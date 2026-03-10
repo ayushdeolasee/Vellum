@@ -126,7 +126,7 @@ export default function App() {
 
   if (!doc) {
     return (
-      <div className="flex h-screen w-screen flex-col">
+      <div className="flex h-screen w-screen flex-col overflow-hidden">
         <Toolbar />
         <WelcomeScreen />
       </div>
@@ -134,9 +134,9 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col">
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
       <Toolbar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* PDF Viewer (main area) */}
         <PdfViewer />
 
@@ -155,7 +155,7 @@ export default function App() {
 
         {/* Annotation sidebar */}
         {sidebarOpen && (
-          <div className="w-80 flex-shrink-0 overflow-hidden border-l bg-background">
+          <div className="flex min-h-0 w-80 flex-shrink-0 flex-col overflow-hidden border-l bg-background">
             <div className="flex border-b">
               <button
                 className={cn(
@@ -183,7 +183,7 @@ export default function App() {
               </button>
             </div>
 
-            <div className="h-[calc(100%-33px)] overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden overscroll-contain">
               {sidebarTab === "annotations" ? <AnnotationSidebar /> : <AiPanel />}
             </div>
           </div>

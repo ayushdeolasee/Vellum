@@ -1,16 +1,13 @@
 import { create } from "zustand";
-import { generateText, streamText } from "ai";
+import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import {
-  buildConversationModePrompt,
-  buildToolModePrompt,
-} from "@/lib/ai-prompts";
+import { buildToolModePrompt } from "@/lib/ai-prompts";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
 import type { Annotation, DocumentInfo } from "@/types";
 
 type AiRole = "user" | "assistant";
-type VoiceMode = "off" | "push-to-talk" | "conversation";
+type VoiceMode = "off" | "push-to-talk";
 
 type ToolAction =
   | {
@@ -90,10 +87,6 @@ interface AiState {
   clearDocumentContext: () => void;
   setPageText: (page: number, text: string) => void;
   sendMessage: (input: string, context: AiContextSnapshot) => Promise<void>;
-  sendConversationMessage: (
-    input: string,
-    context: AiContextSnapshot,
-  ) => Promise<void>;
 }
 
 const SETTINGS_STORAGE_KEY = "research-reader-ai-settings-v1";
@@ -119,6 +112,10 @@ function makeId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeVoiceMode(value: unknown): VoiceMode {
+  return value === "push-to-talk" ? "push-to-talk" : "off";
+}
+
 function readSettingsFromStorage(): AiSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -127,6 +124,7 @@ function readSettingsFromStorage(): AiSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      voiceMode: normalizeVoiceMode(parsed.voiceMode),
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -400,47 +398,6 @@ async function callGemini(opts: {
   return parseModelResponse(rawText);
 }
 
-async function streamGeminiConversationReply(opts: {
-  apiKey: string;
-  model: string;
-  prompt: string;
-  currentPageImage?: AiPageImageSnapshot | null;
-  onTextDelta: (delta: string) => void;
-}): Promise<string> {
-  const google = createGoogleGenerativeAI({
-    apiKey: opts.apiKey,
-  });
-
-  const userContent: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string; mediaType?: string }
-  > = [{ type: "text", text: opts.prompt }];
-
-  if (opts.currentPageImage?.base64Data) {
-    userContent.push({
-      type: "image",
-      image: opts.currentPageImage.base64Data,
-      mediaType: opts.currentPageImage.mediaType,
-    });
-  }
-
-  const streamed = streamText({
-    model: google(opts.model),
-    messages: [{ role: "user", content: userContent }],
-    temperature: 0.2,
-    maxRetries: 1,
-  });
-
-  let fullText = "";
-  for await (const delta of streamed.textStream) {
-    if (!delta) continue;
-    fullText += delta;
-    opts.onTextDelta(delta);
-  }
-
-  return fullText.trim();
-}
-
 async function executeToolAction(action: ToolAction): Promise<string> {
   if (action.tool === "goToPage") {
     const pageNumber = clampPage(action.args.pageNumber);
@@ -654,97 +611,6 @@ export const useAiStore = create<AiState>((set, get) => ({
             createdAt: new Date().toISOString(),
           },
         ],
-      }));
-      saveConversationToStorage(usePdfStore.getState().document, get().messages);
-    }
-  },
-
-  sendConversationMessage: async (input, context) => {
-    const trimmed = input.trim();
-    if (!trimmed) return;
-
-    const { settings, pageTexts } = get();
-    if (!settings.apiKey.trim()) {
-      set({ error: "Set your Gemini API key in AI settings." });
-      return;
-    }
-
-    const userMessage: AiMessage = {
-      id: makeId(),
-      role: "user",
-      content: trimmed,
-      createdAt: new Date().toISOString(),
-    };
-    const assistantMessageId = makeId();
-
-    set((state) => ({
-      messages: [
-        ...state.messages,
-        userMessage,
-        {
-          id: assistantMessageId,
-          role: "assistant",
-          content: "",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      isThinking: true,
-      error: null,
-    }));
-    saveConversationToStorage(usePdfStore.getState().document, get().messages);
-
-    try {
-      const conversation = buildConversationBlock(get().messages);
-      const contextBlock = buildContextBlock(pageTexts, context);
-      const prompt = buildConversationModePrompt({
-        conversation: conversation || "(start of conversation)",
-        context: contextBlock,
-        latestUserRequest: trimmed,
-      });
-
-      let streamedText = "";
-      const finalReply = await streamGeminiConversationReply({
-        apiKey: settings.apiKey.trim(),
-        model: settings.model.trim() || DEFAULT_SETTINGS.model,
-        prompt,
-        currentPageImage: context.currentPageImage,
-        onTextDelta: (delta) => {
-          streamedText += delta;
-          set((state) => ({
-            messages: state.messages.map((message) =>
-              message.id === assistantMessageId
-                ? { ...message, content: streamedText }
-                : message,
-            ),
-          }));
-        },
-      });
-
-      const normalizedReply =
-        finalReply || streamedText.trim() || "I couldn't produce a response.";
-
-      set((state) => ({
-        messages: state.messages.map((message) =>
-          message.id === assistantMessageId
-            ? { ...message, content: normalizedReply }
-            : message,
-        ),
-        isThinking: false,
-      }));
-      saveConversationToStorage(usePdfStore.getState().document, get().messages);
-    } catch (err) {
-      const message = String(err);
-      set((state) => ({
-        isThinking: false,
-        error: message,
-        messages: state.messages.map((m) =>
-          m.id === assistantMessageId
-            ? {
-                ...m,
-                content: `I couldn't complete that request: ${message}`,
-              }
-            : m,
-        ),
       }));
       saveConversationToStorage(usePdfStore.getState().document, get().messages);
     }

@@ -895,7 +895,7 @@ export function PdfViewer() {
     <div
       ref={containerRef}
       className={cn(
-        "relative flex-1 overflow-auto bg-muted",
+        "relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-muted",
         mode === "note" && "cursor-crosshair",
       )}
       onScroll={handleContainerScroll}

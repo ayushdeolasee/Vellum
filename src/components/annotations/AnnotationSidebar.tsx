@@ -124,7 +124,7 @@ export function AnnotationSidebar() {
       </div>
 
       {/* Annotation list */}
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
         {filtered.map((annotation) => {
           const Icon = TYPE_ICONS[annotation.type];
           const isSelected = selectedAnnotationId === annotation.id;
