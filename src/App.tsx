@@ -59,7 +59,7 @@ export default function App() {
       const selected = await open({
         multiple: false,
         filters: [
-          { name: "Research Reader / PDF", extensions: ["rr", "pdf"] },
+          { name: "Vellum / PDF", extensions: ["rr", "pdf"] },
         ],
       });
       const selectedPath = Array.isArray(selected) ? selected[0] : selected;

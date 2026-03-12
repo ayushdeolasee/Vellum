@@ -1,5 +1,5 @@
 [package]
-name = "research-reader"
+name = "vellum"
 version = "0.1.0"
 description = "AI-powered PDF reader and annotation tool"
 authors = ["you"]

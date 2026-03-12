@@ -2968,26 +2968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "research-reader"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "log",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tempfile",
- "thiserror 2.0.18",
- "uuid",
- "zip",
-]
-
-[[package]]
 name = "rfd"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4412,6 +4392,26 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "vellum"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+ "zip",
+]
 
 [[package]]
 name = "version-compare"

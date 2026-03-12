@@ -11,7 +11,7 @@ export function WelcomeScreen() {
       multiple: false,
       filters: [
         {
-          name: "Research Reader / PDF",
+          name: "Vellum / PDF",
           extensions: ["rr", "pdf"],
         },
       ],
@@ -25,7 +25,7 @@ export function WelcomeScreen() {
     <div className="flex h-full flex-col items-center justify-center gap-6">
       <div className="flex flex-col items-center gap-2">
         <FileText size={48} className="text-muted-foreground" />
-        <h1 className="text-2xl font-semibold">Research Reader</h1>
+        <h1 className="text-2xl font-semibold">Vellum</h1>
         <p className="text-sm text-muted-foreground">
           Open a PDF or .rr file to get started
         </p>

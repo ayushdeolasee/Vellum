@@ -1,18 +1,18 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Research Reader",
+  "productName": "Vellum",
   "version": "0.1.0",
-  "identifier": "com.researchreader.app",
+  "identifier": "com.vellum.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm run icons:generate && npm run dev",
+    "beforeBuildCommand": "npm run icons:generate && npm run build"
   },
   "app": {
     "windows": [
       {
-        "title": "Research Reader",
+        "title": "Vellum",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

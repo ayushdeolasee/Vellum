@@ -59,7 +59,7 @@ export function Toolbar() {
       multiple: false,
       filters: [
         {
-          name: "Research Reader / PDF",
+          name: "Vellum / PDF",
           extensions: ["rr", "pdf"],
         },
       ],

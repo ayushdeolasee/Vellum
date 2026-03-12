@@ -1,5 +1,5 @@
 {
-  "name": "research-reader",
+  "name": "vellum",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,6 +11,7 @@
     "website:dev": "vite --config website/vite.config.ts",
     "website:build": "vite build --config website/vite.config.ts",
     "website:preview": "vite preview --config website/vite.config.ts",
+    "icons:generate": "tauri icon src-tauri/icons/app-icon.png",
     "tauri": "tauri"
   },
   "dependencies": {
