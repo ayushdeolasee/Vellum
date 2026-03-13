@@ -154,3 +154,22 @@ Console log prefix convention: `[ComponentName]` or `[module-name]` (e.g., `[Pdf
 - Keyboard shortcuts centralized in `App.tsx`, use `getState()` to avoid stale closures
 - Pinch-to-zoom handled at document level in `App.tsx` (WebKit GestureEvent + wheel+ctrlKey fallback)
 - `.rr` file extracted to temp dir on open; SQLite writes are instant; re-packed to ZIP on save
+
+## Cursor Cloud specific instructions
+
+### Environment prerequisites (already installed by the VM snapshot)
+- **Rust toolchain**: Must be ≥ 1.85 (edition2024 support required by transitive dep `dlopen2`). The snapshot installs latest stable via `rustup update stable && rustup default stable`.
+- **Tauri Linux system libs**: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libjavascriptcoregtk-4.1-dev`, `libsoup-3.0-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`.
+- **Xvfb**: Needed for headless GUI testing; start with `Xvfb :99 -screen 0 1280x800x24 -ac &` and `export DISPLAY=:99`.
+
+### Running the app in the cloud VM
+- Start a virtual display before launching the Tauri app: `Xvfb :99 -screen 0 1280x800x24 -ac &` then `export DISPLAY=:99`.
+- Launch with `DISPLAY=:99 npm run tauri dev` from the workspace root. The `beforeDevCommand` in `tauri.conf.json` auto-starts Vite on port 5173 and regenerates icons.
+- First Rust build takes ~60s; subsequent incremental builds are fast.
+- The GTK file dialog may have trouble with `/tmp` permissions; copy test files to `/home/ubuntu/` if needed.
+
+### Checks (no test suites exist)
+- **Lint**: `npm run lint`
+- **TypeScript**: `npx tsc --noEmit`
+- **Rust**: `cargo check` (from `src-tauri/`)
+- There are no automated test suites (no vitest/jest, no `#[cfg(test)]`).
