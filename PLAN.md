@@ -25,54 +25,36 @@ annotations on your behalf, and converse via chat or voice.
 
 ---
 
-## `.rr` File Format (Research Reader)
+## Embedded PDF Persistence
 
-A ZIP-based container that bundles a PDF with its annotations in a single shareable file.
+Vellum opens and edits standard PDF files directly. Highlights, sticky notes,
+bookmarks, and reading metadata are embedded in the PDF, so the document carries
+its annotations when it is renamed, moved, or shared.
 
-### Internal Structure
+### Storage Layout
 
 ```
-myresearch.rr  (ZIP file)
-├── manifest.json       { version, format, created_at }
-├── document.pdf        Original PDF (stored uncompressed for speed)
-└── data.sqlite         Annotations, notes, bookmarks, AI conversations
+document.pdf
+  ├── /Highlight annotations with /QuadPoints
+  ├── /Text annotations for notes
+  ├── /Outlines entries for bookmarks
+  ├── /NM stable annotation identifiers
+  └── PDF information dictionary reading metadata
 ```
 
 ### Key Properties
 
-- **Non-destructive**: Original PDF is stored byte-identical, never modified
-- **Portable**: Rename to .zip, extract document.pdf — readable without Research Reader
-- **Extensible**: Can add thumbnails/, ai-config.json, etc. later
-
-### SQLite Schema (inside data.sqlite)
-
-```sql
-metadata        (key TEXT PK, value TEXT)  -- format version, title, etc.
-
-annotations
-├── id              TEXT PK (UUID)
-├── type            TEXT        -- 'highlight' | 'note' | 'bookmark'
-├── page_number     INTEGER
-├── color           TEXT        -- hex color
-├── content         TEXT        -- note text (null for plain highlights)
-├── position_data   TEXT (JSON) -- rects, pageWidth/Height, selectedText, offsets
-├── created_at      DATETIME
-└── updated_at      DATETIME
-
-conversations  (future — Phase 2)
-├── id              TEXT PK
-├── role            TEXT        -- 'user' | 'assistant'
-├── content         TEXT
-├── created_at      DATETIME
-```
+- **Standard annotations**: Other PDF applications can display Vellum highlights and notes
+- **Portable**: Annotation state follows the PDF rather than its filesystem path
+- **Immediately durable**: Every create, update, and delete writes an atomic replacement
+- **Round-trip editing**: Vellum reads supported annotations from the PDF on every open
 
 ### Data Flow
 
-1. **Open .rr**: Unzip to temp dir -> open SQLite -> load PDF via PDF.js
-2. **Open raw .pdf**: Prompt to import -> create .rr container -> proceed as above
-3. **Annotate**: Zustand updates instantly (optimistic) -> write to temp SQLite
-4. **Save**: Re-pack temp dir into .rr file (fast — PDF is uncompressed copy)
-5. **Close**: Clean up temp directory
+1. **Open PDF**: Validate the PDF -> read embedded annotations -> load PDF via PDF.js
+2. **Annotate**: Zustand updates optimistically -> write a standard PDF annotation object
+3. **Edit/Delete**: Locate the object by `/NM` -> update or remove it -> atomically replace the PDF
+4. **Reopen/Share**: Read annotations from the PDF regardless of its current path
 
 ### Annotation Position Data
 
@@ -104,12 +86,12 @@ Dual-anchored for resilience:
 │  │  └────────────────────────────────────────┘   │  │
 │  │                                                │  │
 │  │  ┌──────────────────┐ ┌────────────────────┐  │  │
-│  │  │ AI Provider      │ │ .rr File Manager   │  │  │
-│  │  │ (Vercel AI SDK)  │ │ (ZIP + SQLite)     │  │  │
+│  │  │ AI Provider      │ │ PDF Annotation I/O │  │  │
+│  │  │ (Vercel AI SDK)  │ │ (lopdf)            │  │  │
 │  │  └──────────────────┘ └────────────────────┘  │  │
 │  └───────────────────────────────────────────────┘  │
 │                    Rust Backend                       │
-│         (File I/O, SQLite, ZIP, IPC, file dialog)    │
+│            (PDF mutation, IPC, native file dialog)   │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -127,14 +109,14 @@ All core functionality is implemented and working.
 | # | Task | Status |
 |---|------|--------|
 | 1 | Scaffold Tauri 2.0 + Vite + React + TypeScript + Tailwind | ✅ Done |
-| 2 | Implement .rr file format (ZIP container, SQLite, Tauri commands) | ✅ Done |
+| 2 | Implement direct PDF sessions with embedded standard annotations | ✅ Done |
 | 3 | PDF viewer: render pages, scroll, zoom, page navigation, viewport tracking | ✅ Done |
-| 4 | Toolbar: open file (.rr or .pdf with import), page number, zoom controls | ✅ Done |
+| 4 | Toolbar: open PDFs directly, page number, zoom controls | ✅ Done |
 | 5 | Text selection -> highlight creation with color picker | ✅ Done |
 | 6 | Sticky notes: click-to-place, drag-to-reposition, expand/collapse, edit | ✅ Done |
 | 7 | Annotation sidebar: list all annotations, click to navigate, filter by type | ✅ Done |
 | 8 | Highlight + note overlay rendering on PDF pages | ✅ Done |
-| 9 | Auto-save .rr file (30s interval), persist page count + last page | ✅ Done |
+| 9 | Immediate embedded annotation writes + PDF reading-position metadata | ✅ Done |
 
 **Phase 1 details — what was built:**
 
@@ -142,7 +124,7 @@ All core functionality is implemented and working.
 - **PDF viewer**: Page virtualization (PAGE_BUFFER=2), `useDeferredValue(zoom)` for smooth zoom, RAF-throttled scroll handler, `window.__scrollToPage` for cross-component navigation
 - **Pinch-to-zoom**: Document-level WebKit GestureEvent handlers + wheel+ctrlKey fallback, continuous multiplicative scaling (0.25x–4.0x)
 - **Keyboard shortcuts** (centralized in App.tsx): Ctrl+O open, Ctrl+S save, Ctrl+=/- zoom, Ctrl+B toggle bookmark, N toggle note mode, Escape deselect/exit mode
-- **Annotations**: Optimistic create/update/delete with rollback on failure, pre-indexed by page via `Map<number, Annotation[]>` useMemo
+- **Annotations**: Standard `/Highlight`, `/Text`, and `/Outlines` objects, optimistic create/update/delete with rollback, pre-indexed by page via `Map<number, Annotation[]>` useMemo
 - **Sticky notes**: Shared drag handler with 3px threshold (click vs drag), RAF-batched positioning, collapsed (icon) and expanded (card) states
 - **Error handling**: Top-level ErrorBoundary (shows error + stack trace + reload), inner ErrorBoundary around `<Document>`, console.error with `[module]` prefixes
 - **Context menu**: Right-click on PDF pages → "Add note here"
@@ -183,11 +165,11 @@ All core functionality is implemented and working.
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Web page ingestion (readability parsing -> .rr container) | ⬜ Not started |
+| 1 | Web page ingestion (readability parsing -> PDF or library entry) | ⬜ Not started |
 | 2 | iPad app (Tauri mobile or React Native with shared logic) | ⬜ Not started |
 | 3 | Multi-document library view | ⬜ Not started |
 | 4 | Export annotations (Markdown, annotated PDF copy) | ⬜ Not started |
-| 5 | iCloud/Dropbox sync of .rr files | ⬜ Not started |
+| 5 | iCloud/Dropbox sync of annotated PDFs | ⬜ Not started |
 
 ### Additionals
 
@@ -197,10 +179,10 @@ All core functionality is implemented and working.
 
 ## Key Design Decisions
 
-1. **Non-destructive**: Never modify original PDFs — annotations stored separately in .rr container
-2. **Optimistic UI**: Zustand updates instantly, SQLite persists async, rollback on failure
+1. **Standard PDF workflow**: Open PDFs directly and keep original files readable in any viewer
+2. **Optimistic UI**: Zustand updates instantly, PDF persistence runs async, rollback on failure
 3. **Normalized coordinates**: Annotation positions stored at zoom=1.0, scaled on render
 4. **Dual anchoring**: Rects for fast render + text offsets for re-anchoring resilience
 5. **Store actions as API**: UI and AI share the same mutation interface
-6. **ZIP container**: .rr files are inspectable, portable, extensible
+6. **Embedded annotations**: Standard PDF objects are the source of truth and travel with the file
 7. **BYOK for AI**: No backend costs, user brings their own API keys

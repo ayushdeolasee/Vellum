@@ -85,7 +85,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
   setNumPages: (num: number) => {
     set({ numPages: num });
-    // Persist to .rr metadata
+    // Page count is derived from the PDF; the backend skips redundant writes.
     commands.setDocumentMetadata("page_count", String(num)).catch(() => {});
   },
   setZoom: (zoom: number) =>

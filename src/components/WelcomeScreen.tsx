@@ -1,7 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { usePdfStore } from "@/stores/pdf-store";
 import { FileText, FolderOpen } from "lucide-react";
-import { confirmPdfImport } from "@/lib/pdf-import";
 
 export function WelcomeScreen() {
   const { openFile, isLoading, error } = usePdfStore();
@@ -11,13 +10,13 @@ export function WelcomeScreen() {
       multiple: false,
       filters: [
         {
-          name: "Vellum / PDF",
-          extensions: ["rr", "pdf"],
+          name: "PDF",
+          extensions: ["pdf"],
         },
       ],
     });
     const selectedPath = Array.isArray(selected) ? selected[0] : selected;
-    if (!selectedPath || !confirmPdfImport(selectedPath)) return;
+    if (!selectedPath) return;
     await openFile(selectedPath);
   };
 
@@ -27,7 +26,7 @@ export function WelcomeScreen() {
         <FileText size={48} className="text-muted-foreground" />
         <h1 className="text-2xl font-semibold">Vellum</h1>
         <p className="text-sm text-muted-foreground">
-          Open a PDF or .rr file to get started
+          Open a PDF to get started
         </p>
       </div>
 

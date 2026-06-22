@@ -22,12 +22,9 @@ tauri = { version = "2.10.0", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-zip = "2"
-rusqlite = { version = "0.34", features = ["bundled"] }
+lopdf = "0.34"
 uuid = { version = "1", features = ["v4"] }
-tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"

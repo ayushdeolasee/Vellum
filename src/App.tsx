@@ -9,7 +9,6 @@ import { AnnotationSidebar } from "@/components/annotations/AnnotationSidebar";
 import { AiPanel } from "@/components/ai/AiPanel";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import * as commands from "@/lib/tauri-commands";
-import { confirmPdfImport } from "@/lib/pdf-import";
 import { MessageSquare, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -59,11 +58,11 @@ export default function App() {
       const selected = await open({
         multiple: false,
         filters: [
-          { name: "Vellum / PDF", extensions: ["rr", "pdf"] },
+          { name: "PDF", extensions: ["pdf"] },
         ],
       });
       const selectedPath = Array.isArray(selected) ? selected[0] : selected;
-      if (!selectedPath || !confirmPdfImport(selectedPath)) return;
+      if (!selectedPath) return;
       await usePdfStore.getState().openFile(selectedPath);
     }
 

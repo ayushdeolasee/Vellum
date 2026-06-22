@@ -3,16 +3,16 @@ use std::sync::Mutex;
 use tauri::ipc::Response;
 use tauri::State;
 
-use crate::database;
 use crate::models::*;
-use crate::rr_file::{self, RrSession};
+use crate::pdf_annotations;
+use crate::pdf_session::{self, PdfSession};
 
 /// Application state holding the current session
 pub struct AppState {
-    pub session: Mutex<Option<RrSession>>,
+    pub session: Mutex<Option<PdfSession>>,
 }
 
-/// Open a .rr file or import a PDF
+/// Open a PDF without creating a custom document container.
 #[tauri::command]
 pub fn open_file(path: String, state: State<AppState>) -> Result<DocumentInfo, String> {
     let path = PathBuf::from(&path);
@@ -23,43 +23,35 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<DocumentInfo, S
         .to_lowercase();
 
     let session = match ext.as_str() {
-        "rr" => rr_file::open_rr(&path)?,
-        "pdf" => rr_file::import_pdf(&path, None)?,
+        "pdf" => pdf_session::open_pdf(&path)?,
         _ => return Err(format!("Unsupported file type: .{}", ext)),
     };
 
     let pdf_path = session.pdf_path().to_string_lossy().to_string();
-    let title = database::get_metadata(&session.db, "title")
-        .map_err(|e| format!("Failed to read title: {}", e))?;
-    let page_count_str = database::get_metadata(&session.db, "page_count")
-        .map_err(|e| format!("Failed to read page_count: {}", e))?;
-    let last_page_str = database::get_metadata(&session.db, "last_page")
-        .map_err(|e| format!("Failed to read last_page: {}", e))?;
+    let (title, page_count, last_page) = pdf_annotations::document_info(&session.pdf_path)?;
 
     let info = DocumentInfo {
         pdf_path,
-        rr_path: session.rr_path.to_string_lossy().to_string(),
         title,
-        page_count: page_count_str.and_then(|s| s.parse().ok()),
-        last_page: last_page_str.and_then(|s| s.parse().ok()),
+        page_count: Some(page_count),
+        last_page,
     };
 
     let mut state_session = state.session.lock().map_err(|e| e.to_string())?;
-    // Clean up previous session if any
     if let Some(prev) = state_session.take() {
-        rr_file::cleanup_session(&prev);
+        pdf_session::save_session(&prev)?;
     }
     *state_session = Some(session);
 
     Ok(info)
 }
 
-/// Save the current session back to the .rr file
+/// Synchronize the current session. Annotation mutations are saved immediately.
 #[tauri::command]
 pub fn save_file(state: State<AppState>) -> Result<(), String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    rr_file::save_rr(session)
+    pdf_session::save_session(session)
 }
 
 /// Close the current session
@@ -67,9 +59,7 @@ pub fn save_file(state: State<AppState>) -> Result<(), String> {
 pub fn close_file(state: State<AppState>) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     if let Some(prev) = session.take() {
-        // Save before closing
-        rr_file::save_rr(&prev)?;
-        rr_file::cleanup_session(&prev);
+        pdf_session::save_session(&prev)?;
     }
     Ok(())
 }
@@ -82,8 +72,7 @@ pub fn get_annotations(
 ) -> Result<Vec<Annotation>, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    database::get_annotations(&session.db, page_number)
-        .map_err(|e| format!("Failed to get annotations: {}", e))
+    pdf_annotations::get_annotations(&session.pdf_path, page_number)
 }
 
 /// Create a new annotation
@@ -94,8 +83,7 @@ pub fn create_annotation(
 ) -> Result<Annotation, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    database::create_annotation(&session.db, &input)
-        .map_err(|e| format!("Failed to create annotation: {}", e))
+    pdf_annotations::create_annotation(&session.pdf_path, &input)
 }
 
 /// Update an existing annotation
@@ -106,8 +94,7 @@ pub fn update_annotation(
 ) -> Result<bool, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    database::update_annotation(&session.db, &input)
-        .map_err(|e| format!("Failed to update annotation: {}", e))
+    pdf_annotations::update_annotation(&session.pdf_path, &input)
 }
 
 /// Delete an annotation
@@ -115,8 +102,7 @@ pub fn update_annotation(
 pub fn delete_annotation(id: String, state: State<AppState>) -> Result<bool, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    database::delete_annotation(&session.db, &id)
-        .map_err(|e| format!("Failed to delete annotation: {}", e))
+    pdf_annotations::delete_annotation(&session.pdf_path, &id)
 }
 
 /// Set document metadata (e.g., page_count, last_page, title)
@@ -128,8 +114,7 @@ pub fn set_document_metadata(
 ) -> Result<(), String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("No file is open")?;
-    database::set_metadata(&session.db, &key, &value)
-        .map_err(|e| format!("Failed to set metadata: {}", e))
+    pdf_annotations::set_metadata(&session.pdf_path, &key, &value)
 }
 
 /// Read the PDF bytes for the current session.
@@ -148,7 +133,6 @@ pub fn read_pdf_bytes(state: State<AppState>) -> Result<Response, String> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocumentInfo {
     pub pdf_path: String,
-    pub rr_path: String,
     pub title: Option<String>,
     pub page_count: Option<u32>,
     pub last_page: Option<u32>,
