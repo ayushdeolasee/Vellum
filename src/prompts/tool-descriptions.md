@@ -3,7 +3,7 @@
 These are the ONLY tools you may call. Never invent other tool names — any
 unrecognized tool is discarded. A maximum of 5 actions run per response.
 
-## Coordinate System (shared by `addNote` and `addHighlight`)
+## Coordinate System (used by `addNote`)
 - Coordinates are in PDF points with the origin at the **top-left** of the page.
 - `x` increases to the right; `y` increases **downward**.
 - A typical US Letter page is 612 wide x 792 tall. If you don't know the page
@@ -57,30 +57,30 @@ Create a sticky-note annotation on a page with user-visible text.
 
 ## Tool: `addHighlight`
 ### Purpose
-Create a highlight annotation on a page for text/regions of interest.
+Create a highlight annotation over a specific run of text on a page.
 
 ### Use When
 - The user asks to highlight text or visually mark important content.
-- You identify a critical statement, value, or region worth emphasizing.
+- You identify a critical statement, value, or phrase worth emphasizing.
 
 ### Input Schema
 ```json
 {
   "pageNumber": number,
-  "text"?: string,
-  "color"?: string,
-  "x"?: number,
-  "y"?: number,
-  "width"?: number,
-  "height"?: number
+  "text": string,
+  "color"?: string
 }
 ```
 
 ### Notes
-- `pageNumber` is 1-indexed. Include the highlighted phrase in `text` when known.
+- `pageNumber` is 1-indexed.
+- `text` is REQUIRED: it is the exact phrase to highlight. The app locates that
+  phrase in the page's text and draws the highlight over its real position — you
+  do NOT supply any coordinates. Quote the phrase verbatim from the document
+  (whitespace differences are tolerated, but spelling/words must match).
+- Keep `text` to the specific phrase of interest. Highlighting an entire
+  paragraph is rarely useful; pick the key sentence or term.
+- If the phrase does not appear verbatim on that page, the highlight is skipped,
+  so prefer text you can see in the provided page text.
 - `color` must be a valid CSS color (hex like `#fef08a` preferred). Invalid
   values fall back to the default yellow.
-- `x` / `y` are the top-left corner; `width` / `height` are the box size (see
-  Coordinate System). They default to a small box at (72, 96) if omitted.
-- If exact geometry is uncertain, prefer conveying intent via `text` rather than
-  guessing precise coordinates.

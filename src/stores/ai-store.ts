@@ -3,6 +3,7 @@ import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { buildToolModePrompt } from "@/lib/ai-prompts";
+import { locateTextOnPage } from "@/lib/highlight-locator";
 import * as commands from "@/lib/tauri-commands";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
@@ -29,13 +30,11 @@ type ToolAction =
   | {
       tool: "addHighlight";
       args: {
+        // The text to highlight. Its on-page geometry is resolved by searching
+        // the page's extracted text, not supplied by the model.
         pageNumber: number;
-        text?: string;
+        text: string;
         color?: string;
-        x?: number;
-        y?: number;
-        width?: number;
-        height?: number;
       };
     };
 
@@ -589,26 +588,24 @@ async function executeToolAction(action: ToolAction): Promise<string> {
 
   if (action.tool === "addHighlight") {
     const pageNumber = clampPage(action.args.pageNumber);
-    const x = sanitizeNonNegative(action.args.x, 72);
-    const y = sanitizeNonNegative(action.args.y, 96);
-    const width = sanitizeNonNegative(action.args.width, 220);
-    const height = sanitizeNonNegative(action.args.height, 24);
+    const query = action.args.text?.trim();
+    if (!query) return "Skipped addHighlight: no text provided to locate.";
     const color = sanitizeColor(action.args.color, "#fef08a");
+
+    // Resolve the highlight geometry from the actual page text instead of
+    // trusting model-supplied coordinates, which land on arbitrary positions.
+    const positionData = await locateTextOnPage(pageNumber, query);
+    if (!positionData || positionData.rects.length === 0) {
+      return `Skipped addHighlight: couldn't find "${query}" on page ${pageNumber}.`;
+    }
 
     await useAnnotationStore.getState().addHighlight({
       type: "highlight",
       page_number: pageNumber,
       color,
-      position_data: {
-        rects: [{ x, y, width, height }],
-        page_width: DEFAULT_PAGE_WIDTH,
-        page_height: DEFAULT_PAGE_HEIGHT,
-        selected_text: action.args.text ?? null,
-        start_offset: null,
-        end_offset: null,
-      },
+      position_data: positionData,
     });
-    return `Added highlight on page ${pageNumber}.`;
+    return `Highlighted "${query}" on page ${pageNumber}.`;
   }
 
   // Unknown tools are filtered out before this point; this guards against a

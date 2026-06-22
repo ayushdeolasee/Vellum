@@ -317,18 +317,14 @@ fn codex_output_schema() -> serde_json::Value {
                                 "text": { "type": ["string", "null"] },
                                 "color": { "type": ["string", "null"] },
                                 "x": { "type": ["number", "null"] },
-                                "y": { "type": ["number", "null"] },
-                                "width": { "type": ["number", "null"] },
-                                "height": { "type": ["number", "null"] }
+                                "y": { "type": ["number", "null"] }
                             },
                             "required": [
                                 "pageNumber",
                                 "text",
                                 "color",
                                 "x",
-                                "y",
-                                "width",
-                                "height"
+                                "y"
                             ]
                         }
                     },

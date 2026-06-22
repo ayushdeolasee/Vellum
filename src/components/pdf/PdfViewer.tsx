@@ -16,6 +16,10 @@ import { useAiStore } from "@/stores/ai-store";
 import { HighlightLayer } from "@/components/annotations/HighlightLayer";
 import { SelectionPopover } from "@/components/annotations/SelectionPopover";
 import { useTextSelection } from "@/hooks/useTextSelection";
+import {
+  registerPdfDocument,
+  unregisterPdfDocument,
+} from "@/lib/highlight-locator";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { StickyNote } from "lucide-react";
@@ -162,6 +166,11 @@ export function PdfViewer() {
   const setPageText = useAiStore((s) => s.setPageText);
   const clearDocumentContext = useAiStore((s) => s.clearDocumentContext);
   const textExtractionRunRef = useRef(0);
+  // Tracks the pdf.js document registered with the highlight locator so it can
+  // be released when the document changes or the viewer unmounts.
+  const registeredPdfRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(
+    null,
+  );
 
   useEffect(() => {
     return () => {
@@ -251,6 +260,14 @@ export function PdfViewer() {
       const pages = loadedPdf.numPages;
       setNumPages(pages);
 
+      // Expose this document to the highlight locator so the AI can resolve
+      // text -> geometry on any page, even ones not currently rendered.
+      if (registeredPdfRef.current) {
+        unregisterPdfDocument(registeredPdfRef.current);
+      }
+      registeredPdfRef.current = loadedPdf;
+      registerPdfDocument(loadedPdf);
+
       const runId = textExtractionRunRef.current + 1;
       textExtractionRunRef.current = runId;
 
@@ -325,6 +342,10 @@ export function PdfViewer() {
         wrapper.style.willChange = "";
       }
       pinchRef.current.active = false;
+      if (registeredPdfRef.current) {
+        unregisterPdfDocument(registeredPdfRef.current);
+        registeredPdfRef.current = null;
+      }
     };
   }, []);
 
