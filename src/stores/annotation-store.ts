@@ -38,7 +38,8 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
     try {
       const annotations = await commands.getAnnotations();
       set({ annotations, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error("[annotation-store] Failed to load annotations:", err);
       set({ isLoading: false });
     }
   },
@@ -53,7 +54,8 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
         annotations: [...state.annotations, annotation],
       }));
       return annotation;
-    } catch {
+    } catch (err) {
+      console.error("[annotation-store] Failed to create highlight:", err);
       return null;
     }
   },
@@ -84,7 +86,8 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
         annotations: [...state.annotations, annotation],
       }));
       return annotation;
-    } catch {
+    } catch (err) {
+      console.error("[annotation-store] Failed to create bookmark:", err);
       return null;
     }
   },
@@ -105,8 +108,12 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
       ),
     }));
     try {
-      await commands.updateAnnotation(input);
-    } catch {
+      const updated = await commands.updateAnnotation(input);
+      if (!updated) {
+        throw new Error(`Annotation ${input.id} was not found`);
+      }
+    } catch (err) {
+      console.error("[annotation-store] Failed to update annotation:", err);
       // Reload on failure to revert optimistic update
       get().loadAnnotations();
     }
@@ -123,8 +130,12 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
           : state.selectedAnnotationId,
     }));
     try {
-      await commands.deleteAnnotation(id);
-    } catch {
+      const deleted = await commands.deleteAnnotation(id);
+      if (!deleted) {
+        throw new Error(`Annotation ${id} was not found`);
+      }
+    } catch (err) {
+      console.error("[annotation-store] Failed to delete annotation:", err);
       // Revert on failure
       set({ annotations: prev });
     }

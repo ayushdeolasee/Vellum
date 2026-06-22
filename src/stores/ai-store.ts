@@ -157,7 +157,7 @@ function writeSettingsToStorage(settings: AiSettings) {
 }
 
 function getConversationDocumentKey(document: DocumentInfo | null): string | null {
-  const rawKey = document?.rr_path?.trim() || document?.pdf_path?.trim() || null;
+  const rawKey = document?.pdf_path?.trim() || null;
   if (!rawKey) return null;
   return rawKey;
 }

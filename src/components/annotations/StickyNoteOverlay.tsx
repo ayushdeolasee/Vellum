@@ -72,7 +72,7 @@ export const StickyNoteOverlay = memo(function StickyNoteOverlay({
     if (trimmed !== (annotation.content ?? "")) {
       updateAnnotation({
         id: annotation.id,
-        content: trimmed || undefined,
+        content: trimmed,
       });
     }
   }, [annotation.content, annotation.id, editText, updateAnnotation]);

@@ -1,7 +1,7 @@
 mod commands;
-mod database;
 mod models;
-mod rr_file;
+mod pdf_annotations;
+mod pdf_session;
 
 use commands::AppState;
 use std::sync::Mutex;

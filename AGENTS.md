@@ -4,7 +4,7 @@
 
 Research Reader is a Tauri 2.0 desktop app for AI-powered PDF annotation.
 Stack: Tauri 2 (Rust backend) + React 19 + TypeScript 5.9 + Vite 7 + Tailwind CSS v4 + Zustand 5 + react-pdf 10.
-Custom `.rr` file format: ZIP container bundling `document.pdf` + `data.sqlite` + `manifest.json`.
+The app opens standard `.pdf` files directly. Highlights and notes are embedded as standard PDF annotation objects, bookmarks are standard PDF outline entries, and reading metadata is stored in the PDF information dictionary. No sidecar database or custom document container is created.
 
 ## Build & Dev Commands
 
@@ -48,8 +48,8 @@ src-tauri/src/                # Rust backend
   lib.rs                      #   Tauri builder, plugin registration, command list
   commands.rs                 #   9 IPC commands + DocumentInfo struct
   models.rs                   #   Data models (Annotation, PositionData, Rect, etc.)
-  database.rs                 #   SQLite CRUD (rusqlite)
-  rr_file.rs                  #   .rr ZIP container ops (open, save, import, cleanup)
+  pdf_annotations.rs          #   Standard PDF annotation CRUD + coordinate conversion
+  pdf_session.rs              #   PDF session validation and active path
 ```
 
 ## Code Style — TypeScript / React
@@ -112,8 +112,8 @@ Path alias: `@/*` → `./src/*`. Target: ES2022.
 - Doc comments (`///`) on every public command
 
 ### Naming
-- Modules: snake_case (`rr_file`, `database`)
-- Structs/Enums: PascalCase (`RrSession`, `AnnotationType`)
+- Modules: snake_case (`pdf_session`, `pdf_annotations`)
+- Structs/Enums: PascalCase (`PdfSession`, `AnnotationType`)
 - Functions: snake_case (`open_file`, `create_annotation`)
 
 ### Tauri Commands
@@ -127,11 +127,11 @@ Path alias: `@/*` → `./src/*`. Target: ES2022.
 - `#[derive(Debug, Clone, Serialize, Deserialize)]` on all data structs
 - `#[serde(rename = "type")]` for reserved-word fields
 - `#[serde(rename_all = "lowercase")]` on enums
-- `position_data` stored as JSON string in SQLite, deserialized with `serde_json::from_str`
+- Standard PDF fields (`/Subtype`, `/Rect`, `/QuadPoints`, `/Contents`, `/C`, `/NM`) are the annotation source of truth
 
 ### AppState
-- `Mutex<Option<RrSession>>` — `None` when no file open
-- Previous session cleaned up when opening new file
+- `Mutex<Option<PdfSession>>` — `None` when no file open
+- Annotation mutations rewrite the PDF immediately through an atomic replacement
 
 ## Error Handling
 
@@ -153,4 +153,6 @@ Console log prefix convention: `[ComponentName]` or `[module-name]` (e.g., `[Pdf
 - `window.__scrollToPage` exposes scroll function for cross-component use
 - Keyboard shortcuts centralized in `App.tsx`, use `getState()` to avoid stale closures
 - Pinch-to-zoom handled at document level in `App.tsx` (WebKit GestureEvent + wheel+ctrlKey fallback)
-- `.rr` file extracted to temp dir on open; SQLite writes are instant; re-packed to ZIP on save
+- PDFs are opened in place; notes use standard `/Text` annotations and highlights use `/Highlight` + `/QuadPoints`
+- Bookmarks use standard `/Outlines` entries with page destinations
+- `/NM` provides stable annotation IDs so embedded annotations remain editable after moving or sharing the PDF

@@ -4,7 +4,6 @@ import { usePdfStore } from "@/stores/pdf-store";
 import type { AppUpdate, AppUpdateDownloadEvent } from "@/lib/app-updates";
 import { checkForAppUpdate, relaunchForUpdate } from "@/lib/app-updates";
 import * as commands from "@/lib/tauri-commands";
-import { confirmPdfImport } from "@/lib/pdf-import";
 import {
   FolderOpen,
   ZoomIn,
@@ -188,13 +187,13 @@ export function Toolbar() {
       multiple: false,
       filters: [
         {
-          name: "Vellum / PDF",
-          extensions: ["rr", "pdf"],
+          name: "PDF",
+          extensions: ["pdf"],
         },
       ],
     });
     const selectedPath = Array.isArray(selected) ? selected[0] : selected;
-    if (!selectedPath || !confirmPdfImport(selectedPath)) return;
+    if (!selectedPath) return;
     await openFile(selectedPath);
   };
 

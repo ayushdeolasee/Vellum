@@ -46,7 +46,6 @@ export interface UpdateAnnotationInput {
 
 export interface DocumentInfo {
   pdf_path: string;
-  rr_path: string;
   title: string | null;
   page_count: number | null;
   last_page: number | null;
