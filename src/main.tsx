@@ -2,8 +2,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import App from "./App";
+import { initTheme } from "./stores/theme-store";
 import "./index.css";
 import "katex/dist/katex.min.css";
+
+// Apply the saved light/dark theme before the first paint to avoid a flash.
+initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

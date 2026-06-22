@@ -1,5 +1,16 @@
 # Tool Skills Reference
 
+These are the ONLY tools you may call. Never invent other tool names — any
+unrecognized tool is discarded. A maximum of 5 actions run per response.
+
+## Coordinate System (shared by `addNote` and `addHighlight`)
+- Coordinates are in PDF points with the origin at the **top-left** of the page.
+- `x` increases to the right; `y` increases **downward**.
+- A typical US Letter page is 612 wide x 792 tall. If you don't know the page
+  size, assume those dimensions.
+- All coordinates and sizes must be finite and non-negative. Omit any field you
+  are unsure about and a sensible default is used instead.
+
 ## Tool: `goToPage`
 ### Purpose
 Navigate the document viewport to a specific page.
@@ -14,9 +25,10 @@ Navigate the document viewport to a specific page.
 ```
 
 ### Notes
-- `pageNumber` should be a positive integer.
-- Prefer exact page numbers when the request is explicit.
-- If the request is vague, choose the most likely page and explain in `reply`.
+- `pageNumber` is 1-indexed (the first page is 1).
+- Out-of-range values are clamped to the valid page range.
+- Prefer exact page numbers when the request is explicit. If the request is
+  vague, choose the most likely page and explain your choice in `reply`.
 
 ## Tool: `addNote`
 ### Purpose
@@ -37,8 +49,10 @@ Create a sticky-note annotation on a page with user-visible text.
 ```
 
 ### Notes
-- `text` is required and should be concise and useful.
-- `x` and `y` are page coordinates; omit them if placement is unclear.
+- `pageNumber` is 1-indexed; `text` is required and must be non-empty
+  (empty-text notes are skipped). Keep it concise and useful.
+- `x` / `y` place the note's top-left anchor (see Coordinate System). Omit them
+  if placement is unclear; they default to (72, 96).
 - Do not add empty or redundant notes.
 
 ## Tool: `addHighlight`
@@ -63,7 +77,10 @@ Create a highlight annotation on a page for text/regions of interest.
 ```
 
 ### Notes
-- `text` should contain the highlighted phrase when known.
-- `color` should be a valid CSS color string (hex preferred).
-- Region fields (`x`, `y`, `width`, `height`) should be coherent and non-negative.
-- If exact geometry is uncertain, prefer semantic highlight intent via `text`.
+- `pageNumber` is 1-indexed. Include the highlighted phrase in `text` when known.
+- `color` must be a valid CSS color (hex like `#fef08a` preferred). Invalid
+  values fall back to the default yellow.
+- `x` / `y` are the top-left corner; `width` / `height` are the box size (see
+  Coordinate System). They default to a small box at (72, 96) if omitted.
+- If exact geometry is uncertain, prefer conveying intent via `text` rather than
+  guessing precise coordinates.

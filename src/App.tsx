@@ -5,16 +5,18 @@ import { useAnnotationStore } from "@/stores/annotation-store";
 import { useAiStore } from "@/stores/ai-store";
 import { PdfViewer } from "@/components/pdf/PdfViewer";
 import { Toolbar } from "@/components/pdf/Toolbar";
+import { TabBar } from "@/components/pdf/TabBar";
 import { AnnotationSidebar } from "@/components/annotations/AnnotationSidebar";
 import { AiPanel } from "@/components/ai/AiPanel";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import * as commands from "@/lib/tauri-commands";
-import { MessageSquare, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
+import { MessageSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function App() {
   // Only subscribe to what drives rendering decisions
   const doc = usePdfStore((s) => s.document);
+  const activeTabId = usePdfStore((s) => s.activeTabId);
   const loadAnnotations = useAnnotationStore((s) => s.loadAnnotations);
   const clearAnnotations = useAnnotationStore((s) => s.clearAnnotations);
   const clearDocumentContext = useAiStore((s) => s.clearDocumentContext);
@@ -26,6 +28,8 @@ export default function App() {
   // Load annotations when document changes
   useEffect(() => {
     if (doc) {
+      clearAnnotations();
+      clearDocumentContext();
       loadAnnotations();
       loadConversationForDocument(doc);
     } else {
@@ -33,6 +37,7 @@ export default function App() {
       clearDocumentContext();
     }
   }, [
+    activeTabId,
     doc,
     loadAnnotations,
     clearAnnotations,
@@ -42,12 +47,12 @@ export default function App() {
 
   // Auto-save every 30 seconds
   useEffect(() => {
-    if (!doc) return;
+    if (!doc || !activeTabId) return;
     const interval = setInterval(() => {
-      commands.saveFile().catch(() => {});
+      commands.saveFile(activeTabId).catch(() => {});
     }, 30000);
     return () => clearInterval(interval);
-  }, [doc]);
+  }, [activeTabId, doc]);
 
   // Keyboard shortcuts — uses getState() so the callback never changes
   const handleKeyDown = useCallback(async (e: KeyboardEvent) => {
@@ -56,19 +61,37 @@ export default function App() {
     if (isCtrl && e.key === "o") {
       e.preventDefault();
       const selected = await open({
-        multiple: false,
+        multiple: true,
         filters: [
           { name: "PDF", extensions: ["pdf"] },
         ],
       });
-      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
-      if (!selectedPath) return;
-      await usePdfStore.getState().openFile(selectedPath);
+      if (!selected) return;
+      await usePdfStore
+        .getState()
+        .openFiles(Array.isArray(selected) ? selected : [selected]);
     }
 
     if (isCtrl && e.key === "s") {
       e.preventDefault();
-      commands.saveFile().catch(() => {});
+      const { activeTabId: sessionId } = usePdfStore.getState();
+      if (sessionId) {
+        commands.saveFile(sessionId).catch(() => {});
+      }
+    }
+
+    if (isCtrl && e.key.toLowerCase() === "w") {
+      e.preventDefault();
+      usePdfStore.getState().closeFile();
+    }
+
+    if (isCtrl && /^[1-9]$/.test(e.key)) {
+      const index = Number(e.key) - 1;
+      const tab = usePdfStore.getState().tabs[index];
+      if (tab) {
+        e.preventDefault();
+        usePdfStore.getState().activateTab(tab.id);
+      }
     }
 
     if (isCtrl && e.key === "=") {
@@ -126,6 +149,7 @@ export default function App() {
   if (!doc) {
     return (
       <div className="flex h-screen w-screen flex-col overflow-hidden">
+        <TabBar />
         <Toolbar />
         <WelcomeScreen />
       </div>
@@ -134,55 +158,49 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
-      <Toolbar />
+      <TabBar />
+      <Toolbar
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+      />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* PDF Viewer (main area) */}
-        <PdfViewer />
+        <PdfViewer key={activeTabId} />
 
-        {/* Sidebar toggle */}
-        <button
-          className="flex h-full w-6 flex-shrink-0 items-center justify-center border-l bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-        >
-          {sidebarOpen ? (
-            <PanelRightClose size={14} />
-          ) : (
-            <PanelRightOpen size={14} />
-          )}
-        </button>
-
-        {/* Annotation sidebar */}
+        {/* Annotation / AI side panel */}
         {sidebarOpen && (
           <div className="flex min-h-0 w-80 flex-shrink-0 flex-col overflow-hidden border-l bg-background">
-            <div className="flex border-b">
-              <button
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-xs transition-colors",
-                  sidebarTab === "annotations"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                onClick={() => setSidebarTab("annotations")}
-              >
-                <MessageSquare size={12} />
-                Annotations
-              </button>
-              <button
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-xs transition-colors",
-                  sidebarTab === "ai"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                onClick={() => setSidebarTab("ai")}
-              >
-                <Sparkles size={12} />
-                AI
-              </button>
+            {/* Segmented control */}
+            <div className="flex-shrink-0 p-2">
+              <div className="flex gap-1 rounded-lg bg-muted p-1">
+                <button
+                  className={cn(
+                    "focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    sidebarTab === "annotations"
+                      ? "bg-surface text-foreground shadow-soft"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setSidebarTab("annotations")}
+                >
+                  <MessageSquare size={13} />
+                  Annotations
+                </button>
+                <button
+                  className={cn(
+                    "focus-ring flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    sidebarTab === "ai"
+                      ? "bg-surface text-foreground shadow-soft"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setSidebarTab("ai")}
+                >
+                  <Sparkles size={13} />
+                  AI
+                </button>
+              </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-hidden overscroll-contain">
+            <div className="min-h-0 flex-1 overflow-hidden overscroll-contain border-t">
               {sidebarTab === "annotations" ? <AnnotationSidebar /> : <AiPanel />}
             </div>
           </div>
