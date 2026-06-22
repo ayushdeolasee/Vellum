@@ -19,7 +19,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useAnnotationStore } from "@/stores/annotation-store";
-import { cn } from "@/lib/utils";
+import { cn, shortcut } from "@/lib/utils";
 
 export function Toolbar() {
   const {
@@ -249,7 +249,7 @@ export function Toolbar() {
       <button
         className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={handleOpen}
-        title="Open file (Ctrl+O)"
+        title={`Open file (${shortcut("O")})`}
       >
         <FolderOpen size={16} />
       </button>
@@ -258,7 +258,7 @@ export function Toolbar() {
         <button
           className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={handleSave}
-          title="Save (Ctrl+S)"
+          title={`Save (${shortcut("S")})`}
         >
           <Save size={16} />
         </button>

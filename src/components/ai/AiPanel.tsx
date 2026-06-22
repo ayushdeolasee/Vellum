@@ -25,7 +25,7 @@ type SpeechRecognitionLike = {
   stop: () => void;
 };
 
-const MODELS = [
+const GEMINI_MODELS = [
   "gemini-3.1-flash-lite-preview",
   "gemini-3-pro-preview",
   "gemini-3-flash-preview",
@@ -37,8 +37,31 @@ const MODELS = [
   "gemini-1.5-pro",
   "gemini-1.5-flash",
 ];
+
+const OPENAI_MODELS = [
+  "gpt-5.5",
+  "gpt-5.5-2026-04-23",
+  "gpt-5.4-mini",
+  "gpt-5.4",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+];
+
+const CODEX_MODELS = [
+  "gpt-5.5",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-spark",
+];
+
 const SNAPSHOT_MAX_DIMENSION = 1280;
 const SNAPSHOT_JPEG_QUALITY = 0.72;
+
+function getProviderModels(provider: string): string[] {
+  if (provider === "codex") return CODEX_MODELS;
+  return provider === "openai" ? OPENAI_MODELS : GEMINI_MODELS;
+}
 
 export function AiPanel() {
   const messages = useAiStore((s) => s.messages);
@@ -299,24 +322,73 @@ export function AiPanel() {
       {settingsOpen && (
         <div className="space-y-2 border-b bg-muted/50 p-3 text-xs">
           <label className="block">
-            <span className="mb-1 block text-muted-foreground">Gemini API key</span>
-            <input
-              type="password"
+            <span className="mb-1 block text-muted-foreground">Provider</span>
+            <select
               className="w-full rounded border bg-background px-2 py-1 outline-none focus:ring-1 focus:ring-primary"
-              value={settings.apiKey}
-              onChange={(e) => setSettings({ apiKey: e.target.value })}
-              placeholder="AIza..."
-            />
+              value={settings.provider}
+              onChange={(e) => {
+                const provider =
+                  e.target.value === "codex"
+                    ? "codex"
+                    : e.target.value === "openai"
+                    ? "openai"
+                    : "gemini";
+                setSettings({ provider });
+              }}
+            >
+              <option value="gemini">Gemini</option>
+              <option value="openai">OpenAI API</option>
+              <option value="codex">Codex CLI</option>
+            </select>
           </label>
+
+          {settings.provider !== "codex" && (
+            <label className="block">
+              <span className="mb-1 block text-muted-foreground">
+                {settings.provider === "openai" ? "OpenAI API key" : "Gemini API key"}
+              </span>
+              <input
+                type="password"
+                className="w-full rounded border bg-background px-2 py-1 outline-none focus:ring-1 focus:ring-primary"
+                value={
+                  settings.provider === "openai"
+                    ? settings.openaiApiKey
+                    : settings.apiKey
+                }
+                onChange={(e) =>
+                  setSettings(
+                    settings.provider === "openai"
+                      ? { openaiApiKey: e.target.value }
+                      : { apiKey: e.target.value },
+                  )
+                }
+                placeholder={settings.provider === "openai" ? "sk-..." : "AIza..."}
+              />
+            </label>
+          )}
 
           <label className="block">
             <span className="mb-1 block text-muted-foreground">Model</span>
             <select
               className="w-full rounded border bg-background px-2 py-1 outline-none focus:ring-1 focus:ring-primary"
-              value={settings.model}
-              onChange={(e) => setSettings({ model: e.target.value })}
+              value={
+                settings.provider === "codex"
+                  ? settings.codexModel
+                  : settings.provider === "openai"
+                  ? settings.openaiModel
+                  : settings.model
+              }
+              onChange={(e) =>
+                setSettings(
+                  settings.provider === "codex"
+                    ? { codexModel: e.target.value }
+                    : settings.provider === "openai"
+                    ? { openaiModel: e.target.value }
+                    : { model: e.target.value },
+                )
+              }
             >
-              {MODELS.map((m) => (
+              {getProviderModels(settings.provider).map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>

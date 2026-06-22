@@ -1,12 +1,15 @@
 import { create } from "zustand";
 import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import { buildToolModePrompt } from "@/lib/ai-prompts";
+import * as commands from "@/lib/tauri-commands";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
 import type { Annotation, DocumentInfo } from "@/types";
 
 type AiRole = "user" | "assistant";
+type AiProvider = "gemini" | "openai" | "codex";
 type VoiceMode = "off" | "push-to-talk";
 
 type ToolAction =
@@ -44,8 +47,12 @@ interface AiMessage {
 }
 
 interface AiSettings {
+  provider: AiProvider;
   model: string;
   apiKey: string;
+  openaiModel: string;
+  openaiApiKey: string;
+  codexModel: string;
   voiceMode: VoiceMode;
   ttsEnabled: boolean;
 }
@@ -99,8 +106,12 @@ const MAX_STORED_MESSAGE_CHARS = 12_000;
 const MAX_STORED_DOCUMENTS = 25;
 
 const DEFAULT_SETTINGS: AiSettings = {
+  provider: "gemini",
   model: "gemini-3.1-flash-lite-preview",
   apiKey: "",
+  openaiModel: "gpt-5.5",
+  openaiApiKey: "",
+  codexModel: "gpt-5.5",
   voiceMode: "off",
   ttsEnabled: false,
 };
@@ -116,6 +127,11 @@ function normalizeVoiceMode(value: unknown): VoiceMode {
   return value === "push-to-talk" ? "push-to-talk" : "off";
 }
 
+function normalizeAiProvider(value: unknown): AiProvider {
+  if (value === "codex") return "codex";
+  return value === "openai" ? "openai" : "gemini";
+}
+
 function readSettingsFromStorage(): AiSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -124,6 +140,7 @@ function readSettingsFromStorage(): AiSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      provider: normalizeAiProvider(parsed.provider),
       voiceMode: normalizeVoiceMode(parsed.voiceMode),
     };
   } catch {
@@ -398,6 +415,106 @@ async function callGemini(opts: {
   return parseModelResponse(rawText);
 }
 
+async function callOpenAI(opts: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  currentPageImage?: AiPageImageSnapshot | null;
+}): Promise<{ reply: string; actions: ToolAction[] }> {
+  const openai = createOpenAI({
+    apiKey: opts.apiKey,
+  });
+
+  const userContent: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; image: string; mediaType?: string }
+  > = [{ type: "text", text: opts.prompt }];
+
+  if (opts.currentPageImage?.base64Data) {
+    userContent.push({
+      type: "image",
+      image: opts.currentPageImage.base64Data,
+      mediaType: opts.currentPageImage.mediaType,
+    });
+  }
+
+  const { text: rawText } = await generateText({
+    model: openai.responses(opts.model),
+    messages: [{ role: "user", content: userContent }],
+    maxRetries: 1,
+    providerOptions: {
+      openai: {
+        store: false,
+      },
+    },
+  });
+
+  if (!rawText.trim()) {
+    return {
+      reply: "I couldn't produce a response.",
+      actions: [],
+    };
+  }
+
+  return parseModelResponse(rawText);
+}
+
+async function callCodex(opts: {
+  model: string;
+  prompt: string;
+  currentPageImage?: AiPageImageSnapshot | null;
+}): Promise<{ reply: string; actions: ToolAction[] }> {
+  const rawText = await commands.runCodexAi(
+    opts.prompt,
+    opts.model,
+    opts.currentPageImage?.base64Data
+      ? {
+          base64_data: opts.currentPageImage.base64Data,
+          media_type: opts.currentPageImage.mediaType,
+        }
+      : null,
+  );
+
+  if (!rawText.trim()) {
+    return {
+      reply: "I couldn't produce a response.",
+      actions: [],
+    };
+  }
+
+  return parseModelResponse(rawText);
+}
+
+async function callAiProvider(opts: {
+  settings: AiSettings;
+  prompt: string;
+  currentPageImage?: AiPageImageSnapshot | null;
+}): Promise<{ reply: string; actions: ToolAction[] }> {
+  if (opts.settings.provider === "codex") {
+    return callCodex({
+      model: opts.settings.codexModel.trim() || DEFAULT_SETTINGS.codexModel,
+      prompt: opts.prompt,
+      currentPageImage: opts.currentPageImage,
+    });
+  }
+
+  if (opts.settings.provider === "openai") {
+    return callOpenAI({
+      apiKey: opts.settings.openaiApiKey.trim(),
+      model: opts.settings.openaiModel.trim() || DEFAULT_SETTINGS.openaiModel,
+      prompt: opts.prompt,
+      currentPageImage: opts.currentPageImage,
+    });
+  }
+
+  return callGemini({
+    apiKey: opts.settings.apiKey.trim(),
+    model: opts.settings.model.trim() || DEFAULT_SETTINGS.model,
+    prompt: opts.prompt,
+    currentPageImage: opts.currentPageImage,
+  });
+}
+
 async function executeToolAction(action: ToolAction): Promise<string> {
   if (action.tool === "goToPage") {
     const pageNumber = clampPage(action.args.pageNumber);
@@ -535,8 +652,16 @@ export const useAiStore = create<AiState>((set, get) => ({
     if (!trimmed) return;
 
     const { settings, pageTexts } = get();
-    if (!settings.apiKey.trim()) {
-      set({ error: "Set your Gemini API key in AI settings." });
+    const activeProvider = settings.provider;
+    const activeApiKey =
+      activeProvider === "openai" ? settings.openaiApiKey : settings.apiKey;
+    if (activeProvider !== "codex" && !activeApiKey.trim()) {
+      set({
+        error:
+          activeProvider === "openai"
+            ? "Set your OpenAI API key in AI settings."
+            : "Set your Gemini API key in AI settings.",
+      });
       return;
     }
 
@@ -563,9 +688,8 @@ export const useAiStore = create<AiState>((set, get) => ({
         latestUserRequest: trimmed,
       });
 
-      const modelOutput = await callGemini({
-        apiKey: settings.apiKey.trim(),
-        model: settings.model.trim() || DEFAULT_SETTINGS.model,
+      const modelOutput = await callAiProvider({
+        settings,
         prompt,
         currentPageImage: context.currentPageImage,
       });
@@ -617,4 +741,4 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 }));
 
-export type { AiMessage, AiSettings, AiContextSnapshot, VoiceMode };
+export type { AiMessage, AiSettings, AiContextSnapshot, AiProvider, VoiceMode };

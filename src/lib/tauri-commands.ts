@@ -8,6 +8,11 @@ import type {
   UpdateAnnotationInput,
 } from "@/types";
 
+interface CodexAiImageInput {
+  base64_data: string;
+  media_type: string;
+}
+
 export async function openFile(path: string): Promise<DocumentInfo> {
   return invoke<DocumentInfo>("open_file", { path });
 }
@@ -53,4 +58,16 @@ export async function setDocumentMetadata(
   value: string,
 ): Promise<void> {
   return invoke("set_document_metadata", { key, value });
+}
+
+export async function runCodexAi(
+  prompt: string,
+  model: string,
+  image?: CodexAiImageInput | null,
+): Promise<string> {
+  return invoke<string>("run_codex_ai", {
+    prompt,
+    model,
+    image: image ?? null,
+  });
 }

@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { usePdfStore } from "@/stores/pdf-store";
 import { FileText, FolderOpen } from "lucide-react";
 import { confirmPdfImport } from "@/lib/pdf-import";
+import { shortcut } from "@/lib/utils";
 
 export function WelcomeScreen() {
   const { openFile, isLoading, error } = usePdfStore();
@@ -49,7 +50,7 @@ export function WelcomeScreen() {
       <div className="mt-4 text-xs text-muted-foreground">
         <p>
           <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono">
-            Ctrl+O
+            {shortcut("O")}
           </kbd>{" "}
           to open a file
         </p>

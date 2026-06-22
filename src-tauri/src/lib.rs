@@ -44,6 +44,7 @@ pub fn run() {
             commands::update_annotation,
             commands::delete_annotation,
             commands::set_document_metadata,
+            commands::run_codex_ai,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
