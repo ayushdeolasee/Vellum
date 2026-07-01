@@ -16,18 +16,31 @@ import {
   Download,
   LoaderCircle,
   RefreshCw,
+  PanelRight,
 } from "lucide-react";
 import { useAnnotationStore } from "@/stores/annotation-store";
+import { IconButton } from "@/components/ui/IconButton";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { cn, shortcut } from "@/lib/utils";
 
-export function Toolbar() {
+function Divider() {
+  return <div className="mx-1.5 h-5 w-px flex-shrink-0 bg-border" aria-hidden />;
+}
+
+interface ToolbarProps {
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
+}
+
+export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
   const {
     document: doc,
+    activeTabId,
     currentPage,
     numPages,
     zoom,
     mode,
-    openFile,
+    openFiles,
     zoomIn,
     zoomOut,
     setZoom,
@@ -184,7 +197,7 @@ export function Toolbar() {
 
   const handleOpen = async () => {
     const selected = await open({
-      multiple: false,
+      multiple: true,
       filters: [
         {
           name: "PDF",
@@ -192,14 +205,14 @@ export function Toolbar() {
         },
       ],
     });
-    const selectedPath = Array.isArray(selected) ? selected[0] : selected;
-    if (!selectedPath) return;
-    await openFile(selectedPath);
+    if (!selected) return;
+    await openFiles(Array.isArray(selected) ? selected : [selected]);
   };
 
   const handleSave = async () => {
+    if (!activeTabId) return;
     try {
-      await commands.saveFile();
+      await commands.saveFile(activeTabId);
     } catch {
       // TODO: show error toast
     }
@@ -210,6 +223,16 @@ export function Toolbar() {
       await deleteAnnotation(currentBookmark.id);
     } else {
       await addBookmark(currentPage);
+    }
+  };
+
+  const handleResetZoom = () => {
+    const zoomTo = (window as unknown as Record<string, unknown>)
+      .__zoomPdfTo as ((targetZoom: number) => void) | undefined;
+    if (zoomTo) {
+      zoomTo(1);
+    } else {
+      setZoom(1);
     }
   };
 
@@ -243,44 +266,35 @@ export function Toolbar() {
   }
 
   return (
-    <div className="flex h-10 items-center gap-1 border-b bg-background px-2">
+    <div className="flex h-11 items-center gap-0.5 border-b bg-background px-2">
       {/* File operations */}
-      <button
-        className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        onClick={handleOpen}
-        title={`Open file (${shortcut("O")})`}
-      >
+      <IconButton onClick={handleOpen} title={`Open file (${shortcut("O")})`}>
         <FolderOpen size={16} />
-      </button>
+      </IconButton>
 
       {doc && (
-        <button
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          onClick={handleSave}
-          title={`Save (${shortcut("S")})`}
-        >
+        <IconButton onClick={handleSave} title={`Save (${shortcut("S")})`}>
           <Save size={16} />
-        </button>
+        </IconButton>
       )}
 
       {doc && (
         <>
-          <div className="mx-1 h-5 w-px bg-border" />
+          <Divider />
 
           {/* Page navigation */}
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+          <IconButton
             onClick={() => goToPage(currentPage - 1)}
             disabled={currentPage <= 1}
             title="Previous page"
           >
             <ChevronLeft size={16} />
-          </button>
+          </IconButton>
 
-          <div className="flex items-center gap-1 text-sm">
+          <div className="flex items-center gap-1.5 px-0.5 text-sm tabular-nums">
             <input
               type="number"
-              className="w-12 rounded border bg-muted px-1 py-0.5 text-center text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="focus-ring h-7 w-11 rounded-md border border-border bg-surface px-1 text-center text-sm text-foreground [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
               value={pageInput}
               min={1}
               max={numPages}
@@ -296,91 +310,66 @@ export function Toolbar() {
             <span className="text-muted-foreground">/ {numPages}</span>
           </div>
 
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+          <IconButton
             onClick={() => goToPage(currentPage + 1)}
             disabled={currentPage >= numPages}
             title="Next page"
           >
             <ChevronRight size={16} />
-          </button>
+          </IconButton>
 
-          <div className="mx-1 h-5 w-px bg-border" />
+          <Divider />
 
           {/* Zoom */}
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            onClick={zoomOut}
-            title="Zoom out"
-          >
+          <IconButton onClick={zoomOut} title="Zoom out">
             <ZoomOut size={16} />
-          </button>
+          </IconButton>
 
           <button
-            className="min-w-[3rem] rounded px-1 py-0.5 text-center text-sm text-muted-foreground hover:bg-accent"
-            onClick={() => setZoom(1.0)}
-            title="Reset zoom"
+            className="focus-ring h-7 min-w-[3.25rem] rounded-md px-1 text-center text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={handleResetZoom}
+            title="Reset zoom to 100%"
           >
             {Math.round(zoom * 100)}%
           </button>
 
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            onClick={zoomIn}
-            title="Zoom in"
-          >
+          <IconButton onClick={zoomIn} title="Zoom in">
             <ZoomIn size={16} />
-          </button>
+          </IconButton>
 
-          <div className="mx-1 h-5 w-px bg-border" />
+          <Divider />
 
           {/* Bookmark */}
-          <button
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded transition-colors",
-              isBookmarked
-                ? "text-orange-500 hover:bg-accent"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
+          <IconButton
             onClick={handleBookmark}
+            className={cn(isBookmarked && "text-gold hover:text-gold")}
             title={isBookmarked ? "Remove bookmark" : "Bookmark this page"}
           >
             <Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} />
-          </button>
+          </IconButton>
 
           {/* Sticky Note tool */}
-          <button
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded transition-colors",
-              mode === "note"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
+          <IconButton
+            variant={mode === "note" ? "active" : "ghost"}
             onClick={() => setMode(mode === "note" ? "view" : "note")}
             title="Sticky note tool (N) — click on the page to place a note"
           >
             <StickyNote size={16} />
-          </button>
-
-          <div className="ml-2 min-w-0 flex-1 truncate text-sm text-muted-foreground">
-            {doc.title ?? "Untitled"}
-          </div>
+          </IconButton>
         </>
       )}
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-1.5">
         {showUpdateStatusChip && (
           <button
             className={cn(
-              "flex h-7 items-center gap-1 rounded-full border px-2 text-xs transition-colors",
+              "focus-ring flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
               updateStatus === "available" &&
                 "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300",
-              updateStatus === "downloading" &&
-                "border-primary/20 bg-primary/10 text-foreground",
-              updateStatus === "restarting" &&
+              (updateStatus === "downloading" || updateStatus === "restarting") &&
                 "border-primary/20 bg-primary/10 text-foreground",
               updateStatus === "error" &&
-                "border-destructive/20 bg-destructive/10 text-destructive",
+                "border-destructive/30 bg-destructive/10 text-destructive",
             )}
             onClick={() => {
               if (updateStatus === "available") {
@@ -400,8 +389,7 @@ export function Toolbar() {
           </button>
         )}
 
-        <button
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        <IconButton
           onClick={() => void handleCheckForUpdates()}
           disabled={updateDisabled}
           title={updateButtonTitle}
@@ -411,7 +399,23 @@ export function Toolbar() {
           ) : (
             <RefreshCw size={16} />
           )}
-        </button>
+        </IconButton>
+
+        <ThemeToggle />
+
+        {doc && onToggleSidebar && (
+          <>
+            <Divider />
+            <IconButton
+              variant={sidebarOpen ? "active" : "ghost"}
+              onClick={onToggleSidebar}
+              title={sidebarOpen ? "Hide side panel" : "Show side panel"}
+              aria-label={sidebarOpen ? "Hide side panel" : "Show side panel"}
+            >
+              <PanelRight size={16} />
+            </IconButton>
+          </>
+        )}
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -15,6 +16,10 @@ import { useAiStore } from "@/stores/ai-store";
 import { HighlightLayer } from "@/components/annotations/HighlightLayer";
 import { SelectionPopover } from "@/components/annotations/SelectionPopover";
 import { useTextSelection } from "@/hooks/useTextSelection";
+import {
+  registerPdfDocument,
+  unregisterPdfDocument,
+} from "@/lib/highlight-locator";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { StickyNote } from "lucide-react";
@@ -27,7 +32,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 /** Number of pages to render above/below the visible range */
-const PAGE_BUFFER = 4;
+const PAGE_BUFFER = 2;
 /** Default PDF page dimensions in points (US Letter) */
 const DEFAULT_PAGE_WIDTH = 612;
 const DEFAULT_PAGE_HEIGHT = 792;
@@ -43,6 +48,15 @@ const clampZoom = (value: number) =>
 const clampScrollPosition = (value: number) =>
   Number.isFinite(value) ? Math.max(0, value) : 0;
 
+const waitForBrowserIdle = () =>
+  new Promise<void>((resolve) => {
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(() => resolve(), { timeout: 500 });
+      return;
+    }
+    setTimeout(resolve, 16);
+  });
+
 type ZoomAnchorSnapshot = {
   anchorX: number;
   anchorY: number;
@@ -53,14 +67,67 @@ type ZoomAnchorSnapshot = {
   relY: number;
 };
 
+interface PdfPageContentProps {
+  pageNumber: number;
+  scale: number;
+  devicePixelRatio: number;
+  renderTextLayer: boolean;
+  annotations: Annotation[];
+  onPageLoad: (
+    pageNumber: number,
+    page: { width: number; height: number },
+  ) => void;
+}
+
+const EMPTY_ANNOTATIONS: Annotation[] = [];
+
+const PdfPageContent = memo(function PdfPageContent({
+  pageNumber,
+  scale,
+  devicePixelRatio,
+  renderTextLayer,
+  annotations,
+  onPageLoad,
+}: PdfPageContentProps) {
+  const handleLoadSuccess = useCallback(
+    (page: { originalWidth: number; originalHeight: number }) => {
+      // react-pdf's `width`/`height` are already multiplied by the `scale`
+      // prop; use the unscaled originals so the placeholder box isn't scaled
+      // a second time by `renderZoom` in the container below.
+      onPageLoad(pageNumber, {
+        width: page.originalWidth,
+        height: page.originalHeight,
+      });
+    },
+    [onPageLoad, pageNumber],
+  );
+
+  return (
+    <>
+      <Page
+        pageNumber={pageNumber}
+        scale={scale}
+        devicePixelRatio={devicePixelRatio}
+        onLoadSuccess={handleLoadSuccess}
+        renderTextLayer={renderTextLayer}
+        renderAnnotationLayer={false}
+      />
+      {annotations.length > 0 && (
+        <HighlightLayer zoom={scale} annotations={annotations} />
+      )}
+    </>
+  );
+});
+
 export function PdfViewer() {
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesWrapperRef = useRef<HTMLDivElement>(null);
   const pageElementsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const zoomAnchorRafRef = useRef<number | null>(null);
-  const manuallyAnchoredZoomRef = useRef(false);
   const zoomSettlingRef = useRef(false);
-  const prevZoomRef = useRef<number | null>(null);
+  const pendingZoomAnchorRef = useRef<ZoomAnchorSnapshot | null>(null);
+  const initialPageRef = useRef(usePdfStore.getState().currentPage);
+  const didInitialScrollRef = useRef(false);
   const pinchRef = useRef({
     active: false,
     baseZoom: 1,
@@ -76,6 +143,7 @@ export function PdfViewer() {
 
   // --- Zustand selectors (individual subscriptions) ---
   const doc = usePdfStore((s) => s.document);
+  const activeTabId = usePdfStore((s) => s.activeTabId);
   const numPages = usePdfStore((s) => s.numPages);
   const zoom = usePdfStore((s) => s.zoom);
   const renderZoom = zoom;
@@ -98,11 +166,23 @@ export function PdfViewer() {
   const setPageText = useAiStore((s) => s.setPageText);
   const clearDocumentContext = useAiStore((s) => s.clearDocumentContext);
   const textExtractionRunRef = useRef(0);
+  // Tracks the pdf.js document registered with the highlight locator so it can
+  // be released when the document changes or the viewer unmounts.
+  const registeredPdfRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    return () => {
+      textExtractionRunRef.current += 1;
+    };
+  }, []);
 
   // Page dimension tracking for virtualization placeholders.
   const [pageDimensions, setPageDimensions] = useState<
     Record<number, { width: number; height: number }>
   >({});
+  const [dimensionsReady, setDimensionsReady] = useState(false);
 
   const {
     selection,
@@ -128,26 +208,32 @@ export function PdfViewer() {
   } | null>(null);
 
   useEffect(() => {
-    if (!doc) {
+    if (!doc || !activeTabId) {
       queueMicrotask(() => {
         setPdfData(null);
         setPdfError(null);
         setPageDimensions({});
+        setDimensionsReady(false);
         clearDocumentContext();
       });
       return;
     }
     let cancelled = false;
 
+    // New document: re-arm the one-shot initial scroll and target this tab's page.
+    didInitialScrollRef.current = false;
+    initialPageRef.current = usePdfStore.getState().currentPage;
+
     queueMicrotask(() => {
       if (cancelled) return;
       setPdfData(null);
       setPdfError(null);
       setPageDimensions({});
+      setDimensionsReady(false);
     });
 
     commands
-      .readPdfBytes()
+      .readPdfBytes(activeTabId)
       .then((buffer) => {
         if (!cancelled) {
           const arr = new Uint8Array(buffer);
@@ -164,18 +250,63 @@ export function PdfViewer() {
     return () => {
       cancelled = true;
     };
-  }, [clearDocumentContext, doc]);
+  }, [activeTabId, clearDocumentContext, doc]);
 
   const onDocumentLoadSuccess = useCallback(
-    (loadedPdf: { numPages: number; getPage: (page: number) => Promise<unknown> }) => {
+    (loadedPdf: {
+      numPages: number;
+      getPage: (page: number) => Promise<unknown>;
+    }) => {
       const pages = loadedPdf.numPages;
       setNumPages(pages);
+
+      // Expose this document to the highlight locator so the AI can resolve
+      // text -> geometry on any page, even ones not currently rendered.
+      if (registeredPdfRef.current) {
+        unregisterPdfDocument(registeredPdfRef.current);
+      }
+      registeredPdfRef.current = loadedPdf;
+      registerPdfDocument(loadedPdf);
 
       const runId = textExtractionRunRef.current + 1;
       textExtractionRunRef.current = runId;
 
       void (async () => {
+        const dimensions: Record<number, { width: number; height: number }> = {};
+
         for (let pageNum = 1; pageNum <= pages; pageNum++) {
+          if (textExtractionRunRef.current !== runId) return;
+          try {
+            const page = (await loadedPdf.getPage(pageNum)) as {
+              getViewport: (options: { scale: number }) => {
+                width: number;
+                height: number;
+              };
+            };
+            const viewport = page.getViewport({ scale: 1 });
+            dimensions[pageNum] = {
+              width: viewport.width,
+              height: viewport.height,
+            };
+          } catch (err) {
+            console.warn(
+              `[PdfViewer] Failed dimension read for page ${pageNum}:`,
+              err,
+            );
+          }
+
+          if (pageNum % 32 === 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+          }
+        }
+
+        if (textExtractionRunRef.current !== runId) return;
+        setPageDimensions(dimensions);
+        setDimensionsReady(true);
+
+        for (let pageNum = 1; pageNum <= pages; pageNum++) {
+          if (textExtractionRunRef.current !== runId) return;
+          await waitForBrowserIdle();
           if (textExtractionRunRef.current !== runId) return;
           try {
             const page = (await loadedPdf.getPage(pageNum)) as {
@@ -192,11 +323,6 @@ export function PdfViewer() {
             setPageText(pageNum, pageText);
           } catch (err) {
             console.warn(`[PdfViewer] Failed text extraction for page ${pageNum}:`, err);
-          }
-
-          // Yield periodically to keep UI responsive.
-          if (pageNum % 4 === 0) {
-            await new Promise((resolve) => window.setTimeout(resolve, 0));
           }
         }
       })();
@@ -216,25 +342,29 @@ export function PdfViewer() {
         wrapper.style.willChange = "";
       }
       pinchRef.current.active = false;
+      if (registeredPdfRef.current) {
+        unregisterPdfDocument(registeredPdfRef.current);
+        registeredPdfRef.current = null;
+      }
     };
   }, []);
 
-  // Track page dimensions on load.
-  // react-pdf reports original PDF dimensions (before scale).
+  // Track page dimensions on load. Dimensions are stored unscaled (zoom=1);
+  // the container applies `renderZoom`, so storing scaled values here would
+  // double-apply the zoom and distort the layout.
   const handlePageLoad = useCallback(
-    (pageNum: number) =>
-      ({ width, height }: { width: number; height: number }) => {
-        setPageDimensions((prev) => {
-          const existing = prev[pageNum];
-          if (existing && existing.width === width && existing.height === height) {
-            return prev;
-          }
-          return {
-            ...prev,
-            [pageNum]: { width, height },
-          };
-        });
-      },
+    (pageNum: number, { width, height }: { width: number; height: number }) => {
+      setPageDimensions((prev) => {
+        const existing = prev[pageNum];
+        if (existing && existing.width === width && existing.height === height) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [pageNum]: { width, height },
+        };
+      });
+    },
     [],
   );
 
@@ -260,27 +390,16 @@ export function PdfViewer() {
 
   // --- Page virtualization: only mount pages near the viewport ---
   const pagesToRender = useMemo(() => {
-    // Keep all pages mounted while zoomed in to avoid placeholder blanking.
-    if (renderZoom > 1.1) {
-      return new Set(pageNumbers);
-    }
-
     const center = visiblePages.length > 0 ? visiblePages : [currentPage];
-    const dynamicBuffer =
-      renderZoom >= 2
-        ? PAGE_BUFFER + 4
-        : renderZoom >= 1.25
-          ? PAGE_BUFFER + 2
-          : PAGE_BUFFER + 1;
-    const min = Math.max(1, center[0] - dynamicBuffer);
+    const min = Math.max(1, center[0] - PAGE_BUFFER);
     const max = Math.min(
       numPages,
-      center[center.length - 1] + dynamicBuffer,
+      center[center.length - 1] + PAGE_BUFFER,
     );
     const set = new Set<number>();
     for (let i = min; i <= max; i++) set.add(i);
     return set;
-  }, [renderZoom, visiblePages, currentPage, numPages, pageNumbers]);
+  }, [visiblePages, currentPage, numPages]);
 
   const visiblePagesSet = useMemo(() => new Set(visiblePages), [visiblePages]);
 
@@ -371,6 +490,28 @@ export function PdfViewer() {
     }
   }, []);
 
+  // Scroll to the initial page once per document. This must NOT depend on the
+  // unstable `handleScroll`/`scrollToPage` callbacks — they change identity
+  // whenever `selection` changes, which would otherwise re-fire this effect on
+  // every text selection and yank the viewport back to the starting page.
+  useEffect(() => {
+    if (didInitialScrollRef.current) return;
+    if (!pdfData || numPages < 1 || !dimensionsReady) return;
+    didInitialScrollRef.current = true;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        scrollToPage(Math.min(numPages, initialPageRef.current));
+        handleScroll();
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimensionsReady, numPages, pdfData]);
+
   // Expose scrollToPage via window for external callers (toolbar, sidebar, shortcuts)
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__scrollToPage =
@@ -383,16 +524,6 @@ export function PdfViewer() {
   useEffect(() => {
     handleScroll();
   }, [handleScroll, numPages, pdfData]);
-
-  useEffect(() => {
-    if (!pdfData || numPages < 1) return;
-    const raf = window.requestAnimationFrame(() => {
-      handleScroll();
-    });
-    return () => {
-      window.cancelAnimationFrame(raf);
-    };
-  }, [handleScroll, pdfData, numPages, pageDimensions]);
 
   const captureZoomAnchorSnapshot = useCallback(
     (clientX?: number, clientY?: number): ZoomAnchorSnapshot | null => {
@@ -494,6 +625,31 @@ export function PdfViewer() {
     [],
   );
 
+  const commitAnchoredZoom = useCallback(
+    (targetZoom: number, snapshot: ZoomAnchorSnapshot) => {
+      const nextZoom = clampZoom(targetZoom);
+      const currentZoom = usePdfStore.getState().zoom;
+      if (Math.abs(nextZoom - currentZoom) < 0.0001) {
+        zoomSettlingRef.current = false;
+        return;
+      }
+
+      zoomSettlingRef.current = true;
+      pendingZoomAnchorRef.current = snapshot;
+      setZoom(nextZoom);
+    },
+    [setZoom],
+  );
+
+  const requestAnchoredZoom = useCallback(
+    (targetZoom: number, clientX?: number, clientY?: number) => {
+      const snapshot = captureZoomAnchorSnapshot(clientX, clientY);
+      if (!snapshot) return;
+      commitAnchoredZoom(targetZoom, snapshot);
+    },
+    [captureZoomAnchorSnapshot, commitAnchoredZoom],
+  );
+
   const beginPinchPreview = useCallback((clientX?: number, clientY?: number) => {
     const container = containerRef.current;
     const wrapper = pagesWrapperRef.current;
@@ -555,11 +711,15 @@ export function PdfViewer() {
 
     pinchRef.current.active = false;
     pinchRef.current.scale = 1;
+    commitAnchoredZoom(targetZoom, snapshot);
+  }, [commitAnchoredZoom]);
 
-    zoomSettlingRef.current = true;
-    manuallyAnchoredZoomRef.current = true;
-    setZoom(targetZoom);
+  useLayoutEffect(() => {
+    const snapshot = pendingZoomAnchorRef.current;
+    if (!snapshot) return;
+    pendingZoomAnchorRef.current = null;
 
+    applyZoomAnchorSnapshot(snapshot);
     if (zoomAnchorRafRef.current !== null) {
       window.cancelAnimationFrame(zoomAnchorRafRef.current);
     }
@@ -569,66 +729,17 @@ export function PdfViewer() {
       zoomSettlingRef.current = false;
       handleScroll();
     });
-  }, [applyZoomAnchorSnapshot, handleScroll, setZoom]);
+  }, [applyZoomAnchorSnapshot, handleScroll, zoom]);
 
-  const zoomWithAnchorStep = useCallback(
-    (targetZoom: number, clientX: number, clientY: number) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const snapshot = captureZoomAnchorSnapshot(clientX, clientY);
-      if (!snapshot) return;
-
-      const currentZoom = usePdfStore.getState().zoom;
-      const nextZoom = clampZoom(targetZoom);
-      if (Math.abs(nextZoom - currentZoom) < 0.0001) return;
-
-      zoomSettlingRef.current = true;
-      manuallyAnchoredZoomRef.current = true;
-      setZoom(nextZoom);
-
-      if (zoomAnchorRafRef.current !== null) {
-        window.cancelAnimationFrame(zoomAnchorRafRef.current);
-      }
-      zoomAnchorRafRef.current = window.requestAnimationFrame(() => {
-        zoomAnchorRafRef.current = null;
-        applyZoomAnchorSnapshot(snapshot);
-        zoomSettlingRef.current = false;
-        handleScroll();
-      });
-    },
-    [applyZoomAnchorSnapshot, captureZoomAnchorSnapshot, handleScroll, setZoom],
-  );
-
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    const prevZoom = prevZoomRef.current;
-
-    if (prevZoom === null) {
-      prevZoomRef.current = zoom;
-      return;
-    }
-
-    if (!container || Math.abs(zoom - prevZoom) < 0.0001) {
-      prevZoomRef.current = zoom;
-      return;
-    }
-
-    if (manuallyAnchoredZoomRef.current) {
-      manuallyAnchoredZoomRef.current = false;
-      prevZoomRef.current = zoom;
-      return;
-    }
-
-    // Keep toolbar/shortcut zoom anchored to viewport center.
-    const anchorX = container.clientWidth / 2;
-    const anchorY = container.clientHeight / 2;
-    const ratio = zoom / prevZoom;
-    container.scrollTop = (container.scrollTop + anchorY) * ratio - anchorY;
-    container.scrollLeft = (container.scrollLeft + anchorX) * ratio - anchorX;
-
-    prevZoomRef.current = zoom;
-  }, [zoom]);
+  useEffect(() => {
+    const zoomTo = (targetZoom: number) => {
+      requestAnchoredZoom(targetZoom);
+    };
+    (window as unknown as Record<string, unknown>).__zoomPdfTo = zoomTo;
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__zoomPdfTo;
+    };
+  }, [requestAnchoredZoom]);
 
   // Trackpad pinch-to-zoom inside the PDF viewer only.
   // - WKWebView/Safari emits GestureEvents with scale.
@@ -693,16 +804,21 @@ export function PdfViewer() {
       if (!e.ctrlKey) return;
       e.preventDefault();
 
-      // Ignore wheel fallback while native gesture preview is active.
-      if (pinchRef.current.active) return;
+      if (!pinchRef.current.active) {
+        beginPinchPreview(e.clientX, e.clientY);
+      }
+      if (!pinchRef.current.active) return;
 
-      const currentZoom = usePdfStore.getState().zoom;
       const clampedDelta = Math.max(
         -MAX_WHEEL_DELTA,
         Math.min(MAX_WHEEL_DELTA, e.deltaY),
       );
       const zoomFactor = Math.exp(-clampedDelta * WHEEL_ZOOM_SENSITIVITY);
-      zoomWithAnchorStep(currentZoom * zoomFactor, e.clientX, e.clientY);
+      const pinch = pinchRef.current;
+      const nextScale =
+        clampZoom(pinch.baseZoom * pinch.scale * zoomFactor) / pinch.baseZoom;
+      updatePinchPreview(nextScale);
+      scheduleGestureIdleCommit();
     };
 
     const onScrollDuringPinch = () => {
@@ -736,7 +852,6 @@ export function PdfViewer() {
     commitPinchPreview,
     pdfData,
     updatePinchPreview,
-    zoomWithAnchorStep,
   ]);
 
   // Click-to-place sticky note when in "note" mode, or deselect when in "view" mode
@@ -895,9 +1010,10 @@ export function PdfViewer() {
     <div
       ref={containerRef}
       className={cn(
-        "relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-muted",
+        "relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-well",
         mode === "note" && "cursor-crosshair",
       )}
+      style={{ overflowAnchor: "none" }}
       onScroll={handleContainerScroll}
       onMouseUp={handleMouseUp}
       onClick={handleContainerClick}
@@ -936,41 +1052,29 @@ export function PdfViewer() {
                       pageElementsRef.current.delete(pageNum);
                     }
                   }}
-                  className="relative w-fit shadow-md"
+                  className="relative w-fit rounded-sm shadow-page ring-1 ring-border/50"
+                  style={{
+                    width: (dims?.width ?? DEFAULT_PAGE_WIDTH) * renderZoom,
+                    height: (dims?.height ?? DEFAULT_PAGE_HEIGHT) * renderZoom,
+                  }}
                   data-page-number={pageNum}
                   onClick={shouldRender ? handlePageClick : undefined}
                   onContextMenu={shouldRender ? handleContextMenu : undefined}
                 >
                   {shouldRender ? (
-                    <>
-                      <Page
-                        pageNumber={pageNum}
-                        scale={renderZoom}
-                        devicePixelRatio={renderDevicePixelRatio}
-                        onLoadSuccess={handlePageLoad(pageNum)}
-                        renderTextLayer={
-                          visiblePagesSet.has(pageNum) || pageNum === currentPage
-                        }
-                        renderAnnotationLayer={false}
-                      />
-                      {pageAnnotations && pageAnnotations.length > 0 && (
-                        <HighlightLayer
-                          zoom={renderZoom}
-                          annotations={pageAnnotations}
-                        />
-                      )}
-                    </>
+                    <PdfPageContent
+                      pageNumber={pageNum}
+                      scale={renderZoom}
+                      devicePixelRatio={renderDevicePixelRatio}
+                      renderTextLayer={
+                        visiblePagesSet.has(pageNum) || pageNum === currentPage
+                      }
+                      annotations={pageAnnotations ?? EMPTY_ANNOTATIONS}
+                      onPageLoad={handlePageLoad}
+                    />
                   ) : (
                     /* Placeholder — preserves scroll height for off-screen pages */
-                    <div
-                      className="bg-white"
-                        style={{
-                          width:
-                            (dims?.width ?? DEFAULT_PAGE_WIDTH) * renderZoom,
-                          height:
-                            (dims?.height ?? DEFAULT_PAGE_HEIGHT) * renderZoom,
-                        }}
-                      />
+                    <div className="h-full w-full bg-white" />
                   )}
                 </div>
               );

@@ -51,6 +51,16 @@ export interface DocumentInfo {
   last_page: number | null;
 }
 
+export interface PdfTab {
+  id: string;
+  document: DocumentInfo;
+  currentPage: number;
+  numPages: number;
+  zoom: number;
+  visiblePages: number[];
+  mode: "view" | "note";
+}
+
 export const HIGHLIGHT_COLORS = [
   { name: "Yellow", value: "#fef08a", dark: "#854d0e80" },
   { name: "Green", value: "#bbf7d0", dark: "#16653480" },

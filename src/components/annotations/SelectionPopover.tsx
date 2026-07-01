@@ -19,29 +19,30 @@ export const SelectionPopover = forwardRef<HTMLDivElement, SelectionPopoverProps
     { position, selection, currentPage, onClose },
     ref,
   ) {
-    const { addHighlight, addNote } = useAnnotationStore();
+    const addHighlight = useAnnotationStore((s) => s.addHighlight);
+    const addNote = useAnnotationStore((s) => s.addNote);
     const [showNoteInput, setShowNoteInput] = useState(false);
     const [noteText, setNoteText] = useState("");
 
-    const handleHighlight = async (color: string) => {
-      await addHighlight({
+    const handleHighlight = (color: string) => {
+      onClose();
+      void addHighlight({
         type: "highlight",
         page_number: currentPage,
         color,
         position_data: selection.positionData,
       });
-      onClose();
     };
 
-    const handleAddNote = async () => {
+    const handleAddNote = () => {
       if (!noteText.trim()) return;
-      await addNote({
+      onClose();
+      void addNote({
         type: "note",
         page_number: currentPage,
         content: noteText.trim(),
         position_data: selection.positionData,
       });
-      onClose();
     };
 
     return (

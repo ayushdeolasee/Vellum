@@ -1,5 +1,6 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,14 +13,18 @@ use crate::models::*;
 use crate::pdf_annotations;
 use crate::pdf_session::{self, PdfSession};
 
-/// Application state holding the current session
+/// Application state holding all open PDF tab sessions.
 pub struct AppState {
-    pub session: Mutex<Option<PdfSession>>,
+    pub sessions: Mutex<HashMap<String, PdfSession>>,
 }
 
 /// Open a PDF without creating a custom document container.
 #[tauri::command]
-pub fn open_file(path: String, state: State<AppState>) -> Result<DocumentInfo, String> {
+pub fn open_file(
+    path: String,
+    session_id: String,
+    state: State<AppState>,
+) -> Result<DocumentInfo, String> {
     let path = PathBuf::from(&path);
     let ext = path
         .extension()
@@ -42,28 +47,30 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<DocumentInfo, S
         last_page,
     };
 
-    let mut state_session = state.session.lock().map_err(|e| e.to_string())?;
-    if let Some(prev) = state_session.take() {
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(prev) = sessions.remove(&session_id) {
         pdf_session::save_session(&prev)?;
     }
-    *state_session = Some(session);
+    sessions.insert(session_id, session);
 
     Ok(info)
 }
 
-/// Synchronize the current session. Annotation mutations are saved immediately.
+/// Synchronize a tab session. Annotation mutations are saved immediately.
 #[tauri::command]
-pub fn save_file(state: State<AppState>) -> Result<(), String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+pub fn save_file(session_id: String, state: State<AppState>) -> Result<(), String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_session::save_session(session)
 }
 
-/// Close the current session
+/// Close a tab session.
 #[tauri::command]
-pub fn close_file(state: State<AppState>) -> Result<(), String> {
-    let mut session = state.session.lock().map_err(|e| e.to_string())?;
-    if let Some(prev) = session.take() {
+pub fn close_file(session_id: String, state: State<AppState>) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(prev) = sessions.remove(&session_id) {
         pdf_session::save_session(&prev)?;
     }
     Ok(())
@@ -72,62 +79,82 @@ pub fn close_file(state: State<AppState>) -> Result<(), String> {
 /// Get all annotations, optionally filtered by page
 #[tauri::command]
 pub fn get_annotations(
+    session_id: String,
     page_number: Option<u32>,
     state: State<AppState>,
 ) -> Result<Vec<Annotation>, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_annotations::get_annotations(&session.pdf_path, page_number)
 }
 
 /// Create a new annotation
 #[tauri::command]
 pub fn create_annotation(
+    session_id: String,
     input: CreateAnnotationInput,
     state: State<AppState>,
 ) -> Result<Annotation, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_annotations::create_annotation(&session.pdf_path, &input)
 }
 
 /// Update an existing annotation
 #[tauri::command]
 pub fn update_annotation(
+    session_id: String,
     input: UpdateAnnotationInput,
     state: State<AppState>,
 ) -> Result<bool, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_annotations::update_annotation(&session.pdf_path, &input)
 }
 
 /// Delete an annotation
 #[tauri::command]
-pub fn delete_annotation(id: String, state: State<AppState>) -> Result<bool, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+pub fn delete_annotation(
+    session_id: String,
+    id: String,
+    state: State<AppState>,
+) -> Result<bool, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_annotations::delete_annotation(&session.pdf_path, &id)
 }
 
 /// Set document metadata (e.g., page_count, last_page, title)
 #[tauri::command]
 pub fn set_document_metadata(
+    session_id: String,
     key: String,
     value: String,
     state: State<AppState>,
 ) -> Result<(), String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     pdf_annotations::set_metadata(&session.pdf_path, &key, &value)
 }
 
-/// Read the PDF bytes for the current session.
+/// Read the PDF bytes for a tab session.
 /// Returns raw bytes via IPC Response (efficient binary transfer).
 #[tauri::command]
-pub fn read_pdf_bytes(state: State<AppState>) -> Result<Response, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("No file is open")?;
+pub fn read_pdf_bytes(session_id: String, state: State<AppState>) -> Result<Response, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("No session found for tab {}", session_id))?;
     let pdf_path = session.pdf_path();
     let bytes = std::fs::read(&pdf_path)
         .map_err(|e| format!("Failed to read PDF at {}: {}", pdf_path.display(), e))?;
@@ -284,7 +311,21 @@ fn codex_output_schema() -> serde_json::Value {
                         },
                         "args": {
                             "type": "object",
-                            "additionalProperties": true
+                            "additionalProperties": false,
+                            "properties": {
+                                "pageNumber": { "type": "number" },
+                                "text": { "type": ["string", "null"] },
+                                "color": { "type": ["string", "null"] },
+                                "x": { "type": ["number", "null"] },
+                                "y": { "type": ["number", "null"] }
+                            },
+                            "required": [
+                                "pageNumber",
+                                "text",
+                                "color",
+                                "x",
+                                "y"
+                            ]
                         }
                     },
                     "required": ["tool", "args"]

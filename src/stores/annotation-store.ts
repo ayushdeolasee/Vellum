@@ -5,6 +5,7 @@ import type {
   UpdateAnnotationInput,
 } from "@/types";
 import * as commands from "@/lib/tauri-commands";
+import { usePdfStore } from "@/stores/pdf-store";
 
 interface AnnotationState {
   // All annotations for the current document
@@ -34,26 +35,40 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
   selectedAnnotationId: null,
 
   loadAnnotations: async () => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) {
+      set({ annotations: [], isLoading: false, selectedAnnotationId: null });
+      return;
+    }
     set({ isLoading: true });
     try {
-      const annotations = await commands.getAnnotations();
-      set({ annotations, isLoading: false });
+      const annotations = await commands.getAnnotations(sessionId);
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set({ annotations, isLoading: false, selectedAnnotationId: null });
+      }
     } catch (err) {
       console.error("[annotation-store] Failed to load annotations:", err);
-      set({ isLoading: false });
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set({ isLoading: false });
+      }
     }
   },
 
   addHighlight: async (input: CreateAnnotationInput) => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) return null;
     try {
-      const annotation = await commands.createAnnotation({
+      const annotation = await commands.createAnnotation(sessionId, {
         ...input,
         type: "highlight",
       });
-      set((state) => ({
-        annotations: [...state.annotations, annotation],
-      }));
-      return annotation;
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set((state) => ({
+          annotations: [...state.annotations, annotation],
+        }));
+        return annotation;
+      }
+      return null;
     } catch (err) {
       console.error("[annotation-store] Failed to create highlight:", err);
       return null;
@@ -61,15 +76,20 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
   },
 
   addNote: async (input: CreateAnnotationInput) => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) return null;
     try {
-      const annotation = await commands.createAnnotation({
+      const annotation = await commands.createAnnotation(sessionId, {
         ...input,
         type: "note",
       });
-      set((state) => ({
-        annotations: [...state.annotations, annotation],
-      }));
-      return annotation;
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set((state) => ({
+          annotations: [...state.annotations, annotation],
+        }));
+        return annotation;
+      }
+      return null;
     } catch (err) {
       console.error("[annotation-store] Failed to create note:", err);
       return null;
@@ -77,15 +97,20 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
   },
 
   addBookmark: async (pageNumber: number) => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) return null;
     try {
-      const annotation = await commands.createAnnotation({
+      const annotation = await commands.createAnnotation(sessionId, {
         type: "bookmark",
         page_number: pageNumber,
       });
-      set((state) => ({
-        annotations: [...state.annotations, annotation],
-      }));
-      return annotation;
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set((state) => ({
+          annotations: [...state.annotations, annotation],
+        }));
+        return annotation;
+      }
+      return null;
     } catch (err) {
       console.error("[annotation-store] Failed to create bookmark:", err);
       return null;
@@ -93,6 +118,8 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
   },
 
   updateAnnotation: async (input: UpdateAnnotationInput) => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) return;
     // Optimistic update
     set((state) => ({
       annotations: state.annotations.map((a) =>
@@ -108,18 +135,22 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
       ),
     }));
     try {
-      const updated = await commands.updateAnnotation(input);
+      const updated = await commands.updateAnnotation(sessionId, input);
       if (!updated) {
         throw new Error(`Annotation ${input.id} was not found`);
       }
     } catch (err) {
       console.error("[annotation-store] Failed to update annotation:", err);
       // Reload on failure to revert optimistic update
-      get().loadAnnotations();
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        get().loadAnnotations();
+      }
     }
   },
 
   deleteAnnotation: async (id: string) => {
+    const sessionId = usePdfStore.getState().activeTabId;
+    if (!sessionId) return;
     // Optimistic delete
     const prev = get().annotations;
     set((state) => ({
@@ -130,14 +161,16 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
           : state.selectedAnnotationId,
     }));
     try {
-      const deleted = await commands.deleteAnnotation(id);
+      const deleted = await commands.deleteAnnotation(sessionId, id);
       if (!deleted) {
         throw new Error(`Annotation ${id} was not found`);
       }
     } catch (err) {
       console.error("[annotation-store] Failed to delete annotation:", err);
       // Revert on failure
-      set({ annotations: prev });
+      if (usePdfStore.getState().activeTabId === sessionId) {
+        set({ annotations: prev });
+      }
     }
   },
 

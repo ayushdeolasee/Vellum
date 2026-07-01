@@ -79,8 +79,20 @@ export function AnnotationSidebar() {
 
   if (annotations.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
-        No annotations yet. Select text on the PDF to create highlights.
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+        <span className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+          <Highlighter size={20} strokeWidth={1.75} />
+        </span>
+        <div>
+          <p className="text-sm font-medium text-foreground">No annotations yet</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Select text on the page to highlight it, or press{" "}
+            <kbd className="rounded border border-border-strong bg-surface px-1 py-0.5 font-mono text-[10px]">
+              N
+            </kbd>{" "}
+            to drop a note.
+          </p>
+        </div>
       </div>
     );
   }
@@ -88,18 +100,18 @@ export function AnnotationSidebar() {
   return (
     <div className="flex h-full flex-col">
       {/* Filter bar */}
-      <div className="flex items-center gap-1 border-b p-2">
-        <Filter size={14} className="text-muted-foreground" />
+      <div className="flex flex-wrap items-center gap-1.5 border-b p-2.5">
+        <Filter size={13} className="text-muted-foreground" />
         <button
           className={cn(
-            "rounded px-2 py-0.5 text-xs transition-colors",
+            "focus-ring rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
             filter === "all"
               ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent",
+              : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
           onClick={() => setFilter("all")}
         >
-          All ({annotations.length})
+          All · {annotations.length}
         </button>
         {(["highlight", "note", "bookmark"] as const).map((type) => {
           const count = counts[type];
@@ -109,12 +121,13 @@ export function AnnotationSidebar() {
             <button
               key={type}
               className={cn(
-                "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors",
+                "focus-ring flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
                 filter === type
                   ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent",
+                  : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
               )}
               onClick={() => setFilter(type)}
+              title={TYPE_LABELS[type]}
             >
               <Icon size={12} />
               {count}
@@ -124,7 +137,7 @@ export function AnnotationSidebar() {
       </div>
 
       {/* Annotation list */}
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      <div className="min-h-0 flex-1 overflow-auto overscroll-contain p-1.5">
         {filtered.map((annotation) => {
           const Icon = TYPE_ICONS[annotation.type];
           const isSelected = selectedAnnotationId === annotation.id;
@@ -134,16 +147,16 @@ export function AnnotationSidebar() {
             <div
               key={annotation.id}
               className={cn(
-                "group cursor-pointer border-b p-3 transition-colors hover:bg-accent/50",
-                isSelected && "bg-accent",
+                "group cursor-pointer rounded-lg border border-transparent p-2.5 transition-colors hover:bg-accent",
+                isSelected && "border-border-strong bg-accent",
               )}
               onClick={() => handleClick(annotation)}
             >
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-2.5">
                 <div className="mt-0.5 flex-shrink-0">
                   {annotation.type === "highlight" && annotation.color ? (
                     <div
-                      className="h-4 w-4 rounded-full border"
+                      className="h-4 w-4 rounded-full ring-1 ring-border-strong"
                       style={{ backgroundColor: annotation.color }}
                     />
                   ) : (
@@ -152,12 +165,11 @@ export function AnnotationSidebar() {
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1">
-                    <span className="text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    <span>{TYPE_LABELS[annotation.type]}</span>
+                    <span aria-hidden>·</span>
+                    <span className="normal-case tracking-normal">
                       p.{annotation.page_number}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {TYPE_LABELS[annotation.type]}
                     </span>
                   </div>
 

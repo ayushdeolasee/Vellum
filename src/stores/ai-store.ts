@@ -3,6 +3,7 @@ import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { buildToolModePrompt } from "@/lib/ai-prompts";
+import { locateTextOnPage } from "@/lib/highlight-locator";
 import * as commands from "@/lib/tauri-commands";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
@@ -29,13 +30,11 @@ type ToolAction =
   | {
       tool: "addHighlight";
       args: {
+        // The text to highlight. Its on-page geometry is resolved by searching
+        // the page's extracted text, not supplied by the model.
         pageNumber: number;
-        text?: string;
+        text: string;
         color?: string;
-        x?: number;
-        y?: number;
-        width?: number;
-        height?: number;
       };
     };
 
@@ -259,10 +258,42 @@ function saveConversationToStorage(document: DocumentInfo | null, messages: AiMe
   writeConversationsToStorage(conversations);
 }
 
-function clampPage(page: number): number {
+// Tools the model is allowed to call. Anything outside this set is rejected
+// rather than silently coerced into a default action.
+const KNOWN_TOOLS = new Set<ToolAction["tool"]>([
+  "goToPage",
+  "addNote",
+  "addHighlight",
+]);
+
+function clampPage(page: unknown): number {
   const total = usePdfStore.getState().numPages;
+  const fallback = total > 0 ? usePdfStore.getState().currentPage : 1;
+  // Guard against undefined / NaN / Infinity, which would otherwise propagate
+  // through Math.round/min/max and produce a NaN page number.
+  if (typeof page !== "number" || !Number.isFinite(page)) {
+    return Math.max(1, fallback);
+  }
   if (total <= 0) return 1;
   return Math.max(1, Math.min(total, Math.round(page)));
+}
+
+// Clamp a coordinate/dimension to a finite, non-negative number, falling back
+// to the provided default when the model omits it or supplies garbage.
+function sanitizeNonNegative(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, value);
+}
+
+// Accept only plausible CSS color strings (hex, rgb/rgba, hsl/hsla, or a bare
+// keyword) so an arbitrary model string can't be injected as inline CSS.
+const CSS_COLOR_PATTERN =
+  /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|rgba|hsl|hsla)\([^)]*\)$|^[a-z]+$/i;
+
+function sanitizeColor(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim();
+  return CSS_COLOR_PATTERN.test(trimmed) ? trimmed : fallback;
 }
 
 function extractJsonObject(text: string): string | null {
@@ -288,14 +319,19 @@ function parseModelResponse(rawText: string): {
         : rawText.trim();
 
     const actions = Array.isArray(parsed.actions)
-      ? parsed.actions.filter(
-          (a): a is ToolAction =>
-            typeof a === "object" &&
-            a !== null &&
-            "tool" in a &&
-            "args" in a &&
-            typeof (a as { tool: unknown }).tool === "string",
-        )
+      ? parsed.actions.filter((a): a is ToolAction => {
+          if (typeof a !== "object" || a === null) return false;
+          const tool = (a as { tool?: unknown }).tool;
+          const args = (a as { args?: unknown }).args;
+          // Drop hallucinated/unknown tool names and malformed args here so
+          // they never reach executeToolAction's dispatch.
+          return (
+            typeof tool === "string" &&
+            KNOWN_TOOLS.has(tool as ToolAction["tool"]) &&
+            typeof args === "object" &&
+            args !== null
+          );
+        })
       : [];
 
     return { reply, actions };
@@ -534,8 +570,8 @@ async function executeToolAction(action: ToolAction): Promise<string> {
       position_data: {
         rects: [
           {
-            x: action.args.x ?? 72,
-            y: action.args.y ?? 96,
+            x: sanitizeNonNegative(action.args.x, 72),
+            y: sanitizeNonNegative(action.args.y, 96),
             width: 0,
             height: 0,
           },
@@ -550,27 +586,31 @@ async function executeToolAction(action: ToolAction): Promise<string> {
     return `Added note on page ${pageNumber}.`;
   }
 
-  const pageNumber = clampPage(action.args.pageNumber);
-  const width = action.args.width ?? 220;
-  const height = action.args.height ?? 24;
-  const x = action.args.x ?? 72;
-  const y = action.args.y ?? 96;
-  const color = action.args.color ?? "#fef08a";
+  if (action.tool === "addHighlight") {
+    const pageNumber = clampPage(action.args.pageNumber);
+    const query = action.args.text?.trim();
+    if (!query) return "Skipped addHighlight: no text provided to locate.";
+    const color = sanitizeColor(action.args.color, "#fef08a");
 
-  await useAnnotationStore.getState().addHighlight({
-    type: "highlight",
-    page_number: pageNumber,
-    color,
-    position_data: {
-      rects: [{ x, y, width, height }],
-      page_width: DEFAULT_PAGE_WIDTH,
-      page_height: DEFAULT_PAGE_HEIGHT,
-      selected_text: action.args.text ?? null,
-      start_offset: null,
-      end_offset: null,
-    },
-  });
-  return `Added highlight on page ${pageNumber}.`;
+    // Resolve the highlight geometry from the actual page text instead of
+    // trusting model-supplied coordinates, which land on arbitrary positions.
+    const positionData = await locateTextOnPage(pageNumber, query);
+    if (!positionData || positionData.rects.length === 0) {
+      return `Skipped addHighlight: couldn't find "${query}" on page ${pageNumber}.`;
+    }
+
+    await useAnnotationStore.getState().addHighlight({
+      type: "highlight",
+      page_number: pageNumber,
+      color,
+      position_data: positionData,
+    });
+    return `Highlighted "${query}" on page ${pageNumber}.`;
+  }
+
+  // Unknown tools are filtered out before this point; this guards against a
+  // ToolAction variant being added without a matching handler.
+  return `Skipped unknown tool: ${String((action as { tool?: unknown }).tool)}.`;
 }
 
 export const useAiStore = create<AiState>((set, get) => ({
@@ -621,7 +661,7 @@ export const useAiStore = create<AiState>((set, get) => ({
 
   loadConversationForDocument: (document) => {
     const messages = loadConversationFromStorage(document);
-    set({ messages, error: null });
+    set({ messages, isThinking: false, error: null });
   },
 
   clearConversation: () => {
@@ -631,7 +671,7 @@ export const useAiStore = create<AiState>((set, get) => ({
   },
 
   clearDocumentContext: () => {
-    set({ pageTexts: {}, messages: [], error: null });
+    set({ pageTexts: {}, messages: [], isThinking: false, error: null });
   },
 
   setPageText: (page, text) => {
@@ -650,6 +690,10 @@ export const useAiStore = create<AiState>((set, get) => ({
   sendMessage: async (input, context) => {
     const trimmed = input.trim();
     if (!trimmed) return;
+
+    const sessionIdAtStart = usePdfStore.getState().activeTabId;
+    const documentAtStart = usePdfStore.getState().document;
+    if (!sessionIdAtStart || !documentAtStart) return;
 
     const { settings, pageTexts } = get();
     const activeProvider = settings.provider;
@@ -677,7 +721,8 @@ export const useAiStore = create<AiState>((set, get) => ({
       isThinking: true,
       error: null,
     }));
-    saveConversationToStorage(usePdfStore.getState().document, get().messages);
+    const messagesWithUser = get().messages;
+    saveConversationToStorage(documentAtStart, messagesWithUser);
 
     try {
       const conversation = buildConversationBlock(get().messages);
@@ -696,6 +741,9 @@ export const useAiStore = create<AiState>((set, get) => ({
 
       const actionResults: string[] = [];
       for (const action of modelOutput.actions.slice(0, 5)) {
+        if (usePdfStore.getState().activeTabId !== sessionIdAtStart) {
+          break;
+        }
         try {
           const result = await executeToolAction(action);
           actionResults.push(result);
@@ -716,27 +764,30 @@ export const useAiStore = create<AiState>((set, get) => ({
         createdAt: new Date().toISOString(),
       };
 
-      set((state) => ({
-        messages: [...state.messages, assistantMessage],
-        isThinking: false,
-      }));
-      saveConversationToStorage(usePdfStore.getState().document, get().messages);
+      const completedMessages = [...messagesWithUser, assistantMessage];
+      saveConversationToStorage(documentAtStart, completedMessages);
+      if (usePdfStore.getState().activeTabId === sessionIdAtStart) {
+        set({ messages: completedMessages, isThinking: false });
+      }
     } catch (err) {
       const message = String(err);
-      set((state) => ({
-        isThinking: false,
-        error: message,
-        messages: [
-          ...state.messages,
-          {
-            id: makeId(),
-            role: "assistant",
-            content: `I couldn't complete that request: ${message}`,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      }));
-      saveConversationToStorage(usePdfStore.getState().document, get().messages);
+      const failedMessages = [
+        ...messagesWithUser,
+        {
+          id: makeId(),
+          role: "assistant" as const,
+          content: `I couldn't complete that request: ${message}`,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      saveConversationToStorage(documentAtStart, failedMessages);
+      if (usePdfStore.getState().activeTabId === sessionIdAtStart) {
+        set({
+          isThinking: false,
+          error: message,
+          messages: failedMessages,
+        });
+      }
     }
   },
 }));

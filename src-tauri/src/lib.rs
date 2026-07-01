@@ -4,6 +4,7 @@ mod pdf_annotations;
 mod pdf_session;
 
 use commands::AppState;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12,7 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
-            session: Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
         });
 
     #[cfg(desktop)]

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot,
-  MessageSquare,
   Mic,
   Send,
   Settings,
+  Sparkles,
   Square,
   Trash2,
+  User,
 } from "lucide-react";
 import { MarkdownMessage } from "@/components/ai/MarkdownMessage";
+import { IconButton } from "@/components/ui/IconButton";
 import { useAiStore } from "@/stores/ai-store";
 import { cn } from "@/lib/utils";
 import { usePdfStore } from "@/stores/pdf-store";
@@ -298,29 +299,25 @@ export function AiPanel() {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-3 py-2">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Bot size={15} />
+          <Sparkles size={15} className="text-primary" />
           AI Assistant
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+        <div className="flex items-center gap-0.5">
+          <IconButton
+            variant={settingsOpen ? "active" : "ghost"}
             onClick={() => setSettingsOpen((v) => !v)}
             title="AI settings"
           >
-            <Settings size={14} />
-          </button>
-          <button
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={clearConversation}
-            title="Clear conversation"
-          >
-            <Trash2 size={14} />
-          </button>
+            <Settings size={15} />
+          </IconButton>
+          <IconButton onClick={clearConversation} title="Clear conversation">
+            <Trash2 size={15} />
+          </IconButton>
         </div>
       </div>
 
       {settingsOpen && (
-        <div className="space-y-2 border-b bg-muted/50 p-3 text-xs">
+        <div className="space-y-2.5 border-b bg-surface-muted p-3 text-xs">
           <label className="block">
             <span className="mb-1 block text-muted-foreground">Provider</span>
             <select
@@ -430,9 +427,14 @@ export function AiPanel() {
         className="min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain px-3 py-3"
       >
         {messages.length === 0 && (
-          <div className="rounded border bg-muted/40 p-3 text-xs text-muted-foreground">
-            Ask anything about the PDF. The assistant can navigate pages and create
-            notes/highlights.
+          <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-primary">
+              <Sparkles size={20} strokeWidth={1.75} />
+            </span>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Ask anything about this document. The assistant can read the page,
+              jump around, and create notes and highlights for you.
+            </p>
           </div>
         )}
 
@@ -440,39 +442,49 @@ export function AiPanel() {
           <div
             key={msg.id}
             className={cn(
-              "max-w-[90%] rounded-lg px-3 py-2 text-sm",
-              msg.role === "user"
-                ? "ml-auto bg-primary text-primary-foreground"
-                : "bg-muted text-foreground",
+              "flex flex-col gap-1",
+              msg.role === "user" ? "items-end" : "items-start",
             )}
           >
-            <div className="mb-1 flex items-center gap-1 text-[11px] opacity-70">
-              {msg.role === "user" ? <MessageSquare size={12} /> : <Bot size={12} />}
+            <div className="flex items-center gap-1 px-1 text-[11px] font-medium text-muted-foreground">
+              {msg.role === "user" ? <User size={11} /> : <Sparkles size={11} />}
               {msg.role === "user" ? "You" : "Assistant"}
             </div>
-            <MarkdownMessage content={msg.content} />
+            <div
+              className={cn(
+                "max-w-[92%] rounded-xl px-3 py-2 text-sm",
+                msg.role === "user"
+                  ? "rounded-tr-sm bg-primary text-primary-foreground"
+                  : "rounded-tl-sm border border-border bg-surface text-foreground",
+              )}
+            >
+              <MarkdownMessage content={msg.content} />
+            </div>
           </div>
         ))}
 
         {isThinking && (
-          <div className="inline-flex items-center gap-2 rounded bg-muted px-3 py-2 text-xs text-muted-foreground">
-            <Bot size={12} />
-            Thinking...
+          <div className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+            <Sparkles size={12} className="animate-pulse text-primary" />
+            Thinking…
           </div>
         )}
 
         {error && (
-          <div className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
           </div>
         )}
       </div>
 
       <div className="border-t p-3">
-        <form className="flex items-end gap-2" onSubmit={handleSubmit}>
+        <form
+          className="focus-within:border-primary/60 flex items-end gap-2 rounded-xl border border-border bg-surface p-1.5 transition-colors"
+          onSubmit={handleSubmit}
+        >
           <textarea
-            className="min-h-[2.5rem] min-w-0 flex-1 resize-none rounded border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
-            placeholder="Ask about this document..."
+            className="min-h-[2.5rem] min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            placeholder="Ask about this document…"
             value={input}
             rows={2}
             onChange={(e) => setInput(e.target.value)}
@@ -488,10 +500,10 @@ export function AiPanel() {
             <button
               type="button"
               className={cn(
-                "flex h-10 w-10 items-center justify-center rounded border transition-colors",
+                "focus-ring flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors",
                 isListening
-                  ? "border-red-400 bg-red-100 text-red-600"
-                  : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+                  ? "bg-destructive text-destructive-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
               )}
               onMouseDown={handlePushToTalkStart}
               onMouseUp={handlePushToTalkStop}
@@ -506,17 +518,17 @@ export function AiPanel() {
               }}
               title="Push to talk"
             >
-              {isListening ? <Square size={14} /> : <Mic size={14} />}
+              {isListening ? <Square size={15} /> : <Mic size={15} />}
             </button>
           )}
 
           <button
             type="submit"
-            className="flex h-10 w-10 items-center justify-center rounded bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="focus-ring flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-40"
             disabled={!input.trim() || isThinking}
-            title="Send"
+            title="Send message"
           >
-            <Send size={14} />
+            <Send size={15} />
           </button>
         </form>
       </div>
