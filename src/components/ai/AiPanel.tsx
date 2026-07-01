@@ -11,6 +11,7 @@ import {
 import { MarkdownMessage } from "@/components/ai/MarkdownMessage";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAiStore } from "@/stores/ai-store";
+import * as commands from "@/lib/tauri-commands";
 import { cn } from "@/lib/utils";
 import { usePdfStore } from "@/stores/pdf-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
@@ -50,17 +51,18 @@ const OPENAI_MODELS = [
   "gpt-4.1-mini",
 ];
 
-const CODEX_MODELS = [
+// Models billable against a ChatGPT subscription via the codex/responses endpoint.
+const CHATGPT_MODELS = [
+  "gpt-5.5-codex",
   "gpt-5.5",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex-spark",
+  "gpt-5.4-codex",
 ];
 
 const SNAPSHOT_MAX_DIMENSION = 1280;
 const SNAPSHOT_JPEG_QUALITY = 0.72;
 
 function getProviderModels(provider: string): string[] {
-  if (provider === "codex") return CODEX_MODELS;
+  if (provider === "chatgpt") return CHATGPT_MODELS;
   return provider === "openai" ? OPENAI_MODELS : GEMINI_MODELS;
 }
 
@@ -83,6 +85,9 @@ export function AiPanel() {
   const [input, setInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [chatgptStatus, setChatgptStatus] =
+    useState<commands.ChatGptOauthStatus | null>(null);
+  const [chatgptBusy, setChatgptBusy] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const lastSpokenMessageIdRef = useRef<string | null>(null);
@@ -283,6 +288,56 @@ export function AiPanel() {
     };
   }, [handlePushToTalkStop]);
 
+  // Load the current ChatGPT sign-in state for the settings UI.
+  useEffect(() => {
+    let cancelled = false;
+    commands
+      .chatgptOauthStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setChatgptStatus(status);
+        // Mirror the (non-secret) email into settings for display continuity.
+        setSettings({ chatgptAccountEmail: status.email });
+      })
+      .catch(() => {
+        if (!cancelled) setChatgptStatus({ signed_in: false, email: null, account_id: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setSettings]);
+
+  const handleChatgptSignIn = useCallback(async () => {
+    setChatgptBusy(true);
+    setErrorState(null);
+    try {
+      const result = await commands.chatgptOauthLogin();
+      setChatgptStatus({
+        signed_in: true,
+        email: result.email,
+        account_id: result.account_id,
+      });
+      setSettings({ chatgptAccountEmail: result.email });
+    } catch (err) {
+      setErrorState(`ChatGPT sign-in failed: ${String(err)}`);
+    } finally {
+      setChatgptBusy(false);
+    }
+  }, [setErrorState, setSettings]);
+
+  const handleChatgptSignOut = useCallback(async () => {
+    setChatgptBusy(true);
+    try {
+      await commands.chatgptOauthLogout();
+    } catch {
+      // Ignore logout errors; treat as signed out regardless.
+    } finally {
+      setChatgptStatus({ signed_in: false, email: null, account_id: null });
+      setSettings({ chatgptAccountEmail: null });
+      setChatgptBusy(false);
+    }
+  }, [setSettings]);
+
   const handleSubmit = useCallback(
     async (e?: React.FormEvent) => {
       e?.preventDefault();
@@ -325,8 +380,8 @@ export function AiPanel() {
               value={settings.provider}
               onChange={(e) => {
                 const provider =
-                  e.target.value === "codex"
-                    ? "codex"
+                  e.target.value === "chatgpt"
+                    ? "chatgpt"
                     : e.target.value === "openai"
                     ? "openai"
                     : "gemini";
@@ -335,11 +390,39 @@ export function AiPanel() {
             >
               <option value="gemini">Gemini</option>
               <option value="openai">OpenAI API</option>
-              <option value="codex">Codex CLI</option>
+              <option value="chatgpt">ChatGPT (subscription)</option>
             </select>
           </label>
 
-          {settings.provider !== "codex" && (
+          {settings.provider === "chatgpt" ? (
+            <div className="space-y-1.5">
+              <span className="block text-muted-foreground">ChatGPT account</span>
+              {chatgptStatus?.signed_in ? (
+                <div className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1.5">
+                  <span className="min-w-0 truncate text-foreground">
+                    {chatgptStatus.email ?? "Signed in"}
+                  </span>
+                  <button
+                    type="button"
+                    className="focus-ring flex-shrink-0 rounded border px-2 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    onClick={handleChatgptSignOut}
+                    disabled={chatgptBusy}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="focus-ring w-full rounded bg-primary px-2 py-1.5 text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-40"
+                  onClick={handleChatgptSignIn}
+                  disabled={chatgptBusy}
+                >
+                  {chatgptBusy ? "Waiting for browser…" : "Sign in with ChatGPT"}
+                </button>
+              )}
+            </div>
+          ) : (
             <label className="block">
               <span className="mb-1 block text-muted-foreground">
                 {settings.provider === "openai" ? "OpenAI API key" : "Gemini API key"}
@@ -369,16 +452,16 @@ export function AiPanel() {
             <select
               className="w-full rounded border bg-background px-2 py-1 outline-none focus:ring-1 focus:ring-primary"
               value={
-                settings.provider === "codex"
-                  ? settings.codexModel
+                settings.provider === "chatgpt"
+                  ? settings.chatgptModel
                   : settings.provider === "openai"
                   ? settings.openaiModel
                   : settings.model
               }
               onChange={(e) =>
                 setSettings(
-                  settings.provider === "codex"
-                    ? { codexModel: e.target.value }
+                  settings.provider === "chatgpt"
+                    ? { chatgptModel: e.target.value }
                     : settings.provider === "openai"
                     ? { openaiModel: e.target.value }
                     : { model: e.target.value },

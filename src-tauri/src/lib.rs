@@ -1,5 +1,6 @@
 mod commands;
 mod models;
+mod oauth;
 mod pdf_annotations;
 mod pdf_session;
 
@@ -12,6 +13,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
         .manage(AppState {
             sessions: Mutex::new(HashMap::new()),
         });
@@ -45,7 +47,10 @@ pub fn run() {
             commands::update_annotation,
             commands::delete_annotation,
             commands::set_document_metadata,
-            commands::run_codex_ai,
+            oauth::chatgpt_oauth_login,
+            oauth::chatgpt_get_access_token,
+            oauth::chatgpt_oauth_status,
+            oauth::chatgpt_oauth_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

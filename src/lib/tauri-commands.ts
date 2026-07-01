@@ -8,9 +8,20 @@ import type {
   UpdateAnnotationInput,
 } from "@/types";
 
-interface CodexAiImageInput {
-  base64_data: string;
-  media_type: string;
+export interface ChatGptLoginResult {
+  account_id: string;
+  email: string | null;
+}
+
+export interface ChatGptAccessToken {
+  access_token: string;
+  account_id: string;
+}
+
+export interface ChatGptOauthStatus {
+  signed_in: boolean;
+  email: string | null;
+  account_id: string | null;
 }
 
 export async function openFile(
@@ -71,14 +82,21 @@ export async function setDocumentMetadata(
   return invoke("set_document_metadata", { sessionId, key, value });
 }
 
-export async function runCodexAi(
-  prompt: string,
-  model: string,
-  image?: CodexAiImageInput | null,
-): Promise<string> {
-  return invoke<string>("run_codex_ai", {
-    prompt,
-    model,
-    image: image ?? null,
-  });
+// --- "Sign in with ChatGPT" OAuth ---
+// Secrets stay in Rust/keychain; the renderer only ever sees short-lived tokens.
+
+export async function chatgptOauthLogin(): Promise<ChatGptLoginResult> {
+  return invoke<ChatGptLoginResult>("chatgpt_oauth_login");
+}
+
+export async function chatgptGetAccessToken(): Promise<ChatGptAccessToken> {
+  return invoke<ChatGptAccessToken>("chatgpt_get_access_token");
+}
+
+export async function chatgptOauthStatus(): Promise<ChatGptOauthStatus> {
+  return invoke<ChatGptOauthStatus>("chatgpt_oauth_status");
+}
+
+export async function chatgptOauthLogout(): Promise<void> {
+  return invoke("chatgpt_oauth_logout");
 }

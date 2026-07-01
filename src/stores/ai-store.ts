@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { buildToolModePrompt } from "@/lib/ai-prompts";
 import { locateTextOnPage } from "@/lib/highlight-locator";
 import * as commands from "@/lib/tauri-commands";
@@ -10,7 +11,7 @@ import { usePdfStore } from "@/stores/pdf-store";
 import type { Annotation, DocumentInfo } from "@/types";
 
 type AiRole = "user" | "assistant";
-type AiProvider = "gemini" | "openai" | "codex";
+type AiProvider = "gemini" | "openai" | "chatgpt";
 type VoiceMode = "off" | "push-to-talk";
 
 type ToolAction =
@@ -51,7 +52,9 @@ interface AiSettings {
   apiKey: string;
   openaiModel: string;
   openaiApiKey: string;
-  codexModel: string;
+  chatgptModel: string;
+  // Non-secret display field only. No tokens are ever stored in settings/localStorage.
+  chatgptAccountEmail?: string | null;
   voiceMode: VoiceMode;
   ttsEnabled: boolean;
 }
@@ -110,7 +113,8 @@ const DEFAULT_SETTINGS: AiSettings = {
   apiKey: "",
   openaiModel: "gpt-5.5",
   openaiApiKey: "",
-  codexModel: "gpt-5.5",
+  chatgptModel: "gpt-5.5",
+  chatgptAccountEmail: null,
   voiceMode: "off",
   ttsEnabled: false,
 };
@@ -127,7 +131,7 @@ function normalizeVoiceMode(value: unknown): VoiceMode {
 }
 
 function normalizeAiProvider(value: unknown): AiProvider {
-  if (value === "codex") return "codex";
+  if (value === "chatgpt") return "chatgpt";
   return value === "openai" ? "openai" : "gemini";
 }
 
@@ -411,6 +415,26 @@ function buildConversationBlock(messages: AiMessage[]): string {
     .join("\n");
 }
 
+type UserContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; image: string; mediaType?: string };
+
+// Assemble a multimodal user message from a prompt and an optional page image.
+function buildUserContent(
+  prompt: string,
+  image?: AiPageImageSnapshot | null,
+): UserContentPart[] {
+  const content: UserContentPart[] = [{ type: "text", text: prompt }];
+  if (image?.base64Data) {
+    content.push({
+      type: "image",
+      image: image.base64Data,
+      mediaType: image.mediaType,
+    });
+  }
+  return content;
+}
+
 async function callGemini(opts: {
   apiKey: string;
   model: string;
@@ -421,22 +445,14 @@ async function callGemini(opts: {
     apiKey: opts.apiKey,
   });
 
-  const userContent: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string; mediaType?: string }
-  > = [{ type: "text", text: opts.prompt }];
-
-  if (opts.currentPageImage?.base64Data) {
-    userContent.push({
-      type: "image",
-      image: opts.currentPageImage.base64Data,
-      mediaType: opts.currentPageImage.mediaType,
-    });
-  }
-
   const { text: rawText } = await generateText({
     model: google(opts.model),
-    messages: [{ role: "user", content: userContent }],
+    messages: [
+      {
+        role: "user",
+        content: buildUserContent(opts.prompt, opts.currentPageImage),
+      },
+    ],
     temperature: 0.2,
     maxRetries: 1,
   });
@@ -461,22 +477,14 @@ async function callOpenAI(opts: {
     apiKey: opts.apiKey,
   });
 
-  const userContent: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string; mediaType?: string }
-  > = [{ type: "text", text: opts.prompt }];
-
-  if (opts.currentPageImage?.base64Data) {
-    userContent.push({
-      type: "image",
-      image: opts.currentPageImage.base64Data,
-      mediaType: opts.currentPageImage.mediaType,
-    });
-  }
-
   const { text: rawText } = await generateText({
     model: openai.responses(opts.model),
-    messages: [{ role: "user", content: userContent }],
+    messages: [
+      {
+        role: "user",
+        content: buildUserContent(opts.prompt, opts.currentPageImage),
+      },
+    ],
     maxRetries: 1,
     providerOptions: {
       openai: {
@@ -495,21 +503,62 @@ async function callOpenAI(opts: {
   return parseModelResponse(rawText);
 }
 
-async function callCodex(opts: {
+function isUnauthorizedError(err: unknown): boolean {
+  const message = String(
+    err instanceof Error ? err.message : err,
+  ).toLowerCase();
+  return message.includes("401") || message.includes("unauthorized");
+}
+
+// Reach the user's ChatGPT subscription via Codex's `codex/responses` endpoint.
+// Access token + account id come from Rust (keychain); the request goes through
+// Tauri's HTTP plugin to bypass browser CORS on chatgpt.com. On a 401 we force a
+// token refresh once and retry. See src-tauri/src/oauth.rs for the ToS caveats.
+async function callChatGpt(opts: {
   model: string;
   prompt: string;
   currentPageImage?: AiPageImageSnapshot | null;
 }): Promise<{ reply: string; actions: ToolAction[] }> {
-  const rawText = await commands.runCodexAi(
-    opts.prompt,
-    opts.model,
-    opts.currentPageImage?.base64Data
-      ? {
-          base64_data: opts.currentPageImage.base64Data,
-          media_type: opts.currentPageImage.mediaType,
-        }
-      : null,
-  );
+  const runOnce = async () => {
+    const { access_token, account_id } =
+      await commands.chatgptGetAccessToken();
+    const openai = createOpenAI({
+      baseURL: "https://chatgpt.com/backend-api/codex",
+      apiKey: access_token,
+      headers: {
+        "ChatGPT-Account-Id": account_id,
+        originator: "vellum",
+      },
+      fetch: tauriFetch as typeof fetch,
+    });
+
+    const { text } = await generateText({
+      model: openai.responses(opts.model),
+      messages: [
+        {
+          role: "user",
+          content: buildUserContent(opts.prompt, opts.currentPageImage),
+        },
+      ],
+      maxRetries: 1,
+      providerOptions: {
+        openai: {
+          store: false,
+        },
+      },
+    });
+    return text;
+  };
+
+  let rawText: string;
+  try {
+    rawText = await runOnce();
+  } catch (err) {
+    // A 401 usually means the cached access token went stale; force a refresh
+    // (chatgptGetAccessToken re-issues when expired) and retry exactly once.
+    if (!isUnauthorizedError(err)) throw err;
+    rawText = await runOnce();
+  }
 
   if (!rawText.trim()) {
     return {
@@ -526,9 +575,9 @@ async function callAiProvider(opts: {
   prompt: string;
   currentPageImage?: AiPageImageSnapshot | null;
 }): Promise<{ reply: string; actions: ToolAction[] }> {
-  if (opts.settings.provider === "codex") {
-    return callCodex({
-      model: opts.settings.codexModel.trim() || DEFAULT_SETTINGS.codexModel,
+  if (opts.settings.provider === "chatgpt") {
+    return callChatGpt({
+      model: opts.settings.chatgptModel.trim() || DEFAULT_SETTINGS.chatgptModel,
       prompt: opts.prompt,
       currentPageImage: opts.currentPageImage,
     });
@@ -697,16 +746,26 @@ export const useAiStore = create<AiState>((set, get) => ({
 
     const { settings, pageTexts } = get();
     const activeProvider = settings.provider;
-    const activeApiKey =
-      activeProvider === "openai" ? settings.openaiApiKey : settings.apiKey;
-    if (activeProvider !== "codex" && !activeApiKey.trim()) {
-      set({
-        error:
-          activeProvider === "openai"
-            ? "Set your OpenAI API key in AI settings."
-            : "Set your Gemini API key in AI settings.",
-      });
-      return;
+
+    if (activeProvider === "chatgpt") {
+      // No API key: the ChatGPT provider authenticates via OAuth (keychain).
+      const status = await commands.chatgptOauthStatus();
+      if (!status.signed_in) {
+        set({ error: "Sign in with ChatGPT first in AI settings." });
+        return;
+      }
+    } else {
+      const activeApiKey =
+        activeProvider === "openai" ? settings.openaiApiKey : settings.apiKey;
+      if (!activeApiKey.trim()) {
+        set({
+          error:
+            activeProvider === "openai"
+              ? "Set your OpenAI API key in AI settings."
+              : "Set your Gemini API key in AI settings.",
+        });
+        return;
+      }
     }
 
     const userMessage: AiMessage = {
