@@ -1,8 +1,12 @@
 import { create } from "zustand";
-import { generateText } from "ai";
+import { generateText, jsonSchema, stepCountIs, tool } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import { buildToolModePrompt } from "@/lib/ai-prompts";
+import {
+  buildNativeToolSystemPrompt,
+  buildNativeToolUserPrompt,
+  buildToolModePrompt,
+} from "@/lib/ai-prompts";
 import { locateTextOnPage } from "@/lib/highlight-locator";
 import * as commands from "@/lib/tauri-commands";
 import { useAnnotationStore } from "@/stores/annotation-store";
@@ -411,72 +415,195 @@ function buildConversationBlock(messages: AiMessage[]): string {
     .join("\n");
 }
 
+// Maximum number of UI actions honored per assistant turn, regardless of how
+// many tool calls the model attempts.
+const MAX_TOOL_ACTIONS = 5;
+
+type UserContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; image: string; mediaType?: string };
+
+function buildUserContent(
+  text: string,
+  currentPageImage?: AiPageImageSnapshot | null,
+): UserContentPart[] {
+  const parts: UserContentPart[] = [{ type: "text", text }];
+  if (currentPageImage?.base64Data) {
+    parts.push({
+      type: "image",
+      image: currentPageImage.base64Data,
+      mediaType: currentPageImage.mediaType,
+    });
+  }
+  return parts;
+}
+
+// Run a single tool action behind the active-tab guard, capping total actions
+// and recording each outcome. Shared by the native and JSON tool paths.
+async function runToolAction(
+  action: ToolAction,
+  sessionIdAtStart: string,
+  actionResults: string[],
+): Promise<string> {
+  if (actionResults.length >= MAX_TOOL_ACTIONS) {
+    const message = "Skipped: action limit reached for this response.";
+    actionResults.push(message);
+    return message;
+  }
+  if (usePdfStore.getState().activeTabId !== sessionIdAtStart) {
+    const message = "Skipped: the active document changed before this action ran.";
+    actionResults.push(message);
+    return message;
+  }
+  try {
+    const result = await executeToolAction(action);
+    actionResults.push(result);
+    return result;
+  } catch (err) {
+    const message = `Action failed: ${String(err)}`;
+    actionResults.push(message);
+    return message;
+  }
+}
+
+// JSON-schema input definitions handed to the AI SDK for native tool calling.
+// These mirror the ToolAction argument shapes; runtime clamping/sanitizing still
+// happens in executeToolAction.
+const goToPageInputSchema = jsonSchema<{ pageNumber: number }>({
+  type: "object",
+  properties: {
+    pageNumber: {
+      type: "number",
+      description: "1-indexed page number to navigate to. Out-of-range values are clamped.",
+    },
+  },
+  required: ["pageNumber"],
+  additionalProperties: false,
+});
+
+const addNoteInputSchema = jsonSchema<{
+  pageNumber: number;
+  text: string;
+  x?: number;
+  y?: number;
+}>({
+  type: "object",
+  properties: {
+    pageNumber: { type: "number", description: "1-indexed page number for the note." },
+    text: { type: "string", description: "Note body. Must be non-empty." },
+    x: { type: "number", description: "Optional top-left x in PDF points (default 72)." },
+    y: { type: "number", description: "Optional top-left y in PDF points (default 96)." },
+  },
+  required: ["pageNumber", "text"],
+  additionalProperties: false,
+});
+
+const addHighlightInputSchema = jsonSchema<{
+  pageNumber: number;
+  text: string;
+  color?: string;
+}>({
+  type: "object",
+  properties: {
+    pageNumber: { type: "number", description: "1-indexed page number for the highlight." },
+    text: {
+      type: "string",
+      description:
+        "Exact phrase to highlight, quoted verbatim from the page text. The app locates it; do not supply coordinates.",
+    },
+    color: { type: "string", description: "Optional CSS color (e.g. #fef08a). Invalid values fall back to yellow." },
+  },
+  required: ["pageNumber", "text"],
+  additionalProperties: false,
+});
+
+// AI SDK native tool set. Each tool's execute runs the corresponding UI action
+// through the shared guard and pushes its outcome into actionResults.
+function buildNativeTools(sessionIdAtStart: string, actionResults: string[]) {
+  return {
+    goToPage: tool({
+      description: "Navigate the document viewport to a specific 1-indexed page.",
+      inputSchema: goToPageInputSchema,
+      execute: ({ pageNumber }) =>
+        runToolAction(
+          { tool: "goToPage", args: { pageNumber } },
+          sessionIdAtStart,
+          actionResults,
+        ),
+    }),
+    addNote: tool({
+      description: "Create a sticky-note annotation with visible text on a page.",
+      inputSchema: addNoteInputSchema,
+      execute: ({ pageNumber, text, x, y }) =>
+        runToolAction(
+          { tool: "addNote", args: { pageNumber, text, x, y } },
+          sessionIdAtStart,
+          actionResults,
+        ),
+    }),
+    addHighlight: tool({
+      description:
+        "Highlight an exact phrase on a page. Provide the verbatim text; the app locates and draws it.",
+      inputSchema: addHighlightInputSchema,
+      execute: ({ pageNumber, text, color }) =>
+        runToolAction(
+          { tool: "addHighlight", args: { pageNumber, text, color } },
+          sessionIdAtStart,
+          actionResults,
+        ),
+    }),
+  };
+}
+
 async function callGemini(opts: {
   apiKey: string;
   model: string;
-  prompt: string;
+  systemPrompt: string;
+  userPrompt: string;
+  sessionIdAtStart: string;
   currentPageImage?: AiPageImageSnapshot | null;
-}): Promise<{ reply: string; actions: ToolAction[] }> {
+}): Promise<{ reply: string; actionResults: string[] }> {
   const google = createGoogleGenerativeAI({
     apiKey: opts.apiKey,
   });
 
-  const userContent: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string; mediaType?: string }
-  > = [{ type: "text", text: opts.prompt }];
-
-  if (opts.currentPageImage?.base64Data) {
-    userContent.push({
-      type: "image",
-      image: opts.currentPageImage.base64Data,
-      mediaType: opts.currentPageImage.mediaType,
-    });
-  }
-
+  const actionResults: string[] = [];
   const { text: rawText } = await generateText({
     model: google(opts.model),
-    messages: [{ role: "user", content: userContent }],
+    system: opts.systemPrompt,
+    messages: [
+      { role: "user", content: buildUserContent(opts.userPrompt, opts.currentPageImage) },
+    ],
+    tools: buildNativeTools(opts.sessionIdAtStart, actionResults),
+    stopWhen: stepCountIs(MAX_TOOL_ACTIONS + 1),
     temperature: 0.2,
     maxRetries: 1,
   });
 
-  if (!rawText.trim()) {
-    return {
-      reply: "I couldn't produce a response.",
-      actions: [],
-    };
-  }
-
-  return parseModelResponse(rawText);
+  return { reply: finalizeReply(rawText, actionResults), actionResults };
 }
 
 async function callOpenAI(opts: {
   apiKey: string;
   model: string;
-  prompt: string;
+  systemPrompt: string;
+  userPrompt: string;
+  sessionIdAtStart: string;
   currentPageImage?: AiPageImageSnapshot | null;
-}): Promise<{ reply: string; actions: ToolAction[] }> {
+}): Promise<{ reply: string; actionResults: string[] }> {
   const openai = createOpenAI({
     apiKey: opts.apiKey,
   });
 
-  const userContent: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string; mediaType?: string }
-  > = [{ type: "text", text: opts.prompt }];
-
-  if (opts.currentPageImage?.base64Data) {
-    userContent.push({
-      type: "image",
-      image: opts.currentPageImage.base64Data,
-      mediaType: opts.currentPageImage.mediaType,
-    });
-  }
-
+  const actionResults: string[] = [];
   const { text: rawText } = await generateText({
     model: openai.responses(opts.model),
-    messages: [{ role: "user", content: userContent }],
+    system: opts.systemPrompt,
+    messages: [
+      { role: "user", content: buildUserContent(opts.userPrompt, opts.currentPageImage) },
+    ],
+    tools: buildNativeTools(opts.sessionIdAtStart, actionResults),
+    stopWhen: stepCountIs(MAX_TOOL_ACTIONS + 1),
     maxRetries: 1,
     providerOptions: {
       openai: {
@@ -485,21 +612,17 @@ async function callOpenAI(opts: {
     },
   });
 
-  if (!rawText.trim()) {
-    return {
-      reply: "I couldn't produce a response.",
-      actions: [],
-    };
-  }
-
-  return parseModelResponse(rawText);
+  return { reply: finalizeReply(rawText, actionResults), actionResults };
 }
 
+// The Codex CLI runs outside the AI SDK and has no native tool-calling API, so
+// it keeps the JSON contract: the model returns actions we parse and execute.
 async function callCodex(opts: {
   model: string;
   prompt: string;
+  sessionIdAtStart: string;
   currentPageImage?: AiPageImageSnapshot | null;
-}): Promise<{ reply: string; actions: ToolAction[] }> {
+}): Promise<{ reply: string; actionResults: string[] }> {
   const rawText = await commands.runCodexAi(
     opts.prompt,
     opts.model,
@@ -512,24 +635,42 @@ async function callCodex(opts: {
   );
 
   if (!rawText.trim()) {
-    return {
-      reply: "I couldn't produce a response.",
-      actions: [],
-    };
+    return { reply: "I couldn't produce a response.", actionResults: [] };
   }
 
-  return parseModelResponse(rawText);
+  const { reply, actions } = parseModelResponse(rawText);
+  const actionResults: string[] = [];
+  for (const action of actions) {
+    if (actionResults.length >= MAX_TOOL_ACTIONS) break;
+    if (usePdfStore.getState().activeTabId !== opts.sessionIdAtStart) break;
+    await runToolAction(action, opts.sessionIdAtStart, actionResults);
+  }
+  return { reply, actionResults };
+}
+
+// Turn the model's final text into a user-facing reply, falling back when the
+// model returned no text (e.g. it only issued tool calls).
+function finalizeReply(rawText: string, actionResults: string[]): string {
+  const trimmed = rawText.trim();
+  if (trimmed) return trimmed;
+  return actionResults.length > 0
+    ? "Done."
+    : "I couldn't produce a response.";
 }
 
 async function callAiProvider(opts: {
   settings: AiSettings;
-  prompt: string;
+  systemPrompt: string;
+  userPrompt: string;
+  jsonPrompt: string;
+  sessionIdAtStart: string;
   currentPageImage?: AiPageImageSnapshot | null;
-}): Promise<{ reply: string; actions: ToolAction[] }> {
+}): Promise<{ reply: string; actionResults: string[] }> {
   if (opts.settings.provider === "codex") {
     return callCodex({
       model: opts.settings.codexModel.trim() || DEFAULT_SETTINGS.codexModel,
-      prompt: opts.prompt,
+      prompt: opts.jsonPrompt,
+      sessionIdAtStart: opts.sessionIdAtStart,
       currentPageImage: opts.currentPageImage,
     });
   }
@@ -538,7 +679,9 @@ async function callAiProvider(opts: {
     return callOpenAI({
       apiKey: opts.settings.openaiApiKey.trim(),
       model: opts.settings.openaiModel.trim() || DEFAULT_SETTINGS.openaiModel,
-      prompt: opts.prompt,
+      systemPrompt: opts.systemPrompt,
+      userPrompt: opts.userPrompt,
+      sessionIdAtStart: opts.sessionIdAtStart,
       currentPageImage: opts.currentPageImage,
     });
   }
@@ -546,7 +689,9 @@ async function callAiProvider(opts: {
   return callGemini({
     apiKey: opts.settings.apiKey.trim(),
     model: opts.settings.model.trim() || DEFAULT_SETTINGS.model,
-    prompt: opts.prompt,
+    systemPrompt: opts.systemPrompt,
+    userPrompt: opts.userPrompt,
+    sessionIdAtStart: opts.sessionIdAtStart,
     currentPageImage: opts.currentPageImage,
   });
 }
@@ -727,35 +872,25 @@ export const useAiStore = create<AiState>((set, get) => ({
     try {
       const conversation = buildConversationBlock(get().messages);
       const contextBlock = buildContextBlock(pageTexts, context);
-      const prompt = buildToolModePrompt({
+      const promptParams = {
         conversation: conversation || "(start of conversation)",
         context: contextBlock,
         latestUserRequest: trimmed,
-      });
+      };
 
-      const modelOutput = await callAiProvider({
+      const { reply, actionResults } = await callAiProvider({
         settings,
-        prompt,
+        systemPrompt: buildNativeToolSystemPrompt(),
+        userPrompt: buildNativeToolUserPrompt(promptParams),
+        jsonPrompt: buildToolModePrompt(promptParams),
+        sessionIdAtStart,
         currentPageImage: context.currentPageImage,
       });
 
-      const actionResults: string[] = [];
-      for (const action of modelOutput.actions.slice(0, 5)) {
-        if (usePdfStore.getState().activeTabId !== sessionIdAtStart) {
-          break;
-        }
-        try {
-          const result = await executeToolAction(action);
-          actionResults.push(result);
-        } catch (err) {
-          actionResults.push(`Action failed: ${String(err)}`);
-        }
-      }
-
       const assistantContent =
         actionResults.length > 0
-          ? `${modelOutput.reply}\n\nActions:\n${actionResults.map((r) => `- ${r}`).join("\n")}`
-          : modelOutput.reply;
+          ? `${reply}\n\nActions:\n${actionResults.map((r) => `- ${r}`).join("\n")}`
+          : reply;
 
       const assistantMessage: AiMessage = {
         id: makeId(),
