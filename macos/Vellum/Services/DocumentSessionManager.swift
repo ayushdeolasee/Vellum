@@ -50,11 +50,14 @@ final class DocumentSessionManager: SessionService {
     }
 
     /// Web session lookup for web-only commands (saved-state, export).
-    private func webSession(_ id: String) throws -> WebDocumentSession {
-        guard let session = sessions[id] as? WebDocumentSession else {
+    private func webSession(_ id: String, pdfTabMessage: String) throws -> WebDocumentSession {
+        guard let session = sessions[id] else {
             throw SessionServiceError.sessionNotFound(id)
         }
-        return session
+        guard let webSession = session as? WebDocumentSession else {
+            throw SessionServiceError.invalidDocument(pdfTabMessage)
+        }
+        return webSession
     }
 
     // MARK: - Lifecycle
@@ -96,11 +99,16 @@ final class DocumentSessionManager: SessionService {
     // MARK: - Web library / archives
 
     func setWebpageSaved(sessionId: String, saved: Bool) async throws {
-        try await webSession(sessionId).setSaved(saved)
+        try await webSession(
+            sessionId,
+            pdfTabMessage: "PDFs are already portable — archiving applies to webpage tabs"
+        ).setSaved(saved)
     }
 
     func getWebpageSaved(sessionId: String) async throws -> Bool {
-        try await webSession(sessionId).isSaved()
+        try await webSession(
+            sessionId, pdfTabMessage: "This tab is a PDF, not a webpage"
+        ).isSaved()
     }
 
     func listSavedWebpages() async throws -> [WebLibraryEntry] {
@@ -112,11 +120,15 @@ final class DocumentSessionManager: SessionService {
     }
 
     func exportVellumweb(sessionId: String, destPath: String, pages: [WebPageText]) async throws -> VellumwebExportSummary {
-        try await webSession(sessionId).exportVellumweb(destPath: destPath, pages: pages)
+        try await webSession(
+            sessionId, pdfTabMessage: "PDFs are already portable — archiving applies to webpage tabs"
+        ).exportVellumweb(destPath: destPath, pages: pages)
     }
 
     func archiveWebpageDefault(sessionId: String, pages: [WebPageText], expectedUrl: String) async throws -> Bool {
-        try await webSession(sessionId).archiveDefault(pages: pages, expectedUrl: expectedUrl)
+        try await webSession(
+            sessionId, pdfTabMessage: "PDFs are already portable — archiving applies to webpage tabs"
+        ).archiveDefault(pages: pages, expectedUrl: expectedUrl)
     }
 
     // MARK: - Annotations

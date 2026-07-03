@@ -2,9 +2,6 @@ import Foundation
 import Observation
 
 // AI assistant state — port of src/stores/ai-store.ts (see macos/specs/SPECS-ai.md).
-// STUB: the public surface below is the cross-module contract. The AI module
-// implements the bodies (persistence, sendMessage pipeline, providers, tool
-// engine) — signatures must not change.
 
 enum AiRole: String, Codable, Sendable {
     case user
@@ -90,23 +87,33 @@ final class AiStore {
     /// dimension 1280, quality 0.72 (AiPanel's captureCurrentPageImage).
     var capturePageImageHandler: ((Int) async -> AiPageImageSnapshot?)?
 
-    init() {}
+    init() {
+        settings = AiPersistence.loadSettings()
+    }
 
     // MARK: - Contract used by other modules (implemented by the AI module)
 
     func setSettings(_ settings: AiSettings) {
         self.settings = settings
-        // TODO(ai-module): persist to UserDefaults key research-reader-ai-settings-v1
+        AiPersistence.saveSettings(settings)
     }
 
     @discardableResult
     func addLocalMessage(role: AiRole, content: String, id: String? = nil) -> String {
-        // TODO(ai-module)
-        return id ?? UUID().uuidString.lowercased()
+        let message = AiPersistence.makeMessage(role: role, content: content, id: id)
+        messages.append(message)
+        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        return message.id
     }
 
     func updateLocalMessage(id: String, content: String) {
-        // TODO(ai-module)
+        messages = messages.map { message in
+            guard message.id == id else { return message }
+            var next = message
+            next.content = content
+            return next
+        }
+        AiPersistence.saveConversation(for: app?.document, messages: messages)
     }
 
     func setThinkingState(_ thinking: Bool) {
@@ -119,12 +126,16 @@ final class AiStore {
 
     /// Restore the persisted conversation for a document (or reset when nil).
     func loadConversationForDocument(_ document: DocumentInfo?) {
-        // TODO(ai-module)
+        messages = AiPersistence.loadConversation(for: document)
+        isThinking = false
+        error = nil
     }
 
     /// Save an empty list (deleting the document's stored entry) and clear state.
     func clearConversation() {
-        // TODO(ai-module)
+        AiPersistence.saveConversation(for: app?.document, messages: [])
+        messages = []
+        error = nil
     }
 
     /// Wipes pageTexts, messages, isThinking, error (called on doc/tab change).
@@ -147,6 +158,162 @@ final class AiStore {
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
-        // TODO(ai-module)
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let app,
+              let annotationStore,
+              let sessionIdAtStart = app.activeTabId,
+              let documentAtStart = app.document else { return }
+
+        let settingsAtStart = settings
+        if settingsAtStart.provider == .openai,
+           settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenAI API key in AI settings."
+            return
+        }
+        if settingsAtStart.provider == .gemini,
+           settingsAtStart.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your Gemini API key in AI settings."
+            return
+        }
+
+        let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
+        messages.append(userMessage)
+        isThinking = true
+        error = nil
+        let messagesWithUser = messages
+        AiPersistence.saveConversation(for: documentAtStart, messages: messagesWithUser)
+
+        do {
+            let conversation = AiPrompts.buildConversationBlock(messagesWithUser)
+            let parameters = AiPromptParameters(
+                conversation: conversation.isEmpty ? "(start of conversation)" : conversation,
+                context: AiPrompts.buildContextBlock(pageTexts: pageTexts, context: context),
+                latestUserRequest: trimmed
+            )
+            let engine = AiToolEngine(store: self, app: app, annotations: annotationStore)
+            let result: AiProviderResult
+            switch settingsAtStart.provider {
+            case .gemini:
+                let model = settingsAtStart.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                result = try await GeminiClient().generate(
+                    apiKey: settingsAtStart.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model.isEmpty ? "gemini-3.1-flash-lite-preview" : model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: context.currentPageImage,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine
+                )
+            case .openai:
+                let model = settingsAtStart.openaiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                result = try await OpenAIClient().generate(
+                    apiKey: settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model.isEmpty ? "gpt-5.5" : model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: context.currentPageImage,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine
+                )
+            case .codex:
+                let model = settingsAtStart.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                let image = context.currentPageImage.map {
+                    CodexAiImageInput(base64Data: $0.base64Data, mediaType: $0.mediaType)
+                }
+                let raw = try await app.sessions.runCodexAi(
+                    prompt: AiPrompts.buildToolModePrompt(parameters),
+                    model: model.isEmpty ? "gpt-5.5" : model,
+                    image: image
+                )
+                result = await parseAndRunCodex(
+                    raw,
+                    engine: engine,
+                    sessionIdAtStart: sessionIdAtStart,
+                    app: app
+                )
+            }
+
+            let assistantContent: String
+            if result.actionResults.isEmpty {
+                assistantContent = result.reply
+            } else {
+                assistantContent = result.reply + "\n\nActions:\n"
+                    + result.actionResults.map { "- \($0)" }.joined(separator: "\n")
+            }
+            let assistant = AiPersistence.makeMessage(
+                role: .assistant,
+                content: assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            let completed = messagesWithUser + [assistant]
+            AiPersistence.saveConversation(for: documentAtStart, messages: completed)
+            if app.activeTabId == sessionIdAtStart {
+                messages = completed
+                isThinking = false
+            }
+        } catch {
+            let detail = error.localizedDescription
+            let assistant = AiPersistence.makeMessage(
+                role: .assistant,
+                content: "I couldn't complete that request: \(detail)"
+            )
+            let failed = messagesWithUser + [assistant]
+            AiPersistence.saveConversation(for: documentAtStart, messages: failed)
+            if app.activeTabId == sessionIdAtStart {
+                messages = failed
+                isThinking = false
+                self.error = detail
+            }
+        }
+    }
+
+    private func parseAndRunCodex(
+        _ raw: String,
+        engine: AiToolEngine,
+        sessionIdAtStart: String,
+        app: AppStore
+    ) async -> AiProviderResult {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return AiProviderResult(reply: "I couldn't produce a response.", actionResults: [])
+        }
+        let jsonText: String
+        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
+            jsonText = String(trimmed[first...last])
+        } else {
+            jsonText = trimmed
+        }
+        guard let data = jsonText.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return AiProviderResult(reply: trimmed, actionResults: [])
+        }
+        let parsedReply = (object["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = parsedReply?.isEmpty == false ? parsedReply! : trimmed
+        let rawActions = object["actions"] as? [[String: Any]] ?? []
+        var actionResults: [String] = []
+        for rawAction in rawActions {
+            guard actionResults.count < AiToolEngine.maxActions,
+                  app.activeTabId == sessionIdAtStart,
+                  let tool = rawAction["tool"] as? String,
+                  ["goToPage", "addNote", "addHighlight"].contains(tool),
+                  let args = rawAction["args"] as? [String: Any] else { continue }
+            let action = AiToolAction(
+                tool: tool,
+                args: AiToolArguments(
+                    pageNumber: (args["pageNumber"] as? NSNumber)?.doubleValue,
+                    text: args["text"] as? String,
+                    color: args["color"] as? String,
+                    x: (args["x"] as? NSNumber)?.doubleValue,
+                    y: (args["y"] as? NSNumber)?.doubleValue
+                )
+            )
+            let result = await engine.run(
+                action,
+                sessionIdAtStart: sessionIdAtStart,
+                actionCount: actionResults.count
+            )
+            actionResults.append(result)
+        }
+        return AiProviderResult(reply: reply, actionResults: actionResults)
     }
 }
