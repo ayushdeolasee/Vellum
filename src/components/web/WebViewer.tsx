@@ -3,6 +3,11 @@ import { usePdfStore } from "@/stores/pdf-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { useAiStore } from "@/stores/ai-store";
 import { SelectionPopover } from "@/components/annotations/SelectionPopover";
+import {
+  WebContextMenu,
+  WebNoteComposer,
+  WebNoteViewer,
+} from "@/components/web/WebNotePopovers";
 import * as commands from "@/lib/tauri-commands";
 import type { PositionData } from "@/types";
 import { WifiOff } from "lucide-react";
@@ -13,6 +18,10 @@ const IS_WINDOWS = navigator.userAgent.includes("Windows");
 
 function webProxyUrl(target: string): string {
   const query = `?url=${encodeURIComponent(target)}`;
+  // Test hook: lets browser-based integration tests substitute an HTTP proxy
+  // for the vellum-web custom protocol (which only exists inside Tauri).
+  const devProxy = (window as unknown as Record<string, unknown>).__VELLUM_DEV_PROXY__;
+  if (typeof devProxy === "string") return `${devProxy}${query}`;
   return IS_WINDOWS
     ? `http://vellum-web.localhost/${query}`
     : `vellum-web://localhost/${query}`;
@@ -44,6 +53,59 @@ interface PendingLocate {
 interface CapturedWebPosition {
   pageNumber: number;
   positionData: PositionData;
+}
+
+/** Text-quote anchor for a note placed at a point in the page. */
+interface WebNoteAnchor {
+  start: number;
+  end: number;
+  text: string;
+  prefix: string | null;
+  suffix: string | null;
+  pageNumber: number;
+}
+
+interface NoteComposerState {
+  x: number;
+  y: number;
+  anchor: WebNoteAnchor;
+  openedAt: number;
+}
+
+interface WebContextMenuState {
+  x: number;
+  y: number;
+  anchor: WebNoteAnchor | null;
+  openedAt: number;
+}
+
+interface NoteViewerState {
+  id: string;
+  x: number;
+  y: number;
+  openedAt: number;
+}
+
+function parseNoteAnchor(data: Record<string, unknown>): WebNoteAnchor | null {
+  if (
+    typeof data.start !== "number" ||
+    typeof data.end !== "number" ||
+    typeof data.text !== "string" ||
+    !data.text
+  ) {
+    return null;
+  }
+  return {
+    start: data.start,
+    end: data.end,
+    text: data.text,
+    prefix: typeof data.prefix === "string" ? data.prefix : null,
+    suffix: typeof data.suffix === "string" ? data.suffix : null,
+    pageNumber:
+      typeof data.pageNumber === "number" && data.pageNumber >= 1
+        ? data.pageNumber
+        : 1,
+  };
 }
 
 interface PendingCapture {
@@ -78,6 +140,7 @@ export function WebViewer() {
   const doc = usePdfStore((s) => s.document);
   const activeTabId = usePdfStore((s) => s.activeTabId);
   const zoom = usePdfStore((s) => s.zoom);
+  const mode = usePdfStore((s) => s.mode);
   const annotations = useAnnotationStore((s) => s.annotations);
   const selectedAnnotationId = useAnnotationStore((s) => s.selectedAnnotationId);
 
@@ -89,6 +152,13 @@ export function WebViewer() {
   const [selection, setSelection] = useState<WebSelection | null>(null);
   const [popoverPosition, setPopoverPosition] = useState<{ x: number; y: number } | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Note UI popovers (rendered in the app shell, anchored over the iframe):
+  // composer for new notes, context menu for right-clicks, viewer for
+  // clicking an existing marker.
+  const [noteComposer, setNoteComposer] = useState<NoteComposerState | null>(null);
+  const [webContextMenu, setWebContextMenu] = useState<WebContextMenuState | null>(null);
+  const [noteViewer, setNoteViewer] = useState<NoteViewerState | null>(null);
 
   // The iframe src is set once per mount; link navigation swaps it explicitly.
   const [frameSrc, setFrameSrc] = useState(() =>
@@ -110,6 +180,48 @@ export function WebViewer() {
       window.clearTimeout(archiveTimerRef.current);
       archiveTimerRef.current = null;
     }
+  }, []);
+
+  // Map iframe-viewport coordinates to app-shell coordinates (the iframe is
+  // scaled by the zoom transform).
+  const frameToParent = useCallback((x: number, y: number) => {
+    const rect = iframeRef.current?.getBoundingClientRect();
+    const scale = usePdfStore.getState().zoom;
+    return {
+      x: (rect?.left ?? 0) + x * scale,
+      y: (rect?.top ?? 0) + y * scale,
+    };
+  }, []);
+
+  const closeNotePopovers = useCallback(() => {
+    setNoteComposer(null);
+    setWebContextMenu(null);
+    setNoteViewer(null);
+  }, []);
+
+  const createAnchoredNote = useCallback((anchor: WebNoteAnchor, content: string) => {
+    void useAnnotationStore
+      .getState()
+      .addNote({
+        type: "note",
+        page_number: anchor.pageNumber,
+        content,
+        position_data: {
+          rects: [],
+          page_width: 1,
+          page_height: 1,
+          selected_text: anchor.text,
+          start_offset: anchor.start,
+          end_offset: anchor.end,
+          prefix: anchor.prefix,
+          suffix: anchor.suffix,
+        },
+      })
+      .then((annotation) => {
+        if (annotation) {
+          useAnnotationStore.getState().selectAnnotation(annotation.id);
+        }
+      });
   }, []);
 
   // --- Inbound messages from the content script ---
@@ -147,8 +259,11 @@ export function WebViewer() {
             // The frame navigated (back/forward or a redirect changed the
             // effective URL): rebind the session, then ask the page to
             // report again so the fresh context lands after the App-level
-            // document reset.
+            // document reset. Any open note popovers belong to the outgoing
+            // document — submitting them against the new one would save
+            // wrong-page anchors.
             cancelPendingArchive();
+            closeNotePopovers();
             void store.webNavigated(tabId, reportedUrl).then((rebound) => {
               if (rebound) postToFrame("request-init");
             });
@@ -266,6 +381,69 @@ export function WebViewer() {
         case "selection-cleared": {
           setSelection(null);
           setPopoverPosition(null);
+          // A plain click inside the page doubles as "click outside" for the
+          // note popovers (parent-window clicks can't reach the iframe). The
+          // grace period keeps the event fired by the opening click itself
+          // from instantly dismissing them.
+          const clickOutside = (openedAt: number) => Date.now() - openedAt > 400;
+          setWebContextMenu((cur) => (cur && clickOutside(cur.openedAt) ? null : cur));
+          setNoteViewer((cur) => (cur && clickOutside(cur.openedAt) ? null : cur));
+          setNoteComposer((cur) => (cur && clickOutside(cur.openedAt) ? null : cur));
+          break;
+        }
+
+        case "note-placed": {
+          const anchor = parseNoteAnchor(data);
+          if (!anchor) break;
+          const point = frameToParent(
+            typeof data.x === "number" ? data.x : 0,
+            typeof data.y === "number" ? data.y : 0,
+          );
+          setWebContextMenu(null);
+          setNoteViewer(null);
+          setNoteComposer({
+            x: point.x,
+            y: point.y,
+            anchor,
+            openedAt: Date.now(),
+          });
+          // Mirror the PDF viewer: placing a note returns to view mode.
+          store.setMode("view");
+          break;
+        }
+
+        case "context-menu": {
+          const point = frameToParent(
+            typeof data.x === "number" ? data.x : 0,
+            typeof data.y === "number" ? data.y : 0,
+          );
+          setNoteComposer(null);
+          setNoteViewer(null);
+          setWebContextMenu({
+            x: point.x,
+            y: point.y,
+            anchor: data.found ? parseNoteAnchor(data) : null,
+            openedAt: Date.now(),
+          });
+          break;
+        }
+
+        case "annotation-click": {
+          const id = typeof data.id === "string" ? data.id : null;
+          if (!id) break;
+          useAnnotationStore.getState().selectAnnotation(id);
+          const annotation = useAnnotationStore
+            .getState()
+            .annotations.find((a) => a.id === id);
+          if (annotation?.type === "note") {
+            const point = frameToParent(
+              typeof data.x === "number" ? data.x : 0,
+              typeof data.y === "number" ? data.y : 0,
+            );
+            setNoteComposer(null);
+            setWebContextMenu(null);
+            setNoteViewer({ id, x: point.x, y: point.y, openedAt: Date.now() });
+          }
           break;
         }
 
@@ -277,6 +455,7 @@ export function WebViewer() {
           // against the rebound session.
           cancelPendingArchive();
           clearSelection();
+          closeNotePopovers();
           void store.webNavigated(tabId, url).then((rebound) => {
             if (rebound) {
               pendingNavUrlRef.current = rebound.pdf_path;
@@ -288,9 +467,9 @@ export function WebViewer() {
         }
 
         case "viewport-scrolled": {
-          // The selection popover is positioned in app-shell coordinates from
-          // selection-time rects; scrolling the page underneath invalidates
-          // it (mirrors the PDF viewer's scroll behaviour).
+          // Popovers are positioned in app-shell coordinates from event-time
+          // rects; scrolling the page underneath invalidates them (mirrors
+          // the PDF viewer's scroll behaviour).
           setSelection((current) => {
             if (current) {
               setPopoverPosition(null);
@@ -299,6 +478,13 @@ export function WebViewer() {
             }
             return current;
           });
+          setWebContextMenu(null);
+          setNoteViewer(null);
+          // Keep the composer only if it just opened (the placement click
+          // can nudge scroll on some pages); otherwise typing continues.
+          setNoteComposer((current) =>
+            current && Date.now() - current.openedAt < 400 ? current : null,
+          );
           break;
         }
 
@@ -366,30 +552,48 @@ export function WebViewer() {
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [postToFrame, cancelPendingArchive, clearSelection]);
+  }, [postToFrame, cancelPendingArchive, clearSelection, closeNotePopovers, frameToParent]);
 
-  // --- Push highlight annotations into the frame ---
+  // --- Push highlight + note annotations into the frame ---
   useEffect(() => {
     if (initCount === 0) return;
+    const anchor = (a: (typeof annotations)[number]) => ({
+      id: a.id,
+      color: a.color ?? "#fef08a",
+      start: a.position_data?.start_offset ?? null,
+      end: a.position_data?.end_offset ?? null,
+      text: a.position_data?.selected_text ?? "",
+      prefix: a.position_data?.prefix ?? null,
+      suffix: a.position_data?.suffix ?? null,
+    });
     const highlights = annotations
       .filter((a) => a.type === "highlight" && a.position_data?.selected_text)
-      .map((a) => ({
-        id: a.id,
-        color: a.color ?? "#fef08a",
-        start: a.position_data?.start_offset ?? null,
-        end: a.position_data?.end_offset ?? null,
-        text: a.position_data?.selected_text ?? "",
-        prefix: a.position_data?.prefix ?? null,
-        suffix: a.position_data?.suffix ?? null,
-      }));
-    postToFrame("apply-annotations", { highlights });
+      .map(anchor);
+    const notes = annotations
+      .filter(
+        (a) =>
+          a.type === "note" &&
+          a.position_data?.selected_text &&
+          a.position_data?.start_offset != null,
+      )
+      .map((a) => ({ ...anchor(a), content: a.content ?? "" }));
+    postToFrame("apply-annotations", { highlights, notes });
   }, [annotations, initCount, postToFrame]);
+
+  // --- Keep the frame's interaction mode in sync (note placement) ---
+  useEffect(() => {
+    if (initCount === 0) return;
+    postToFrame("set-mode", { mode });
+  }, [mode, initCount, postToFrame]);
 
   // --- Scroll to an annotation when it is selected in the sidebar ---
   useEffect(() => {
     if (initCount === 0 || !selectedAnnotationId) return;
     const annotation = annotations.find((a) => a.id === selectedAnnotationId);
-    if (annotation?.type === "highlight" && annotation.position_data?.selected_text) {
+    if (
+      (annotation?.type === "highlight" || annotation?.type === "note") &&
+      annotation.position_data?.selected_text
+    ) {
       postToFrame("scroll-to-annotation", { id: selectedAnnotationId });
     } else if (
       annotation?.type === "bookmark" &&
@@ -507,7 +711,9 @@ export function WebViewer() {
       <iframe
         ref={iframeRef}
         src={frameSrc}
-        title={doc.title ?? doc.pdf_path}
+        // aria-label rather than title: a title attribute makes the browser
+        // show a hover tooltip over the entire reading surface.
+        aria-label={doc.title ?? doc.pdf_path}
         className="border-0 bg-white"
         style={{
           width: `${inverse}%`,
@@ -532,6 +738,51 @@ export function WebViewer() {
           selection={selection}
           currentPage={selection.pageNumber}
           onClose={clearSelection}
+        />
+      )}
+
+      {webContextMenu && (
+        <WebContextMenu
+          x={webContextMenu.x}
+          y={webContextMenu.y}
+          canAddNote={webContextMenu.anchor !== null}
+          onAddNote={() => {
+            const menu = webContextMenu;
+            setWebContextMenu(null);
+            if (menu.anchor) {
+              setNoteComposer({
+                x: menu.x,
+                y: menu.y,
+                anchor: menu.anchor,
+                openedAt: Date.now(),
+              });
+            }
+          }}
+          onClose={() => setWebContextMenu(null)}
+        />
+      )}
+
+      {noteComposer && (
+        <WebNoteComposer
+          x={noteComposer.x}
+          y={noteComposer.y}
+          onSubmit={(content) => {
+            createAnchoredNote(noteComposer.anchor, content);
+            setNoteComposer(null);
+          }}
+          onClose={() => setNoteComposer(null)}
+        />
+      )}
+
+      {noteViewer && (
+        <WebNoteViewer
+          // Keyed by annotation so switching markers never carries one
+          // note's edit draft into another.
+          key={noteViewer.id}
+          annotationId={noteViewer.id}
+          x={noteViewer.x}
+          y={noteViewer.y}
+          onClose={() => setNoteViewer(null)}
         />
       )}
     </div>

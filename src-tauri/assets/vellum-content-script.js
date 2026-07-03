@@ -31,7 +31,9 @@
   var pages = []; // [{ number, start(raw), end(raw), normStart, normEnd, text }]
   var pageTops = null; // cached document-Y of each page start
   var overlayRoot = null;
-  var appliedHighlights = []; // [{ id, color, start, end, text }]
+  var appliedHighlights = []; // [{ id, color, start, end, text, prefix, suffix }]
+  var appliedNotes = []; // same anchor shape + { content } for the marker tooltip
+  var noteMode = false;
   var initialized = false;
 
   function post(type, payload) {
@@ -511,6 +513,70 @@
         root.appendChild(div);
       }
     }
+
+    // Sticky-note markers: a small clickable badge at the note's anchor. The
+    // full note UI lives in the app-shell sidebar; clicking a marker selects
+    // the note there. Notes sharing an anchor fan out so none is buried.
+    var seenAnchors = {};
+    for (var ni = 0; ni < appliedNotes.length; ni++) {
+      renderNoteMarker(root, appliedNotes[ni], seenAnchors);
+    }
+  }
+
+  function renderNoteMarker(root, note, seenAnchors) {
+    var resolved = resolveHighlight(note);
+    if (!resolved) return;
+    var anchorKey = String(resolved.start);
+    var duplicateIndex = seenAnchors[anchorKey] || 0;
+    seenAnchors[anchorKey] = duplicateIndex + 1;
+    var range = rangeFromRaw(resolved.start, Math.min(resolved.start + 1, resolved.end));
+    if (!range) return;
+    var rect = range.getBoundingClientRect();
+    if (!isFinite(rect.top) || (rect.width === 0 && rect.height === 0 && rect.top === 0)) {
+      return;
+    }
+
+    var marker = document.createElement("div");
+    marker.setAttribute("data-vellum-note", note.id);
+    marker.style.cssText =
+      "position:absolute;pointer-events:auto;cursor:pointer;width:18px;height:18px;" +
+      "border-radius:4px 4px 4px 1px;background:#fbbf24;border:1px solid #b4530999;" +
+      "box-shadow:0 1px 3px rgba(0,0,0,0.25);display:flex;align-items:center;" +
+      "justify-content:center;font-size:11px;line-height:1;user-select:none;";
+    marker.textContent = "✎"; // pencil
+    // Sit in the margin just left of the anchored text when there's room;
+    // when the text touches the edge, float just above the line instead of
+    // covering the words. Duplicate anchors fan out downward.
+    var left = rect.left + window.scrollX - 24;
+    var top = rect.top + window.scrollY + Math.max(0, (rect.height - 18) / 2);
+    if (left < 2) {
+      left = Math.max(2, rect.left + window.scrollX - 2);
+      top = rect.top + window.scrollY - 20;
+      if (top < 2) top = rect.top + window.scrollY + rect.height + 2;
+    }
+    top += duplicateIndex * 22;
+    marker.style.left = left + "px";
+    marker.style.top = top + "px";
+    if (note.content) {
+      marker.title = String(note.content).slice(0, 200);
+    }
+    marker.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    marker.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      // Viewport coords of the marker so the app shell can anchor the note
+      // viewer popover next to it.
+      var box = marker.getBoundingClientRect();
+      post("annotation-click", {
+        id: note.id,
+        x: box.left + box.width / 2,
+        y: box.top,
+      });
+    });
+    root.appendChild(marker);
   }
 
   var relayout = debounce(function () {
@@ -650,6 +716,87 @@
   );
 
   // ------------------------------------------------------------------
+  // Sticky-note placement (note mode click / right-click menu): anchor a
+  // note to the text under the pointer
+  // ------------------------------------------------------------------
+
+  // Text-quote anchor for the caret at/near a viewport point, or null when
+  // no anchorable text is nearby. Probes around the point so clicks in gaps
+  // (image margins, padding) still anchor.
+  function noteAnchorAtPoint(clientX, clientY) {
+    if (rawText.length === 0) return null;
+    var offset = null;
+    var probes = [
+      [clientX, clientY],
+      [clientX - 40, clientY],
+      [clientX + 40, clientY],
+      [clientX, clientY - 20],
+      [clientX, clientY + 20],
+    ];
+    for (var i = 0; i < probes.length && offset === null; i++) {
+      offset = rawOffsetAtPoint(probes[i][0], probes[i][1]);
+    }
+    if (offset === null) return null;
+
+    var start = Math.max(0, Math.min(offset, rawText.length - 1));
+    while (start < rawText.length && isSpaceCode(rawText.charCodeAt(start))) start++;
+    if (start >= rawText.length) start = Math.max(0, rawText.length - 1);
+    // Snap back to the start of the word so the anchored quote doesn't begin
+    // mid-word ("ent on a hike..." instead of "went on a hike...").
+    while (start > 0 && !isSpaceCode(rawText.charCodeAt(start - 1))) start--;
+    var end = Math.min(rawText.length, start + 80);
+    // Finish the trailing word too (capped) so the quote ends cleanly.
+    var endCap = Math.min(rawText.length, start + 100);
+    while (end < endCap && !isSpaceCode(rawText.charCodeAt(end))) end++;
+    var snippet = collapseWs(rawText.slice(start, end)).trim();
+    if (!snippet) return null;
+
+    var ctx = quoteContext(start, end);
+    return {
+      start: start,
+      end: end,
+      text: snippet,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      pageNumber: pageForRaw(start),
+    };
+  }
+
+  document.addEventListener(
+    "click",
+    function (e) {
+      if (!noteMode) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
+      if (!anchor) return; // stay in note mode
+      anchor.x = e.clientX;
+      anchor.y = e.clientY;
+      post("note-placed", anchor);
+    },
+    true
+  );
+
+  // Right-click: replace the native menu with the app shell's context menu
+  // (mirrors the PDF viewer's "Add note here").
+  document.addEventListener(
+    "contextmenu",
+    function (e) {
+      var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
+      e.preventDefault();
+      var payload = { x: e.clientX, y: e.clientY, found: !!anchor };
+      if (anchor) {
+        for (var k in anchor) payload[k] = anchor[k];
+        payload.x = e.clientX;
+        payload.y = e.clientY;
+      }
+      post("context-menu", payload);
+    },
+    true
+  );
+
+  // ------------------------------------------------------------------
   // Link interception — keep navigation inside the proxy
   // ------------------------------------------------------------------
 
@@ -657,6 +804,7 @@
     "click",
     function (e) {
       if (e.defaultPrevented) return;
+      if (noteMode) return; // note placement owns clicks in note mode
       var target = e.target;
       if (!target || !target.closest) return;
       var link = target.closest("a[href]");
@@ -737,15 +885,30 @@
 
       case "apply-annotations":
         appliedHighlights = Array.isArray(d.highlights) ? d.highlights : [];
+        appliedNotes = Array.isArray(d.notes) ? d.notes : [];
         renderHighlights();
         break;
 
+      case "set-mode": {
+        noteMode = d.mode === "note";
+        try {
+          document.documentElement.style.cursor = noteMode ? "crosshair" : "";
+        } catch (err) {
+          /* ignore */
+        }
+        break;
+      }
+
       case "scroll-to-annotation": {
         var match = null;
-        for (var i = 0; i < appliedHighlights.length; i++) {
-          if (appliedHighlights[i].id === d.id) {
-            match = resolveHighlight(appliedHighlights[i]);
-            break;
+        var annotationLists = [appliedHighlights, appliedNotes];
+        for (var li = 0; li < annotationLists.length && !match; li++) {
+          var list = annotationLists[li];
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].id === d.id) {
+              match = resolveHighlight(list[i]);
+              break;
+            }
           }
         }
         if (match) {

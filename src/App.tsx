@@ -135,8 +135,7 @@ export default function App() {
       !(e.target instanceof HTMLTextAreaElement)
     ) {
       const { document: d, mode, setMode } = usePdfStore.getState();
-      // Click-to-place notes are PDF-only; web notes attach to selections.
-      if (d && d.kind !== "web") {
+      if (d) {
         e.preventDefault();
         setMode(mode === "note" ? "view" : "note");
       }

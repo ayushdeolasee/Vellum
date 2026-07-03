@@ -513,16 +513,18 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
             <Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} />
           </IconButton>
 
-          {/* Sticky Note tool (PDF only — web notes attach to selections) */}
-          {!isWeb && (
-            <IconButton
-              variant={mode === "note" ? "active" : "ghost"}
-              onClick={() => setMode(mode === "note" ? "view" : "note")}
-              title="Sticky note tool (N) — click on the page to place a note"
-            >
-              <StickyNote size={16} />
-            </IconButton>
-          )}
+          {/* Sticky Note tool */}
+          <IconButton
+            variant={mode === "note" ? "active" : "ghost"}
+            onClick={() => setMode(mode === "note" ? "view" : "note")}
+            title={
+              isWeb
+                ? "Sticky note tool (N) — click in the page to attach a note to the text there"
+                : "Sticky note tool (N) — click on the page to place a note"
+            }
+          >
+            <StickyNote size={16} />
+          </IconButton>
 
           {/* Save webpage to library */}
           {isWeb && (
