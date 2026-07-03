@@ -345,6 +345,13 @@ export function WebViewer() {
               end: data.visibleEnd,
             });
           }
+          if (Array.isArray(data.visibleBookmarks)) {
+            store.setWebVisibleBookmarks(
+              (data.visibleBookmarks as unknown[]).filter(
+                (id): id is string => typeof id === "string",
+              ),
+            );
+          }
           break;
         }
 
@@ -577,7 +584,17 @@ export function WebViewer() {
           a.position_data?.start_offset != null,
       )
       .map((a) => ({ ...anchor(a), content: a.content ?? "" }));
-    postToFrame("apply-annotations", { highlights, notes });
+    // Point bookmarks go along too so the content script can re-anchor them
+    // and report which are on screen (drives the toolbar bookmark state).
+    const bookmarks = annotations
+      .filter(
+        (a) =>
+          a.type === "bookmark" &&
+          a.position_data?.selected_text &&
+          a.position_data?.start_offset != null,
+      )
+      .map(anchor);
+    postToFrame("apply-annotations", { highlights, notes, bookmarks });
   }, [annotations, initCount, postToFrame]);
 
   // --- Keep the frame's interaction mode in sync (note placement) ---

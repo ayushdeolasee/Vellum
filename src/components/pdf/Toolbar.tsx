@@ -15,11 +15,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Save,
+  Archive,
   Bookmark,
-  BookmarkPlus,
   StickyNote,
   Download,
-  FileDown,
+  Share,
   LoaderCircle,
   RefreshCw,
   PanelRight,
@@ -56,7 +56,7 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
   } = usePdfStore();
 
   const { annotations, toggleBookmark } = useAnnotationStore();
-  const webVisibleRange = usePdfStore((s) => s.webVisibleRange);
+  const webVisibleBookmarks = usePdfStore((s) => s.webVisibleBookmarks);
   const isWeb = doc?.kind === "web";
 
   // "Add webpage" URL prompt (also opened via Cmd/Ctrl+L)
@@ -173,7 +173,7 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
     annotations,
     doc?.kind,
     currentPage,
-    webVisibleRange,
+    webVisibleBookmarks,
   );
   const isBookmarked = !!currentBookmark;
 
@@ -526,22 +526,30 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
             <StickyNote size={16} />
           </IconButton>
 
-          {/* Save webpage to library */}
+          {/* Page actions (save/export) — separated from the annotation
+              tools so the cluster doesn't read as one row of lookalikes. */}
+          {isWeb && <Divider />}
+
+          {/* Save webpage to library. Deliberately NOT a bookmark glyph
+              (the spot-bookmark button owns that shape), and the saved
+              state tints the icon like the bookmark's gold — a filled
+              "active" background would swallow the glyph entirely. */}
           {isWeb && (
             <IconButton
               onClick={() => void handleToggleSavedPage()}
-              className={cn(pageSaved && "text-gold hover:text-gold")}
+              className={cn(pageSaved && "text-primary hover:text-primary")}
               title={
                 pageSaved
-                  ? "Remove from saved pages"
+                  ? "Saved to library — click to remove"
                   : "Save page to library (keeps an offline snapshot)"
               }
             >
-              <BookmarkPlus size={16} fill={pageSaved ? "currentColor" : "none"} />
+              <Archive size={16} />
             </IconButton>
           )}
 
-          {/* Export portable .vellumweb archive */}
+          {/* Export portable .vellumweb archive (share-style glyph so it
+              doesn't read as yet another file/page icon) */}
           {isWeb && (
             <IconButton
               onClick={() => void handleExportVellumweb()}
@@ -559,7 +567,7 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
               {exportState.status === "exporting" ? (
                 <LoaderCircle size={16} className="animate-spin" />
               ) : (
-                <FileDown size={16} />
+                <Share size={16} />
               )}
             </IconButton>
           )}

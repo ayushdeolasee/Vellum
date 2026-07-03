@@ -22,6 +22,9 @@ interface PdfState {
   visiblePages: number[];
   /** Raw text-offset span currently on screen (web documents only). */
   webVisibleRange: { start: number; end: number } | null;
+  /** Ids of point bookmarks currently on screen (re-anchored by the content
+   *  script, so valid across restarts and page reflows). */
+  webVisibleBookmarks: string[];
 
   // Active interaction mode
   mode: InteractionMode;
@@ -44,6 +47,7 @@ interface PdfState {
   zoomOut: () => void;
   setVisiblePages: (pages: number[]) => void;
   setWebVisibleRange: (range: { start: number; end: number } | null) => void;
+  setWebVisibleBookmarks: (ids: string[]) => void;
   goToPage: (page: number) => void;
   setMode: (mode: InteractionMode) => void;
 }
@@ -60,6 +64,7 @@ const EMPTY_ACTIVE_STATE = {
   zoom: 1.0,
   visiblePages: [] as number[],
   webVisibleRange: null as { start: number; end: number } | null,
+  webVisibleBookmarks: [] as string[],
   mode: "view" as InteractionMode,
 };
 
@@ -72,6 +77,7 @@ function activeStateFromTab(tab: PdfTab) {
     zoom: tab.zoom,
     visiblePages: tab.visiblePages,
     webVisibleRange: tab.webVisibleRange,
+    webVisibleBookmarks: tab.webVisibleBookmarks,
     mode: tab.mode,
   };
 }
@@ -107,6 +113,7 @@ export const usePdfStore = create<PdfState>((set, get) => {
       zoom: 1.0,
       visiblePages: [],
       webVisibleRange: null,
+      webVisibleBookmarks: [],
       mode: "view",
     };
 
@@ -201,6 +208,7 @@ export const usePdfStore = create<PdfState>((set, get) => {
                   numPages: doc.page_count ?? 0,
                   visiblePages: [],
                   webVisibleRange: null,
+                  webVisibleBookmarks: [],
                 }
               : candidate,
           ),
@@ -211,6 +219,7 @@ export const usePdfStore = create<PdfState>((set, get) => {
                 numPages: doc.page_count ?? 0,
                 visiblePages: [] as number[],
                 webVisibleRange: null,
+                webVisibleBookmarks: [] as string[],
               }
             : {}),
         }));
@@ -362,6 +371,18 @@ export const usePdfStore = create<PdfState>((set, get) => {
       }
       set({ webVisibleRange: range });
       updateActiveTab({ webVisibleRange: range });
+    },
+
+    setWebVisibleBookmarks: (ids: string[]) => {
+      const prev = get().webVisibleBookmarks;
+      if (
+        prev.length === ids.length &&
+        prev.every((id, index) => id === ids[index])
+      ) {
+        return;
+      }
+      set({ webVisibleBookmarks: ids });
+      updateActiveTab({ webVisibleBookmarks: ids });
     },
 
     goToPage: (page: number) => {

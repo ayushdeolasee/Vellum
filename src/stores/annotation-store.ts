@@ -19,14 +19,18 @@ export function findCurrentBookmark(
   annotations: Annotation[],
   docKind: DocumentKind | undefined,
   currentPage: number,
-  webVisibleRange: { start: number; end: number } | null,
+  webVisibleBookmarks: string[],
 ): Annotation | undefined {
   return annotations.find((a) => {
     if (a.type !== "bookmark") return false;
     const start = a.position_data?.start_offset;
     if (docKind === "web" && start != null) {
-      if (!webVisibleRange) return false;
-      return start >= webVisibleRange.start && start < webVisibleRange.end;
+      // The content script re-anchors each bookmark against the live DOM and
+      // reports the ones actually on screen. Stored offsets come from the
+      // session that created them, so comparing them to the current visible
+      // text span drifts after restarts — and a span covers whole virtual
+      // pages, which lit the star for an entire short article.
+      return webVisibleBookmarks.includes(a.id);
     }
     return a.page_number === currentPage;
   });
@@ -157,7 +161,7 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
       get().annotations,
       doc.kind,
       pdfState.currentPage,
-      pdfState.webVisibleRange,
+      pdfState.webVisibleBookmarks,
     );
     if (existing) {
       await get().deleteAnnotation(existing.id);

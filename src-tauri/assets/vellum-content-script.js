@@ -33,6 +33,10 @@
   var overlayRoot = null;
   var appliedHighlights = []; // [{ id, color, start, end, text, prefix, suffix }]
   var appliedNotes = []; // same anchor shape + { content } for the marker tooltip
+  // Point bookmarks: same anchor shape. Re-resolved against the current DOM
+  // so the "bookmarked here?" toolbar state survives restarts and reflows.
+  var appliedBookmarks = [];
+  var resolvedBookmarks = []; // [{ id, start }] after re-anchoring
   var noteMode = false;
   var initialized = false;
 
@@ -482,9 +486,20 @@
     };
   }
 
+  function resolveBookmarks() {
+    resolvedBookmarks = [];
+    for (var i = 0; i < appliedBookmarks.length; i++) {
+      var resolved = resolveHighlight(appliedBookmarks[i]);
+      if (resolved) {
+        resolvedBookmarks.push({ id: appliedBookmarks[i].id, start: resolved.start });
+      }
+    }
+  }
+
   function renderHighlights() {
     var root = ensureOverlayRoot();
     while (root.firstChild) root.removeChild(root.firstChild);
+    resolveBookmarks();
 
     for (var i = 0; i < appliedHighlights.length; i++) {
       var h = appliedHighlights[i];
@@ -605,7 +620,7 @@
     }
   }
 
-  var lastReported = { current: 0, visible: "" };
+  var lastReported = { current: 0, visible: "", bookmarks: "" };
 
   function reportScroll(force) {
     if (pages.length === 0) return;
@@ -624,11 +639,36 @@
     }
     if (visible.length === 0) visible = [current];
 
+    // Point bookmarks actually on screen right now: check each re-anchored
+    // bookmark's rendered position against the viewport. This is precise to
+    // the visible text (a virtual-page span would light the toolbar star for
+    // an entire ~3600-char page — or the whole document on short articles).
+    var visibleBookmarks = [];
+    for (var bi = 0; bi < resolvedBookmarks.length; bi++) {
+      var bookmarkRange = rangeFromRaw(
+        resolvedBookmarks[bi].start,
+        resolvedBookmarks[bi].start + 1
+      );
+      if (!bookmarkRange) continue;
+      var bookmarkRect = bookmarkRange.getBoundingClientRect();
+      if (bookmarkRect.bottom > 0 && bookmarkRect.top < window.innerHeight) {
+        visibleBookmarks.push(resolvedBookmarks[bi].id);
+      }
+    }
+    var bookmarksKey = visibleBookmarks.join(",");
+
     var visibleKey = visible.join(",");
-    if (!force && current === lastReported.current && visibleKey === lastReported.visible) return;
-    lastReported = { current: current, visible: visibleKey };
-    // Raw-offset span of the visible virtual pages, so the app shell can tell
-    // whether a point bookmark is currently on screen.
+    if (
+      !force &&
+      current === lastReported.current &&
+      visibleKey === lastReported.visible &&
+      bookmarksKey === lastReported.bookmarks
+    ) {
+      return;
+    }
+    lastReported = { current: current, visible: visibleKey, bookmarks: bookmarksKey };
+    // Raw-offset span of the visible virtual pages (legacy fallback for the
+    // app shell when visibleBookmarks is absent).
     var firstPage = pages[visible[0] - 1];
     var lastPage = pages[visible[visible.length - 1] - 1];
     post("scroll", {
@@ -636,6 +676,7 @@
       visiblePages: visible,
       visibleStart: firstPage ? firstPage.start : 0,
       visibleEnd: lastPage ? lastPage.end : 0,
+      visibleBookmarks: visibleBookmarks,
     });
   }
 
@@ -886,7 +927,10 @@
       case "apply-annotations":
         appliedHighlights = Array.isArray(d.highlights) ? d.highlights : [];
         appliedNotes = Array.isArray(d.notes) ? d.notes : [];
+        appliedBookmarks = Array.isArray(d.bookmarks) ? d.bookmarks : [];
         renderHighlights();
+        // Bookmark visibility may have changed with the new set.
+        reportScroll(true);
         break;
 
       case "set-mode": {

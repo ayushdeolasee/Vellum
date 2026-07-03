@@ -88,6 +88,9 @@ export interface PdfTab {
   visiblePages: number[];
   /** Raw text-offset span currently on screen (web documents only). */
   webVisibleRange: { start: number; end: number } | null;
+  /** Ids of point bookmarks whose re-anchored position is on screen right
+   *  now (web documents only; reported by the content script). */
+  webVisibleBookmarks: string[];
   mode: "view" | "note";
 }
 

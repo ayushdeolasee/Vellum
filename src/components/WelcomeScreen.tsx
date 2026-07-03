@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookmarkCheck, Clock, FileText, FolderOpen, Globe, X } from "lucide-react";
+import { Archive, Clock, FileText, FolderOpen, Globe, X } from "lucide-react";
 import {
   getPdfFileName,
   getRecentPdfs,
@@ -132,7 +132,7 @@ export function WelcomeScreen() {
         {savedPages.length > 0 && (
           <section className="mt-12 w-full">
             <h2 className="mb-2 flex items-center gap-1.5 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <BookmarkCheck size={13} />
+              <Archive size={13} />
               Saved pages
             </h2>
             <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-soft">
