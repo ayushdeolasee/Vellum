@@ -6,6 +6,8 @@ import type {
   CreateAnnotationInput,
   DocumentInfo,
   UpdateAnnotationInput,
+  VellumwebExportSummary,
+  WebLibraryEntry,
 } from "@/types";
 
 interface CodexAiImageInput {
@@ -18,6 +20,64 @@ export async function openFile(
   sessionId: string,
 ): Promise<DocumentInfo> {
   return invoke<DocumentInfo>("open_file", { path, sessionId });
+}
+
+export async function openWebDocument(
+  url: string,
+  sessionId: string,
+): Promise<DocumentInfo> {
+  return invoke<DocumentInfo>("open_web_document", { url, sessionId });
+}
+
+export async function setWebpageSaved(
+  sessionId: string,
+  saved: boolean,
+): Promise<void> {
+  return invoke("set_webpage_saved", { sessionId, saved });
+}
+
+export async function getWebpageSaved(sessionId: string): Promise<boolean> {
+  return invoke<boolean>("get_webpage_saved", { sessionId });
+}
+
+export async function listSavedWebpages(): Promise<WebLibraryEntry[]> {
+  return invoke<WebLibraryEntry[]>("list_saved_webpages");
+}
+
+export async function removeSavedWebpage(url: string): Promise<void> {
+  return invoke("remove_saved_webpage", { url });
+}
+
+export async function exportVellumweb(
+  sessionId: string,
+  destPath: string,
+  pages: Array<{ number: number; text: string }>,
+): Promise<VellumwebExportSummary> {
+  return invoke<VellumwebExportSummary>("export_vellumweb", {
+    sessionId,
+    destPath,
+    pages,
+  });
+}
+
+export async function openVellumwebFile(
+  path: string,
+  sessionId: string,
+): Promise<DocumentInfo> {
+  return invoke<DocumentInfo>("open_vellumweb_file", { path, sessionId });
+}
+
+/** Auto-archive an opened webpage into the managed library as .vellumweb. */
+export async function archiveWebpageDefault(
+  sessionId: string,
+  pages: Array<{ number: number; text: string }>,
+  expectedUrl: string,
+): Promise<boolean> {
+  return invoke<boolean>("archive_webpage_default", {
+    sessionId,
+    pages,
+    expectedUrl,
+  });
 }
 
 export async function saveFile(sessionId: string): Promise<void> {

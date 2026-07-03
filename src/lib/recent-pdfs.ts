@@ -1,7 +1,9 @@
-import type { DocumentInfo } from "@/types";
+import type { DocumentInfo, DocumentKind } from "@/types";
 
 export interface RecentPdf {
+  /** File path for PDFs, normalized URL for webpages. */
   pdf_path: string;
+  kind: DocumentKind;
   title: string | null;
   page_count: number | null;
   opened_at: string;
@@ -27,6 +29,7 @@ export function getRecentPdfs(): RecentPdf[] {
 export function recordRecentPdf(document: DocumentInfo): void {
   const recentPdf: RecentPdf = {
     pdf_path: document.pdf_path,
+    kind: document.kind ?? "pdf",
     title: document.title,
     page_count: document.page_count,
     opened_at: new Date().toISOString(),
@@ -49,16 +52,36 @@ export function getPdfFileName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+/** Compact display label for a webpage URL, e.g. "example.com/post". */
+export function getWebpageDisplayName(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "");
+    return `${parsed.hostname}${path}`;
+  } catch {
+    return url;
+  }
+}
+
 function isRecentPdf(value: unknown): value is RecentPdf {
   if (typeof value !== "object" || value === null) return false;
 
-  const pdf = value as Partial<RecentPdf>;
-  return (
-    typeof pdf.pdf_path === "string" &&
-    (typeof pdf.title === "string" || pdf.title === null) &&
-    (typeof pdf.page_count === "number" || pdf.page_count === null) &&
-    typeof pdf.opened_at === "string"
-  );
+  const pdf = value as Partial<RecentPdf> & { kind?: unknown };
+  if (
+    typeof pdf.pdf_path !== "string" ||
+    !(typeof pdf.title === "string" || pdf.title === null) ||
+    !(typeof pdf.page_count === "number" || pdf.page_count === null) ||
+    typeof pdf.opened_at !== "string"
+  ) {
+    return false;
+  }
+
+  // Entries written before webpage support have no kind; treat them as PDFs.
+  if (pdf.kind === undefined) {
+    (pdf as RecentPdf).kind = "pdf";
+    return true;
+  }
+  return pdf.kind === "pdf" || pdf.kind === "web";
 }
 
 function writeRecentPdfs(recentPdfs: RecentPdf[]): void {

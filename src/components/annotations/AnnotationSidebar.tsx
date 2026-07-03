@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
-import type { Annotation, AnnotationType } from "@/types";
+import type { Annotation, AnnotationType, PositionData } from "@/types";
 import { cn } from "@/lib/utils";
 import {
   Highlighter,
@@ -60,10 +60,24 @@ export function AnnotationSidebar() {
 
   const handleClick = (annotation: Annotation) => {
     selectAnnotation(annotation.id);
+    // Web annotations anchored to a text position scroll to that exact spot;
+    // everything else jumps to the page.
+    const globals = window as unknown as Record<string, unknown>;
+    const scrollToWebPosition = globals.__scrollToWebPosition as
+      | ((pd: PositionData, page?: number) => boolean)
+      | undefined;
+    if (
+      scrollToWebPosition &&
+      annotation.position_data?.start_offset != null &&
+      annotation.type !== "highlight" &&
+      scrollToWebPosition(annotation.position_data, annotation.page_number)
+    ) {
+      return;
+    }
     goToPage(annotation.page_number);
-    // Scroll to page
-    const scrollToPage = (window as unknown as Record<string, unknown>)
-      .__scrollToPage as ((page: number) => void) | undefined;
+    const scrollToPage = globals.__scrollToPage as
+      | ((page: number) => void)
+      | undefined;
     scrollToPage?.(annotation.page_number);
   };
 

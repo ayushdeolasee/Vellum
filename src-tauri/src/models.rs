@@ -32,6 +32,17 @@ pub struct PositionData {
     pub selected_text: Option<String>,
     pub start_offset: Option<u32>,
     pub end_offset: Option<u32>,
+    /// Text-quote anchor context for webpage annotations (normalized text,
+    /// ~32 chars each side). None for PDF annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    /// How far below the viewport top (CSS px) the anchor text sat when a
+    /// webpage point bookmark was captured; restoring scrolls the anchor back
+    /// to that offset. None for PDF annotations and text selections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_offset: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

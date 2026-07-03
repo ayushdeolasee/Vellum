@@ -7,7 +7,7 @@ import { locateTextOnPage } from "@/lib/highlight-locator";
 import * as commands from "@/lib/tauri-commands";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { usePdfStore } from "@/stores/pdf-store";
-import type { Annotation, DocumentInfo } from "@/types";
+import type { Annotation, DocumentInfo, PositionData } from "@/types";
 
 type AiRole = "user" | "assistant";
 type AiProvider = "gemini" | "openai" | "codex";
@@ -592,20 +592,49 @@ async function executeToolAction(action: ToolAction): Promise<string> {
     if (!query) return "Skipped addHighlight: no text provided to locate.";
     const color = sanitizeColor(action.args.color, "#fef08a");
 
-    // Resolve the highlight geometry from the actual page text instead of
+    // Resolve the highlight anchor from the actual page text instead of
     // trusting model-supplied coordinates, which land on arbitrary positions.
-    const positionData = await locateTextOnPage(pageNumber, query);
-    if (!positionData || positionData.rects.length === 0) {
+    // Webpages anchor by text offsets (resolved inside the page's content
+    // script); PDFs anchor by on-page geometry.
+    const isWebDocument = usePdfStore.getState().document?.kind === "web";
+    let positionData: PositionData | null;
+    // The web locator may find the text on a different virtual page than the
+    // model guessed; file the annotation under the real one.
+    let resolvedPage = pageNumber;
+    if (isWebDocument) {
+      const locateWebText = (window as unknown as Record<string, unknown>)
+        .__locateWebText as
+        | ((
+            page: number,
+            text: string,
+          ) => Promise<{ positionData: PositionData; pageNumber: number } | null>)
+        | undefined;
+      const located = locateWebText
+        ? await locateWebText(pageNumber, query)
+        : null;
+      positionData = located
+        ? { ...located.positionData, selected_text: query }
+        : null;
+      if (located && located.pageNumber >= 1) {
+        resolvedPage = clampPage(located.pageNumber);
+      }
+    } else {
+      positionData = await locateTextOnPage(pageNumber, query);
+    }
+    if (
+      !positionData ||
+      (!isWebDocument && positionData.rects.length === 0)
+    ) {
       return `Skipped addHighlight: couldn't find "${query}" on page ${pageNumber}.`;
     }
 
     await useAnnotationStore.getState().addHighlight({
       type: "highlight",
-      page_number: pageNumber,
+      page_number: resolvedPage,
       color,
       position_data: positionData,
     });
-    return `Highlighted "${query}" on page ${pageNumber}.`;
+    return `Highlighted "${query}" on page ${resolvedPage}.`;
   }
 
   // Unknown tools are filtered out before this point; this guards against a

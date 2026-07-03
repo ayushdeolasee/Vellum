@@ -20,6 +20,8 @@ interface PdfState {
   numPages: number;
   zoom: number;
   visiblePages: number[];
+  /** Raw text-offset span currently on screen (web documents only). */
+  webVisibleRange: { start: number; end: number } | null;
 
   // Active interaction mode
   mode: InteractionMode;
@@ -27,6 +29,11 @@ interface PdfState {
   // Actions
   openFile: (path: string) => Promise<void>;
   openFiles: (paths: string[]) => Promise<void>;
+  openUrl: (url: string) => Promise<void>;
+  /** Rebind a webpage tab to a new URL (in-tab link navigation). */
+  webNavigated: (tabId: string, url: string) => Promise<DocumentInfo | null>;
+  /** Update a tab's document title (reported by the webpage content script). */
+  updateDocumentTitle: (tabId: string, title: string) => void;
   closeFile: () => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   activateTab: (tabId: string) => void;
@@ -36,6 +43,7 @@ interface PdfState {
   zoomIn: () => void;
   zoomOut: () => void;
   setVisiblePages: (pages: number[]) => void;
+  setWebVisibleRange: (range: { start: number; end: number } | null) => void;
   goToPage: (page: number) => void;
   setMode: (mode: InteractionMode) => void;
 }
@@ -51,6 +59,7 @@ const EMPTY_ACTIVE_STATE = {
   numPages: 0,
   zoom: 1.0,
   visiblePages: [] as number[],
+  webVisibleRange: null as { start: number; end: number } | null,
   mode: "view" as InteractionMode,
 };
 
@@ -62,6 +71,7 @@ function activeStateFromTab(tab: PdfTab) {
     numPages: tab.numPages,
     zoom: tab.zoom,
     visiblePages: tab.visiblePages,
+    webVisibleRange: tab.webVisibleRange,
     mode: tab.mode,
   };
 }
@@ -77,9 +87,7 @@ export const usePdfStore = create<PdfState>((set, get) => {
     }));
   };
 
-  const openOneFile = async (path: string) => {
-    const sessionId = crypto.randomUUID();
-    const doc = await commands.openFile(path, sessionId);
+  const adoptOpenedDocument = async (doc: DocumentInfo, sessionId: string) => {
     recordRecentPdf(doc);
     const existing = get().tabs.find(
       (tab) => tab.document.pdf_path === doc.pdf_path,
@@ -98,6 +106,7 @@ export const usePdfStore = create<PdfState>((set, get) => {
       numPages: doc.page_count ?? 0,
       zoom: 1.0,
       visiblePages: [],
+      webVisibleRange: null,
       mode: "view",
     };
 
@@ -105,6 +114,28 @@ export const usePdfStore = create<PdfState>((set, get) => {
       tabs: [...state.tabs, tab],
       ...activeStateFromTab(tab),
     }));
+  };
+
+  const openOneFile = async (path: string) => {
+    const sessionId = crypto.randomUUID();
+    // .vellumweb archives import as web documents; everything else is a PDF.
+    const isArchive = path.toLowerCase().endsWith(".vellumweb");
+    const doc = isArchive
+      ? await commands.openVellumwebFile(path, sessionId)
+      : await commands.openFile(path, sessionId);
+    await adoptOpenedDocument(doc, sessionId);
+    if (isArchive) {
+      // The import may have merged annotations into a tab that is already
+      // open and active, in which case no document change fires — nudge the
+      // annotation store to reload.
+      window.dispatchEvent(new CustomEvent("vellum:annotations-updated"));
+    }
+  };
+
+  const openOneUrl = async (url: string) => {
+    const sessionId = crypto.randomUUID();
+    const doc = await commands.openWebDocument(url, sessionId);
+    await adoptOpenedDocument(doc, sessionId);
   };
 
   return {
@@ -139,6 +170,70 @@ export const usePdfStore = create<PdfState>((set, get) => {
       set({
         isLoading: false,
         error: errors.length > 0 ? errors.join("\n") : null,
+      });
+    },
+
+    openUrl: async (url: string) => {
+      set({ isLoading: true, error: null });
+      try {
+        await openOneUrl(url);
+        set({ isLoading: false });
+      } catch (e) {
+        set({ isLoading: false, error: String(e) });
+      }
+    },
+
+    webNavigated: async (tabId: string, url: string) => {
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      if (!tab || tab.document.kind !== "web") return null;
+      try {
+        // Reuse the session id: the Rust side rebinds the session to the new
+        // URL, so annotation commands keep working against the same tab.
+        const doc = await commands.openWebDocument(url, tabId);
+        recordRecentPdf(doc);
+        set((state) => ({
+          tabs: state.tabs.map((candidate) =>
+            candidate.id === tabId
+              ? {
+                  ...candidate,
+                  document: doc,
+                  currentPage: doc.last_page ?? 1,
+                  numPages: doc.page_count ?? 0,
+                  visiblePages: [],
+                  webVisibleRange: null,
+                }
+              : candidate,
+          ),
+          ...(state.activeTabId === tabId
+            ? {
+                document: doc,
+                currentPage: doc.last_page ?? 1,
+                numPages: doc.page_count ?? 0,
+                visiblePages: [] as number[],
+                webVisibleRange: null,
+              }
+            : {}),
+        }));
+        return doc;
+      } catch (e) {
+        set({ error: String(e) });
+        return null;
+      }
+    },
+
+    updateDocumentTitle: (tabId: string, title: string) => {
+      const trimmed = title.trim();
+      if (!trimmed) return;
+      set((state) => {
+        const tab = state.tabs.find((candidate) => candidate.id === tabId);
+        if (!tab || tab.document.title === trimmed) return state;
+        const document = { ...tab.document, title: trimmed };
+        return {
+          tabs: state.tabs.map((candidate) =>
+            candidate.id === tabId ? { ...candidate, document } : candidate,
+          ),
+          ...(state.activeTabId === tabId ? { document } : {}),
+        };
       });
     },
 
@@ -257,8 +352,23 @@ export const usePdfStore = create<PdfState>((set, get) => {
       updateActiveTab({ visiblePages: pages });
     },
 
+    setWebVisibleRange: (range) => {
+      const prev = get().webVisibleRange;
+      if (
+        prev === range ||
+        (prev && range && prev.start === range.start && prev.end === range.end)
+      ) {
+        return;
+      }
+      set({ webVisibleRange: range });
+      updateActiveTab({ webVisibleRange: range });
+    },
+
     goToPage: (page: number) => {
       const { numPages } = get();
+      // Before the document reports its page count, clamping would produce
+      // page 0 — ignore navigation until pages exist.
+      if (numPages < 1) return;
       const clamped = Math.min(numPages, Math.max(1, page));
       get().setCurrentPage(clamped);
       const scrollToPage = (window as unknown as Record<string, unknown>)

@@ -1,24 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { usePdfStore } from "@/stores/pdf-store";
+import { useAiStore } from "@/stores/ai-store";
 import type { AppUpdate, AppUpdateDownloadEvent } from "@/lib/app-updates";
 import { checkForAppUpdate, relaunchForUpdate } from "@/lib/app-updates";
 import * as commands from "@/lib/tauri-commands";
 import {
   FolderOpen,
+  Globe,
   ZoomIn,
   ZoomOut,
+  ArrowLeft,
+  ArrowRight,
   ChevronLeft,
   ChevronRight,
   Save,
   Bookmark,
+  BookmarkPlus,
   StickyNote,
   Download,
+  FileDown,
   LoaderCircle,
   RefreshCw,
   PanelRight,
 } from "lucide-react";
-import { useAnnotationStore } from "@/stores/annotation-store";
+import { useAnnotationStore, findCurrentBookmark } from "@/stores/annotation-store";
 import { IconButton } from "@/components/ui/IconButton";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { cn, shortcut } from "@/lib/utils";
@@ -41,6 +47,7 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
     zoom,
     mode,
     openFiles,
+    openUrl,
     zoomIn,
     zoomOut,
     setZoom,
@@ -48,11 +55,125 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
     setMode,
   } = usePdfStore();
 
-  const { addBookmark, annotations, deleteAnnotation } = useAnnotationStore();
+  const { annotations, toggleBookmark } = useAnnotationStore();
+  const webVisibleRange = usePdfStore((s) => s.webVisibleRange);
+  const isWeb = doc?.kind === "web";
 
-  // Find existing bookmark for the current page
-  const currentBookmark = annotations.find(
-    (a) => a.type === "bookmark" && a.page_number === currentPage,
+  // "Add webpage" URL prompt (also opened via Cmd/Ctrl+L)
+  const [urlPromptOpen, setUrlPromptOpen] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const urlInputRef = useRef<HTMLInputElement>(null);
+
+  // Saved-to-library state for the active webpage tab
+  const [pageSaved, setPageSaved] = useState(false);
+
+  useEffect(() => {
+    const openPrompt = () => setUrlPromptOpen(true);
+    window.addEventListener("vellum:add-webpage", openPrompt);
+    return () => window.removeEventListener("vellum:add-webpage", openPrompt);
+  }, []);
+
+  useEffect(() => {
+    if (urlPromptOpen) {
+      setUrlInput("");
+      requestAnimationFrame(() => urlInputRef.current?.focus());
+    }
+  }, [urlPromptOpen]);
+
+  useEffect(() => {
+    setPageSaved(false);
+    if (!isWeb || !activeTabId) return;
+    let cancelled = false;
+    commands
+      .getWebpageSaved(activeTabId)
+      .then((saved) => {
+        if (!cancelled) setPageSaved(saved);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isWeb, activeTabId, doc?.pdf_path]);
+
+  const handleSubmitUrl = async () => {
+    const value = urlInput.trim();
+    setUrlPromptOpen(false);
+    if (!value) return;
+    await openUrl(value);
+  };
+
+  const handleToggleSavedPage = async () => {
+    if (!activeTabId) return;
+    const next = !pageSaved;
+    setPageSaved(next);
+    try {
+      await commands.setWebpageSaved(activeTabId, next);
+    } catch {
+      setPageSaved(!next);
+    }
+  };
+
+  const handleWebHistory = (delta: number) => {
+    const nav = (window as unknown as Record<string, unknown>).__webHistory as
+      | ((delta: number) => void)
+      | undefined;
+    nav?.(delta);
+  };
+
+  // .vellumweb export state for the active web tab
+  const [exportState, setExportState] = useState<{
+    status: "idle" | "exporting" | "done" | "error";
+    detail: string;
+  }>({ status: "idle", detail: "" });
+
+  useEffect(() => {
+    setExportState({ status: "idle", detail: "" });
+  }, [activeTabId, doc?.pdf_path]);
+
+  const handleExportVellumweb = async () => {
+    if (!activeTabId || !doc) return;
+
+    const slug =
+      (doc.title ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60) || "article";
+    const destPath = await save({
+      defaultPath: `${slug}.vellumweb`,
+      filters: [{ name: "Vellum Web Archive", extensions: ["vellumweb"] }],
+    });
+    if (!destPath) return;
+
+    const pageTexts = useAiStore.getState().pageTexts;
+    const pages = Object.keys(pageTexts)
+      .map(Number)
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b)
+      .map((number) => ({ number, text: pageTexts[number] }));
+
+    setExportState({ status: "exporting", detail: "Exporting…" });
+    try {
+      const summary = await commands.exportVellumweb(activeTabId, destPath, pages);
+      const sizeMb = (summary.bytes / (1024 * 1024)).toFixed(2);
+      setExportState({
+        status: "done",
+        detail: `Exported ${sizeMb} MB (${summary.asset_count} assets${
+          summary.assets_skipped > 0 ? `, ${summary.assets_skipped} skipped` : ""
+        })`,
+      });
+    } catch (err) {
+      setExportState({ status: "error", detail: String(err) });
+    }
+  };
+
+  // Find the bookmark at the current reading position (current page for PDFs,
+  // the on-screen anchor for webpages).
+  const currentBookmark = findCurrentBookmark(
+    annotations,
+    doc?.kind,
+    currentPage,
+    webVisibleRange,
   );
   const isBookmarked = !!currentBookmark;
 
@@ -199,10 +320,9 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
     const selected = await open({
       multiple: true,
       filters: [
-        {
-          name: "PDF",
-          extensions: ["pdf"],
-        },
+        { name: "Documents", extensions: ["pdf", "vellumweb"] },
+        { name: "PDF", extensions: ["pdf"] },
+        { name: "Vellum Web Archive", extensions: ["vellumweb"] },
       ],
     });
     if (!selected) return;
@@ -219,11 +339,7 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
   };
 
   const handleBookmark = async () => {
-    if (currentBookmark) {
-      await deleteAnnotation(currentBookmark.id);
-    } else {
-      await addBookmark(currentPage);
-    }
+    await toggleBookmark();
   };
 
   const handleResetZoom = () => {
@@ -266,16 +382,59 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
   }
 
   return (
-    <div className="flex h-11 items-center gap-0.5 border-b bg-background px-2">
+    <div className="relative flex h-11 items-center gap-0.5 border-b bg-background px-2">
       {/* File operations */}
       <IconButton onClick={handleOpen} title={`Open file (${shortcut("O")})`}>
         <FolderOpen size={16} />
       </IconButton>
 
-      {doc && (
+      <IconButton
+        variant={urlPromptOpen ? "active" : "ghost"}
+        onClick={() => setUrlPromptOpen((v) => !v)}
+        title={`Add webpage (${shortcut("L")})`}
+      >
+        <Globe size={16} />
+      </IconButton>
+
+      {urlPromptOpen && (
+        <div className="absolute left-2 top-11 z-50 mt-1 flex w-96 gap-1.5 rounded-lg border bg-background p-2 shadow-lg">
+          <input
+            ref={urlInputRef}
+            type="text"
+            className="focus-ring h-8 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-foreground"
+            placeholder="Paste an article URL…"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleSubmitUrl();
+              if (e.key === "Escape") setUrlPromptOpen(false);
+            }}
+          />
+          <button
+            className="focus-ring h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={() => void handleSubmitUrl()}
+          >
+            Open
+          </button>
+        </div>
+      )}
+
+      {doc && !isWeb && (
         <IconButton onClick={handleSave} title={`Save (${shortcut("S")})`}>
           <Save size={16} />
         </IconButton>
+      )}
+
+      {doc && isWeb && (
+        <>
+          <Divider />
+          <IconButton onClick={() => handleWebHistory(-1)} title="Back">
+            <ArrowLeft size={16} />
+          </IconButton>
+          <IconButton onClick={() => handleWebHistory(1)} title="Forward">
+            <ArrowRight size={16} />
+          </IconButton>
+        </>
       )}
 
       {doc && (
@@ -343,19 +502,75 @@ export function Toolbar({ sidebarOpen, onToggleSidebar }: ToolbarProps) {
           <IconButton
             onClick={handleBookmark}
             className={cn(isBookmarked && "text-gold hover:text-gold")}
-            title={isBookmarked ? "Remove bookmark" : "Bookmark this page"}
+            title={
+              isBookmarked
+                ? "Remove bookmark"
+                : isWeb
+                  ? "Bookmark this spot"
+                  : "Bookmark this page"
+            }
           >
             <Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} />
           </IconButton>
 
-          {/* Sticky Note tool */}
-          <IconButton
-            variant={mode === "note" ? "active" : "ghost"}
-            onClick={() => setMode(mode === "note" ? "view" : "note")}
-            title="Sticky note tool (N) — click on the page to place a note"
-          >
-            <StickyNote size={16} />
-          </IconButton>
+          {/* Sticky Note tool (PDF only — web notes attach to selections) */}
+          {!isWeb && (
+            <IconButton
+              variant={mode === "note" ? "active" : "ghost"}
+              onClick={() => setMode(mode === "note" ? "view" : "note")}
+              title="Sticky note tool (N) — click on the page to place a note"
+            >
+              <StickyNote size={16} />
+            </IconButton>
+          )}
+
+          {/* Save webpage to library */}
+          {isWeb && (
+            <IconButton
+              onClick={() => void handleToggleSavedPage()}
+              className={cn(pageSaved && "text-gold hover:text-gold")}
+              title={
+                pageSaved
+                  ? "Remove from saved pages"
+                  : "Save page to library (keeps an offline snapshot)"
+              }
+            >
+              <BookmarkPlus size={16} fill={pageSaved ? "currentColor" : "none"} />
+            </IconButton>
+          )}
+
+          {/* Export portable .vellumweb archive */}
+          {isWeb && (
+            <IconButton
+              onClick={() => void handleExportVellumweb()}
+              disabled={exportState.status === "exporting"}
+              className={cn(
+                exportState.status === "done" && "text-emerald-600",
+                exportState.status === "error" && "text-destructive",
+              )}
+              title={
+                exportState.status === "idle"
+                  ? "Export as .vellumweb (portable archive with snapshot + annotations)"
+                  : exportState.detail
+              }
+            >
+              {exportState.status === "exporting" ? (
+                <LoaderCircle size={16} className="animate-spin" />
+              ) : (
+                <FileDown size={16} />
+              )}
+            </IconButton>
+          )}
+
+          {/* Page URL (web tabs) */}
+          {isWeb && (
+            <span
+              className="ml-1 max-w-[16rem] truncate text-xs text-muted-foreground"
+              title={doc.pdf_path}
+            >
+              {doc.pdf_path.replace(/^https?:\/\//, "")}
+            </span>
+          )}
         </>
       )}
 
