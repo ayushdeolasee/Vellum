@@ -4,6 +4,7 @@ import { usePdfStore } from "@/stores/pdf-store";
 import { useAnnotationStore } from "@/stores/annotation-store";
 import { useAiStore } from "@/stores/ai-store";
 import { PdfViewer } from "@/components/pdf/PdfViewer";
+import { WebViewer } from "@/components/web/WebViewer";
 import { Toolbar } from "@/components/pdf/Toolbar";
 import { TabBar } from "@/components/pdf/TabBar";
 import { AnnotationSidebar } from "@/components/annotations/AnnotationSidebar";
@@ -25,20 +26,23 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<"annotations" | "ai">("annotations");
 
-  // Load annotations when document changes
+  // Load annotations when the document identity changes. Keyed on the path
+  // rather than the document object so metadata updates (e.g. a webpage
+  // reporting its title) don't wipe the AI context and annotations.
+  const docPath = doc?.pdf_path ?? null;
   useEffect(() => {
-    if (doc) {
+    if (docPath) {
       clearAnnotations();
       clearDocumentContext();
       loadAnnotations();
-      loadConversationForDocument(doc);
+      loadConversationForDocument(usePdfStore.getState().document);
     } else {
       clearAnnotations();
       clearDocumentContext();
     }
   }, [
     activeTabId,
-    doc,
+    docPath,
     loadAnnotations,
     clearAnnotations,
     clearDocumentContext,
@@ -63,13 +67,20 @@ export default function App() {
       const selected = await open({
         multiple: true,
         filters: [
+          { name: "Documents", extensions: ["pdf", "vellumweb"] },
           { name: "PDF", extensions: ["pdf"] },
+          { name: "Vellum Web Archive", extensions: ["vellumweb"] },
         ],
       });
       if (!selected) return;
       await usePdfStore
         .getState()
         .openFiles(Array.isArray(selected) ? selected : [selected]);
+    }
+
+    if (isCtrl && e.key === "l") {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent("vellum:add-webpage"));
     }
 
     if (isCtrl && e.key === "s") {
@@ -106,18 +117,8 @@ export default function App() {
 
     if (isCtrl && e.key === "b") {
       e.preventDefault();
-      const { document: d, currentPage } = usePdfStore.getState();
-      if (d) {
-        const { annotations, addBookmark, deleteAnnotation } =
-          useAnnotationStore.getState();
-        const existing = annotations.find(
-          (a) => a.type === "bookmark" && a.page_number === currentPage,
-        );
-        if (existing) {
-          deleteAnnotation(existing.id);
-        } else {
-          addBookmark(currentPage);
-        }
+      if (usePdfStore.getState().document) {
+        void useAnnotationStore.getState().toggleBookmark();
       }
     }
 
@@ -146,6 +147,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
+  // Reload annotations when an external mutation (e.g. a .vellumweb import
+  // merging into the already-active tab) changes them outside the store.
+  useEffect(() => {
+    const reload = () => {
+      if (usePdfStore.getState().document) {
+        loadAnnotations();
+      }
+    };
+    window.addEventListener("vellum:annotations-updated", reload);
+    return () => window.removeEventListener("vellum:annotations-updated", reload);
+  }, [loadAnnotations]);
+
   if (!doc) {
     return (
       <div className="flex h-screen w-screen flex-col overflow-hidden">
@@ -164,8 +177,12 @@ export default function App() {
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* PDF Viewer (main area) */}
-        <PdfViewer key={activeTabId} />
+        {/* Document viewer (main area) */}
+        {doc.kind === "web" ? (
+          <WebViewer key={activeTabId} />
+        ) : (
+          <PdfViewer key={activeTabId} />
+        )}
 
         {/* Annotation / AI side panel */}
         {sidebarOpen && (

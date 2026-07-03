@@ -27,6 +27,18 @@ lopdf = "0.34"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["gzip", "brotli", "deflate"] }
+encoding_rs = "0.8"
+url = "2"
+sha2 = "0.10"
+regex = "1"
+# deflate-zopfli enables compression levels 10-264 (Zopfli iterations) for
+# denser .vellumweb archives; plain deflate stays available for big entries.
+zip = { version = "2", default-features = false, features = ["deflate", "deflate-zopfli"] }
+
+[dev-dependencies]
+tiny_http = "0.12"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"

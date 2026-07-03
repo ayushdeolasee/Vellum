@@ -16,6 +16,13 @@ export interface PositionData {
   selected_text: string | null;
   start_offset: number | null;
   end_offset: number | null;
+  /** Text-quote anchor context for webpage annotations (normalized text,
+   *  ~32 chars each side). Absent for PDF annotations. */
+  prefix?: string | null;
+  suffix?: string | null;
+  /** How far below the viewport top (CSS px) the anchor text sat when a
+   *  webpage point bookmark was captured. Absent for PDFs and selections. */
+  viewport_offset?: number | null;
 }
 
 export interface Annotation {
@@ -44,11 +51,32 @@ export interface UpdateAnnotationInput {
   position_data?: PositionData;
 }
 
+export type DocumentKind = "pdf" | "web";
+
 export interface DocumentInfo {
+  /** "pdf" for files on disk, "web" for proxied webpages. */
+  kind: DocumentKind;
+  /** Generic document URI: a filesystem path for PDFs, a normalized URL for
+   *  webpages. The name is kept for compatibility with stored data keyed on it. */
   pdf_path: string;
   title: string | null;
   page_count: number | null;
   last_page: number | null;
+}
+
+export interface VellumwebExportSummary {
+  path: string;
+  bytes: number;
+  asset_count: number;
+  assets_skipped: number;
+}
+
+export interface WebLibraryEntry {
+  url: string;
+  title: string | null;
+  page_count: number | null;
+  saved_at: string | null;
+  has_snapshot: boolean;
 }
 
 export interface PdfTab {
@@ -58,6 +86,11 @@ export interface PdfTab {
   numPages: number;
   zoom: number;
   visiblePages: number[];
+  /** Raw text-offset span currently on screen (web documents only). */
+  webVisibleRange: { start: number; end: number } | null;
+  /** Ids of point bookmarks whose re-anchored position is on screen right
+   *  now (web documents only; reported by the content script). */
+  webVisibleBookmarks: string[];
   mode: "view" | "note";
 }
 

@@ -801,6 +801,9 @@ fn default_position(input: &CreateAnnotationInput, geometry: &PageGeometry) -> P
         selected_text: None,
         start_offset: None,
         end_offset: None,
+        prefix: None,
+        suffix: None,
+        viewport_offset: None,
     }
 }
 
@@ -1011,6 +1014,9 @@ fn read_position(
         selected_text,
         start_offset: None,
         end_offset: None,
+        prefix: None,
+        suffix: None,
+        viewport_offset: None,
     })
 }
 
@@ -1403,6 +1409,9 @@ mod tests {
             selected_text: Some("selected text".to_string()),
             start_offset: None,
             end_offset: None,
+            prefix: None,
+            suffix: None,
+            viewport_offset: None,
         }
     }
 

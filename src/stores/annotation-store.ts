@@ -2,10 +2,39 @@ import { create } from "zustand";
 import type {
   Annotation,
   CreateAnnotationInput,
+  DocumentKind,
+  PositionData,
   UpdateAnnotationInput,
 } from "@/types";
 import * as commands from "@/lib/tauri-commands";
 import { usePdfStore } from "@/stores/pdf-store";
+
+/**
+ * The bookmark the toggle button/shortcut acts on. PDF bookmarks are per
+ * page; web bookmarks anchor to a text position, so "current" means a
+ * bookmark whose anchor is on screen right now. Web bookmarks from before
+ * point anchoring existed have no offsets and fall back to page matching.
+ */
+export function findCurrentBookmark(
+  annotations: Annotation[],
+  docKind: DocumentKind | undefined,
+  currentPage: number,
+  webVisibleBookmarks: string[],
+): Annotation | undefined {
+  return annotations.find((a) => {
+    if (a.type !== "bookmark") return false;
+    const start = a.position_data?.start_offset;
+    if (docKind === "web" && start != null) {
+      // The content script re-anchors each bookmark against the live DOM and
+      // reports the ones actually on screen. Stored offsets come from the
+      // session that created them, so comparing them to the current visible
+      // text span drifts after restarts — and a span covers whole virtual
+      // pages, which lit the star for an entire short article.
+      return webVisibleBookmarks.includes(a.id);
+    }
+    return a.page_number === currentPage;
+  });
+}
 
 interface AnnotationState {
   // All annotations for the current document
@@ -19,7 +48,12 @@ interface AnnotationState {
   loadAnnotations: () => Promise<void>;
   addHighlight: (input: CreateAnnotationInput) => Promise<Annotation | null>;
   addNote: (input: CreateAnnotationInput) => Promise<Annotation | null>;
-  addBookmark: (pageNumber: number) => Promise<Annotation | null>;
+  addBookmark: (
+    pageNumber: number,
+    positionData?: PositionData,
+  ) => Promise<Annotation | null>;
+  /** Add or remove the bookmark at the current reading position. */
+  toggleBookmark: () => Promise<void>;
   updateAnnotation: (input: UpdateAnnotationInput) => Promise<void>;
   deleteAnnotation: (id: string) => Promise<void>;
   selectAnnotation: (id: string | null) => void;
@@ -96,13 +130,14 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
     }
   },
 
-  addBookmark: async (pageNumber: number) => {
+  addBookmark: async (pageNumber: number, positionData?: PositionData) => {
     const sessionId = usePdfStore.getState().activeTabId;
     if (!sessionId) return null;
     try {
       const annotation = await commands.createAnnotation(sessionId, {
         type: "bookmark",
         page_number: pageNumber,
+        ...(positionData && { position_data: positionData }),
       });
       if (usePdfStore.getState().activeTabId === sessionId) {
         set((state) => ({
@@ -115,6 +150,36 @@ export const useAnnotationStore = create<AnnotationState>((set, get) => ({
       console.error("[annotation-store] Failed to create bookmark:", err);
       return null;
     }
+  },
+
+  toggleBookmark: async () => {
+    const pdfState = usePdfStore.getState();
+    const doc = pdfState.document;
+    if (!doc) return;
+
+    const existing = findCurrentBookmark(
+      get().annotations,
+      doc.kind,
+      pdfState.currentPage,
+      pdfState.webVisibleBookmarks,
+    );
+    if (existing) {
+      await get().deleteAnnotation(existing.id);
+      return;
+    }
+
+    if (doc.kind === "web") {
+      const capture = (window as unknown as Record<string, unknown>)
+        .__captureWebPosition as
+        | (() => Promise<{ pageNumber: number; positionData: PositionData } | null>)
+        | undefined;
+      const captured = capture ? await capture() : null;
+      if (captured) {
+        await get().addBookmark(captured.pageNumber, captured.positionData);
+        return;
+      }
+    }
+    await get().addBookmark(pdfState.currentPage);
   },
 
   updateAnnotation: async (input: UpdateAnnotationInput) => {

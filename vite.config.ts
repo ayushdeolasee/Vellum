@@ -29,5 +29,15 @@ export default defineConfig({
       // Tell vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    proxy: {
+      // Dev/testing only: same-origin route to a local stand-in for the
+      // vellum-web custom protocol, so the webpage reader can be exercised
+      // in a plain browser (see __VELLUM_DEV_PROXY__ in WebViewer).
+      "/__vellum-dev-proxy": {
+        target: "http://127.0.0.1:8632",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/__vellum-dev-proxy/, ""),
+      },
+    },
   },
 });
