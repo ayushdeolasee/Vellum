@@ -120,8 +120,12 @@ final class CodexAiClient: Sendable {
             let rawDetails = errorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? outputText.trimmingCharacters(in: .whitespacesAndNewlines)
                 : errorText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Keep the TAIL, not the head: codex streams the prompt echo first
+            // and prints the actual error last. (The Rust original truncated
+            // the head, which surfaced 1200 chars of prompt echo instead of
+            // the error — deliberate improvement.)
             let details = rawDetails.count > 1_200
-                ? String(rawDetails.prefix(1_200)) + "..."
+                ? "..." + String(rawDetails.suffix(1_200))
                 : rawDetails
             throw CodexAiError.message("Codex CLI exited with status exit status: \(process.terminationStatus): \(details)")
         }

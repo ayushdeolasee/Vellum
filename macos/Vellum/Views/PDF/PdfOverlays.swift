@@ -16,6 +16,22 @@ struct PdfOverlayStack: View {
         // Recompute page frames on every geometry change.
         let _ = controller.geometryVersion
         ZStack(alignment: .topLeading) {
+            // Note-mode crosshair + click-to-place. A hit-testable clear layer
+            // is the only way pointerStyle reliably beats PDFView's internal
+            // cursor updates; it also owns the placement click (the PdfKitView
+            // monitor ignores events that hit-test into SwiftUI overlays, so
+            // exactly one placement fires). Sits below annotation overlays so
+            // sticky pills keep their own cursor and drag behavior.
+            if app.mode == .note {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .pointerStyle(.rectSelection) // crosshair-style pointer
+                    .onTapGesture(coordinateSpace: .local) { location in
+                        controller.handleNoteOverlayClick(atTopLeft: location)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
             ForEach(overlayPages, id: \.self) { pageNumber in
                 let pageAnnotations = annotationStore.annotationsForPage(pageNumber)
                 if !pageAnnotations.isEmpty,

@@ -292,6 +292,9 @@ struct ToolbarView: View {
         .task(id: toolbarDocumentIdentity) {
             let identity = toolbarDocumentIdentity
             exportState = .idle
+            // Restored sessions start on last_page — the field only synced on
+            // page CHANGES, so it showed "1" until the first navigation.
+            pageInput = String(appStore.currentPage)
             await loadSavedState(for: identity)
         }
         .task {

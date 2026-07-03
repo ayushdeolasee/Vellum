@@ -302,6 +302,17 @@ final class PdfViewerController {
     // MARK: - Mouse handling (fed by PdfKitView's event monitors)
 
     /// Returns true when the event must be swallowed (note placement).
+    /// Note-mode overlay click: the point arrives in viewer top-left (SwiftUI
+    /// overlay) coordinates; flip to PDFView-native and reuse the standard
+    /// mousedown path. topLeftPoint is its own inverse.
+    func handleNoteOverlayClick(atTopLeft point: CGPoint) {
+        _ = handleMouseDown(atNative: topLeftPoint(point))
+        // The tap gesture fires AFTER its own mouseup, so the suppress flag
+        // set by note placement has nothing left to suppress — clearing it
+        // keeps the next real selection mouseup from being swallowed.
+        suppressNextMouseUp = false
+    }
+
     func handleMouseDown(atNative point: CGPoint) -> Bool {
         contextMenu = nil
         guard let pdfView else { return false }

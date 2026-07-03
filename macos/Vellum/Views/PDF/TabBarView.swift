@@ -158,18 +158,28 @@ private final class MiddleClickNSView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let event = NSApp.currentEvent,
-              event.type == .otherMouseDown || event.type == .otherMouseUp,
-              event.buttonNumber == 2 else { return nil }
-        return super.hitTest(point)
-    }
+    private var monitor: Any?
 
-    override func otherMouseUp(with event: NSEvent) {
-        guard event.buttonNumber == 2 else {
-            super.otherMouseUp(with: event)
-            return
+    /// Invisible to hit testing — a local monitor handles the middle button,
+    /// since middle-clicks otherwise dispatch through views that ignore them.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
         }
-        action()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [weak self] event in
+            guard let self, event.buttonNumber == 2,
+                  event.window === self.window,
+                  self.bounds.contains(self.convert(event.locationInWindow, from: nil))
+            else { return event }
+            self.action()
+            return nil
+        }
     }
+    // No deinit cleanup needed: viewDidMoveToWindow(window == nil) removes the
+    // monitor when the tab leaves the hierarchy, before deallocation.
 }
