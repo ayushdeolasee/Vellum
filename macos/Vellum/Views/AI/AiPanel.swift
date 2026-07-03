@@ -207,6 +207,10 @@ struct AiPanel: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !aiStore.isThinking else { return }
         input = ""
+        // Capture the session and context synchronously, before any await, so
+        // a tab switch during image capture can't send to the wrong tab
+        // (mirrors the original's atomic submit -> sendMessage state read).
+        let sessionId = appStore.activeTabId
         let document = appStore.document
         let currentPage = appStore.currentPage
         let numPages = appStore.numPages
@@ -214,6 +218,7 @@ struct AiPanel: View {
         let annotations = annotationStore.annotations
         Task {
             let image = await aiStore.capturePageImageHandler?(currentPage)
+            guard appStore.activeTabId == sessionId else { return }
             let context = AiContextSnapshot(
                 title: document?.title,
                 numPages: numPages,

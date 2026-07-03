@@ -15,6 +15,9 @@ struct PdfViewerView: View {
 
     @State private var controller = PdfViewerController()
     @State private var loadState: LoadState = .idle
+    /// Tab the shared handler slots are currently registered for; nil when
+    /// this view has no live registration (see teardown's ownership guard).
+    @State private var handlersTabId: String?
 
     private enum LoadState {
         case idle
@@ -64,6 +67,7 @@ struct PdfViewerView: View {
 
     private func load(tabId: String) async {
         unregisterHandlers()
+        handlersTabId = nil
         controller.reset()
         loadState = .loading
         // Document/tab changed: reset the AI document context (PdfViewer.tsx
@@ -85,6 +89,7 @@ struct PdfViewerView: View {
             )
             app.setNumPages(document.pageCount)
             registerHandlers()
+            handlersTabId = tabId
             loadState = .loaded(document, tabId: tabId)
             controller.startTextExtraction()
         } catch {
@@ -121,9 +126,18 @@ struct PdfViewerView: View {
     }
 
     private func teardown() {
-        unregisterHandlers()
+        // SwiftUI mounts the replacement viewer (onAppear/task) BEFORE this
+        // onDisappear fires, so only clear the shared handler slots and the AI
+        // document context when no replacement viewer has taken over — same
+        // ownership guard as WebViewerController.detach. A replacement's own
+        // load() unconditionally unregisters before re-registering, so stale
+        // handlers never leak.
+        if app.activeTabId == handlersTabId || app.document == nil {
+            unregisterHandlers()
+            aiStore.clearDocumentContext()
+        }
+        handlersTabId = nil
         controller.reset()
-        aiStore.clearDocumentContext()
         loadState = .idle
     }
 }

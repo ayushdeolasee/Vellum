@@ -143,7 +143,6 @@ final class OpenAIClient {
                 "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to navigate to. Out-of-range values are clamped."]],
                 "required": ["pageNumber"], "additionalProperties": false,
             ],
-            "strict": true,
         ],
         [
             "type": "function", "name": "addNote",
@@ -158,7 +157,6 @@ final class OpenAIClient {
                 ],
                 "required": ["pageNumber", "text"], "additionalProperties": false,
             ],
-            "strict": true,
         ],
         [
             "type": "function", "name": "addHighlight",
@@ -172,7 +170,6 @@ final class OpenAIClient {
                 ],
                 "required": ["pageNumber", "text"], "additionalProperties": false,
             ],
-            "strict": true,
         ],
     ]
 }

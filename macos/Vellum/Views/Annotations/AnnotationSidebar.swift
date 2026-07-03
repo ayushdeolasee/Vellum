@@ -208,7 +208,6 @@ private struct AnnotationRow: View {
     let onCancelEdit: () -> Void
     let onDelete: () -> Void
 
-    @Environment(ThemeStore.self) private var themeStore
     @Environment(\.palette) private var palette
     @State private var hovering = false
 
@@ -259,7 +258,9 @@ private struct AnnotationRow: View {
                         .lineLimit(3)
                         .padding(.top, 4)
                         .contentShape(Rectangle())
-                        .onTapGesture(count: 2, perform: onStartEdit)
+                        .highPriorityGesture(
+                            TapGesture(count: 2).onEnded { onStartEdit() }
+                        )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -272,7 +273,7 @@ private struct AnnotationRow: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(palette.mutedForeground)
-            .opacity(hovering ? 1 : 0)
+            .opacity(hovering || selected ? 1 : 0)
             .help("Delete annotation")
             .accessibilityLabel("Delete annotation")
         }
@@ -292,7 +293,7 @@ private struct AnnotationRow: View {
     private var marker: some View {
         if annotation.type == .highlight, annotation.color != nil {
             Circle()
-                .fill(themeStore.highlightRenderColor(for: annotation.color))
+                .fill(Color(hex: annotation.color ?? "#fef08a"))
                 .frame(width: 16, height: 16)
                 .overlay {
                     Circle().strokeBorder(palette.borderStrong, lineWidth: 1)

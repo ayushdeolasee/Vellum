@@ -221,7 +221,7 @@ final class PdfDocumentSession: DocumentSession {
     /// /VellumUpdatedAt always refresh.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
-        guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document) else {
+        guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
         }
 
@@ -267,11 +267,31 @@ final class PdfDocumentSession: DocumentSession {
             return true
         }
 
-        guard let (pageIndex, annotation) = Self.findAnnotation(id: id, in: document),
+        guard let (pageIndex, annotation) = Self.findAnnotation(id: id, in: document, raw: raw),
               let page = document.page(at: pageIndex)
         else {
             return false
         }
+
+        // PDFKit's serializer maps an annotation's PARSED index onto the raw
+        // /Annots slot when persisting a removal, so on pages where the two
+        // domains diverge (null / non-dictionary slots) removeAnnotation would
+        // drop the WRONG entry from the file. Rewrite the page's /Annots at
+        // the byte level in that case.
+        let rawSlotCount = (raw.page(at: pageIndex + 1)?.dictionary)
+            .flatMap { CgPdf.array($0, "Annots") }
+            .map(CgPdf.count) ?? 0
+        if rawSlotCount != page.annotations.count {
+            let normalized = try serialize(document)
+            guard let patched = try Self.deleteAnnotationIncrement(
+                normalizedData: normalized, id: id, pageNumber: pageIndex + 1)
+            else {
+                return false
+            }
+            try saveThroughPdfKit(patched)
+            return true
+        }
+
         page.removeAnnotation(annotation)
         let data = try serialize(document)
         try PdfAtomicWriter.save(data, toPath: path)
@@ -292,18 +312,76 @@ final class PdfDocumentSession: DocumentSession {
 
     /// find_annotation: iterate pages and entries comparing /NM or the derived
     /// `pdf-direct-{page}-{index}` id.
-    static func findAnnotation(id: String, in document: PDFDocument) -> (pageIndex: Int, annotation: PDFAnnotation)? {
+    ///
+    /// Derived ids MUST use the same index domain as PdfAnnotationReader: the
+    /// raw /Annots slot (CGPDF), not the position in PDFKit's `page.annotations`
+    /// array, which omits slots PDFKit cannot instantiate (null / non-dictionary
+    /// entries). A separate cursor into `page.annotations` advances only for
+    /// slots CGPDF resolves to a dictionary, so both arrays stay aligned.
+    static func findAnnotation(
+        id: String, in document: PDFDocument, raw: CGPDFDocument
+    ) -> (pageIndex: Int, annotation: PDFAnnotation)? {
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
-            for (index, annotation) in page.annotations.enumerated() {
-                let annotationId = (annotation.value(forAnnotationKey: PdfAnnotationWriter.nmKey) as? String)
-                    ?? "pdf-direct-\(pageIndex + 1)-\(index)"
+            let annotations = page.annotations
+            guard !annotations.isEmpty,
+                  let pageDictionary = raw.page(at: pageIndex + 1)?.dictionary,
+                  let entries = CgPdf.array(pageDictionary, "Annots")
+            else { continue }
+            var cursor = 0
+            for index in 0..<CgPdf.count(entries) {
+                guard let dictionary = CgPdf.dictionaryAt(entries, index) else { continue }
+                guard cursor < annotations.count else { break }
+                let annotation = annotations[cursor]
+                cursor += 1
+                let annotationId = PdfAnnotationReader.annotationId(
+                    dictionary: dictionary, pageNumber: pageIndex + 1, index: index)
                 if annotationId == id {
                     return (pageIndex, annotation)
                 }
             }
         }
         return nil
+    }
+
+    /// Prune one entry from a page's /Annots by rewriting the page object in
+    /// an incremental update — used when PDFKit's parsed annotations and the
+    /// raw /Annots slots are misaligned. `normalizedData` must be
+    /// PDFKit-serializer output (it preserves /Annots slot order, so the
+    /// derived-id domain carries over).
+    private static func deleteAnnotationIncrement(
+        normalizedData: Data, id: String, pageNumber: Int
+    ) throws -> Data? {
+        guard let cg = PdfDocumentLoader.cgDocument(from: normalizedData),
+              let pageDictionary = cg.page(at: pageNumber)?.dictionary,
+              let entries = CgPdf.array(pageDictionary, "Annots")
+        else { return nil }
+        var slot: Int?
+        for index in 0..<CgPdf.count(entries) {
+            guard let dictionary = CgPdf.dictionaryAt(entries, index) else { continue }
+            let annotationId = PdfAnnotationReader.annotationId(
+                dictionary: dictionary, pageNumber: pageNumber, index: index)
+            if annotationId == id {
+                slot = index
+                break
+            }
+        }
+        guard let slot else { return nil }
+
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let catalogNumber = file.rootNumber,
+              let catalog = file.objectSource(catalogNumber),
+              let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+                in: file, catalog: catalog, pageNumber: pageNumber),
+              var pageSource = file.objectSource(pageObjectNumber),
+              let annots = pageSource.inlineArray(forKey: "Annots"),
+              let pruned = PdfArraySource.removingElement(at: slot, fromArray: annots)
+        else { return nil }
+
+        pageSource.setValue(forKey: "Annots", raw: pruned)
+        var increment = PdfIncrement(file: file)
+        increment.setObject(pageObjectNumber, source: pageSource.sourceBytes)
+        return increment.appended()
     }
 
     private func serialize(_ document: PDFDocument) throws -> Data {

@@ -249,7 +249,23 @@ final class PdfViewerController {
         case 270: point = CGPoint(x: bounds.maxX, y: bounds.maxY)
         default: point = CGPoint(x: bounds.minX, y: bounds.maxY)
         }
-        pdfView.go(to: PDFDestination(page: page, at: point))
+        // block: "start" aligns only vertically (inline defaults to "nearest"),
+        // so keep the clip view's current horizontal origin and set only y —
+        // PDFDestination + go(to:) would snap the zoomed-in horizontal pan back
+        // to the page's left edge.
+        guard let docView = pdfView.documentView,
+              let clip = docView.superview as? NSClipView else {
+            pdfView.go(to: PDFDestination(page: page, at: point))
+            return
+        }
+        let viewPoint = pdfView.convert(point, from: page)
+        let docPoint = docView.convert(viewPoint, from: pdfView)
+        let targetY = docView.isFlipped ? docPoint.y : docPoint.y - clip.bounds.height
+        let desired = CGPoint(x: clip.bounds.origin.x, y: targetY)
+        let constrained = clip.constrainBoundsRect(
+            CGRect(origin: desired, size: clip.bounds.size))
+        clip.scroll(to: constrained.origin)
+        docView.enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
     /// Anchored zoom: keep the document point at the viewport center fixed.

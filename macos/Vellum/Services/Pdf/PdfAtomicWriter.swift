@@ -391,6 +391,14 @@ struct PdfDictSource {
         return raw
     }
 
+    /// Raw source of an INLINE array value ("[ ... ]"), e.g. a page's /Annots.
+    func inlineArray(forKey key: String) -> [UInt8]? {
+        guard let raw = rawValue(forKey: key), raw.count >= 2,
+              raw.first == UInt8(ascii: "["), raw.last == UInt8(ascii: "]")
+        else { return nil }
+        return raw
+    }
+
     private func rawValue(forKey key: String) -> [UInt8]? {
         guard let keyRange = keyTokenRange(key), let span = valueSpan(afterKeyToken: keyRange) else { return nil }
         return Array(bytes[span])
@@ -525,6 +533,134 @@ struct PdfDictSource {
         guard let keyRange = keyTokenRange(key), let span = valueSpan(afterKeyToken: keyRange) else { return }
         bytes.removeSubrange(keyRange.lowerBound..<span.upperBound)
         masked = PdfDictSource.mask(bytes)
+    }
+}
+
+// MARK: - Raw array source manipulation
+
+/// Editing helpers for raw PDF array sources ("[ ... ]"), e.g. a page's
+/// /Annots. Element grammar mirrors PdfDictSource.valueSpan: names, strings,
+/// hex strings, nested arrays/dictionaries, and "N G R" indirect references.
+enum PdfArraySource {
+    /// Byte ranges of the array's top-level elements (brackets excluded);
+    /// nil when the source is not a well-formed array.
+    static func elementSpans(inArray bytes: [UInt8]) -> [Range<Int>]? {
+        guard bytes.count >= 2, bytes.first == UInt8(ascii: "["),
+              bytes.last == UInt8(ascii: "]") else { return nil }
+        var spans: [Range<Int>] = []
+        var i = 1
+        let end = bytes.count - 1
+        while i < end {
+            if PdfBytes.isWhitespace(bytes[i]) {
+                i += 1
+                continue
+            }
+            guard let elementEnd = elementEnd(bytes, from: i, to: end), elementEnd > i else {
+                return nil
+            }
+            spans.append(i..<elementEnd)
+            i = elementEnd
+        }
+        return spans
+    }
+
+    /// The array with its `index`-th element removed; nil when out of range or
+    /// unparsable.
+    static func removingElement(at index: Int, fromArray bytes: [UInt8]) -> [UInt8]? {
+        guard let spans = elementSpans(inArray: bytes), index >= 0, index < spans.count else {
+            return nil
+        }
+        var out = bytes
+        out.removeSubrange(spans[index])
+        return out
+    }
+
+    /// End index (exclusive) of the element starting at `start`.
+    private static func elementEnd(_ bytes: [UInt8], from start: Int, to end: Int) -> Int? {
+        var i = start
+        switch bytes[i] {
+        case UInt8(ascii: "/"):
+            i += 1
+            while i < end, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
+            return i
+        case UInt8(ascii: "("):
+            var depth = 1
+            i += 1
+            while i < end, depth > 0 {
+                if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+                if bytes[i] == UInt8(ascii: "(") { depth += 1 }
+                if bytes[i] == UInt8(ascii: ")") { depth -= 1 }
+                i += 1
+            }
+            return depth == 0 ? i : nil
+        case UInt8(ascii: "["):
+            var depth = 0
+            while i < end {
+                let byte = bytes[i]
+                if byte == UInt8(ascii: "(") {
+                    var stringDepth = 1
+                    i += 1
+                    while i < end, stringDepth > 0 {
+                        if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+                        if bytes[i] == UInt8(ascii: "(") { stringDepth += 1 }
+                        if bytes[i] == UInt8(ascii: ")") { stringDepth -= 1 }
+                        i += 1
+                    }
+                    continue
+                }
+                if byte == UInt8(ascii: "[") { depth += 1 }
+                if byte == UInt8(ascii: "]") {
+                    depth -= 1
+                    if depth == 0 { return i + 1 }
+                }
+                i += 1
+            }
+            return nil
+        case UInt8(ascii: "<") where i + 1 < end && bytes[i + 1] == UInt8(ascii: "<"):
+            var depth = 0
+            while i + 1 < end {
+                if bytes[i] == UInt8(ascii: "<"), bytes[i + 1] == UInt8(ascii: "<") {
+                    depth += 1
+                    i += 2
+                    continue
+                }
+                if bytes[i] == UInt8(ascii: ">"), bytes[i + 1] == UInt8(ascii: ">") {
+                    depth -= 1
+                    i += 2
+                    if depth == 0 { return i }
+                    continue
+                }
+                i += 1
+            }
+            return nil
+        case UInt8(ascii: "<"):
+            i += 1
+            while i < end, bytes[i] != UInt8(ascii: ">") { i += 1 }
+            return i < end ? i + 1 : nil
+        default:
+            // Number, boolean, null — possibly the head of an "N G R" reference.
+            while i < end, !PdfBytes.isWhitespace(bytes[i]), !PdfBytes.isDelimiter(bytes[i]) { i += 1 }
+            let tokenEnd = i
+            var allDigits = tokenEnd > start
+            for j in start..<tokenEnd where !PdfBytes.isDigit(bytes[j]) {
+                allDigits = false
+                break
+            }
+            guard allDigits else { return tokenEnd }
+            var k = tokenEnd
+            while k < end, PdfBytes.isWhitespace(bytes[k]) { k += 1 }
+            let genStart = k
+            while k < end, PdfBytes.isDigit(bytes[k]) { k += 1 }
+            guard k > genStart else { return tokenEnd }
+            var m = k
+            while m < end, PdfBytes.isWhitespace(bytes[m]) { m += 1 }
+            guard m < end, bytes[m] == UInt8(ascii: "R") else { return tokenEnd }
+            let afterR = m + 1
+            if afterR >= end || PdfBytes.isWhitespace(bytes[afterR]) || PdfBytes.isDelimiter(bytes[afterR]) {
+                return afterR
+            }
+            return tokenEnd
+        }
     }
 }
 

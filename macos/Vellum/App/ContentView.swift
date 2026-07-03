@@ -149,7 +149,7 @@ struct ContentView: View {
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
-        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        let key = event.charactersIgnoringModifiers ?? ""
 
         if command && key == "o" {
             openDocuments()
@@ -165,7 +165,7 @@ struct ContentView: View {
             }
             return true
         }
-        if command && key == "w" {
+        if command && key.lowercased() == "w" {
             Task { await appStore.closeFile() }
             return true
         }
@@ -175,7 +175,8 @@ struct ContentView: View {
             appStore.activateTab(appStore.tabs[index].id)
             return true
         }
-        if command && key == "=" {
+        // AppKit reports native Cmd-Plus (Cmd-Shift-=) as "+".
+        if command && (key == "=" || key == "+") {
             appStore.zoomIn()
             return true
         }

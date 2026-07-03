@@ -7,44 +7,42 @@ struct TabBarView: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        if appStore.tabs.isEmpty {
-            Color.clear.frame(height: 0)
-        } else {
-            HStack(spacing: 8) {
-                Wordmark()
-                    .fixedSize()
+        HStack(spacing: 8) {
+            Wordmark()
+                .fixedSize()
 
+            if !appStore.tabs.isEmpty {
                 Rectangle()
                     .fill(palette.border)
                     .frame(width: 1, height: 20)
+            }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(appStore.tabs) { tab in
-                            TabItem(
-                                tab: tab,
-                                isActive: tab.id == appStore.activeTabId,
-                                onActivate: { appStore.activateTab(tab.id) },
-                                onClose: { Task { await appStore.closeTab(tab.id) } }
-                            )
-                        }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(appStore.tabs) { tab in
+                        TabItem(
+                            tab: tab,
+                            isActive: tab.id == appStore.activeTabId,
+                            onActivate: { appStore.activateTab(tab.id) },
+                            onClose: { Task { await appStore.closeTab(tab.id) } }
+                        )
                     }
-                    .padding(.vertical, 4)
                 }
-                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+            .frame(maxWidth: .infinity)
 
-                IconButton(help: "Open PDF in new tab", action: openPdf) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 16))
-                }
+            IconButton(help: "Open PDF in new tab", action: openPdf) {
+                Image(systemName: "plus")
+                    .font(.system(size: 16))
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 8)
-            .frame(height: 40)
-            .background(palette.background)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(palette.border).frame(height: 1)
-            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .frame(height: 40)
+        .background(palette.background)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(palette.border).frame(height: 1)
         }
     }
 
@@ -73,10 +71,12 @@ private struct TabItem: View {
            !title.isEmpty {
             return title
         }
-        let fallback = tab.document.kind == .web
-            ? RecentFilesService.webpageDisplayName(for: tab.document.pdfPath)
-            : RecentFilesService.fileName(for: tab.document.pdfPath)
-        if tab.document.kind == .pdf, fallback.lowercased().hasSuffix(".pdf") {
+        let fallback = tab.document.pdfPath
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .last
+            .map(String.init) ?? ""
+        if fallback.lowercased().hasSuffix(".pdf") {
             return String(fallback.dropLast(4))
         }
         return fallback.isEmpty ? "Untitled" : fallback
@@ -86,7 +86,7 @@ private struct TabItem: View {
         HStack(spacing: 0) {
             Button(action: onActivate) {
                 HStack(spacing: 8) {
-                    Image(systemName: tab.document.kind == .web ? "globe" : "doc.text")
+                    Image(systemName: "doc.text")
                         .font(.system(size: 13))
                         .foregroundStyle(isActive ? palette.primary : palette.mutedForeground)
                     Text(label)
@@ -127,5 +127,49 @@ private struct TabItem: View {
         .shadow(color: isActive ? Color.black.opacity(0.08) : .clear, radius: 3, y: 1)
         .onHover { hovering = $0 }
         .help(tab.document.pdfPath)
+        .overlay {
+            MiddleClickView(action: onClose)
+        }
+    }
+}
+
+private struct MiddleClickView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> MiddleClickNSView {
+        MiddleClickNSView(action: action)
+    }
+
+    func updateNSView(_ nsView: MiddleClickNSView, context: Context) {
+        nsView.action = action
+    }
+}
+
+private final class MiddleClickNSView: NSView {
+    var action: () -> Void
+
+    init(action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let event = NSApp.currentEvent,
+              event.type == .otherMouseDown || event.type == .otherMouseUp,
+              event.buttonNumber == 2 else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2 else {
+            super.otherMouseUp(with: event)
+            return
+        }
+        action()
     }
 }

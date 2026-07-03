@@ -417,8 +417,10 @@ struct WebSelectionPopover: View {
             HStack(spacing: 4) {
                 ForEach(HIGHLIGHT_COLORS) { color in
                     SwatchButton(color: color) {
-                        onClose()
+                        // The action must run before onClose: onClose clears
+                        // controller.selection, which addHighlight reads.
                         onHighlight(color.value)
+                        onClose()
                     }
                 }
                 Rectangle()
@@ -481,8 +483,10 @@ struct WebSelectionPopover: View {
     private func submitNote() {
         let trimmed = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        onClose()
+        // The action must run before onClose: onClose clears
+        // controller.selection, which addSelectionNote reads.
         onNote(trimmed)
+        onClose()
     }
 }
 

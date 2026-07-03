@@ -44,6 +44,8 @@ struct PdfKitView: NSViewRepresentable {
         if abs(nsView.scaleFactor - app.zoom) > 0.0001 {
             nsView.scaleFactor = app.zoom
         }
+        // Note-mode crosshair (the original's cursor-crosshair container class).
+        context.coordinator.noteModeChanged(app.mode == .note)
     }
 
     static func dismantleNSView(_ nsView: PDFView, coordinator: Coordinator) {
@@ -57,6 +59,7 @@ struct PdfKitView: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var monitors: [Any] = []
         private var trackingArea: NSTrackingArea?
+        private var noteModeActive = false
 
         init(controller: PdfViewerController) {
             self.controller = controller
@@ -162,7 +165,15 @@ struct PdfKitView: NSViewRepresentable {
 
             if let monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, let point = self.pdfPoint(for: event) else { return }
+                    // Container-level mouseup like the original's onMouseUp on
+                    // the scroll container: a selection drag released on top of
+                    // a highlight rect or sticky-note pill must still capture
+                    // (overlays only stop propagation for mousedown/click), so
+                    // no hit-test gate here — just bounds containment.
+                    guard let self, let view = self.view,
+                          event.window === view.window else { return }
+                    let point = view.convert(event.locationInWindow, from: nil)
+                    guard view.bounds.contains(point) else { return }
                     self.controller.handleMouseUp(atNative: point)
                 }
                 return event
@@ -184,17 +195,39 @@ struct PdfKitView: NSViewRepresentable {
                 monitors.append(monitor)
             }
 
-            if let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { [weak self] event in
-                let swallow = MainActor.assumeIsolated { () -> Bool in
+            if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .cursorUpdate], handler: { [weak self] event in
+                MainActor.assumeIsolated {
                     guard let self, self.controller.isNoteMode,
-                          self.pdfPoint(for: event) != nil else { return false }
-                    NSCursor.crosshair.set()
-                    // Swallowed so PDFView's own tracking can't reset the cursor.
-                    return true
+                          self.pdfPoint(for: event) != nil else { return }
+                    // PDFView re-sets its own cursor (arrow / I-beam) while it
+                    // handles this event, so asserting the crosshair here would
+                    // be immediately overridden. Re-assert on the next runloop
+                    // turn, after PDFView's handling ran.
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.controller.isNoteMode else { return }
+                        NSCursor.crosshair.set()
+                    }
                 }
-                return swallow ? nil : event
+                return event
             }) {
                 monitors.append(monitor)
+            }
+        }
+
+        /// Mode-change hook from updateNSView: show the crosshair immediately
+        /// when note mode turns on with the pointer already over the viewer
+        /// (the monitor above keeps it asserted while the mouse moves), and
+        /// restore the arrow when note mode ends.
+        func noteModeChanged(_ active: Bool) {
+            guard active != noteModeActive else { return }
+            noteModeActive = active
+            guard let view, let window = view.window else { return }
+            let mouse = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            guard view.bounds.contains(mouse) else { return }
+            if active {
+                NSCursor.crosshair.set()
+            } else {
+                NSCursor.arrow.set()
             }
         }
 

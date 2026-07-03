@@ -106,6 +106,14 @@ enum WebUrl {
         if host.isEmpty {
             throw SessionServiceError.invalidDocument("Invalid URL: empty host")
         }
+        // rust-url runs domains through IDNA (UTS-46 → punycode). Full UTS-46
+        // mapping is out of scope here, but lowercasing + NFC + RFC 3492
+        // punycode reproduces the crate's output for real-world hosts, so
+        // "münchen.de" keys the same record as the Tauri app's
+        // "xn--mnchen-3ya.de".
+        if !host.hasPrefix("["), !host.allSatisfy(\.isASCII) {
+            host = try idnaToAscii(host)
+        }
         var port: Int? = nil
         if let portString, !portString.isEmpty {
             guard portString.allSatisfy(\.isNumber), let parsed = Int(portString), parsed <= 65535 else {
@@ -153,37 +161,125 @@ enum WebUrl {
         }
     }
 
+    /// IDNA ToASCII for an already-lowercased host: NFC-normalize each label
+    /// and punycode-encode the non-ASCII ones (error message matches
+    /// rust-url's Display for ParseError::IdnaError).
+    private static func idnaToAscii(_ host: String) throws -> String {
+        let labels = try host
+            .split(separator: ".", omittingEmptySubsequences: false)
+            .map { piece -> String in
+                let label = String(piece)
+                if label.allSatisfy(\.isASCII) { return label }
+                let normalized = label.precomposedStringWithCanonicalMapping
+                if normalized.allSatisfy(\.isASCII) { return normalized }
+                guard let encoded = punycodeEncode(normalized) else {
+                    throw SessionServiceError.invalidDocument(
+                        "Invalid URL: invalid international domain name")
+                }
+                return "xn--" + encoded
+            }
+        return labels.joined(separator: ".")
+    }
+
+    /// RFC 3492 punycode encoding (base 36, tmin 1, tmax 26, skew 38,
+    /// damp 700, initial bias 72, initial n 128). Returns nil on overflow.
+    private static func punycodeEncode(_ label: String) -> String? {
+        let input = Array(label.unicodeScalars)
+        var output = ""
+        for scalar in input where scalar.isASCII {
+            output.unicodeScalars.append(scalar)
+        }
+        let basicCount = output.unicodeScalars.count
+        var handled = basicCount
+        if basicCount > 0 { output.append("-") }
+
+        func digit(_ value: UInt32) -> Character {
+            value < 26
+                ? Character(UnicodeScalar(UInt8(ascii: "a") + UInt8(value)))
+                : Character(UnicodeScalar(UInt8(ascii: "0") + UInt8(value - 26)))
+        }
+        func adapt(_ delta: UInt32, _ numPoints: UInt32, _ firstTime: Bool) -> UInt32 {
+            var delta = firstTime ? delta / 700 : delta / 2
+            delta += delta / numPoints
+            var k: UInt32 = 0
+            while delta > (35 * 26) / 2 {
+                delta /= 36
+                k += 36
+            }
+            return k + 36 * delta / (delta + 38)
+        }
+
+        var n: UInt32 = 128
+        var delta: UInt32 = 0
+        var bias: UInt32 = 72
+        while handled < input.count {
+            guard let m = input.lazy.map(\.value).filter({ $0 >= n }).min() else { return nil }
+            let (step, stepOverflow) = (m - n).multipliedReportingOverflow(by: UInt32(handled + 1))
+            if stepOverflow { return nil }
+            let (next, nextOverflow) = delta.addingReportingOverflow(step)
+            if nextOverflow { return nil }
+            delta = next
+            n = m
+            for scalar in input {
+                if scalar.value < n {
+                    let (bumped, overflow) = delta.addingReportingOverflow(1)
+                    if overflow { return nil }
+                    delta = bumped
+                }
+                if scalar.value == n {
+                    var q = delta
+                    var k: UInt32 = 36
+                    while true {
+                        let t = k <= bias ? 1 : (k >= bias + 26 ? 26 : k - bias)
+                        if q < t { break }
+                        output.append(digit(t + (q - t) % (36 - t)))
+                        q = (q - t) / (36 - t)
+                        k += 36
+                    }
+                    output.append(digit(q))
+                    bias = adapt(delta, UInt32(handled + 1), handled == basicCount)
+                    delta = 0
+                    handled += 1
+                }
+            }
+            delta += 1
+            n += 1
+        }
+        return output
+    }
+
     /// WHATWG-style path canonicalization for special schemes: '\' → '/',
     /// dot-segment resolution, percent-encoding of the path encode set
-    /// (existing percent-escapes pass through untouched).
+    /// (existing percent-escapes pass through untouched). Only "." and ".."
+    /// dot-segments are resolved — empty segments are PRESERVED ("/a//b"
+    /// stays "/a//b"), matching the rust `url` crate whose serialization
+    /// feeds the sha256 storage key.
     private static func normalizePath(_ raw: String) -> String {
         let path = raw.replacingOccurrences(of: "\\", with: "/")
+        if path.isEmpty { return "/" }
+        // `path` starts with "/" (the authority scan stops at the first
+        // slash), so the piece before it is the empty string — skip it and
+        // treat the rest as WHATWG path-state segments.
+        let pieces = path.split(separator: "/", omittingEmptySubsequences: false)
         var segments: [String] = []
-        var endsWithSlash = true
-        for piece in path.split(separator: "/", omittingEmptySubsequences: false).dropFirst(0) {
+        for (offset, piece) in pieces.enumerated().dropFirst() {
             let segment = String(piece)
+            let isLast = offset == pieces.count - 1
             let lowered = segment.lowercased()
                 .replacingOccurrences(of: "%2e", with: ".")
             if lowered == "." {
-                endsWithSlash = true
+                // A trailing "." keeps the trailing slash ("/a/." → "/a/").
+                if isLast { segments.append("") }
                 continue
             }
             if lowered == ".." {
                 if !segments.isEmpty { segments.removeLast() }
-                endsWithSlash = true
-                continue
-            }
-            if segment.isEmpty {
-                endsWithSlash = true
+                if isLast { segments.append("") }
                 continue
             }
             segments.append(segment)
-            endsWithSlash = false
         }
-        if segments.isEmpty { return "/" }
-        var out = "/" + segments.map(encodePathSegment).joined(separator: "/")
-        if endsWithSlash || path.hasSuffix("/") { out += "/" }
-        return out
+        return "/" + segments.map(encodePathSegment).joined(separator: "/")
     }
 
     private static func encodePathSegment(_ segment: String) -> String {
@@ -368,7 +464,11 @@ enum WebFetch {
 
     /// Decode HTML honoring the charset from the Content-Type header
     /// (falling back to UTF-8). Note: the charset key match is case-sensitive
-    /// like the Rust `strip_prefix("charset=")`.
+    /// like the Rust `strip_prefix("charset=")`. The Rust side decodes with
+    /// encoding_rs (WHATWG labels, lossy per invalid sequence), so labels are
+    /// resolved through the WHATWG alias table first and strict-decode
+    /// failures degrade per-sequence instead of re-reading the whole page as
+    /// UTF-8 mojibake.
     static func decodeHtml(_ body: Data, contentType: String) -> String {
         var charset = "utf-8"
         for part in contentType.split(separator: ";") {
@@ -379,14 +479,91 @@ enum WebFetch {
                 break
             }
         }
-        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(charset as CFString)
-        if cfEncoding != kCFStringEncodingInvalidId {
-            let nsEncoding = CFStringConvertEncodingToNSStringEncoding(cfEncoding)
-            if let decoded = String(data: body, encoding: String.Encoding(rawValue: nsEncoding)) {
-                return decoded
+        let label = resolveCharsetLabel(charset)
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(label as CFString)
+        guard cfEncoding != kCFStringEncodingInvalidId else {
+            // Unknown label: Rust's for_label(...).unwrap_or(UTF_8), lossy.
+            return String(decoding: body, as: UTF8.self)
+        }
+        let encoding = String.Encoding(
+            rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
+        if encoding == .utf8 {
+            return String(decoding: body, as: UTF8.self)
+        }
+        if let decoded = String(data: body, encoding: encoding) {
+            return decoded
+        }
+        return decodeLossy(body, encoding: encoding)
+    }
+
+    /// WHATWG Encoding Standard label resolution for the alias families that
+    /// CFString maps differently (browsers — and encoding_rs on the Rust
+    /// side — decode `iso-8859-1` as windows-1252, `gb2312` as GBK, …).
+    /// Anything not listed passes through to the CF IANA lookup unchanged.
+    private static func resolveCharsetLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "ansi_x3.4-1968", "ascii", "cp1252", "cp819", "csisolatin1", "ibm819",
+             "iso-8859-1", "iso-ir-100", "iso8859-1", "iso88591", "iso_8859-1",
+             "iso_8859-1:1987", "l1", "latin1", "us-ascii", "windows-1252", "x-cp1252":
+            return "windows-1252"
+        case "csisolatin5", "iso-8859-9", "iso-ir-148", "iso8859-9", "iso88599",
+             "iso_8859-9", "iso_8859-9:1989", "l5", "latin5", "windows-1254", "x-cp1254":
+            return "windows-1254"
+        case "dos-874", "iso-8859-11", "iso8859-11", "iso885911", "tis-620", "windows-874":
+            return "windows-874"
+        case "chinese", "csgb2312", "csiso58gb231280", "gb2312", "gb_2312", "gb_2312-80",
+             "gbk", "iso-ir-58", "x-gbk":
+            return "gbk"
+        case "csshiftjis", "ms932", "ms_kanji", "shift-jis", "shift_jis", "sjis",
+             "windows-31j", "x-sjis":
+            return "shift_jis"
+        default:
+            return raw
+        }
+    }
+
+    /// Lossy decode mirroring encoding_rs: invalid byte sequences become
+    /// U+FFFD while everything else decodes with the declared encoding.
+    /// Decodes greedily in chunks, backing off around invalid sequences
+    /// (multibyte sequences are at most 4 bytes, so a valid chunk boundary is
+    /// found within 3 trims; a failing 1-byte chunk is the invalid byte).
+    private static func decodeLossy(_ body: Data, encoding: String.Encoding) -> String {
+        let bytes = [UInt8](body)
+        var out = ""
+        var index = 0
+        let maxChunk = 64 * 1024
+        while index < bytes.count {
+            var chunk = min(maxChunk, bytes.count - index)
+            var advanced = false
+            while chunk > 0 {
+                let atEnd = index + chunk == bytes.count
+                let minLength = atEnd ? chunk : max(1, chunk - 3)
+                var length = chunk
+                while length >= minLength {
+                    if let decoded = String(bytes: bytes[index..<(index + length)], encoding: encoding) {
+                        out += decoded
+                        index += length
+                        advanced = true
+                        break
+                    }
+                    length -= 1
+                }
+                if advanced { break }
+                if chunk == 1 {
+                    out.append("\u{FFFD}")
+                    index += 1
+                    advanced = true
+                    break
+                }
+                chunk /= 2
+            }
+            if !advanced {
+                // Unreachable (chunk bottoms out at 1), kept as a hard stop.
+                out.append("\u{FFFD}")
+                index += 1
             }
         }
-        return String(decoding: body, as: UTF8.self)
+        return out
     }
 
     /// Write a snapshot file atomically (temp + rename) so concurrent readers

@@ -37,6 +37,13 @@ final class SpeechService: NSObject {
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
+        // A 0 Hz / 0-channel format (no input device, mic access denied) makes
+        // installTap raise an uncatchable NSException — surface the spec'd
+        // unavailable error instead of crashing.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            self.request = nil
+            throw SpeechServiceError.unavailable
+        }
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak request] buffer, _ in
             request?.append(buffer)

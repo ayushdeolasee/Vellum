@@ -43,11 +43,12 @@ final class GeminiClient {
             let response = try await sendWithRetry(request)
             let root = try Self.jsonObject(response)
             guard let candidates = root["candidates"] as? [[String: Any]],
-                  let candidate = candidates.first,
-                  let content = candidate["content"] as? [String: Any],
-                  let parts = content["parts"] as? [[String: Any]] else {
+                  let candidate = candidates.first else {
                 throw AiClientError.message(Self.providerMessage(root, fallback: "Gemini returned an invalid response."))
             }
+            // Safety-blocked / MAX_TOKENS candidates omit content.parts; the
+            // original AI SDK tolerates that and yields empty text.
+            let parts = ((candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? []
 
             let text = parts.compactMap { $0["text"] as? String }.joined()
             let calls = parts.compactMap { $0["functionCall"] as? [String: Any] }
@@ -133,7 +134,6 @@ final class GeminiClient {
                 "type": "object",
                 "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to navigate to. Out-of-range values are clamped."]],
                 "required": ["pageNumber"],
-                "additionalProperties": false,
             ],
         ],
         [
@@ -148,7 +148,6 @@ final class GeminiClient {
                     "y": ["type": "number", "description": "Optional top-left y in PDF points (default 96)."],
                 ],
                 "required": ["pageNumber", "text"],
-                "additionalProperties": false,
             ],
         ],
         [
@@ -162,7 +161,6 @@ final class GeminiClient {
                     "color": ["type": "string", "description": "Optional CSS color (e.g. #fef08a). Invalid values fall back to yellow."],
                 ],
                 "required": ["pageNumber", "text"],
-                "additionalProperties": false,
             ],
         ],
     ]

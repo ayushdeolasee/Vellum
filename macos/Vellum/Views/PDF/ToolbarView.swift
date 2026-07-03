@@ -289,9 +289,10 @@ struct ToolbarView: View {
         .onChange(of: appStore.currentPage) { _, page in
             pageInput = String(page)
         }
-        .task(id: appStore.activeTabId) {
+        .task(id: toolbarDocumentIdentity) {
+            let identity = toolbarDocumentIdentity
             exportState = .idle
-            await loadSavedState()
+            await loadSavedState(for: identity)
         }
         .task {
             await updateChecker.check(silent: true)
@@ -371,15 +372,18 @@ struct ToolbarView: View {
         let pages = aiStore.pageTexts
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
+        let identity = toolbarDocumentIdentity
         exportState = .exporting
         Task {
             do {
                 let summary = try await appStore.sessions.exportVellumweb(
                     sessionId: sessionId, destPath: destination.path, pages: pages)
-                let mb = String(format: "%.1f", Double(summary.bytes) / (1024 * 1024))
+                guard toolbarDocumentIdentity == identity else { return }
+                let mb = String(format: "%.2f", Double(summary.bytes) / (1024 * 1024))
                 let skipped = summary.assetsSkipped > 0 ? ", \(summary.assetsSkipped) skipped" : ""
                 exportState = .done("Exported \(mb) MB (\(summary.assetCount) assets\(skipped))")
             } catch {
+                guard toolbarDocumentIdentity == identity else { return }
                 exportState = .failed(error.localizedDescription)
             }
         }
@@ -392,7 +396,8 @@ struct ToolbarView: View {
         var slug = ""
         var lastWasDash = false
         for scalar in title.lowercased().unicodeScalars {
-            if CharacterSet.alphanumerics.contains(scalar) {
+            if (scalar.value >= 97 && scalar.value <= 122)
+                || (scalar.value >= 48 && scalar.value <= 57) {
                 slug.unicodeScalars.append(scalar)
                 lastWasDash = false
             } else if !lastWasDash, !slug.isEmpty {
@@ -413,6 +418,10 @@ struct ToolbarView: View {
         if path.hasPrefix("https://") { return String(path.dropFirst(8)) }
         if path.hasPrefix("http://") { return String(path.dropFirst(7)) }
         return path
+    }
+
+    private var toolbarDocumentIdentity: ToolbarDocumentIdentity {
+        ToolbarDocumentIdentity(tabId: appStore.activeTabId, path: appStore.document?.pdfPath)
     }
 
     private func openFiles() {
@@ -454,13 +463,13 @@ struct ToolbarView: View {
         }
     }
 
-    private func loadSavedState() async {
+    private func loadSavedState(for identity: ToolbarDocumentIdentity) async {
+        pageSaved = false
         guard isWeb, let sessionId = appStore.activeTabId else {
-            pageSaved = false
             return
         }
         let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
-        if appStore.activeTabId == sessionId {
+        if toolbarDocumentIdentity == identity {
             pageSaved = saved
         }
     }
@@ -477,6 +486,11 @@ struct ToolbarView: View {
             }
         }
     }
+}
+
+private struct ToolbarDocumentIdentity: Hashable {
+    var tabId: String?
+    var path: String?
 }
 
 private struct Divider: View {

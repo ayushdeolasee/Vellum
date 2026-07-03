@@ -480,6 +480,104 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertEqual(CgPdf.string(dictionary, "NM"), "pdf-direct-1-0")
     }
 
+    func testForeignAnnotationDerivedIdSkipsNonDictionarySlots() async throws {
+        // /Annots with a null slot before the real annotation: the reader
+        // derives the id from the RAW slot index (pdf-direct-1-1), while
+        // PDFKit's page.annotations omits the null entry — update/delete must
+        // resolve against the raw-slot domain, not PDFKit's filtered index.
+        let path = makeClassicPdf(name: "foreign-null-slot", objects: [
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [null 5 0 R] >>",
+            4: "<< /Length 0 >>\nstream\n\nendstream",
+            5: "<< /Type /Annot /Subtype /Highlight /Rect [72 676 252 692] /QuadPoints [72 692 252 692 72 676 252 676] /C [1 1 0] >>",
+        ])
+
+        let session = try await openSession(path)
+        let annotations = try await session.annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.count, 1)
+        XCTAssertEqual(annotations[0].id, "pdf-direct-1-1", "id derives from the raw /Annots slot")
+
+        // Update through the derived id must hit the highlight (not miss, and
+        // not resolve slot 1 against PDFKit's filtered array).
+        let updated = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: "pdf-direct-1-1", color: "#bbf7d0", content: "Edited", positionData: nil))
+        XCTAssertTrue(updated)
+        let after = try await openSession(path).annotations(pageNumber: nil)
+        let edited = try XCTUnwrap(after.first { $0.id == "pdf-direct-1-1" })
+        XCTAssertEqual(edited.color, "#bbf7d0")
+        XCTAssertEqual(edited.content, "Edited")
+
+        // Delete through the derived id.
+        let deleted = try await session.deleteAnnotation(id: "pdf-direct-1-1")
+        XCTAssertTrue(deleted)
+        let final = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertTrue(final.isEmpty)
+    }
+
+    func testAnnotatedFileRendersThroughViewerLoadPath() async throws {
+        // Regression for the "blank viewport on reopen" QA report: a file
+        // rewritten by the persistence engine (embedded annotations with /AP
+        // appearance streams from PDFKit's serializer) must still render page
+        // content through the viewer's exact load path — raw bytes →
+        // PDFDocument(data:) → strip embedded annotations → draw.
+        let path = makeTestPdf(name: "render-check")
+        let session = try await openSession(path)
+        _ = try await session.createAnnotation(CreateAnnotationInput(
+            type: .highlight, pageNumber: 1, color: nil, content: nil,
+            positionData: position(AnnotationRect(x: 72, y: 80, width: 180, height: 16))))
+        _ = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note, pageNumber: 1, color: nil, content: "note",
+            positionData: position(AnnotationRect(x: 300, y: 400, width: 0, height: 0), selectedText: nil)))
+        try await session.setMetadata(key: "last_page", value: "1")
+
+        let data = try await session.readPdfBytes()
+        let document = try XCTUnwrap(PDFDocument(data: data), "viewer parse of rewritten bytes")
+        let page = try XCTUnwrap(document.page(at: 0))
+        XCTAssertFalse(page.annotations.isEmpty, "annotations embedded after rewrite")
+        // The viewer's display-copy strip (PdfViewerController.adopt).
+        for index in 0..<document.pageCount {
+            guard let stripPage = document.page(at: index) else { continue }
+            for annotation in stripPage.annotations {
+                stripPage.removeAnnotation(annotation)
+            }
+        }
+        XCTAssertTrue(page.annotations.isEmpty)
+
+        // Render page 1 like the viewer does and require non-blank pixels.
+        let box = page.bounds(for: .cropBox)
+        let width = Int(box.width), height = Int(box.height)
+        let thumb = page.thumbnail(of: NSSize(width: width, height: height), for: .cropBox)
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        thumb.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.restoreGraphicsState()
+
+        var sum = 0.0, sumSq = 0.0, count = 0.0
+        let bytes = try XCTUnwrap(rep.bitmapData)
+        for y in stride(from: 0, to: height, by: 2) {
+            for x in stride(from: 0, to: width, by: 2) {
+                let offset = y * rep.bytesPerRow + x * rep.samplesPerPixel
+                let luma = 0.299 * Double(bytes[offset])
+                    + 0.587 * Double(bytes[offset + 1])
+                    + 0.114 * Double(bytes[offset + 2])
+                sum += luma
+                sumSq += luma * luma
+                count += 1
+            }
+        }
+        let mean = sum / count
+        let variance = sumSq / count - mean * mean
+        XCTAssertGreaterThan(variance, 1.0, "page 1 must render content, not a blank fill")
+    }
+
     func testRotatedPagesRoundTrip() async throws {
         for rotation in [90, 180, 270] {
             let path = makeRotatedPdf(name: "rotated-\(rotation)", rotation: rotation)
