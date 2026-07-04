@@ -498,9 +498,14 @@ private struct LibraryRow: View {
         .padding(.horizontal, 6)
         .background {
             // Subtle hover wash — same neutral fill the chrome uses for
-            // hovered-but-unselected elements (SelectionStyle.fill).
+            // hovered-but-unselected elements (SelectionStyle.fill). The row
+            // content sits inset 5pt within the 52pt row (defaultMinListRowHeight
+            // set on the List), so stretch the wash to the full row height —
+            // otherwise it reads visibly smaller than the native selection
+            // highlight, which fills the row.
             RoundedRectangle(cornerRadius: Radius.md)
                 .fill(hovering ? AnyShapeStyle(.quaternary.opacity(0.55)) : AnyShapeStyle(Color.clear))
+                .padding(.vertical, -5)
         }
         .padding(.horizontal, -6)
         .contentShape(Rectangle())
