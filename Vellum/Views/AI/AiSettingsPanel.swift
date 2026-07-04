@@ -1,21 +1,33 @@
 import SwiftUI
 
+/// Model catalogs shared between the in-panel AI settings and the Settings
+/// window's AI tab so the two never drift.
+enum AiModelCatalog {
+    static let gemini = [
+        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview", "gemini-3-flash-preview",
+        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+        "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash",
+    ]
+    static let openAI = [
+        "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
+        "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
+    ]
+    static let codex = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+
+    static func models(for provider: AiProvider) -> [String] {
+        switch provider {
+        case .gemini: gemini
+        case .openai: openAI
+        case .codex: codex
+        }
+    }
+}
+
 struct AiSettingsPanel: View {
     var onStopRecognition: () -> Void = {}
 
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
-
-    private let geminiModels = [
-        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview", "gemini-3-flash-preview",
-        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-        "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash",
-    ]
-    private let openAIModels = [
-        "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
-        "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
-    ]
-    private let codexModels = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -72,11 +84,7 @@ struct AiSettingsPanel: View {
     }
 
     private var models: [String] {
-        switch aiStore.settings.provider {
-        case .gemini: geminiModels
-        case .openai: openAIModels
-        case .codex: codexModels
-        }
+        AiModelCatalog.models(for: aiStore.settings.provider)
     }
 
     private var providerBinding: Binding<AiProvider> {

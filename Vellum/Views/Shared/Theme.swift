@@ -26,9 +26,18 @@ extension Color {
     }
 }
 
-enum AppTheme: String, Sendable {
+enum AppTheme: String, Sendable, CaseIterable {
+    case system
     case light
     case dark
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
 }
 
 /// Semantic palette for one theme. Mirrors the CSS custom properties.
@@ -167,38 +176,95 @@ extension View {
 final class ThemeStore {
     static let storageKey = "vellum.theme"
 
+    /// The user's three-way choice (System / Light / Dark). Persisted verbatim.
     private(set) var theme: AppTheme
 
-    var palette: ThemePalette { theme == .dark ? .dark : .light }
-    var colorScheme: ColorScheme { theme == .dark ? .dark : .light }
+    /// Live snapshot of the OS appearance, updated by a KVO observer on
+    /// `NSApp.effectiveAppearance` so System mode re-renders the instant macOS
+    /// flips between light and dark.
+    private var systemIsDark: Bool
+
+    @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
+    @ObservationIgnored private var distributedObserver: NSObjectProtocol?
+
+    /// Effective dark-mode state after resolving System against the OS.
+    var isDark: Bool {
+        switch theme {
+        case .light: false
+        case .dark: true
+        case .system: systemIsDark
+        }
+    }
+
+    var palette: ThemePalette { isDark ? .dark : .light }
+
+    /// Scheme forced onto the window chrome. `nil` in System mode so we defer to
+    /// the OS appearance instead of pinning it — required for live switching.
+    var colorScheme: ColorScheme? {
+        switch theme {
+        case .light: .light
+        case .dark: .dark
+        case .system: nil
+        }
+    }
 
     init() {
-        if let stored = UserDefaults.standard.string(forKey: Self.storageKey),
-           let parsed = AppTheme(rawValue: stored) {
-            theme = parsed
-        } else {
-            // First launch: follow the OS preference.
-            let appearance = NSApp?.effectiveAppearance
-                ?? NSAppearance.currentDrawing()
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            theme = isDark ? .dark : .light
+        let stored = UserDefaults.standard.string(forKey: Self.storageKey)
+            .flatMap(AppTheme.init(rawValue:))
+        // Existing light/dark preferences migrate untouched; a fresh install
+        // (no stored value) defaults to System so it tracks macOS out of the box.
+        theme = stored ?? .system
+        systemIsDark = Self.currentSystemIsDark()
+        observeSystemAppearance()
+    }
+
+    private static func currentSystemIsDark() -> Bool {
+        let appearance = NSApp?.effectiveAppearance ?? NSAppearance.currentDrawing()
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    private func observeSystemAppearance() {
+        // In System mode the window forces no scheme, so effectiveAppearance
+        // tracks the OS and this fires on every Control Center appearance flip.
+        if let app = NSApp {
+            appearanceObservation = app.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.systemIsDark = Self.currentSystemIsDark()
+                }
+            }
+        }
+        // Belt-and-suspenders: the OS also broadcasts this when the global Light/
+        // Dark setting flips, covering any case where the KVO signal is missed.
+        distributedObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.systemIsDark = Self.currentSystemIsDark()
+            }
         }
     }
 
     func setTheme(_ theme: AppTheme) {
         self.theme = theme
         UserDefaults.standard.set(theme.rawValue, forKey: Self.storageKey)
+        // Re-read the OS appearance so a switch into System resolves correctly
+        // even if the KVO callback lands a frame later.
+        systemIsDark = Self.currentSystemIsDark()
     }
 
     func toggleTheme() {
-        setTheme(theme == .dark ? .light : .dark)
+        setTheme(isDark ? .light : .dark)
     }
 
     /// Render color for a persisted highlight hex: highlights are stored with
     /// their light value; dark mode maps to the matching dark variant.
     func highlightRenderColor(for storedHex: String?) -> Color {
         let hex = storedHex ?? HIGHLIGHT_COLORS[0].value
-        if theme == .dark,
+        if isDark,
            let match = HIGHLIGHT_COLORS.first(where: {
                $0.value.caseInsensitiveCompare(hex) == .orderedSame
            }) {

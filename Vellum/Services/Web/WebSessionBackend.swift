@@ -7,7 +7,6 @@ import Foundation
 // Annotations live in the per-URL JSON sidecar; every mutation rewrites the
 // sidecar immediately, so save/close are no-ops.
 
-private let defaultHighlightColor = "#fef08a"
 private let defaultNoteColor = "#fde68a"
 
 @MainActor
@@ -134,7 +133,7 @@ final class WebDocumentSession: DocumentSession {
         let now = WebLibrary.rfc3339Now()
         let defaultColor: String?
         switch input.type {
-        case .highlight: defaultColor = defaultHighlightColor
+        case .highlight: defaultColor = AppStore.storedDefaultHighlightColor()
         case .note: defaultColor = defaultNoteColor
         case .bookmark: defaultColor = nil
         }

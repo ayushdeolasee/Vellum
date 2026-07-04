@@ -73,6 +73,8 @@ struct VellumApp: App {
         Settings {
             SettingsView()
                 .environment(themeStore)
+                .environment(appStore)
+                .environment(aiStore)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

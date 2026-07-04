@@ -63,6 +63,34 @@ final class AppStore {
         }
     }
 
+    // Default highlight color — applied to new highlights created without an
+    // explicit color (e.g. AI tool highlights, webpage sidecar defaults). One of
+    // HIGHLIGHT_COLORS[*].value; editable from Settings ▸ Annotations.
+    static let defaultHighlightColorKey = "vellum.defaultHighlightColor"
+
+    var defaultHighlightColor: String = {
+        let stored = UserDefaults.standard.string(forKey: AppStore.defaultHighlightColorKey)
+        // Reject stale values no longer in the palette.
+        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
+            return stored
+        }
+        return HIGHLIGHT_COLORS[0].value
+    }() {
+        didSet {
+            UserDefaults.standard.set(defaultHighlightColor, forKey: Self.defaultHighlightColorKey)
+        }
+    }
+
+    /// The persisted default highlight color read without an AppStore instance
+    /// (services that create annotations off the main store, e.g. web sidecars).
+    static func storedDefaultHighlightColor() -> String {
+        let stored = UserDefaults.standard.string(forKey: defaultHighlightColorKey)
+        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
+            return stored
+        }
+        return HIGHLIGHT_COLORS[0].value
+    }
+
     func increaseSidebarFont() {
         sidebarFontSize = min(Self.maxSidebarFontSize, sidebarFontSize + 1)
     }
