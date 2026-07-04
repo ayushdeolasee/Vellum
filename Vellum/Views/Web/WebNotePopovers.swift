@@ -78,13 +78,7 @@ private struct PopoverCard<Content: View>: View {
 
     var body: some View {
         content()
-            .background(palette.background)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.lg)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
-            .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
+            .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
     }
 }
 
@@ -238,32 +232,37 @@ struct WebContextMenuView: View {
     @State private var hovering = false
 
     var body: some View {
-        PopoverCard {
-            VStack(spacing: 0) {
-                Button(action: onAddNote) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 14))
-                            .foregroundStyle(WebAmber.amber500)
-                        Text("Add note here")
-                            .font(.system(size: 13))
-                            .foregroundStyle(palette.foreground)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(hovering && canAddNote ? palette.accent : .clear)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canAddNote)
-                .opacity(canAddNote ? 1 : 0.5)
-                .onHover { hovering = $0 }
-                .help(canAddNote ? "" : "No text near this spot to attach a note to")
+        // A single-action pill that hugs its label — not a full-width menu row.
+        Button(action: onAddNote) {
+            HStack(spacing: 8) {
+                Image(systemName: "note.text")
+                    .font(.system(size: 13))
+                    .foregroundStyle(WebAmber.amber500)
+                Text("Add note here")
+                    .font(.system(size: 13))
+                    .foregroundStyle(palette.foreground)
             }
-            .padding(.vertical, 4)
-            .frame(minWidth: 160, alignment: .leading)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.lg))
         }
+        .buttonStyle(.plain)
+        .disabled(!canAddNote)
+        .opacity(canAddNote ? 1 : 0.5)
+        // Hover tints the whole pill a shade darker, edge to edge, rather
+        // than a smaller inset rectangle behind just the text.
+        // Hover darkens the whole pill edge to edge, behind the label so the
+        // text stays crisp (accent is too close to the glass tint to register).
+        .background {
+            if hovering && canAddNote {
+                RoundedRectangle(cornerRadius: Radius.lg).fill(.black.opacity(0.25))
+            }
+        }
+        .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
+        .onHover { hovering = $0 }
+        .help(canAddNote ? "" : "No text near this spot to attach a note to")
+        // The overlay proposes the full container width; hug the label instead.
+        .fixedSize()
     }
 }
 
@@ -432,13 +431,7 @@ struct WebSelectionPopover: View {
                 }
             }
             .padding(6)
-            .background(palette.background)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.lg)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
-            .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
+            .glassEffect(.regular, in: .capsule)
 
             if showNoteInput {
                 HStack(spacing: 6) {
@@ -461,13 +454,7 @@ struct WebSelectionPopover: View {
                 }
                 .padding(8)
                 .frame(width: 256)
-                .background(palette.background)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Radius.lg)
-                        .strokeBorder(palette.border, lineWidth: 1)
-                }
-                .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
+                .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
             }
         }
         .onGeometryChange(for: CGSize.self) { proxy in

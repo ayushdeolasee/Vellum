@@ -8,41 +8,39 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Wordmark()
-                .fixedSize()
-
-            if !appStore.tabs.isEmpty {
-                Rectangle()
-                    .fill(palette.border)
-                    .frame(width: 1, height: 20)
-            }
-
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(appStore.tabs) { tab in
-                        TabItem(
-                            tab: tab,
-                            isActive: tab.id == appStore.activeTabId,
-                            onActivate: { appStore.activateTab(tab.id) },
-                            onClose: { Task { await appStore.closeTab(tab.id) } }
-                        )
+                GlassEffectContainer(spacing: 4) {
+                    HStack(spacing: 4) {
+                        ForEach(appStore.tabs) { tab in
+                            TabItem(
+                                tab: tab,
+                                isActive: tab.id == appStore.activeTabId,
+                                onActivate: { appStore.activateTab(tab.id) },
+                                onClose: { Task { await appStore.closeTab(tab.id) } }
+                            )
+                        }
                     }
+                    .padding(.vertical, 5)
                 }
-                .padding(.vertical, 4)
             }
             .frame(maxWidth: .infinity)
 
-            IconButton(help: "Open PDF in new tab", action: openPdf) {
+            Button(action: openPdf) {
                 Image(systemName: "plus")
-                    .font(.system(size: 16))
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.accessoryBar)
+            .help("Open PDF in new tab")
+            .accessibilityLabel("Open PDF in new tab")
         }
         .padding(.leading, 12)
         .padding(.trailing, 8)
-        .frame(height: 40)
-        .background(palette.background)
+        .frame(height: 38)
+        .background(.bar)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(palette.border).frame(height: 1)
+            Divider()
         }
     }
 
@@ -88,7 +86,7 @@ private struct TabItem: View {
                 HStack(spacing: 8) {
                     Image(systemName: "doc.text")
                         .font(.system(size: 13))
-                        .foregroundStyle(isActive ? palette.primary : palette.mutedForeground)
+                        .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     Text(label)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -107,24 +105,24 @@ private struct TabItem: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(palette.mutedForeground)
+            .foregroundStyle(.secondary)
             .opacity(hovering ? 1 : 0)
             .padding(.trailing, 4)
             .help("Close \(label)")
             .accessibilityLabel("Close \(label)")
         }
         .font(.system(size: 12))
-        .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
+        .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .frame(minWidth: 128, idealWidth: 176, maxWidth: 224, minHeight: 28, maxHeight: 28)
-        .background(isActive ? palette.surface : (hovering ? palette.accent : .clear))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-        .overlay {
-            if isActive {
+        .background {
+            if !isActive, hovering {
                 RoundedRectangle(cornerRadius: Radius.md)
-                    .strokeBorder(palette.borderStrong, lineWidth: 1)
+                    .fill(.quaternary.opacity(0.5))
             }
         }
-        .shadow(color: isActive ? Color.black.opacity(0.08) : .clear, radius: 3, y: 1)
+        .glassEffect(
+            isActive ? .regular.interactive() : .identity,
+            in: .rect(cornerRadius: Radius.md))
         .onHover { hovering = $0 }
         .help(tab.document.pdfPath)
         .overlay {

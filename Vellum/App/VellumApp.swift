@@ -60,8 +60,22 @@ struct VellumApp: App {
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
+                .tint(themeStore.palette.primary)
         }
         .defaultSize(width: 1280, height: 800)
         .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified(showsTitle: false))
+        .commands {
+            VellumCommands()
+        }
+
+        // Adds "Settings…" (⌘,) to the app menu automatically.
+        Settings {
+            SettingsView()
+                .environment(themeStore)
+                .environment(\.palette, themeStore.palette)
+                .preferredColorScheme(themeStore.colorScheme)
+                .tint(themeStore.palette.primary)
+        }
     }
 }

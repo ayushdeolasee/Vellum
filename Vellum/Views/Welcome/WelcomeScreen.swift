@@ -63,20 +63,12 @@ struct WelcomeScreen: View {
         VStack(spacing: 0) {
             Image(systemName: "doc.text")
                 .font(.system(size: 30, weight: .regular))
-                .foregroundStyle(palette.primary)
+                .foregroundStyle(.tint)
                 .frame(width: 64, height: 64)
-                .background(palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.xxl))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Radius.xxl)
-                        .strokeBorder(palette.borderStrong)
-                }
-                .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
+                .glassEffect(.regular, in: .rect(cornerRadius: Radius.xxl))
                 .padding(.bottom, 12)
 
-            Wordmark()
-                .scaleEffect(2.4)
-                .frame(height: 43)
+            Wordmark(size: 36)
 
             Text("A quiet place to read, annotate, and think alongside your documents.")
                 .font(.system(size: 14))
@@ -97,16 +89,14 @@ struct WelcomeScreen: View {
                 Text("or press")
                 Text("⌘O")
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(palette.foreground)
+                    .foregroundStyle(.primary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(palette.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.sm))
                     .overlay {
                         RoundedRectangle(cornerRadius: Radius.sm)
-                            .strokeBorder(palette.borderStrong)
+                            .strokeBorder(.separator)
                     }
-                    .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
             }
             .font(.system(size: 12))
             .foregroundStyle(palette.mutedForeground)
@@ -127,15 +117,9 @@ struct WelcomeScreen: View {
                     .disabled(appStore.isLoading)
                     .onSubmit(openUrl)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .frame(height: 40)
-            .background(palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.lg)
-                    .strokeBorder(palette.border)
-            }
-            .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
+            .glassEffect(.regular, in: .capsule)
 
             TextButton(
                 disabled: appStore.isLoading || trimmedUrl.isEmpty,
@@ -152,26 +136,16 @@ struct WelcomeScreen: View {
         VStack(spacing: 8) {
             SectionHeader(title: "Saved pages", systemImage: "archivebox")
 
-            VStack(spacing: 0) {
-                ForEach(Array(savedPages.enumerated()), id: \.element.url) { index, page in
+            VStack(spacing: 8) {
+                ForEach(savedPages, id: \.url) { page in
                     SavedPageRow(
                         page: page,
                         isLoading: appStore.isLoading,
                         onOpen: { Task { await appStore.openUrl(page.url) } },
                         onRemove: { removeSavedPage(page.url) }
                     )
-                    if index < savedPages.count - 1 {
-                        Divider().overlay(palette.border)
-                    }
                 }
             }
-            .background(palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.xl)
-                    .strokeBorder(palette.border)
-            }
-            .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
         }
         .frame(maxWidth: .infinity)
     }
@@ -180,26 +154,16 @@ struct WelcomeScreen: View {
         VStack(spacing: 8) {
             SectionHeader(title: "Recently opened", systemImage: "clock")
 
-            VStack(spacing: 0) {
-                ForEach(Array(recentDocuments.enumerated()), id: \.element.pdfPath) { index, entry in
+            VStack(spacing: 8) {
+                ForEach(recentDocuments, id: \.pdfPath) { entry in
                     RecentDocumentRow(
                         entry: entry,
                         isLoading: appStore.isLoading,
                         onOpen: { openRecent(entry) },
                         onRemove: { recentDocuments = RecentFilesService.remove(path: entry.pdfPath) }
                     )
-                    if index < recentDocuments.count - 1 {
-                        Divider().overlay(palette.border)
-                    }
                 }
             }
-            .background(palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.xl)
-                    .strokeBorder(palette.border)
-            }
-            .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
         }
         .frame(maxWidth: .infinity)
     }
@@ -355,6 +319,56 @@ private struct RecentDocumentRow: View {
     }
 }
 
+#Preview("Saved page rows") {
+    VStack(spacing: 8) {
+        DocumentRow(
+            icon: "globe",
+            title: "Example Domain",
+            subtitle: "example.com · available offline",
+            tooltip: "https://example.com",
+            isLoading: false,
+            hovering: true,
+            removeHelp: "Remove from saved pages",
+            removeAccessibilityLabel: "Remove",
+            onOpen: {},
+            onRemove: {}
+        )
+        DocumentRow(
+            icon: "globe",
+            title: "Jane Street Blog - Can you reverse engineer our neural network?",
+            subtitle: "blog.janestreet.com/can-you-reverse-engineer-our-neural-network · available offline",
+            tooltip: "https://blog.janestreet.com",
+            isLoading: false,
+            hovering: false,
+            removeHelp: "Remove from saved pages",
+            removeAccessibilityLabel: "Remove",
+            onOpen: {},
+            onRemove: {}
+        )
+    }
+    .frame(width: 660)
+    .padding(24)
+    .background(Color(hex: "#1a1a1a"))
+    .environment(\.palette, .dark)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Hero wordmark") {
+    VStack(spacing: 12) {
+        Image(systemName: "doc.text")
+            .font(.system(size: 30, weight: .regular))
+            .foregroundStyle(.tint)
+            .frame(width: 64, height: 64)
+            .glassEffect(.regular, in: .rect(cornerRadius: Radius.xxl))
+        Wordmark(size: 36)
+    }
+    .padding(40)
+    .background(Color(hex: "#1a1a1a"))
+    .environment(\.palette, .dark)
+    .preferredColorScheme(.dark)
+    .tint(ThemePalette.dark.primary)
+}
+
 private struct DocumentRow: View {
     let icon: String
     let title: String
@@ -376,13 +390,12 @@ private struct DocumentRow: View {
                 HStack(spacing: 12) {
                     Image(systemName: icon)
                         .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(hovering ? palette.primary : palette.mutedForeground)
+                        .foregroundStyle(hovering ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                         .frame(width: 36, height: 36)
-                        .background(palette.muted)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.lg))
                         .overlay {
                             RoundedRectangle(cornerRadius: Radius.lg)
-                                .strokeBorder(hovering ? palette.borderStrong : palette.border)
+                                .strokeBorder(.separator)
                         }
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -410,17 +423,30 @@ private struct DocumentRow: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 15))
                     .frame(width: 32, height: 32)
-                    .foregroundStyle(removeHovering ? palette.destructive : palette.mutedForeground)
-                    .background(removeHovering ? palette.muted : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                    .foregroundStyle(removeHovering ? AnyShapeStyle(palette.destructive) : AnyShapeStyle(.secondary))
+                    .background(
+                        removeHovering ? AnyShapeStyle(.quaternary.opacity(0.6)) : AnyShapeStyle(.clear),
+                        in: RoundedRectangle(cornerRadius: Radius.md))
             }
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
             .onHover { removeHovering = $0 }
             .help(removeHelp)
             .accessibilityLabel(removeAccessibilityLabel)
-            .padding(.trailing, 8)
+            // Optically matches the 16pt leading content inset (the glyph
+            // sits inset within its 32pt hit target).
+            .padding(.trailing, 12)
         }
-        .background(hovering ? palette.accent : palette.surface)
+        // Hover tint layered over the card material so the highlight shares
+        // the card's rounded shape instead of squaring off at the edges.
+        .background(
+            hovering ? AnyShapeStyle(.quaternary.opacity(0.35)) : AnyShapeStyle(.clear),
+            in: RoundedRectangle(cornerRadius: Radius.xl))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.xl))
+        .background(.quinary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.xl))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.xl)
+                .strokeBorder(.separator)
+        }
     }
 }

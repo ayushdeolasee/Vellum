@@ -34,12 +34,8 @@ struct AiSettingsPanel: View {
                         aiStore.settings.provider == .openai ? "sk-..." : "AIza...",
                         text: apiKeyBinding
                     )
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 8)
-                    .frame(height: 25)
-                    .background(palette.background)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
-                    .overlay { RoundedRectangle(cornerRadius: Radius.sm).stroke(palette.border) }
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
                 }
             }
 

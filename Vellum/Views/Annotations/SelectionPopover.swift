@@ -15,7 +15,6 @@ struct SelectionPopover: View {
     @State private var showNoteInput = false
     @State private var noteText = ""
     @State private var noteButtonHovering = false
-    @State private var addButtonHovering = false
     @FocusState private var noteFieldFocused: Bool
 
     var body: some View {
@@ -32,7 +31,7 @@ struct SelectionPopover: View {
                 }
 
                 Rectangle()
-                    .fill(palette.border)
+                    .fill(.quaternary)
                     .frame(width: 1, height: 20)
                     .padding(.horizontal, 4)
 
@@ -42,8 +41,8 @@ struct SelectionPopover: View {
                     Image(systemName: "plus.bubble")
                         .font(.system(size: 12))
                         .frame(width: 24, height: 24)
-                        .foregroundStyle(noteButtonHovering ? palette.foreground : palette.mutedForeground)
-                        .background(noteButtonHovering ? palette.accent : .clear)
+                        .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
                         .clipShape(Circle())
                         .contentShape(Circle())
                 }
@@ -52,57 +51,25 @@ struct SelectionPopover: View {
                 .help("Add note")
             }
             .padding(6)
-            .background(palette.background)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.lg)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.1), radius: 15, x: 0, y: 10)
+            .glassEffect(.regular, in: .capsule)
 
             if showNoteInput {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     TextField("Add a note...", text: $noteText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-                        .foregroundStyle(palette.foreground)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(palette.muted)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(
-                                    noteFieldFocused ? palette.primary : palette.border,
-                                    lineWidth: 1)
-                        )
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13))
                         .focused($noteFieldFocused)
                         .onSubmit { handleAddNote() }
                         .onExitCommand { onClose() }
                         .onAppear { noteFieldFocused = true }
 
-                    Button(action: handleAddNote) {
-                        Text("Add")
-                            .font(.system(size: 12))
-                            .foregroundStyle(palette.primaryForeground)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(addButtonHovering ? palette.primary.opacity(0.9) : palette.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { addButtonHovering = $0 }
+                    Button("Add", action: handleAddNote)
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.small)
                 }
                 .padding(8)
                 .frame(width: 256)
-                .background(palette.background)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Radius.lg)
-                        .strokeBorder(palette.border, lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.1), radius: 15, x: 0, y: 10)
+                .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
             }
         }
     }

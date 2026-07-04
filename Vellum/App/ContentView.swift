@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppStore.self) private var appStore
@@ -9,36 +8,52 @@ struct ContentView: View {
     @Environment(\.palette) private var palette
 
     @State private var keyMonitor: Any?
+    @State private var sidebarHovering = false
 
     var body: some View {
         VStack(spacing: 0) {
-            TabBarView()
+            if !appStore.tabs.isEmpty {
+                TabBarView()
+            }
 
             if appStore.document == nil {
-                ToolbarView()
                 WelcomeScreen()
             } else {
-                ToolbarView(
-                    sidebarOpen: appStore.sidebarOpen,
-                    onToggleSidebar: { appStore.sidebarOpen.toggle() }
-                )
-
-                HStack(spacing: 0) {
-                    documentViewer
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if appStore.sidebarOpen {
-                        sidebar
-                            .frame(width: 320)
-                            .frame(maxHeight: .infinity)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+                documentViewer
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
+        .toolbar {
+            VellumToolbar()
+        }
+        .inspector(isPresented: inspectorPresented) {
+            sidebar
+                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
+                .toolbar {
+                    // Declared inside the inspector so the switcher lands in
+                    // the inspector's own toolbar section, Xcode-style. The
+                    // explicit condition matters: inspector toolbar items stay
+                    // visible even while the inspector itself is closed.
+                    if inspectorPresented.wrappedValue {
+                        // Flexible spacers on both sides center the switcher
+                        // over the inspector instead of pinning it leading.
+                        ToolbarSpacer(.flexible)
+                        ToolbarItem {
+                            GlassSegmentedPicker(
+                                options: [
+                                    (AppStore.SidebarTab.annotations, "Annotations"),
+                                    (AppStore.SidebarTab.ai, "AI"),
+                                ],
+                                selection: sidebarTabBinding
+                            )
+                        }
+                        ToolbarSpacer(.flexible)
+                    }
+                }
+        }
         .task(id: documentIdentity) {
             annotationStore.clearAnnotations()
             aiStore.clearDocumentContext()
@@ -65,6 +80,10 @@ struct ContentView: View {
             guard appStore.document != nil else { return }
             Task { await annotationStore.loadAnnotations() }
         }
+        // Publish the stores as a focused value so the app-level menu commands
+        // (VellumCommands) route here and disable themselves when the Settings
+        // window — which does not publish this value — is key.
+        .focusedValue(\.vellumFocus, VellumFocus(appStore: appStore, annotationStore: annotationStore))
         .onAppear(perform: installKeyMonitor)
         .onDisappear(perform: removeKeyMonitor)
     }
@@ -80,45 +99,33 @@ struct ContentView: View {
         }
     }
 
+    /// Inspector only makes sense with a document; opening state still lives
+    /// in AppStore so the toolbar toggle and restores keep working.
+    private var inspectorPresented: Binding<Bool> {
+        Binding(
+            get: { appStore.document != nil && appStore.sidebarOpen },
+            set: { appStore.sidebarOpen = $0 }
+        )
+    }
+
+    private var sidebarTabBinding: Binding<AppStore.SidebarTab> {
+        Binding(
+            get: { appStore.sidebarTab },
+            set: { appStore.sidebarTab = $0 }
+        )
+    }
+
     private var sidebar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                SidebarSegment(
-                    title: "Annotations",
-                    systemImage: "message",
-                    selected: appStore.sidebarTab == .annotations,
-                    action: { appStore.sidebarTab = .annotations }
-                )
-                SidebarSegment(
-                    title: "AI",
-                    systemImage: "sparkles",
-                    selected: appStore.sidebarTab == .ai,
-                    action: { appStore.sidebarTab = .ai }
-                )
+        Group {
+            if appStore.sidebarTab == .annotations {
+                AnnotationSidebar()
+            } else {
+                AiPanel()
             }
-            .padding(4)
-            .background(palette.muted)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .padding(8)
-
-            Divider().overlay(palette.border)
-
-            Group {
-                if appStore.sidebarTab == .annotations {
-                    AnnotationSidebar()
-                } else {
-                    AiPanel()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
         }
-        .background(palette.background)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(palette.border)
-                .frame(width: 1)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .onHover { sidebarHovering = $0 }
     }
 
     private var documentIdentity: DocumentIdentity {
@@ -146,48 +153,37 @@ struct ContentView: View {
 
     /// Returns true when the event matches a Vellum shortcut and must not be
     /// passed on to AppKit.
+    ///
+    /// The bulk of the keyboard surface now lives in native menu commands
+    /// (`VellumCommands`). This monitor is deliberately reduced to only the
+    /// interactions SwiftUI's `.commands` cannot express:
+    ///   • bare `N` to toggle sticky-note mode,
+    ///   • `Escape` to leave note mode / deselect,
+    ///   • the pointer-contextual `⌘+ / ⌘− / ⌘=`, which resize the side panel's
+    ///     text (instead of zooming the document) only while the pointer hovers
+    ///     the open panel — a hover condition a menu shortcut can't carry.
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        // Local monitors see every window's events; these shortcuts must never
+        // act on the document while the Settings window is key.
+        if let identifier = event.window?.identifier?.rawValue,
+           identifier.localizedCaseInsensitiveContains("settings") {
+            return false
+        }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
         let key = event.charactersIgnoringModifiers ?? ""
 
-        if command && key == "o" {
-            openDocuments()
+        // Sidebar text sizing: only intercept ⌘+/⌘− while hovering the open
+        // side panel. Otherwise fall through so the View-menu zoom command
+        // handles the document zoom.
+        if command && !modifiers.contains(.option) && (key == "=" || key == "+") {
+            guard sidebarHovering && appStore.sidebarOpen else { return false }
+            appStore.increaseSidebarFont()
             return true
         }
-        if command && key == "l" {
-            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-            return true
-        }
-        if command && key == "s" {
-            if let sessionId = appStore.activeTabId {
-                Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
-            }
-            return true
-        }
-        if command && key.lowercased() == "w" {
-            Task { await appStore.closeFile() }
-            return true
-        }
-        if command, key.count == 1, let number = Int(key), (1...9).contains(number) {
-            let index = number - 1
-            guard appStore.tabs.indices.contains(index) else { return false }
-            appStore.activateTab(appStore.tabs[index].id)
-            return true
-        }
-        // AppKit reports native Cmd-Plus (Cmd-Shift-=) as "+".
-        if command && (key == "=" || key == "+") {
-            appStore.zoomIn()
-            return true
-        }
-        if command && key == "-" {
-            appStore.zoomOut()
-            return true
-        }
-        if command && key == "b" {
-            if appStore.document != nil {
-                Task { await annotationStore.toggleBookmark() }
-            }
+        if command && !modifiers.contains(.option) && key == "-" {
+            guard sidebarHovering && appStore.sidebarOpen else { return false }
+            appStore.decreaseSidebarFont()
             return true
         }
         if key == "\u{1b}" || event.keyCode == 53 {
@@ -208,25 +204,6 @@ struct ContentView: View {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
         return responder is NSTextView || responder is NSTextField || responder is NSSearchField
     }
-
-    private func openDocuments() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = Self.documentContentTypes
-        guard panel.runModal() == .OK else { return }
-        let paths = panel.urls.map(\.path)
-        Task { await appStore.openFiles(paths: paths) }
-    }
-
-    private static var documentContentTypes: [UTType] {
-        var types: [UTType] = [.pdf]
-        if let archive = UTType(filenameExtension: "vellumweb") {
-            types.append(archive)
-        }
-        return types
-    }
 }
 
 private struct DocumentIdentity: Hashable {
@@ -239,33 +216,3 @@ private struct AutosaveIdentity: Hashable {
     var path: String?
 }
 
-private struct SidebarSegment: View {
-    let title: String
-    let systemImage: String
-    let selected: Bool
-    let action: () -> Void
-
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13))
-                Text(title)
-            }
-            .font(.system(size: 12, weight: .medium))
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .foregroundStyle(selected || hovering ? palette.foreground : palette.mutedForeground)
-            .background(selected ? palette.surface : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-            .shadow(color: selected ? Color.black.opacity(0.08) : .clear, radius: 1, y: 1)
-            .contentShape(RoundedRectangle(cornerRadius: Radius.md))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-    }
-}

@@ -22,7 +22,6 @@ struct AiPanel: View {
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.background)
         .onAppear { speakLatestIfNeeded() }
         .onChange(of: aiStore.messages) { _, _ in speakLatestIfNeeded() }
         .onChange(of: aiStore.isThinking) { _, _ in speakLatestIfNeeded() }
@@ -58,7 +57,7 @@ struct AiPanel: View {
         .foregroundStyle(palette.foreground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .overlay(alignment: .bottom) { Rectangle().fill(palette.border).frame(height: 1) }
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var messages: some View {
@@ -116,23 +115,16 @@ struct AiPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: 272, alignment: .leading)
-                .background(message.role == .user ? palette.primary : palette.surface)
+                .background(
+                    message.role == .user
+                        ? AnyShapeStyle(.tint)
+                        : AnyShapeStyle(.quaternary.opacity(0.45)))
                 .clipShape(UnevenRoundedRectangle(
                     topLeadingRadius: message.role == .assistant ? Radius.sm : Radius.xl,
                     bottomLeadingRadius: Radius.xl,
                     bottomTrailingRadius: Radius.xl,
                     topTrailingRadius: message.role == .user ? Radius.sm : Radius.xl
                 ))
-                .overlay {
-                    if message.role == .assistant {
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: Radius.sm,
-                            bottomLeadingRadius: Radius.xl,
-                            bottomTrailingRadius: Radius.xl,
-                            topTrailingRadius: Radius.xl
-                        ).stroke(palette.border)
-                    }
-                }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
@@ -146,9 +138,7 @@ struct AiPanel: View {
         .foregroundStyle(palette.mutedForeground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
-        .overlay { RoundedRectangle(cornerRadius: Radius.xl).stroke(palette.border) }
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: Radius.xl))
     }
 
     private func errorBanner(_ error: String) -> some View {
@@ -186,9 +176,8 @@ struct AiPanel: View {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 15))
                     .frame(width: 36, height: 36)
-                    .background(palette.primary)
+                    .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
                     .foregroundStyle(palette.primaryForeground)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
             }
             .buttonStyle(.plain)
             .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking)
@@ -196,11 +185,9 @@ struct AiPanel: View {
             .help("Send message")
         }
         .padding(6)
-        .background(palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
-        .overlay { RoundedRectangle(cornerRadius: Radius.xl).stroke(palette.border) }
+        .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
         .padding(12)
-        .overlay(alignment: .top) { Rectangle().fill(palette.border).frame(height: 1) }
+        .overlay(alignment: .top) { Divider() }
     }
 
     private func submit() {

@@ -104,33 +104,29 @@ struct PdfContextMenuView: View {
     @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onAddNote) {
-                HStack(spacing: 8) {
-                    Image(systemName: "note.text")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color(hex: "#f59e0b"))
-                    Text("Add note here")
-                        .font(.system(size: 14))
-                        .foregroundStyle(palette.foreground)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(hovering ? palette.accent : .clear)
-                .contentShape(Rectangle())
+        // A single-action pill that hugs its label — not a full-width menu row.
+        Button(action: onAddNote) {
+            HStack(spacing: 8) {
+                Image(systemName: "note.text")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(hex: "#f59e0b"))
+                Text("Add note here")
+                    .font(.system(size: 13))
+                    .foregroundStyle(palette.foreground)
             }
-            .buttonStyle(.plain)
-            .onHover { hovering = $0 }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.lg))
         }
-        .padding(.vertical, 4)
-        .frame(minWidth: 160, alignment: .leading)
-        .background(palette.background)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.lg)
-                .strokeBorder(palette.border, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.1), radius: 15, x: 0, y: 10)
+        .buttonStyle(.plain)
+        // Hover darkens the whole pill edge to edge, behind the label.
+        .background {
+            if hovering {
+                RoundedRectangle(cornerRadius: Radius.lg).fill(.black.opacity(0.25))
+            }
+        }
+        .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
+        .onHover { hovering = $0 }
+        .fixedSize()
     }
 }

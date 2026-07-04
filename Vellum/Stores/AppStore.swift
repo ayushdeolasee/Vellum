@@ -42,6 +42,28 @@ final class AppStore {
 
     enum SidebarTab { case annotations, ai }
 
+    // Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
+    static let minSidebarFontSize: Double = 10
+    static let maxSidebarFontSize: Double = 24
+    private static let sidebarFontSizeKey = "sidebarFontSize"
+
+    var sidebarFontSize: Double = {
+        let stored = UserDefaults.standard.double(forKey: "sidebarFontSize")
+        return stored == 0 ? 14 : min(AppStore.maxSidebarFontSize, max(AppStore.minSidebarFontSize, stored))
+    }() {
+        didSet {
+            UserDefaults.standard.set(sidebarFontSize, forKey: Self.sidebarFontSizeKey)
+        }
+    }
+
+    func increaseSidebarFont() {
+        sidebarFontSize = min(Self.maxSidebarFontSize, sidebarFontSize + 1)
+    }
+
+    func decreaseSidebarFont() {
+        sidebarFontSize = max(Self.minSidebarFontSize, sidebarFontSize - 1)
+    }
+
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
     var zoomToHandler: ((Double) -> Void)?
@@ -232,6 +254,16 @@ final class AppStore {
         }
     }
 
+    /// Reset zoom to 100%, anchored on the viewport center when a PDF viewer
+    /// has registered its handler (mirrors the toolbar's percentage button).
+    func resetZoom() {
+        if let zoomToHandler {
+            zoomToHandler(1)
+        } else {
+            setZoom(1)
+        }
+    }
+
     func setVisiblePages(_ pages: [Int]) {
         guard pages != visiblePages else { return }
         visiblePages = pages
@@ -287,6 +319,8 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         RecentFilesService.record(doc)
+        // Reveal the side panel by default whenever a document is opened.
+        sidebarOpen = true
         if let existing = tabs.first(where: { $0.document.pdfPath == doc.pdfPath }) {
             try? await sessions.closeFile(sessionId: sessionId)
             activateTab(existing.id)

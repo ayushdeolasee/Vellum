@@ -49,6 +49,12 @@ struct WebNoteViewerState {
     var openedAt: Date
 }
 
+struct WebHighlightEditorState {
+    var id: String
+    var point: CGPoint
+    var openedAt: Date
+}
+
 // MARK: - View
 
 struct WebViewerView: View {
@@ -114,6 +120,24 @@ struct WebViewerView: View {
                     .zIndex(50)
                 }
 
+                if let editor = controller.highlightEditor,
+                   let annotation = annotationStore.annotations.first(where: {
+                       $0.id == editor.id && $0.type == .highlight
+                   }) {
+                    AnchoredPopover(
+                        x: editor.point.x, y: editor.point.y,
+                        placement: .above, containerSize: proxy.size
+                    ) {
+                        HighlightEditPopover(
+                            annotation: annotation,
+                            onDelete: { controller.closeHighlightEditor() })
+                            // The overlay proposes the full container width;
+                            // hug the swatch row instead.
+                            .fixedSize()
+                    }
+                    .zIndex(50)
+                }
+
                 if let viewer = controller.noteViewer {
                     AnchoredPopover(
                         x: viewer.point.x, y: viewer.point.y,
@@ -172,15 +196,10 @@ struct WebViewerView: View {
             Text("Offline snapshot")
                 .font(.system(size: 12))
         }
-        .foregroundStyle(palette.mutedForeground)
+        .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(palette.background.opacity(0.95))
-        .clipShape(Capsule())
-        .overlay {
-            Capsule().strokeBorder(palette.border, lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.08), radius: 3, y: 1)
+        .glassEffect(.regular, in: .capsule)
         .zIndex(40)
     }
 }
@@ -210,6 +229,7 @@ final class WebViewerController: NSObject {
     private(set) var noteComposer: WebNoteComposerState?
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
+    private(set) var highlightEditor: WebHighlightEditorState?
 
     /// Window-space frame of the context menu (for click-outside detection).
     @ObservationIgnored var contextMenuGlobalFrame: CGRect = .zero
@@ -229,6 +249,9 @@ final class WebViewerController: NSObject {
     // Target of an in-flight link navigation: late messages from the outgoing
     // document are ignored until the new document reports in.
     @ObservationIgnored private var pendingNavUrl: String?
+    /// URL of the page being navigated away from — its late re-inits must be
+    /// ignored during the transition, everything else is the new document.
+    @ObservationIgnored private var outgoingNavUrl: String?
     // URL whose reading position has already been restored this mount.
     @ObservationIgnored private var restoredUrl: String?
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
@@ -387,11 +410,13 @@ final class WebViewerController: NSObject {
 
     func closeNoteComposer() { noteComposer = nil }
     func closeNoteViewer() { noteViewer = nil }
+    func closeHighlightEditor() { highlightEditor = nil }
 
     func closeNotePopovers() {
         noteComposer = nil
         hideContextMenu()
         noteViewer = nil
+        highlightEditor = nil
     }
 
     // MARK: Effects (annotations / mode / selection scroll)
@@ -647,6 +672,7 @@ final class WebViewerController: NSObject {
             if let menu = contextMenu, clickOutside(menu.openedAt) { hideContextMenu() }
             if let viewer = noteViewer, clickOutside(viewer.openedAt) { noteViewer = nil }
             if let composer = noteComposer, clickOutside(composer.openedAt) { noteComposer = nil }
+            if let editor = highlightEditor, clickOutside(editor.openedAt) { highlightEditor = nil }
 
         case "note-placed":
             guard let anchor = parseNoteAnchor(data) else { break }
@@ -673,12 +699,18 @@ final class WebViewerController: NSObject {
             guard let id = data["id"] as? String, let annotationStore else { break }
             annotationStore.selectAnnotation(id)
             let annotation = annotationStore.annotations.first { $0.id == id }
+            let point = frameToParent(
+                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             if annotation?.type == .note {
-                let point = frameToParent(
-                    x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
                 noteComposer = nil
+                highlightEditor = nil
                 hideContextMenu()
                 noteViewer = WebNoteViewerState(id: id, point: point, openedAt: Date())
+            } else if annotation?.type == .highlight {
+                noteComposer = nil
+                noteViewer = nil
+                hideContextMenu()
+                highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
             }
 
         case "navigate":
@@ -688,10 +720,12 @@ final class WebViewerController: NSObject {
             cancelPendingArchive()
             clearSelection()
             closeNotePopovers()
+            let outgoing = app.document?.pdfPath
             Task { [weak self] in
                 guard let rebound = await app.webNavigated(tabId: tabId, url: url),
                       let self else { return }
                 self.pendingNavUrl = rebound.pdfPath
+                self.outgoingNavUrl = outgoing
                 self.initCount = 0
                 self.webView.load(
                     URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
@@ -707,6 +741,7 @@ final class WebViewerController: NSObject {
             }
             hideContextMenu()
             noteViewer = nil
+            highlightEditor = nil
             // Keep the composer only if it just opened (the placement click
             // can nudge scroll on some pages); otherwise typing continues.
             if let composer = noteComposer,
@@ -768,10 +803,15 @@ final class WebViewerController: NSObject {
         let reportedUrl = data["url"] as? String
 
         // Mid-navigation: ignore late reports from the outgoing document (its
-        // delayed re-extraction) so they can't rebind us backwards.
-        if let pending = pendingNavUrl {
-            guard reportedUrl == pending else { return }
+        // delayed re-extraction) so they can't rebind us backwards. Anything
+        // else is the incoming document — requiring equality with the
+        // requested URL here swallowed the init (and every one after it)
+        // whenever a server redirect landed the load on a different final
+        // URL, leaving the address pill stale from then on.
+        if pendingNavUrl != nil {
+            if reportedUrl != pendingNavUrl, reportedUrl == outgoingNavUrl { return }
             pendingNavUrl = nil
+            outgoingNavUrl = nil
         }
 
         isOffline = data["offline"] as? Bool ?? false
@@ -851,6 +891,10 @@ final class WebViewerController: NSObject {
                 return (x, y, width, height)
             }
         guard let last = rects.last else { return }
+
+        // A live text selection wins over the highlight edit popover (e.g.
+        // double-click selecting a word inside a highlight).
+        highlightEditor = nil
 
         let scale = app.zoom
         popoverPosition = CGPoint(

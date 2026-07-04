@@ -47,6 +47,10 @@ enum WebContentScript {
   var pageTops = null; // cached document-Y of each page start
   var overlayRoot = null;
   var appliedHighlights = []; // [{ id, color, start, end, text, prefix, suffix }]
+  // Document-coordinate rects of the rendered highlight divs. The divs are
+  // pointer-events:none (so text under a highlight stays selectable), so
+  // clicks are matched against these instead.
+  var highlightHitRects = []; // [{ id, left, top, width, height }]
   var appliedNotes = []; // same anchor shape + { content } for the marker tooltip
   // Point bookmarks: same anchor shape. Re-resolved against the current DOM
   // so the "bookmarked here?" toolbar state survives restarts and reflows.
@@ -515,6 +519,7 @@ enum WebContentScript {
     var root = ensureOverlayRoot();
     while (root.firstChild) root.removeChild(root.firstChild);
     resolveBookmarks();
+    highlightHitRects = [];
 
     for (var i = 0; i < appliedHighlights.length; i++) {
       var h = appliedHighlights[i];
@@ -526,6 +531,13 @@ enum WebContentScript {
       for (var r = 0; r < rects.length; r++) {
         var rect = rects[r];
         if (rect.width < 1 || rect.height < 1) continue;
+        highlightHitRects.push({
+          id: h.id,
+          left: rect.left + window.scrollX,
+          top: rect.top + window.scrollY,
+          width: rect.width,
+          height: rect.height,
+        });
         var div = document.createElement("div");
         div.setAttribute("data-vellum-id", h.id);
         div.style.cssText =
@@ -834,6 +846,53 @@ enum WebContentScript {
     true
   );
 
+  // ------------------------------------------------------------------
+  // Highlight click → edit popover in the app shell
+  // ------------------------------------------------------------------
+
+  // Hit-test clicks against the rendered highlight rects (the overlay divs
+  // are pointer-events:none, so this is the only click path). Registered
+  // before the link interceptor so a highlighted link opens the edit popover
+  // instead of navigating. A drag-selection also ends in a click, so a
+  // non-collapsed selection means "leave it to the selection popover".
+  document.addEventListener(
+    "click",
+    function (e) {
+      if (e.defaultPrevented) return;
+      if (noteMode) return;
+      var sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      // Note markers (inside the overlay root) handle their own clicks.
+      if (overlayRoot && e.target && overlayRoot.contains(e.target)) return;
+      var docX = e.clientX + window.scrollX;
+      var docY = e.clientY + window.scrollY;
+      var hit = null;
+      // Backwards: the last-rendered (topmost) of overlapping highlights wins.
+      for (var i = highlightHitRects.length - 1; i >= 0 && !hit; i--) {
+        var r = highlightHitRects[i];
+        if (
+          docX >= r.left &&
+          docX <= r.left + r.width &&
+          docY >= r.top &&
+          docY <= r.top + r.height
+        ) {
+          hit = r;
+        }
+      }
+      if (!hit) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // Viewport coords of the clicked rect so the app shell can anchor the
+      // popover above it (the highlight's first rect may be off screen).
+      post("annotation-click", {
+        id: hit.id,
+        x: hit.left - window.scrollX + hit.width / 2,
+        y: hit.top - window.scrollY,
+      });
+    },
+    true
+  );
+
   // Right-click: replace the native menu with the app shell's context menu
   // (mirrors the PDF viewer's "Add note here").
   document.addEventListener(
@@ -972,10 +1031,15 @@ enum WebContentScript {
           var range = rangeFromRaw(match.start, match.end);
           if (range) {
             var rect = range.getBoundingClientRect();
-            window.scrollTo({
-              top: Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3),
-              behavior: "auto",
-            });
+            // Already fully on screen (e.g. selected by clicking it in the
+            // page): scrolling would just yank the viewport — and dismiss
+            // the popover the click opened.
+            if (rect.top < 0 || rect.bottom > window.innerHeight) {
+              window.scrollTo({
+                top: Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3),
+                behavior: "auto",
+              });
+            }
           }
         }
         break;
@@ -1133,6 +1197,15 @@ enum WebContentScript {
     initialize(true);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", relayout);
+
+    // Back/forward can restore this page from WebKit's page cache, where
+    // user scripts don't re-run: without a fresh init the shell keeps the
+    // outgoing document bound and the address pill shows a stale URL. A
+    // persisted pageshow is exactly that restore — re-report so handleInit's
+    // rebind path fires.
+    window.addEventListener("pageshow", function (e) {
+      if (e.persisted) initialize(true);
+    });
     if (window.ResizeObserver && document.body) {
       new ResizeObserver(relayout).observe(document.body);
     }

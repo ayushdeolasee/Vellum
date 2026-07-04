@@ -39,18 +39,21 @@ struct IconButton<Icon: View>: View {
         .accessibilityLabel(help ?? "")
     }
 
-    private var background: Color {
+    private var background: AnyShapeStyle {
         switch variant {
-        case .ghost: return hovering ? palette.accent : .clear
-        case .active: return hovering ? palette.primaryHover : palette.primary
-        case .primary: return hovering ? palette.primaryHover : palette.primary
+        case .ghost:
+            return hovering ? AnyShapeStyle(.quaternary.opacity(0.6)) : AnyShapeStyle(.clear)
+        case .active, .primary:
+            return hovering ? AnyShapeStyle(palette.primaryHover) : AnyShapeStyle(.tint)
         }
     }
 
-    private var foreground: Color {
+    private var foreground: AnyShapeStyle {
         switch variant {
-        case .ghost: return hovering ? palette.foreground : palette.mutedForeground
-        case .active, .primary: return palette.primaryForeground
+        case .ghost:
+            return hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
+        case .active, .primary:
+            return AnyShapeStyle(palette.primaryForeground)
         }
     }
 }
@@ -65,6 +68,7 @@ enum TextButtonSize {
 }
 
 /// A consistent text button with optional leading icon. (ui/Button.tsx)
+/// Primary/secondary variants render as Liquid Glass; ghost stays borderless.
 struct TextButton<Content: View>: View {
     var variant: TextButtonVariant = .primary
     var size: TextButtonSize = .md
@@ -72,74 +76,99 @@ struct TextButton<Content: View>: View {
     let action: () -> Void
     @ViewBuilder let label: () -> Content
 
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             HStack(spacing: size.gap) { label() }
                 .font(.system(size: size.fontSize, weight: .medium))
-                .padding(.horizontal, size.paddingX)
-                .frame(height: size.height)
-                .background(background)
-                .foregroundStyle(foreground)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                .overlay {
-                    if variant == .secondary {
-                        RoundedRectangle(cornerRadius: Radius.md)
-                            .strokeBorder(palette.borderStrong, lineWidth: 1)
-                    }
-                }
-                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+                .padding(.horizontal, size.paddingX / 2)
+                .frame(minHeight: size.height - 12)
         }
-        .buttonStyle(.plain)
+        .controlSize(controlSize)
         .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
-        .onHover { hovering = $0 }
-    }
 
-    private var background: Color {
         switch variant {
-        case .primary: return hovering ? palette.primaryHover : palette.primary
-        case .secondary: return hovering ? palette.accent : palette.surface
-        case .ghost: return hovering ? palette.accent : .clear
+        case .primary: button.buttonStyle(.glassProminent)
+        case .secondary: button.buttonStyle(.glass)
+        case .ghost: button.buttonStyle(.borderless)
         }
     }
 
-    private var foreground: Color {
-        switch variant {
-        case .primary: return palette.primaryForeground
-        case .secondary: return palette.foreground
-        case .ghost: return hovering ? palette.foreground : palette.mutedForeground
+    private var controlSize: ControlSize {
+        switch size {
+        case .sm: return .small
+        case .md: return .regular
+        case .lg: return .large
         }
     }
 }
 
+/// Capsule segment switcher with a sliding Liquid Glass thumb, like the view
+/// switcher in Music. The system segmented Picker snaps between segments;
+/// this one morphs.
+struct GlassSegmentedPicker<Value: Hashable>: View {
+    let options: [(value: Value, label: String)]
+    @Binding var selection: Value
+
+    @Namespace private var thumbNamespace
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.value) { option in
+                Button {
+                    // Springy morph, like the view switcher in Music — the
+                    // thumb overshoots slightly and settles instead of snapping.
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                        selection = option.value
+                    }
+                } label: {
+                    // Every segment is sized by the widest label (hidden
+                    // copies) so the thumb doesn't shrink-wrap short labels
+                    // like "AI" and read lopsided.
+                    ZStack {
+                        ForEach(options, id: \.value) { sizing in
+                            Text(sizing.label).hidden()
+                        }
+                        Text(option.label)
+                            .foregroundStyle(selection == option.value ? .primary : .secondary)
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 14)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .background {
+                    if selection == option.value {
+                        // The thumb fills the track's full height (only the
+                        // 2 px inset shows), matching Apple Music's snug pill.
+                        Capsule()
+                            .fill(.quaternary.opacity(0.6))
+                            .glassEffect(.regular.interactive(), in: .capsule)
+                            .matchedGeometryEffect(id: "thumb", in: thumbNamespace)
+                    }
+                }
+            }
+        }
+        .frame(height: 26)
+        .padding(2)
+        .background(.quaternary.opacity(0.4), in: Capsule())
+    }
+}
+
 /// The Vellum wordmark. Set in the serif display face — the one place the
-/// "parchment" identity is allowed to speak loudly.
+/// "parchment" identity is allowed to speak loudly. Render at the real point
+/// size: scaling it up with scaleEffect rasterizes the small glyphs and
+/// produces a blurry bitmap.
 struct Wordmark: View {
+    var size: CGFloat = 15
+
     @Environment(\.palette) private var palette
 
     var body: some View {
         (Text("Vellum").foregroundStyle(palette.foreground)
             + Text(".").foregroundStyle(palette.primary))
-            .font(.custom("Iowan Old Style", size: 15).weight(.semibold))
-            .kerning(-0.2)
+            .font(.custom("Iowan Old Style", size: size).weight(.semibold))
+            .kerning(-0.2 * size / 15)
     }
 }
 
-/// Toolbar control that flips between the light and dark Scriptorium themes.
-struct ThemeToggle: View {
-    @Environment(ThemeStore.self) private var themeStore
-
-    var body: some View {
-        let isDark = themeStore.theme == .dark
-        IconButton(
-            help: isDark ? "Switch to light theme" : "Switch to dark theme",
-            action: { themeStore.toggleTheme() }
-        ) {
-            Image(systemName: isDark ? "sun.max" : "moon")
-                .font(.system(size: 14))
-        }
-    }
-}

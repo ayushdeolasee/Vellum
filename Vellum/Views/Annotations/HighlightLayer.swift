@@ -105,9 +105,12 @@ private struct HighlightRectView: View {
 }
 
 /// Edit popover above the selected highlight's first rect: 5 swatches (20px,
-/// current marked with a primary ring) and an "Unhighlight" row.
-private struct HighlightEditPopover: View {
+/// current marked with a primary ring) and an "Unhighlight" row. Shared with
+/// the web viewer, which anchors it at the clicked highlight rect.
+struct HighlightEditPopover: View {
     let annotation: Annotation
+    /// Runs after Unhighlight (the web viewer closes its popover state here).
+    var onDelete: (() -> Void)? = nil
 
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(\.palette) private var palette
@@ -137,17 +140,12 @@ private struct HighlightEditPopover: View {
                 Task {
                     await annotationStore.deleteAnnotation(id: annotation.id)
                 }
+                onDelete?()
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(palette.background)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.md)
-                .strokeBorder(palette.border, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 4)
+        .glassEffect(.regular, in: .rect(cornerRadius: Radius.md))
     }
 }
 

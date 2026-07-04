@@ -23,12 +23,14 @@ struct AnnotationSidebar: View {
                                 annotation: annotation,
                                 selected: annotationStore.selectedAnnotationId == annotation.id,
                                 editing: editingId == annotation.id,
+                                fontSize: appStore.sidebarFontSize,
                                 editText: $editText,
                                 editFieldFocused: $editFieldFocused,
                                 onSelect: { navigate(to: annotation) },
                                 onStartEdit: { startEditing(annotation) },
                                 onSaveEdit: { saveEdit(annotation.id) },
                                 onCancelEdit: { cancelEdit() },
+                                onChangeColor: { color in changeColor(annotation, to: color) },
                                 onDelete: {
                                     Task { await annotationStore.deleteAnnotation(id: annotation.id) }
                                 }
@@ -64,11 +66,10 @@ struct AnnotationSidebar: View {
                         .font(.system(size: 10, design: .monospaced))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
-                        .background(palette.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
                         .overlay {
                             RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(palette.borderStrong, lineWidth: 1)
+                                .strokeBorder(.separator)
                         }
                     Text("to drop a note.")
                 }
@@ -86,7 +87,7 @@ struct AnnotationSidebar: View {
         HStack(spacing: 6) {
             Image(systemName: "line.3.horizontal.decrease")
                 .font(.system(size: 13))
-                .foregroundStyle(palette.mutedForeground)
+                .foregroundStyle(.secondary)
 
             FilterPill(
                 title: "All · \(annotationStore.annotations.count)",
@@ -109,9 +110,10 @@ struct AnnotationSidebar: View {
 
             Spacer(minLength: 0)
         }
-        .padding(10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(palette.border).frame(height: 1)
+            Divider()
         }
     }
 
@@ -135,6 +137,18 @@ struct AnnotationSidebar: View {
         }
         appStore.goToPage(annotation.pageNumber)
         appStore.scrollToPageHandler?(annotation.pageNumber)
+    }
+
+    /// Recolor a highlight in place — deliberately no selectAnnotation /
+    /// navigation, so the viewer never jumps to the highlight.
+    private func changeColor(_ annotation: Annotation, to color: String) {
+        let input = UpdateAnnotationInput(
+            id: annotation.id,
+            color: color,
+            content: nil,
+            positionData: nil
+        )
+        Task { await annotationStore.updateAnnotation(input) }
     }
 
     private func startEditing(_ annotation: Annotation) {
@@ -183,12 +197,18 @@ private struct FilterPill: View {
                 }
                 Text(title)
             }
-            .font(.system(size: 12, weight: .medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .foregroundStyle(selected ? palette.primaryForeground : palette.mutedForeground)
-            .background(selected ? palette.primary : (hovering ? palette.accent : palette.muted))
-            .clipShape(Capsule())
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .foregroundStyle(
+                selected
+                    ? AnyShapeStyle(palette.primaryForeground)
+                    : AnyShapeStyle(hovering ? .primary : .secondary))
+            .background(
+                selected
+                    ? AnyShapeStyle(.tint)
+                    : AnyShapeStyle(.quaternary.opacity(hovering ? 0.8 : 0.5)),
+                in: Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -200,16 +220,22 @@ private struct AnnotationRow: View {
     let annotation: Annotation
     let selected: Bool
     let editing: Bool
+    let fontSize: Double
     @Binding var editText: String
     var editFieldFocused: FocusState<Bool>.Binding
     let onSelect: () -> Void
     let onStartEdit: () -> Void
     let onSaveEdit: () -> Void
     let onCancelEdit: () -> Void
+    let onChangeColor: (String) -> Void
     let onDelete: () -> Void
 
     @Environment(\.palette) private var palette
     @State private var hovering = false
+    @State private var colorPickerOpen = false
+
+    /// Meta line / quote scale with the body size, keeping their ratio.
+    private var metaSize: Double { max(9, fontSize - 3) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -223,13 +249,13 @@ private struct AnnotationRow: View {
                     Text("·")
                     Text("p.\(annotation.pageNumber)")
                 }
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: metaSize, weight: .medium))
                 .foregroundStyle(palette.mutedForeground)
 
                 if let selectedText = annotation.positionData?.selectedText,
                    !selectedText.isEmpty {
                     Text("“\(selectedText)”")
-                        .font(.system(size: 14).italic())
+                        .font(.system(size: fontSize).italic())
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(2)
                         .padding(.top, 4)
@@ -238,7 +264,7 @@ private struct AnnotationRow: View {
                 if editing {
                     TextField("", text: $editText)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 14))
+                        .font(.system(size: fontSize))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
                         .background(palette.muted)
@@ -253,7 +279,7 @@ private struct AnnotationRow: View {
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
                     Text(content)
-                        .font(.system(size: 14))
+                        .font(.system(size: fontSize))
                         .foregroundStyle(palette.foreground)
                         .lineLimit(3)
                         .padding(.top, 4)
@@ -292,12 +318,39 @@ private struct AnnotationRow: View {
     @ViewBuilder
     private var marker: some View {
         if annotation.type == .highlight, annotation.color != nil {
+            // The circle doubles as a color picker. The tap must be a
+            // highPriorityGesture: a plain Button here still lets the row's
+            // own onTapGesture fire, which selects the row and scrolls the
+            // viewer to the highlight — exactly what this picker must avoid.
             Circle()
                 .fill(Color(hex: annotation.color ?? "#fef08a"))
                 .frame(width: 16, height: 16)
                 .overlay {
                     Circle().strokeBorder(palette.borderStrong, lineWidth: 1)
                 }
+                .padding(3)
+                .contentShape(Circle())
+                .highPriorityGesture(
+                    TapGesture().onEnded { colorPickerOpen = true }
+                )
+                .padding(-3)
+                .help("Change highlight color")
+            .popover(isPresented: $colorPickerOpen, arrowEdge: .bottom) {
+                HStack(spacing: 6) {
+                    ForEach(HIGHLIGHT_COLORS) { color in
+                        HighlightSwatchButton(
+                            color: color,
+                            size: 20,
+                            isCurrent: annotation.color == color.value,
+                            helpText: "Set highlight color: \(color.name)"
+                        ) {
+                            colorPickerOpen = false
+                            onChangeColor(color.value)
+                        }
+                    }
+                }
+                .padding(10)
+            }
         } else {
             Image(systemName: symbol(for: annotation.type))
                 .font(.system(size: 16))

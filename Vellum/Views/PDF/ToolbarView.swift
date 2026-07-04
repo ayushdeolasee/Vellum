@@ -2,30 +2,301 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ToolbarView: View {
-    var sidebarOpen: Bool? = nil
-    var onToggleSidebar: (() -> Void)? = nil
-
+// Native unified-toolbar content (Liquid Glass on macOS 26+). Groups are
+// separated with ToolbarSpacer so each cluster reads as its own glass pod.
+struct VellumToolbar: ToolbarContent {
     @Environment(AppStore.self) private var appStore
-    @Environment(AnnotationStore.self) private var annotationStore
-    @Environment(AiStore.self) private var aiStore
-    @Environment(\.palette) private var palette
 
-    private enum ExportState: Equatable {
-        case idle
-        case exporting
-        case done(String)
-        case failed(String)
+    private var isWeb: Bool { appStore.document?.kind == .web }
+    private var hasDocument: Bool { appStore.document != nil }
+
+    var body: some ToolbarContent {
+        // ControlGroup merges related buttons into one shared glass capsule —
+        // left to their own devices, macOS 26 gives every button its own
+        // circle with no gap, which reads as a squished blob.
+        ToolbarItemGroup(placement: .navigation) {
+            ControlGroup {
+                OpenFileButton()
+                AddWebpageButton()
+                if hasDocument, !isWeb {
+                    SaveButton()
+                }
+            }
+            if hasDocument, isWeb {
+                ControlGroup {
+                    WebHistoryButtons()
+                }
+            }
+        }
+
+        if hasDocument {
+            // Web pages scroll continuously — page numbers are meaningless
+            // there, so the page cluster is PDF-only.
+            if !isWeb {
+                ToolbarItemGroup {
+                    PageControls()
+                }
+                ToolbarSpacer(.fixed)
+            }
+
+            ToolbarItemGroup {
+                ControlGroup {
+                    ZoomControls()
+                }
+            }
+
+            // Flexible spacers center the address pod in the free space,
+            // Safari-style, instead of leaving one dead gap at the trailing
+            // edge. Everything stays in .automatic placement — mixing in
+            // .primaryAction scatters items mid-bar on macOS 26.
+            ToolbarSpacer(.flexible)
+
+            // The address pill is its own item: nesting a hand-drawn capsule
+            // inside the icon pod produced capsule-in-capsule seams and left
+            // the trailing button with mismatched corner rounding.
+            ToolbarItem {
+                DocumentTitleField()
+            }
+            ToolbarSpacer(.fixed)
+            ToolbarItemGroup {
+                BookmarkButton()
+                NoteToolToggle()
+                if isWeb {
+                    WebLibraryControls()
+                }
+            }
+
+            ToolbarSpacer(.flexible)
+        } else {
+            ToolbarSpacer(.flexible)
+        }
+
+        ToolbarItemGroup {
+            UpdateControls()
+        }
+
+        if hasDocument {
+            ToolbarSpacer(.fixed)
+            ToolbarItem {
+                SidebarToggleButton()
+            }
+        }
+    }
+}
+
+// MARK: - File / web entry points
+
+private struct OpenFileButton: View {
+    @Environment(AppStore.self) private var appStore
+
+    var body: some View {
+        Button(action: openFiles) {
+            Label("Open file", systemImage: "folder")
+        }
+        .help("Open file (⌘O) — open a PDF or .vellumweb archive in a new tab")
     }
 
-    @State private var urlPromptOpen = false
+    private func openFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        var types: [UTType] = [.pdf]
+        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
+        panel.allowedContentTypes = types
+        guard panel.runModal() == .OK else { return }
+        Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }
+    }
+}
+
+private struct AddWebpageButton: View {
+    @Environment(AppStore.self) private var appStore
+
+    @State private var promptOpen = false
     @State private var urlInput = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        Button {
+            promptOpen.toggle()
+        } label: {
+            Label("Add webpage", systemImage: "globe")
+        }
+        .help("Add webpage (⌘L) — open an article URL in reading mode")
+        .popover(isPresented: $promptOpen, arrowEdge: .bottom) {
+            HStack(spacing: 8) {
+                TextField("Paste an article URL…", text: $urlInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13))
+                    .frame(width: 300)
+                    .focused($fieldFocused)
+                    .onSubmit(submit)
+                Button("Open", action: submit)
+                    .buttonStyle(.glassProminent)
+            }
+            .padding(12)
+            .onAppear {
+                urlInput = ""
+                fieldFocused = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
+            promptOpen = true
+        }
+    }
+
+    private func submit() {
+        let value = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        promptOpen = false
+        guard !value.isEmpty else { return }
+        Task { await appStore.openUrl(value) }
+    }
+}
+
+private struct SaveButton: View {
+    @Environment(AppStore.self) private var appStore
+
+    var body: some View {
+        Button {
+            guard let sessionId = appStore.activeTabId else { return }
+            Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
+        } label: {
+            Label("Save", systemImage: "square.and.arrow.down")
+        }
+        .help("Save (⌘S) — write annotations into the PDF file")
+    }
+}
+
+/// In-page history for web tabs (window.__webHistory in the original).
+private struct WebHistoryButtons: View {
+    var body: some View {
+        Button {
+            go(-1)
+        } label: {
+            Label("Back", systemImage: "arrow.left")
+        }
+        .help("Back — go to the previous page in this tab's history")
+
+        Button {
+            go(1)
+        } label: {
+            Label("Forward", systemImage: "arrow.right")
+        }
+        .help("Forward — go to the next page in this tab's history")
+    }
+
+    private func go(_ delta: Int) {
+        NotificationCenter.default.post(
+            name: .vellumWebHistory, object: nil, userInfo: ["delta": delta])
+    }
+}
+
+// MARK: - Page navigation
+
+private struct PageControls: View {
+    @Environment(AppStore.self) private var appStore
+
     @State private var pageInput = "1"
-    @State private var pageSaved = false
-    @State private var exportState: ExportState = .idle
-    @State private var updateChecker = UpdateChecker()
-    @FocusState private var urlFieldFocused: Bool
-    @FocusState private var pageFieldFocused: Bool
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        ControlGroup {
+            Button {
+                appStore.goToPage(appStore.currentPage - 1)
+            } label: {
+                Label("Previous page", systemImage: "chevron.left")
+            }
+            .disabled(appStore.currentPage <= 1)
+            .help("Previous page — or type a page number in the field")
+
+            Button {
+                appStore.goToPage(appStore.currentPage + 1)
+            } label: {
+                Label("Next page", systemImage: "chevron.right")
+            }
+            .disabled(appStore.currentPage >= appStore.numPages)
+            .help("Next page — or type a page number in the field")
+        }
+
+        HStack(spacing: 5) {
+            TextField("", text: $pageInput)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.center)
+                .focused($fieldFocused)
+                // Commit directly on Return — FocusState changes are unreliable
+                // inside NSToolbar-hosted fields, so blur alone can't be trusted.
+                .onSubmit { commitPageInput(); fieldFocused = false }
+                .onChange(of: fieldFocused) { _, focused in
+                    if !focused { commitPageInput() }
+                }
+                .frame(width: 44)
+            Text("/ \(appStore.numPages)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 12))
+        .onChange(of: appStore.currentPage) { _, page in
+            pageInput = String(page)
+        }
+        // Restored sessions start on last_page — sync on tab/doc switch too.
+        .task(id: DocumentKey(appStore)) {
+            pageInput = String(appStore.currentPage)
+        }
+    }
+
+    private func commitPageInput() {
+        guard let page = Int(pageInput), (1...appStore.numPages).contains(page) else {
+            pageInput = String(appStore.currentPage)
+            return
+        }
+        appStore.goToPage(page)
+    }
+}
+
+// MARK: - Zoom
+
+private struct ZoomControls: View {
+    @Environment(AppStore.self) private var appStore
+
+    var body: some View {
+        Button {
+            appStore.zoomOut()
+        } label: {
+            Label("Zoom out", systemImage: "minus.magnifyingglass")
+        }
+        .help("Zoom out (⌘−)")
+
+        Button(action: resetZoom) {
+            Text("\(Int((appStore.zoom * 100).rounded()))%")
+                .font(.system(size: 12))
+                .monospacedDigit()
+                .frame(minWidth: 40)
+        }
+        .help("Reset zoom to 100%")
+        .accessibilityLabel("Reset zoom to 100%")
+
+        Button {
+            appStore.zoomIn()
+        } label: {
+            Label("Zoom in", systemImage: "plus.magnifyingglass")
+        }
+        .help("Zoom in (⌘+)")
+    }
+
+    private func resetZoom() {
+        if let zoomToHandler = appStore.zoomToHandler {
+            zoomToHandler(1)
+        } else {
+            appStore.setZoom(1)
+        }
+    }
+}
+
+// MARK: - Annotation tools
+
+private struct BookmarkButton: View {
+    @Environment(AppStore.self) private var appStore
+    @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(\.palette) private var palette
 
     private var isWeb: Bool { appStore.document?.kind == .web }
     private var isBookmarked: Bool {
@@ -38,301 +309,91 @@ struct ToolbarView: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
-            IconButton(help: "Open file (⌘O)", action: openFiles) {
-                Image(systemName: "folder")
-                    .font(.system(size: 16))
-            }
-
-            IconButton(
-                variant: urlPromptOpen ? .active : .ghost,
-                help: "Add webpage (⌘L)",
-                action: { urlPromptOpen.toggle() }
-            ) {
-                Image(systemName: "globe")
-                    .font(.system(size: 16))
-            }
-
-            if appStore.document != nil, !isWeb {
-                IconButton(help: "Save (⌘S)", action: saveDocument) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 16))
-                }
-            }
-
-            if appStore.document != nil, isWeb {
-                // Web tabs get in-page history instead of Save.
-                IconButton(help: "Back", action: { goWebHistory(-1) }) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 16))
-                }
-                IconButton(help: "Forward", action: { goWebHistory(1) }) {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 16))
-                }
-            }
-
-            if appStore.document != nil {
-                Divider()
-
-                IconButton(
-                    help: "Previous page",
-                    disabled: appStore.currentPage <= 1,
-                    action: { appStore.goToPage(appStore.currentPage - 1) }
-                ) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16))
-                }
-
-                HStack(spacing: 6) {
-                    TextField("", text: $pageInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-                        .multilineTextAlignment(.center)
-                        .focused($pageFieldFocused)
-                        .onSubmit { pageFieldFocused = false }
-                        .onChange(of: pageFieldFocused) { _, focused in
-                            if !focused { commitPageInput() }
-                        }
-                        .frame(width: 44, height: 28)
-                        .background(palette.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: Radius.md)
-                                .strokeBorder(palette.border, lineWidth: 1)
-                        }
-                    Text("/ \(appStore.numPages)")
-                        .font(.system(size: 14))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.mutedForeground)
-                }
-                .padding(.horizontal, 2)
-
-                IconButton(
-                    help: "Next page",
-                    disabled: appStore.currentPage >= appStore.numPages,
-                    action: { appStore.goToPage(appStore.currentPage + 1) }
-                ) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 16))
-                }
-
-                Divider()
-
-                IconButton(help: "Zoom out", action: appStore.zoomOut) {
-                    Image(systemName: "minus.magnifyingglass")
-                        .font(.system(size: 16))
-                }
-
-                Button(action: resetZoom) {
-                    Text("\(Int((appStore.zoom * 100).rounded()))%")
-                        .font(.system(size: 14))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.mutedForeground)
-                        .frame(minWidth: 52, minHeight: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Reset zoom to 100%")
-                .accessibilityLabel("Reset zoom to 100%")
-
-                IconButton(help: "Zoom in", action: appStore.zoomIn) {
-                    Image(systemName: "plus.magnifyingglass")
-                        .font(.system(size: 16))
-                }
-
-                Divider()
-
-                IconButton(
-                    help: isBookmarked
-                        ? "Remove bookmark"
-                        : (isWeb ? "Bookmark this spot" : "Bookmark this page"),
-                    action: { Task { await annotationStore.toggleBookmark() } }
-                ) {
-                    Image(systemName: isBookmarked ? "star.fill" : "star")
-                        .font(.system(size: 16))
-                        .foregroundStyle(isBookmarked ? palette.gold : palette.mutedForeground)
-                }
-
-                IconButton(
-                    variant: appStore.mode == .note ? .active : .ghost,
-                    help: isWeb
-                        ? "Sticky note tool (N) — click in the page to attach a note to the text there"
-                        : "Sticky note tool (N) — click on the page to place a note",
-                    action: { appStore.setMode(appStore.mode == .note ? .view : .note) }
-                ) {
-                    Image(systemName: "note.text")
-                        .font(.system(size: 16))
-                }
-
-                if isWeb {
-                    Divider()
-                    IconButton(
-                        help: pageSaved
-                            ? "Saved to library — click to remove"
-                            : "Save page to library (keeps an offline snapshot)",
-                        action: toggleSavedPage
-                    ) {
-                        Image(systemName: "archivebox")
-                            .font(.system(size: 16))
-                            .foregroundStyle(pageSaved ? palette.primary : palette.mutedForeground)
-                    }
-
-                    IconButton(
-                        help: exportTooltip,
-                        disabled: exportState == .exporting,
-                        action: exportVellumweb
-                    ) {
-                        if exportState == .exporting {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 16))
-                                .foregroundStyle(exportIconColor)
-                        }
-                    }
-
-                    Text(displayURL)
-                        .font(.system(size: 12))
-                        .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 256)
-                        .help(appStore.document?.pdfPath ?? "")
-                }
-            }
-
-            Spacer(minLength: 4)
-
-            if updateChecker.state == .available,
-               let version = updateChecker.availableVersion {
-                Button(action: updateChecker.install) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 12))
-                        Text("Update \(version)")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .foregroundStyle(Color(hex: "#047857"))
-                    .background(Color(hex: "#10b981").opacity(0.10))
-                    .clipShape(Capsule())
-                    .overlay {
-                        Capsule().strokeBorder(Color(hex: "#10b981").opacity(0.30), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help(updateChecker.tooltip)
-                .accessibilityLabel(updateChecker.tooltip)
-            }
-
-            IconButton(
-                help: updateChecker.tooltip,
-                disabled: updateChecker.state == .checking,
-                action: { Task { await updateChecker.check() } }
-            ) {
-                if updateChecker.state == .checking {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 16))
-                }
-            }
-
-            ThemeToggle()
-
-            if appStore.document != nil, let onToggleSidebar {
-                Divider()
-                IconButton(
-                    variant: sidebarOpen == true ? .active : .ghost,
-                    help: sidebarOpen == true ? "Hide side panel" : "Show side panel",
-                    action: onToggleSidebar
-                ) {
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 16))
-                }
-            }
+        Button {
+            Task { await annotationStore.toggleBookmark() }
+        } label: {
+            Label(
+                isBookmarked ? "Remove bookmark" : "Bookmark",
+                systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
+            )
+            .foregroundStyle(isBookmarked ? AnyShapeStyle(palette.gold) : AnyShapeStyle(.primary))
         }
-        .padding(.horizontal, 8)
-        .frame(height: 44)
-        .background(palette.background)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(palette.border).frame(height: 1)
+        .help(
+            isBookmarked
+                ? "Remove bookmark (⌘D)"
+                : (isWeb
+                    ? "Bookmark this spot (⌘D) — saves your reading position"
+                    : "Bookmark this page (⌘D) — saves it in the annotations panel"))
+    }
+}
+
+private struct NoteToolToggle: View {
+    @Environment(AppStore.self) private var appStore
+
+    private var isWeb: Bool { appStore.document?.kind == .web }
+
+    var body: some View {
+        Toggle(
+            isOn: Binding(
+                get: { appStore.mode == .note },
+                set: { appStore.setMode($0 ? .note : .view) }
+            )
+        ) {
+            Label("Sticky note tool", systemImage: "note.text")
         }
-        .overlay(alignment: .topLeading) {
-            if urlPromptOpen {
-                urlPrompt
-                    .offset(x: 8, y: 48)
-                    .zIndex(100)
-            }
-        }
-        .zIndex(urlPromptOpen ? 100 : 0)
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
-            urlPromptOpen = true
-        }
-        .onChange(of: urlPromptOpen) { _, isOpen in
-            if isOpen {
-                urlInput = ""
-                Task {
-                    await Task.yield()
-                    urlFieldFocused = true
-                }
-            } else {
-                urlFieldFocused = false
-            }
-        }
-        .onChange(of: appStore.currentPage) { _, page in
-            pageInput = String(page)
-        }
-        .task(id: toolbarDocumentIdentity) {
-            let identity = toolbarDocumentIdentity
-            exportState = .idle
-            // Restored sessions start on last_page — the field only synced on
-            // page CHANGES, so it showed "1" until the first navigation.
-            pageInput = String(appStore.currentPage)
-            await loadSavedState(for: identity)
-        }
-        .task {
-            await updateChecker.check(silent: true)
-        }
+        .toggleStyle(.button)
+        .help(
+            isWeb
+                ? "Sticky note tool (N) — click in the page to attach a note to the text there"
+                : "Sticky note tool (N) — click on the page to place a note")
+    }
+}
+
+// MARK: - Web library / export
+
+private struct WebLibraryControls: View {
+    @Environment(AppStore.self) private var appStore
+    @Environment(AiStore.self) private var aiStore
+    @Environment(\.palette) private var palette
+
+    private enum ExportState: Equatable {
+        case idle
+        case exporting
+        case done(String)
+        case failed(String)
     }
 
-    private var urlPrompt: some View {
-        HStack(spacing: 6) {
-            TextField("Paste an article URL…", text: $urlInput)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .padding(.horizontal, 8)
-                .frame(height: 32)
-                .background(palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(palette.border, lineWidth: 1)
-                }
-                .focused($urlFieldFocused)
-                .onSubmit { submitURL() }
-                .onExitCommand { urlPromptOpen = false }
+    @State private var pageSaved = false
+    @State private var exportState: ExportState = .idle
 
-            TextButton(size: .sm, action: submitURL) {
-                Text("Open")
+    var body: some View {
+        Button(action: toggleSavedPage) {
+            Label(
+                pageSaved ? "Saved to library" : "Save page to library",
+                systemImage: "archivebox"
+            )
+            .foregroundStyle(pageSaved ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.primary))
+        }
+        .help(
+            pageSaved
+                ? "Saved to library — click to remove"
+                : "Save page to library (keeps an offline snapshot)")
+
+        Button(action: exportVellumweb) {
+            if exportState == .exporting {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Label("Export", systemImage: "square.and.arrow.up")
+                    .foregroundStyle(exportIconStyle)
             }
-            .frame(height: 32)
         }
-        .padding(8)
-        .frame(width: 384)
-        .background(palette.background)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radius.lg)
-                .strokeBorder(palette.border, lineWidth: 1)
+        .disabled(exportState == .exporting)
+        .help(exportTooltip)
+        .task(id: DocumentKey(appStore)) {
+            exportState = .idle
+            await loadSavedState(for: DocumentKey(appStore))
         }
-        .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
     private var exportTooltip: String {
@@ -344,18 +405,34 @@ struct ToolbarView: View {
         }
     }
 
-    private var exportIconColor: Color {
+    private var exportIconStyle: AnyShapeStyle {
         switch exportState {
-        case .done: return Color(hex: "#059669")
-        case .failed: return palette.destructive
-        default: return palette.mutedForeground
+        case .done: return AnyShapeStyle(.green)
+        case .failed: return AnyShapeStyle(palette.destructive)
+        default: return AnyShapeStyle(.primary)
         }
     }
 
-    /// In-page history for web tabs (window.__webHistory in the original).
-    private func goWebHistory(_ delta: Int) {
-        NotificationCenter.default.post(
-            name: .vellumWebHistory, object: nil, userInfo: ["delta": delta])
+    private func loadSavedState(for identity: DocumentKey) async {
+        pageSaved = false
+        guard let sessionId = appStore.activeTabId else { return }
+        let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
+        if DocumentKey(appStore) == identity {
+            pageSaved = saved
+        }
+    }
+
+    private func toggleSavedPage() {
+        guard let sessionId = appStore.activeTabId else { return }
+        let next = !pageSaved
+        pageSaved = next
+        Task {
+            do {
+                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
+            } catch {
+                if appStore.activeTabId == sessionId { pageSaved = !next }
+            }
+        }
     }
 
     /// Export the active webpage as a .vellumweb archive (Toolbar.tsx export flow).
@@ -375,18 +452,18 @@ struct ToolbarView: View {
         let pages = aiStore.pageTexts
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
-        let identity = toolbarDocumentIdentity
+        let identity = DocumentKey(appStore)
         exportState = .exporting
         Task {
             do {
                 let summary = try await appStore.sessions.exportVellumweb(
                     sessionId: sessionId, destPath: destination.path, pages: pages)
-                guard toolbarDocumentIdentity == identity else { return }
+                guard DocumentKey(appStore) == identity else { return }
                 let mb = String(format: "%.2f", Double(summary.bytes) / (1024 * 1024))
                 let skipped = summary.assetsSkipped > 0 ? ", \(summary.assetsSkipped) skipped" : ""
                 exportState = .done("Exported \(mb) MB (\(summary.assetCount) assets\(skipped))")
             } catch {
-                guard toolbarDocumentIdentity == identity else { return }
+                guard DocumentKey(appStore) == identity else { return }
                 exportState = .failed(error.localizedDescription)
             }
         }
@@ -415,94 +492,191 @@ struct ToolbarView: View {
         }
         return slug.isEmpty ? "article" : slug
     }
+}
 
-    private var displayURL: String {
+/// Safari-style address field: shows the page URL for web tabs (click copies
+/// it, double-click exports the archive) or the file name for PDFs
+/// (double-click = Save As, retargeting the tab to the new location).
+private struct DocumentTitleField: View {
+    @Environment(AppStore.self) private var appStore
+    @Environment(AiStore.self) private var aiStore
+
+    /// Transient status text shown in place of the title (e.g. "URL copied").
+    @State private var feedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
+
+    private var isWeb: Bool { appStore.document?.kind == .web }
+
+    var body: some View {
+        Text(feedback ?? displayText)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .center)
+            .background(.quaternary.opacity(0.5), in: Capsule())
+            .contentShape(Capsule())
+            .frame(minWidth: 200, idealWidth: isWeb ? 420 : 300, maxWidth: isWeb ? 420 : 300)
+            .help(helpText)
+            .onTapGesture(count: 2) { saveAs() }
+            .onTapGesture { if isWeb { copyURL() } }
+    }
+
+    private var displayText: String {
         guard let path = appStore.document?.pdfPath else { return "" }
-        if path.hasPrefix("https://") { return String(path.dropFirst(8)) }
-        if path.hasPrefix("http://") { return String(path.dropFirst(7)) }
-        return path
-    }
-
-    private var toolbarDocumentIdentity: ToolbarDocumentIdentity {
-        ToolbarDocumentIdentity(tabId: appStore.activeTabId, path: appStore.document?.pdfPath)
-    }
-
-    private func openFiles() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        var types: [UTType] = [.pdf]
-        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
-        panel.allowedContentTypes = types
-        guard panel.runModal() == .OK else { return }
-        Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }
-    }
-
-    private func saveDocument() {
-        guard let sessionId = appStore.activeTabId else { return }
-        Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
-    }
-
-    private func submitURL() {
-        let value = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        urlPromptOpen = false
-        guard !value.isEmpty else { return }
-        Task { await appStore.openUrl(value) }
-    }
-
-    private func commitPageInput() {
-        guard let page = Int(pageInput), (1...appStore.numPages).contains(page) else {
-            pageInput = String(appStore.currentPage)
-            return
+        if isWeb {
+            if path.hasPrefix("https://") { return String(path.dropFirst(8)) }
+            if path.hasPrefix("http://") { return String(path.dropFirst(7)) }
+            return path
         }
-        appStore.goToPage(page)
+        return (path as NSString).lastPathComponent
     }
 
-    private func resetZoom() {
-        if let zoomToHandler = appStore.zoomToHandler {
-            zoomToHandler(1)
+    private var helpText: String {
+        let path = appStore.document?.pdfPath ?? ""
+        return isWeb
+            ? "\(path) — click to copy, double-click to export a copy"
+            : "\(path) — double-click to change where the file is saved"
+    }
+
+    private func showFeedback(_ text: String) {
+        feedbackTask?.cancel()
+        feedback = text
+        feedbackTask = Task {
+            try? await Task.sleep(for: .seconds(1.4))
+            guard !Task.isCancelled else { return }
+            feedback = nil
+        }
+    }
+
+    private func copyURL() {
+        guard let path = appStore.document?.pdfPath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        showFeedback("URL copied")
+    }
+
+    private func saveAs() {
+        if isWeb {
+            exportWebArchive()
         } else {
-            appStore.setZoom(1)
+            savePdfAs()
         }
     }
 
-    private func loadSavedState(for identity: ToolbarDocumentIdentity) async {
-        pageSaved = false
-        guard isWeb, let sessionId = appStore.activeTabId else {
-            return
-        }
-        let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
-        if toolbarDocumentIdentity == identity {
-            pageSaved = saved
-        }
-    }
-
-    private func toggleSavedPage() {
-        guard let sessionId = appStore.activeTabId else { return }
-        let next = !pageSaved
-        pageSaved = next
+    /// Save As for PDFs: flush annotations, copy the file, retarget the tab.
+    private func savePdfAs() {
+        guard let sessionId = appStore.activeTabId,
+              let sourcePath = appStore.document?.pdfPath else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = (sourcePath as NSString).lastPathComponent
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let destPath = destination.path
+        guard destPath != sourcePath else { return }
         Task {
             do {
-                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
+                try await appStore.sessions.saveFile(sessionId: sessionId)
+                if FileManager.default.fileExists(atPath: destPath) {
+                    try FileManager.default.removeItem(atPath: destPath)
+                }
+                try FileManager.default.copyItem(atPath: sourcePath, toPath: destPath)
+                await appStore.closeTab(sessionId)
+                await appStore.openFile(path: destPath)
             } catch {
-                if appStore.activeTabId == sessionId { pageSaved = !next }
+                showFeedback("Save failed")
+            }
+        }
+    }
+
+    /// Double-click on a web tab: export the snapshot archive to a chosen spot.
+    private func exportWebArchive() {
+        guard let sessionId = appStore.activeTabId else { return }
+        let panel = NSSavePanel()
+        if let archive = UTType(filenameExtension: "vellumweb") {
+            panel.allowedContentTypes = [archive]
+        }
+        panel.nameFieldStringValue = "article.vellumweb"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        Task {
+            do {
+                _ = try await appStore.sessions.exportVellumweb(
+                    sessionId: sessionId, destPath: destination.path, pages: pages)
+                showFeedback("Exported")
+            } catch {
+                showFeedback("Export failed")
             }
         }
     }
 }
 
-private struct ToolbarDocumentIdentity: Hashable {
-    var tabId: String?
-    var path: String?
-}
+// MARK: - Updates / theme / sidebar
 
-private struct Divider: View {
-    @Environment(\.palette) private var palette
+private struct UpdateControls: View {
+    @State private var updateChecker = UpdateChecker()
 
     var body: some View {
-        Rectangle()
-            .fill(palette.border)
-            .frame(width: 1, height: 20)
-            .padding(.horizontal, 6)
+        if updateChecker.state == .available,
+           let version = updateChecker.availableVersion {
+            Button(action: updateChecker.install) {
+                Label("Update \(version)", systemImage: "arrow.down")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.glassProminent)
+            .tint(.green)
+            .help(updateChecker.tooltip)
+            .accessibilityLabel(updateChecker.tooltip)
+        }
+
+        Button {
+            Task { await updateChecker.check() }
+        } label: {
+            if updateChecker.state == .checking {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Label("Check for updates", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(updateChecker.state == .checking)
+        .help("Check for updates — \(updateChecker.tooltip)")
+        .task {
+            await updateChecker.check(silent: true)
+        }
+    }
+}
+
+private struct SidebarToggleButton: View {
+    @Environment(AppStore.self) private var appStore
+
+    var body: some View {
+        Button {
+            appStore.sidebarOpen.toggle()
+        } label: {
+            Label(
+                appStore.sidebarOpen ? "Hide side panel" : "Show side panel",
+                systemImage: "sidebar.trailing")
+        }
+        .help(
+            appStore.sidebarOpen
+                ? "Hide side panel (⌘⌥S)"
+                : "Show side panel (⌘⌥S) — annotations and AI chat")
+    }
+}
+
+/// Identity of the active document — toolbar state (page field, export, saved
+/// flag) resets whenever the tab or backing file changes.
+private struct DocumentKey: Hashable {
+    var tabId: String?
+    var path: String?
+
+    @MainActor
+    init(_ appStore: AppStore) {
+        tabId = appStore.activeTabId
+        path = appStore.document?.pdfPath
     }
 }
