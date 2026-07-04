@@ -49,9 +49,12 @@ struct AiPanel: View {
                 ) {
                     Image(systemName: "gearshape").font(.system(size: 15))
                 }
+                .accessibilityIdentifier("aiPanel.settings")
+                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
                 IconButton(help: "Clear conversation", action: aiStore.clearConversation) {
                     Image(systemName: "trash").font(.system(size: 15))
                 }
+                .accessibilityIdentifier("aiPanel.clearConversation")
             }
         }
         .foregroundStyle(palette.foreground)
@@ -171,6 +174,9 @@ struct AiPanel: View {
                             .onEnded { _ in stopListening() }
                     )
                     .help("Push to talk")
+                    .accessibilityLabel(isListening ? "Stop listening" : "Push to talk")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("aiPanel.pushToTalk")
             }
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
@@ -183,6 +189,8 @@ struct AiPanel: View {
             .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking)
             .opacity(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking ? 0.4 : 1)
             .help("Send message")
+            .accessibilityLabel("Send message")
+            .accessibilityIdentifier("aiPanel.send")
         }
         .padding(6)
         .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))

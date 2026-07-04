@@ -84,6 +84,7 @@ struct WelcomeScreen: View {
                     .font(.system(size: 18))
                 Text(appStore.isLoading ? "Opening…" : "Open a PDF")
             }
+            .accessibilityIdentifier("welcome.openPdf")
 
             HStack(spacing: 4) {
                 Text("or press")
@@ -116,6 +117,7 @@ struct WelcomeScreen: View {
                     .foregroundStyle(palette.foreground)
                     .disabled(appStore.isLoading)
                     .onSubmit(openUrl)
+                    .accessibilityIdentifier("welcome.urlField")
             }
             .padding(.horizontal, 14)
             .frame(height: 40)
@@ -127,6 +129,7 @@ struct WelcomeScreen: View {
             ) {
                 Text("Open")
             }
+            .accessibilityIdentifier("welcome.openUrl")
         }
         .frame(maxWidth: 448)
         .padding(.top, 16)

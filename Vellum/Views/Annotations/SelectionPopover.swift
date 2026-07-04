@@ -49,6 +49,8 @@ struct SelectionPopover: View {
                 .buttonStyle(.plain)
                 .onHover { noteButtonHovering = $0 }
                 .help("Add note")
+                .accessibilityLabel("Add note")
+                .accessibilityIdentifier("selectionPopover.addNote")
             }
             .padding(6)
             .glassEffect(.regular, in: .capsule)
@@ -137,5 +139,7 @@ struct HighlightSwatchButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(helpText)
+        .accessibilityLabel(helpText)
+        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
     }
 }

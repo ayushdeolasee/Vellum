@@ -375,5 +375,6 @@ private struct NoteHeaderButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(helpText)
+        .accessibilityLabel(helpText)
     }
 }

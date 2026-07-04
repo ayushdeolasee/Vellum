@@ -34,6 +34,7 @@ struct TabBarView: View {
             .buttonStyle(.accessoryBar)
             .help("Open PDF in new tab")
             .accessibilityLabel("Open PDF in new tab")
+            .accessibilityIdentifier("tabBar.newTab")
         }
         .padding(.leading, 12)
         .padding(.trailing, 8)
@@ -97,6 +98,9 @@ private struct TabItem: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
+            .accessibilityIdentifier("tabBar.tab.\(tab.id)")
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -110,6 +114,7 @@ private struct TabItem: View {
             .padding(.trailing, 4)
             .help("Close \(label)")
             .accessibilityLabel("Close \(label)")
+            .accessibilityIdentifier("tabBar.close.\(tab.id)")
         }
         .font(.system(size: 12))
         .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))

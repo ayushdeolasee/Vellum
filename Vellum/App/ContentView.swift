@@ -49,7 +49,8 @@ struct ContentView: View {
                                     (AppStore.SidebarTab.annotations, "Annotations"),
                                     (AppStore.SidebarTab.ai, "AI"),
                                 ],
-                                selection: sidebarTabBinding
+                                selection: sidebarTabBinding,
+                                accessibilityIdentifierPrefix: "sidebarTab"
                             )
                         }
                         ToolbarSpacer(.flexible)

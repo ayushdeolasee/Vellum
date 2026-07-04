@@ -92,6 +92,8 @@ struct AnnotationSidebar: View {
             FilterPill(
                 title: "All · \(annotationStore.annotations.count)",
                 selected: filter == nil,
+                accessibilityLabel: "All annotations",
+                accessibilityIdentifier: "annotationFilter.all",
                 action: { filter = nil }
             )
 
@@ -103,6 +105,8 @@ struct AnnotationSidebar: View {
                         systemImage: symbol(for: type),
                         selected: filter == type,
                         help: typeLabel(for: type),
+                        accessibilityLabel: "\(typeLabel(for: type)), \(count)",
+                        accessibilityIdentifier: "annotationFilter.\(typeLabel(for: type).lowercased())",
                         action: { filter = type }
                     )
                 }
@@ -183,6 +187,8 @@ private struct FilterPill: View {
     var systemImage: String? = nil
     let selected: Bool
     var help: String = ""
+    var accessibilityLabel: String? = nil
+    var accessibilityIdentifier: String? = nil
     let action: () -> Void
 
     @Environment(\.palette) private var palette
@@ -213,6 +219,9 @@ private struct FilterPill: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+        .accessibilityLabel(accessibilityLabel ?? (help.isEmpty ? title : help))
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier(accessibilityIdentifier ?? "annotationFilter.\(title)")
     }
 }
 
@@ -302,6 +311,7 @@ private struct AnnotationRow: View {
             .opacity(hovering || selected ? 1 : 0)
             .help("Delete annotation")
             .accessibilityLabel("Delete annotation")
+            .accessibilityIdentifier("annotationRow.delete")
         }
         .padding(10)
         .background((selected || hovering) ? palette.accent : .clear)
@@ -335,6 +345,9 @@ private struct AnnotationRow: View {
                 )
                 .padding(-3)
                 .help("Change highlight color")
+                .accessibilityLabel("Change highlight color")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("annotationRow.changeColor")
             .popover(isPresented: $colorPickerOpen, arrowEdge: .bottom) {
                 HStack(spacing: 6) {
                     ForEach(HIGHLIGHT_COLORS) { color in

@@ -108,12 +108,16 @@ struct TextButton<Content: View>: View {
 struct GlassSegmentedPicker<Value: Hashable>: View {
     let options: [(value: Value, label: String)]
     @Binding var selection: Value
+    /// Optional stable identifier prefix for UI automation, e.g. "sidebarTab"
+    /// produces "sidebarTab.annotations" / "sidebarTab.ai" from each label.
+    var accessibilityIdentifierPrefix: String? = nil
 
     @Namespace private var thumbNamespace
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(options, id: \.value) { option in
+                let isSelected = selection == option.value
                 Button {
                     // Springy morph, like the view switcher in Music — the
                     // thumb overshoots slightly and settles instead of snapping.
@@ -123,13 +127,18 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
                 } label: {
                     // Every segment is sized by the widest label (hidden
                     // copies) so the thumb doesn't shrink-wrap short labels
-                    // like "AI" and read lopsided.
+                    // like "AI" and read lopsided. The hidden copies must be
+                    // excluded from accessibility or every segment announces
+                    // every label's text.
                     ZStack {
                         ForEach(options, id: \.value) { sizing in
-                            Text(sizing.label).hidden()
+                            Text(sizing.label)
+                                .hidden()
+                                .accessibilityHidden(true)
                         }
                         Text(option.label)
-                            .foregroundStyle(selection == option.value ? .primary : .secondary)
+                            .foregroundStyle(isSelected ? .primary : .secondary)
+                            .accessibilityHidden(true)
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .padding(.horizontal, 14)
@@ -137,8 +146,13 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(option.label)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier(
+                    accessibilityIdentifierPrefix.map { "\($0).\(option.label)" } ?? option.label
+                )
                 .background {
-                    if selection == option.value {
+                    if isSelected {
                         // The thumb fills the track's full height (only the
                         // 2 px inset shows), matching Apple Music's snug pill.
                         Capsule()

@@ -94,6 +94,7 @@ private struct OpenFileButton: View {
             Label("Open file", systemImage: "folder")
         }
         .help("Open file (⌘O) — open a PDF or .vellumweb archive in a new tab")
+        .accessibilityIdentifier("toolbar.openFile")
     }
 
     private func openFiles() {
@@ -116,6 +117,7 @@ private struct AddWebpageButton: View {
             Label("Add webpage", systemImage: "globe")
         }
         .help("Add webpage (⌘L) — open an article URL in reading mode")
+        .accessibilityIdentifier("toolbar.addWebpage")
     }
 }
 
@@ -181,6 +183,7 @@ private struct SaveButton: View {
             Label("Save", systemImage: "square.and.arrow.down")
         }
         .help("Save (⌘S) — write annotations into the PDF file")
+        .accessibilityIdentifier("toolbar.save")
     }
 }
 
@@ -193,6 +196,7 @@ private struct WebHistoryButtons: View {
             Label("Back", systemImage: "arrow.left")
         }
         .help("Back — go to the previous page in this tab's history")
+        .accessibilityIdentifier("toolbar.webBack")
 
         Button {
             go(1)
@@ -200,6 +204,7 @@ private struct WebHistoryButtons: View {
             Label("Forward", systemImage: "arrow.right")
         }
         .help("Forward — go to the next page in this tab's history")
+        .accessibilityIdentifier("toolbar.webForward")
     }
 
     private func go(_ delta: Int) {
@@ -225,6 +230,7 @@ private struct PageControls: View {
             }
             .disabled(appStore.currentPage <= 1)
             .help("Previous page — or type a page number in the field")
+            .accessibilityIdentifier("toolbar.previousPage")
 
             Button {
                 appStore.goToPage(appStore.currentPage + 1)
@@ -233,6 +239,7 @@ private struct PageControls: View {
             }
             .disabled(appStore.currentPage >= appStore.numPages)
             .help("Next page — or type a page number in the field")
+            .accessibilityIdentifier("toolbar.nextPage")
         }
 
         HStack(spacing: 5) {
@@ -247,6 +254,8 @@ private struct PageControls: View {
                     if !focused { commitPageInput() }
                 }
                 .frame(width: 44)
+                .accessibilityLabel("Page number")
+                .accessibilityIdentifier("toolbar.pageField")
             Text("/ \(appStore.numPages)")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -282,6 +291,7 @@ private struct ZoomControls: View {
             Label("Zoom out", systemImage: "minus.magnifyingglass")
         }
         .help("Zoom out (⌘−)")
+        .accessibilityIdentifier("toolbar.zoomOut")
 
         Button(action: resetZoom) {
             Text("\(Int((appStore.zoom * 100).rounded()))%")
@@ -291,6 +301,7 @@ private struct ZoomControls: View {
         }
         .help("Reset zoom to 100%")
         .accessibilityLabel("Reset zoom to 100%")
+        .accessibilityIdentifier("toolbar.resetZoom")
 
         Button {
             appStore.zoomIn()
@@ -298,6 +309,7 @@ private struct ZoomControls: View {
             Label("Zoom in", systemImage: "plus.magnifyingglass")
         }
         .help("Zoom in (⌘+)")
+        .accessibilityIdentifier("toolbar.zoomIn")
     }
 
     private func resetZoom() {
@@ -342,6 +354,8 @@ private struct BookmarkButton: View {
                 : (isWeb
                     ? "Bookmark this spot (⌘D) — saves your reading position"
                     : "Bookmark this page (⌘D) — saves it in the annotations panel"))
+        .accessibilityAddTraits(isBookmarked ? .isSelected : [])
+        .accessibilityIdentifier("toolbar.bookmark")
     }
 }
 
@@ -364,6 +378,8 @@ private struct NoteToolToggle: View {
             isWeb
                 ? "Sticky note tool (N) — click in the page to attach a note to the text there"
                 : "Sticky note tool (N) — click on the page to place a note")
+        .accessibilityAddTraits(appStore.mode == .note ? .isSelected : [])
+        .accessibilityIdentifier("toolbar.noteTool")
     }
 }
 
@@ -396,6 +412,8 @@ private struct WebLibraryControls: View {
             pageSaved
                 ? "Saved to library — click to remove"
                 : "Save page to library (keeps an offline snapshot)")
+        .accessibilityAddTraits(pageSaved ? .isSelected : [])
+        .accessibilityIdentifier("toolbar.saveToLibrary")
 
         Button(action: exportVellumweb) {
             if exportState == .exporting {
@@ -408,6 +426,8 @@ private struct WebLibraryControls: View {
         }
         .disabled(exportState == .exporting)
         .help(exportTooltip)
+        .accessibilityLabel("Export")
+        .accessibilityIdentifier("toolbar.export")
         .task(id: DocumentKey(appStore)) {
             exportState = .idle
             await loadSavedState(for: DocumentKey(appStore))
@@ -539,6 +559,8 @@ private struct DocumentTitleField: View {
             .help(helpText)
             .onTapGesture(count: 2) { saveAs() }
             .onTapGesture { if isWeb { copyURL() } }
+            .accessibilityLabel(feedback ?? displayText)
+            .accessibilityIdentifier("toolbar.documentTitle")
     }
 
     private var displayText: String {
@@ -662,6 +684,8 @@ private struct UpdateControls: View {
         }
         .disabled(updateChecker.state == .checking)
         .help("Check for updates — \(updateChecker.tooltip)")
+        .accessibilityLabel("Check for updates")
+        .accessibilityIdentifier("toolbar.checkForUpdates")
         .task {
             await updateChecker.check(silent: true)
         }
@@ -683,6 +707,8 @@ private struct SidebarToggleButton: View {
             appStore.sidebarOpen
                 ? "Hide side panel (⌘⌥S)"
                 : "Show side panel (⌘⌥S) — annotations and AI chat")
+        .accessibilityAddTraits(appStore.sidebarOpen ? .isSelected : [])
+        .accessibilityIdentifier("toolbar.sidebarToggle")
     }
 }
 
