@@ -40,6 +40,9 @@ struct VellumCommands: Commands {
     private var hasFocus: Bool { focus != nil }
     private var appStore: AppStore? { focus?.appStore }
     private var hasDocument: Bool { appStore?.document != nil }
+    /// Any tab at all, including a document-less start tab — Close Tab must
+    /// work on a lone start tab too, not just on open documents.
+    private var hasTab: Bool { !(appStore?.tabs.isEmpty ?? true) }
     private var isWeb: Bool { appStore?.document?.kind == .web }
     private var isPdf: Bool { hasDocument && !isWeb }
     private var findVisible: Bool { appStore?.findVisible ?? false }
@@ -67,7 +70,7 @@ struct VellumCommands: Commands {
                 if let appStore { Task { await appStore.closeFile() } }
             }
             .keyboardShortcut("w", modifiers: .command)
-            .disabled(!hasDocument)
+            .disabled(!hasTab)
         }
 
         CommandGroup(replacing: .printItem) {

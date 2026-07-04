@@ -218,6 +218,17 @@ final class ThemeStore {
         observeSystemAppearance()
     }
 
+    // Isolated so the non-Sendable observer tokens can be released here. The
+    // KVO handle self-invalidates on dealloc, but DistributedNotificationCenter
+    // retains its token until explicitly removed — a lingering registration if
+    // a ThemeStore is ever recreated (tests, previews).
+    isolated deinit {
+        appearanceObservation?.invalidate()
+        if let distributedObserver {
+            DistributedNotificationCenter.default().removeObserver(distributedObserver)
+        }
+    }
+
     private static func currentSystemIsDark() -> Bool {
         let appearance = NSApp?.effectiveAppearance ?? NSAppearance.currentDrawing()
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

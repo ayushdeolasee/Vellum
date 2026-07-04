@@ -454,16 +454,18 @@ final class AppStore {
         // Reveal the side panel by default whenever a document is opened.
         sidebarOpen = true
         // Was the active tab a start tab? If so, opening a document from it
-        // replaces that tab in place rather than appending a new one.
-        let activeStartIndex: Int? = activeTabId.flatMap { id in
-            tabs.firstIndex(where: { $0.id == id && $0.document == nil })
+        // replaces that tab in place rather than appending a new one. Track it
+        // by id, not index — `tabs` can be mutated by other main-actor work
+        // while we're suspended on the backend call below.
+        let activeStartId: String? = activeTabId.flatMap { id in
+            tabs.first(where: { $0.id == id && $0.document == nil })?.id
         }
         if let existing = tabs.first(where: { $0.document?.pdfPath == doc.pdfPath }) {
             try? await sessions.closeFile(sessionId: sessionId)
             // Discard the start tab we opened from before switching to the
             // already-open document (never remove the target itself).
-            if let activeStartIndex, tabs[activeStartIndex].id != existing.id {
-                tabs.remove(at: activeStartIndex)
+            if let activeStartId, activeStartId != existing.id {
+                tabs.removeAll { $0.id == activeStartId }
             }
             activateTab(existing.id)
             return
@@ -479,8 +481,8 @@ final class AppStore {
             webVisibleBookmarks: [],
             mode: .view
         )
-        if let activeStartIndex {
-            tabs[activeStartIndex] = tab
+        if let activeStartId, let startIndex = tabs.firstIndex(where: { $0.id == activeStartId }) {
+            tabs[startIndex] = tab
         } else {
             tabs.append(tab)
         }

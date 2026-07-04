@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var keyMonitor: Any?
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
+    @State private var hostWindow: NSWindow?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,6 +98,7 @@ struct ContentView: View {
         // (VellumCommands) route here and disable themselves when the Settings
         // window — which does not publish this value — is key.
         .focusedValue(\.vellumFocus, VellumFocus(appStore: appStore, annotationStore: annotationStore))
+        .background(WindowAccessor { hostWindow = $0 })
         .onAppear(perform: installKeyMonitor)
         .onDisappear(perform: removeKeyMonitor)
     }
@@ -186,12 +188,11 @@ struct ContentView: View {
     ///     handling the two shortcuts here guarantees they always reach us
     ///     regardless of which document view currently holds first responder.
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        // Local monitors see every window's events; these shortcuts must never
-        // act on the document while the Settings window is key.
-        if let identifier = event.window?.identifier?.rawValue,
-           identifier.localizedCaseInsensitiveContains("settings") {
-            return false
-        }
+        // Local monitors see every window's events; only act on events aimed
+        // at the window hosting this view. A positive identity check (rather
+        // than filtering out windows whose identifier "looks like Settings")
+        // also excludes sheets, panels, and any future auxiliary windows.
+        guard let window = event.window, window === hostWindow else { return false }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
         let key = event.charactersIgnoringModifiers ?? ""
@@ -310,6 +311,22 @@ struct ContentView: View {
 private struct DocumentIdentity: Hashable {
     var tabId: String?
     var path: String?
+}
+
+/// Reports the NSWindow hosting this view so the key monitor can positively
+/// identify events belonging to the main content window.
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in onWindow(view?.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in onWindow(nsView?.window) }
+    }
 }
 
 private struct AutosaveIdentity: Hashable {
