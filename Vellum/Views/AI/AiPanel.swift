@@ -82,23 +82,30 @@ struct AiPanel: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: "sparkles")
-                .font(.system(size: 20, weight: .light))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(palette.primary)
-                .frame(width: 48, height: 48)
+                .frame(width: 30, height: 30)
                 .background(palette.muted)
-                .clipShape(Circle())
-                .overlay { Circle().stroke(palette.border) }
-            Text("Ask anything about this document. The assistant can read the page, jump around, and create notes and highlights for you.")
-                .font(.system(size: 12))
-                .foregroundStyle(palette.mutedForeground)
-                .lineSpacing(3)
-                .multilineTextAlignment(.center)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                .overlay { RoundedRectangle(cornerRadius: Radius.md).stroke(palette.border) }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Ask about this document")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.foreground)
+                Text("The assistant can read the page, jump around, and create notes and highlights for you.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 32)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Radius.lg))
+        .overlay { RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(palette.border) }
     }
 
     private func messageRow(_ message: AiMessage) -> some View {

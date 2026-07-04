@@ -11,10 +11,12 @@ struct AnnotationSidebar: View {
     @FocusState private var editFieldFocused: Bool
 
     var body: some View {
-        if annotationStore.annotations.isEmpty {
-            emptyState
-        } else {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            header
+            if annotationStore.annotations.isEmpty {
+                emptyState
+                Spacer(minLength: 0)
+            } else {
                 filterBar
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -41,27 +43,51 @@ struct AnnotationSidebar: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "highlighter")
+                .font(.system(size: 15))
+                .foregroundStyle(palette.primary)
+            Text("Annotations")
+                .font(.system(size: 14, weight: .medium))
+            Spacer()
+            let total = annotationStore.annotations.count
+            if total > 0 {
+                Text("\(total)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.mutedForeground)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
+                    .accessibilityLabel("\(total) \(total == 1 ? "annotation" : "annotations")")
+            }
+        }
+        .foregroundStyle(palette.foreground)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: "highlighter")
-                .font(.system(size: 20, weight: .light))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(palette.mutedForeground)
-                .frame(width: 48, height: 48)
+                .frame(width: 30, height: 30)
                 .background(palette.muted)
-                .clipShape(Circle())
-                .overlay {
-                    Circle().strokeBorder(palette.border, lineWidth: 1)
-                }
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                .overlay { RoundedRectangle(cornerRadius: Radius.md).strokeBorder(palette.border) }
 
-            VStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("No annotations yet")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(palette.foreground)
 
                 HStack(spacing: 3) {
-                    Text("Select text on the page to highlight it, or press")
+                    Text("Select text to highlight, or press")
                     Text("N")
                         .font(.system(size: 10, design: .monospaced))
                         .padding(.horizontal, 4)
@@ -75,12 +101,14 @@ struct AnnotationSidebar: View {
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Radius.lg))
+        .overlay { RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(palette.border) }
+        .padding(12)
     }
 
     private var filterBar: some View {
