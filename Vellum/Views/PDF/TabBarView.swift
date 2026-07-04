@@ -9,19 +9,20 @@ struct TabBarView: View {
     var body: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 4) {
-                    HStack(spacing: 4) {
-                        ForEach(appStore.tabs) { tab in
-                            TabItem(
-                                tab: tab,
-                                isActive: tab.id == appStore.activeTabId,
-                                onActivate: { appStore.activateTab(tab.id) },
-                                onClose: { Task { await appStore.closeTab(tab.id) } }
-                            )
-                        }
+                // Semantic fills, not glass: the tab strip is chrome, so the
+                // active tab uses the shared SelectionStyle surface rather than
+                // stacking its own glass pane on the `.bar` material.
+                HStack(spacing: 4) {
+                    ForEach(appStore.tabs) { tab in
+                        TabItem(
+                            tab: tab,
+                            isActive: tab.id == appStore.activeTabId,
+                            onActivate: { appStore.activateTab(tab.id) },
+                            onClose: { Task { await appStore.closeTab(tab.id) } }
+                        )
                     }
-                    .padding(.vertical, 5)
                 }
+                .padding(.vertical, 5)
             }
             .frame(maxWidth: .infinity)
 
@@ -119,15 +120,11 @@ private struct TabItem: View {
         .font(.system(size: 12))
         .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .frame(minWidth: 128, idealWidth: 176, maxWidth: 224, minHeight: 28, maxHeight: 28)
-        .background {
-            if !isActive, hovering {
-                RoundedRectangle(cornerRadius: Radius.md)
-                    .fill(.quaternary.opacity(0.5))
-            }
-        }
-        .glassEffect(
-            isActive ? .regular.interactive() : .identity,
-            in: .rect(cornerRadius: Radius.md))
+        .selectionSurface(
+            selected: isActive,
+            hovering: hovering,
+            in: RoundedRectangle(cornerRadius: Radius.md),
+            palette: palette)
         .onHover { hovering = $0 }
         .help(tab.document.pdfPath)
         .overlay {

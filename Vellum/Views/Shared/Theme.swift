@@ -116,6 +116,52 @@ enum Radius {
     static let xxl: CGFloat = 20
 }
 
+/// Shared selection language for every "current" chrome element — active tab,
+/// selected segmented item, active annotation tool, selected filter chip. One
+/// quiet primary-tinted fill plus a hairline primary edge everywhere, so state
+/// reads from shape and color, not from labels. Deliberately semantic (no
+/// glass): per the material strategy the unified toolbar owns the glass, and
+/// selected children get this flat tint instead of their own stacked pane.
+enum SelectionStyle {
+    /// Fill behind an element: primary tint when selected, a faint neutral wash
+    /// on hover, otherwise clear.
+    static func fill(_ palette: ThemePalette, selected: Bool, hovering: Bool = false) -> AnyShapeStyle {
+        if selected { return AnyShapeStyle(palette.primary.opacity(0.16)) }
+        return hovering ? AnyShapeStyle(.quaternary.opacity(0.55)) : AnyShapeStyle(Color.clear)
+    }
+
+    /// Hairline edge: a translucent primary stroke when selected, else clear.
+    static func edge(_ palette: ThemePalette, selected: Bool) -> AnyShapeStyle {
+        selected ? AnyShapeStyle(palette.primary.opacity(0.45)) : AnyShapeStyle(Color.clear)
+    }
+
+    /// Label/icon color: primary tint when selected, secondary at rest, primary
+    /// on hover.
+    static func foreground(_ palette: ThemePalette, selected: Bool, hovering: Bool = false) -> AnyShapeStyle {
+        if selected { return AnyShapeStyle(palette.primary) }
+        return hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
+    }
+}
+
+extension View {
+    /// Apply the shared selection surface (tinted fill + hairline edge) clipped
+    /// to `shape`. Used by tabs, the segmented thumb, and filter chips so they
+    /// all read as one selection system.
+    func selectionSurface<S: InsettableShape>(
+        selected: Bool,
+        hovering: Bool = false,
+        in shape: S,
+        palette: ThemePalette
+    ) -> some View {
+        background {
+            shape.fill(SelectionStyle.fill(palette, selected: selected, hovering: hovering))
+        }
+        .overlay {
+            shape.strokeBorder(SelectionStyle.edge(palette, selected: selected), lineWidth: 1)
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class ThemeStore {

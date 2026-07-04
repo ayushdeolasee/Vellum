@@ -10,116 +10,71 @@ struct VellumToolbar: ToolbarContent {
     private var isWeb: Bool { appStore.document?.kind == .web }
     private var hasDocument: Bool { appStore.document != nil }
 
+    // Three stable regions, shared by PDF and web tabs so nothing familiar
+    // moves when the tab type changes:
+    //   • LEADING (.navigation): the same navigation slot — web back/forward or
+    //     PDF page controls — plus PDF-only reading controls (zoom).
+    //   • CENTER (.principal): the quiet document title/address. .principal is
+    //     genuinely centered by the window, so it never shifts with the leading
+    //     cluster's width the way flexible spacers did.
+    //   • TRAILING: bookmark, note, inspector, and one overflow Menu that holds
+    //     the low-frequency actions (Open, Save, Export, library, updates).
+    // Low-use file/library/update actions no longer each claim a glass circle,
+    // which is what produced the "pill soup".
     var body: some ToolbarContent {
-        // ControlGroup merges related buttons into one shared glass capsule —
-        // left to their own devices, macOS 26 gives every button its own
-        // circle with no gap, which reads as a squished blob.
+        // LEADING — navigation. ControlGroup merges related buttons into one
+        // shared glass capsule; bare buttons in a group render as zero-gap
+        // squished circles on macOS 26.
         ToolbarItemGroup(placement: .navigation) {
-            ControlGroup {
-                OpenFileButton()
-                AddWebpageButton()
-                if hasDocument, !isWeb {
-                    SaveButton()
-                }
-            }
-            if hasDocument, isWeb {
-                ControlGroup {
-                    WebHistoryButtons()
+            if hasDocument {
+                if isWeb {
+                    ControlGroup {
+                        WebHistoryButtons()
+                    }
+                } else {
+                    PageControls()
                 }
             }
         }
 
-        if hasDocument {
-            // Web pages scroll continuously — page numbers are meaningless
-            // there, so the page cluster is PDF-only.
-            if !isWeb {
-                ToolbarItemGroup {
-                    PageControls()
-                }
-                ToolbarSpacer(.fixed)
-            }
-
-            ToolbarItemGroup {
+        // PDF-only reading controls stay in the leading region so the centered
+        // title and the trailing pod never move between modes.
+        if hasDocument, !isWeb {
+            ToolbarItemGroup(placement: .navigation) {
                 ControlGroup {
                     ZoomControls()
                 }
             }
+        }
 
-            // Flexible spacers center the address pod in the free space,
-            // Safari-style, instead of leaving one dead gap at the trailing
-            // edge. Everything stays in .automatic placement — mixing in
-            // .primaryAction scatters items mid-bar on macOS 26.
-            ToolbarSpacer(.flexible)
-
-            // The address pill is its own item: nesting a hand-drawn capsule
-            // inside the icon pod produced capsule-in-capsule seams and left
-            // the trailing button with mismatched corner rounding.
-            ToolbarItem {
+        // CENTER — quiet title/address, genuinely centered and not pretending
+        // to be an editable pill.
+        if hasDocument {
+            ToolbarItem(placement: .principal) {
                 DocumentTitleField()
             }
-            ToolbarSpacer(.fixed)
+        }
+
+        // TRAILING — stable pod. These items sit in the same order for PDF and
+        // web tabs.
+        if hasDocument {
             ToolbarItemGroup {
                 BookmarkButton()
                 NoteToolToggle()
-                if isWeb {
-                    WebLibraryControls()
-                }
             }
-
-            ToolbarSpacer(.flexible)
-        } else {
-            ToolbarSpacer(.flexible)
-        }
-
-        ToolbarItemGroup {
-            UpdateControls()
-        }
-
-        if hasDocument {
             ToolbarSpacer(.fixed)
             ToolbarItem {
                 SidebarToggleButton()
             }
         }
-    }
-}
 
-// MARK: - File / web entry points
-
-private struct OpenFileButton: View {
-    @Environment(AppStore.self) private var appStore
-
-    var body: some View {
-        Button(action: openFiles) {
-            Label("Open file", systemImage: "folder")
+        ToolbarItem {
+            OverflowMenu()
         }
-        .help("Open file (⌘O) — open a PDF or .vellumweb archive in a new tab")
-        .accessibilityIdentifier("toolbar.openFile")
-    }
-
-    private func openFiles() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        var types: [UTType] = [.pdf]
-        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
-        panel.allowedContentTypes = types
-        guard panel.runModal() == .OK else { return }
-        Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }
     }
 }
 
-private struct AddWebpageButton: View {
-    var body: some View {
-        Button {
-            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-        } label: {
-            Label("Add webpage", systemImage: "globe")
-        }
-        .help("Add webpage (⌘L) — open an article URL in reading mode")
-        .accessibilityIdentifier("toolbar.addWebpage")
-    }
-}
+// MARK: - Add webpage sheet
 
 /// Sheet for the Add Webpage flow (⌘L). A popover anchored to the toolbar
 /// button could detach and land at the edge of another display — see the
@@ -169,21 +124,6 @@ struct AddWebpageSheet: View {
         guard !value.isEmpty else { return }
         dismiss()
         Task { await appStore.openUrl(value) }
-    }
-}
-
-private struct SaveButton: View {
-    @Environment(AppStore.self) private var appStore
-
-    var body: some View {
-        Button {
-            guard let sessionId = appStore.activeTabId else { return }
-            Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
-        } label: {
-            Label("Save", systemImage: "square.and.arrow.down")
-        }
-        .help("Save (⌘S) — write annotations into the PDF file")
-        .accessibilityIdentifier("toolbar.save")
     }
 }
 
@@ -383,77 +323,110 @@ private struct NoteToolToggle: View {
     }
 }
 
-// MARK: - Web library / export
+// MARK: - Overflow menu
 
-private struct WebLibraryControls: View {
+/// One trailing Menu that collects the low-frequency actions that used to each
+/// claim their own toolbar circle: Open, Save, web library + Export, and the
+/// updater. Keeping them here is what removes the "pill soup" while leaving the
+/// reading controls (nav, zoom, bookmark, note, inspector) permanently visible.
+private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
-    @Environment(\.palette) private var palette
 
-    private enum ExportState: Equatable {
-        case idle
-        case exporting
-        case done(String)
-        case failed(String)
-    }
-
+    @State private var updateChecker = UpdateChecker()
     @State private var pageSaved = false
-    @State private var exportState: ExportState = .idle
+    @State private var exporting = false
+
+    private var isWeb: Bool { appStore.document?.kind == .web }
+    private var hasDocument: Bool { appStore.document != nil }
 
     var body: some View {
-        Button(action: toggleSavedPage) {
-            Label(
-                pageSaved ? "Saved to library" : "Save page to library",
-                systemImage: "archivebox"
-            )
-            .foregroundStyle(pageSaved ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.primary))
-        }
-        .help(
-            pageSaved
-                ? "Saved to library — click to remove"
-                : "Save page to library (keeps an offline snapshot)")
-        .accessibilityAddTraits(pageSaved ? .isSelected : [])
-        .accessibilityIdentifier("toolbar.saveToLibrary")
-
-        Button(action: exportVellumweb) {
-            if exportState == .exporting {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Label("Export", systemImage: "square.and.arrow.up")
-                    .foregroundStyle(exportIconStyle)
+        Menu {
+            Section {
+                Button(action: openFiles) {
+                    Label("Open File…", systemImage: "folder")
+                }
+                Button {
+                    NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+                } label: {
+                    Label("Add Webpage…", systemImage: "globe")
+                }
             }
+
+            if hasDocument, !isWeb {
+                Section {
+                    Button(action: savePdf) {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                }
+            }
+
+            if hasDocument, isWeb {
+                Section {
+                    Button(action: toggleSavedPage) {
+                        Label(
+                            pageSaved ? "Remove from Library" : "Save Page to Library",
+                            systemImage: pageSaved ? "archivebox.fill" : "archivebox")
+                    }
+                    Button(action: exportVellumweb) {
+                        Label("Export as .vellumweb…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(exporting)
+                }
+            }
+
+            Section {
+                if updateChecker.state == .available,
+                   let version = updateChecker.availableVersion {
+                    Button(action: updateChecker.install) {
+                        Label("Install Update \(version)", systemImage: "arrow.down.circle")
+                    }
+                }
+                Button {
+                    Task { await updateChecker.check() }
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.clockwise")
+                }
+                .disabled(updateChecker.state == .checking)
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis")
         }
-        .disabled(exportState == .exporting)
-        .help(exportTooltip)
-        .accessibilityLabel("Export")
-        .accessibilityIdentifier("toolbar.export")
+        .menuIndicator(.hidden)
+        .help("More — open, save, export, and updates")
+        .accessibilityLabel("More actions")
+        .accessibilityIdentifier("toolbar.overflowMenu")
+        .task {
+            await updateChecker.check(silent: true)
+        }
         .task(id: DocumentKey(appStore)) {
-            exportState = .idle
             await loadSavedState(for: DocumentKey(appStore))
         }
     }
 
-    private var exportTooltip: String {
-        switch exportState {
-        case .idle: return "Export as .vellumweb (portable archive with snapshot + annotations)"
-        case .exporting: return "Exporting…"
-        case .done(let detail): return detail
-        case .failed(let message): return message
-        }
+    // MARK: File
+
+    private func openFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        var types: [UTType] = [.pdf]
+        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
+        panel.allowedContentTypes = types
+        guard panel.runModal() == .OK else { return }
+        Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }
     }
 
-    private var exportIconStyle: AnyShapeStyle {
-        switch exportState {
-        case .done: return AnyShapeStyle(.green)
-        case .failed: return AnyShapeStyle(palette.destructive)
-        default: return AnyShapeStyle(.primary)
-        }
+    private func savePdf() {
+        guard let sessionId = appStore.activeTabId else { return }
+        Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
     }
+
+    // MARK: Web library
 
     private func loadSavedState(for identity: DocumentKey) async {
         pageSaved = false
-        guard let sessionId = appStore.activeTabId else { return }
+        guard isWeb, let sessionId = appStore.activeTabId else { return }
         let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
         if DocumentKey(appStore) == identity {
             pageSaved = saved
@@ -475,7 +448,7 @@ private struct WebLibraryControls: View {
 
     /// Export the active webpage as a .vellumweb archive (Toolbar.tsx export flow).
     private func exportVellumweb() {
-        guard exportState != .exporting,
+        guard !exporting,
               let sessionId = appStore.activeTabId,
               appStore.document?.kind == .web else { return }
 
@@ -490,20 +463,11 @@ private struct WebLibraryControls: View {
         let pages = aiStore.pageTexts
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
-        let identity = DocumentKey(appStore)
-        exportState = .exporting
+        exporting = true
         Task {
-            do {
-                let summary = try await appStore.sessions.exportVellumweb(
-                    sessionId: sessionId, destPath: destination.path, pages: pages)
-                guard DocumentKey(appStore) == identity else { return }
-                let mb = String(format: "%.2f", Double(summary.bytes) / (1024 * 1024))
-                let skipped = summary.assetsSkipped > 0 ? ", \(summary.assetsSkipped) skipped" : ""
-                exportState = .done("Exported \(mb) MB (\(summary.assetCount) assets\(skipped))")
-            } catch {
-                guard DocumentKey(appStore) == identity else { return }
-                exportState = .failed(error.localizedDescription)
-            }
+            defer { exporting = false }
+            _ = try? await appStore.sessions.exportVellumweb(
+                sessionId: sessionId, destPath: destination.path, pages: pages)
         }
     }
 
@@ -546,16 +510,18 @@ private struct DocumentTitleField: View {
     private var isWeb: Bool { appStore.document?.kind == .web }
 
     var body: some View {
+        // Quiet centered title/address — no capsule, no stacked material. It
+        // reads as a label the unified toolbar hosts, not a fake editable pill.
+        // Middle-truncation keeps both the site/name head and the tail visible.
         Text(feedback ?? displayText)
-            .font(.system(size: 11))
+            .font(.system(size: 12))
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 30, alignment: .center)
-            .background(.quaternary.opacity(0.5), in: Capsule())
-            .contentShape(Capsule())
-            .frame(minWidth: 200, idealWidth: isWeb ? 420 : 300, maxWidth: isWeb ? 420 : 300)
+            .truncationMode(.middle)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 120, idealWidth: isWeb ? 380 : 260, maxWidth: isWeb ? 440 : 320)
+            .frame(minHeight: 30)
+            .contentShape(Rectangle())
             .help(helpText)
             .onTapGesture(count: 2) { saveAs() }
             .onTapGesture { if isWeb { copyURL() } }
@@ -654,43 +620,7 @@ private struct DocumentTitleField: View {
     }
 }
 
-// MARK: - Updates / theme / sidebar
-
-private struct UpdateControls: View {
-    @State private var updateChecker = UpdateChecker()
-
-    var body: some View {
-        if updateChecker.state == .available,
-           let version = updateChecker.availableVersion {
-            Button(action: updateChecker.install) {
-                Label("Update \(version)", systemImage: "arrow.down")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .buttonStyle(.glassProminent)
-            .tint(.green)
-            .help(updateChecker.tooltip)
-            .accessibilityLabel(updateChecker.tooltip)
-        }
-
-        Button {
-            Task { await updateChecker.check() }
-        } label: {
-            if updateChecker.state == .checking {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Label("Check for updates", systemImage: "arrow.clockwise")
-            }
-        }
-        .disabled(updateChecker.state == .checking)
-        .help("Check for updates — \(updateChecker.tooltip)")
-        .accessibilityLabel("Check for updates")
-        .accessibilityIdentifier("toolbar.checkForUpdates")
-        .task {
-            await updateChecker.check(silent: true)
-        }
-    }
-}
+// MARK: - Sidebar
 
 private struct SidebarToggleButton: View {
     @Environment(AppStore.self) private var appStore

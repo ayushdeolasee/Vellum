@@ -112,6 +112,7 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
     /// produces "sidebarTab.annotations" / "sidebarTab.ai" from each label.
     var accessibilityIdentifierPrefix: String? = nil
 
+    @Environment(\.palette) private var palette
     @Namespace private var thumbNamespace
 
     var body: some View {
@@ -154,10 +155,15 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
                 .background {
                     if isSelected {
                         // The thumb fills the track's full height (only the
-                        // 2 px inset shows), matching Apple Music's snug pill.
+                        // 2 px inset shows). Semantic SelectionStyle tint —
+                        // the same fill + edge the tabs and filter chips use —
+                        // instead of a private glass pane, so the whole app
+                        // speaks one selection language.
                         Capsule()
-                            .fill(.quaternary.opacity(0.6))
-                            .glassEffect(.regular.interactive(), in: .capsule)
+                            .fill(SelectionStyle.fill(palette, selected: true))
+                            .overlay(
+                                Capsule().strokeBorder(
+                                    SelectionStyle.edge(palette, selected: true), lineWidth: 1))
                             .matchedGeometryEffect(id: "thumb", in: thumbNamespace)
                     }
                 }

@@ -206,15 +206,9 @@ private struct FilterPill: View {
             .font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .foregroundStyle(
-                selected
-                    ? AnyShapeStyle(palette.primaryForeground)
-                    : AnyShapeStyle(hovering ? .primary : .secondary))
-            .background(
-                selected
-                    ? AnyShapeStyle(.tint)
-                    : AnyShapeStyle(.quaternary.opacity(hovering ? 0.8 : 0.5)),
-                in: Capsule())
+            .foregroundStyle(SelectionStyle.foreground(palette, selected: selected, hovering: hovering))
+            .selectionSurface(
+                selected: selected, hovering: hovering, in: Capsule(), palette: palette)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
