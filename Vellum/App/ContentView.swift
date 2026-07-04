@@ -204,6 +204,22 @@ struct ContentView: View {
             return true
         }
 
+        // ⌘⇧[ / ⌘⇧] previous/next tab. Handled here for the same reason as
+        // ⌘L/⌘O: an open PDF/web view can consume the command-key event via
+        // performKeyEquivalent before the Navigate-menu shortcut is offered.
+        // With Shift held, charactersIgnoringModifiers yields "{" / "}", so
+        // accept both the shifted and unshifted glyphs.
+        if modifiers == [.command, .shift] {
+            if key == "[" || key == "{" {
+                appStore.cycleTab(-1)
+                return true
+            }
+            if key == "]" || key == "}" {
+                appStore.cycleTab(1)
+                return true
+            }
+        }
+
         // Sidebar text sizing: only intercept ⌘+/⌘− while hovering the open
         // side panel. Otherwise fall through so the View-menu zoom command
         // handles the document zoom.

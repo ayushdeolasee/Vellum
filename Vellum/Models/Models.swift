@@ -154,7 +154,10 @@ struct WebVisibleRange: Equatable, Sendable {
 
 struct PdfTab: Identifiable, Equatable, Sendable {
     var id: String
-    var document: DocumentInfo
+    /// The tab's document, or `nil` for a lightweight "start tab" — the
+    /// new-tab page offering Recent, Open PDF…, and Open Webpage…. A start tab
+    /// is replaced in place the moment a document is opened from it.
+    var document: DocumentInfo?
     var currentPage: Int
     var numPages: Int
     var zoom: Double

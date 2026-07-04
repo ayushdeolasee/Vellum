@@ -26,15 +26,25 @@ struct TabBarView: View {
             }
             .frame(maxWidth: .infinity)
 
-            Button(action: openPdf) {
+            Menu {
+                Button("Open PDF…", action: openPdf)
+                Button("Open Webpage…") {
+                    NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+                }
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
+            } primaryAction: {
+                appStore.newStartTab()
             }
+            .menuIndicator(.hidden)
+            .menuStyle(.button)
             .buttonStyle(.accessoryBar)
-            .help("Open PDF in new tab")
-            .accessibilityLabel("Open PDF in new tab")
+            .fixedSize()
+            .help("New tab — click for a new tab, or choose Open PDF / Open Webpage")
+            .accessibilityLabel("New tab")
             .accessibilityIdentifier("tabBar.newTab")
         }
         .padding(.leading, 12)
@@ -66,12 +76,20 @@ private struct TabItem: View {
     @Environment(\.palette) private var palette
     @State private var hovering = false
 
+    private var isStart: Bool { tab.document == nil }
+
+    private var iconName: String {
+        guard let document = tab.document else { return "plus.square" }
+        return document.kind == .web ? "globe" : "doc.text"
+    }
+
     private var label: String {
-        if let title = tab.document.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let document = tab.document else { return "New Tab" }
+        if let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines),
            !title.isEmpty {
             return title
         }
-        let fallback = tab.document.pdfPath
+        let fallback = document.pdfPath
             .replacingOccurrences(of: "\\", with: "/")
             .split(separator: "/", omittingEmptySubsequences: false)
             .last
@@ -86,7 +104,7 @@ private struct TabItem: View {
         HStack(spacing: 0) {
             Button(action: onActivate) {
                 HStack(spacing: 8) {
-                    Image(systemName: "doc.text")
+                    Image(systemName: iconName)
                         .font(.system(size: 13))
                         .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     Text(label)
@@ -126,7 +144,7 @@ private struct TabItem: View {
             in: RoundedRectangle(cornerRadius: Radius.md),
             palette: palette)
         .onHover { hovering = $0 }
-        .help(tab.document.pdfPath)
+        .help(tab.document?.pdfPath ?? "New Tab")
         .overlay {
             MiddleClickView(action: onClose)
         }

@@ -125,7 +125,7 @@ final class AppStore {
     /// session id so annotation commands keep working against the same tab.
     @discardableResult
     func webNavigated(tabId: String, url: String) async -> DocumentInfo? {
-        guard let tab = tabs.first(where: { $0.id == tabId }), tab.document.kind == .web else {
+        guard let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .web else {
             return nil
         }
         do {
@@ -159,8 +159,8 @@ final class AppStore {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard let tab = tabs.first(where: { $0.id == tabId }),
-              tab.document.title != trimmed else { return }
-        var doc = tab.document
+              var doc = tab.document,
+              doc.title != trimmed else { return }
         doc.title = trimmed
         updateTab(tabId) { $0.document = doc }
         if activeTabId == tabId {
@@ -179,9 +179,13 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        try? await sessions.setDocumentMetadata(
-            sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
-        try? await sessions.closeFile(sessionId: closingTab.id)
+        // Start tabs carry no backend session — skip the metadata/close round
+        // trips that would otherwise fire against a nonexistent session id.
+        if closingTab.document != nil {
+            try? await sessions.setDocumentMetadata(
+                sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
+            try? await sessions.closeFile(sessionId: closingTab.id)
+        }
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
@@ -200,7 +204,7 @@ final class AppStore {
 
     func activateTab(_ tabId: String) {
         guard activeTabId != tabId, let tab = tabs.first(where: { $0.id == tabId }) else { return }
-        if let current = tabs.first(where: { $0.id == activeTabId }) {
+        if let current = tabs.first(where: { $0.id == activeTabId }), current.document != nil {
             let sessionId = current.id
             let page = current.currentPage
             Task {
@@ -209,6 +213,38 @@ final class AppStore {
             }
         }
         applyActiveState(from: tab)
+    }
+
+    // MARK: - Start tab (new-tab page)
+
+    /// Open a fresh start tab — the lightweight new-tab page offering Recent,
+    /// Open PDF…, and Open Webpage…. Backing ⌘T and the tab bar's `+`. A start
+    /// tab holds no backend session; opening a document from it replaces the
+    /// tab in place (see `adoptOpenedDocument`).
+    func newStartTab() {
+        let tab = PdfTab(
+            id: "start-" + UUID().uuidString.lowercased(),
+            document: nil,
+            currentPage: 1,
+            numPages: 0,
+            zoom: 1.0,
+            visiblePages: [],
+            webVisibleRange: nil,
+            webVisibleBookmarks: [],
+            mode: .view
+        )
+        tabs.append(tab)
+        applyActiveState(from: tab)
+    }
+
+    /// Cycle the active tab by `delta`, wrapping at both ends. Backs the
+    /// ⌘⇧[ / ⌘⇧] previous/next-tab shortcuts across any mix of tab types.
+    func cycleTab(_ delta: Int) {
+        guard tabs.count > 1, let activeTabId,
+              let index = tabs.firstIndex(where: { $0.id == activeTabId }) else { return }
+        let count = tabs.count
+        let next = ((index + delta) % count + count) % count
+        activateTab(tabs[next].id)
     }
 
     // MARK: - Viewport
@@ -321,8 +357,18 @@ final class AppStore {
         RecentFilesService.record(doc)
         // Reveal the side panel by default whenever a document is opened.
         sidebarOpen = true
-        if let existing = tabs.first(where: { $0.document.pdfPath == doc.pdfPath }) {
+        // Was the active tab a start tab? If so, opening a document from it
+        // replaces that tab in place rather than appending a new one.
+        let activeStartIndex: Int? = activeTabId.flatMap { id in
+            tabs.firstIndex(where: { $0.id == id && $0.document == nil })
+        }
+        if let existing = tabs.first(where: { $0.document?.pdfPath == doc.pdfPath }) {
             try? await sessions.closeFile(sessionId: sessionId)
+            // Discard the start tab we opened from before switching to the
+            // already-open document (never remove the target itself).
+            if let activeStartIndex, tabs[activeStartIndex].id != existing.id {
+                tabs.remove(at: activeStartIndex)
+            }
             activateTab(existing.id)
             return
         }
@@ -337,7 +383,11 @@ final class AppStore {
             webVisibleBookmarks: [],
             mode: .view
         )
-        tabs.append(tab)
+        if let activeStartIndex {
+            tabs[activeStartIndex] = tab
+        } else {
+            tabs.append(tab)
+        }
         applyActiveState(from: tab)
     }
 

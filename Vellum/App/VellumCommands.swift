@@ -46,7 +46,7 @@ struct VellumCommands: Commands {
     var body: some Commands {
         // MARK: File
         CommandGroup(replacing: .newItem) {
-            Button("New Tab") { openPanel() }
+            Button("New Tab") { appStore?.newStartTab() }
                 .keyboardShortcut("t", modifiers: .command)
                 .disabled(!hasFocus)
 
@@ -135,6 +135,18 @@ struct VellumCommands: Commands {
 
             Divider()
 
+            // Tab cycling ⌘⇧[ / ⌘⇧], wrapping at the ends across any mix of
+            // PDF / web / start tabs.
+            Button("Show Previous Tab") { appStore?.cycleTab(-1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled((appStore?.tabs.count ?? 0) < 2)
+
+            Button("Show Next Tab") { appStore?.cycleTab(1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled((appStore?.tabs.count ?? 0) < 2)
+
+            Divider()
+
             // Tab switching ⌘1…⌘9.
             ForEach(1...9, id: \.self) { number in
                 Button(tabTitle(index: number - 1)) { activateTab(index: number - 1) }
@@ -179,7 +191,9 @@ struct VellumCommands: Commands {
         guard let appStore, appStore.tabs.indices.contains(index) else {
             return "Tab \(index + 1)"
         }
-        let title = appStore.tabs[index].document.title ?? ""
+        let tab = appStore.tabs[index]
+        guard let document = tab.document else { return "New Tab" }
+        let title = document.title ?? ""
         return title.isEmpty ? "Tab \(index + 1)" : title
     }
 
