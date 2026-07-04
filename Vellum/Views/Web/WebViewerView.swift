@@ -298,6 +298,18 @@ final class WebViewerController: NSObject {
         aiStore.locateWebTextHandler = { [weak self] page, text in
             await self?.locateWebText(page: page, text: text)
         }
+        app.findQueryHandler = { [weak self] query in
+            self?.post("find", ["query": query])
+        }
+        app.findStepHandler = { [weak self] delta in
+            self?.post("find-step", ["delta": delta])
+        }
+        app.findClearHandler = { [weak self] in
+            self?.post("find-clear")
+        }
+        app.printHandler = { [weak self] in
+            self?.printPage()
+        }
 
         if let doc = app.document, doc.kind == .web {
             webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
@@ -320,6 +332,10 @@ final class WebViewerController: NSObject {
             app.scrollToWebPositionHandler = nil
             annotationStore?.captureWebPositionHandler = nil
             aiStore?.locateWebTextHandler = nil
+            app.findQueryHandler = nil
+            app.findStepHandler = nil
+            app.findClearHandler = nil
+            app.printHandler = nil
         }
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "vellum")
@@ -343,6 +359,14 @@ final class WebViewerController: NSObject {
 
     func goHistory(delta: Int) {
         post("history", ["delta": delta])
+    }
+
+    /// Print the rendered page via WKWebView's print operation.
+    func printPage() {
+        guard let window = webView.window else { return }
+        let operation = webView.printOperation(with: NSPrintInfo.shared)
+        operation.view?.frame = webView.bounds
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
     }
 
     // MARK: Selection & note actions
@@ -769,6 +793,11 @@ final class WebViewerController: NSObject {
             } else {
                 finishLocate(requestId, with: nil)
             }
+
+        case "find-result":
+            app.setFindResults(
+                count: intValue(data["count"]) ?? 0,
+                current: intValue(data["current"]) ?? 0)
 
         case "position-result":
             guard let requestId = data["requestId"] as? String else { break }

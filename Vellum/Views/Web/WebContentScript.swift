@@ -59,6 +59,12 @@ enum WebContentScript {
   var noteMode = false;
   var initialized = false;
 
+  // Find bar state (⌘F): matches are raw-offset {start,end} pairs, rendered in
+  // their own overlay layer so the app's find never touches annotation layers.
+  var findRoot = null;
+  var findMatches = [];
+  var findIndex = -1;
+
   function post(type, payload) {
     var msg = { vellum: true, type: type };
     if (payload) {
@@ -116,6 +122,7 @@ enum WebContentScript {
               return NodeFilter.FILTER_REJECT;
             }
             if (node === overlayRoot) return NodeFilter.FILTER_REJECT;
+            if (node === findRoot) return NodeFilter.FILTER_REJECT;
             return NodeFilter.FILTER_SKIP;
           }
           return NodeFilter.FILTER_ACCEPT;
@@ -621,9 +628,100 @@ enum WebContentScript {
     root.appendChild(marker);
   }
 
+  // ------------------------------------------------------------------
+  // Find bar (⌘F) — separate overlay layer, whitespace-collapsed matching
+  // ------------------------------------------------------------------
+
+  function ensureFindRoot() {
+    if (findRoot && findRoot.isConnected) return findRoot;
+    findRoot = document.createElement("div");
+    findRoot.id = "__vellum-find";
+    findRoot.setAttribute("aria-hidden", "true");
+    findRoot.style.cssText =
+      "position:absolute;left:0;top:0;width:0;height:0;overflow:visible;" +
+      "pointer-events:none;z-index:2147483647;";
+    (document.documentElement || document.body).appendChild(findRoot);
+    return findRoot;
+  }
+
+  function findAll(query) {
+    findMatches = [];
+    findIndex = -1;
+    var q = collapseWs(query || "").trim();
+    if (!q) return;
+    var pair = searchPair(q);
+    var hay = pair.hay;
+    var needle = pair.needle;
+    if (!needle) return;
+    var idx = hay.indexOf(needle);
+    while (idx !== -1 && findMatches.length < 5000) {
+      findMatches.push({
+        start: normMap[idx],
+        end: normMap[idx + needle.length - 1] + 1,
+      });
+      idx = hay.indexOf(needle, idx + needle.length);
+    }
+    if (findMatches.length > 0) findIndex = 0;
+  }
+
+  function renderFind() {
+    var root = ensureFindRoot();
+    while (root.firstChild) root.removeChild(root.firstChild);
+    for (var i = 0; i < findMatches.length; i++) {
+      var range = rangeFromRaw(findMatches[i].start, findMatches[i].end);
+      if (!range) continue;
+      var rects = range.getClientRects();
+      var current = i === findIndex;
+      for (var r = 0; r < rects.length; r++) {
+        var rect = rects[r];
+        if (rect.width < 1 || rect.height < 1) continue;
+        var div = document.createElement("div");
+        div.style.cssText =
+          "position:absolute;pointer-events:none;border-radius:2px;" +
+          "mix-blend-mode:multiply;";
+        div.style.left = rect.left + window.scrollX + "px";
+        div.style.top = rect.top + window.scrollY + "px";
+        div.style.width = rect.width + "px";
+        div.style.height = rect.height + "px";
+        div.style.backgroundColor = current ? "#fb923c" : "#fde047";
+        root.appendChild(div);
+      }
+    }
+  }
+
+  function scrollFindIntoView() {
+    if (findIndex < 0 || findIndex >= findMatches.length) return;
+    var m = findMatches[findIndex];
+    var range = rangeFromRaw(m.start, m.end);
+    if (!range) return;
+    var rect = range.getBoundingClientRect();
+    if (rect.top < 60 || rect.bottom > window.innerHeight - 20) {
+      window.scrollTo({
+        top: Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3),
+        behavior: "auto",
+      });
+    }
+  }
+
+  function reportFind() {
+    post("find-result", {
+      count: findMatches.length,
+      current: findMatches.length > 0 ? findIndex + 1 : 0,
+    });
+  }
+
+  function clearFind() {
+    findMatches = [];
+    findIndex = -1;
+    if (findRoot) {
+      while (findRoot.firstChild) findRoot.removeChild(findRoot.firstChild);
+    }
+  }
+
   var relayout = debounce(function () {
     pageTops = null;
     renderHighlights();
+    if (findMatches.length > 0) renderFind();
     reportScroll(true);
   }, 250);
 
@@ -1137,6 +1235,30 @@ enum WebContentScript {
         break;
       }
 
+      case "find": {
+        findAll(d.query || "");
+        renderFind();
+        scrollFindIntoView();
+        reportFind();
+        break;
+      }
+
+      case "find-step": {
+        if (findMatches.length > 0) {
+          var delta = Number(d.delta) || 1;
+          var n = findMatches.length;
+          findIndex = ((findIndex + delta) % n + n) % n;
+          renderFind();
+          scrollFindIntoView();
+        }
+        reportFind();
+        break;
+      }
+
+      case "find-clear":
+        clearFind();
+        break;
+
       case "clear-selection": {
         var sel = window.getSelection();
         if (sel) sel.removeAllRanges();
@@ -1230,6 +1352,9 @@ enum WebContentScript {
         for (var i = 0; i < records.length; i++) {
           var target = records[i].target;
           if (overlayRoot && (target === overlayRoot || overlayRoot.contains(target))) {
+            continue;
+          }
+          if (findRoot && (target === findRoot || findRoot.contains(target))) {
             continue;
           }
           remap();

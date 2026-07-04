@@ -116,6 +116,18 @@ struct PdfViewerView: View {
         aiStore.capturePageImageHandler = { [weak controller] page in
             await controller?.capturePageImage(pageNumber: page)
         }
+        app.findQueryHandler = { [weak controller] query in
+            MainActor.assumeIsolated { controller?.findQuery(query) }
+        }
+        app.findStepHandler = { [weak controller] delta in
+            MainActor.assumeIsolated { controller?.findStep(delta) }
+        }
+        app.findClearHandler = { [weak controller] in
+            MainActor.assumeIsolated { controller?.findClear() }
+        }
+        app.printHandler = { [weak controller] in
+            MainActor.assumeIsolated { controller?.printDocument() }
+        }
     }
 
     private func unregisterHandlers() {
@@ -123,6 +135,10 @@ struct PdfViewerView: View {
         app.scrollToPageHandler = nil
         aiStore.locatePdfTextHandler = nil
         aiStore.capturePageImageHandler = nil
+        app.findQueryHandler = nil
+        app.findStepHandler = nil
+        app.findClearHandler = nil
+        app.printHandler = nil
     }
 
     private func teardown() {

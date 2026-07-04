@@ -18,6 +18,10 @@ struct ContentView: View {
                 TabBarView()
             }
 
+            if appStore.findVisible && appStore.document != nil {
+                FindBar()
+            }
+
             if appStore.document == nil {
                 WelcomeScreen()
             } else {
@@ -191,6 +195,39 @@ struct ContentView: View {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
         let key = event.charactersIgnoringModifiers ?? ""
+        let lowerKey = key.lowercased()
+
+        // Escape dismisses the find bar first — this must run before the
+        // text-field guard below, since the find field is itself a text field.
+        if (key == "\u{1b}" || event.keyCode == 53), appStore.findVisible {
+            appStore.hideFind()
+            return true
+        }
+
+        // ⌘F / ⌘G / ⌘⇧G / ⌘P: PDFView and WKWebView can swallow these via
+        // performKeyEquivalent before the menu sees them (same reasoning as
+        // ⌘L/⌘O below), so intercept them here. Guards mirror the menu
+        // validation; when a guard fails the event falls through untouched.
+        if modifiers == .command && lowerKey == "f" {
+            guard appStore.document != nil else { return false }
+            appStore.showFind()
+            return true
+        }
+        if modifiers == [.command, .shift] && lowerKey == "g" {
+            guard appStore.findVisible else { return false }
+            appStore.findPrev()
+            return true
+        }
+        if modifiers == .command && lowerKey == "g" {
+            guard appStore.findVisible else { return false }
+            appStore.findNext()
+            return true
+        }
+        if modifiers == .command && lowerKey == "p" {
+            guard appStore.document != nil else { return false }
+            appStore.printDocument()
+            return true
+        }
 
         // ⌘L / ⌘O: see the doc comment above — PDFView/WKWebView can eat these
         // via performKeyEquivalent before the menu ever sees them, so handle

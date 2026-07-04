@@ -42,6 +42,7 @@ struct VellumCommands: Commands {
     private var hasDocument: Bool { appStore?.document != nil }
     private var isWeb: Bool { appStore?.document?.kind == .web }
     private var isPdf: Bool { hasDocument && !isWeb }
+    private var findVisible: Bool { appStore?.findVisible ?? false }
 
     var body: some Commands {
         // MARK: File
@@ -67,6 +68,27 @@ struct VellumCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
             .disabled(!hasDocument)
+        }
+
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") { appStore?.printDocument() }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(!hasDocument)
+        }
+
+        // MARK: Edit → Find
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { appStore?.showFind() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(!hasDocument)
+
+            Button("Find Next") { appStore?.findNext() }
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(!findVisible)
+
+            Button("Find Previous") { appStore?.findPrev() }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(!findVisible)
         }
 
         CommandGroup(replacing: .saveItem) {

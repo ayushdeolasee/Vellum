@@ -56,6 +56,11 @@ final class PdfViewerController {
     @ObservationIgnored private var suppressNextMouseUp = false
     @ObservationIgnored private var extractionTask: Task<Void, Never>?
 
+    // Find state (⌘F): every PDFSelection matching the current query, plus the
+    // index of the one currently focused.
+    @ObservationIgnored private var findMatches: [PDFSelection] = []
+    @ObservationIgnored private var findIndex = -1
+
     var isNoteMode: Bool { app?.mode == .note }
 
     // MARK: - Lifecycle
@@ -91,6 +96,8 @@ final class PdfViewerController {
         lastScrollOrigin = nil
         lastScrollScale = nil
         suppressNextMouseUp = false
+        findMatches = []
+        findIndex = -1
     }
 
     /// Called by PdfKitView once the PDFView exists with the document set:
@@ -297,6 +304,60 @@ final class PdfViewerController {
         docView.enclosingScrollView?.reflectScrolledClipView(clip)
         scheduleVisiblePagesRecompute()
         bumpGeometry()
+    }
+
+    // MARK: - Find (⌘F)
+
+    /// Search the whole document; highlight every match and focus the first.
+    func findQuery(_ query: String) {
+        guard let document, let pdfView else { return }
+        let matches = document.findString(query, withOptions: [.caseInsensitive])
+        for match in matches {
+            match.color = NSColor.systemYellow.withAlphaComponent(0.5)
+        }
+        findMatches = matches
+        pdfView.highlightedSelections = matches.isEmpty ? nil : matches
+        findIndex = matches.isEmpty ? -1 : 0
+        focusCurrentMatch()
+        app?.setFindResults(count: matches.count, current: matches.isEmpty ? 0 : 1)
+    }
+
+    /// Move the focused match by `delta`, wrapping at both ends.
+    func findStep(_ delta: Int) {
+        guard !findMatches.isEmpty else {
+            app?.setFindResults(count: 0, current: 0)
+            return
+        }
+        let count = findMatches.count
+        findIndex = ((findIndex + delta) % count + count) % count
+        focusCurrentMatch()
+        app?.setFindResults(count: count, current: findIndex + 1)
+    }
+
+    func findClear() {
+        findMatches = []
+        findIndex = -1
+        pdfView?.highlightedSelections = nil
+        pdfView?.setCurrentSelection(nil, animate: false)
+    }
+
+    /// The current match is drawn as the live selection (system tint) on top of
+    /// the yellow highlight layer, then scrolled into view.
+    private func focusCurrentMatch() {
+        guard let pdfView, findMatches.indices.contains(findIndex) else { return }
+        let match = findMatches[findIndex]
+        pdfView.setCurrentSelection(match, animate: false)
+        pdfView.scrollSelectionToVisible(nil)
+    }
+
+    // MARK: - Print (⌘P)
+
+    func printDocument() {
+        guard let document, let window = pdfView?.window else { return }
+        let printInfo = NSPrintInfo.shared
+        guard let operation = document.printOperation(
+            for: printInfo, scalingMode: .pageScaleDownToFit, autoRotate: true) else { return }
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
     }
 
     // MARK: - Mouse handling (fed by PdfKitView's event monitors)

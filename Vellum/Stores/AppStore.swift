@@ -36,6 +36,13 @@ final class AppStore {
     // Active interaction mode
     private(set) var mode: InteractionMode = .view
 
+    // Find bar (⌘F). `findVisible` drives the slim bar under the toolbar; the
+    // counts are reported back by whichever viewer is active.
+    var findVisible = false
+    private(set) var findMatchCount = 0
+    /// 1-based index of the current match; 0 when there are no matches.
+    private(set) var findCurrentMatch = 0
+
     // Shell state (App.tsx locals)
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
@@ -72,6 +79,15 @@ final class AppStore {
     /// Registered by the web viewer: scroll to a text-anchored web position;
     /// returns whether the anchor was found (window.__scrollToWebPosition).
     var scrollToWebPositionHandler: ((PositionData, Int) -> Bool)?
+    /// Registered by the active viewer to run a find query — highlights every
+    /// match and moves to the first, reporting counts back via `setFindResults`.
+    var findQueryHandler: ((String) -> Void)?
+    /// Step the current find match by +1 (next) / -1 (previous), wrapping.
+    var findStepHandler: ((Int) -> Void)?
+    /// Clear the viewer's find highlights and state.
+    var findClearHandler: (() -> Void)?
+    /// Print the active document (PDF print operation / WKWebView print).
+    var printHandler: (() -> Void)?
 
     init(sessions: SessionService) {
         self.sessions = sessions
@@ -300,6 +316,58 @@ final class AppStore {
         }
     }
 
+    // MARK: - Find
+
+    /// Reveal the find bar (⌘F). No-op without a document.
+    func showFind() {
+        guard document != nil else { return }
+        findVisible = true
+    }
+
+    /// Dismiss the find bar (Escape / close), clearing the viewer highlights.
+    func hideFind() {
+        guard findVisible else { return }
+        findVisible = false
+        findMatchCount = 0
+        findCurrentMatch = 0
+        findClearHandler?()
+    }
+
+    /// Run a query. An empty query clears highlights but keeps the bar open.
+    func performFind(_ query: String) {
+        guard document != nil else { return }
+        if query.isEmpty {
+            findMatchCount = 0
+            findCurrentMatch = 0
+            findClearHandler?()
+            return
+        }
+        findQueryHandler?(query)
+    }
+
+    func findNext() { findStepHandler?(1) }
+    func findPrev() { findStepHandler?(-1) }
+
+    /// Called by the active viewer with the outcome of a query / step.
+    func setFindResults(count: Int, current: Int) {
+        findMatchCount = count
+        findCurrentMatch = current
+    }
+
+    // MARK: - Print
+
+    /// Print the active document via the viewer's registered print operation.
+    func printDocument() {
+        guard document != nil else { return }
+        printHandler?()
+    }
+
+    private func resetFindState() {
+        findVisible = false
+        findMatchCount = 0
+        findCurrentMatch = 0
+    }
+
     func setVisiblePages(_ pages: [Int]) {
         guard pages != visiblePages else { return }
         visiblePages = pages
@@ -392,6 +460,9 @@ final class AppStore {
     }
 
     private func applyActiveState(from tab: PdfTab) {
+        // The find bar belongs to the outgoing viewer; the incoming one
+        // registers its own handlers on mount.
+        resetFindState()
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -404,6 +475,7 @@ final class AppStore {
     }
 
     private func applyEmptyActiveState() {
+        resetFindState()
         activeTabId = nil
         document = nil
         currentPage = 1
