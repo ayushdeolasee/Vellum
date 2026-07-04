@@ -109,45 +109,63 @@ private struct OpenFileButton: View {
 }
 
 private struct AddWebpageButton: View {
-    @Environment(AppStore.self) private var appStore
-
-    @State private var promptOpen = false
-    @State private var urlInput = ""
-    @FocusState private var fieldFocused: Bool
-
     var body: some View {
         Button {
-            promptOpen.toggle()
+            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
         } label: {
             Label("Add webpage", systemImage: "globe")
         }
         .help("Add webpage (⌘L) — open an article URL in reading mode")
-        .popover(isPresented: $promptOpen, arrowEdge: .bottom) {
-            HStack(spacing: 8) {
-                TextField("Paste an article URL…", text: $urlInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 13))
-                    .frame(width: 300)
-                    .focused($fieldFocused)
-                    .onSubmit(submit)
+    }
+}
+
+/// Sheet for the Add Webpage flow (⌘L). A popover anchored to the toolbar
+/// button could detach and land at the edge of another display — see the
+/// audit's P0 "Add Webpage popover" finding. A sheet is always centered over
+/// the owning window, so it can't escape onto another screen. It also sidesteps
+/// the @FocusState-in-NSToolbar gotcha since the field now lives in a normal
+/// window-hosted view instead of a toolbar item.
+struct AddWebpageSheet: View {
+    @Environment(AppStore.self) private var appStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var urlInput = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Webpage")
+                .font(.headline)
+            Text("Paste an article URL to open it in reading mode.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            TextField("https://…", text: $urlInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13))
+                .focused($fieldFocused)
+                .onSubmit(submit)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Open", action: submit)
                     .buttonStyle(.glassProminent)
-            }
-            .padding(12)
-            .onAppear {
-                urlInput = ""
-                fieldFocused = true
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(urlInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
-            promptOpen = true
+        .padding(20)
+        .frame(width: 380)
+        .onAppear {
+            urlInput = ""
+            fieldFocused = true
         }
     }
 
     private func submit() {
         let value = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        promptOpen = false
         guard !value.isEmpty else { return }
+        dismiss()
         Task { await appStore.openUrl(value) }
     }
 }

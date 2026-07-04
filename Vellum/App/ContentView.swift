@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppStore.self) private var appStore
@@ -9,6 +10,7 @@ struct ContentView: View {
 
     @State private var keyMonitor: Any?
     @State private var sidebarHovering = false
+    @State private var addWebpagePresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,6 +81,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
             guard appStore.document != nil else { return }
             Task { await annotationStore.loadAnnotations() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
+            addWebpagePresented = true
+        }
+        .sheet(isPresented: $addWebpagePresented) {
+            AddWebpageSheet()
         }
         // Publish the stores as a focused value so the app-level menu commands
         // (VellumCommands) route here and disable themselves when the Settings
@@ -156,12 +164,22 @@ struct ContentView: View {
     ///
     /// The bulk of the keyboard surface now lives in native menu commands
     /// (`VellumCommands`). This monitor is deliberately reduced to only the
-    /// interactions SwiftUI's `.commands` cannot express:
+    /// interactions SwiftUI's `.commands` cannot express, plus two shortcuts
+    /// that must be intercepted here defensively:
     ///   • bare `N` to toggle sticky-note mode,
     ///   • `Escape` to leave note mode / deselect,
     ///   • the pointer-contextual `⌘+ / ⌘− / ⌘=`, which resize the side panel's
     ///     text (instead of zooming the document) only while the pointer hovers
     ///     the open panel — a hover condition a menu shortcut can't carry.
+    ///   • `⌘L` (Add Webpage) and `⌘O` (Open…) — `PDFView` and `WKWebView` both
+    ///     override `performKeyEquivalent(with:)` and can swallow command-key
+    ///     events before `NSWindow` ever offers them to the main menu, so once
+    ///     one of those views becomes first responder (any open PDF or web
+    ///     tab) the equivalent `VellumCommands` menu items silently stop
+    ///     firing from the keyboard even though they still work from a click.
+    ///     A local monitor runs before that responder-chain dispatch, so
+    ///     handling the two shortcuts here guarantees they always reach us
+    ///     regardless of which document view currently holds first responder.
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         // Local monitors see every window's events; these shortcuts must never
         // act on the document while the Settings window is key.
@@ -172,6 +190,18 @@ struct ContentView: View {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
         let key = event.charactersIgnoringModifiers ?? ""
+
+        // ⌘L / ⌘O: see the doc comment above — PDFView/WKWebView can eat these
+        // via performKeyEquivalent before the menu ever sees them, so handle
+        // them unconditionally here rather than relying on the menu shortcut.
+        if modifiers == .command && key == "l" {
+            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+            return true
+        }
+        if modifiers == .command && key == "o" {
+            openFilePanel()
+            return true
+        }
 
         // Sidebar text sizing: only intercept ⌘+/⌘− while hovering the open
         // side panel. Otherwise fall through so the View-menu zoom command
@@ -203,6 +233,23 @@ struct ContentView: View {
     private var isTextInputFirstResponder: Bool {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
         return responder is NSTextView || responder is NSTextField || responder is NSSearchField
+    }
+
+    /// Mirrors `VellumCommands.openPanel()`. Duplicated (rather than shared)
+    /// because the menu command and this defensive key-monitor path have no
+    /// common owner to hang a shared helper off without new plumbing; both
+    /// are small and intentionally identical.
+    private func openFilePanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        var types: [UTType] = [.pdf]
+        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
+        panel.allowedContentTypes = types
+        guard panel.runModal() == .OK else { return }
+        let paths = panel.urls.map(\.path)
+        Task { await appStore.openFiles(paths: paths) }
     }
 }
 
