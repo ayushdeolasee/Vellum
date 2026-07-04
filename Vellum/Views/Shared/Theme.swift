@@ -169,6 +169,16 @@ extension View {
             shape.strokeBorder(SelectionStyle.edge(palette, selected: selected), lineWidth: 1)
         }
     }
+
+    /// Dark glass surface for popovers that float over document content (the
+    /// selection highlight popovers). Plain `.regular` glass over a light PDF
+    /// or web page is too faint to spot, so these get a heavy dark tint and a
+    /// forced dark scheme/palette so their contents stay legible in both themes.
+    func darkGlassSurface<S: Shape>(in shape: S) -> some View {
+        glassEffect(.regular.tint(.black.opacity(0.55)), in: shape)
+            .environment(\.colorScheme, .dark)
+            .environment(\.palette, .dark)
+    }
 }
 
 @MainActor

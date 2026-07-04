@@ -467,6 +467,7 @@ private struct LibraryRow: View {
     let item: LibraryItem
 
     @Environment(\.palette) private var palette
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -494,7 +495,17 @@ private struct LibraryRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background {
+            // Subtle hover wash — same neutral fill the chrome uses for
+            // hovered-but-unselected elements (SelectionStyle.fill).
+            RoundedRectangle(cornerRadius: Radius.md)
+                .fill(hovering ? AnyShapeStyle(.quaternary.opacity(0.55)) : AnyShapeStyle(Color.clear))
+        }
+        .padding(.horizontal, -6)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .help(item.tooltip)
     }
 }

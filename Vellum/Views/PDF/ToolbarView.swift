@@ -185,6 +185,7 @@ private struct PageControls: View {
         HStack(spacing: 5) {
             TextField("", text: $pageInput)
                 .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
                 .multilineTextAlignment(.center)
                 .focused($fieldFocused)
                 // Commit directly on Return — FocusState changes are unreliable
@@ -201,6 +202,9 @@ private struct PageControls: View {
                 .foregroundStyle(.secondary)
         }
         .font(.system(size: 12))
+        // Breathing room between the field/count and the glass pod's rounded
+        // ends — flush content gets visually clipped by the capsule curvature.
+        .padding(.horizontal, 6)
         .onChange(of: appStore.currentPage) { _, page in
             pageInput = String(page)
         }
@@ -391,6 +395,10 @@ private struct OverflowMenu: View {
             }
         } label: {
             Label("More", systemImage: "ellipsis")
+                // Icon-only keeps the pod the same circle as the neighboring
+                // buttons; a text-bearing Menu label can outgrow the toolbar
+                // height and clip against its bottom edge.
+                .labelStyle(.iconOnly)
         }
         .menuIndicator(.hidden)
         .help("More — open, save, export, and updates")

@@ -53,7 +53,7 @@ struct SelectionPopover: View {
                 .accessibilityIdentifier("selectionPopover.addNote")
             }
             .padding(6)
-            .glassEffect(.regular, in: .capsule)
+            .darkGlassSurface(in: .capsule)
 
             if showNoteInput {
                 HStack(spacing: 6) {
@@ -71,7 +71,7 @@ struct SelectionPopover: View {
                 }
                 .padding(8)
                 .frame(width: 256)
-                .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
+                .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
     }
