@@ -12,9 +12,30 @@ struct PdfOverlayStack: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(\.palette) private var palette
 
+    /// One per-page overlay layer with its frame resolved. Frames are computed
+    /// in `body` (re-run on every geometryVersion bump) and passed into the
+    /// ForEach as row DATA: a row whose closure merely calls
+    /// controller.pageViewFrame never re-evaluates — its inputs (page number,
+    /// annotations, controller reference) are unchanged and the frame is not
+    /// observable — so highlights freeze at their creation-time position while
+    /// the document scrolls and zooms underneath them.
+    private struct PageOverlay: Equatable {
+        var pageNumber: Int
+        var frame: CGRect
+        var annotations: [Annotation]
+    }
+
     var body: some View {
         // Recompute page frames on every geometry change.
         let _ = controller.geometryVersion
+        // Scale overlay rects by the LIVE PDFView scale, not app.zoom. During a
+        // trackpad pinch PDFKit does not post PDFViewScaleChanged until the
+        // gesture ends, so app.zoom lags the real scaleFactor mid-pinch — while
+        // the page frames (pageViewFrame → convert) use the live scale. Mixing
+        // the two made highlights drift as you zoomed and snap back on release.
+        // geometryVersion bumps throughout the pinch (scroll/frame changes), so
+        // reading scaleFactor here stays in lockstep with the page frames.
+        let scale = controller.pdfView.map { Double($0.scaleFactor) } ?? app.zoom
         ZStack(alignment: .topLeading) {
             // Note-mode crosshair + click-to-place. A hit-testable clear layer
             // is the only way pointerStyle reliably beats PDFView's internal
@@ -32,14 +53,12 @@ struct PdfOverlayStack: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            ForEach(overlayPages, id: \.self) { pageNumber in
-                let pageAnnotations = annotationStore.annotationsForPage(pageNumber)
-                if !pageAnnotations.isEmpty,
-                   let frame = controller.pageViewFrame(pageNumber: pageNumber) {
-                    HighlightLayer(annotations: pageAnnotations, zoom: app.zoom)
-                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
-                        .offset(x: frame.minX, y: frame.minY)
-                }
+            ForEach(pageOverlays, id: \.pageNumber) { overlay in
+                HighlightLayer(annotations: overlay.annotations, zoom: scale)
+                    .frame(
+                        width: overlay.frame.width, height: overlay.frame.height,
+                        alignment: .topLeading)
+                    .offset(x: overlay.frame.minX, y: overlay.frame.minY)
             }
 
             if let selection = controller.selection,
@@ -62,6 +81,16 @@ struct PdfOverlayStack: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
+    }
+
+    private var pageOverlays: [PageOverlay] {
+        overlayPages.compactMap { pageNumber in
+            let annotations = annotationStore.annotationsForPage(pageNumber)
+            guard !annotations.isEmpty,
+                  let frame = controller.pageViewFrame(pageNumber: pageNumber)
+            else { return nil }
+            return PageOverlay(pageNumber: pageNumber, frame: frame, annotations: annotations)
+        }
     }
 
     /// Pages that carry overlays: the visible range padded by the original's

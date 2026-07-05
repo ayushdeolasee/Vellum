@@ -39,13 +39,34 @@ struct PdfKitView: NSViewRepresentable {
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         nsView.backgroundColor = NSColor(palette.well)
-        // Store → view zoom sync (setZoom fallback path when no anchored
-        // handler ran; view → store flows through PDFViewScaleChanged).
-        if abs(nsView.scaleFactor - app.zoom) > 0.0001 {
+        // Store → view zoom sync, ONLY on the fallback path where no anchored
+        // zoom handler is registered. While a PDF viewer is live the handler is
+        // always set and zoom flows view → store: the pinch gesture / zoomTo
+        // drive scaleFactor directly and PDFViewScaleChanged mirrors it into
+        // app.zoom. Re-asserting app.zoom onto scaleFactor here would fight the
+        // live magnify gesture (yanking it back to a lagging clamped value) and
+        // undo rapid button zooms that app.zoom hasn't caught up to yet.
+        if app.zoomToHandler == nil, abs(nsView.scaleFactor - app.zoom) > 0.0001 {
             nsView.scaleFactor = app.zoom
         }
         // Note-mode crosshair (the original's cursor-crosshair container class).
         context.coordinator.noteModeChanged(app.mode == .note)
+    }
+
+    /// Always adopt the container's proposed size and never the PDFView's own
+    /// fitting size — which is the full document (e.g. 1890×2446 vs a 1293×1184
+    /// viewport). Without this, a relayout triggered by a highlight add/remove
+    /// makes SwiftUI re-measure the host and resize it to that huge intrinsic
+    /// size for a pass: the PDFView stretches past the window and its scroll
+    /// view retiles, snapping a zoomed/panned document's scroll position (the
+    /// "recentering"). Echoing the proposal keeps the host pinned to the
+    /// viewport across every layout pass.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PDFView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
     }
 
     static func dismantleNSView(_ nsView: PDFView, coordinator: Coordinator) {
@@ -87,6 +108,27 @@ struct PdfKitView: NSViewRepresentable {
                               let clip = self.view?.documentView?.enclosingScrollView?.contentView
                         else { return }
                         self.controller.scrollChanged(origin: clip.bounds.origin)
+                    }
+                })
+            }
+
+            // Per-frame zoom signal for the annotation overlays. PDFKit defers
+            // .PDFViewScaleChanged until a trackpad magnify ENDS, and the host
+            // frame is pinned to the viewport, so mid-pinch the only geometry
+            // that moves is the documentView (PDFKit resizes it to
+            // pageSize × scaleFactor every frame). Without observing it, a pinch
+            // that doesn't also shift the clip origin (content anchored at the
+            // top-left, or smaller than the viewport) bumps nothing, and the
+            // overlays freeze at the pre-pinch scale until release. layoutChanged
+            // only bumps geometry (never touches scaleFactor), so it can't fight
+            // the gesture or loop.
+            if let documentView = view.documentView {
+                documentView.postsFrameChangedNotifications = true
+                observers.append(center.addObserver(
+                    forName: NSView.frameDidChangeNotification, object: documentView, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.controller.layoutChanged()
                     }
                 })
             }

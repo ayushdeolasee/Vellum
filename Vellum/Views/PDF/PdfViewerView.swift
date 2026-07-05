@@ -47,10 +47,19 @@ struct PdfViewerView: View {
         case .parseFailed:
             statusView(Text("Failed to load PDF").foregroundStyle(palette.destructive))
         case .loaded(let document, let loadedTabId) where loadedTabId == tabId:
-            ZStack(alignment: .topLeading) {
-                PdfKitView(controller: controller, document: document)
-                    .id(loadedTabId)
-                PdfOverlayStack(controller: controller)
+            // Explicit concrete frame from the container size. PDFView's own
+            // fitting size is the full document (much larger than the viewport
+            // when zoomed in); pinning the host to the geometry size stops
+            // SwiftUI from ever adopting that intrinsic size during a relayout
+            // (highlight add/remove) or a zoom, which would oversize the view
+            // and break scrolling to the page edges.
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    PdfKitView(controller: controller, document: document)
+                        .id(loadedTabId)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                    PdfOverlayStack(controller: controller)
+                }
             }
         default:
             statusView(Text("Loading PDF...").foregroundStyle(palette.mutedForeground))

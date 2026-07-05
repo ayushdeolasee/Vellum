@@ -288,6 +288,10 @@ final class PdfViewerController {
         let anchorPoint = anchorPage.map { pdfView.convert(viewCenter, to: $0) }
 
         pdfView.scaleFactor = clamped
+        // Keep app.zoom in lockstep synchronously so the next zoomIn/zoomOut
+        // reads a fresh value (PDFViewScaleChanged only updates it a runloop
+        // turn later, which would make rapid button zooms stall).
+        app?.setZoom(clamped)
 
         guard let anchorPage, let anchorPoint,
               let docView = pdfView.documentView,
@@ -517,7 +521,13 @@ final class PdfViewerController {
     func clearSelection() {
         selection = nil
         selectionPopoverPosition = nil
-        pdfView?.currentSelection = nil
+        // The non-animated setter clears the text selection without PDFKit
+        // animating it back into view (the plain `currentSelection = nil`
+        // setter recenters on the old selection). The document position stays
+        // fixed across the relayout that follows because PdfKitView is pinned
+        // to the viewport size (see its sizeThatFits + the GeometryReader frame
+        // in PdfViewerView), so SwiftUI never resizes the host on a highlight.
+        pdfView?.setCurrentSelection(nil, animate: false)
     }
 
     // MARK: - Note placement
