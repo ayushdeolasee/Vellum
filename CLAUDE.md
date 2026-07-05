@@ -1,5 +1,6 @@
 The codex-cli computer-use is much better, since we are building a desktop application I want you to use codex-cli to verify your work. Make sure that whatever changes you've made or asked your sub-agents to make are giving the correct behaviour.   
 Additionally instead absolutely required prefer spinning up Sonnet, Opus or Codex models. I would like it if you do not spin up a bunch of Fable models since they use up a bunch of tokens. 
+I would also like that in all circumstance that computer-use be called my codex, opus or sonnet models and not by Fable models.
 
 ## Picking the right models for workflows and subagents
 
