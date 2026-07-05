@@ -1,0 +1,54 @@
+name: Vellum
+options:
+  bundleIdPrefix: com.vellum
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
+    DEAD_CODE_STRIPPING: "YES"
+schemes:
+  Vellum:
+    build:
+      targets:
+        Vellum: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - VellumTests
+targets:
+  VellumTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Vellum
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum
+  Vellum:
+    type: application
+    platform: macOS
+    sources:
+      - path: Vellum
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ENABLE_HARDENED_RUNTIME: "NO"
+        ENABLE_APP_SANDBOX: "NO"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: Vellum/Resources/Info.plist
