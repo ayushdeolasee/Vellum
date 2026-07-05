@@ -1,6 +1,10 @@
 import Foundation
 import PDFKit
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 // Annotation dictionary codec — port of the read/write halves of
 // src-tauri/src/pdf_annotations.rs (create_dictionary, apply_position,
@@ -58,15 +62,14 @@ enum PdfColor {
         return (red, green, blue)
     }
 
-    /// NSColor whose /C serialization is channel/255.0 (fallback rgb(254,240,138),
-    /// mirroring color_array's unparsable-color fallback).
-    static func annotationColor(fromHex color: String) -> NSColor {
+    /// Platform color whose /C serialization is channel/255.0 (fallback
+    /// rgb(254,240,138), mirroring color_array's unparsable-color fallback).
+    static func annotationColor(fromHex color: String) -> PlatformColor {
         let (red, green, blue) = parseHex(color) ?? (254, 240, 138)
-        return NSColor(
-            deviceRed: CGFloat(red) / 255.0,
-            green: CGFloat(green) / 255.0,
-            blue: CGFloat(blue) / 255.0,
-            alpha: 1.0)
+        return PlatformColor.annotationRGB(
+            CGFloat(red) / 255.0,
+            CGFloat(green) / 255.0,
+            CGFloat(blue) / 255.0)
     }
 
     /// /C array → "#rrggbb" via round(clamp(c,0,1)*255) (mirrors read_color).
@@ -349,7 +352,11 @@ enum PdfAnnotationWriter {
             let bounds = boundingBox(of: quads)
             annotation.bounds = bounds
             annotation.quadrilateralPoints = quads.map {
+                #if os(macOS)
                 NSValue(point: NSPoint(x: $0.0 - bounds.origin.x, y: $0.1 - bounds.origin.y))
+                #else
+                NSValue(cgPoint: CGPoint(x: $0.0 - bounds.origin.x, y: $0.1 - bounds.origin.y))
+                #endif
             }
         } else {
             guard let anchor = position.rects.first else {

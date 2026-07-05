@@ -306,7 +306,9 @@ private struct AnnotationRow: View {
                         }
                         .focused(editFieldFocused)
                         .onSubmit(onSaveEdit)
+                        #if os(macOS)
                         .onExitCommand(perform: onCancelEdit)
+                        #endif
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
                     Text(content)

@@ -387,7 +387,10 @@ private struct DeleteNoteButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
-                .contentShape(RoundedRectangle(cornerRadius: Radius.sm))
+                // Expand the tap target toward the touch-friendly 44pt
+                // minimum without growing the visible 24pt glyph box — the
+                // header row has room to spare (a Spacer sits to its left).
+                .contentShape(Rectangle().inset(by: -10))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -448,7 +451,9 @@ struct WebSelectionPopover: View {
                         }
                         .focused($noteFieldFocused)
                         .onSubmit(submitNote)
+                        #if os(macOS)
                         .onExitCommand { onClose() }
+                        #endif
                         .onAppear { noteFieldFocused = true }
                     SmallPrimaryButton(title: "Add", action: submitNote)
                 }

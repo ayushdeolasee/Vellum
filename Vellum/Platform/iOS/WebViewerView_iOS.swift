@@ -1,146 +1,148 @@
-#if os(macOS)
-import AppKit
+#if os(iOS)
 import Observation
 import SwiftUI
+import UIKit
 import WebKit
 
-// Web reading mode — port of src/components/web/WebViewer.tsx. The sandboxed
-// iframe becomes a WKWebView fed by the vellum-web:// scheme handler; the
-// postMessage bridge becomes WKScriptMessageHandler (in) + evaluateJavaScript
-// (out) with identical message semantics. One instance per tab mount
-// (ContentView keys the view by activeTabId).
+// Touch web reading mode — iPad port of Vellum/Views/Web/WebViewerView.swift.
+// Same bridge contract (VellumWebSchemeHandler + WebContentScript +
+// WKScriptMessageHandler named "vellum"), rehosted on UIKit: WKWebView inside
+// a UIViewRepresentable, store handlers registered/unregistered the same way
+// PdfViewerView_iOS does it. Annotation UI (selection popover, note
+// composer/viewer, highlight editor, context menu) mirrors the macOS
+// controller; the only structural difference is there's no NSEvent monitor —
+// touch has no hover/click-outside concept, so context-menu / popover
+// dismissal relies entirely on the "selection-cleared" grace-period logic and
+// "viewport-scrolled", exactly as the macOS handlers already do.
 
-// MARK: - View
-
-struct WebViewerView: View {
-    @Environment(AppStore.self) private var appStore
+struct WebViewerView_iOS: View {
+    @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
-    @State private var controller = WebViewerController()
+    @State private var controller = WebViewerController_iOS()
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .topLeading) {
-                WebViewRepresentable(controller: controller)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if app.document?.kind == .web {
+            GeometryReader { proxy in
+                ZStack(alignment: .topLeading) {
+                    WebViewRepresentable_iOS(controller: controller)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if controller.isOffline {
-                    offlineBadge
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.trailing, 12)
-                        .padding(.top, 12)
-                }
-
-                if controller.selection != nil, let position = controller.popoverPosition {
-                    WebSelectionPopover(
-                        position: position,
-                        onHighlight: { color in controller.addHighlight(color: color) },
-                        onNote: { content in controller.addSelectionNote(content: content) },
-                        onClose: { controller.clearSelection() }
-                    )
-                    .zIndex(50)
-                }
-
-                if let menu = controller.contextMenu {
-                    AnchoredPopover(
-                        x: menu.point.x, y: menu.point.y,
-                        placement: .menu, containerSize: proxy.size
-                    ) {
-                        WebContextMenuView(
-                            canAddNote: menu.anchor != nil,
-                            onAddNote: { controller.contextMenuAddNote() })
-                            .onGeometryChange(for: CGRect.self) { geometry in
-                                geometry.frame(in: .global)
-                            } action: { frame in
-                                controller.contextMenuGlobalFrame = frame
-                            }
+                    if controller.isOffline {
+                        offlineBadge
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .padding(.trailing, 12)
+                            .padding(.top, 12)
                     }
-                    .zIndex(50)
-                }
 
-                if let composer = controller.noteComposer {
-                    AnchoredPopover(
-                        x: composer.point.x, y: composer.point.y,
-                        placement: .below, containerSize: proxy.size
-                    ) {
-                        WebNoteComposerView(
-                            onSubmit: { content in
-                                controller.createAnchoredNote(anchor: composer.anchor, content: content)
-                                controller.closeNoteComposer()
-                            },
-                            onClose: { controller.closeNoteComposer() })
+                    if controller.selection != nil, let position = controller.popoverPosition {
+                        WebSelectionPopover(
+                            position: position,
+                            onHighlight: { color in controller.addHighlight(color: color) },
+                            onNote: { content in controller.addSelectionNote(content: content) },
+                            onClose: { controller.clearSelection() }
+                        )
+                        .zIndex(50)
                     }
-                    .zIndex(50)
-                }
 
-                if let editor = controller.highlightEditor,
-                   let annotation = annotationStore.annotations.first(where: {
-                       $0.id == editor.id && $0.type == .highlight
-                   }) {
-                    AnchoredPopover(
-                        x: editor.point.x, y: editor.point.y,
-                        placement: .above, containerSize: proxy.size
-                    ) {
-                        HighlightEditPopover(
-                            annotation: annotation,
-                            onDelete: { controller.closeHighlightEditor() })
-                            // The overlay proposes the full container width;
-                            // hug the swatch row instead.
-                            .fixedSize()
+                    if let menu = controller.contextMenu {
+                        AnchoredPopover(
+                            x: menu.point.x, y: menu.point.y,
+                            placement: .menu, containerSize: proxy.size
+                        ) {
+                            WebContextMenuView(
+                                canAddNote: menu.anchor != nil,
+                                onAddNote: { controller.contextMenuAddNote() })
+                        }
+                        .zIndex(50)
                     }
-                    .zIndex(50)
-                }
 
-                if let viewer = controller.noteViewer {
-                    AnchoredPopover(
-                        x: viewer.point.x, y: viewer.point.y,
-                        placement: .above, containerSize: proxy.size
-                    ) {
-                        // Keyed by annotation so switching markers never
-                        // carries one note's edit draft into another.
-                        WebNoteViewerView(
-                            annotationId: viewer.id,
-                            onClose: { controller.closeNoteViewer() })
-                            .id(viewer.id)
+                    if let composer = controller.noteComposer {
+                        AnchoredPopover(
+                            x: composer.point.x, y: composer.point.y,
+                            placement: .below, containerSize: proxy.size
+                        ) {
+                            WebNoteComposerView(
+                                onSubmit: { content in
+                                    controller.createAnchoredNote(anchor: composer.anchor, content: content)
+                                    controller.closeNoteComposer()
+                                },
+                                onClose: { controller.closeNoteComposer() })
+                        }
+                        .zIndex(50)
                     }
-                    .zIndex(50)
+
+                    if let editor = controller.highlightEditor,
+                       let annotation = annotationStore.annotations.first(where: {
+                           $0.id == editor.id && $0.type == .highlight
+                       }) {
+                        AnchoredPopover(
+                            x: editor.point.x, y: editor.point.y,
+                            placement: .above, containerSize: proxy.size
+                        ) {
+                            HighlightEditPopover(
+                                annotation: annotation,
+                                onDelete: { controller.closeHighlightEditor() })
+                                // The overlay proposes the full container width;
+                                // hug the swatch row instead.
+                                .fixedSize()
+                        }
+                        .zIndex(50)
+                    }
+
+                    if let viewer = controller.noteViewer {
+                        AnchoredPopover(
+                            x: viewer.point.x, y: viewer.point.y,
+                            placement: .above, containerSize: proxy.size
+                        ) {
+                            // Keyed by annotation so switching markers never
+                            // carries one note's edit draft into another.
+                            WebNoteViewerView(
+                                annotationId: viewer.id,
+                                onClose: { controller.closeNoteViewer() })
+                                .id(viewer.id)
+                        }
+                        .zIndex(50)
+                    }
                 }
             }
-        }
-        .background(palette.well)
-        .clipped()
-        .onAppear {
-            controller.attach(app: appStore, annotationStore: annotationStore, aiStore: aiStore)
-        }
-        .onDisappear {
-            controller.detach()
-        }
-        .onChange(of: controller.initCount) {
-            controller.pushAnnotations(annotationStore.annotations)
-            controller.pushMode(appStore.mode)
-            controller.scrollToSelected(
-                annotations: annotationStore.annotations,
-                selectedId: annotationStore.selectedAnnotationId)
-        }
-        .onChange(of: annotationStore.annotations) {
-            controller.pushAnnotations(annotationStore.annotations)
-        }
-        .onChange(of: appStore.mode) {
-            controller.pushMode(appStore.mode)
-        }
-        .onChange(of: annotationStore.selectedAnnotationId) {
-            controller.scrollToSelected(
-                annotations: annotationStore.annotations,
-                selectedId: annotationStore.selectedAnnotationId)
-        }
-        .onChange(of: appStore.zoom) { _, zoom in
-            controller.applyZoom(zoom)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
-            let delta = note.userInfo?["delta"] as? Int ?? 0
-            controller.goHistory(delta: delta)
+            .background(palette.well)
+            .clipped()
+            .onAppear {
+                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+            }
+            .onDisappear {
+                controller.detach()
+            }
+            .onChange(of: controller.initCount) {
+                controller.pushAnnotations(annotationStore.annotations)
+                controller.pushMode(app.mode)
+                controller.scrollToSelected(
+                    annotations: annotationStore.annotations,
+                    selectedId: annotationStore.selectedAnnotationId)
+            }
+            .onChange(of: annotationStore.annotations) {
+                controller.pushAnnotations(annotationStore.annotations)
+            }
+            .onChange(of: app.mode) {
+                controller.pushMode(app.mode)
+            }
+            .onChange(of: annotationStore.selectedAnnotationId) {
+                controller.scrollToSelected(
+                    annotations: annotationStore.annotations,
+                    selectedId: annotationStore.selectedAnnotationId)
+            }
+            .onChange(of: app.zoom) { _, zoom in
+                controller.applyZoom(zoom)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
+                let delta = note.userInfo?["delta"] as? Int ?? 0
+                controller.goHistory(delta: delta)
+            }
+        } else {
+            Color.clear
         }
     }
 
@@ -159,21 +161,23 @@ struct WebViewerView: View {
     }
 }
 
-private struct WebViewRepresentable: NSViewRepresentable {
-    let controller: WebViewerController
+/// Hosts the controller's WKWebView. UIKit counterpart of the macOS
+/// NSViewRepresentable — no AppKit involved.
+private struct WebViewRepresentable_iOS: UIViewRepresentable {
+    let controller: WebViewerController_iOS
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeUIView(context: Context) -> WKWebView {
         controller.webView
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
-// MARK: - Controller (the WebViewer bridge logic)
+// MARK: - Controller (the WebViewer bridge logic, iOS)
 
 @MainActor
 @Observable
-final class WebViewerController: NSObject {
+final class WebViewerController_iOS: NSObject {
     // Counts inits from the document currently bound to this tab; 0 = nothing
     // loaded yet. A counter (not a boolean) so highlight application re-fires
     // after in-tab navigation replaces the document.
@@ -185,9 +189,6 @@ final class WebViewerController: NSObject {
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
     private(set) var highlightEditor: WebHighlightEditorState?
-
-    /// Window-space frame of the context menu (for click-outside detection).
-    @ObservationIgnored var contextMenuGlobalFrame: CGRect = .zero
 
     @ObservationIgnored private weak var app: AppStore?
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
@@ -211,7 +212,6 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var restoredUrl: String?
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
-    @ObservationIgnored private var eventMonitor: Any?
 
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
@@ -221,9 +221,9 @@ final class WebViewerController: NSObject {
         configuration.setURLSchemeHandler(
             VellumWebSchemeHandler(), forURLScheme: VellumWebSchemeHandler.scheme)
         configuration.userContentController.add(
-            WeakScriptMessageHandler(self), name: "vellum")
+            WeakScriptMessageHandler_iOS(self), name: "vellum")
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsBackForwardNavigationGestures = true
         return webView
     }
 
@@ -279,7 +279,6 @@ final class WebViewerController: NSObject {
         pendingLocates.removeAll()
         for resolve in pendingCaptures.values { resolve(nil) }
         pendingCaptures.removeAll()
-        removeEventMonitor()
         // Only clear the shared handler slots when no replacement viewer has
         // taken over (handlers hold self weakly, so a stale slot is inert).
         if let app, app.activeTabId == mountTabId || app.document == nil {
@@ -316,12 +315,34 @@ final class WebViewerController: NSObject {
         post("history", ["delta": delta])
     }
 
-    /// Print the rendered page via WKWebView's print operation.
+    // MARK: Navigation controls (toolbar back/forward/reload)
+
+    func goBack() {
+        guard webView.canGoBack else { return }
+        webView.goBack()
+    }
+
+    func goForward() {
+        guard webView.canGoForward else { return }
+        webView.goForward()
+    }
+
+    func reload() {
+        webView.reload()
+    }
+
+    /// Print the rendered page via WKWebView's print formatter. WKWebView has
+    /// no printOperation equivalent on iOS, so UIPrintInteractionController
+    /// is driven with the web view's own UIPrintFormatter, presented
+    /// non-blocking from the shared UIPrintInteractionController.
     func printPage() {
-        guard let window = webView.window else { return }
-        let operation = webView.printOperation(with: NSPrintInfo.shared)
-        operation.view?.frame = webView.bounds
-        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        let printController = UIPrintInteractionController.shared
+        let printInfo = UIPrintInfo(dictionary: nil)
+        printInfo.outputType = .general
+        printInfo.jobName = app?.document?.title ?? "Document"
+        printController.printInfo = printInfo
+        printController.printFormatter = webView.viewPrintFormatter()
+        printController.present(animated: true, completionHandler: nil)
     }
 
     // MARK: Selection & note actions
@@ -396,6 +417,10 @@ final class WebViewerController: NSObject {
         hideContextMenu()
         noteViewer = nil
         highlightEditor = nil
+    }
+
+    func hideContextMenu() {
+        contextMenu = nil
     }
 
     // MARK: Effects (annotations / mode / selection scroll)
@@ -559,53 +584,6 @@ final class WebViewerController: NSObject {
         return CGPoint(x: x * scale, y: y * scale)
     }
 
-    // MARK: Context-menu dismissal (any app-shell click or Escape)
-
-    private func showContextMenu(_ state: WebContextMenuState) {
-        contextMenu = state
-        contextMenuGlobalFrame = .zero
-        installEventMonitor()
-    }
-
-    func hideContextMenu() {
-        contextMenu = nil
-        removeEventMonitor()
-    }
-
-    private func installEventMonitor() {
-        guard eventMonitor == nil else { return }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .keyDown]
-        ) { [weak self] event in
-            guard let self else { return event }
-            if event.type == .keyDown {
-                if event.keyCode == 53 { // Escape
-                    self.hideContextMenu()
-                }
-                return event
-            }
-            // Ignore clicks inside the menu itself (the button handles them).
-            if let contentView = event.window?.contentView {
-                var point = contentView.convert(event.locationInWindow, from: nil)
-                if !contentView.isFlipped {
-                    point.y = contentView.bounds.height - point.y
-                }
-                if self.contextMenuGlobalFrame.contains(point) {
-                    return event
-                }
-            }
-            self.hideContextMenu()
-            return event
-        }
-    }
-
-    private func removeEventMonitor() {
-        if let eventMonitor {
-            NSEvent.removeMonitor(eventMonitor)
-            self.eventMonitor = nil
-        }
-    }
-
     // MARK: Inbound messages
 
     fileprivate func handleMessage(_ body: Any) {
@@ -642,9 +620,9 @@ final class WebViewerController: NSObject {
         case "selection-cleared":
             selection = nil
             popoverPosition = nil
-            // A plain click inside the page doubles as "click outside" for
+            // A plain tap inside the page doubles as "click outside" for
             // the note popovers. The grace period keeps the event fired by
-            // the opening click itself from instantly dismissing them.
+            // the opening tap itself from instantly dismissing them.
             func clickOutside(_ openedAt: Date) -> Bool {
                 Date().timeIntervalSince(openedAt) > 0.4
             }
@@ -669,10 +647,10 @@ final class WebViewerController: NSObject {
             noteComposer = nil
             noteViewer = nil
             let found = data["found"] as? Bool ?? false
-            showContextMenu(WebContextMenuState(
+            contextMenu = WebContextMenuState(
                 point: point,
                 anchor: found ? parseNoteAnchor(data) : nil,
-                openedAt: Date()))
+                openedAt: Date())
 
         case "annotation-click":
             guard let id = data["id"] as? String, let annotationStore else { break }
@@ -721,7 +699,7 @@ final class WebViewerController: NSObject {
             hideContextMenu()
             noteViewer = nil
             highlightEditor = nil
-            // Keep the composer only if it just opened (the placement click
+            // Keep the composer only if it just opened (the placement tap
             // can nudge scroll on some pages); otherwise typing continues.
             if let composer = noteComposer,
                Date().timeIntervalSince(composer.openedAt) >= 0.4 {
@@ -877,7 +855,7 @@ final class WebViewerController: NSObject {
         guard let last = rects.last else { return }
 
         // A live text selection wins over the highlight edit popover (e.g.
-        // double-click selecting a word inside a highlight).
+        // double-tap selecting a word inside a highlight).
         highlightEditor = nil
 
         let scale = app.zoom
@@ -929,7 +907,7 @@ final class WebViewerController: NSObject {
     }
 }
 
-extension WebViewerController: WKScriptMessageHandler {
+extension WebViewerController_iOS: WKScriptMessageHandler {
     func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
@@ -939,7 +917,7 @@ extension WebViewerController: WKScriptMessageHandler {
 }
 
 /// Breaks the WKUserContentController → handler retain cycle.
-private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+private final class WeakScriptMessageHandler_iOS: NSObject, WKScriptMessageHandler {
     weak var delegate: WKScriptMessageHandler?
 
     init(_ delegate: WKScriptMessageHandler) {
@@ -953,5 +931,4 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
         delegate?.userContentController(userContentController, didReceive: message)
     }
 }
-
-#endif  // os(macOS) — iPad reference; see Platform/iOS
+#endif

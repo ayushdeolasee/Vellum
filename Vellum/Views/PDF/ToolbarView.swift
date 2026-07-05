@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -662,3 +663,5 @@ private struct DocumentKey: Hashable {
         path = appStore.document?.pdfPath
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 // Selection popover — port of src/components/annotations/SelectionPopover.tsx.
 // 5 color swatches (24px, tooltip "Highlight {Name}"), divider, note button
@@ -35,6 +38,24 @@ struct SelectionPopover: View {
                     .frame(width: 1, height: 20)
                     .padding(.horizontal, 4)
 
+                #if os(iOS)
+                // The system callout is suppressed on iPad (it collided with
+                // this popover), so copy lives here instead.
+                Button {
+                    UIPasteboard.general.string = selection.text
+                    onClose()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(.secondary)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy")
+                .accessibilityIdentifier("selectionPopover.copy")
+                #endif
+
                 Button {
                     showNoteInput.toggle()
                 } label: {
@@ -62,7 +83,9 @@ struct SelectionPopover: View {
                         .font(.system(size: 13))
                         .focused($noteFieldFocused)
                         .onSubmit { handleAddNote() }
+                        #if os(macOS)
                         .onExitCommand { onClose() }
+                        #endif
                         .onAppear { noteFieldFocused = true }
 
                     Button("Add", action: handleAddNote)
@@ -107,39 +130,5 @@ struct SelectionPopover: View {
     }
 }
 
-/// Round highlight-color swatch shared by the selection popover (24px) and the
-/// highlight edit popover (20px, ring when current).
-struct HighlightSwatchButton: View {
-    let color: HighlightColor
-    let size: CGFloat
-    var isCurrent = false
-    let helpText: String
-    let action: () -> Void
-
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Circle()
-                .fill(Color(hex: color.value))
-                .overlay(Circle().strokeBorder(palette.border, lineWidth: 1))
-                .overlay {
-                    if isCurrent {
-                        // ring-2 ring-primary ring-offset-1
-                        Circle()
-                            .stroke(palette.primary, lineWidth: 2)
-                            .padding(-2)
-                    }
-                }
-                .frame(width: size, height: size)
-                .scaleEffect(hovering ? 1.1 : 1)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(helpText)
-        .accessibilityLabel(helpText)
-        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
-    }
-}
+// HighlightSwatchButton moved to Views/Annotations/HighlightSwatchButton.swift
+// (cross-platform) so the shared AnnotationSidebar can use it on iPad.

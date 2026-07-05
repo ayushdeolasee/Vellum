@@ -3,6 +3,14 @@ import PDFKit
 import CoreGraphics
 @testable import Vellum
 
+/// MainActor-isolated box for sampling the largest scheduling gap observed while
+/// a write runs (Task closures are `@Sendable` and can't capture a mutable var).
+@MainActor
+private final class GapTracker {
+    var maxGap: Double = 0
+    func record(_ gap: Double) { maxGap = max(maxGap, gap) }
+}
+
 // Round-trip tests for the PDF persistence engine (Services/Pdf/*). These
 // mirror the Rust tests in src-tauri/src/pdf_annotations.rs and additionally
 // verify the raw dictionary format via CGPDF, including interop with files in
@@ -83,6 +91,38 @@ final class PdfPersistenceTests: XCTestCase {
 
     private func openSession(_ path: String) async throws -> PdfDocumentSession {
         try await PdfSessionBackend().open(path: path, sessionId: UUID().uuidString)
+    }
+
+    /// A deliberately heavy PDF: every page carries a UNIQUE full-page noise
+    /// image (noise defeats both compression and CGPDFContext's image dedup),
+    /// yielding a file in the hundreds-of-megabytes class. A mutation pays the
+    /// full pipeline over that file — read, double parse (CGPDFDocument +
+    /// PDFDocument), `dataRepresentation()`, the byte-patch scan, and the
+    /// atomic rewrite — which is the cost the main thread used to eat
+    /// synchronously on textbook-size documents.
+    private func makeLargePdf(name: String, pages: Int, imageSide: Int) -> String {
+        let url = tempDir.appendingPathComponent("\(name).pdf")
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil)!
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        for _ in 0..<pages {
+            // arc4random_buf fills at C speed, so fixture generation stays
+            // fast even in unoptimized Debug test builds.
+            var pixels = [UInt8](repeating: 0, count: imageSide * imageSide * 4)
+            pixels.withUnsafeMutableBytes { arc4random_buf($0.baseAddress, $0.count) }
+            let image: CGImage = pixels.withUnsafeMutableBytes { raw in
+                let bitmap = CGContext(
+                    data: raw.baseAddress, width: imageSide, height: imageSide,
+                    bitsPerComponent: 8, bytesPerRow: imageSide * 4, space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+                return bitmap.makeImage()!
+            }
+            context.beginPDFPage(nil)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 612, height: 792))
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return url.path
     }
 
     private func position(_ rect: AnnotationRect, pageWidth: Double = 612, pageHeight: Double = 792, selectedText: String? = "selected text") -> PositionData {
@@ -545,29 +585,32 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertTrue(page.annotations.isEmpty)
 
         // Render page 1 like the viewer does and require non-blank pixels.
+        // CoreGraphics (page.draw + CGBitmapContext) is cross-platform, so the
+        // same round-trip test runs on both the macOS and iPad builds.
         let box = page.bounds(for: .cropBox)
         let width = Int(box.width), height = Int(box.height)
-        let thumb = page.thumbnail(of: NSSize(width: width, height: height), for: .cropBox)
-        let rep = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        NSColor.white.setFill()
-        NSRect(x: 0, y: 0, width: width, height: height).fill()
-        thumb.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
-        NSGraphicsContext.restoreGraphicsState()
+        let bytesPerRow = width * 4
+        var buffer = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(buffer.withUnsafeMutableBytes { raw in
+            CGContext(
+                data: raw.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        })
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        // Map the crop box to the context origin before drawing the page.
+        context.translateBy(x: -box.origin.x, y: -box.origin.y)
+        page.draw(with: .cropBox, to: context)
 
         var sum = 0.0, sumSq = 0.0, count = 0.0
-        let bytes = try XCTUnwrap(rep.bitmapData)
         for y in stride(from: 0, to: height, by: 2) {
             for x in stride(from: 0, to: width, by: 2) {
-                let offset = y * rep.bytesPerRow + x * rep.samplesPerPixel
-                let luma = 0.299 * Double(bytes[offset])
-                    + 0.587 * Double(bytes[offset + 1])
-                    + 0.114 * Double(bytes[offset + 2])
+                let offset = y * bytesPerRow + x * 4
+                let luma = 0.299 * Double(buffer[offset])
+                    + 0.587 * Double(buffer[offset + 1])
+                    + 0.114 * Double(buffer[offset + 2])
                 sum += luma
                 sumSq += luma * luma
                 count += 1
@@ -701,5 +744,65 @@ final class PdfPersistenceTests: XCTestCase {
         // save/close are no-ops.
         try await session.save()
         try await session.close()
+    }
+
+    /// The freeze regression: creating an annotation on a textbook-size PDF must
+    /// not block the MainActor. We create a note on a heavy document while a
+    /// MainActor loop samples its own scheduling latency every 50ms; if the
+    /// write ran on the main thread (the old behavior) the sampler would stall
+    /// for the whole multi-second rewrite.
+    func testCreateAnnotationKeepsMainActorResponsiveOnLargePdf() async throws {
+        // ~55 pages x unique 1024x1024 noise image ≈ 170MB on disk. Note:
+        // `dataRepresentation()` alone is NOT the heaviness gauge — PDFKit
+        // stream-copies at memcpy speed (a 470MB file serializes in ~0.2s) —
+        // so the fixture check below gates on the wall-clock cost of the FULL
+        // createAnnotation pipeline (read + double parse + serialize +
+        // byte-patch scan + atomic rewrite), which is exactly the work the
+        // main thread used to do synchronously.
+        let path = makeLargePdf(name: "responsive", pages: 55, imageSide: 1024)
+
+        let session = try await openSession(path)
+
+        // Sample MainActor scheduling latency continuously.
+        let tracker = GapTracker()
+        let sampler = Task { @MainActor in
+            var last = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+                let now = Date()
+                tracker.record(now.timeIntervalSince(last) - 0.050)
+                last = now
+            }
+        }
+        // Let the sampler establish a baseline before the write starts.
+        try await Task.sleep(for: .milliseconds(120))
+
+        let writeStart = Date()
+        let created = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 1,
+            color: nil,
+            content: "responsiveness note",
+            positionData: position(AnnotationRect(x: 100, y: 100, width: 0, height: 0), selectedText: nil)))
+        let writeSeconds = Date().timeIntervalSince(writeStart)
+
+        sampler.cancel()
+        let maxGap = tracker.maxGap
+
+        // The mutation must be genuinely expensive, or a passing gap assertion
+        // proves nothing. On the old main-thread code path this entire
+        // duration WAS a MainActor stall.
+        XCTAssertGreaterThan(
+            writeSeconds, 0.5,
+            "fixture too cheap (createAnnotation took \(writeSeconds)s) to exercise the freeze; scale up pages")
+
+        // The annotation must actually have landed on disk.
+        let annotations = try await openSession(path).annotations(pageNumber: nil)
+        let note = try XCTUnwrap(annotations.first { $0.id == created.id })
+        XCTAssertEqual(note.content, "responsiveness note")
+
+        XCTAssertLessThan(
+            maxGap, 0.5,
+            "MainActor stalled \(maxGap)s during a \(writeSeconds)s write — the write is blocking main")
     }
 }

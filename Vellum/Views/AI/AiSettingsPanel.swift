@@ -67,7 +67,11 @@ struct AiSettingsPanel: View {
             }
 
             Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #else
+                .toggleStyle(.switch)
+                #endif
                 .foregroundStyle(palette.mutedForeground)
         }
         .font(.system(size: 12))

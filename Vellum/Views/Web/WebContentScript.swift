@@ -828,9 +828,15 @@ enum WebContentScript {
   // Selection reporting
   // ------------------------------------------------------------------
 
+  // Signature of the last posted selection, so the touch path (debounced
+  // selectionchange) and the mouse path (mouseup) never double-post one
+  // selection to the app shell.
+  var lastSelectionKey = null;
+
   function reportSelection() {
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      lastSelectionKey = null;
       post("selection-cleared");
       return;
     }
@@ -857,6 +863,10 @@ enum WebContentScript {
       });
     }
 
+    var key = start + ":" + end + ":" + text;
+    if (key === lastSelectionKey) return;
+    lastSelectionKey = key;
+
     var ctx = quoteContext(start, end);
     post("selection", {
       text: text,
@@ -873,11 +883,38 @@ enum WebContentScript {
     setTimeout(reportSelection, 30);
   });
 
+  // Touch selection (iPad long-press + handle drags) never fires mouseup, so
+  // report from the selectionchange stream there. Mouse platforms keep the
+  // mouseup-only flow (no popover mid-drag); the key dedupe above makes the
+  // overlap harmless either way.
+  var touchSelection = "ontouchstart" in window;
+
+  // Leading edge: the handles keep emitting selectionchange while they settle,
+  // which would push a pure debounce out to multiple seconds — throttle so the
+  // popover appears promptly, and let the debounced pass below finalize.
+  var lastTouchReport = 0;
+  if (touchSelection) {
+    document.addEventListener("selectionchange", function () {
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      var now = Date.now();
+      if (now - lastTouchReport > 300) {
+        lastTouchReport = now;
+        reportSelection();
+      }
+    });
+  }
+
   document.addEventListener(
     "selectionchange",
     debounce(function () {
       var sel = window.getSelection();
-      if (!sel || sel.isCollapsed) post("selection-cleared");
+      if (!sel || sel.isCollapsed) {
+        lastSelectionKey = null;
+        post("selection-cleared");
+      } else if (touchSelection) {
+        reportSelection();
+      }
     }, 200)
   );
 

@@ -64,8 +64,11 @@ struct FindBar: View {
             if !query.isEmpty { app.performFind(query) }
         }
         // Escape while the bar (or its field) holds focus dismisses it; the
-        // window-level key monitor covers the other focus cases.
+        // window-level key monitor covers the other focus cases. (macOS only —
+        // iPad dismisses via the bar's Done button.)
+        #if os(macOS)
         .onExitCommand { app.hideFind() }
+        #endif
     }
 
     private var matchLabel: String {

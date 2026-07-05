@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 // "Scriptorium" design system — ported 1:1 from src/index.css.
 // Warm parchment chrome, deep ink-indigo accent, neutral document well.
@@ -189,13 +194,15 @@ final class ThemeStore {
     /// The user's three-way choice (System / Light / Dark). Persisted verbatim.
     private(set) var theme: AppTheme
 
-    /// Live snapshot of the OS appearance, updated by a KVO observer on
-    /// `NSApp.effectiveAppearance` so System mode re-renders the instant macOS
-    /// flips between light and dark.
+    /// Live snapshot of the OS appearance. On macOS a KVO observer on
+    /// `NSApp.effectiveAppearance` keeps it current; on iOS the root view feeds
+    /// it from the SwiftUI `\.colorScheme` environment via `systemAppearanceChanged`.
     private var systemIsDark: Bool
 
+    #if os(macOS)
     @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
     @ObservationIgnored private var distributedObserver: NSObjectProtocol?
+    #endif
 
     /// Effective dark-mode state after resolving System against the OS.
     var isDark: Bool {
@@ -228,6 +235,7 @@ final class ThemeStore {
         observeSystemAppearance()
     }
 
+    #if os(macOS)
     // Isolated so the non-Sendable observer tokens can be released here. The
     // KVO handle self-invalidates on dealloc, but DistributedNotificationCenter
     // retains its token until explicitly removed — a lingering registration if
@@ -238,13 +246,19 @@ final class ThemeStore {
             DistributedNotificationCenter.default().removeObserver(distributedObserver)
         }
     }
+    #endif
 
     private static func currentSystemIsDark() -> Bool {
+        #if os(macOS)
         let appearance = NSApp?.effectiveAppearance ?? NSAppearance.currentDrawing()
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        #else
+        return UITraitCollection.current.userInterfaceStyle == .dark
+        #endif
     }
 
     private func observeSystemAppearance() {
+        #if os(macOS)
         // In System mode the window forces no scheme, so effectiveAppearance
         // tracks the OS and this fires on every Control Center appearance flip.
         if let app = NSApp {
@@ -267,7 +281,19 @@ final class ThemeStore {
                 self.systemIsDark = Self.currentSystemIsDark()
             }
         }
+        #endif
+        // iOS: appearance updates arrive via `systemAppearanceChanged(isDark:)`,
+        // driven by the root view's `\.colorScheme` environment.
     }
+
+    #if !os(macOS)
+    /// iOS hook: the root view forwards the live SwiftUI `\.colorScheme` here so
+    /// System mode re-resolves the palette when iPadOS flips light/dark.
+    func systemAppearanceChanged(isDark: Bool) {
+        guard systemIsDark != isDark else { return }
+        systemIsDark = isDark
+    }
+    #endif
 
     func setTheme(_ theme: AppTheme) {
         self.theme = theme

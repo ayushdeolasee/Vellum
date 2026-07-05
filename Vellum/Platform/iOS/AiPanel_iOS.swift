@@ -1,7 +1,13 @@
-#if os(macOS)
+#if os(iOS)
 import SwiftUI
+import UIKit
 
-struct AiPanel: View {
+// Touch-first port of the macOS AI chat panel (Views/AI/AiPanel.swift). Same
+// message list, thinking/error/empty states, and settings — but the composer
+// is a native SwiftUI TextField/TextEditor instead of an NSTextView, and the
+// push-to-talk mic is a plain tap toggle instead of a click-drag gesture
+// (there's no mouse-down/mouse-up on a touch surface).
+struct AiPanel_iOS: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
@@ -10,8 +16,8 @@ struct AiPanel: View {
     @State private var input = ""
     @State private var settingsOpen = false
     @State private var isListening = false
-    @State private var pressingMic = false
     @State private var speechService = SpeechService()
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,6 +29,7 @@ struct AiPanel: View {
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.surface)
         .onAppear { speakLatestIfNeeded() }
         .onChange(of: aiStore.messages) { _, _ in speakLatestIfNeeded() }
         .onChange(of: aiStore.isThinking) { _, _ in speakLatestIfNeeded() }
@@ -33,6 +40,8 @@ struct AiPanel: View {
         }
     }
 
+    // MARK: - Header
+
     private var header: some View {
         HStack {
             HStack(spacing: 8) {
@@ -42,18 +51,17 @@ struct AiPanel: View {
                 Text("AI Assistant").font(.system(size: 14, weight: .medium))
             }
             Spacer()
-            HStack(spacing: 2) {
-                IconButton(
-                    variant: settingsOpen ? .active : .ghost,
-                    help: "AI settings",
-                    action: { settingsOpen.toggle() }
+            HStack(spacing: 4) {
+                touchIconButton(
+                    system: "gearshape", label: "AI settings", active: settingsOpen
                 ) {
-                    Image(systemName: "gearshape").font(.system(size: 15))
+                    settingsOpen.toggle()
                 }
                 .accessibilityIdentifier("aiPanel.settings")
-                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
-                IconButton(help: "Clear conversation", action: aiStore.clearConversation) {
-                    Image(systemName: "trash").font(.system(size: 15))
+                touchIconButton(
+                    system: "trash", label: "Clear conversation"
+                ) {
+                    aiStore.clearConversation()
                 }
                 .accessibilityIdentifier("aiPanel.clearConversation")
             }
@@ -63,6 +71,28 @@ struct AiPanel: View {
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
     }
+
+    /// A 44pt touch icon button matching the toolbar's Liquid Glass tool
+    /// buttons, sized for a compact sidebar header instead of a full pod.
+    private func touchIconButton(
+        system: String, label: String, active: Bool = false, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 15))
+                .foregroundStyle(active ? palette.primary : palette.mutedForeground)
+                .frame(width: 36, height: 36)
+                .background {
+                    if active { Circle().fill(palette.primary.opacity(0.16)) }
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+    }
+
+    // MARK: - Messages
 
     private var messages: some View {
         ScrollViewReader { proxy in
@@ -76,6 +106,7 @@ struct AiPanel: View {
                 }
                 .padding(12)
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: aiStore.messages.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: aiStore.isThinking) { _, _ in scrollToBottom(proxy) }
         }
@@ -125,10 +156,10 @@ struct AiPanel: View {
                 .foregroundStyle(message.role == .user ? palette.primaryForeground : palette.foreground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .frame(maxWidth: 272, alignment: .leading)
+                .frame(maxWidth: 320, alignment: .leading)
                 .background(
                     message.role == .user
-                        ? AnyShapeStyle(.tint)
+                        ? AnyShapeStyle(palette.primary)
                         : AnyShapeStyle(.quaternary.opacity(0.45)))
                 .clipShape(UnevenRoundedRectangle(
                     topLeadingRadius: message.role == .assistant ? Radius.sm : Radius.xl,
@@ -136,6 +167,13 @@ struct AiPanel: View {
                     bottomTrailingRadius: Radius.xl,
                     topTrailingRadius: message.role == .user ? Radius.sm : Radius.xl
                 ))
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = message.content
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
@@ -164,39 +202,34 @@ struct AiPanel: View {
             .overlay { RoundedRectangle(cornerRadius: Radius.md).stroke(palette.destructive.opacity(0.3)) }
     }
 
+    // MARK: - Composer
+
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            ComposerTextView(text: $input, placeholder: "Ask about this document…", onSubmit: submit)
-                .frame(minHeight: 40, maxHeight: 64)
+            TextField("Ask about this document…", text: $input, axis: .vertical)
+                .font(.system(size: 15))
+                .foregroundStyle(palette.foreground)
+                .lineLimit(1...4)
+                .focused($composerFocused)
+                .submitLabel(.send)
+                .onSubmit(submit)
+                .padding(.horizontal, 10)
+                .frame(minHeight: 40)
+
             if aiStore.settings.voiceMode == .pushToTalk {
-                Image(systemName: isListening ? "stop.fill" : "mic")
-                    .font(.system(size: 15))
-                    .foregroundStyle(isListening ? palette.destructiveForeground : palette.mutedForeground)
-                    .frame(width: 36, height: 36)
-                    .background(isListening ? palette.destructive : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                    .contentShape(RoundedRectangle(cornerRadius: Radius.md))
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { _ in startListening() }
-                            .onEnded { _ in stopListening() }
-                    )
-                    .help("Push to talk")
-                    .accessibilityLabel(isListening ? "Stop listening" : "Push to talk")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityIdentifier("aiPanel.pushToTalk")
+                micButton
             }
+
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 15))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
                     .foregroundStyle(palette.primaryForeground)
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking)
-            .opacity(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking ? 0.4 : 1)
-            .help("Send message")
+            .disabled(isSendDisabled)
+            .opacity(isSendDisabled ? 0.4 : 1)
             .accessibilityLabel("Send message")
             .accessibilityIdentifier("aiPanel.send")
         }
@@ -206,13 +239,37 @@ struct AiPanel: View {
         .overlay(alignment: .top) { Divider() }
     }
 
+    /// Push-to-talk on a touch surface: tap to start, tap again to stop —
+    /// the macOS mouse-down/mouse-up gesture has no touch equivalent, so this
+    /// is a simple toggle rather than a hold gesture.
+    private var micButton: some View {
+        Button {
+            isListening ? stopListening() : startListening()
+        } label: {
+            Image(systemName: isListening ? "stop.fill" : "mic")
+                .font(.system(size: 15))
+                .foregroundStyle(isListening ? palette.destructiveForeground : palette.mutedForeground)
+                .frame(width: 44, height: 44)
+                .background(isListening ? palette.destructive : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isListening ? "Stop listening" : "Push to talk")
+        .accessibilityIdentifier("aiPanel.pushToTalk")
+    }
+
+    private var isSendDisabled: Bool {
+        input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking
+    }
+
     private func submit() {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !aiStore.isThinking else { return }
         input = ""
         // Capture the session and context synchronously, before any await, so
         // a tab switch during image capture can't send to the wrong tab
-        // (mirrors the original's atomic submit -> sendMessage state read).
+        // (mirrors the macOS panel's atomic submit -> sendMessage state read).
         let sessionId = appStore.activeTabId
         let document = appStore.document
         let currentPage = appStore.currentPage
@@ -234,9 +291,10 @@ struct AiPanel: View {
         }
     }
 
+    // MARK: - Voice
+
     private func startListening() {
-        guard !pressingMic, aiStore.settings.voiceMode == .pushToTalk else { return }
-        pressingMic = true
+        guard aiStore.settings.voiceMode == .pushToTalk else { return }
         aiStore.setErrorState(nil)
         Task {
             do {
@@ -246,7 +304,6 @@ struct AiPanel: View {
                     },
                     onStateChange: { isListening = $0 }
                 )
-                if !pressingMic { speechService.stopRecognition() }
             } catch {
                 isListening = false
                 if error.localizedDescription == SpeechService.unavailableMessage {
@@ -257,7 +314,6 @@ struct AiPanel: View {
     }
 
     private func stopListening() {
-        pressingMic = false
         speechService.stopRecognition()
         isListening = false
     }
@@ -272,73 +328,4 @@ struct AiPanel: View {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
     }
 }
-
-private struct ComposerTextView: NSViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let onSubmit: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = false
-        let textView = SubmitTextView()
-        textView.delegate = context.coordinator
-        textView.submit = onSubmit
-        textView.placeholder = placeholder
-        textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 14)
-        textView.textContainerInset = NSSize(width: 8, height: 6)
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        scroll.documentView = textView
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let textView = scroll.documentView as? SubmitTextView else { return }
-        context.coordinator.parent = self
-        textView.submit = onSubmit
-        textView.placeholder = placeholder
-        if textView.string != text { textView.string = text }
-        textView.needsDisplay = true
-    }
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: ComposerTextView
-        init(parent: ComposerTextView) { self.parent = parent }
-        func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView else { return }
-            parent.text = view.string
-        }
-    }
-}
-
-private final class SubmitTextView: NSTextView {
-    var submit: (() -> Void)?
-    var placeholder = ""
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
-            submit?()
-        } else {
-            super.keyDown(with: event)
-        }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard string.isEmpty else { return }
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        placeholder.draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height), withAttributes: attributes)
-    }
-}
-
-#endif  // os(macOS) — iPad reference; see Platform/iOS
+#endif
