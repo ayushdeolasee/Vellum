@@ -142,7 +142,7 @@ struct WebPageText: Sendable {
     var text: String
 }
 
-enum InteractionMode: String, Sendable {
+enum InteractionMode: String, Codable, Sendable {
     case view
     case note
 }

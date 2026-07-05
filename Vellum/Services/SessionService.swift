@@ -62,4 +62,8 @@ extension Notification.Name {
     static let vellumAnnotationsUpdated = Notification.Name("vellum.annotations-updated")
     /// Asks the toolbar to open its "add webpage" URL prompt. (vellum:add-webpage)
     static let vellumAddWebpage = Notification.Name("vellum.add-webpage")
+    /// Broadcast after AI settings change so every pane's AiStore reloads the
+    /// shared, disk-persisted settings (multiple AiStore instances exist once
+    /// panes can be split). (vellum:ai-settings-changed)
+    static let vellumAiSettingsChanged = Notification.Name("vellum.ai-settings-changed")
 }

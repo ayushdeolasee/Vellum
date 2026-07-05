@@ -125,11 +125,11 @@ final class AiToolEngine {
     }
 
     private func sanitizeColor(_ value: String?) -> String {
-        guard let value else { return AppStore.storedDefaultHighlightColor() }
+        guard let value else { return WorkspaceStore.storedDefaultHighlightColor() }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = #"^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$|^(?:rgb|rgba|hsl|hsla)\([^)]*\)$|^[a-z]+$"#
         guard trimmed.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil else {
-            return AppStore.storedDefaultHighlightColor()
+            return WorkspaceStore.storedDefaultHighlightColor()
         }
         return trimmed
     }

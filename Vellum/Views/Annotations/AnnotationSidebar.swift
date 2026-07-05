@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AnnotationSidebar: View {
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(\.palette) private var palette
 
@@ -25,7 +26,7 @@ struct AnnotationSidebar: View {
                                 annotation: annotation,
                                 selected: annotationStore.selectedAnnotationId == annotation.id,
                                 editing: editingId == annotation.id,
-                                fontSize: appStore.sidebarFontSize,
+                                fontSize: workspace.sidebarFontSize,
                                 editText: $editText,
                                 editFieldFocused: $editFieldFocused,
                                 onSelect: { navigate(to: annotation) },
