@@ -66,6 +66,7 @@ final class PaneTreeTests: XCTestCase {
         first.app.newStartTab()
         first.app.newStartTab()
         let firstTabCount = first.app.tabs.count
+        let firstActiveTabId = first.app.activeTabId
         ws.splitFocused(.horizontal)   // new pane has 1 start tab
         XCTAssertEqual(ws.root.allLeaves().count, 2)
         // Focus the original pane, then merge: the other pane's tab migrates in.
@@ -73,6 +74,9 @@ final class PaneTreeTests: XCTestCase {
         ws.mergeAll()
         XCTAssertEqual(ws.root.allLeaves().count, 1)
         XCTAssertEqual(ws.focusedPane.app.tabs.count, firstTabCount + 1)
+        // Merging must not steal focus from the tab the user was viewing in the
+        // surviving pane, even though each migrated tab activates on attach.
+        XCTAssertEqual(ws.focusedPane.app.activeTabId, firstActiveTabId)
     }
 
     func testMoveTabBetweenPanes() {

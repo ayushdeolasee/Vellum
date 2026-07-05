@@ -38,10 +38,18 @@ indirect enum PaneNodeDTO: Codable, Equatable {
                 tabs: try container.decode([TabDescriptor].self, forKey: .tabs),
                 activeTabIndex: try container.decodeIfPresent(Int.self, forKey: .activeTabIndex))
         case .split:
-            self = .split(
-                direction: try container.decode(SplitDirection.self, forKey: .direction),
-                children: try container.decode([PaneNodeDTO].self, forKey: .children),
-                sizes: try container.decode([Double].self, forKey: .sizes))
+            let direction = try container.decode(SplitDirection.self, forKey: .direction)
+            let children = try container.decode([PaneNodeDTO].self, forKey: .children)
+            let sizes = try container.decode([Double].self, forKey: .sizes)
+            // Reject malformed splits so a hand-edited/corrupted blob resets to a
+            // fresh workspace instead of crashing later (firstLeafId force-indexes
+            // children[0]; SplitContainer indexes sizes against children).
+            guard children.count >= 2, children.count == sizes.count else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .children, in: container,
+                    debugDescription: "split node requires >= 2 children matching sizes.count")
+            }
+            self = .split(direction: direction, children: children, sizes: sizes)
         }
     }
 

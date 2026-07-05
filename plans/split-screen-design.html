@@ -516,7 +516,9 @@ function moveTabToLeaf(fromLeafId, tabId, toLeafId){
   const idx = from.tabs.findIndex(t=>t.id===tabId);
   const [tab] = from.tabs.splice(idx,1);
   to.tabs.push(tab); to.activeId = tab.id; focusId = to.id;
-  if(from.tabs.length===0){ closeLeaf(fromLeafId); return; }
+  // closeLeaf refocuses the collapsed pane's sibling; the tab actually landed in
+  // `to`, so restore focus there after collapsing the now-empty source.
+  if(from.tabs.length===0){ closeLeaf(fromLeafId); focusId = toLeafId; render(); return; }
   if(from.activeId===tabId) from.activeId = from.tabs[Math.min(idx,from.tabs.length-1)].id;
   render();
 }
@@ -535,7 +537,9 @@ function splitWithDraggedTab(fromLeafId, tabId, targetLeafId, dir, before){
     parent.children[pi] = split;
   }
   focusId = nl.id;
-  if(from.tabs.length===0){ closeLeaf(fromLeafId); return; }
+  // Same as moveTabToLeaf: closeLeaf would refocus the sibling, but the dragged
+  // tab now lives in the freshly split-out pane `nl`, so keep focus there.
+  if(from.tabs.length===0){ closeLeaf(fromLeafId); focusId = nl.id; render(); return; }
   if(from.activeId===tabId) from.activeId = from.tabs[0].id;
   render();
 }

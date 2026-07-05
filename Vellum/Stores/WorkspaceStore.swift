@@ -35,7 +35,7 @@ final class WorkspaceStore {
     private static let sidebarFontSizeKey = "sidebarFontSize"
 
     var sidebarFontSize: Double = {
-        let stored = UserDefaults.standard.double(forKey: "sidebarFontSize")
+        let stored = UserDefaults.standard.double(forKey: WorkspaceStore.sidebarFontSizeKey)
         return stored == 0 ? 14 : min(WorkspaceStore.maxSidebarFontSize, max(WorkspaceStore.minSidebarFontSize, stored))
     }() {
         didSet {
@@ -217,6 +217,7 @@ final class WorkspaceStore {
             let pane = makePane(startTab: false)
             root = .leaf(pane)
             focusedPaneId = pane.id
+            scheduleSave()
             return
         }
         if let pruned = removingLeaf(root, id: paneId) {
@@ -242,10 +243,17 @@ final class WorkspaceStore {
         let leaves = root.allLeaves()
         guard leaves.count > 1 else { return }
         let keep = root.leaf(id: focusedPaneId) ?? leaves[0]
+        // Preserve whatever `keep` was showing: each attachTab activates the tab
+        // it adopts, so without restoring this the surviving pane would end up on
+        // the last migrated tab instead of the user's current document.
+        let keepActiveTabId = keep.app.activeTabId
         for leaf in leaves where leaf.id != keep.id {
             for tab in leaf.app.tabs {
                 keep.app.attachTab(tab)
             }
+        }
+        if let keepActiveTabId {
+            keep.app.activateTab(keepActiveTabId)
         }
         root = .leaf(keep)
         focusedPaneId = keep.id
