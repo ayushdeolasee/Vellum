@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PDFKit
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -12,6 +13,37 @@ final class AppStore {
     static let zoomStep: Double = 0.1
 
     let sessions: SessionService
+
+    // MARK: - Prepared-PDF cache
+    //
+    // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
+    // without a cache every switch re-reads + re-parses + re-strips the whole PDF
+    // (now off-main, but still a visible delay for large docs). Cache the display-
+    // ready PDFDocument per tab so switching back is instant. A stripped display
+    // doc stays valid across annotation edits (annotations render from overlays,
+    // page content is unchanged), so no invalidation is needed beyond close/LRU.
+    private static let maxPreparedCache = 3
+    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
+
+    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
+        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
+        // Touch: move to most-recently-used.
+        let entry = preparedPdfCache.remove(at: index)
+        preparedPdfCache.append(entry)
+        return entry.doc
+    }
+
+    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
+        preparedPdfCache.removeAll { $0.tabId == tabId }
+        preparedPdfCache.append((tabId, doc))
+        if preparedPdfCache.count > Self.maxPreparedCache {
+            preparedPdfCache.removeFirst()
+        }
+    }
+
+    func evictPreparedPdf(tabId: String) {
+        preparedPdfCache.removeAll { $0.tabId == tabId }
+    }
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -173,6 +205,7 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
+        evictPreparedPdf(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
