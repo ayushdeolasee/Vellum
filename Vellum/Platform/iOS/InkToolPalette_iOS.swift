@@ -34,7 +34,7 @@ struct InkToolPalette_iOS: View {
             toolGroup
             divider
             if ink.tool != .eraser {
-                colorRow
+                colorRow(compact: compact)
                 divider
             }
             if compact {
@@ -106,9 +106,15 @@ struct InkToolPalette_iOS: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    private var colorRow: some View {
-        HStack(spacing: 6) {
-            ForEach(colors, id: \.self) { color in
+    /// Preset swatches plus the custom color well. When the palette is compact
+    /// (e.g. the Annotations sidebar is open and the PDF column is narrow) only
+    /// the first few presets are shown so the row still fits — the color well
+    /// still reaches every color, and no preset is fully lost since the full row
+    /// takes over as soon as there's width for it.
+    private func colorRow(compact: Bool) -> some View {
+        let shown = compact ? Array(colors.prefix(3)) : colors
+        return HStack(spacing: 6) {
+            ForEach(shown, id: \.self) { color in
                 let selected = colorsEqual(ink.activeColor, color)
                 Button {
                     ink.activeColor = color
@@ -129,7 +135,31 @@ struct InkToolPalette_iOS: View {
                 .accessibilityLabel(Text("Ink color"))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
+            customColorPicker
         }
+    }
+
+    /// Full-spectrum color well: opens the system color picker so the user can
+    /// pick any custom ink color (spectrum, sliders, hex, eyedropper) beyond the
+    /// presets. Highlighter allows opacity; pen stays fully opaque.
+    private var customColorPicker: some View {
+        let isCustom = !colors.contains { colorsEqual(ink.activeColor, $0) }
+        return ColorPicker(
+            "Custom ink color",
+            selection: Binding(
+                get: { ink.activeColor },
+                set: { ink.activeColor = $0; ink.bumpTool() }
+            ),
+            supportsOpacity: ink.tool == .highlighter
+        )
+        .labelsHidden()
+        .frame(width: 26, height: 26)
+        .overlay {
+            if isCustom {
+                Circle().stroke(palette.primary, lineWidth: 2).padding(-3)
+            }
+        }
+        .accessibilityLabel(Text("Custom ink color"))
     }
 
     /// The three width dots for the active tool (pen / highlighter / eraser).

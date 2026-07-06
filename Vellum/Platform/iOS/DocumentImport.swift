@@ -15,11 +15,28 @@ enum DocumentImport {
         return dir
     }
 
-    /// Content types the picker accepts (PDF + `.vellumweb` archive).
-    static var openableTypes: [UTType] {
+    /// Content types the picker accepts (PDF + `.vellumweb` archive). Cached — a
+    /// computed rebuild ran on every welcome-screen body pass.
+    static let openableTypes: [UTType] = {
         var types: [UTType] = [.pdf]
         if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
         return types
+    }()
+
+    /// Resolve a stored recent-document path to a file that exists *now*.
+    ///
+    /// Recents persist an absolute path rooted in the app's data container
+    /// (`.../Application/<UUID>/Documents/Documents/<name>`), but that container
+    /// UUID changes across reinstalls/updates — so the stored path can stop
+    /// resolving even though the imported copy is still present under the current
+    /// library directory. Every opened PDF was copied into `libraryDirectory`
+    /// (flat, by filename), so if the stored path is gone we fall back to a
+    /// same-named file in the current library. Returns `nil` if neither exists.
+    static func resolveExistingPath(_ path: String) -> String? {
+        if FileManager.default.fileExists(atPath: path) { return path }
+        let candidate = libraryDirectory.appendingPathComponent((path as NSString).lastPathComponent)
+        if FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
+        return nil
     }
 
     /// Copy security-scoped picked URLs into the writable library, returning the

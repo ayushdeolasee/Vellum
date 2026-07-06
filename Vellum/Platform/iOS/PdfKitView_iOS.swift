@@ -48,6 +48,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
         // Install the Pencil overlay provider BEFORE the document so PDFKit wires
         // a per-page canvas as each page lays out.
         view.pageOverlayViewProvider = ink.inkProvider
+        // One Pencil double-tap interaction on the always-mounted PDFView (not on
+        // the virtualized per-page canvases), so barrel double-taps are delivered
+        // reliably regardless of scroll position / which page canvas is live.
+        view.addInteraction(UIPencilInteraction(delegate: ink.inkProvider))
         view.document = document
         view.scaleFactor = CGFloat(min(AppStore.maxZoom, max(AppStore.minZoom, app.zoom)))
         controller.pdfView = view

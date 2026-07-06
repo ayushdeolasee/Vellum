@@ -12,34 +12,29 @@ struct ContentView_iOS: View {
     @Environment(\.palette) private var palette
     @Environment(\.colorScheme) private var colorScheme
 
-    @State private var importing = false
     @State private var addWebpagePresented = false
 
     var body: some View {
         Group {
             if appStore.tabs.isEmpty {
                 WelcomeLibrary_iOS(
-                    onOpen: { importing = true },
+                    onOpen: { presentImporter() },
                     onAddWebpage: { addWebpagePresented = true }
                 )
             } else {
                 TabbedShell_iOS(
-                    onOpenFile: { importing = true },
+                    onOpenFile: { presentImporter() },
                     onAddWebpage: { addWebpagePresented = true }
                 )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background.ignoresSafeArea())
-        .fileImporter(
-            isPresented: $importing,
-            allowedContentTypes: DocumentImport.openableTypes,
-            allowsMultipleSelection: true
-        ) { result in
-            guard case let .success(urls) = result else { return }
-            let paths = DocumentImport.importPicked(urls)
-            guard !paths.isEmpty else { return }
-            Task { await appStore.openFiles(paths: paths) }
+        // Warm the document-picker subsystem shortly after launch so the first
+        // "Open a PDF" tap doesn't pay the multi-second service-discovery cost.
+        .task {
+            try? await Task.sleep(for: .seconds(1))
+            DocumentPickerCoordinator_iOS.shared.prewarm()
         }
         .sheet(isPresented: $addWebpagePresented) {
             AddWebpageSheet_iOS { url in
@@ -66,6 +61,14 @@ struct ContentView_iOS: View {
         #if DEBUG
         .task { await autoOpenForTesting() }
         #endif
+    }
+
+    private func presentImporter() {
+        DocumentPickerCoordinator_iOS.shared.present { urls in
+            let paths = DocumentImport.importPicked(urls)
+            guard !paths.isEmpty else { return }
+            Task { await appStore.openFiles(paths: paths) }
+        }
     }
 
     private var documentIdentity: String {

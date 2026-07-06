@@ -26,6 +26,12 @@ enum PdfInk {
         var made: [PDFAnnotation] = []
         var storedData = false
         for stroke in drawing.strokes {
+            // The bitmap eraser masks a stroke rather than deleting it, so fully
+            // erased strokes linger in `drawing.strokes` with an empty
+            // `renderBounds`. Skip them: don't write them back as native ink (which
+            // would make the page read as annotated again and resurrect erased ink
+            // in other viewers / on reload).
+            guard !stroke.renderBounds.isEmpty else { continue }
             guard let annotation = inkAnnotation(for: stroke, crop: crop) else { continue }
             if !storedData {
                 // Stash the whole drawing once per page for lossless re-edit.

@@ -14,7 +14,7 @@ enum InkTool: String, CaseIterable, Sendable {
 /// the highlight palette.
 enum InkPalette {
     static let penColors: [Color] = [
-        Color(hex: "#211d18"), // ink black
+        Color(hex: "#000000"), // true black (matches Notes)
         Color(hex: "#45418f"), // indigo (brand)
         Color(hex: "#b23a30"), // red
         Color(hex: "#1f6f43"), // green
@@ -94,12 +94,24 @@ final class InkController_iOS {
             NSLog("[ink-debug] isActive -> %d (currentPage=%d)",
                   isActive ? 1 : 0, app?.currentPage ?? -1)
             #endif
-            // Turning ink off can't lose the last stroke: write any pending
-            // debounced ink right now (the canvas keeps rendering regardless).
-            if !isActive { flushPendingInk() }
+            if isActive {
+                // Focused inking: collapse the inspector sidebar so the full
+                // tool palette fits the document column (it overflows the
+                // narrowed column otherwise). Restore the prior state on Done.
+                sidebarWasOpen = app?.sidebarOpen ?? false
+                app?.sidebarOpen = false
+            } else {
+                // Turning ink off can't lose the last stroke: write any pending
+                // debounced ink right now (the canvas keeps rendering regardless).
+                flushPendingInk()
+                if sidebarWasOpen { app?.sidebarOpen = true }
+            }
             inkProvider.refreshPolicies()
         }
     }
+    /// Whether the inspector sidebar was open when inking began, so Done can
+    /// restore it (inking auto-collapses it for a full-width palette).
+    @ObservationIgnored private var sidebarWasOpen = false
     var tool: InkTool = .pen {
         didSet {
             guard oldValue != tool else { return }
@@ -277,20 +289,26 @@ final class InkController_iOS {
         drawingVersion &+= 1
     }
 
-    var pkTool: PKTool {
+    var pkTool: PKTool { pkTool(widthScale: 1) }
+
+    /// The active PencilKit tool, with its width multiplied by `widthScale`. The
+    /// ink canvases draw in a super-sampled space (see `InkOverlayProvider_iOS`),
+    /// so each passes its own `K` here to keep the on-page stroke width equal to
+    /// what the user selected regardless of the backing-store density.
+    func pkTool(widthScale: CGFloat) -> PKTool {
         switch tool {
         case .pen:
-            return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth)
+            return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth * widthScale)
         case .highlighter:
-            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth)
+            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth * widthScale)
         case .eraser:
             // Explicit width — the default reports 0 ("system default"), which
             // leaves the erase radius an unknown.
             switch eraserMode {
             case .pixel:
-                return PKEraserTool(.bitmap, width: activeWidth)
+                return PKEraserTool(.bitmap, width: activeWidth * widthScale)
             case .object:
-                return PKEraserTool(.vector, width: activeWidth)
+                return PKEraserTool(.vector, width: activeWidth * widthScale)
             }
         }
     }

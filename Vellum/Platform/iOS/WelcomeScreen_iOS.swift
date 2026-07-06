@@ -73,7 +73,10 @@ struct WelcomeLibrary_iOS: View {
         if item.kind == .web {
             Task { await appStore.openUrl(item.pdfPath) }
         } else {
-            Task { await appStore.openFiles(paths: [item.pdfPath]) }
+            // Resolve against the current container so a recent recorded before a
+            // reinstall still opens (its path's container UUID may have changed).
+            let path = DocumentImport.resolveExistingPath(item.pdfPath) ?? item.pdfPath
+            Task { await appStore.openFiles(paths: [path]) }
         }
     }
 }
@@ -93,7 +96,7 @@ private struct RecentCard_iOS: View {
     }
 
     private var onDisk: Bool {
-        item.kind == .web || FileManager.default.fileExists(atPath: item.pdfPath)
+        item.kind == .web || DocumentImport.resolveExistingPath(item.pdfPath) != nil
     }
 
     var body: some View {

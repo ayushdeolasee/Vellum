@@ -82,6 +82,7 @@
 		F0ACBADDBB9B0C0E9224BAAD /* ContentView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */; };
 		F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */; };
 		F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8909CC21C72AF947D20B4B6C /* AppStore.swift */; };
+		FD98982C411E8ED537EEFCCA /* DocumentPicker_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71490A27042704DDA72A2CE3 /* DocumentPicker_iOS.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,6 +125,7 @@
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
 		65C4546D0D679437B876586A /* WebViewerTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewerTypes.swift; sourceTree = "<group>"; };
 		6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSessionBackend.swift; sourceTree = "<group>"; };
+		71490A27042704DDA72A2CE3 /* DocumentPicker_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPicker_iOS.swift; sourceTree = "<group>"; };
 		721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp_iOS.swift; sourceTree = "<group>"; };
 		723EC058218A6DF8D994CC26 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		7280818785023514C87C04C9 /* SessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionService.swift; sourceTree = "<group>"; };
@@ -189,6 +191,7 @@
 				0317C551D2245591754B389C /* AiPanel_iOS.swift */,
 				2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */,
 				DB938214DCB295AEA743C5D3 /* DocumentImport.swift */,
+				71490A27042704DDA72A2CE3 /* DocumentPicker_iOS.swift */,
 				96A7991568F0B38518672931 /* InkController_iOS.swift */,
 				438D3DD29145D25F74DF89C8 /* InkOverlayProvider_iOS.swift */,
 				7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */,
@@ -547,6 +550,7 @@
 				F0ACBADDBB9B0C0E9224BAAD /* ContentView_iOS.swift in Sources */,
 				53621485E83DB998CCBA6163 /* Controls.swift in Sources */,
 				0AB16693412D0D1CC104EAEB /* DocumentImport.swift in Sources */,
+				FD98982C411E8ED537EEFCCA /* DocumentPicker_iOS.swift in Sources */,
 				F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */,
 				8DDA7D560DAB61C377817B0D /* FindBar.swift in Sources */,
 				4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */,
