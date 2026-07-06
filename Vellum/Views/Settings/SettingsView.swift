@@ -20,7 +20,11 @@ struct SettingsView: View {
             AiSettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
         }
+        #if os(macOS)
+        // Fixed-width settings window on macOS; on iPad the sheet fills its
+        // presentation and the TabView renders as a bottom tab bar.
         .frame(width: 480)
+        #endif
     }
 }
 
@@ -39,13 +43,21 @@ private struct GeneralSettingsTab: View {
                 }
                 .pickerStyle(.segmented)
             } footer: {
-                Text("System follows macOS and updates live when you change appearance in Control Center.")
+                Text(systemFooter)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+    }
+
+    private var systemFooter: String {
+        #if os(macOS)
+        "System follows macOS and updates live when you change appearance in Control Center."
+        #else
+        "System follows iPadOS and updates live when you change appearance in Control Center."
+        #endif
     }
 
     private var themeBinding: Binding<AppTheme> {
@@ -60,6 +72,11 @@ private struct GeneralSettingsTab: View {
 
 private struct ReadingSettingsTab: View {
     @Environment(AppStore.self) private var appStore
+    #if os(iOS)
+    @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
+    @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
+    @AppStorage(InkController_iOS.autoHideSidebarKey) private var autoHideSidebarWhileInking = true
+    #endif
 
     var body: some View {
         Form {
@@ -87,6 +104,34 @@ private struct ReadingSettingsTab: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            #if os(iOS)
+            Section {
+                Toggle("Two-finger double-tap adds a note", isOn: $twoFingerNoteTap)
+            } header: {
+                Text("Gestures")
+            } footer: {
+                Text("Double-tap the page with two fingers to add a sticky note at that spot.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Double-tap action", selection: $pencilDoubleTap) {
+                    ForEach(PencilDoubleTapAction.allCases, id: \.rawValue) { action in
+                        Text(action.label).tag(action.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Toggle("Auto-hide sidebar while inking", isOn: $autoHideSidebarWhileInking)
+            } header: {
+                Text("Apple Pencil")
+            } footer: {
+                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool. Auto-hiding the sidebar collapses the annotation panel so the ink tools get the full page width.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
         }
         .formStyle(.grouped)
         .scrollDisabled(true)

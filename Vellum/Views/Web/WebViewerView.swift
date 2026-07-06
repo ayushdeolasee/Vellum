@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Observation
 import SwiftUI
@@ -8,52 +9,6 @@ import WebKit
 // postMessage bridge becomes WKScriptMessageHandler (in) + evaluateJavaScript
 // (out) with identical message semantics. One instance per tab mount
 // (ContentView keys the view by activeTabId).
-
-extension Notification.Name {
-    /// Ask the active web viewer to run history.go(delta) inside the page
-    /// (window.__webHistory in the original). userInfo: ["delta": Int].
-    static let vellumWebHistory = Notification.Name("vellum.web-history")
-}
-
-/// Text-quote anchor for a note placed at a point in the page.
-struct WebNoteAnchor {
-    var start: Int
-    var end: Int
-    var text: String
-    var prefix: String?
-    var suffix: String?
-    var pageNumber: Int
-}
-
-struct WebSelection {
-    var text: String
-    var pageNumber: Int
-    var positionData: PositionData
-}
-
-struct WebNoteComposerState {
-    var point: CGPoint
-    var anchor: WebNoteAnchor
-    var openedAt: Date
-}
-
-struct WebContextMenuState {
-    var point: CGPoint
-    var anchor: WebNoteAnchor?
-    var openedAt: Date
-}
-
-struct WebNoteViewerState {
-    var id: String
-    var point: CGPoint
-    var openedAt: Date
-}
-
-struct WebHighlightEditorState {
-    var id: String
-    var point: CGPoint
-    var openedAt: Date
-}
 
 // MARK: - View
 
@@ -998,3 +953,5 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
         delegate?.userContentController(userContentController, didReceive: message)
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

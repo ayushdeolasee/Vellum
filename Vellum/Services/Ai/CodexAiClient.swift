@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // Runs the codex CLI off the main actor (the original executes it inside
@@ -256,3 +257,5 @@ private final class CodexExitLatch: @unchecked Sendable {
         }
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

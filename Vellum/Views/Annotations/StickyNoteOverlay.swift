@@ -112,7 +112,9 @@ struct StickyNoteOverlay: View {
         .scaleEffect(pillHovering ? 1.05 : 1)
         .onHover { pillHovering = $0 }
         .help(content ?? "Empty note - click to edit, drag to move")
+        #if os(macOS)
         .pointerStyle(isDragging ? .grabActive : .grabIdle)
+        #endif
         .gesture(noteDragGesture(onClick: {
             if !isSelected {
                 annotationStore.selectAnnotation(annotation.id)
@@ -158,7 +160,9 @@ struct StickyNoteOverlay: View {
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
+            #if os(macOS)
             .pointerStyle(isDragging ? .grabActive : .grabIdle)
+            #endif
             .gesture(noteDragGesture(onClick: nil))
 
             HStack(spacing: 2) {
@@ -205,7 +209,9 @@ struct StickyNoteOverlay: View {
                             escapeFromEditor()
                             return .handled
                         }
+                        #if os(macOS)
                         .onExitCommand { escapeFromEditor() }
+                        #endif
                     if editText.isEmpty {
                         Text("Type your note...")
                             .font(.system(size: 14))
@@ -244,7 +250,9 @@ struct StickyNoteOverlay: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
                 .contentShape(Rectangle())
+                #if os(macOS)
                 .pointerStyle(.horizontalText)
+                #endif
                 .onTapGesture { startEditing() }
             }
         }

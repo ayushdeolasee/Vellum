@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Observation
 import PDFKit
@@ -7,25 +8,8 @@ import PDFKit
 // src/hooks/useTextSelection.ts, src/components/pdf/PdfViewer.tsx and
 // src/lib/highlight-locator.ts. UI lives in PdfViewerView / PdfOverlays.
 
-/// In-memory text selection (useTextSelection's TextSelection).
-struct PdfTextSelection {
-    var text: String
-    var positionData: PositionData
-    var pageNumber: Int
-}
-
-/// Right-click "Add note here" menu state (PdfViewer's contextMenu).
-struct PdfContextMenuState {
-    /// Menu anchor in viewer (top-left origin) coordinates.
-    var location: CGPoint
-    var pageNumber: Int
-    /// Click point normalized to zoom = 1, top-left page origin.
-    var clickX: Double
-    var clickY: Double
-    /// Page display size at zoom = 1.
-    var pageWidth: Double
-    var pageHeight: Double
-}
+// PdfTextSelection and PdfContextMenuState moved to PdfViewerTypes.swift
+// (cross-platform, shared with the iPad viewer).
 
 /// Shared state + behavior between the PDFView (AppKit) and the SwiftUI
 /// overlay stack. One instance per PdfViewerView; reset on document change.
@@ -798,3 +782,5 @@ final class PdfViewerController {
         )
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

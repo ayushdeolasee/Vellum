@@ -217,6 +217,7 @@ final class AiStore {
                     toolEngine: engine
                 )
             case .codex:
+                #if os(macOS)
                 let model = settingsAtStart.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 let image = context.currentPageImage.map {
                     CodexAiImageInput(base64Data: $0.base64Data, mediaType: $0.mediaType)
@@ -232,6 +233,12 @@ final class AiStore {
                     sessionIdAtStart: sessionIdAtStart,
                     app: app
                 )
+                #else
+                // Codex CLI is desktop-only; the iPad settings UI hides this
+                // provider, but guard the code path defensively.
+                throw SessionServiceError.invalidDocument(
+                    "The Codex provider isn’t available on iPad. Choose Gemini or OpenAI in AI settings.")
+                #endif
             }
 
             let assistantContent: String

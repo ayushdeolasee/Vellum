@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 struct AiPanel: View {
@@ -339,3 +340,5 @@ private final class SubmitTextView: NSTextView {
         placeholder.draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height), withAttributes: attributes)
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

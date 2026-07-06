@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -81,3 +82,5 @@ struct VellumApp: App {
         }
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

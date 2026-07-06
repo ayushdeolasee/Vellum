@@ -2,16 +2,17 @@ name: Vellum
 options:
   bundleIdPrefix: com.vellum
   deploymentTarget:
-    macOS: "26.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: minimal
-    MACOSX_DEPLOYMENT_TARGET: "26.0"
-    CODE_SIGN_IDENTITY: "-"
-    CODE_SIGNING_REQUIRED: "NO"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 9DCG97VASG
     DEAD_CODE_STRIPPING: "YES"
+    TARGETED_DEVICE_FAMILY: "2"  # iPad only
 schemes:
   Vellum:
     build:
@@ -26,29 +27,33 @@ schemes:
 targets:
   VellumTests:
     type: bundle.unit-test
-    platform: macOS
+    platform: iOS
     sources:
       - path: Tests
     dependencies:
       - target: Vellum
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.tests
         GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Vellum
         BUNDLE_LOADER: $(TEST_HOST)
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum
   Vellum:
     type: application
-    platform: macOS
+    platform: iOS
     sources:
       - path: Vellum
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/Info-iOS.plist"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
-        INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        ENABLE_HARDENED_RUNTIME: "NO"
-        ENABLE_APP_SANDBOX: "NO"
+        TARGETED_DEVICE_FAMILY: "2"
         GENERATE_INFOPLIST_FILE: "NO"
-        INFOPLIST_FILE: Vellum/Resources/Info.plist
+        INFOPLIST_FILE: Vellum/Resources/Info-iOS.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: "NO"
+        SUPPORTS_MACCATALYST: "NO"

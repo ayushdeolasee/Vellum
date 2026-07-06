@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 // Overlay positioning glue over PDFView page coordinates: places per-page
@@ -106,24 +107,7 @@ struct PdfOverlayStack: View {
     }
 }
 
-/// Positions content so its bottom-center sits at `point` — the CSS
-/// `translate(-50%, -100%)` used by both popovers.
-struct AnchoredAbove<Content: View>: View {
-    var point: CGPoint
-    @ViewBuilder var content: () -> Content
-
-    @State private var size: CGSize = .zero
-
-    var body: some View {
-        content()
-            .onGeometryChange(for: CGSize.self) { proxy in
-                proxy.size
-            } action: { newSize in
-                size = newSize
-            }
-            .offset(x: point.x - size.width / 2, y: point.y - size.height)
-    }
-}
+// AnchoredAbove moved to PdfViewerTypes.swift (cross-platform).
 
 /// Right-click context menu: single "Add note here" row.
 struct PdfContextMenuView: View {
@@ -159,3 +143,5 @@ struct PdfContextMenuView: View {
         .fixedSize()
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

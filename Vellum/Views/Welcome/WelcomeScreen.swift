@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -530,3 +531,5 @@ private struct LibraryRow: View {
     .preferredColorScheme(.dark)
     .tint(ThemePalette.dark.primary)
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

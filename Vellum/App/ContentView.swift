@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -334,3 +335,5 @@ private struct AutosaveIdentity: Hashable {
     var path: String?
 }
 
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

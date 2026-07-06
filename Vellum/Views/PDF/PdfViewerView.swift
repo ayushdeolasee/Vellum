@@ -1,3 +1,4 @@
+#if os(macOS)
 import PDFKit
 import SwiftUI
 
@@ -166,3 +167,5 @@ struct PdfViewerView: View {
         loadState = .idle
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

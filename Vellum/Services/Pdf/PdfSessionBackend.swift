@@ -99,6 +99,42 @@ enum PdfDocumentLoader {
     }
 }
 
+// MARK: - Shared serialization gate
+
+/// The single serialization point for EVERY on-disk mutation of a Vellum PDF —
+/// annotation create/update/delete, metadata, bookmark increments, and Apple
+/// Pencil ink writes. Each of those is a full read-modify-write (parse the whole
+/// document, mutate, re-serialize via `PDFDocument.dataRepresentation()`, atomic
+/// rename), so two writers to the same file that interleaved would clobber each
+/// other's rewrite (the classic lost update). Funnelling them all through one
+/// actor makes the writes strictly sequential and — because actors run on the
+/// cooperative pool, never the main thread — keeps the MainActor responsive
+/// while a textbook-size document is being rewritten.
+///
+/// The bodies are `@Sendable` synchronous closures: they construct and consume
+/// the non-Sendable `CGPDFDocument`/`PDFDocument` values entirely inside
+/// themselves, so only Sendable values (paths, `Data`, model structs) ever cross
+/// the actor boundary.
+actor PdfFileGate {
+    static let shared = PdfFileGate()
+
+    /// Run one mutating file operation to completion before the next begins.
+    func perform<T: Sendable>(_ body: @Sendable () throws -> T) rethrows -> T {
+        try body()
+    }
+}
+
+/// Reads run OFF the gate, detached from the MainActor. The atomic-rename write
+/// path means a reader always observes either the complete previous file or the
+/// complete next one — never a torn write — so reads need no serialization with
+/// writers and can proceed concurrently, which matters because the sidebar
+/// re-reads annotations on every annotations-updated notification.
+private func offMainRead<T: Sendable>(
+    _ body: @Sendable @escaping () throws -> T
+) async throws -> T {
+    try await Task.detached(priority: .userInitiated, operation: body).value
+}
+
 // MARK: - Session
 
 @MainActor
@@ -120,11 +156,8 @@ final class PdfDocumentSession: DocumentSession {
 
     /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
     func readPdfBytes() async throws -> Data {
-        do {
-            return try Data(contentsOf: URL(fileURLWithPath: path))
-        } catch {
-            throw SessionServiceError.io("Failed to read PDF at \(path): \(error.localizedDescription)")
-        }
+        let path = self.path
+        return try await offMainRead { try Self.readBytes(path: path) }
     }
 
     // MARK: Annotations
@@ -132,6 +165,49 @@ final class PdfDocumentSession: DocumentSession {
     /// get_annotations: every supported page annotation plus outline bookmarks,
     /// sorted by page_number then created_at (string compare, stable).
     func annotations(pageNumber: Int?) async throws -> [Annotation] {
+        let path = self.path
+        return try await offMainRead { try Self.readAnnotations(path: path, pageNumber: pageNumber) }
+    }
+
+    /// create_annotation: embed a /Highlight or /Text annotation, or divert
+    /// bookmarks to outline creation. Saves the file; returns the full record.
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        let path = self.path
+        return try await PdfFileGate.shared.perform { try Self.performCreate(path: path, input: input) }
+    }
+
+    /// update_annotation: only provided fields change; /M and /VellumUpdatedAt
+    /// always refresh. Returns false when the id is unknown.
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+        let path = self.path
+        return try await PdfFileGate.shared.perform { try Self.performUpdate(path: path, input: input) }
+    }
+
+    /// delete_annotation: outline bookmarks first, then page annotations;
+    /// false when the id is unknown.
+    func deleteAnnotation(id: String) async throws -> Bool {
+        let path = self.path
+        return try await PdfFileGate.shared.perform { try Self.performDelete(path: path, id: id) }
+    }
+
+    /// set_metadata: `page_count` is ignored; everything else lands in the
+    /// Info dictionary and rewrites the file.
+    func setMetadata(key: String, value: String) async throws {
+        let path = self.path
+        try await PdfFileGate.shared.perform { try Self.performSetMetadata(path: path, key: key, value: value) }
+    }
+
+    // MARK: Off-main implementations
+
+    nonisolated static func readBytes(path: String) throws -> Data {
+        do {
+            return try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw SessionServiceError.io("Failed to read PDF at \(path): \(error.localizedDescription)")
+        }
+    }
+
+    nonisolated static func readAnnotations(path: String, pageNumber: Int?) throws -> [Annotation] {
         let document = try PdfDocumentLoader.loadRaw(path: path)
         var annotations: [Annotation] = []
 
@@ -165,20 +241,20 @@ final class PdfDocumentSession: DocumentSession {
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
     /// bookmarks to outline creation. Saves the file; returns the full record.
-    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+    nonisolated static func performCreate(path: String, input: CreateAnnotationInput) throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard input.pageNumber >= 1, input.pageNumber <= raw.numberOfPages else {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
 
-        let id = UUID().uuidString.lowercased()
-        let now = PdfDates.rfc3339Now()
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = input.createdAt ?? PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
                 normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
-            try saveThroughPdfKit(patched)
+            try saveThroughPdfKit(patched, path: path)
             return Annotation(
                 id: id,
                 type: .bookmark,
@@ -219,7 +295,7 @@ final class PdfDocumentSession: DocumentSession {
     /// included; un-NM'd ones get stamped with their derived id). Never
     /// matches outline bookmarks. Only provided fields change; /M and
     /// /VellumUpdatedAt always refresh.
-    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+    nonisolated static func performUpdate(path: String, input: UpdateAnnotationInput) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
@@ -255,7 +331,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
-    func deleteAnnotation(id: String) async throws -> Bool {
+    nonisolated static func performDelete(path: String, id: String) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
@@ -263,7 +339,7 @@ final class PdfDocumentSession: DocumentSession {
             guard let patched = try PdfBookmarks.deleteBookmarkIncrement(normalizedData: normalized, id: id) else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try saveThroughPdfKit(patched, path: path)
             return true
         }
 
@@ -288,7 +364,7 @@ final class PdfDocumentSession: DocumentSession {
             else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try saveThroughPdfKit(patched, path: path)
             return true
         }
 
@@ -300,12 +376,12 @@ final class PdfDocumentSession: DocumentSession {
 
     /// set_metadata: `page_count` is ignored; everything else lands in the
     /// Info dictionary and rewrites the file.
-    func setMetadata(key: String, value: String) async throws {
+    nonisolated static func performSetMetadata(path: String, key: String, value: String) throws {
         if key == "page_count" { return }
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)
         let patched = try PdfMetadata.setMetadataIncrement(normalizedData: normalized, key: key, value: value)
-        try saveThroughPdfKit(patched)
+        try saveThroughPdfKit(patched, path: path)
     }
 
     // MARK: Helpers
@@ -318,7 +394,7 @@ final class PdfDocumentSession: DocumentSession {
     /// array, which omits slots PDFKit cannot instantiate (null / non-dictionary
     /// entries). A separate cursor into `page.annotations` advances only for
     /// slots CGPDF resolves to a dictionary, so both arrays stay aligned.
-    static func findAnnotation(
+    nonisolated static func findAnnotation(
         id: String, in document: PDFDocument, raw: CGPDFDocument
     ) -> (pageIndex: Int, annotation: PDFAnnotation)? {
         for pageIndex in 0..<document.pageCount {
@@ -349,7 +425,7 @@ final class PdfDocumentSession: DocumentSession {
     /// raw /Annots slots are misaligned. `normalizedData` must be
     /// PDFKit-serializer output (it preserves /Annots slot order, so the
     /// derived-id domain carries over).
-    private static func deleteAnnotationIncrement(
+    nonisolated private static func deleteAnnotationIncrement(
         normalizedData: Data, id: String, pageNumber: Int
     ) throws -> Data? {
         guard let cg = PdfDocumentLoader.cgDocument(from: normalizedData),
@@ -384,7 +460,7 @@ final class PdfDocumentSession: DocumentSession {
         return increment.appended()
     }
 
-    private func serialize(_ document: PDFDocument) throws -> Data {
+    nonisolated private static func serialize(_ document: PDFDocument) throws -> Data {
         guard let data = document.dataRepresentation() else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit produced no data")
         }
@@ -393,7 +469,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
-    private func saveThroughPdfKit(_ patchedData: Data) throws {
+    nonisolated private static func saveThroughPdfKit(_ patchedData: Data, path: String) throws {
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }

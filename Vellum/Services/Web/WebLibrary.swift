@@ -65,10 +65,16 @@ enum WebLibrary {
 
     /// The app-data dir the Rust app used: `~/Library/Application Support/<bundle id>`.
     static var appDataDir: URL {
-        let base = FileManager.default.urls(
+        let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+        ).first
+        #if os(macOS)
+        let base = applicationSupport ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
+        #else
+        // iOS always provides an in-container Application Support directory.
+        let base = applicationSupport ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        #endif
         let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"
         return base.appendingPathComponent(bundleId, isDirectory: true)
     }

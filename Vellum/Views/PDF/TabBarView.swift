@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -201,3 +202,5 @@ private final class MiddleClickNSView: NSView {
     // No deinit cleanup needed: viewDidMoveToWindow(window == nil) removes the
     // monitor when the tab leaves the hierarchy, before deallocation.
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

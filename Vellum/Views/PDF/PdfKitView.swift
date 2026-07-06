@@ -1,3 +1,4 @@
+#if os(macOS)
 import PDFKit
 import SwiftUI
 
@@ -286,3 +287,5 @@ struct PdfKitView: NSViewRepresentable {
         }
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS
