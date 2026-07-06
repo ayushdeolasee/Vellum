@@ -23,6 +23,30 @@ enum InkPalette {
     static let highlighterColors: [Color] = HIGHLIGHT_COLORS.map { Color(hex: $0.value) }
 }
 
+/// What a double-tap on the Apple Pencil does. The user picks this in Settings
+/// (it overrides the system-wide Pencil preference, which iPadOS otherwise
+/// reserves for its own tools). Persisted as a raw string in UserDefaults.
+enum PencilDoubleTapAction: String, CaseIterable, Sendable {
+    /// Toggle the eraser: switch to it, or back to the previous tool if already erasing.
+    case eraser
+    /// Switch to the previously used tool (e.g. flip between pen and highlighter).
+    case lastTool
+
+    static let defaultsKey = "pencilDoubleTapAction"
+
+    static func current() -> PencilDoubleTapAction {
+        UserDefaults.standard.string(forKey: defaultsKey)
+            .flatMap(PencilDoubleTapAction.init(rawValue:)) ?? .eraser
+    }
+
+    var label: String {
+        switch self {
+        case .eraser: "Switch to eraser"
+        case .lastTool: "Switch to last tool"
+        }
+    }
+}
+
 /// Eraser behavior: `.pixel` (bitmap) erases only the ink under the pixels the
 /// eraser passes over; `.object` (vector) erases an entire stroke as soon as
 /// the eraser touches any point on it — GoodNotes calls these "Pixel" and
@@ -136,14 +160,14 @@ final class InkController_iOS {
         return currentCanvas?.undoManager?.canRedo ?? false
     }
 
-    /// Apple Pencil double-tap: honor the system preference — flip to the
-    /// previous tool, or toggle the eraser (also the fallback behavior).
+    /// Apple Pencil double-tap: follow the user's in-app choice (Settings ▸
+    /// Pencil), which overrides the system-wide preference iPadOS reports.
     func pencilDoubleTap(preferredAction: UIPencilPreferredAction) {
-        switch preferredAction {
-        case .switchPrevious:
-            tool = previousTool
-        default:
+        switch PencilDoubleTapAction.current() {
+        case .eraser:
             tool = tool == .eraser ? previousTool : .eraser
+        case .lastTool:
+            tool = previousTool
         }
     }
 

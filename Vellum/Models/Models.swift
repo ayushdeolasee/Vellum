@@ -73,6 +73,11 @@ struct CreateAnnotationInput: Sendable {
     var color: String?
     var content: String?
     var positionData: PositionData?
+    /// Optional caller-supplied identity so the UI can render an annotation
+    /// optimistically (before the disk write finishes) and the persisted record
+    /// carries the same id/timestamp. Nil lets the backend generate them.
+    var id: String?
+    var createdAt: String?
 }
 
 struct UpdateAnnotationInput: Sendable {

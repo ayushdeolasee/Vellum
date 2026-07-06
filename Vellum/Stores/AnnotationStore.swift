@@ -186,16 +186,63 @@ final class AnnotationStore {
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
-        do {
-            let annotation = try await sessions.createAnnotation(sessionId: sessionId, input: input)
-            if app.activeTabId == sessionId {
-                annotations.append(annotation)
-                return annotation
+
+        // Optimistic create: render the annotation immediately with a stable,
+        // caller-supplied id/timestamp, then persist in the background. Embedding
+        // an annotation is a full read-modify-write of the whole PDF (seconds on
+        // a textbook, off the main thread), so awaiting it before the note/
+        // highlight appeared made the tool look frozen for the whole write.
+        var input = input
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = PdfDates.rfc3339Now()
+        input.id = id
+        input.createdAt = now
+        let optimistic = Annotation(
+            id: id,
+            type: input.type,
+            pageNumber: input.pageNumber,
+            color: input.color ?? resolvedDefaultColor(for: input.type),
+            content: input.content,
+            positionData: input.positionData,
+            createdAt: now,
+            updatedAt: now)
+        annotations.append(optimistic)
+
+        // Persist in the background and return the optimistic record NOW, so the
+        // caller can open the note editor / reset the tool immediately instead of
+        // waiting out the whole-file rewrite.
+        Task { [weak self] in
+            do {
+                let saved = try await self?.sessions.createAnnotation(sessionId: sessionId, input: input)
+                guard let self, let saved, self.app.activeTabId == sessionId else { return }
+                // Reconcile in place (same id, so the SwiftUI row/editor is
+                // preserved) with the authoritative record — but never clobber
+                // note text the user may have typed while the write was in flight.
+                if let index = self.annotations.firstIndex(where: { $0.id == id }) {
+                    if saved.type == .note {
+                        self.annotations[index].color = saved.color
+                        self.annotations[index].positionData = saved.positionData
+                    } else {
+                        self.annotations[index] = saved
+                    }
+                }
+            } catch {
+                NSLog("[annotation-store] Failed to create \(label): \(error)")
+                // Roll back the optimistic insert.
+                if let self, self.app.activeTabId == sessionId {
+                    self.annotations.removeAll { $0.id == id }
+                }
             }
-            return nil
-        } catch {
-            NSLog("[annotation-store] Failed to create \(label): \(error)")
-            return nil
+        }
+        return optimistic
+    }
+
+    /// The default color the backend would assign when the caller passes none,
+    /// so the optimistic record matches what persistence writes.
+    private func resolvedDefaultColor(for type: AnnotationType) -> String? {
+        switch type {
+        case .highlight: return AppStore.storedDefaultHighlightColor()
+        case .note, .bookmark: return nil
         }
     }
 }

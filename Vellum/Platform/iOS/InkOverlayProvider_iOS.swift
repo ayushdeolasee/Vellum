@@ -4,9 +4,49 @@ import PencilKit
 import UIKit
 
 /// A `PKCanvasView` that carries its 1-based page number so the drawing
-/// delegate can route changes back to the controller without a reverse map.
+/// delegate can route changes back to the controller without a reverse map,
+/// and that re-asserts its target rasterization density on every layout pass.
 final class InkPageCanvas_iOS: PKCanvasView {
     var pageNumber = 0
+
+    /// Backing-store density PencilKit should rasterize strokes at (screen scale
+    /// × clamped zoom). The provider sets this on creation and on every zoom.
+    ///
+    /// PencilKit renders through private subviews (`PKTiledView` et al.) that it
+    /// creates — and sometimes *recreates* — lazily (first stroke, resize, window
+    /// changes, a page recycled by the scroll view). A newborn render subview is
+    /// born at the default scale, so if we only pushed the density on zoom/draw
+    /// events, a freshly recreated subview would rasterize grainy (bitmap-upscaled
+    /// past the display) until the next such event. `layoutSubviews` fires exactly
+    /// when those subviews are inserted/relaid, so re-asserting here closes that
+    /// window and keeps ink crisp through PencilKit's whole view lifecycle.
+    var targetContentScale: CGFloat = UIScreen.main.scale {
+        didSet {
+            guard abs(oldValue - targetContentScale) > 0.001 else { return }
+            applyContentScaleToTree()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        applyContentScaleToTree()
+    }
+
+    /// Push `targetContentScale` onto the whole view subtree. Only the sanctioned
+    /// `contentScaleFactor` is touched — UIKit keeps each view's
+    /// `layer.contentsScale` in sync and re-renders. (Poking the private ink
+    /// layer's `contentsScale` directly instead blanks the strokes.)
+    func applyContentScaleToTree() {
+        applyScale(to: self)
+    }
+
+    private func applyScale(to view: UIView) {
+        if abs(view.contentScaleFactor - targetContentScale) > 0.001 {
+            view.contentScaleFactor = targetContentScale
+            view.setNeedsDisplay()
+        }
+        for sub in view.subviews { applyScale(to: sub) }
+    }
 }
 
 /// PDFKit's sanctioned PencilKit bridge: returns a persistent `PKCanvasView`
@@ -43,9 +83,10 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     /// only the rasterization density — so on-disk PdfInk round-tripping is
     /// unaffected.
     private var pdfScale: CGFloat = 1
-    /// Cap the rasterization density at 3× the base backing store to bound the
-    /// per-canvas memory/GPU cost at extreme zoom (Vellum clamps zoom to 4×).
-    private let maxScaleMultiple: CGFloat = 3
+    /// Cap the rasterization density multiple at the app's max zoom so strokes
+    /// stay crisp across the whole zoom range (below this, ink at high zoom is
+    /// bitmap-upscaled past the display resolution and looks grainy).
+    private let maxScaleMultiple: CGFloat = 4
 
     // MARK: - PDFPageOverlayViewProvider
 
@@ -103,21 +144,13 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     private func applyContentScale(to canvas: PKCanvasView) {
         let base = UIScreen.main.scale
         let target = base * min(max(pdfScale, 1), maxScaleMultiple)
-        setContentScale(target, on: canvas)
-    }
-
-    /// PencilKit renders through a private subview tree; the scale must be pushed
-    /// onto every node, not just the outer `PKCanvasView`, or the ink subview keeps
-    /// rasterizing at the old density. We only touch the sanctioned
-    /// `contentScaleFactor` — UIKit keeps each view's `layer.contentsScale` in sync
-    /// and re-renders. (Poking `layer.contentsScale` directly on PencilKit's
-    /// private ink layer instead blanks the strokes on the next redraw.)
-    private func setContentScale(_ scale: CGFloat, on view: UIView) {
-        if abs(view.contentScaleFactor - scale) > 0.001 {
-            view.contentScaleFactor = scale
-            view.setNeedsDisplay()
+        // The canvas re-asserts this across PencilKit's whole subview lifecycle
+        // (see `InkPageCanvas_iOS.targetContentScale`); `didSet` pushes it onto
+        // the current subtree immediately.
+        if let canvas = canvas as? InkPageCanvas_iOS {
+            canvas.targetContentScale = target
+            canvas.applyContentScaleToTree()
         }
-        for sub in view.subviews { setContentScale(scale, on: sub) }
     }
 
     // Keep drawings alive when a page scrolls off — the cache retains the canvas
@@ -184,6 +217,11 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
               NSCoder.string(for: canvasView.bounds),
               String(describing: type(of: canvasView.tool)))
         #endif
+        // PencilKit instantiates its stroke-rendering subview lazily on the first
+        // stroke — after `pdfView(_:overlayViewFor:)` already ran — so that subview
+        // is born at the default backing scale. Re-push the target scale now that
+        // it exists (the abs-diff guard makes this a no-op once it's correct).
+        applyContentScale(to: canvasView)
         ink?.drawingChanged(canvasView.drawing, page: canvas.pageNumber)
     }
 

@@ -247,8 +247,8 @@ final class PdfDocumentSession: DocumentSession {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
 
-        let id = UUID().uuidString.lowercased()
-        let now = PdfDates.rfc3339Now()
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = input.createdAt ?? PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
             let normalized = try serialize(document)

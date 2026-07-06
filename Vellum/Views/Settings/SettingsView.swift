@@ -74,6 +74,7 @@ private struct ReadingSettingsTab: View {
     @Environment(AppStore.self) private var appStore
     #if os(iOS)
     @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
+    @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
     #endif
 
     var body: some View {
@@ -110,6 +111,21 @@ private struct ReadingSettingsTab: View {
                 Text("Gestures")
             } footer: {
                 Text("Double-tap the page with two fingers to add a sticky note at that spot.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Double-tap action", selection: $pencilDoubleTap) {
+                    ForEach(PencilDoubleTapAction.allCases, id: \.rawValue) { action in
+                        Text(action.label).tag(action.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Apple Pencil")
+            } footer: {
+                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -17,6 +17,7 @@
 		18277300524A92AEDAAAEA7E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027E09C0BD7A98F4590A5878 /* ContentView.swift */; };
 		1E7BFBF158342C3E70EAB718 /* PdfChrome_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE14F1472A7451AF57FD04ED /* PdfChrome_iOS.swift */; };
 		1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */; };
+		1F27BEF7A0CFEDADB3836503 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */; };
 		1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4C07C56943274B9E062A70 /* RecentFilesService.swift */; };
 		1FCCAC565DBDC21D62F833FB /* PdfBookmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */; };
 		2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54417DBF142FD33E6B2F6672 /* SettingsView.swift */; };
@@ -170,6 +171,7 @@
 		EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSessionBackend.swift; sourceTree = "<group>"; };
 		EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibrary.swift; sourceTree = "<group>"; };
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
+		FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -374,6 +376,7 @@
 			isa = PBXGroup;
 			children = (
 				89E21441131E7C57CE324E83 /* AppIcon.icns */,
+				FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
 			);
 			path = Resources;
@@ -515,6 +518,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */,
+				1F27BEF7A0CFEDADB3836503 /* Assets.xcassets in Resources */,
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
 				AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */,
 				885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */,

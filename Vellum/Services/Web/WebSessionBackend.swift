@@ -137,15 +137,17 @@ final class WebDocumentSession: DocumentSession {
         case .note: defaultColor = defaultNoteColor
         case .bookmark: defaultColor = nil
         }
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let createdAt = input.createdAt ?? now
         let annotation = Annotation(
-            id: UUID().uuidString.lowercased(),
+            id: id,
             type: input.type,
             pageNumber: input.pageNumber,
             color: input.color ?? defaultColor,
             content: input.content,
             positionData: input.positionData,
-            createdAt: now,
-            updatedAt: now)
+            createdAt: createdAt,
+            updatedAt: createdAt)
         try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
             record.annotations.append(annotation)
         }
