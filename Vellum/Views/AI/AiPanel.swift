@@ -68,8 +68,14 @@ struct AiPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if aiStore.messages.isEmpty { emptyState }
-                    ForEach(aiStore.messages) { message in messageRow(message) }
-                    if aiStore.isThinking { thinkingPill }
+                    ForEach(aiStore.messages) { message in
+                        // The empty streaming placeholder is represented by the
+                        // activity pill below until its first token arrives.
+                        if !(message.id == aiStore.streamingMessageId && message.content.isEmpty) {
+                            messageRow(message)
+                        }
+                    }
+                    if aiStore.isThinking && aiStore.activity != .streaming { activityPill }
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
@@ -77,6 +83,8 @@ struct AiPanel: View {
             }
             .onChange(of: aiStore.messages.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: aiStore.isThinking) { _, _ in scrollToBottom(proxy) }
+            // Streaming appends to a single message, so follow its growing length.
+            .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in scrollToBottom(proxy) }
         }
         .frame(maxHeight: .infinity)
     }
@@ -119,36 +127,99 @@ struct AiPanel: View {
             .foregroundStyle(palette.mutedForeground)
             .padding(.horizontal, 4)
 
-            MarkdownMessage(content: message.content)
-                .font(.system(size: 14))
-                .foregroundStyle(message.role == .user ? palette.primaryForeground : palette.foreground)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: 272, alignment: .leading)
-                .background(
-                    message.role == .user
-                        ? AnyShapeStyle(.tint)
-                        : AnyShapeStyle(.quaternary.opacity(0.45)))
-                .clipShape(UnevenRoundedRectangle(
-                    topLeadingRadius: message.role == .assistant ? Radius.sm : Radius.xl,
-                    bottomLeadingRadius: Radius.xl,
-                    bottomTrailingRadius: Radius.xl,
-                    topTrailingRadius: message.role == .user ? Radius.sm : Radius.xl
-                ))
+            messageBubble(message)
+
+            if message.role == .assistant, !message.content.isEmpty {
+                messageActions(message)
+            }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
-    private var thinkingPill: some View {
+    @ViewBuilder
+    private func messageBubble(_ message: AiMessage) -> some View {
+        Group {
+            if message.role == .assistant {
+                SelectableMessageText(
+                    content: message.content,
+                    color: palette.foreground,
+                    secondary: palette.mutedForeground,
+                    onQuote: { text in
+                        aiStore.addReference(AiReference(kind: .quote(text: text, messageId: message.id)))
+                    }
+                )
+            } else {
+                MarkdownMessage(content: message.content)
+                    .font(.system(size: 14))
+                    .foregroundStyle(palette.primaryForeground)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 272, alignment: .leading)
+        .background(
+            message.role == .user
+                ? AnyShapeStyle(.tint)
+                : AnyShapeStyle(.quaternary.opacity(0.45)))
+        .clipShape(UnevenRoundedRectangle(
+            topLeadingRadius: message.role == .assistant ? Radius.sm : Radius.xl,
+            bottomLeadingRadius: Radius.xl,
+            bottomTrailingRadius: Radius.xl,
+            topTrailingRadius: message.role == .user ? Radius.sm : Radius.xl
+        ))
+    }
+
+    /// Copy / Quote / Add-as-note row under each assistant reply.
+    private func messageActions(_ message: AiMessage) -> some View {
+        HStack(spacing: 2) {
+            IconButton(help: "Copy", action: { copyToPasteboard(message.content) }) {
+                Image(systemName: "doc.on.doc").font(.system(size: 12))
+            }
+            .accessibilityIdentifier("aiMessage.copy")
+
+            IconButton(help: "Quote in reply", action: {
+                aiStore.addReference(AiReference(kind: .quote(text: message.content, messageId: message.id)))
+            }) {
+                Image(systemName: "quote.bubble").font(.system(size: 12))
+            }
+            .accessibilityIdentifier("aiMessage.quote")
+
+            IconButton(help: "Add as note — click on the page to place it", action: {
+                appStore.beginNoteWithContent(message.content)
+            }) {
+                Image(systemName: "note.text.badge.plus").font(.system(size: 12))
+            }
+            .accessibilityIdentifier("aiMessage.addNote")
+        }
+        .foregroundStyle(palette.mutedForeground)
+        .padding(.leading, 2)
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private var activityPill: some View {
         HStack(spacing: 8) {
             Image(systemName: "sparkles").font(.system(size: 12)).foregroundStyle(palette.primary)
-            Text("Thinking…")
+            Text(activityLabel)
+            AnimatedDots()
         }
         .font(.system(size: 12))
         .foregroundStyle(palette.mutedForeground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: Radius.xl))
+        .transition(.opacity)
+    }
+
+    private var activityLabel: String {
+        switch aiStore.activity {
+        case .idle, .streaming, .thinking: return "Thinking"
+        case .reading: return "Reading document"
+        case .tool(let summary): return summary
+        }
     }
 
     private func errorBanner(_ error: String) -> some View {
@@ -164,7 +235,24 @@ struct AiPanel: View {
     }
 
     private var composer: some View {
+        VStack(spacing: 6) {
+            if !aiStore.composerReferences.isEmpty {
+                ReferenceChipRow(
+                    references: aiStore.composerReferences,
+                    onRemove: { aiStore.removeReference(id: $0) }
+                )
+            }
+            composerControls
+        }
+        .padding(6)
+        .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+        .padding(12)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var composerControls: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            attachMenu
             ComposerTextView(text: $input, placeholder: "Ask about this document…", onSubmit: submit)
                 .frame(minHeight: 40, maxHeight: 64)
             if aiStore.settings.voiceMode == .pushToTalk {
@@ -193,22 +281,66 @@ struct AiPanel: View {
                     .foregroundStyle(palette.primaryForeground)
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking)
-            .opacity(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiStore.isThinking ? 0.4 : 1)
+            .disabled(!canSend)
+            .opacity(canSend ? 1 : 0.4)
             .help("Send message")
             .accessibilityLabel("Send message")
             .accessibilityIdentifier("aiPanel.send")
         }
-        .padding(6)
-        .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
-        .padding(12)
-        .overlay(alignment: .top) { Divider() }
+    }
+
+    /// "+" attach menu: full current-page snapshot or a drag-to-crop region.
+    private var attachMenu: some View {
+        Menu {
+            Button {
+                attachCurrentPage()
+            } label: {
+                Label("Attach current page", systemImage: "doc.richtext")
+            }
+            Button {
+                appStore.setMode(.snapshotRegion)
+            } label: {
+                Label("Snapshot region…", systemImage: "square.dashed")
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 15))
+                .foregroundStyle(palette.mutedForeground)
+                .frame(width: 36, height: 36)
+                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(appStore.document?.kind != .pdf)
+        .help("Attach page or region")
+        .accessibilityIdentifier("aiPanel.attach")
+    }
+
+    private func attachCurrentPage() {
+        let page = appStore.currentPage
+        Task {
+            guard let image = await aiStore.capturePageImageHandler?(page) else { return }
+            aiStore.addReference(AiReference(kind: .pageSnapshot(image: image, page: page)))
+        }
+    }
+
+    private var canSend: Bool {
+        guard !aiStore.isThinking else { return false }
+        return !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !aiStore.composerReferences.isEmpty
     }
 
     private func submit() {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !aiStore.isThinking else { return }
+        let references = aiStore.composerReferences
+        guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        // With only references attached, send a light default prompt so the
+        // request is non-empty and the model knows to act on them.
+        let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
         input = ""
+        aiStore.clearComposerReferences()
         // Capture the session and context synchronously, before any await, so
         // a tab switch during image capture can't send to the wrong tab
         // (mirrors the original's atomic submit -> sendMessage state read).
@@ -227,9 +359,10 @@ struct AiPanel: View {
                 currentPage: currentPage,
                 visiblePages: visiblePages,
                 annotations: annotations,
-                currentPageImage: image
+                currentPageImage: image,
+                references: references
             )
-            await aiStore.sendMessage(trimmed, context: context)
+            await aiStore.sendMessage(messageText, context: context)
         }
         // Hand the task to the store so clearing the conversation can cancel it.
         aiStore.registerSendTask(task)
@@ -271,6 +404,23 @@ struct AiPanel: View {
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
+    }
+}
+
+/// Three dots that fade in sequence — the "…" of a thinking indicator.
+private struct AnimatedDots: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.25)) { context in
+            let tick = Int(context.date.timeIntervalSinceReferenceDate * 4) % 3
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .frame(width: 4, height: 4)
+                        .opacity(index == tick ? 1 : 0.3)
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

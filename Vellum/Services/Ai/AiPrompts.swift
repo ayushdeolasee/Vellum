@@ -71,7 +71,12 @@ enum AiPrompts {
             "attached (\($0.width)x\($0.height), \($0.mediaType))"
         } ?? "none"
 
+        let referenced = context.references.map(referenceLine).joined(separator: "\n")
+
         return [
+            "User-referenced context (the user explicitly attached these to this message — prioritize them):",
+            referenced.isEmpty ? "(none)" : referenced,
+            "",
             "Document title: \(context.title ?? "Untitled")",
             "Total pages: \(context.numPages)",
             "Current page: \(context.currentPage)",
@@ -90,6 +95,21 @@ enum AiPrompts {
             "Full PDF text:",
             boundedFullText.isEmpty ? "(text extraction pending)" : boundedFullText,
         ].joined(separator: "\n")
+    }
+
+    private static func referenceLine(_ reference: AiReference) -> String {
+        switch reference.kind {
+        case let .selection(text, page):
+            return "- [selected text, p.\(page)] \(quoted(text))"
+        case let .highlight(text, page):
+            return "- [existing highlight, p.\(page)] \(quoted(text))"
+        case let .region(image, page):
+            return "- [region snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
+        case let .pageSnapshot(image, page):
+            return "- [page snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
+        case let .quote(text, _):
+            return "- [quoted from an earlier assistant reply] \(quoted(text))"
+        }
     }
 
     private static func annotationLine(_ annotation: Annotation) -> String {

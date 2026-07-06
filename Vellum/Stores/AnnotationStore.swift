@@ -80,14 +80,14 @@ final class AnnotationStore {
     func addHighlight(_ input: CreateAnnotationInput) async -> Annotation? {
         var input = input
         input.type = .highlight
-        return await create(input, label: "highlight")
+        return create(input, label: "highlight")
     }
 
     @discardableResult
     func addNote(_ input: CreateAnnotationInput) async -> Annotation? {
         var input = input
         input.type = .note
-        return await create(input, label: "note")
+        return create(input, label: "note")
     }
 
     @discardableResult
@@ -99,7 +99,7 @@ final class AnnotationStore {
             content: nil,
             positionData: positionData
         )
-        return await create(input, label: "bookmark")
+        return create(input, label: "bookmark")
     }
 
     /// Add or remove the bookmark at the current reading position.
@@ -184,18 +184,56 @@ final class AnnotationStore {
         annotations.filter { $0.pageNumber == pageNumber }
     }
 
-    private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
+    /// Optimistic create: render the annotation immediately under a
+    /// client-assigned id, then persist in the background. Persisting a single
+    /// annotation re-serializes the whole PDF (seconds on a large document), so
+    /// waiting for it before showing the note is what made "add note" feel like
+    /// a multi-second hang. The backend writes under the SAME id, so an
+    /// immediate drag/edit targets the right record; a failed write rolls the
+    /// optimistic annotation back.
+    private func create(_ input: CreateAnnotationInput, label: String) -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
-        do {
-            let annotation = try await sessions.createAnnotation(sessionId: sessionId, input: input)
-            if app.activeTabId == sessionId {
-                annotations.append(annotation)
-                return annotation
+        let id = input.id ?? UUID().uuidString.lowercased()
+        var persistInput = input
+        persistInput.id = id
+
+        let now = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+        let optimistic = Annotation(
+            id: id,
+            type: input.type,
+            pageNumber: input.pageNumber,
+            color: input.color ?? defaultColor(for: input.type),
+            content: input.content,
+            positionData: input.positionData,
+            createdAt: now,
+            updatedAt: now)
+        annotations.append(optimistic)
+
+        Task {
+            do {
+                _ = try await sessions.createAnnotation(sessionId: sessionId, input: persistInput)
+            } catch {
+                NSLog("[annotation-store] Failed to create \(label): \(error)")
+                // Roll back the optimistic insert if the write failed and we're
+                // still on the same document.
+                if app.activeTabId == sessionId {
+                    annotations.removeAll { $0.id == id }
+                    if selectedAnnotationId == id { selectedAnnotationId = nil }
+                }
             }
-            return nil
-        } catch {
-            NSLog("[annotation-store] Failed to create \(label): \(error)")
-            return nil
+        }
+        return optimistic
+    }
+
+    /// Default render color for a freshly created annotation, matching the
+    /// backend's own defaults so the optimistic copy looks identical to the
+    /// persisted one (notes carry a fixed amber; highlights use the user's
+    /// configured default; bookmarks have no color).
+    private func defaultColor(for type: AnnotationType) -> String? {
+        switch type {
+        case .highlight: return app.defaultHighlightColor
+        case .note: return "#fde68a"
+        case .bookmark: return nil
         }
     }
 }

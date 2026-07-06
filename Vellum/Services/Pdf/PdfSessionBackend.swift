@@ -7,11 +7,21 @@ import CoreGraphics
 // delete annotations, metadata, bytes). A session is just a canonicalized
 // path; like the Rust code, every operation loads the file fresh from disk,
 // mutates, and rewrites it atomically.
+//
+// All disk I/O + PDFKit parse/serialize/rewrite runs on a dedicated background
+// `PdfDocumentIO` actor (never the main thread) and is serialized per document.
+// The Tauri backend got this for free from a background command thread + a
+// per-file lock; the earlier port pinned everything to @MainActor, so every
+// annotation move/edit/read blocked the UI for the full read+parse+serialize+
+// write cost (~15s on a large PDF) and stacked multiple full-file copies in
+// memory. The @MainActor `PdfDocumentSession` is now a thin facade that hops to
+// the actor, releasing the main thread for the duration of the work.
 
 @MainActor
 final class PdfSessionBackend {
     /// open_file: validate the extension, canonicalize, require a file, parse,
-    /// and read (title, page_count, last_page).
+    /// and read (title, page_count, last_page). The parse runs off the main
+    /// thread on the session's IO actor.
     func open(path: String, sessionId: String) async throws -> PdfDocumentSession {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         guard ext == "pdf" else {
@@ -25,17 +35,9 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
         }
 
-        let document = try PdfDocumentLoader.loadRaw(path: canonical)
-        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: canonical)
-
-        return PdfDocumentSession(
-            path: canonical,
-            info: DocumentInfo(
-                kind: .pdf,
-                pdfPath: canonical,
-                title: title,
-                pageCount: pageCount,
-                lastPage: lastPage))
+        let io = PdfDocumentIO(path: canonical)
+        let info = try await io.open()
+        return PdfDocumentSession(io: io, path: canonical, info: info)
     }
 }
 
@@ -99,14 +101,20 @@ enum PdfDocumentLoader {
     }
 }
 
-// MARK: - Session
+// MARK: - Session facade
 
+/// Thin @MainActor facade satisfying the @MainActor `DocumentSession` protocol.
+/// Holds only the Sendable `DocumentInfo`; every operation delegates to the
+/// background `PdfDocumentIO` actor, so the `await` performs a real actor hop
+/// that releases the main thread while the file work runs.
 @MainActor
 final class PdfDocumentSession: DocumentSession {
     let path: String
     let info: DocumentInfo
+    private let io: PdfDocumentIO
 
-    init(path: String, info: DocumentInfo) {
+    init(io: PdfDocumentIO, path: String, info: DocumentInfo) {
+        self.io = io
         self.path = path
         self.info = info
     }
@@ -118,8 +126,58 @@ final class PdfDocumentSession: DocumentSession {
     /// close_session runs the same no-op sync; the manager drops the session.
     func close() async throws {}
 
+    func readPdfBytes() async throws -> Data { try await io.readPdfBytes() }
+
+    func annotations(pageNumber: Int?) async throws -> [Annotation] {
+        try await io.annotations(pageNumber: pageNumber)
+    }
+
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        try await io.createAnnotation(input)
+    }
+
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+        try await io.updateAnnotation(input)
+    }
+
+    func deleteAnnotation(id: String) async throws -> Bool {
+        try await io.deleteAnnotation(id: id)
+    }
+
+    func setMetadata(key: String, value: String) async throws {
+        try await io.setMetadata(key: key, value: value)
+    }
+}
+
+// MARK: - Background file engine
+
+/// Owns all PDF disk I/O and PDFKit/CGPDF parse-serialize-rewrite work for one
+/// open document. Being an `actor`, its calls run off the main thread on the
+/// cooperative pool AND are serialized per instance, so overlapping mutations
+/// to the same file can't interleave or clobber each other. PDFDocument /
+/// CGPDFDocument values stay local to each call and never cross the actor
+/// boundary, so no Sendable guarantees are required of them.
+actor PdfDocumentIO {
+    let path: String
+
+    init(path: String) {
+        self.path = path
+    }
+
+    /// Parse a freshly opened document and read (title, page_count, last_page).
+    func open() throws -> DocumentInfo {
+        let document = try PdfDocumentLoader.loadRaw(path: path)
+        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: path)
+        return DocumentInfo(
+            kind: .pdf,
+            pdfPath: path,
+            title: title,
+            pageCount: pageCount,
+            lastPage: lastPage)
+    }
+
     /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
-    func readPdfBytes() async throws -> Data {
+    func readPdfBytes() throws -> Data {
         do {
             return try Data(contentsOf: URL(fileURLWithPath: path))
         } catch {
@@ -131,7 +189,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// get_annotations: every supported page annotation plus outline bookmarks,
     /// sorted by page_number then created_at (string compare, stable).
-    func annotations(pageNumber: Int?) async throws -> [Annotation] {
+    func annotations(pageNumber: Int?) throws -> [Annotation] {
         let document = try PdfDocumentLoader.loadRaw(path: path)
         var annotations: [Annotation] = []
 
@@ -165,13 +223,13 @@ final class PdfDocumentSession: DocumentSession {
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
     /// bookmarks to outline creation. Saves the file; returns the full record.
-    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+    func createAnnotation(_ input: CreateAnnotationInput) throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard input.pageNumber >= 1, input.pageNumber <= raw.numberOfPages else {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
 
-        let id = UUID().uuidString.lowercased()
+        let id = input.id ?? UUID().uuidString.lowercased()
         let now = PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
@@ -219,7 +277,7 @@ final class PdfDocumentSession: DocumentSession {
     /// included; un-NM'd ones get stamped with their derived id). Never
     /// matches outline bookmarks. Only provided fields change; /M and
     /// /VellumUpdatedAt always refresh.
-    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+    func updateAnnotation(_ input: UpdateAnnotationInput) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
@@ -255,7 +313,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
-    func deleteAnnotation(id: String) async throws -> Bool {
+    func deleteAnnotation(id: String) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
@@ -300,7 +358,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// set_metadata: `page_count` is ignored; everything else lands in the
     /// Info dictionary and rewrites the file.
-    func setMetadata(key: String, value: String) async throws {
+    func setMetadata(key: String, value: String) throws {
         if key == "page_count" { return }
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)

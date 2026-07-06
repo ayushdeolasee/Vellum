@@ -1106,7 +1106,17 @@ enum WebContentScript {
       case "set-mode": {
         noteMode = d.mode === "note";
         try {
-          document.documentElement.style.cursor = noteMode ? "crosshair" : "";
+          // Custom "+" cursor (matches the PDF note tool): a bold plus with a
+          // white halo so it reads on any background, hotspot at the crossing.
+          var noteCursorSvg =
+            "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'>" +
+            "<line x1='12' y1='5' x2='12' y2='19' stroke='white' stroke-width='5' stroke-linecap='round'/>" +
+            "<line x1='5' y1='12' x2='19' y2='12' stroke='white' stroke-width='5' stroke-linecap='round'/>" +
+            "<line x1='12' y1='5' x2='12' y2='19' stroke='black' stroke-width='2.5' stroke-linecap='round'/>" +
+            "<line x1='5' y1='12' x2='19' y2='12' stroke='black' stroke-width='2.5' stroke-linecap='round'/></svg>";
+          var noteCursor =
+            "url(\"data:image/svg+xml," + encodeURIComponent(noteCursorSvg) + "\") 12 12, crosshair";
+          document.documentElement.style.cursor = noteMode ? noteCursor : "";
         } catch (err) {
           /* ignore */
         }

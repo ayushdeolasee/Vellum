@@ -2,20 +2,23 @@ import Foundation
 
 @MainActor
 final class OpenAIClient {
+    /// Streams a reply from the Responses API (`stream: true`). Text deltas are
+    /// forwarded live; function-call items run the tool loop between turns.
     func generate(
         apiKey: String,
         model: String,
         systemPrompt: String,
         userPrompt: String,
-        image: AiPageImageSnapshot?,
+        images: [AiPageImageSnapshot],
         sessionIdAtStart: String,
-        toolEngine: AiToolEngine
+        toolEngine: AiToolEngine,
+        onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
         guard let url = URL(string: "https://api.openai.com/v1/responses") else {
             throw AiClientError.message("Invalid OpenAI endpoint.")
         }
         var content: [[String: Any]] = [["type": "input_text", "text": userPrompt]]
-        if let image, !image.base64Data.isEmpty {
+        for image in images where !image.base64Data.isEmpty {
             content.append([
                 "type": "input_image",
                 "image_url": "data:\(image.mediaType);base64,\(image.base64Data)",
@@ -24,6 +27,8 @@ final class OpenAIClient {
         var input: [[String: Any]] = [["role": "user", "content": content]]
         var actionResults: [String] = []
 
+        onEvent(.status("Thinking"))
+
         for _ in 0..<6 {
             let body: [String: Any] = [
                 "model": model,
@@ -31,19 +36,42 @@ final class OpenAIClient {
                 "input": input,
                 "tools": Self.functionTools,
                 "store": false,
+                "stream": true,
             ]
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let data = try await sendWithRetry(request)
-            let root = try Self.jsonObject(data)
-            guard let output = root["output"] as? [[String: Any]] else {
-                throw AiClientError.message(Self.providerMessage(root, fallback: "OpenAI returned an invalid response."))
+
+            let bytes = try await openStream(request)
+
+            var text = ""
+            var calls: [[String: Any]] = []
+            for try await payload in SSE.dataPayloads(bytes) {
+                guard let object = Self.jsonObjectOrNil(payload),
+                      let type = object["type"] as? String else { continue }
+                switch type {
+                case "response.output_text.delta":
+                    if let delta = object["delta"] as? String, !delta.isEmpty {
+                        text += delta
+                        onEvent(.textDelta(delta))
+                    }
+                case "response.output_item.done":
+                    if let item = object["item"] as? [String: Any],
+                       item["type"] as? String == "function_call" {
+                        calls.append(item)
+                    }
+                case "response.failed", "error":
+                    let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
+                        ?? (object["message"] as? String)
+                    throw AiClientError.message(message ?? "OpenAI streaming failed.")
+                default:
+                    break
+                }
             }
-            let text = Self.outputText(from: output)
-            let calls = output.filter { $0["type"] as? String == "function_call" }
+
             if calls.isEmpty {
                 return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
@@ -60,27 +88,31 @@ final class OpenAIClient {
                     "name": name,
                     "arguments": argumentsText,
                 ])
+                onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
                 let result = await toolEngine.run(
                     action,
                     sessionIdAtStart: sessionIdAtStart,
                     actionCount: actionResults.count
                 )
                 actionResults.append(result)
+                onEvent(.toolFinished(result: result))
                 input.append(["type": "function_call_output", "call_id": callId, "output": result])
             }
+            onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
-    private func sendWithRetry(_ request: URLRequest) async throws -> Data {
+    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw AiClientError.message("OpenAI returned an invalid HTTP response.")
                 }
-                if (200..<300).contains(http.statusCode) { return data }
+                if (200..<300).contains(http.statusCode) { return bytes }
+                let data = try await Self.drain(bytes)
                 let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
                 let error = AiClientError.message(message.isEmpty ? "OpenAI request failed with status \(http.statusCode)." : message)
                 if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
@@ -96,6 +128,12 @@ final class OpenAIClient {
         throw lastError ?? AiClientError.message("OpenAI request failed.")
     }
 
+    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes { data.append(byte) }
+        return data
+    }
+
     private static func jsonObject(_ data: Data) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AiClientError.message("OpenAI returned invalid JSON.")
@@ -103,19 +141,13 @@ final class OpenAIClient {
         return object
     }
 
-    private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
-        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
+    private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
-    private static func outputText(from output: [[String: Any]]) -> String {
-        output.compactMap { item -> String? in
-            guard item["type"] as? String == "message",
-                  let content = item["content"] as? [[String: Any]] else { return nil }
-            return content.compactMap { part in
-                guard part["type"] as? String == "output_text" else { return nil }
-                return part["text"] as? String
-            }.joined()
-        }.joined()
+    private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
+        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
     }
 
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {

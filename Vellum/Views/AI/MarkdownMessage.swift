@@ -97,7 +97,9 @@ struct MarkdownMessage: View {
     }
 }
 
-private enum MarkdownBlock {
+// Exposed (not private) so the AppKit selectable renderer in
+// SelectableMessageText.swift can reuse the exact same block parsing.
+enum MarkdownBlock: Equatable {
     case heading(Int, String)
     case paragraph(String)
     case unordered([String])
@@ -107,7 +109,7 @@ private enum MarkdownBlock {
     case table(String)
 }
 
-private enum MarkdownParser {
+enum MarkdownParser {
     static func parse(_ source: String) -> [MarkdownBlock] {
         let lines = source.components(separatedBy: .newlines)
         var blocks: [MarkdownBlock] = []
