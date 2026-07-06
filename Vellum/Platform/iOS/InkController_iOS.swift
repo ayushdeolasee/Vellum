@@ -98,13 +98,19 @@ final class InkController_iOS {
                 // Focused inking: collapse the inspector sidebar so the full
                 // tool palette fits the document column (it overflows the
                 // narrowed column otherwise). Restore the prior state on Done.
-                sidebarWasOpen = app?.sidebarOpen ?? false
-                app?.sidebarOpen = false
+                // Opt-out via the "auto-hide sidebar while inking" setting.
+                if Self.autoHideSidebarWhileInking {
+                    sidebarWasOpen = app?.sidebarOpen ?? false
+                    app?.sidebarOpen = false
+                }
             } else {
                 // Turning ink off can't lose the last stroke: write any pending
                 // debounced ink right now (the canvas keeps rendering regardless).
                 flushPendingInk()
-                if sidebarWasOpen { app?.sidebarOpen = true }
+                if sidebarWasOpen {
+                    sidebarWasOpen = false
+                    app?.sidebarOpen = true
+                }
             }
             inkProvider.refreshPolicies()
         }
@@ -112,6 +118,14 @@ final class InkController_iOS {
     /// Whether the inspector sidebar was open when inking began, so Done can
     /// restore it (inking auto-collapses it for a full-width palette).
     @ObservationIgnored private var sidebarWasOpen = false
+
+    /// User preference: whether entering Pencil ink mode auto-collapses the
+    /// inspector sidebar to give the tool palette the full document width.
+    /// Defaults to on. Persisted under `autoHideSidebarKey`.
+    static let autoHideSidebarKey = "autoHideSidebarWhileInking"
+    static var autoHideSidebarWhileInking: Bool {
+        UserDefaults.standard.object(forKey: autoHideSidebarKey) as? Bool ?? true
+    }
     var tool: InkTool = .pen {
         didSet {
             guard oldValue != tool else { return }

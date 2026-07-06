@@ -75,6 +75,7 @@ private struct ReadingSettingsTab: View {
     #if os(iOS)
     @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
     @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
+    @AppStorage(InkController_iOS.autoHideSidebarKey) private var autoHideSidebarWhileInking = true
     #endif
 
     var body: some View {
@@ -122,10 +123,11 @@ private struct ReadingSettingsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                Toggle("Auto-hide sidebar while inking", isOn: $autoHideSidebarWhileInking)
             } header: {
                 Text("Apple Pencil")
             } footer: {
-                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool.")
+                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool. Auto-hiding the sidebar collapses the annotation panel so the ink tools get the full page width.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
