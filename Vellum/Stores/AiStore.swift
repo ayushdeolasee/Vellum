@@ -81,6 +81,10 @@ final class AiStore {
     private(set) var messages: [AiMessage] = []
     private(set) var isThinking = false
     private(set) var error: String?
+    /// The in-flight request task (image capture + sendMessage), held so an
+    /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
+    /// interruptible.
+    private var sendTask: Task<Void, Never>?
     /// 1-indexed page → whitespace-normalized extracted text.
     private(set) var pageTexts: [Int: String] = [:]
     private(set) var settings = AiSettings()
@@ -138,8 +142,23 @@ final class AiStore {
         error = nil
     }
 
+    /// Register the current in-flight request task so it can be cancelled.
+    func registerSendTask(_ task: Task<Void, Never>?) {
+        sendTask = task
+    }
+
+    /// Cancel any in-flight request and stop the thinking indicator.
+    func cancelActiveRequest() {
+        sendTask?.cancel()
+        sendTask = nil
+        isThinking = false
+    }
+
     /// Save an empty list (deleting the document's stored entry) and clear state.
+    /// Also cancels any in-flight request so a completing response can't
+    /// re-append the messages we just cleared.
     func clearConversation() {
+        cancelActiveRequest()
         AiPersistence.saveConversation(for: app?.document, messages: [])
         messages = []
         error = nil
@@ -266,6 +285,10 @@ final class AiStore {
                 )
             }
 
+            // Cancelled mid-request (e.g. the user cleared the conversation):
+            // drop the result without persisting or re-appending messages.
+            guard !Task.isCancelled else { return }
+
             let assistantContent: String
             if result.actionResults.isEmpty {
                 assistantContent = result.reply
@@ -284,6 +307,10 @@ final class AiStore {
                 isThinking = false
             }
         } catch {
+            // A cancelled request surfaces here as a URLSession cancellation
+            // error — swallow it silently instead of showing a failure banner.
+            guard !Task.isCancelled else { return }
+
             let detail = error.localizedDescription
             let assistant = AiPersistence.makeMessage(
                 role: .assistant,

@@ -160,7 +160,7 @@ private struct AiSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Provider", selection: providerBinding) {
+                Picker("Provider", selection: aiStore.providerBinding) {
                     Text("Gemini").tag(AiProvider.gemini)
                     Text("OpenAI API").tag(AiProvider.openai)
                     Text("OpenRouter").tag(AiProvider.openrouter)
@@ -168,20 +168,14 @@ private struct AiSettingsTab: View {
                 }
 
                 if aiStore.settings.provider != .codex {
-                    LabeledContent(keyFieldLabel) {
-                        RevealableSecureField(placeholder: keyFieldPlaceholder, text: apiKeyBinding)
+                    LabeledContent(aiStore.keyFieldLabel) {
+                        RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
                             .id(aiStore.settings.provider)
                     }
                 }
 
                 LabeledContent("Model") {
-                    ModelSelector(
-                        options: modelOptions,
-                        selection: modelBinding,
-                        pinned: pinnedBinding,
-                        isLoading: aiStore.settings.provider == .openrouter && openRouterCatalog.isLoading,
-                        onOpen: { if aiStore.settings.provider == .openrouter { Task { await openRouterCatalog.refresh() } } }
-                    )
+                    AiModelSelectorField()
                 }
                 capabilityWarnings
             } header: {
@@ -189,11 +183,11 @@ private struct AiSettingsTab: View {
             }
 
             Section {
-                Picker("Voice mode", selection: voiceBinding) {
+                Picker("Voice mode", selection: aiStore.voiceBinding()) {
                     Text("Off").tag(VoiceMode.off)
                     Text("Push-to-talk").tag(VoiceMode.pushToTalk)
                 }
-                Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
+                Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
             } header: {
                 Text("Voice")
             }
@@ -202,122 +196,19 @@ private struct AiSettingsTab: View {
         .scrollDisabled(true)
     }
 
-    private var modelOptions: [AiModelOption] {
-        AiModelCatalog.options(for: aiStore.settings.provider, catalog: openRouterCatalog)
-    }
-
-    private var keyFieldLabel: String {
-        switch aiStore.settings.provider {
-        case .openai: "OpenAI API key"
-        case .openrouter: "OpenRouter API key"
-        default: "Gemini API key"
-        }
-    }
-
-    private var keyFieldPlaceholder: String {
-        switch aiStore.settings.provider {
-        case .openai: "sk-…"
-        case .openrouter: "sk-or-…"
-        default: "AIza…"
-        }
-    }
-
-    private var selectedOption: AiModelOption? {
-        modelOptions.first { $0.id == modelBinding.wrappedValue }
-    }
-
     @ViewBuilder
     private var capabilityWarnings: some View {
-        if let option = selectedOption {
+        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
             if !option.supportsVision {
-                Label("This model can't see the page image — answers about page contents may be less accurate.", systemImage: "exclamationmark.triangle.fill")
+                Label(AiCapabilityWarning.noVision, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(palette.gold)
             }
             if !option.supportsTools {
-                Label("This model can't run navigation, highlight, or note actions.", systemImage: "exclamationmark.triangle.fill")
+                Label(AiCapabilityWarning.noTools, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(palette.gold)
             }
         }
-    }
-
-    private var providerBinding: Binding<AiProvider> {
-        Binding(get: { aiStore.settings.provider }, set: { value in
-            var settings = aiStore.settings
-            settings.provider = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var apiKeyBinding: Binding<String> {
-        Binding(
-            get: {
-                switch aiStore.settings.provider {
-                case .openai: aiStore.settings.openaiApiKey
-                case .openrouter: aiStore.settings.openrouterApiKey
-                default: aiStore.settings.apiKey
-                }
-            },
-            set: { value in
-                var settings = aiStore.settings
-                switch settings.provider {
-                case .openai: settings.openaiApiKey = value
-                case .openrouter: settings.openrouterApiKey = value
-                default: settings.apiKey = value
-                }
-                aiStore.setSettings(settings)
-            }
-        )
-    }
-
-    private var modelBinding: Binding<String> {
-        Binding(
-            get: {
-                switch aiStore.settings.provider {
-                case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
-                case .openrouter: aiStore.settings.openrouterModel
-                }
-            },
-            set: { value in
-                var settings = aiStore.settings
-                switch settings.provider {
-                case .gemini: settings.model = value
-                case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
-                case .openrouter: settings.openrouterModel = value
-                }
-                aiStore.setSettings(settings)
-            }
-        )
-    }
-
-    private var pinnedBinding: Binding<[String]> {
-        Binding(
-            get: { aiStore.settings.pinnedModels },
-            set: { value in
-                var settings = aiStore.settings
-                settings.pinnedModels = value
-                aiStore.setSettings(settings)
-            }
-        )
-    }
-
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            var settings = aiStore.settings
-            settings.voiceMode = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
-            settings.ttsEnabled = value
-            aiStore.setSettings(settings)
-        })
     }
 }

@@ -9,14 +9,40 @@ struct AiModelOption: Identifiable, Equatable {
     var supportsTools: Bool
     var contextLength: Int?
     var promptPrice: Double?
+    var completionPrice: Double? = nil
     var created: Int?
 }
 
 enum ModelSort: String, CaseIterable, Identifiable {
+    case pinned = "Pinned"
     case name = "Name"
-    case priceAsc = "Price"
-    case contextDesc = "Context"
-    case recent = "Newest"
+    case price = "Price"
+    case context = "Context"
+    var id: String { rawValue }
+
+    /// Sensible default direction when a sort mode is first selected.
+    /// Pinned/Name → A–Z, Price → cheapest first, Context → largest first.
+    var defaultAscending: Bool {
+        switch self {
+        case .pinned, .name, .price: return true
+        case .context: return false
+        }
+    }
+}
+
+/// Vision-capability filter for the picker.
+enum ImageFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case withImage = "With image"
+    case noImage = "No image"
+    var id: String { rawValue }
+}
+
+/// Tool/function-calling capability filter for the picker.
+enum ToolsFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case withTools = "With tools"
+    case noTools = "No tools"
     var id: String { rawValue }
 }
 
@@ -33,7 +59,26 @@ struct ModelSelector: View {
     @Environment(\.palette) private var palette
     @State private var isPresented = false
     @State private var query = ""
-    @State private var sort: ModelSort = .name
+    // Persisted so the picker reopens to the last-used sort tab + direction.
+    @AppStorage("modelSelector.sort") private var sortRaw = ModelSort.name.rawValue
+    @AppStorage("modelSelector.ascending") private var ascending = ModelSort.name.defaultAscending
+    @State private var providerFilter: String?
+    @State private var imageFilter: ImageFilter = .all
+    @State private var toolsFilter: ToolsFilter = .all
+    @State private var freeOnly = false
+    // Bumped on every pin toggle to force an immediate re-render (see togglePin).
+    @State private var pinRefresh = 0
+
+    /// The active sort, bridged over the persisted raw string. Falls back to
+    /// `.name` when the stored value can't be parsed.
+    private var sort: ModelSort {
+        get { ModelSort(rawValue: sortRaw) ?? .name }
+        nonmutating set { sortRaw = newValue.rawValue }
+    }
+
+    private var sortBinding: Binding<ModelSort> {
+        Binding(get: { sort }, set: { sort = $0 })
+    }
 
     var body: some View {
         Button {
@@ -44,7 +89,7 @@ struct ModelSelector: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            popover.frame(width: 340, height: 380)
+            popover.frame(width: 400, height: 470)
         }
     }
 
@@ -85,20 +130,29 @@ struct ModelSelector: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if options.isEmpty {
+            if filtered.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
-                        if !pinnedOptions.isEmpty {
-                            sectionHeader("Pinned")
-                            ForEach(pinnedOptions) { row($0) }
-                            sectionHeader("All models")
+                        if sort == .pinned {
+                            // Everything shown is already pinned — render flat.
+                            ForEach(filtered) { row($0) }
+                        } else {
+                            if !pinnedOptions.isEmpty {
+                                sectionHeader("Pinned")
+                                ForEach(pinnedOptions) { row($0) }
+                                sectionHeader("All models")
+                            }
+                            ForEach(unpinnedOptions) { row($0) }
                         }
-                        ForEach(unpinnedOptions) { row($0) }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
+                    // Rebuild rows when a pin toggles so the star fill and the
+                    // pinned/all-models split refresh right away (a moved row
+                    // would otherwise be reused with its stale star).
+                    .id(pinRefresh)
                 }
             }
         }
@@ -128,13 +182,159 @@ struct ModelSelector: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
 
-            Picker("", selection: $sort) {
-                ForEach(ModelSort.allCases) { Text($0.rawValue).tag($0) }
+            HStack(spacing: 6) {
+                Picker("", selection: sortBinding) {
+                    ForEach(ModelSort.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .onChange(of: sortRaw) { _, newValue in
+                    ascending = (ModelSort(rawValue: newValue) ?? .name).defaultAscending
+                }
+
+                Button {
+                    ascending.toggle()
+                } label: {
+                    Image(systemName: ascending ? "arrow.up" : "arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.foreground)
+                        .frame(width: 26, height: 22)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help(ascending ? "Sorted low → high" : "Sorted high → low")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+
+            if !availableProviders.isEmpty {
+                VStack(spacing: 6) {
+                    HStack(spacing: 6) {
+                        providerMenu
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 6) {
+                        imageMenu
+                        toolsMenu
+                        freeChip
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
         }
         .padding(12)
+    }
+
+    private var providerMenu: some View {
+        Menu {
+            menuItem("All providers", selected: providerFilter == nil) { providerFilter = nil }
+            Divider()
+            ForEach(availableProviders, id: \.slug) { provider in
+                menuItem("\(provider.name) (\(provider.count))",
+                         selected: providerFilter == provider.slug) {
+                    providerFilter = provider.slug
+                }
+            }
+        } label: {
+            filterChip(
+                icon: "building.2",
+                text: providerFilter.map(Self.providerDisplayName) ?? "All providers",
+                active: providerFilter != nil
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var imageMenu: some View {
+        Menu {
+            ForEach(ImageFilter.allCases) { option in
+                menuItem(option.rawValue, selected: imageFilter == option) {
+                    imageFilter = option
+                }
+            }
+        } label: {
+            filterChip(
+                icon: "photo",
+                text: imageFilter == .all ? "Image" : imageFilter.rawValue,
+                active: imageFilter != .all
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var toolsMenu: some View {
+        Menu {
+            ForEach(ToolsFilter.allCases) { option in
+                menuItem(option.rawValue, selected: toolsFilter == option) {
+                    toolsFilter = option
+                }
+            }
+        } label: {
+            filterChip(
+                icon: "wrench.and.screwdriver",
+                text: toolsFilter == .all ? "Tools" : toolsFilter.rawValue,
+                active: toolsFilter != .all
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var freeChip: some View {
+        Button {
+            freeOnly.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "gift").font(.system(size: 9))
+                Text("Free").lineLimit(1)
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(freeOnly ? palette.primary : palette.mutedForeground)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(freeOnly ? palette.primary.opacity(0.12) : palette.surfaceMuted)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(freeOnly ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func menuItem(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if selected {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
+    }
+
+    private func filterChip(icon: String, text: String, active: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 9))
+            Text(text).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(size: 7))
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(active ? palette.primary : palette.mutedForeground)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(active ? palette.primary.opacity(0.12) : palette.surfaceMuted)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(active ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
+        )
     }
 
     private var emptyState: some View {
@@ -143,8 +343,28 @@ struct ModelSelector: View {
             if isLoading {
                 ProgressView()
                 Text("Loading models…").foregroundStyle(palette.mutedForeground)
-            } else {
+            } else if options.isEmpty {
                 Text("No models found").foregroundStyle(palette.mutedForeground)
+            } else if sort == .pinned && pinned.isEmpty {
+                Image(systemName: "star")
+                    .font(.system(size: 18))
+                    .foregroundStyle(palette.mutedForeground)
+                Text("No pinned models yet").foregroundStyle(palette.mutedForeground)
+                Text("Tap the star on a model to pin it.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.mutedForeground)
+            } else {
+                Text("No models match your filters").foregroundStyle(palette.mutedForeground)
+                Button("Clear filters") {
+                    query = ""
+                    providerFilter = nil
+                    imageFilter = .all
+                    toolsFilter = .all
+                    freeOnly = false
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(palette.primary)
             }
             Spacer()
         }
@@ -162,45 +382,52 @@ struct ModelSelector: View {
 
     private func row(_ option: AiModelOption) -> some View {
         let isSelected = option.id == selection
-        return Button {
-            selection = option.id
-            isPresented = false
-        } label: {
-            HStack(spacing: 8) {
-                Button {
-                    togglePin(option.id)
-                } label: {
-                    Image(systemName: pinned.contains(option.id) ? "star.fill" : "star")
-                        .font(.system(size: 11))
-                        .foregroundStyle(pinned.contains(option.id) ? palette.gold : palette.mutedForeground)
-                }
-                .buttonStyle(.plain)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(option.name).lineLimit(1).foregroundStyle(palette.foreground)
-                    HStack(spacing: 6) {
-                        if let subtitle = subtitle(option) {
-                            Text(subtitle).foregroundStyle(palette.mutedForeground)
-                        }
-                        if !option.supportsVision { badge("no image") }
-                        if !option.supportsTools { badge("no actions") }
-                    }
-                    .font(.system(size: 10))
-                }
-                Spacer(minLength: 4)
-                if isSelected {
-                    Image(systemName: "checkmark").font(.system(size: 11)).foregroundStyle(palette.primary)
-                }
+        let isPinned = pinned.contains(option.id)
+        // The star and the row body are SIBLING buttons — not nested — so the
+        // star's tap toggles the pin without the row's select firing, and its
+        // fill/color reliably re-renders when the pin state flips.
+        return HStack(spacing: 8) {
+            Button {
+                togglePin(option.id)
+            } label: {
+                Image(systemName: isPinned ? "star.fill" : "star")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isPinned ? Color.yellow : palette.mutedForeground)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 5).fill(isSelected ? palette.primary.opacity(0.14) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                selection = option.id
+                isPresented = false
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(option.name).lineLimit(1).foregroundStyle(palette.foreground)
+                        HStack(spacing: 6) {
+                            if let subtitle = subtitle(option) {
+                                Text(subtitle).lineLimit(1).foregroundStyle(palette.mutedForeground)
+                            }
+                            if !option.supportsVision { badge("no image") }
+                            if !option.supportsTools { badge("no actions") }
+                        }
+                        .font(.system(size: 10))
+                    }
+                    Spacer(minLength: 4)
+                    if isSelected {
+                        Image(systemName: "checkmark").font(.system(size: 11)).foregroundStyle(palette.primary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5).fill(isSelected ? palette.primary.opacity(0.14) : Color.clear)
+        )
     }
 
     private func badge(_ text: String) -> some View {
@@ -220,12 +447,39 @@ struct ModelSelector: View {
         } else {
             pinned.append(id)
         }
+        // `pinned` is a manual closure-Binding over AiStore, which doesn't
+        // invalidate this view on its own — bump local state so the star fill
+        // and pinned/all-models sections update immediately on tap.
+        pinRefresh &+= 1
     }
 
     private var filtered: [AiModelOption] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let base = q.isEmpty ? options : options.filter {
-            $0.id.lowercased().contains(q) || $0.name.lowercased().contains(q)
+        var base = options
+        // On the Pinned tab, only pinned models are shown.
+        if sort == .pinned {
+            base = base.filter { pinned.contains($0.id) }
+        }
+        if let providerFilter {
+            base = base.filter { Self.providerSlug($0.id) == providerFilter }
+        }
+        switch imageFilter {
+        case .all: break
+        case .withImage: base = base.filter(\.supportsVision)
+        case .noImage: base = base.filter { !$0.supportsVision }
+        }
+        switch toolsFilter {
+        case .all: break
+        case .withTools: base = base.filter(\.supportsTools)
+        case .noTools: base = base.filter { !$0.supportsTools }
+        }
+        if freeOnly {
+            base = base.filter { $0.promptPrice == 0 }
+        }
+        if !q.isEmpty {
+            base = base.filter {
+                $0.id.lowercased().contains(q) || $0.name.lowercased().contains(q)
+            }
         }
         return base.sorted(by: sortComparator)
     }
@@ -240,15 +494,81 @@ struct ModelSelector: View {
 
     private func sortComparator(_ a: AiModelOption, _ b: AiModelOption) -> Bool {
         switch sort {
-        case .name:
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-        case .priceAsc:
-            return (a.promptPrice ?? .greatestFiniteMagnitude) < (b.promptPrice ?? .greatestFiniteMagnitude)
-        case .contextDesc:
-            return (a.contextLength ?? 0) > (b.contextLength ?? 0)
-        case .recent:
-            return (a.created ?? 0) > (b.created ?? 0)
+        case .pinned, .name:
+            let order = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            return ascending ? order : !order
+        case .price:
+            return numericCompare(Self.priceKey(a), Self.priceKey(b))
+        case .context:
+            // contextLength is optional; treat nil as unknown.
+            return numericCompare(a.contextLength.map(Double.init), b.contextLength.map(Double.init))
         }
+    }
+
+    /// Direction-aware compare that always sinks unknown values (`nil`) to the
+    /// bottom — in both ascending and descending order — so "no price" /
+    /// "no context" rows never crowd the top of a sorted list.
+    private func numericCompare(_ a: Double?, _ b: Double?) -> Bool {
+        switch (a, b) {
+        case let (x?, y?): return ascending ? x < y : x > y
+        case (nil, _?): return false   // a unknown → after b
+        case (_?, nil): return true    // b unknown → a first
+        case (nil, nil): return false
+        }
+    }
+
+    /// Usable prompt price, or nil when OpenRouter reports no real price — that
+    /// includes the `-1` sentinel it returns for variable-priced auto-routers.
+    private static func priceKey(_ option: AiModelOption) -> Double? {
+        guard let price = option.promptPrice, price >= 0 else { return nil }
+        return price
+    }
+
+    // MARK: - Providers
+
+    /// Providers present in the current option set, most popular first, each
+    /// with a display name and model count. Derived from OpenRouter ids of the
+    /// form `provider/model`; empty for built-in providers (bare ids).
+    private var availableProviders: [(slug: String, name: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for option in options {
+            guard let slug = Self.providerSlug(option.id) else { continue }
+            counts[slug, default: 0] += 1
+        }
+        return counts
+            .map { (slug: $0.key, name: Self.providerDisplayName($0.key), count: $0.value) }
+            .sorted { lhs, rhs in
+                let lRank = Self.providerRank[lhs.slug] ?? Int.max
+                let rRank = Self.providerRank[rhs.slug] ?? Int.max
+                if lRank != rRank { return lRank < rRank }
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    /// Provider slug from an OpenRouter id (`anthropic/claude-3.5` → `anthropic`).
+    private static func providerSlug(_ id: String) -> String? {
+        guard let slash = id.firstIndex(of: "/") else { return nil }
+        let slug = String(id[..<slash])
+        return slug.isEmpty ? nil : slug
+    }
+
+    /// Popularity ranking so the biggest labs surface at the top of the filter.
+    private static let providerRank: [String: Int] = [
+        "anthropic": 0, "openai": 1, "google": 2, "meta-llama": 3,
+        "deepseek": 4, "mistralai": 5, "x-ai": 6, "qwen": 7,
+        "cohere": 8, "perplexity": 9, "microsoft": 10, "nvidia": 11,
+    ]
+
+    private static let providerNames: [String: String] = [
+        "openai": "OpenAI", "x-ai": "xAI", "meta-llama": "Meta",
+        "mistralai": "Mistral", "deepseek": "DeepSeek", "nvidia": "NVIDIA",
+        "qwen": "Qwen", "google": "Google", "anthropic": "Anthropic",
+    ]
+
+    private static func providerDisplayName(_ slug: String) -> String {
+        if let name = providerNames[slug] { return name }
+        return slug.capitalized
     }
 
     private func subtitle(_ option: AiModelOption) -> String? {
@@ -257,13 +577,35 @@ struct ModelSelector: View {
             parts.append("\(context / 1000)K ctx")
         }
         if let price = option.promptPrice {
-            if price == 0 {
+            if price < 0 {
+                // OpenRouter returns -1 for variable-priced auto-routers.
+                parts.append("variable price")
+            } else if price == 0 && (option.completionPrice ?? 0) <= 0 {
                 parts.append("free")
             } else {
                 // per-token USD → per-million tokens.
-                parts.append(String(format: "$%.2f/M", price * 1_000_000))
+                let input = price * 1_000_000
+                if let completion = option.completionPrice, completion >= 0,
+                   completion != price {
+                    let output = completion * 1_000_000
+                    parts.append("$\(Self.priceString(input))/$\(Self.priceString(output)) per M")
+                } else {
+                    parts.append("$\(Self.priceString(input))/M")
+                }
             }
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Compact per-million price: drops noisy trailing zeros ("$3" not "$3.00")
+    /// while keeping meaningful fractions ("$0.25").
+    private static func priceString(_ value: Double) -> String {
+        if value == value.rounded() {
+            return String(format: "%.0f", value)
+        }
+        // Up to 2 decimals, trimming a trailing zero (e.g. 0.50 → 0.5).
+        var s = String(format: "%.2f", value)
+        if s.hasSuffix("0") { s.removeLast() }
+        return s
     }
 }

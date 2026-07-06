@@ -218,9 +218,9 @@ struct AiPanel: View {
         let numPages = appStore.numPages
         let visiblePages = appStore.visiblePages
         let annotations = annotationStore.annotations
-        Task {
+        let task = Task {
             let image = await aiStore.capturePageImageHandler?(currentPage)
-            guard appStore.activeTabId == sessionId else { return }
+            guard !Task.isCancelled, appStore.activeTabId == sessionId else { return }
             let context = AiContextSnapshot(
                 title: document?.title,
                 numPages: numPages,
@@ -231,6 +231,8 @@ struct AiPanel: View {
             )
             await aiStore.sendMessage(trimmed, context: context)
         }
+        // Hand the task to the store so clearing the conversation can cancel it.
+        aiStore.registerSendTask(task)
     }
 
     private func startListening() {

@@ -36,6 +36,7 @@ enum AiModelCatalog {
                     supportsTools: $0.supportsTools,
                     contextLength: $0.contextLength,
                     promptPrice: $0.promptPrice,
+                    completionPrice: $0.completionPrice,
                     created: $0.created
                 )
             }
@@ -57,7 +58,7 @@ struct AiSettingsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             field("Provider") {
-                Picker("", selection: providerBinding) {
+                Picker("", selection: aiStore.providerBinding) {
                     Text("Gemini").tag(AiProvider.gemini)
                     Text("OpenAI API").tag(AiProvider.openai)
                     Text("OpenRouter").tag(AiProvider.openrouter)
@@ -67,32 +68,26 @@ struct AiSettingsPanel: View {
             }
 
             if aiStore.settings.provider != .codex {
-                field(keyFieldLabel) {
-                    RevealableSecureField(placeholder: keyFieldPlaceholder, text: apiKeyBinding)
+                field(aiStore.keyFieldLabel) {
+                    RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
                         .id(aiStore.settings.provider)
                 }
             }
 
             field("Model") {
-                ModelSelector(
-                    options: modelOptions,
-                    selection: modelBinding,
-                    pinned: pinnedBinding,
-                    isLoading: aiStore.settings.provider == .openrouter && openRouterCatalog.isLoading,
-                    onOpen: { if aiStore.settings.provider == .openrouter { Task { await openRouterCatalog.refresh() } } }
-                )
+                AiModelSelectorField()
                 capabilityWarnings
             }
 
             field("Voice mode") {
-                Picker("", selection: voiceBinding) {
+                Picker("", selection: aiStore.voiceBinding(onStop: onStopRecognition)) {
                     Text("Off").tag(VoiceMode.off)
                     Text("Push-to-talk").tag(VoiceMode.pushToTalk)
                 }
                 .labelsHidden()
             }
 
-            Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
+            Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
                 .toggleStyle(.checkbox)
                 .foregroundStyle(palette.mutedForeground)
         }
@@ -109,38 +104,14 @@ struct AiSettingsPanel: View {
         }
     }
 
-    private var modelOptions: [AiModelOption] {
-        AiModelCatalog.options(for: aiStore.settings.provider, catalog: openRouterCatalog)
-    }
-
-    private var keyFieldLabel: String {
-        switch aiStore.settings.provider {
-        case .openai: "OpenAI API key"
-        case .openrouter: "OpenRouter API key"
-        default: "Gemini API key"
-        }
-    }
-
-    private var keyFieldPlaceholder: String {
-        switch aiStore.settings.provider {
-        case .openai: "sk-..."
-        case .openrouter: "sk-or-..."
-        default: "AIza..."
-        }
-    }
-
-    private var selectedOption: AiModelOption? {
-        modelOptions.first { $0.id == modelBinding.wrappedValue }
-    }
-
     @ViewBuilder
     private var capabilityWarnings: some View {
-        if let option = selectedOption {
+        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
             if !option.supportsVision {
-                warning("This model can't see the page image — answers about page contents may be less accurate.")
+                warning(AiCapabilityWarning.noVision)
             }
             if !option.supportsTools {
-                warning("This model can't run navigation, highlight, or note actions.")
+                warning(AiCapabilityWarning.noTools)
             }
         }
     }
@@ -154,84 +125,143 @@ struct AiSettingsPanel: View {
         .foregroundStyle(palette.gold)
         .fixedSize(horizontal: false, vertical: true)
     }
+}
 
-    private var providerBinding: Binding<AiProvider> {
-        Binding(get: { aiStore.settings.provider }, set: { value in
-            var settings = aiStore.settings
+/// Shared model-row content embedded by both AI settings hosts (the in-panel
+/// `AiSettingsPanel` and the Settings window's `AiSettingsTab`). Each host wraps
+/// it in its own label container so the surrounding layout stays distinct.
+struct AiModelSelectorField: View {
+    @Environment(AiStore.self) private var aiStore
+    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
+
+    var body: some View {
+        ModelSelector(
+            options: aiStore.modelOptions(catalog: openRouterCatalog),
+            selection: aiStore.modelBinding,
+            pinned: aiStore.pinnedBinding,
+            isLoading: aiStore.settings.provider == .openrouter && openRouterCatalog.isLoading,
+            onOpen: { if aiStore.settings.provider == .openrouter { Task { await openRouterCatalog.refresh() } } }
+        )
+    }
+}
+
+/// Capability-warning strings shared by both hosts so the copy never drifts.
+/// Each host renders them with its own styling (custom HStack vs `Label`).
+enum AiCapabilityWarning {
+    static let noVision = "This model can't see the page image — answers about page contents may be less accurate."
+    static let noTools = "This model can't run navigation, highlight, or note actions."
+}
+
+// MARK: - Shared AI settings plumbing
+
+/// Bindings, labels, and model-option helpers shared by both AI settings hosts.
+/// Kept on `AiStore` (rather than duplicated per view) so the two hosts can't
+/// drift. All provider-dependent helpers read `settings.provider`.
+extension AiStore {
+    var providerBinding: Binding<AiProvider> {
+        Binding(get: { self.settings.provider }, set: { value in
+            var settings = self.settings
             settings.provider = value
-            aiStore.setSettings(settings)
+            self.setSettings(settings)
         })
     }
 
-    private var apiKeyBinding: Binding<String> {
+    var apiKeyBinding: Binding<String> {
         Binding(
             get: {
-                switch aiStore.settings.provider {
-                case .openai: aiStore.settings.openaiApiKey
-                case .openrouter: aiStore.settings.openrouterApiKey
-                default: aiStore.settings.apiKey
+                switch self.settings.provider {
+                case .openai: self.settings.openaiApiKey
+                case .openrouter: self.settings.openrouterApiKey
+                default: self.settings.apiKey
                 }
             },
             set: { value in
-                var settings = aiStore.settings
+                var settings = self.settings
                 switch settings.provider {
                 case .openai: settings.openaiApiKey = value
                 case .openrouter: settings.openrouterApiKey = value
                 default: settings.apiKey = value
                 }
-                aiStore.setSettings(settings)
+                self.setSettings(settings)
             }
         )
     }
 
-    private var modelBinding: Binding<String> {
+    var modelBinding: Binding<String> {
         Binding(
             get: {
-                switch aiStore.settings.provider {
-                case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
-                case .openrouter: aiStore.settings.openrouterModel
+                switch self.settings.provider {
+                case .gemini: self.settings.model
+                case .openai: self.settings.openaiModel
+                case .codex: self.settings.codexModel
+                case .openrouter: self.settings.openrouterModel
                 }
             },
             set: { value in
-                var settings = aiStore.settings
+                var settings = self.settings
                 switch settings.provider {
                 case .gemini: settings.model = value
                 case .openai: settings.openaiModel = value
                 case .codex: settings.codexModel = value
                 case .openrouter: settings.openrouterModel = value
                 }
-                aiStore.setSettings(settings)
+                self.setSettings(settings)
             }
         )
     }
 
-    private var pinnedBinding: Binding<[String]> {
+    var pinnedBinding: Binding<[String]> {
         Binding(
-            get: { aiStore.settings.pinnedModels },
+            get: { self.settings.pinnedModels },
             set: { value in
-                var settings = aiStore.settings
+                var settings = self.settings
                 settings.pinnedModels = value
-                aiStore.setSettings(settings)
+                self.setSettings(settings)
             }
         )
     }
 
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            if value != .pushToTalk { onStopRecognition() }
-            var settings = aiStore.settings
+    /// Voice-mode binding. `onStop` fires when the mode leaves push-to-talk so
+    /// the in-panel host can tear down an active recognition session; the
+    /// Settings host passes the default no-op.
+    func voiceBinding(onStop: @escaping () -> Void = {}) -> Binding<VoiceMode> {
+        Binding(get: { self.settings.voiceMode }, set: { value in
+            if value != .pushToTalk { onStop() }
+            var settings = self.settings
             settings.voiceMode = value
-            aiStore.setSettings(settings)
+            self.setSettings(settings)
         })
     }
 
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
+    var ttsBinding: Binding<Bool> {
+        Binding(get: { self.settings.ttsEnabled }, set: { value in
+            var settings = self.settings
             settings.ttsEnabled = value
-            aiStore.setSettings(settings)
+            self.setSettings(settings)
         })
+    }
+
+    var keyFieldLabel: String {
+        switch settings.provider {
+        case .openai: "OpenAI API key"
+        case .openrouter: "OpenRouter API key"
+        default: "Gemini API key"
+        }
+    }
+
+    var keyFieldPlaceholder: String {
+        switch settings.provider {
+        case .openai: "sk-…"
+        case .openrouter: "sk-or-…"
+        default: "AIza…"
+        }
+    }
+
+    func modelOptions(catalog: OpenRouterCatalog) -> [AiModelOption] {
+        AiModelCatalog.options(for: settings.provider, catalog: catalog)
+    }
+
+    func selectedOption(catalog: OpenRouterCatalog) -> AiModelOption? {
+        modelOptions(catalog: catalog).first { $0.id == modelBinding.wrappedValue }
     }
 }
