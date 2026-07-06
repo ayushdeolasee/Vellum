@@ -17,24 +17,67 @@ enum AiPersistence {
         guard let raw = UserDefaults.standard.string(forKey: settingsKey),
               let data = raw.data(using: .utf8),
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return defaults }
+        else {
+            // No stored blob yet: still surface any keys already in the Keychain.
+            var settings = defaults
+            settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
+            settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
+            settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+            return settings
+        }
 
         var settings = defaults
         if let provider = value["provider"] as? String {
-            settings.provider = provider == "codex" ? .codex : (provider == "openai" ? .openai : .gemini)
+            settings.provider = AiProvider(rawValue: provider) ?? .gemini
         }
         if let model = value["model"] as? String { settings.model = model }
-        if let apiKey = value["apiKey"] as? String { settings.apiKey = apiKey }
         if let model = value["openaiModel"] as? String { settings.openaiModel = model }
-        if let apiKey = value["openaiApiKey"] as? String { settings.openaiApiKey = apiKey }
         if let model = value["codexModel"] as? String { settings.codexModel = model }
+        if let model = value["openrouterModel"] as? String { settings.openrouterModel = model }
+        if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
         settings.voiceMode = value["voiceMode"] as? String == "push-to-talk" ? .pushToTalk : .off
         if let enabled = value["ttsEnabled"] as? Bool { settings.ttsEnabled = enabled }
+
+        // Keys now live in the Keychain. Migrate any legacy plaintext keys still
+        // present in the UserDefaults blob, then prefer the Keychain copy.
+        var didMigrate = false
+        migrate(account: KeychainStore.Account.gemini, legacy: value["apiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.openai, legacy: value["openaiApiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.openrouter, legacy: value["openrouterApiKey"] as? String, didMigrate: &didMigrate)
+        settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
+        settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
+        settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+
+        // Rewrite the blob without plaintext keys once migrated.
+        if didMigrate { saveSettings(settings) }
         return settings
     }
 
+    /// Copies a legacy plaintext key into the Keychain if the Keychain slot is
+    /// empty and the legacy value is non-empty.
+    private static func migrate(account: String, legacy: String?, didMigrate: inout Bool) {
+        let value = legacy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !value.isEmpty else {
+            if legacy != nil { didMigrate = true } // strip empty key field on rewrite
+            return
+        }
+        didMigrate = true
+        if KeychainStore.get(account)?.isEmpty ?? true {
+            KeychainStore.set(account, value)
+        }
+    }
+
     static func saveSettings(_ settings: AiSettings) {
-        guard let data = try? JSONEncoder().encode(settings),
+        // Keys go to the Keychain, never the UserDefaults blob.
+        KeychainStore.set(KeychainStore.Account.gemini, settings.apiKey)
+        KeychainStore.set(KeychainStore.Account.openai, settings.openaiApiKey)
+        KeychainStore.set(KeychainStore.Account.openrouter, settings.openrouterApiKey)
+
+        var stripped = settings
+        stripped.apiKey = ""
+        stripped.openaiApiKey = ""
+        stripped.openrouterApiKey = ""
+        guard let data = try? JSONEncoder().encode(stripped),
               let raw = String(data: data, encoding: .utf8) else { return }
         UserDefaults.standard.set(raw, forKey: settingsKey)
     }

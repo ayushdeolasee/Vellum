@@ -31,6 +31,7 @@ struct VellumApp: App {
     @State private var appStore: AppStore
     @State private var annotationStore: AnnotationStore
     @State private var aiStore: AiStore
+    @State private var openRouterCatalog: OpenRouterCatalog
 
     init() {
         let theme = ThemeStore()
@@ -38,12 +39,15 @@ struct VellumApp: App {
         let app = AppStore(sessions: sessions)
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
+        let openRouter = OpenRouterCatalog()
         ai.app = app
         ai.annotationStore = annotations
+        ai.openRouterCatalog = openRouter
         _themeStore = State(initialValue: theme)
         _appStore = State(initialValue: app)
         _annotationStore = State(initialValue: annotations)
         _aiStore = State(initialValue: ai)
+        _openRouterCatalog = State(initialValue: openRouter)
         VellumAppDelegate.appStore = app
     }
 
@@ -57,6 +61,7 @@ struct VellumApp: App {
                 .environment(appStore)
                 .environment(annotationStore)
                 .environment(aiStore)
+                .environment(openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -75,6 +80,7 @@ struct VellumApp: App {
                 .environment(themeStore)
                 .environment(appStore)
                 .environment(aiStore)
+                .environment(openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

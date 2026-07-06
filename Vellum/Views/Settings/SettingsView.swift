@@ -154,6 +154,8 @@ private struct AnnotationsSettingsTab: View {
 
 private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
+    @Environment(\.palette) private var palette
 
     var body: some View {
         Form {
@@ -161,20 +163,27 @@ private struct AiSettingsTab: View {
                 Picker("Provider", selection: providerBinding) {
                     Text("Gemini").tag(AiProvider.gemini)
                     Text("OpenAI API").tag(AiProvider.openai)
+                    Text("OpenRouter").tag(AiProvider.openrouter)
                     Text("Codex CLI").tag(AiProvider.codex)
                 }
 
                 if aiStore.settings.provider != .codex {
-                    SecureField(
-                        aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key",
-                        text: apiKeyBinding,
-                        prompt: Text(aiStore.settings.provider == .openai ? "sk-…" : "AIza…")
-                    )
+                    LabeledContent(keyFieldLabel) {
+                        RevealableSecureField(placeholder: keyFieldPlaceholder, text: apiKeyBinding)
+                            .id(aiStore.settings.provider)
+                    }
                 }
 
-                Picker("Model", selection: modelBinding) {
-                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                LabeledContent("Model") {
+                    ModelSelector(
+                        options: modelOptions,
+                        selection: modelBinding,
+                        pinned: pinnedBinding,
+                        isLoading: aiStore.settings.provider == .openrouter && openRouterCatalog.isLoading,
+                        onOpen: { if aiStore.settings.provider == .openrouter { Task { await openRouterCatalog.refresh() } } }
+                    )
                 }
+                capabilityWarnings
             } header: {
                 Text("Assistant")
             }
@@ -193,8 +202,44 @@ private struct AiSettingsTab: View {
         .scrollDisabled(true)
     }
 
-    private var models: [String] {
-        AiModelCatalog.models(for: aiStore.settings.provider)
+    private var modelOptions: [AiModelOption] {
+        AiModelCatalog.options(for: aiStore.settings.provider, catalog: openRouterCatalog)
+    }
+
+    private var keyFieldLabel: String {
+        switch aiStore.settings.provider {
+        case .openai: "OpenAI API key"
+        case .openrouter: "OpenRouter API key"
+        default: "Gemini API key"
+        }
+    }
+
+    private var keyFieldPlaceholder: String {
+        switch aiStore.settings.provider {
+        case .openai: "sk-…"
+        case .openrouter: "sk-or-…"
+        default: "AIza…"
+        }
+    }
+
+    private var selectedOption: AiModelOption? {
+        modelOptions.first { $0.id == modelBinding.wrappedValue }
+    }
+
+    @ViewBuilder
+    private var capabilityWarnings: some View {
+        if let option = selectedOption {
+            if !option.supportsVision {
+                Label("This model can't see the page image — answers about page contents may be less accurate.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
+            }
+            if !option.supportsTools {
+                Label("This model can't run navigation, highlight, or note actions.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
+            }
+        }
     }
 
     private var providerBinding: Binding<AiProvider> {
@@ -207,10 +252,20 @@ private struct AiSettingsTab: View {
 
     private var apiKeyBinding: Binding<String> {
         Binding(
-            get: { aiStore.settings.provider == .openai ? aiStore.settings.openaiApiKey : aiStore.settings.apiKey },
+            get: {
+                switch aiStore.settings.provider {
+                case .openai: aiStore.settings.openaiApiKey
+                case .openrouter: aiStore.settings.openrouterApiKey
+                default: aiStore.settings.apiKey
+                }
+            },
             set: { value in
                 var settings = aiStore.settings
-                if settings.provider == .openai { settings.openaiApiKey = value } else { settings.apiKey = value }
+                switch settings.provider {
+                case .openai: settings.openaiApiKey = value
+                case .openrouter: settings.openrouterApiKey = value
+                default: settings.apiKey = value
+                }
                 aiStore.setSettings(settings)
             }
         )
@@ -223,6 +278,7 @@ private struct AiSettingsTab: View {
                 case .gemini: aiStore.settings.model
                 case .openai: aiStore.settings.openaiModel
                 case .codex: aiStore.settings.codexModel
+                case .openrouter: aiStore.settings.openrouterModel
                 }
             },
             set: { value in
@@ -231,7 +287,19 @@ private struct AiSettingsTab: View {
                 case .gemini: settings.model = value
                 case .openai: settings.openaiModel = value
                 case .codex: settings.codexModel = value
+                case .openrouter: settings.openrouterModel = value
                 }
+                aiStore.setSettings(settings)
+            }
+        )
+    }
+
+    private var pinnedBinding: Binding<[String]> {
+        Binding(
+            get: { aiStore.settings.pinnedModels },
+            set: { value in
+                var settings = aiStore.settings
+                settings.pinnedModels = value
                 aiStore.setSettings(settings)
             }
         )

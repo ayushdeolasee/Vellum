@@ -12,6 +12,7 @@ enum AiProvider: String, Codable, Sendable {
     case gemini
     case openai
     case codex
+    case openrouter
 }
 
 enum VoiceMode: String, Codable, Sendable {
@@ -33,6 +34,10 @@ struct AiSettings: Codable, Equatable, Sendable {
     var openaiModel: String = "gpt-5.5"
     var openaiApiKey: String = ""
     var codexModel: String = "gpt-5.5"
+    var openrouterModel: String = ""
+    var openrouterApiKey: String = ""
+    /// Model ids the user has pinned to the top of the model selector.
+    var pinnedModels: [String] = []
     var voiceMode: VoiceMode = .off
     var ttsEnabled: Bool = false
 }
@@ -70,6 +75,8 @@ final class AiStore {
     // Wired in by VellumApp; used by sendMessage's tool engine.
     weak var app: AppStore?
     weak var annotationStore: AnnotationStore?
+    /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
+    weak var openRouterCatalog: OpenRouterCatalog?
 
     private(set) var messages: [AiMessage] = []
     private(set) var isThinking = false
@@ -176,6 +183,11 @@ final class AiStore {
             error = "Set your Gemini API key in AI settings."
             return
         }
+        if settingsAtStart.provider == .openrouter,
+           settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenRouter API key in AI settings."
+            return
+        }
 
         let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
         messages.append(userMessage)
@@ -213,6 +225,26 @@ final class AiStore {
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
                     image: context.currentPageImage,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine
+                )
+            case .openrouter:
+                let model = settingsAtStart.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenRouter model in AI settings.")
+                }
+                // Unknown ids (stale cache) default to permissive so we never
+                // silently strip a capability the model actually has.
+                let capabilities = openRouterCatalog?.model(for: model)
+                let supportsVision = capabilities?.supportsVision ?? true
+                let supportsTools = capabilities?.supportsTools ?? true
+                result = try await OpenRouterClient().generate(
+                    apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: supportsVision ? context.currentPageImage : nil,
+                    allowTools: supportsTools,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine
                 )
