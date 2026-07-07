@@ -254,7 +254,7 @@ struct AiPanel: View {
         HStack(alignment: .bottom, spacing: 8) {
             attachMenu
             ComposerTextView(text: $input, placeholder: "Ask about this document…", onSubmit: submit)
-                .frame(minHeight: 40, maxHeight: 64)
+                .frame(minHeight: 36, maxHeight: 64)
             if aiStore.settings.voiceMode == .pushToTalk {
                 Image(systemName: isListening ? "stop.fill" : "mic")
                     .font(.system(size: 15))
@@ -441,11 +441,19 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
+        textView.alignment = .left
         textView.textContainerInset = NSSize(width: 8, height: 6)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        // Without an explicit large maxSize the empty text view reports an
+        // oversized intrinsic height and stretches to the frame's max, leaving
+        // the placeholder floating at the top. Pin min/max so it collapses to a
+        // single line and grows only as content is added.
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
         scroll.documentView = textView
         return scroll
     }
@@ -488,6 +496,6 @@ private final class SubmitTextView: NSTextView {
             .font: font ?? NSFont.systemFont(ofSize: 14),
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
-        placeholder.draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height), withAttributes: attributes)
+        placeholder.draw(at: NSPoint(x: textContainerInset.width, y: textContainerInset.height), withAttributes: attributes)
     }
 }

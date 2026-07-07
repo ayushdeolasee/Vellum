@@ -4,8 +4,20 @@ import Foundation
 /// (not the Responses API `OpenAIClient` targets). Image and tool support are
 /// gated by the caller: `image` is passed nil for non-vision models and
 /// `allowTools` is false for models that don't support function calling.
+///
+/// Streams the reply over SSE (`stream: true`). Text deltas are forwarded live;
+/// `tool_calls` arrive fragmented (by `index`, with `arguments` split across
+/// frames) and are accumulated before the tool loop runs, matching the other
+/// providers' `onEvent` contract.
 @MainActor
 final class OpenRouterClient {
+    /// One in-progress tool call being reassembled from streamed deltas.
+    private struct ToolCallAccumulator {
+        var id = ""
+        var name = ""
+        var arguments = ""
+    }
+
     func generate(
         apiKey: String,
         model: String,
@@ -14,7 +26,8 @@ final class OpenRouterClient {
         image: AiPageImageSnapshot?,
         allowTools: Bool,
         sessionIdAtStart: String,
-        toolEngine: AiToolEngine
+        toolEngine: AiToolEngine,
+        onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
         guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
             throw AiClientError.message("Invalid OpenRouter endpoint.")
@@ -33,10 +46,13 @@ final class OpenRouterClient {
         ]
         var actionResults: [String] = []
 
+        onEvent(.status("Thinking"))
+
         for _ in 0..<6 {
             var body: [String: Any] = [
                 "model": model,
                 "messages": messages,
+                "stream": true,
             ]
             if allowTools {
                 body["tools"] = Self.functionTools
@@ -45,58 +61,95 @@ final class OpenRouterClient {
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.setValue("Vellum", forHTTPHeaderField: "X-Title")
             request.setValue("https://vellum.app", forHTTPHeaderField: "HTTP-Referer")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let data = try await sendWithRetry(request)
-            let root = try Self.jsonObject(data)
-            guard let choices = root["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any] else {
-                throw AiClientError.message(Self.providerMessage(root, fallback: "OpenRouter returned an invalid response."))
+
+            let bytes = try await openStream(request)
+
+            var text = ""
+            var toolAccumulators: [Int: ToolCallAccumulator] = [:]
+            for try await payload in SSE.dataPayloads(bytes) {
+                guard let object = Self.jsonObjectOrNil(payload) else { continue }
+                // OpenRouter can deliver a mid-stream error as a JSON payload.
+                if let error = object["error"] as? [String: Any],
+                   let message = error["message"] as? String {
+                    throw AiClientError.message(message)
+                }
+                guard let choices = object["choices"] as? [[String: Any]],
+                      let delta = choices.first?["delta"] as? [String: Any] else { continue }
+                if let chunk = delta["content"] as? String, !chunk.isEmpty {
+                    text += chunk
+                    onEvent(.textDelta(chunk))
+                }
+                if let toolDeltas = delta["tool_calls"] as? [[String: Any]] {
+                    for toolDelta in toolDeltas {
+                        let index = (toolDelta["index"] as? NSNumber)?.intValue ?? 0
+                        var entry = toolAccumulators[index] ?? ToolCallAccumulator()
+                        if let id = toolDelta["id"] as? String, !id.isEmpty { entry.id = id }
+                        if let function = toolDelta["function"] as? [String: Any] {
+                            if let name = function["name"] as? String, !name.isEmpty { entry.name = name }
+                            if let arguments = function["arguments"] as? String { entry.arguments += arguments }
+                        }
+                        toolAccumulators[index] = entry
+                    }
+                }
             }
-            let text = message["content"] as? String ?? ""
-            let toolCalls = message["tool_calls"] as? [[String: Any]] ?? []
-            if toolCalls.isEmpty {
+
+            let calls = toolAccumulators.sorted { $0.key < $1.key }.map(\.value)
+                .filter { !$0.name.isEmpty }
+            if calls.isEmpty {
                 return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
 
             // Echo the assistant turn (with its tool_calls) before the results.
-            var assistantMessage: [String: Any] = ["role": "assistant", "tool_calls": toolCalls]
+            let toolCallsPayload: [[String: Any]] = calls.map { call in
+                [
+                    "id": call.id,
+                    "type": "function",
+                    "function": ["name": call.name, "arguments": call.arguments],
+                ]
+            }
+            var assistantMessage: [String: Any] = ["role": "assistant", "tool_calls": toolCallsPayload]
             assistantMessage["content"] = text.isEmpty ? NSNull() : text
             messages.append(assistantMessage)
 
-            for call in toolCalls {
-                guard let callId = call["id"] as? String,
-                      let function = call["function"] as? [String: Any],
-                      let name = function["name"] as? String else { continue }
-                let argumentsText = function["arguments"] as? String ?? "{}"
+            for call in calls {
+                let argumentsText = call.arguments.isEmpty ? "{}" : call.arguments
                 let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
-                let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
+                let action = AiToolAction(tool: call.name, args: Self.toolArguments(from: values))
+                onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
                 let result = await toolEngine.run(
                     action,
                     sessionIdAtStart: sessionIdAtStart,
                     actionCount: actionResults.count
                 )
                 actionResults.append(result)
+                onEvent(.toolFinished(result: result))
                 messages.append([
                     "role": "tool",
-                    "tool_call_id": callId,
+                    "tool_call_id": call.id,
                     "content": result,
                 ])
             }
+            onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
-    private func sendWithRetry(_ request: URLRequest) async throws -> Data {
+    /// Open the SSE stream, retrying once on transient failures before any bytes
+    /// are consumed. Reads the (small) error body to surface a real message.
+    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw AiClientError.message("OpenRouter returned an invalid HTTP response.")
                 }
-                if (200..<300).contains(http.statusCode) { return data }
+                if (200..<300).contains(http.statusCode) { return bytes }
+                let data = try await Self.drain(bytes)
                 let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
                 let error = AiClientError.message(message.isEmpty ? "OpenRouter request failed with status \(http.statusCode)." : message)
                 if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
@@ -112,11 +165,22 @@ final class OpenRouterClient {
         throw lastError ?? AiClientError.message("OpenRouter request failed.")
     }
 
+    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes { data.append(byte) }
+        return data
+    }
+
     private static func jsonObject(_ data: Data) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AiClientError.message("OpenRouter returned invalid JSON.")
         }
         return object
+    }
+
+    private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     private static func providerMessage(_ object: [String: Any], fallback: String) -> String {

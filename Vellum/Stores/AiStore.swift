@@ -380,7 +380,8 @@ final class AiStore {
                     image: supportsVision ? context.currentPageImage : nil,
                     allowTools: supportsTools,
                     sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine
+                    toolEngine: engine,
+                    onEvent: onEvent
                 )
             case .codex:
                 // Codex uses a structured-output schema that can't be partially

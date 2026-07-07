@@ -154,7 +154,10 @@ struct RegionCaptureOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .pointerStyle(.rectSelection)
+        // No `.pointerStyle` here: the snapshot-region crosshair is a custom
+        // NSCursor (NSCursor.snapshotCrosshair) asserted by PdfKitView's mouse
+        // monitor across the whole viewer, which a `.pointerStyle` on this
+        // overlay would override with a plain system pointer.
         .gesture(
             DragGesture(minimumDistance: 2, coordinateSpace: .local)
                 .onChanged { value in

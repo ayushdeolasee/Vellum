@@ -62,6 +62,7 @@ final class PdfViewerController {
     @ObservationIgnored private var findIndex = -1
 
     var isNoteMode: Bool { app?.mode == .note }
+    var isSnapshotRegionMode: Bool { app?.mode == .snapshotRegion }
 
     // MARK: - Lifecycle
 
