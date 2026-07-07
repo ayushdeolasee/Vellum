@@ -12,13 +12,21 @@ enum AiModelCatalog {
         "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
         "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
     ]
-    static let codex = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+    /// Slugs valid on the ChatGPT-subscription Codex backend.
+    static let chatgpt = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
+    /// Curated vision- and tool-capable models on the OpenCode Zen gateway.
+    static let opencode = [
+        "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
+        "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3-flash",
+    ]
 
     static func models(for provider: AiProvider) -> [String] {
         switch provider {
         case .gemini: gemini
         case .openai: openAI
-        case .codex: codex
+        case .chatgpt: chatgpt
+        case .opencode: opencode
         case .openrouter: []
         }
     }
@@ -59,15 +67,16 @@ struct AiSettingsPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             field("Provider") {
                 Picker("", selection: aiStore.providerBinding) {
-                    Text("Gemini").tag(AiProvider.gemini)
-                    Text("OpenAI API").tag(AiProvider.openai)
-                    Text("OpenRouter").tag(AiProvider.openrouter)
-                    Text("Codex CLI").tag(AiProvider.codex)
+                    ForEach(AiProviderOption.all) { option in
+                        Text(option.label).tag(option.provider)
+                    }
                 }
                 .labelsHidden()
             }
 
-            if aiStore.settings.provider != .codex {
+            if aiStore.settings.provider == .chatgpt {
+                field("Account") { ChatGPTSignInControl() }
+            } else {
                 field(aiStore.keyFieldLabel) {
                     RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
                         .id(aiStore.settings.provider)
@@ -152,6 +161,65 @@ enum AiCapabilityWarning {
     static let noTools = "This model can't run navigation, highlight, or note actions."
 }
 
+/// The provider list shared by both AI settings hosts so the picker never
+/// drifts between the in-panel view and the Settings window.
+struct AiProviderOption: Identifiable {
+    let provider: AiProvider
+    let label: String
+    var id: String { provider.rawValue }
+
+    static let all: [AiProviderOption] = [
+        .init(provider: .gemini, label: "Gemini"),
+        .init(provider: .openai, label: "OpenAI API"),
+        .init(provider: .openrouter, label: "OpenRouter"),
+        .init(provider: .chatgpt, label: "ChatGPT (Codex)"),
+        .init(provider: .opencode, label: "OpenCode Zen"),
+    ]
+}
+
+/// Sign-in / signed-in / sign-out control for the ChatGPT-subscription OAuth
+/// provider, shared by both AI settings hosts. Replaces the API-key field, since
+/// this provider authenticates via the browser rather than a pasted key.
+struct ChatGPTSignInControl: View {
+    @Environment(ChatGPTAuth.self) private var auth
+    @Environment(\.palette) private var palette
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if auth.isSignedIn {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                    Text(auth.accountLabel ?? "Signed in").lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("Sign out") { auth.signOut() }
+                        .buttonStyle(.borderless)
+                }
+            } else {
+                Button {
+                    error = nil
+                    Task {
+                        do { try await auth.signIn() }
+                        catch { self.error = error.localizedDescription }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if auth.isAuthorizing { ProgressView().controlSize(.small) }
+                        Text(auth.isAuthorizing ? "Waiting for browser…" : "Sign in with ChatGPT")
+                    }
+                }
+                .disabled(auth.isAuthorizing)
+            }
+            if let error {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.gold)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 // MARK: - Shared AI settings plumbing
 
 /// Bindings, labels, and model-option helpers shared by both AI settings hosts.
@@ -172,6 +240,7 @@ extension AiStore {
                 switch self.settings.provider {
                 case .openai: self.settings.openaiApiKey
                 case .openrouter: self.settings.openrouterApiKey
+                case .opencode: self.settings.opencodeApiKey
                 default: self.settings.apiKey
                 }
             },
@@ -180,6 +249,7 @@ extension AiStore {
                 switch settings.provider {
                 case .openai: settings.openaiApiKey = value
                 case .openrouter: settings.openrouterApiKey = value
+                case .opencode: settings.opencodeApiKey = value
                 default: settings.apiKey = value
                 }
                 self.setSettings(settings)
@@ -193,8 +263,9 @@ extension AiStore {
                 switch self.settings.provider {
                 case .gemini: self.settings.model
                 case .openai: self.settings.openaiModel
-                case .codex: self.settings.codexModel
                 case .openrouter: self.settings.openrouterModel
+                case .chatgpt: self.settings.chatgptModel
+                case .opencode: self.settings.opencodeModel
                 }
             },
             set: { value in
@@ -202,8 +273,9 @@ extension AiStore {
                 switch settings.provider {
                 case .gemini: settings.model = value
                 case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
                 case .openrouter: settings.openrouterModel = value
+                case .chatgpt: settings.chatgptModel = value
+                case .opencode: settings.opencodeModel = value
                 }
                 self.setSettings(settings)
             }
@@ -245,6 +317,7 @@ extension AiStore {
         switch settings.provider {
         case .openai: "OpenAI API key"
         case .openrouter: "OpenRouter API key"
+        case .opencode: "OpenCode Zen API key"
         default: "Gemini API key"
         }
     }
@@ -253,6 +326,7 @@ extension AiStore {
         switch settings.provider {
         case .openai: "sk-…"
         case .openrouter: "sk-or-…"
+        case .opencode: "sk-…"
         default: "AIza…"
         }
     }

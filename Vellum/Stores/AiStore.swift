@@ -11,8 +11,11 @@ enum AiRole: String, Codable, Sendable {
 enum AiProvider: String, Codable, Sendable {
     case gemini
     case openai
-    case codex
     case openrouter
+    /// ChatGPT-subscription OAuth (Codex backend); no API key, uses `ChatGPTAuth`.
+    case chatgpt
+    /// OpenCode Zen gateway, authenticated with a pasted `sk-…` API key.
+    case opencode
 }
 
 enum VoiceMode: String, Codable, Sendable {
@@ -80,9 +83,11 @@ struct AiSettings: Codable, Equatable, Sendable {
     var apiKey: String = ""
     var openaiModel: String = "gpt-5.5"
     var openaiApiKey: String = ""
-    var codexModel: String = "gpt-5.5"
     var openrouterModel: String = ""
     var openrouterApiKey: String = ""
+    var chatgptModel: String = "gpt-5.5"
+    var opencodeModel: String = "claude-opus-4-8"
+    var opencodeApiKey: String = ""
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
     var voiceMode: VoiceMode = .off
@@ -126,6 +131,8 @@ final class AiStore {
     weak var annotationStore: AnnotationStore?
     /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
     weak var openRouterCatalog: OpenRouterCatalog?
+    /// Wired in by VellumApp; owns the ChatGPT-subscription OAuth lifecycle.
+    weak var chatgptAuth: ChatGPTAuth?
 
     private(set) var messages: [AiMessage] = []
     /// Current request phase; drives the panel's activity indicator.
@@ -291,6 +298,15 @@ final class AiStore {
             error = "Set your OpenRouter API key in AI settings."
             return
         }
+        if settingsAtStart.provider == .opencode,
+           settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenCode Zen API key in AI settings."
+            return
+        }
+        if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
+            error = "Sign in with ChatGPT in AI settings."
+            return
+        }
 
         let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
         messages.append(userMessage)
@@ -383,24 +399,33 @@ final class AiStore {
                     toolEngine: engine,
                     onEvent: onEvent
                 )
-            case .codex:
-                // Codex uses a structured-output schema that can't be partially
-                // streamed; it stays buffered but still drives the activity pill.
-                onEvent(.status("Working"))
-                let model = settingsAtStart.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                let image = images.first.map {
-                    CodexAiImageInput(base64Data: $0.base64Data, mediaType: $0.mediaType)
+            case .chatgpt:
+                guard let chatgptAuth else {
+                    throw AiClientError.message("Sign in with ChatGPT in AI settings.")
                 }
-                let raw = try await app.sessions.runCodexAi(
-                    prompt: AiPrompts.buildToolModePrompt(parameters),
+                let model = settingsAtStart.chatgptModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                result = try await ChatGPTClient(auth: chatgptAuth).generate(
                     model: model.isEmpty ? "gpt-5.5" : model,
-                    image: image
-                )
-                result = await parseAndRunCodex(
-                    raw,
-                    engine: engine,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    images: images,
                     sessionIdAtStart: sessionIdAtStart,
-                    app: app,
+                    toolEngine: engine,
+                    onEvent: onEvent
+                )
+            case .opencode:
+                let model = settingsAtStart.opencodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenCode Zen model in AI settings.")
+                }
+                result = try await OpenCodeZenClient().generate(
+                    apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: context.currentPageImage,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine,
                     onEvent: onEvent
                 )
             }
@@ -459,56 +484,4 @@ final class AiStore {
         messages[index].content += delta
     }
 
-    private func parseAndRunCodex(
-        _ raw: String,
-        engine: AiToolEngine,
-        sessionIdAtStart: String,
-        app: AppStore,
-        onEvent: @MainActor (AiStreamEvent) -> Void
-    ) async -> AiProviderResult {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return AiProviderResult(reply: "I couldn't produce a response.", actionResults: [])
-        }
-        let jsonText: String
-        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
-            jsonText = String(trimmed[first...last])
-        } else {
-            jsonText = trimmed
-        }
-        guard let data = jsonText.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return AiProviderResult(reply: trimmed, actionResults: [])
-        }
-        let parsedReply = (object["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reply = parsedReply?.isEmpty == false ? parsedReply! : trimmed
-        let rawActions = object["actions"] as? [[String: Any]] ?? []
-        var actionResults: [String] = []
-        for rawAction in rawActions {
-            guard actionResults.count < AiToolEngine.maxActions,
-                  app.activeTabId == sessionIdAtStart,
-                  let tool = rawAction["tool"] as? String,
-                  ["goToPage", "addNote", "addHighlight"].contains(tool),
-                  let args = rawAction["args"] as? [String: Any] else { continue }
-            let action = AiToolAction(
-                tool: tool,
-                args: AiToolArguments(
-                    pageNumber: (args["pageNumber"] as? NSNumber)?.doubleValue,
-                    text: args["text"] as? String,
-                    color: args["color"] as? String,
-                    x: (args["x"] as? NSNumber)?.doubleValue,
-                    y: (args["y"] as? NSNumber)?.doubleValue
-                )
-            )
-            onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
-            let result = await engine.run(
-                action,
-                sessionIdAtStart: sessionIdAtStart,
-                actionCount: actionResults.count
-            )
-            actionResults.append(result)
-            onEvent(.toolFinished(result: result))
-        }
-        return AiProviderResult(reply: reply, actionResults: actionResults)
-    }
 }

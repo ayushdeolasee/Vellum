@@ -55,7 +55,11 @@
 		BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
-		D0D4EC9C2F31C5D40C71A2AC /* CodexAiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445794DE3CECBDEB9414F5C2 /* CodexAiClient.swift */; };
+		FEED00000000000000000002 /* PKCE.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED00000000000000000001 /* PKCE.swift */; };
+		FEED00000000000000000004 /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED00000000000000000003 /* OAuthLoopbackServer.swift */; };
+		FEED00000000000000000006 /* ChatGPTAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED00000000000000000005 /* ChatGPTAuth.swift */; };
+		FEED00000000000000000008 /* ChatGPTClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED00000000000000000007 /* ChatGPTClient.swift */; };
+		FEED0000000000000000000A /* OpenCodeZenClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED00000000000000000009 /* OpenCodeZenClient.swift */; };
 		D0E1C1D4A6D6A54C194A3389 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
 		D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F38132FDC803C6ACEB43CC /* AiStore.swift */; };
@@ -97,7 +101,11 @@
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
 		3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReferences.swift; sourceTree = "<group>"; };
-		445794DE3CECBDEB9414F5C2 /* CodexAiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAiClient.swift; sourceTree = "<group>"; };
+		FEED00000000000000000001 /* PKCE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OAuth/PKCE.swift"; sourceTree = "<group>"; };
+		FEED00000000000000000003 /* OAuthLoopbackServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OAuth/OAuthLoopbackServer.swift"; sourceTree = "<group>"; };
+		FEED00000000000000000005 /* ChatGPTAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OAuth/ChatGPTAuth.swift"; sourceTree = "<group>"; };
+		FEED00000000000000000007 /* ChatGPTClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTClient.swift; sourceTree = "<group>"; };
+		FEED00000000000000000009 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
 		460DC0522689EC17EC0D233B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfOverlays.swift; sourceTree = "<group>"; };
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
@@ -167,12 +175,16 @@
 				90963B42EE17356826E8DE90 /* AiPrompts.swift */,
 				E201F2530645C6348ECC59AA /* AiStreaming.swift */,
 				ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */,
-				445794DE3CECBDEB9414F5C2 /* CodexAiClient.swift */,
+				FEED00000000000000000007 /* ChatGPTClient.swift */,
 				C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */,
 				BE90299DD7109284EF8AE43D /* OpenAIClient.swift */,
+				FEED00000000000000000009 /* OpenCodeZenClient.swift */,
 				0D0C63462421A1E994C543BB /* OpenRouterCatalog.swift */,
 				96768879872A93B8FD39C342 /* OpenRouterClient.swift */,
 				3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */,
+				FEED00000000000000000005 /* ChatGPTAuth.swift */,
+				FEED00000000000000000003 /* OAuthLoopbackServer.swift */,
+				FEED00000000000000000001 /* PKCE.swift */,
 			);
 			path = Ai;
 			sourceTree = "<group>";
@@ -483,7 +495,11 @@
 				9AC827DE4385CD8EC4201A49 /* AnnotationSidebar.swift in Sources */,
 				9C7F3F0B4C0CDEE7ED83CBB4 /* AnnotationStore.swift in Sources */,
 				F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */,
-				D0D4EC9C2F31C5D40C71A2AC /* CodexAiClient.swift in Sources */,
+				FEED00000000000000000002 /* PKCE.swift in Sources */,
+				FEED00000000000000000004 /* OAuthLoopbackServer.swift in Sources */,
+				FEED00000000000000000006 /* ChatGPTAuth.swift in Sources */,
+				FEED00000000000000000008 /* ChatGPTClient.swift in Sources */,
+				FEED0000000000000000000A /* OpenCodeZenClient.swift in Sources */,
 				19026EE9153EC91FE9D3DB80 /* ComposerReferences.swift in Sources */,
 				18277300524A92AEDAAAEA7E /* ContentView.swift in Sources */,
 				53621485E83DB998CCBA6163 /* Controls.swift in Sources */,

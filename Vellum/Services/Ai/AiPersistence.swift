@@ -23,6 +23,7 @@ enum AiPersistence {
             settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
             settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
             settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+            settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
             return settings
         }
 
@@ -32,8 +33,9 @@ enum AiPersistence {
         }
         if let model = value["model"] as? String { settings.model = model }
         if let model = value["openaiModel"] as? String { settings.openaiModel = model }
-        if let model = value["codexModel"] as? String { settings.codexModel = model }
         if let model = value["openrouterModel"] as? String { settings.openrouterModel = model }
+        if let model = value["chatgptModel"] as? String { settings.chatgptModel = model }
+        if let model = value["opencodeModel"] as? String { settings.opencodeModel = model }
         if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
         settings.voiceMode = value["voiceMode"] as? String == "push-to-talk" ? .pushToTalk : .off
         if let enabled = value["ttsEnabled"] as? Bool { settings.ttsEnabled = enabled }
@@ -44,9 +46,11 @@ enum AiPersistence {
         migrate(account: KeychainStore.Account.gemini, legacy: value["apiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.openai, legacy: value["openaiApiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.openrouter, legacy: value["openrouterApiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.opencode, legacy: value["opencodeApiKey"] as? String, didMigrate: &didMigrate)
         settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
         settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
         settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+        settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
 
         // Rewrite the blob without plaintext keys once migrated.
         if didMigrate { saveSettings(settings) }
@@ -72,11 +76,13 @@ enum AiPersistence {
         KeychainStore.set(KeychainStore.Account.gemini, settings.apiKey)
         KeychainStore.set(KeychainStore.Account.openai, settings.openaiApiKey)
         KeychainStore.set(KeychainStore.Account.openrouter, settings.openrouterApiKey)
+        KeychainStore.set(KeychainStore.Account.opencode, settings.opencodeApiKey)
 
         var stripped = settings
         stripped.apiKey = ""
         stripped.openaiApiKey = ""
         stripped.openrouterApiKey = ""
+        stripped.opencodeApiKey = ""
         guard let data = try? JSONEncoder().encode(stripped),
               let raw = String(data: data, encoding: .utf8) else { return }
         UserDefaults.standard.set(raw, forKey: settingsKey)

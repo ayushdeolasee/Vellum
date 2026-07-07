@@ -54,10 +54,13 @@ enum KeychainStore {
         SecItemDelete(query as CFDictionary)
     }
 
-    // Account identifiers, one per provider with a stored key.
+    // Account identifiers, one per provider with a stored secret.
     enum Account {
         static let gemini = "gemini"
         static let openai = "openai"
         static let openrouter = "openrouter"
+        static let opencode = "opencode"
+        /// JSON blob of the ChatGPT OAuth tokens (access/refresh/id/account id).
+        static let chatgptTokens = "chatgpt-tokens"
     }
 }

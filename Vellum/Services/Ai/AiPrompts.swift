@@ -26,17 +26,6 @@ enum AiPrompts {
         ].joined(separator: "\n")
     }
 
-    static func buildToolModePrompt(_ parameters: AiPromptParameters) throws -> String {
-        let descriptions = try loadTemplate(named: "tool-descriptions")
-        let template = try loadTemplate(named: "tool-mode-system")
-            .replacingOccurrences(of: "{{TOOL_DESCRIPTIONS}}", with: descriptions)
-        return render(template, replacements: [
-            "CONVERSATION": parameters.conversation,
-            "CONTEXT": parameters.context,
-            "LATEST_USER_REQUEST": parameters.latestUserRequest,
-        ])
-    }
-
     static func buildConversationBlock(_ messages: [AiMessage]) -> String {
         messages.suffix(10).map { "\($0.role.rawValue.uppercased()): \($0.content)" }
             .joined(separator: "\n")
@@ -118,12 +107,6 @@ enum AiPrompts {
 
     private static func quoted(_ string: String) -> String {
         "\"\(string)\""
-    }
-
-    private static func render(_ template: String, replacements: [String: String]) -> String {
-        replacements.reduce(template) { result, replacement in
-            result.replacingOccurrences(of: "{{\(replacement.key)}}", with: replacement.value)
-        }.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func loadTemplate(named name: String) throws -> String {

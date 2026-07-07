@@ -254,7 +254,6 @@ struct AiPanel: View {
         HStack(alignment: .bottom, spacing: 8) {
             attachMenu
             ComposerTextView(text: $input, placeholder: "Ask about this document…", onSubmit: submit)
-                .frame(minHeight: 36, maxHeight: 64)
             if aiStore.settings.voiceMode == .pushToTalk {
                 Image(systemName: isListening ? "stop.fill" : "mic")
                     .font(.system(size: 15))
@@ -424,10 +423,40 @@ private struct AnimatedDots: View {
     }
 }
 
-private struct ComposerTextView: NSViewRepresentable {
+/// Single-line-by-default composer field that grows with content up to a cap.
+///
+/// SwiftUI won't reliably size an `NSScrollView`-backed representable to its
+/// text content, so instead of leaning on intrinsic size we measure the laid-out
+/// text height in the coordinator and drive an explicit SwiftUI `frame(height:)`.
+/// That keeps the box hugging one centered line when empty (aligned with the
+/// +/send buttons) and expanding only as lines are added.
+private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
+
+    /// One line + vertical insets. Also the floor the box collapses to.
+    static let minHeight: CGFloat = 36
+    static let maxHeight: CGFloat = 120
+
+    @State private var contentHeight: CGFloat = ComposerTextView.minHeight
+
+    var body: some View {
+        ComposerTextViewRep(
+            text: $text,
+            placeholder: placeholder,
+            onSubmit: onSubmit,
+            contentHeight: $contentHeight
+        )
+        .frame(height: min(max(contentHeight, Self.minHeight), Self.maxHeight))
+    }
+}
+
+private struct ComposerTextViewRep: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let onSubmit: () -> Void
+    @Binding var contentHeight: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -442,14 +471,13 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
         textView.alignment = .left
-        textView.textContainerInset = NSSize(width: 8, height: 6)
+        // Center a single line vertically in the 36pt composer row: a 14pt system
+        // line is ~17pt tall, so (36 - 17) / 2 ≈ 9.5 of top/bottom inset keeps the
+        // caret and placeholder centered against the +/send buttons.
+        textView.textContainerInset = NSSize(width: 8, height: 9.5)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        // Without an explicit large maxSize the empty text view reports an
-        // oversized intrinsic height and stretches to the frame's max, leaving
-        // the placeholder floating at the top. Pin min/max so it collapses to a
-        // single line and grows only as content is added.
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
@@ -465,14 +493,28 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
+        context.coordinator.publishHeight(for: textView)
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: ComposerTextView
-        init(parent: ComposerTextView) { self.parent = parent }
+        var parent: ComposerTextViewRep
+        init(parent: ComposerTextViewRep) { self.parent = parent }
+
         func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView else { return }
+            guard let view = notification.object as? SubmitTextView else { return }
             parent.text = view.string
+            publishHeight(for: view)
+        }
+
+        /// Push the fitted content height back to SwiftUI, deferred to the next
+        /// runloop tick to avoid "modifying state during view update" churn when
+        /// called from `updateNSView`.
+        func publishHeight(for textView: SubmitTextView) {
+            let height = textView.fittingHeight()
+            Task { @MainActor in
+                if parent.contentHeight != height { parent.contentHeight = height }
+            }
         }
     }
 }
@@ -480,6 +522,15 @@ private struct ComposerTextView: NSViewRepresentable {
 private final class SubmitTextView: NSTextView {
     var submit: (() -> Void)?
     var placeholder = ""
+
+    /// Height of the laid-out text plus vertical insets — one line when empty,
+    /// growing as content is added.
+    func fittingHeight() -> CGFloat {
+        guard let layoutManager, let textContainer else { return ComposerTextView.minHeight }
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer).height
+        return used + textContainerInset.height * 2
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) {

@@ -131,12 +131,20 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        Group {
-            if appStore.sidebarTab == .annotations {
-                AnnotationSidebar()
-            } else {
-                AiPanel()
-            }
+        // Keep both panels mounted and toggle visibility rather than swapping via
+        // if/else: tearing AiPanel down on every tab switch loses its scroll
+        // position (returning would land mid-list) and any half-typed draft.
+        // Staying mounted preserves both exactly.
+        ZStack {
+            let showingAnnotations = appStore.sidebarTab == .annotations
+            AnnotationSidebar()
+                .opacity(showingAnnotations ? 1 : 0)
+                .allowsHitTesting(showingAnnotations)
+                .accessibilityHidden(!showingAnnotations)
+            AiPanel()
+                .opacity(showingAnnotations ? 0 : 1)
+                .allowsHitTesting(!showingAnnotations)
+                .accessibilityHidden(showingAnnotations)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()

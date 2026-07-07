@@ -32,6 +32,7 @@ struct VellumApp: App {
     @State private var annotationStore: AnnotationStore
     @State private var aiStore: AiStore
     @State private var openRouterCatalog: OpenRouterCatalog
+    @State private var chatgptAuth: ChatGPTAuth
 
     init() {
         let theme = ThemeStore()
@@ -40,14 +41,17 @@ struct VellumApp: App {
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
         let openRouter = OpenRouterCatalog()
+        let chatgpt = ChatGPTAuth()
         ai.app = app
         ai.annotationStore = annotations
         ai.openRouterCatalog = openRouter
+        ai.chatgptAuth = chatgpt
         _themeStore = State(initialValue: theme)
         _appStore = State(initialValue: app)
         _annotationStore = State(initialValue: annotations)
         _aiStore = State(initialValue: ai)
         _openRouterCatalog = State(initialValue: openRouter)
+        _chatgptAuth = State(initialValue: chatgpt)
         VellumAppDelegate.appStore = app
     }
 
@@ -62,6 +66,7 @@ struct VellumApp: App {
                 .environment(annotationStore)
                 .environment(aiStore)
                 .environment(openRouterCatalog)
+                .environment(chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -81,6 +86,7 @@ struct VellumApp: App {
                 .environment(appStore)
                 .environment(aiStore)
                 .environment(openRouterCatalog)
+                .environment(chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

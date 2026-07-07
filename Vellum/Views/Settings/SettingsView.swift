@@ -161,13 +161,14 @@ private struct AiSettingsTab: View {
         Form {
             Section {
                 Picker("Provider", selection: aiStore.providerBinding) {
-                    Text("Gemini").tag(AiProvider.gemini)
-                    Text("OpenAI API").tag(AiProvider.openai)
-                    Text("OpenRouter").tag(AiProvider.openrouter)
-                    Text("Codex CLI").tag(AiProvider.codex)
+                    ForEach(AiProviderOption.all) { option in
+                        Text(option.label).tag(option.provider)
+                    }
                 }
 
-                if aiStore.settings.provider != .codex {
+                if aiStore.settings.provider == .chatgpt {
+                    LabeledContent("Account") { ChatGPTSignInControl() }
+                } else {
                     LabeledContent(aiStore.keyFieldLabel) {
                         RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
                             .id(aiStore.settings.provider)
