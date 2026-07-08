@@ -39,14 +39,27 @@ struct PaneView: View {
                         .allowsHitTesting(false)
                 }
             }
+            // Transparent drop catcher. A web pane hosts a WKWebView, which
+            // registers its own dragged types and would otherwise swallow a tab
+            // drop before this pane's DropDelegate sees it (a PDFView doesn't,
+            // which is why splitting worked against a PDF but not another web
+            // page). Floating the drop target as an overlay puts it above the
+            // web content, and gating hit testing on an in-flight drag keeps
+            // normal web interaction untouched the rest of the time.
+            .overlay {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(workspace.draggingTab != nil)
+                    .onDrop(
+                        of: [.vellumTab],
+                        delegate: PaneDropDelegate(
+                            paneId: pane.id, size: geo.size, workspace: workspace,
+                            activeZone: $activeZone))
+            }
             // Only show the drop preview while a tab is actually being dragged;
             // `draggingTab` clears reliably on mouse-up, so no highlight lingers
             // after a cancelled drag even if the DropDelegate's exit never fires.
             .overlay { DropZoneOverlay(zone: workspace.draggingTab == nil ? nil : activeZone, palette: palette) }
-            .onDrop(
-                of: [.vellumTab],
-                delegate: PaneDropDelegate(
-                    paneId: pane.id, size: geo.size, workspace: workspace, activeZone: $activeZone))
         }
         .environment(app)
         .environment(pane.annotations)
