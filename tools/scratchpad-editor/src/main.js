@@ -1,9 +1,10 @@
 // Entry point for the scratchpad live-preview editor. Bundled to a single IIFE
 // (window.ScratchpadEditor) that the Swift WKWebView host drives: it pushes
 // content/theme in, and receives change + ready messages back.
-import { EditorState } from "@codemirror/state";
+import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting } from "@codemirror/language";
 import { mathExtension } from "./math.js";
@@ -13,6 +14,14 @@ import { theme, highlight } from "./theme.js";
 
 let view = null;
 let suppressChange = false;
+
+// Teach closeBrackets to auto-pair `$` (inline math) alongside the default
+// `() [] {}` — but not quotes, which are noisy in prose. closeBrackets reads
+// the first `closeBrackets` language-data value it finds, so provide ours at
+// high precedence.
+const closeBracketsConfig = Prec.high(
+  EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["(", "[", "{", "$"] } }])
+);
 
 function post(type, payload) {
   const handler = window.webkit?.messageHandlers?.scratchpad;
@@ -31,7 +40,13 @@ function createEditor(parent) {
       history(),
       drawSelection(),
       EditorView.lineWrapping,
+      closeBrackets(),
+      closeBracketsConfig,
       editorIntelligence,
+      // closeBracketsKeymap (Backspace → delete empty pair) sits above the
+      // Markdown keymap's Backspace so an empty `$|$`/`(|)` deletes both sides;
+      // it no-ops otherwise and falls through to list-markup deletion.
+      Prec.highest(keymap.of(closeBracketsKeymap)),
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage, extensions: [mathExtension] }),
       syntaxHighlighting(highlight),
