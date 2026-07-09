@@ -5,9 +5,12 @@ import SwiftUI
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var appStore: AppStore?
+    @MainActor static weak var scratchpadStore: ScratchpadStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
+            // Persist any pending scratchpad edit before we tear down.
+            Self.scratchpadStore?.flush()
             guard let appStore = Self.appStore, !appStore.tabs.isEmpty else {
                 return .terminateNow
             }
@@ -31,6 +34,7 @@ struct VellumApp: App {
     @State private var appStore: AppStore
     @State private var annotationStore: AnnotationStore
     @State private var aiStore: AiStore
+    @State private var scratchpadStore: ScratchpadStore
 
     init() {
         let theme = ThemeStore()
@@ -40,11 +44,14 @@ struct VellumApp: App {
         let ai = AiStore()
         ai.app = app
         ai.annotationStore = annotations
+        let scratchpad = ScratchpadStore()
         _themeStore = State(initialValue: theme)
         _appStore = State(initialValue: app)
         _annotationStore = State(initialValue: annotations)
         _aiStore = State(initialValue: ai)
+        _scratchpadStore = State(initialValue: scratchpad)
         VellumAppDelegate.appStore = app
+        VellumAppDelegate.scratchpadStore = scratchpad
     }
 
     var body: some Scene {
@@ -57,6 +64,7 @@ struct VellumApp: App {
                 .environment(appStore)
                 .environment(annotationStore)
                 .environment(aiStore)
+                .environment(scratchpadStore)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)

@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     @State private var keyMonitor: Any?
@@ -53,6 +54,7 @@ struct ContentView: View {
                                 options: [
                                     (AppStore.SidebarTab.annotations, "Annotations"),
                                     (AppStore.SidebarTab.ai, "AI"),
+                                    (AppStore.SidebarTab.scratchpad, "Scratchpad"),
                                 ],
                                 selection: sidebarTabBinding,
                                 accessibilityIdentifierPrefix: "sidebarTab"
@@ -65,10 +67,12 @@ struct ContentView: View {
         .task(id: documentIdentity) {
             annotationStore.clearAnnotations()
             aiStore.clearDocumentContext()
+            scratchpadStore.clearDocumentContext()
             guard appStore.document?.pdfPath != nil else { return }
             await annotationStore.loadAnnotations()
             guard !Task.isCancelled else { return }
             aiStore.loadConversationForDocument(appStore.document)
+            scratchpadStore.loadForDocument(appStore.document)
         }
         .task(id: autosaveIdentity) {
             guard let identity = autosaveIdentity else { return }
@@ -130,17 +134,42 @@ struct ContentView: View {
         )
     }
 
+    /// All three panels stay mounted in a ZStack; only visibility toggles as
+    /// the tab changes. Keeping them alive (rather than switching, which
+    /// destroys the inactive ones) preserves each panel's transient state
+    /// across tab flips — the AI panel's scroll position and half-typed
+    /// composer draft, and the scratchpad editor's caret/scroll/selection in
+    /// its live-preview WebView. The persisted text itself already survives via
+    /// the stores; this keeps the *view* state that the stores don't hold.
+    ///
+    /// Trade-off mirrored from the AI panel: because the inactive panels no
+    /// longer unmount on a tab switch, their `onDisappear` fires only when the
+    /// document (and thus the inspector) closes — not when flipping tabs.
     private var sidebar: some View {
-        Group {
-            if appStore.sidebarTab == .annotations {
-                AnnotationSidebar()
-            } else {
-                AiPanel()
-            }
+        ZStack {
+            panel(.annotations) { AnnotationSidebar() }
+            panel(.ai) { AiPanel() }
+            panel(.scratchpad) { ScratchpadPanel() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onHover { sidebarHovering = $0 }
+    }
+
+    /// Wraps a sidebar panel so only the active tab is visible, hit-testable,
+    /// and exposed to accessibility — the inactive panels stay mounted but
+    /// inert.
+    @ViewBuilder
+    private func panel<Content: View>(
+        _ tab: AppStore.SidebarTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isActive = appStore.sidebarTab == tab
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
     }
 
     private var documentIdentity: DocumentIdentity {
@@ -287,7 +316,21 @@ struct ContentView: View {
 
     private var isTextInputFirstResponder: Bool {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-        return responder is NSTextView || responder is NSTextField || responder is NSSearchField
+        if responder is NSTextView || responder is NSTextField || responder is NSSearchField {
+            return true
+        }
+        // The scratchpad editor is a WKWebView (CodeMirror), so typing there
+        // makes a private WebKit content view first responder rather than an
+        // NSTextView. Walk the responder's view ancestry for the scratchpad's
+        // marker WebView so bare-key shortcuts (e.g. `N`) don't fire mid-edit.
+        if let view = responder as? NSView {
+            var ancestor: NSView? = view
+            while let current = ancestor {
+                if current is ScratchpadWebView { return true }
+                ancestor = current.superview
+            }
+        }
+        return false
     }
 
     /// Mirrors `VellumCommands.openPanel()`. Duplicated (rather than shared)

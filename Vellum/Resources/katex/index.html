@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="katex.min.css">
+<script src="katex.min.js"></script>
+<script src="marked.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; padding: 0; background: transparent; -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    color: var(--fg, #211d18);
+    font-size: var(--fs, 14px);
+    line-height: 1.55;
+    padding: 14px 16px 48px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    -webkit-user-select: text;
+  }
+  #content { max-width: 100%; }
+  h1 { font-size: 1.5em; } h2 { font-size: 1.28em; } h3 { font-size: 1.12em; }
+  h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 0.9em 0 0.4em; font-weight: 600; }
+  h1:first-child, h2:first-child, h3:first-child, p:first-child { margin-top: 0; }
+  p { margin: 0 0 0.7em; }
+  a { color: var(--accent, #45418f); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { margin: 0 0 0.7em; padding-left: 1.4em; }
+  li { margin: 0.15em 0; }
+  li > ul, li > ol { margin: 0.15em 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.88em;
+    background: color-mix(in srgb, currentColor 11%, transparent);
+    padding: 0.12em 0.35em;
+    border-radius: 5px;
+  }
+  pre {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    padding: 10px 12px;
+    border-radius: 7px;
+    overflow-x: auto;
+    margin: 0 0 0.7em;
+  }
+  pre code { background: none; padding: 0; font-size: 0.86em; }
+  blockquote {
+    margin: 0 0 0.7em;
+    padding-left: 0.85em;
+    border-left: 2px solid color-mix(in srgb, currentColor 32%, transparent);
+    color: var(--muted, #786f62);
+  }
+  table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; margin: 0 0 0.7em; }
+  th, td { border: 1px solid color-mix(in srgb, currentColor 22%, transparent); padding: 5px 9px; text-align: left; }
+  th { background: color-mix(in srgb, currentColor 7%, transparent); font-weight: 600; }
+  hr { border: none; border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent); margin: 1.1em 0; }
+  img { max-width: 100%; }
+  .katex-display { overflow-x: auto; overflow-y: hidden; padding: 3px 0 5px; }
+  .empty { color: var(--muted, #888); font-style: italic; }
+  .math-error { color: var(--err, #b23a30); font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<div id="content"></div>
+<script>
+  // Private-use sentinels: vanishingly unlikely to appear in user notes, so they
+  // survive Markdown parsing intact and let us splice rendered math back in.
+  var OPEN = String.fromCharCode(0xE000),
+      CLOSE = String.fromCharCode(0xE001),
+      ESC = String.fromCharCode(0xE002);
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+    });
+  }
+
+  // Convert a Markdown + LaTeX source string to HTML. Math spans are pulled out
+  // before Markdown runs (so `x_i`, `a*b`, etc. inside math aren't mangled by
+  // emphasis parsing) then typeset with KaTeX and reinserted.
+  function render(markdown) {
+    var src = String(markdown == null ? "" : markdown);
+    var el = document.getElementById("content");
+    if (!src.trim()) {
+      el.innerHTML = '<p class="empty">Nothing to preview yet. Switch to Write to start taking notes.</p>';
+      return;
+    }
+    var store = [];
+    // Protect escaped dollar signs first so they never open a math span.
+    src = src.split("\\$").join(ESC);
+    // Display math: $$ ... $$
+    src = src.replace(/\$\$([\s\S]+?)\$\$/g, function (m, tex) {
+      store.push({ tex: tex, display: true });
+      return OPEN + (store.length - 1) + CLOSE;
+    });
+    // Inline math: $ ... $  (no newline, no empty span)
+    src = src.replace(/\$([^\n$]+?)\$/g, function (m, tex) {
+      store.push({ tex: tex, display: false });
+      return OPEN + (store.length - 1) + CLOSE;
+    });
+
+    var html;
+    try {
+      html = marked.parse(src, { gfm: true, breaks: true });
+    } catch (e) {
+      html = "<pre>" + escapeHtml(src) + "</pre>";
+    }
+
+    html = html.replace(new RegExp(OPEN + "(\\d+)" + CLOSE, "g"), function (m, i) {
+      var item = store[+i];
+      try {
+        return katex.renderToString(item.tex, {
+          displayMode: item.display,
+          throwOnError: false,
+          output: "html",
+        });
+      } catch (e) {
+        return '<span class="math-error">' + escapeHtml(item.tex) + "</span>";
+      }
+    });
+    html = html.split(ESC).join("$");
+    el.innerHTML = html;
+  }
+
+  function setStyle(fg, muted, accent, err, fontSize) {
+    var r = document.documentElement.style;
+    r.setProperty("--fg", fg);
+    r.setProperty("--muted", muted);
+    r.setProperty("--accent", accent);
+    r.setProperty("--err", err);
+    r.setProperty("--fs", fontSize + "px");
+  }
+
+  window.__scratchpadReady = true;
+</script>
+</body>
+</html>

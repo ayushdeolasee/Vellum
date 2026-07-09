@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="katex.min.css">
+<script src="katex.min.js"></script>
+<script src="marked.min.js"></script>
+<style>
+  :root { color-scheme: light dark; --fg: #211d18; --muted: #786f62; --accent: #45418f; --err: #b23a30; --fs: 14px; }
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; -webkit-text-size-adjust: 100%; }
+  #editor { height: 100%; }
+  .cm-editor { height: 100%; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 22%, transparent); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .katex { font-size: 1em; }
+</style>
+</head>
+<body>
+<div id="editor"></div>
+<script src="editor.bundle.js"></script>
+</body>
+</html>

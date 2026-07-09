@@ -47,7 +47,7 @@ final class AppStore {
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
 
-    enum SidebarTab { case annotations, ai }
+    enum SidebarTab { case annotations, ai, scratchpad }
 
     // Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
     static let minSidebarFontSize: Double = 10
@@ -425,7 +425,9 @@ final class AppStore {
 
     func setMode(_ mode: InteractionMode) {
         self.mode = mode
-        updateActiveTab { $0.mode = mode }
+        // `snapshotRegion` is a transient capture gesture — never persist it to
+        // a tab (a reopened tab must not resurrect a half-started crop).
+        if mode != .snapshotRegion { updateActiveTab { $0.mode = mode } }
     }
 
     // MARK: - Internals

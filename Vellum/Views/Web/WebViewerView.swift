@@ -61,6 +61,7 @@ struct WebViewerView: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     @State private var controller = WebViewerController()
@@ -70,6 +71,20 @@ struct WebViewerView: View {
             ZStack(alignment: .topLeading) {
                 WebViewRepresentable(controller: controller)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Drag-to-crop region snapshot → scratchpad. The scrim
+                // intercepts the drag before the web view sees it.
+                if appStore.mode == .snapshotRegion {
+                    RegionCaptureOverlay { rect in
+                        appStore.setMode(.view)
+                        Task {
+                            if let capture = await controller.captureRegion(viewerRect: rect) {
+                                scratchpadStore.addImage(capture, label: "Web region")
+                            }
+                        }
+                    }
+                    .zIndex(60)
+                }
 
                 if controller.isOffline {
                     offlineBadge
@@ -552,6 +567,22 @@ final class WebViewerController: NSObject {
     private func finishCapture(_ requestId: String, with value: CapturedWebPosition?) {
         guard let resolve = pendingCaptures.removeValue(forKey: requestId) else { return }
         resolve(value)
+    }
+
+    /// Snapshot the web view region under `viewerRect` (the SwiftUI overlay's
+    /// local coordinates, which sit directly over the web view) into an image
+    /// for the scratchpad. Uses `WKWebView.takeSnapshot`; the resulting bytes
+    /// run through the shared `scratchpadCapture` normalizer (downscale/encode).
+    func captureRegion(viewerRect rect: CGRect) async -> ScratchpadImageCapture? {
+        let clamped = rect.intersection(webView.bounds)
+        guard clamped.width >= 4, clamped.height >= 4 else { return nil }
+        let config = WKSnapshotConfiguration()
+        config.rect = clamped
+        guard let image = try? await webView.takeSnapshot(configuration: config),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return scratchpadCapture(from: png)
     }
 
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {

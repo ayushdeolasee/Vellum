@@ -10,6 +10,7 @@ struct PdfOverlayStack: View {
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     /// One per-page overlay layer with its frame resolved. Frames are computed
@@ -51,6 +52,21 @@ struct PdfOverlayStack: View {
                         controller.handleNoteOverlayClick(atTopLeft: location)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            // Drag-to-crop region snapshot → scratchpad. Sits above the page
+            // layers so its marquee owns the drag; a full-viewer hit-testable
+            // scrim means PdfKitView's mouse monitors ignore these events (they
+            // hit-test into this SwiftUI overlay, not the PDFView).
+            if app.mode == .snapshotRegion {
+                RegionCaptureOverlay { rect in
+                    if let capture = controller.capturePageRegionData(viewerRect: rect) {
+                        let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
+                        scratchpadStore.addImage(capture, label: label)
+                    }
+                    app.setMode(.view)
+                }
+                .zIndex(60)
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
@@ -103,6 +119,56 @@ struct PdfOverlayStack: View {
         let high = min(numPages, (center.last ?? 1) + 2)
         guard low <= high else { return [] }
         return Array(low...high)
+    }
+}
+
+/// Drag-to-crop overlay for `.snapshotRegion` mode: draws a dashed marquee and
+/// reports the final rectangle (viewer top-left coordinates) on release.
+struct RegionCaptureOverlay: View {
+    let onCapture: (CGRect) -> Void
+
+    @Environment(\.palette) private var palette
+    @State private var start: CGPoint?
+    @State private var current: CGPoint?
+
+    private var rect: CGRect? {
+        guard let start, let current else { return nil }
+        return CGRect(
+            x: min(start.x, current.x), y: min(start.y, current.y),
+            width: abs(current.x - start.x), height: abs(current.y - start.y))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(0.08)
+                .contentShape(Rectangle())
+            if let rect {
+                Rectangle()
+                    .fill(palette.primary.opacity(0.12))
+                    .overlay {
+                        Rectangle().strokeBorder(
+                            palette.primary,
+                            style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .pointerStyle(.rectSelection)
+        .gesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                .onChanged { value in
+                    if start == nil { start = value.startLocation }
+                    current = value.location
+                }
+                .onEnded { value in
+                    let final = rect ?? CGRect(origin: value.startLocation, size: .zero)
+                    start = nil
+                    current = nil
+                    onCapture(final)
+                }
+        )
     }
 }
 
