@@ -49,6 +49,11 @@ final class ChatGPTClient {
                 "tool_choice": "auto",
                 "parallel_tool_calls": true,
                 "store": false,
+                // Prompt caching (PR A.5): a per-session key so the stable prompt
+                // prefix is reused across tool-loop iterations and follow-ups.
+                // NOTE: acceptance by the ChatGPT OAuth (Codex) backend is pending
+                // live verification; drop from this client only if the backend 400s.
+                "prompt_cache_key": "vellum-\(sessionIdAtStart)",
                 "stream": true,
                 // Cost guard: cap the visible output.
                 "max_output_tokens": 2048,

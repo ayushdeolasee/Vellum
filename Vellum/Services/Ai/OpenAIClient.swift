@@ -36,6 +36,9 @@ final class OpenAIClient {
                 "input": input,
                 "tools": Self.functionTools,
                 "store": false,
+                // Prompt caching (PR A.5): a per-session key so the stable prompt
+                // prefix is reused across tool-loop iterations and follow-ups.
+                "prompt_cache_key": "vellum-\(sessionIdAtStart)",
                 "stream": true,
                 // Cost guard: cap the visible output.
                 "max_output_tokens": 2048,

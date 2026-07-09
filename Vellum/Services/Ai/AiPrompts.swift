@@ -17,13 +17,16 @@ enum AiPrompts {
         try loadTemplate(named: "tool-mode-native")
     }
 
+    /// Stable-first ordering (Document Context → Recent Conversation → Latest
+    /// User Request) so the cacheable prefix — document context — leads and the
+    /// per-message volatile tail (conversation + request) trails. See PR A.5.
     static func buildNativeToolUserPrompt(_ parameters: AiPromptParameters) -> String {
         [
-            "### Recent Conversation",
-            parameters.conversation,
-            "",
             "### Document Context",
             parameters.context,
+            "",
+            "### Recent Conversation",
+            parameters.conversation,
             "",
             "### Latest User Request",
             parameters.latestUserRequest,
@@ -60,15 +63,15 @@ enum AiPrompts {
 
         let referenced = boundedReferencedBlock(context.references.map(referenceLine).joined(separator: "\n"))
 
+        // Ordered most-stable-first so the leading bytes stay identical across a
+        // session and stay cacheable (PR A.5). Session-invariant document
+        // metadata and current-page content lead; the volatile tail (visible
+        // pages, which shift on scroll, and the per-render image dimensions)
+        // follows; the per-message user-referenced block trails last.
         return [
-            "User-referenced context (the user explicitly attached these to this message — prioritize them):",
-            referenced.isEmpty ? "(none)" : referenced,
-            "",
             "Document title: \(context.title ?? "Untitled")",
             "Total pages: \(context.numPages)",
             "Current page: \(context.currentPage)",
-            "Visible pages: \(context.visiblePages.isEmpty ? "none" : context.visiblePages.map(String.init).joined(separator: ", "))",
-            "Current page image: \(image)",
             "",
             "Current page text (page \(context.currentPage)):",
             currentText.isEmpty
@@ -77,6 +80,12 @@ enum AiPrompts {
             "",
             "Current page annotations:",
             currentAnnotations.isEmpty ? "(none)" : currentAnnotations,
+            "",
+            "Visible pages: \(context.visiblePages.isEmpty ? "none" : context.visiblePages.map(String.init).joined(separator: ", "))",
+            "Current page image: \(image)",
+            "",
+            "User-referenced context (the user explicitly attached these to this message — prioritize them):",
+            referenced.isEmpty ? "(none)" : referenced,
         ].joined(separator: "\n")
     }
 
