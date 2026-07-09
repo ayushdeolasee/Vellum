@@ -69,6 +69,9 @@ final class OpenRouterClient {
                 "stream": true,
                 // Cost guard: cap the visible output.
                 "max_tokens": 2048,
+                // Ask OpenRouter to report token usage (incl. cached tokens) on
+                // the final stream chunk. Harmless to keep permanently.
+                "usage": ["include": true],
             ]
             if allowTools {
                 body["tools"] = Self.functionTools
@@ -93,6 +96,13 @@ final class OpenRouterClient {
                    let message = error["message"] as? String {
                     throw AiClientError.message(message)
                 }
+                // Debug-only cache-hit diagnostics for PR A.5: OpenRouter reports
+                // usage (incl. cached tokens) on the final chunk.
+                #if DEBUG
+                if let usage = object["usage"] as? [String: Any], !usage.isEmpty {
+                    NSLog("[AiUsage][openrouter] %@", String(describing: usage))
+                }
+                #endif
                 guard let choices = object["choices"] as? [[String: Any]],
                       let delta = choices.first?["delta"] as? [String: Any] else { continue }
                 if let chunk = delta["content"] as? String, !chunk.isEmpty {

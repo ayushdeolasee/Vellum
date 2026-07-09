@@ -36,10 +36,12 @@ final class GeminiClient {
 
         onEvent(.status("Thinking"))
 
-        // Cost guard: cap output and, for the 2.5 family, disable extended
+        // Cost guard: cap output and, for the 2.5 flash family, disable extended
         // thinking (0 budget). Newer families ignore an unknown thinkingConfig.
         var generationConfig: [String: Any] = ["temperature": 0.2, "maxOutputTokens": 2048]
-        if model.contains("2.5") {
+        // 2.5 Pro rejects thinkingBudget 0 (its minimum is 128); only 2.5
+        // Flash/Flash-Lite accept 0, so exclude Pro from the 0-budget gate.
+        if model.contains("2.5") && !model.lowercased().contains("pro") {
             generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
         }
 

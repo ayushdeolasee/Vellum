@@ -168,9 +168,17 @@ final class AiToolEngine {
     /// top matches with surrounding context, output-capped and time-guarded
     /// against a pathological regex.
     private func searchDocument(query: String, isRegex: Bool) async -> String {
-        let trimmed = query
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Literal queries get whitespace-collapsed to match `pageTexts` (which is
+        // whitespace-normalized); regex queries are only trimmed so intentional
+        // runs of spaces in the pattern aren't silently rewritten.
+        let trimmed: String
+        if isRegex {
+            trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            trimmed = query
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !trimmed.isEmpty else { return "Skipped searchDocument: empty query." }
         // Validate the regex up front so an invalid pattern fails fast with a
         // clear message rather than silently falling back to a literal search.
@@ -187,9 +195,13 @@ final class AiToolEngine {
         guard !snapshot.isEmpty else { return "No extractable text in this document yet." }
 
         // Run the grep off the main actor and race it against a deadline so a
-        // pathological regex can't freeze the UI.
+        // pathological regex can't freeze the UI. `performSearch` checks
+        // `Task.isCancelled` between pages, so the deadline bounds latency to the
+        // timeout plus at most one page's match cost (a single page is capped at
+        // `maxPageScanCharacters`) — it doesn't fully prevent a pathological
+        // pattern from burning that one page.
         do {
-            return try await withThrowingTaskGroup(of: String.self) { group in
+            return try await withThrowingTaskGroup(of: String?.self) { group in
                 group.addTask { Self.performSearch(pages: snapshot, query: trimmed, isRegex: isRegex) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 3_000_000_000)
@@ -197,7 +209,8 @@ final class AiToolEngine {
                 }
                 let first = try await group.next()!
                 group.cancelAll()
-                return first
+                // `performSearch` returns nil when it observed cancellation mid-scan.
+                return first ?? "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
             }
         } catch is SearchTimedOut {
             return "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
@@ -218,10 +231,13 @@ final class AiToolEngine {
 
     /// Pure, off-actor grep over a page-text snapshot. Returns the first match on
     /// each page (up to `maxSearchHits` pages) with `±radius` chars of context.
-    private nonisolated static func performSearch(pages: [Int: String], query: String, isRegex: Bool) -> String {
+    /// Cooperative: checks `Task.isCancelled` between pages and returns nil if the
+    /// deadline fired mid-scan, so the caller can surface the timeout message.
+    private nonisolated static func performSearch(pages: [Int: String], query: String, isRegex: Bool) -> String? {
         let regex = isRegex ? try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) : nil
         var hits: [String] = []
         for page in pages.keys.sorted() {
+            if Task.isCancelled { return nil }
             guard let raw = pages[page], !raw.isEmpty else { continue }
             let text = raw.count > maxPageScanCharacters ? String(raw.prefix(maxPageScanCharacters)) : raw
             let matchRange: Range<String.Index>?

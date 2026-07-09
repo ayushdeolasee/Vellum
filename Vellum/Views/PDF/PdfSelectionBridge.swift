@@ -632,7 +632,12 @@ final class PdfViewerController {
             ai.setPageText(page: pageNumber, text: page.string ?? "")
             extracted += 1
             sinceYield += 1
-            if sinceYield >= 32 {
+            // PDFKit text extraction on a displayed document intentionally stays
+            // on the main actor (thread-safety), so this yield cadence is the only
+            // responsiveness lever — smaller bursts keep the UI more responsive at
+            // the cost of more hops. A persistent text cache (PR B) will make
+            // whole-document on-demand extraction rare.
+            if sinceYield >= 8 {
                 sinceYield = 0
                 await Task.yield()
             }
