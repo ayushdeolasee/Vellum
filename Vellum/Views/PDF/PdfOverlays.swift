@@ -54,7 +54,7 @@ struct PdfOverlayStack: View {
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
-                HighlightLayer(annotations: overlay.annotations, zoom: scale)
+                HighlightLayer(annotations: overlay.annotations, zoom: scale, controller: controller)
                     .frame(
                         width: overlay.frame.width, height: overlay.frame.height,
                         alignment: .topLeading)

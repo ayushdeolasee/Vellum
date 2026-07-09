@@ -165,6 +165,7 @@ struct WebViewerView: View {
         .onChange(of: controller.initCount) {
             controller.pushAnnotations(annotationStore.annotations)
             controller.pushMode(appStore.mode)
+            controller.pushSelectedHighlight()
             controller.scrollToSelected(
                 annotations: annotationStore.annotations,
                 selectedId: annotationStore.selectedAnnotationId)
@@ -229,7 +230,15 @@ final class WebViewerController: NSObject {
     private(set) var noteComposer: WebNoteComposerState?
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
-    private(set) var highlightEditor: WebHighlightEditorState?
+    private(set) var highlightEditor: WebHighlightEditorState? {
+        didSet {
+            // The selected highlight (the one whose edit popover is open) grows
+            // draggable resize handles in the page; keep the content script in
+            // sync whenever the selection changes.
+            guard highlightEditor?.id != oldValue?.id else { return }
+            pushSelectedHighlight()
+        }
+    }
 
     /// Window-space frame of the context menu (for click-outside detection).
     @ObservationIgnored var contextMenuGlobalFrame: CGRect = .zero
@@ -496,6 +505,14 @@ final class WebViewerController: NSObject {
         post("set-mode", ["mode": mode.rawValue])
     }
 
+    /// Tell the content script which highlight is selected so it draws (or
+    /// removes) the drag handles. Re-sent after each (re-)init because the
+    /// injected script starts with no selection.
+    func pushSelectedHighlight() {
+        guard initCount > 0 else { return }
+        post("set-selected-highlight", ["id": orNull(highlightEditor?.id)])
+    }
+
     func scrollToSelected(annotations: [Annotation], selectedId: String?) {
         guard initCount > 0, let selectedId else { return }
         guard let annotation = annotations.first(where: { $0.id == selectedId }) else { return }
@@ -735,6 +752,27 @@ final class WebViewerController: NSObject {
                 noteViewer = nil
                 hideContextMenu()
                 highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
+            }
+
+        case "highlight-resized":
+            guard let id = data["id"] as? String,
+                  let start = intValue(data["start"]),
+                  let end = intValue(data["end"]),
+                  let text = data["text"] as? String,
+                  let annotationStore else { break }
+            let positionData = PositionData(
+                rects: [],
+                pageWidth: 1,
+                pageHeight: 1,
+                selectedText: text,
+                startOffset: start,
+                endOffset: end,
+                prefix: data["prefix"] as? String,
+                suffix: data["suffix"] as? String,
+                viewportOffset: nil)
+            Task {
+                await annotationStore.updateAnnotation(UpdateAnnotationInput(
+                    id: id, color: nil, content: nil, positionData: positionData))
             }
 
         case "navigate":

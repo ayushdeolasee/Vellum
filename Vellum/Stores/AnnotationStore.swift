@@ -186,16 +186,46 @@ final class AnnotationStore {
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
-        do {
-            let annotation = try await sessions.createAnnotation(sessionId: sessionId, input: input)
-            if app.activeTabId == sessionId {
-                annotations.append(annotation)
-                return annotation
+        // Optimistic create: render the annotation IMMEDIATELY with a temporary
+        // id, then persist off the main path and reconcile the real id (or
+        // revert) once the file write finishes. A full-file PDF rewrite can take
+        // seconds on a large document; the user must never wait on that to SEE
+        // their highlight/note — the same optimistic pattern update/delete use.
+        let now = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+        let tempId = "temp-" + UUID().uuidString.lowercased()
+        let optimistic = Annotation(
+            id: tempId,
+            type: input.type,
+            pageNumber: input.pageNumber,
+            color: input.color,
+            content: input.content,
+            positionData: input.positionData,
+            createdAt: now,
+            updatedAt: now)
+        annotations.append(optimistic)
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let persisted = try await self.sessions.createAnnotation(sessionId: sessionId, input: input)
+                guard self.app.activeTabId == sessionId else { return }
+                // Swap the temp record for the persisted one (real id, server
+                // defaults like the applied highlight color), keeping selection.
+                if let index = self.annotations.firstIndex(where: { $0.id == tempId }) {
+                    self.annotations[index] = persisted
+                }
+                if self.selectedAnnotationId == tempId {
+                    self.selectedAnnotationId = persisted.id
+                }
+            } catch {
+                NSLog("[annotation-store] Failed to create \(label): \(error)")
+                guard self.app.activeTabId == sessionId else { return }
+                self.annotations.removeAll { $0.id == tempId }
+                if self.selectedAnnotationId == tempId {
+                    self.selectedAnnotationId = nil
+                }
             }
-            return nil
-        } catch {
-            NSLog("[annotation-store] Failed to create \(label): \(error)")
-            return nil
         }
+        return optimistic
     }
 }
