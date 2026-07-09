@@ -605,6 +605,41 @@ final class PdfViewerController {
         }
     }
 
+    /// On-demand text extraction for the AI request path: fill `pageTexts` for
+    /// the requested 1-indexed pages (or the whole document when `pages` is nil)
+    /// with no idle pacing, so a search/read never misses a page the background
+    /// 1→N walk hasn't reached yet. `AiStore.setPageText`'s dedupe keeps this
+    /// idempotent with that walk. Returns how many pages it newly populated
+    /// (drives the `.indexing` indicator). A cooperative yield every so often
+    /// keeps the run loop responsive during a big whole-document pass without
+    /// reintroducing the walk's 16 ms sleep.
+    @discardableResult
+    func ensureExtracted(pages: Set<Int>?) async -> Int {
+        guard let document, let ai else { return 0 }
+        let pageCount = document.pageCount
+        guard pageCount >= 1 else { return 0 }
+        let targets: [Int]
+        if let pages {
+            targets = pages.filter { $0 >= 1 && $0 <= pageCount }.sorted()
+        } else {
+            targets = Array(1...pageCount)
+        }
+        var extracted = 0
+        var sinceYield = 0
+        for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
+            guard self.document === document,
+                  let page = document.page(at: pageNumber - 1) else { continue }
+            ai.setPageText(page: pageNumber, text: page.string ?? "")
+            extracted += 1
+            sinceYield += 1
+            if sinceYield >= 32 {
+                sinceYield = 0
+                await Task.yield()
+            }
+        }
+        return extracted
+    }
+
     // MARK: - AI highlight locator (highlight-locator.ts)
 
     /// Whitespace-stripped, lowercased first-match locator returning

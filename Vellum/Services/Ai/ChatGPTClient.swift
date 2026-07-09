@@ -40,8 +40,8 @@ final class ChatGPTClient {
 
         onEvent(.status("Thinking"))
 
-        for _ in 0..<6 {
-            let body: [String: Any] = [
+        for _ in 0..<8 {
+            var body: [String: Any] = [
                 "model": model,
                 "instructions": systemPrompt,
                 "input": input,
@@ -50,7 +50,13 @@ final class ChatGPTClient {
                 "parallel_tool_calls": true,
                 "store": false,
                 "stream": true,
+                // Cost guard: cap the visible output.
+                "max_output_tokens": 2048,
             ]
+            // Cost guard: minimal reasoning on the gpt-5 family.
+            if model.lowercased().hasPrefix("gpt-5") {
+                body["reasoning"] = ["effort": "minimal"]
+            }
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
@@ -188,10 +194,11 @@ final class ChatGPTClient {
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {
         AiToolArguments(
             pageNumber: (value["pageNumber"] as? NSNumber)?.doubleValue,
-            text: value["text"] as? String,
+            text: (value["text"] as? String) ?? (value["query"] as? String),
             color: value["color"] as? String,
             x: (value["x"] as? NSNumber)?.doubleValue,
-            y: (value["y"] as? NSNumber)?.doubleValue
+            y: (value["y"] as? NSNumber)?.doubleValue,
+            isRegex: value["isRegex"] as? Bool
         )
     }
 
@@ -202,6 +209,27 @@ final class ChatGPTClient {
     }
 
     private static let functionTools: [[String: Any]] = [
+        [
+            "type": "function", "name": "searchDocument",
+            "description": "Search the FULL document text for a query and get back the pages that match, each with surrounding context. Use this to find where something is discussed before reading a page. Default is a case-insensitive literal substring match; set isRegex true to match a regular expression.",
+            "parameters": [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "Text (or regular expression) to search for across every page."],
+                    "isRegex": ["type": "boolean", "description": "Treat query as a regular expression instead of a literal substring. Optional; defaults to false."],
+                ],
+                "required": ["query"], "additionalProperties": false,
+            ],
+        ],
+        [
+            "type": "function", "name": "getPageText",
+            "description": "Read the full extracted text of a single page by its 1-indexed number. Use it after searchDocument, or when the user names a specific page whose text you don't already have.",
+            "parameters": [
+                "type": "object",
+                "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
+                "required": ["pageNumber"], "additionalProperties": false,
+            ],
+        ],
         [
             "type": "function", "name": "goToPage",
             "description": "Navigate the document viewport to a specific 1-indexed page.",

@@ -35,12 +35,19 @@ final class GeminiClient {
 
         onEvent(.status("Thinking"))
 
-        for _ in 0..<6 {
+        // Cost guard: cap output and, for the 2.5 family, disable extended
+        // thinking (0 budget). Newer families ignore an unknown thinkingConfig.
+        var generationConfig: [String: Any] = ["temperature": 0.2, "maxOutputTokens": 2048]
+        if model.contains("2.5") {
+            generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+        }
+
+        for _ in 0..<8 {
             let body: [String: Any] = [
                 "system_instruction": ["parts": [["text": systemPrompt]]],
                 "contents": contents,
                 "tools": [["function_declarations": Self.functionDeclarations]],
-                "generation_config": ["temperature": 0.2],
+                "generation_config": generationConfig,
             ]
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -152,10 +159,11 @@ final class GeminiClient {
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {
         AiToolArguments(
             pageNumber: (value["pageNumber"] as? NSNumber)?.doubleValue,
-            text: value["text"] as? String,
+            text: (value["text"] as? String) ?? (value["query"] as? String),
             color: value["color"] as? String,
             x: (value["x"] as? NSNumber)?.doubleValue,
-            y: (value["y"] as? NSNumber)?.doubleValue
+            y: (value["y"] as? NSNumber)?.doubleValue,
+            isRegex: value["isRegex"] as? Bool
         )
     }
 
@@ -167,6 +175,12 @@ final class GeminiClient {
             return "Navigating"
         case "addNote": return "Adding a note"
         case "addHighlight": return "Adding a highlight"
+        case "searchDocument":
+            if let query = action.args.text, !query.isEmpty { return "Searching for \"\(query)\"" }
+            return "Searching the document"
+        case "getPageText":
+            if let page = action.args.pageNumber { return "Reading page \(Int(page.rounded()))" }
+            return "Reading a page"
         default: return "Working"
         }
     }
@@ -178,6 +192,27 @@ final class GeminiClient {
     }
 
     private static let functionDeclarations: [[String: Any]] = [
+        [
+            "name": "searchDocument",
+            "description": "Search the FULL document text for a query and get back the pages that match, each with surrounding context. Use this to find where something is discussed before reading a page. Default is a case-insensitive literal substring match; set isRegex true to match a regular expression.",
+            "parameters": [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "Text (or regular expression) to search for across every page."],
+                    "isRegex": ["type": "boolean", "description": "Treat query as a regular expression instead of a literal substring. Optional; defaults to false."],
+                ],
+                "required": ["query"],
+            ],
+        ],
+        [
+            "name": "getPageText",
+            "description": "Read the full extracted text of a single page by its 1-indexed number. Use it after searchDocument, or when the user names a specific page whose text you don't already have.",
+            "parameters": [
+                "type": "object",
+                "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
+                "required": ["pageNumber"],
+            ],
+        ],
         [
             "name": "goToPage",
             "description": "Navigate the document viewport to a specific 1-indexed page.",

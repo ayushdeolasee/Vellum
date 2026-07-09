@@ -6,6 +6,9 @@ struct AiToolArguments: Codable, Sendable {
     var color: String?
     var x: Double?
     var y: Double?
+    /// `searchDocument` only: treat `text` (the query) as a regular expression
+    /// instead of a literal substring.
+    var isRegex: Bool?
 }
 
 struct AiToolAction: Codable, Sendable {
@@ -15,13 +18,26 @@ struct AiToolAction: Codable, Sendable {
 
 @MainActor
 final class AiToolEngine {
-    static let maxActions = 5
+    /// Writes mutate the document/viewport (`goToPage`/`addNote`/`addHighlight`)
+    /// and keep the original tight cap. Reads (`searchDocument`/`getPageText`)
+    /// are free in-memory lookups, so they get a looser budget — a
+    /// search→read→answer chain must fit without starving the write budget.
+    static let maxWrites = 5
+    static let maxReads = 16
     static let defaultPageWidth = 612.0
     static let defaultPageHeight = 792.0
+
+    /// Tools that only read already-extracted text; budgeted separately from
+    /// writes and never counted against the write cap.
+    private static let readTools: Set<String> = ["searchDocument", "getPageText"]
 
     private unowned let store: AiStore
     private unowned let app: AppStore
     private unowned let annotations: AnnotationStore
+
+    /// Per-request counters (a fresh engine is created for every `sendMessage`).
+    private var writeCount = 0
+    private var readCount = 0
 
     init(store: AiStore, app: AppStore, annotations: AnnotationStore) {
         self.store = store
@@ -29,15 +45,24 @@ final class AiToolEngine {
         self.annotations = annotations
     }
 
+    // `actionCount` is retained for call-site compatibility; budgeting now uses
+    // the engine's own per-request read/write counters.
     func run(_ action: AiToolAction, sessionIdAtStart: String, actionCount: Int) async -> String {
-        if actionCount >= Self.maxActions {
-            return "Skipped: action limit reached for this response."
-        }
         if app.activeTabId != sessionIdAtStart {
             return "Skipped: the active document changed before this action ran."
         }
+        let isRead = Self.readTools.contains(action.tool)
+        if isRead {
+            if readCount >= Self.maxReads {
+                return "Skipped: document-read limit reached for this response."
+            }
+        } else if writeCount >= Self.maxWrites {
+            return "Skipped: action limit reached for this response."
+        }
         do {
-            return try await execute(action)
+            let result = try await execute(action)
+            if isRead { readCount += 1 } else { writeCount += 1 }
+            return result
         } catch {
             return "Action failed: \(String(describing: error))"
         }
@@ -45,6 +70,15 @@ final class AiToolEngine {
 
     private func execute(_ action: AiToolAction) async throws -> String {
         switch action.tool {
+        case "getPageText":
+            return await getPageText(pageNumber: action.args.pageNumber)
+
+        case "searchDocument":
+            return await searchDocument(
+                query: action.args.text ?? "",
+                isRegex: action.args.isRegex ?? false
+            )
+
         case "goToPage":
             let page = clampPage(action.args.pageNumber)
             app.goToPage(page)
@@ -109,6 +143,117 @@ final class AiToolEngine {
         default:
             return "Skipped unknown tool: \(action.tool)."
         }
+    }
+
+    // MARK: - Read tools (over in-memory pageTexts)
+
+    /// Read one page's extracted text. Extracts on demand if the background
+    /// walk hasn't reached it yet, so it never returns empty for a page that
+    /// actually has a text layer.
+    private func getPageText(pageNumber: Double?) async -> String {
+        let page = clampPage(pageNumber)
+        if store.pageTexts[page] == nil {
+            store.setActivity(.indexing)
+            _ = await store.ensureExtracted(pages: [page])
+        }
+        let text = store.pageTexts[page] ?? ""
+        guard !text.isEmpty else {
+            return "Page \(page) has no extractable text (it may be a scanned image). Request a page image to read it visually."
+        }
+        return "Page \(page):\n\(text)"
+    }
+
+    /// Grep the whole document (already whitespace-normalized in `pageTexts`).
+    /// Ensures every page with a text layer is extracted first, then returns the
+    /// top matches with surrounding context, output-capped and time-guarded
+    /// against a pathological regex.
+    private func searchDocument(query: String, isRegex: Bool) async -> String {
+        let trimmed = query
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Skipped searchDocument: empty query." }
+        // Validate the regex up front so an invalid pattern fails fast with a
+        // clear message rather than silently falling back to a literal search.
+        if isRegex, (try? NSRegularExpression(pattern: trimmed, options: [.caseInsensitive])) == nil {
+            return "Skipped searchDocument: invalid regular expression."
+        }
+
+        // A whole-document read: fill any pages the background walk hasn't
+        // reached yet before grepping.
+        store.setActivity(.indexing)
+        _ = await store.ensureExtracted(pages: nil)
+
+        let snapshot = store.pageTexts
+        guard !snapshot.isEmpty else { return "No extractable text in this document yet." }
+
+        // Run the grep off the main actor and race it against a deadline so a
+        // pathological regex can't freeze the UI.
+        do {
+            return try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { Self.performSearch(pages: snapshot, query: trimmed, isRegex: isRegex) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    throw SearchTimedOut()
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+        } catch is SearchTimedOut {
+            return "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
+        } catch {
+            return "searchDocument failed: \(String(describing: error))"
+        }
+    }
+
+    private struct SearchTimedOut: Error {}
+
+    /// Max matches surfaced, chars of context on each side of a match, per-page
+    /// scan cap (bounds regex cost), and overall output cap. `nonisolated` so the
+    /// off-actor `performSearch`/`snippet` helpers can read them.
+    private nonisolated static let maxSearchHits = 8
+    private nonisolated static let searchSnippetRadius = 200
+    private nonisolated static let maxPageScanCharacters = 100_000
+    private nonisolated static let maxSearchOutputCharacters = 4_000
+
+    /// Pure, off-actor grep over a page-text snapshot. Returns the first match on
+    /// each page (up to `maxSearchHits` pages) with `±radius` chars of context.
+    private nonisolated static func performSearch(pages: [Int: String], query: String, isRegex: Bool) -> String {
+        let regex = isRegex ? try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) : nil
+        var hits: [String] = []
+        for page in pages.keys.sorted() {
+            guard let raw = pages[page], !raw.isEmpty else { continue }
+            let text = raw.count > maxPageScanCharacters ? String(raw.prefix(maxPageScanCharacters)) : raw
+            let matchRange: Range<String.Index>?
+            if let regex {
+                let ns = text as NSString
+                matchRange = regex
+                    .firstMatch(in: text, options: [], range: NSRange(location: 0, length: ns.length))
+                    .flatMap { Range($0.range, in: text) }
+            } else {
+                matchRange = text.range(of: query, options: .caseInsensitive)
+            }
+            guard let matchRange else { continue }
+            hits.append("page \(page) — \"…\(snippet(around: matchRange, in: text))…\"")
+            if hits.count >= maxSearchHits { break }
+        }
+
+        guard !hits.isEmpty else {
+            return "No matches for \"\(query)\" in the document\(isRegex ? " (regex)" : "")."
+        }
+        let header = "Found \(hits.count) page\(hits.count == 1 ? "" : "s") with a match"
+            + (hits.count >= maxSearchHits ? " (showing first \(maxSearchHits))" : "") + ":"
+        var output = ([header] + hits).joined(separator: "\n")
+        if output.count > maxSearchOutputCharacters {
+            output = String(output.prefix(maxSearchOutputCharacters)) + "\n…[truncated]"
+        }
+        return output
+    }
+
+    private nonisolated static func snippet(around range: Range<String.Index>, in text: String) -> String {
+        let lower = text.index(range.lowerBound, offsetBy: -searchSnippetRadius, limitedBy: text.startIndex) ?? text.startIndex
+        let upper = text.index(range.upperBound, offsetBy: searchSnippetRadius, limitedBy: text.endIndex) ?? text.endIndex
+        return String(text[lower..<upper])
     }
 
     private func clampPage(_ value: Double?) -> Int {

@@ -221,6 +221,7 @@ struct AiPanel: View {
         switch aiStore.activity {
         case .idle, .streaming, .thinking: return "Thinking"
         case .reading: return "Reading document"
+        case .indexing: return "Indexing document"
         case .tool(let summary): return summary
         }
     }

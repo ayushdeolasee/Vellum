@@ -39,6 +39,9 @@ enum AiActivity: Equatable, Sendable {
     case idle
     case thinking
     case reading
+    /// Extracting page text on demand before/while a request reads the document
+    /// (mainly visible during a whole-document `searchDocument`).
+    case indexing
     case streaming
     case tool(String)
 }
@@ -170,6 +173,11 @@ final class AiStore {
     /// Registered by the PDF viewer: JPEG snapshot of a rendered page, max
     /// dimension 1280, quality 0.72 (AiPanel's captureCurrentPageImage).
     var capturePageImageHandler: ((Int) async -> AiPageImageSnapshot?)?
+    /// Registered by the PDF viewer: synchronously extract the given 1-indexed
+    /// pages' text into `pageTexts` (no idle pacing); `nil` extracts the whole
+    /// document. Returns how many pages were newly populated. Web documents load
+    /// their full text up front, so none is registered for them.
+    var ensureExtractedHandler: ((Set<Int>?) async -> Int)?
 
     init() {
         settings = AiPersistence.loadSettings()
@@ -202,6 +210,20 @@ final class AiStore {
 
     func setThinkingState(_ thinking: Bool) {
         activity = thinking ? .thinking : .idle
+    }
+
+    /// Surface a coarse activity phase. Used by the tool engine to show the
+    /// `.indexing` pill while a whole-document search extracts unindexed pages.
+    func setActivity(_ next: AiActivity) {
+        activity = next
+    }
+
+    /// On-demand text extraction for the request/tool path: fill `pageTexts` for
+    /// the given 1-indexed pages (or the whole document when `nil`) with no
+    /// pacing. Idempotent with the background walk via `setPageText`'s dedupe.
+    @discardableResult
+    func ensureExtracted(pages: Set<Int>?) async -> Int {
+        await ensureExtractedHandler?(pages) ?? 0
     }
 
     func setErrorState(_ error: String?) {
@@ -355,6 +377,16 @@ final class AiStore {
         }
 
         do {
+            // Pull model: the default slice only carries the current page, so
+            // make sure that page (and what's on screen) is extracted before the
+            // prompt is built — the background 1→N walk may not have reached a
+            // deep page the user jumped to. Whole-doc extraction happens lazily
+            // inside `searchDocument`. Sub-ms and invisible when already indexed.
+            activity = .indexing
+            _ = await ensureExtracted(pages: Set([context.currentPage] + context.visiblePages))
+            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else { return }
+            activity = .thinking
+
             let conversation = AiPrompts.buildConversationBlock(messagesWithUser)
             let parameters = AiPromptParameters(
                 conversation: conversation.isEmpty ? "(start of conversation)" : conversation,

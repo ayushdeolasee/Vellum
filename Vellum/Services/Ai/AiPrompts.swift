@@ -35,30 +35,24 @@ enum AiPrompts {
             .joined(separator: "\n")
     }
 
+    /// The default per-message context slice (pull model): only the current
+    /// page's text + annotations, document metadata, the optional current-page
+    /// image, and user-attached references. The model reaches anything else via
+    /// the `searchDocument` / `getPageText` tools rather than a full-text dump.
     static func buildContextBlock(pageTexts: [Int: String], context: AiContextSnapshot) -> String {
-        let orderedPages = pageTexts.keys.sorted()
-        let fullText = orderedPages.map { "[Page \($0)] \(pageTexts[$0] ?? "")" }
-            .joined(separator: "\n")
-        let boundedFullText: String
-        if fullText.count > maxContextCharacters {
-            let end = fullText.index(fullText.startIndex, offsetBy: maxContextCharacters)
-            boundedFullText = String(fullText[..<end]) + "\n[truncated]"
+        let rawCurrent = pageTexts[context.currentPage] ?? ""
+        let currentText: String
+        if rawCurrent.count > maxContextCharacters {
+            let end = rawCurrent.index(rawCurrent.startIndex, offsetBy: maxContextCharacters)
+            currentText = String(rawCurrent[..<end]) + "\n[truncated]"
         } else {
-            boundedFullText = fullText
+            currentText = rawCurrent
         }
 
-        let visibleText = context.visiblePages
-            .map { "[Page \($0)] \(pageTexts[$0] ?? "")" }
-            .joined(separator: "\n")
         let currentAnnotations = context.annotations
             .filter { $0.pageNumber == context.currentPage }
             .suffix(50)
             .map(annotationLine)
-            .joined(separator: "\n")
-        let allAnnotations = context.annotations.suffix(200)
-            .map { annotation in
-                "- (\(annotation.type.rawValue)) p.\(annotation.pageNumber) color=\(annotation.color ?? "none") text=\(quoted(annotation.positionData?.selectedText ?? "")) note=\(quoted(annotation.content ?? ""))"
-            }
             .joined(separator: "\n")
         let image = context.currentPageImage.map {
             "attached (\($0.width)x\($0.height), \($0.mediaType))"
@@ -76,17 +70,13 @@ enum AiPrompts {
             "Visible pages: \(context.visiblePages.isEmpty ? "none" : context.visiblePages.map(String.init).joined(separator: ", "))",
             "Current page image: \(image)",
             "",
-            "Visible page text:",
-            visibleText.isEmpty ? "(none)" : visibleText,
+            "Current page text (page \(context.currentPage)):",
+            currentText.isEmpty
+                ? "(no extractable text on this page — it may be scanned; request a page image, or search other pages)"
+                : currentText,
             "",
             "Current page annotations:",
             currentAnnotations.isEmpty ? "(none)" : currentAnnotations,
-            "",
-            "Annotations:",
-            allAnnotations.isEmpty ? "(none)" : allAnnotations,
-            "",
-            "Full PDF text:",
-            boundedFullText.isEmpty ? "(text extraction pending)" : boundedFullText,
         ].joined(separator: "\n")
     }
 

@@ -48,11 +48,13 @@ final class OpenRouterClient {
 
         onEvent(.status("Thinking"))
 
-        for _ in 0..<6 {
+        for _ in 0..<8 {
             var body: [String: Any] = [
                 "model": model,
                 "messages": messages,
                 "stream": true,
+                // Cost guard: cap the visible output.
+                "max_tokens": 2048,
             ]
             if allowTools {
                 body["tools"] = Self.functionTools
@@ -200,10 +202,11 @@ final class OpenRouterClient {
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {
         AiToolArguments(
             pageNumber: (value["pageNumber"] as? NSNumber)?.doubleValue,
-            text: value["text"] as? String,
+            text: (value["text"] as? String) ?? (value["query"] as? String),
             color: value["color"] as? String,
             x: (value["x"] as? NSNumber)?.doubleValue,
-            y: (value["y"] as? NSNumber)?.doubleValue
+            y: (value["y"] as? NSNumber)?.doubleValue,
+            isRegex: value["isRegex"] as? Bool
         )
     }
 
@@ -216,6 +219,33 @@ final class OpenRouterClient {
     /// Chat Completions tool schema (function wrapped), mirroring the three
     /// tools defined for the other providers.
     private static let functionTools: [[String: Any]] = [
+        [
+            "type": "function",
+            "function": [
+                "name": "searchDocument",
+                "description": "Search the FULL document text for a query and get back the pages that match, each with surrounding context. Use this to find where something is discussed before reading a page. Default is a case-insensitive literal substring match; set isRegex true to match a regular expression.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "query": ["type": "string", "description": "Text (or regular expression) to search for across every page."],
+                        "isRegex": ["type": "boolean", "description": "Treat query as a regular expression instead of a literal substring. Optional; defaults to false."],
+                    ],
+                    "required": ["query"], "additionalProperties": false,
+                ],
+            ],
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "getPageText",
+                "description": "Read the full extracted text of a single page by its 1-indexed number. Use it after searchDocument, or when the user names a specific page whose text you don't already have.",
+                "parameters": [
+                    "type": "object",
+                    "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
+                    "required": ["pageNumber"], "additionalProperties": false,
+                ],
+            ],
+        ],
         [
             "type": "function",
             "function": [
