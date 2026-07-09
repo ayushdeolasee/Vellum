@@ -25,11 +25,13 @@ enum KeychainStore {
     }
 
     /// Stores (or updates) the secret for an account. An empty value deletes it.
-    static func set(_ account: String, _ value: String) {
+    /// Returns `true` only when the Keychain reflects the requested state, so
+    /// callers can avoid dropping the plaintext copy before the write lands.
+    @discardableResult
+    static func set(_ account: String, _ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            delete(account)
-            return
+            return delete(account)
         }
         let data = Data(trimmed.utf8)
         let baseQuery: [String: Any] = [
@@ -41,17 +43,22 @@ enum KeychainStore {
         if status == errSecItemNotFound {
             var addQuery = baseQuery
             addQuery[kSecValueData as String] = data
-            SecItemAdd(addQuery as CFDictionary, nil)
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 
-    static func delete(_ account: String) {
+    /// Removes the secret for an account. Returns `true` when the account is
+    /// absent afterwards (either deleted now or already missing).
+    @discardableResult
+    static func delete(_ account: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // Account identifiers, one per provider with a stored secret.
@@ -60,6 +67,7 @@ enum KeychainStore {
         static let openai = "openai"
         static let openrouter = "openrouter"
         static let opencode = "opencode"
+        static let opencodeGo = "opencode-go"
         /// JSON blob of the ChatGPT OAuth tokens (access/refresh/id/account id).
         static let chatgptTokens = "chatgpt-tokens"
     }

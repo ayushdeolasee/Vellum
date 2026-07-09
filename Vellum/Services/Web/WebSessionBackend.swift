@@ -27,13 +27,15 @@ final class WebSessionBackend {
         let key = WebLibrary.pageKey(normalized)
         let recordPath = WebLibrary.recordPath(forKey: key)
 
-        // Read + touch + rewrite the sidecar off the main thread.
+        // Read + touch + rewrite the sidecar off the main thread, serialized per
+        // key via withRecord so a concurrent session for the same page can't
+        // clobber this open (or vice versa).
         let record = try await Task.detached(priority: .userInitiated) {
-            var record = WebLibrary.loadRecord(at: recordPath) ?? WebPageRecord(url: normalized)
-            record.url = normalized
-            record.openedAt = WebLibrary.rfc3339Now()
-            try WebLibrary.saveRecord(record, at: recordPath)
-            return record
+            try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
+                record.url = normalized
+                record.openedAt = WebLibrary.rfc3339Now()
+                return record
+            }
         }.value
 
         return WebDocumentSession(url: normalized, record: record)
@@ -54,37 +56,40 @@ final class WebSessionBackend {
 
         // Install the snapshot (up to 64 MB of assets) and merge annotations
         // off the main thread — this used to block the UI on the main actor.
+        // The record merge runs through withRecord (serialized per key) so it
+        // can't clobber a concurrent session's write to the same sidecar; the
+        // archive install writes to a separate dir so it stays outside the lock.
         let record = try await Task.detached(priority: .userInitiated) {
-            var record = WebLibrary.loadRecord(at: recordPath) ?? WebPageRecord(url: normalized)
-            record.url = normalized
-            record.openedAt = WebLibrary.rfc3339Now()
-
             try WebArchive.installArchiveDir(
                 key: key,
                 snapshotHtml: imported.snapshotHtml,
                 assets: imported.assets,
                 manifest: imported.manifest)
 
-            // Merge archive metadata without clobbering local reading state.
-            if record.title == nil {
-                record.title = imported.manifest.title
+            return try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
+                record.url = normalized
+                record.openedAt = WebLibrary.rfc3339Now()
+
+                // Merge archive metadata without clobbering local reading state.
+                if record.title == nil {
+                    record.title = imported.manifest.title
+                }
+                if record.pageCount == nil {
+                    record.pageCount = imported.manifest.pageCount
+                }
+                if record.lastPage == nil {
+                    record.lastPage = imported.manifest.lastPage
+                }
+                if imported.manifest.loadingPolicy == "snapshot-only" {
+                    record.loadingPolicy = "snapshot-only"
+                }
+                record.saved = true
+                if record.savedAt == nil {
+                    record.savedAt = WebLibrary.rfc3339Now()
+                }
+                WebArchive.mergeAnnotations(&record.annotations, incoming: imported.annotations)
+                return record
             }
-            if record.pageCount == nil {
-                record.pageCount = imported.manifest.pageCount
-            }
-            if record.lastPage == nil {
-                record.lastPage = imported.manifest.lastPage
-            }
-            if imported.manifest.loadingPolicy == "snapshot-only" {
-                record.loadingPolicy = "snapshot-only"
-            }
-            record.saved = true
-            if record.savedAt == nil {
-                record.savedAt = WebLibrary.rfc3339Now()
-            }
-            WebArchive.mergeAnnotations(&record.annotations, incoming: imported.annotations)
-            try WebLibrary.saveRecord(record, at: recordPath)
-            return record
         }.value
 
         return WebDocumentSession(url: normalized, record: record)
@@ -205,9 +210,6 @@ final class WebDocumentSession: DocumentSession {
     private func writeWebArchive(pages: [WebPageText], dest: URL) async throws -> VellumwebExportSummary {
         let localKey = key
         let localRecordPath = recordPath
-        let record = await Task.detached(priority: .userInitiated) {
-            WebLibrary.loadRecord(at: localRecordPath)
-        }.value
 
         // Best available snapshot: live capture > installed archive dir >
         // plain saved snapshot (assets skipped when offline).
@@ -236,6 +238,12 @@ final class WebDocumentSession: DocumentSession {
         }
 
         let pagesJson = try WebArchive.encodePagesJson(pages)
+
+        // Load the record only now — after the fetch/snapshot capture above — so
+        // annotation edits made during that window are included in the archive.
+        let record = await Task.detached(priority: .userInitiated) {
+            WebLibrary.loadRecord(at: localRecordPath)
+        }.value
 
         var pageCount = record?.pageCount
         if !pages.isEmpty {

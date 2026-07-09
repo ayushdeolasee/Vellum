@@ -71,8 +71,8 @@ final class ChatGPTAuth {
         isAuthorizing = true
         defer { isAuthorizing = false }
 
-        let pkce = PKCE.generate()
-        let state = PKCE.generateState()
+        let pkce = try PKCE.generate()
+        let state = try PKCE.generateState()
 
         // Bind the first available registered port; its number goes into the
         // redirect_uri, which must be identical in authorize and token exchange.

@@ -35,7 +35,7 @@ final class SelectableMessageTests: XCTestCase {
         let attributed = AiAttributedRenderer.attributedString(
             for: "The quick brown fox jumps over the lazy dog, again and again and again.",
             color: .labelColor, secondary: .secondaryLabelColor)
-        container.setAttributed(attributed)
+        container.setAttributed(attributed, color: .labelColor, secondary: .secondaryLabelColor)
         for width in [1.0, 40.0, 80.0, 200.0, 248.0] as [CGFloat] {
             let height = container.height(forWidth: width)
             XCTAssertTrue(height.isFinite, "height was not finite at width \(width): \(height)")
@@ -73,7 +73,8 @@ final class SelectableMessageTests: XCTestCase {
     func testEmptyContentDoesNotCrash() {
         let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
         container.setAttributed(AiAttributedRenderer.attributedString(
-            for: "", color: .labelColor, secondary: .secondaryLabelColor))
+            for: "", color: .labelColor, secondary: .secondaryLabelColor),
+            color: .labelColor, secondary: .secondaryLabelColor)
         let height = container.height(forWidth: 248)
         XCTAssertTrue(height.isFinite)
         container.updateQuoteButton()

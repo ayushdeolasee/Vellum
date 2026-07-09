@@ -49,6 +49,12 @@ final class AnnotationStore {
     /// for a point bookmark (window.__captureWebPosition in the original).
     var captureWebPositionHandler: (() async -> CapturedWebPosition?)?
 
+    /// In-flight optimistic creates keyed by annotation id. update/delete await
+    /// the matching create so the backend record exists before they run — an
+    /// immediate edit/delete after "add note" would otherwise race the create
+    /// and hit a spurious "not found" that reverts the user's change.
+    private var pendingCreates: [String: Task<Void, Never>] = [:]
+
     init(app: AppStore) {
         self.app = app
     }
@@ -135,6 +141,10 @@ final class AnnotationStore {
             next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
             return next
         }
+        // Ensure a still-pending optimistic create for this id has landed in the
+        // backend before we try to update it, or the update races to "not found".
+        await awaitPendingCreate(input.id)
+        guard app.activeTabId == sessionId else { return }
         do {
             let updated = try await sessions.updateAnnotation(sessionId: sessionId, input: input)
             if !updated {
@@ -157,6 +167,10 @@ final class AnnotationStore {
         if selectedAnnotationId == id {
             selectedAnnotationId = nil
         }
+        // Ensure a still-pending optimistic create for this id has landed before
+        // we try to delete it, or the delete races to "not found" and reverts.
+        await awaitPendingCreate(id)
+        guard app.activeTabId == sessionId else { return }
         do {
             let deleted = try await sessions.deleteAnnotation(sessionId: sessionId, id: id)
             if !deleted {
@@ -209,7 +223,8 @@ final class AnnotationStore {
             updatedAt: now)
         annotations.append(optimistic)
 
-        Task {
+        let task = Task {
+            defer { pendingCreates[id] = nil }
             do {
                 _ = try await sessions.createAnnotation(sessionId: sessionId, input: persistInput)
             } catch {
@@ -222,7 +237,14 @@ final class AnnotationStore {
                 }
             }
         }
+        pendingCreates[id] = task
         return optimistic
+    }
+
+    /// Wait for an optimistic create for `id` to finish persisting (no-op if
+    /// none is in flight), so follow-up mutations see the backend record.
+    private func awaitPendingCreate(_ id: String) async {
+        await pendingCreates[id]?.value
     }
 
     /// Default render color for a freshly created annotation, matching the

@@ -2,7 +2,7 @@ import Foundation
 
 /// OpenRouter chat client. Uses the OpenAI-compatible **Chat Completions** API
 /// (not the Responses API `OpenAIClient` targets). Image and tool support are
-/// gated by the caller: `image` is passed nil for non-vision models and
+/// gated by the caller: `images` is passed empty for non-vision models and
 /// `allowTools` is false for models that don't support function calling.
 ///
 /// Streams the reply over SSE (`stream: true`). Text deltas are forwarded live;
@@ -23,7 +23,7 @@ final class OpenRouterClient {
         model: String,
         systemPrompt: String,
         userPrompt: String,
-        image: AiPageImageSnapshot?,
+        images: [AiPageImageSnapshot],
         allowTools: Bool,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -34,7 +34,7 @@ final class OpenRouterClient {
         }
 
         var userContent: [[String: Any]] = [["type": "text", "text": userPrompt]]
-        if let image, !image.base64Data.isEmpty {
+        for image in images where !image.base64Data.isEmpty {
             userContent.append([
                 "type": "image_url",
                 "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
@@ -140,27 +140,37 @@ final class OpenRouterClient {
 
     /// Open the SSE stream, retrying once on transient failures before any bytes
     /// are consumed. Reads the (small) error body to surface a real message.
+    /// Only the network call is wrapped in the retry `catch`; non-retryable HTTP
+    /// statuses and cancellation escape immediately instead of being retried.
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    throw AiClientError.message("OpenRouter returned an invalid HTTP response.")
-                }
-                if (200..<300).contains(http.statusCode) { return bytes }
-                let data = try await Self.drain(bytes)
-                let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-                let error = AiClientError.message(message.isEmpty ? "OpenRouter request failed with status \(http.statusCode)." : message)
-                if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                    lastError = error
-                    continue
-                }
-                throw error
+                (bytes, response) = try await URLSession.shared.bytes(for: request)
+            } catch is CancellationError {
+                throw CancellationError() // user-initiated abort: never retry
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError() // URLSession task cancelled: never retry
             } catch {
                 lastError = error
                 if attempt == 1 { throw error }
+                continue // transient network failure: retry once
             }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw AiClientError.message("OpenRouter returned an invalid HTTP response.")
+            }
+            if (200..<300).contains(http.statusCode) { return bytes }
+            let data = try await Self.drain(bytes)
+            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
+            let error = AiClientError.message(message.isEmpty ? "OpenRouter request failed with status \(http.statusCode)." : message)
+            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
+                lastError = error
+                continue // transient status: retry once
+            }
+            throw error // non-retryable status: escapes immediately
         }
         throw lastError ?? AiClientError.message("OpenRouter request failed.")
     }

@@ -474,7 +474,7 @@ struct ModelSelector: View {
         case .noTools: base = base.filter { !$0.supportsTools }
         }
         if freeOnly {
-            base = base.filter { $0.promptPrice == 0 }
+            base = base.filter(Self.isFree)
         }
         if !q.isEmpty {
             base = base.filter {
@@ -495,8 +495,11 @@ struct ModelSelector: View {
     private func sortComparator(_ a: AiModelOption, _ b: AiModelOption) -> Bool {
         switch sort {
         case .pinned, .name:
-            let order = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            return ascending ? order : !order
+            let comparison = a.name.localizedCaseInsensitiveCompare(b.name)
+            if comparison == .orderedSame {
+                return a.id < b.id // deterministic tie-break for duplicate display names
+            }
+            return ascending ? comparison == .orderedAscending : comparison == .orderedDescending
         case .price:
             return numericCompare(Self.priceKey(a), Self.priceKey(b))
         case .context:
@@ -522,6 +525,13 @@ struct ModelSelector: View {
     private static func priceKey(_ option: AiModelOption) -> Double? {
         guard let price = option.promptPrice, price >= 0 else { return nil }
         return price
+    }
+
+    /// A model is "free" only when both input AND output pricing are free; a
+    /// free-input/paid-output model still bills the user. Shared by the free-only
+    /// filter and the subtitle label so they never disagree.
+    private static func isFree(_ option: AiModelOption) -> Bool {
+        option.promptPrice == 0 && (option.completionPrice ?? 0) <= 0
     }
 
     // MARK: - Providers
@@ -580,7 +590,7 @@ struct ModelSelector: View {
             if price < 0 {
                 // OpenRouter returns -1 for variable-priced auto-routers.
                 parts.append("variable price")
-            } else if price == 0 && (option.completionPrice ?? 0) <= 0 {
+            } else if Self.isFree(option) {
                 parts.append("free")
             } else {
                 // per-token USD → per-million tokens.

@@ -14,12 +14,51 @@ enum AiModelCatalog {
     ]
     /// Slugs valid on the ChatGPT-subscription Codex backend.
     static let chatgpt = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
-    /// Curated vision- and tool-capable models on the OpenCode Zen gateway.
+    /// Models on the OpenCode **Zen** gateway: proprietary flagships plus the
+    /// open-weight and free models Zen also hosts. See `opencodeGo` for the
+    /// separate Go gateway.
     static let opencode = [
+        // Proprietary flagships (vision-capable).
         "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
         "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
         "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3-flash",
+        // Open-weight models.
+        "deepseek-v4-pro", "deepseek-v4-flash",
+        "glm-5.2", "glm-5.1", "glm-5",
+        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+        "qwen3.6-plus", "qwen3.5-plus",
+        // Free open models.
+        "big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free",
+        "hy3-free", "nemotron-3-ultra-free", "north-mini-code-free",
     ]
+
+    /// Models on the OpenCode **Go** gateway — low-cost open coding models,
+    /// authenticated with a Go-specific API key that is separate from Zen's.
+    static let opencodeGo = [
+        "glm-5.2", "glm-5.1", "glm-5",
+        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "deepseek-v4-pro", "deepseek-v4-flash",
+        "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+        "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+        "mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5-pro", "mimo-v2.5",
+        "hy3-preview",
+    ]
+
+    /// Vision-capable model ids across both OpenCode gateways. Everything else is
+    /// treated as text-only, so the page image is withheld and the model picker
+    /// surfaces the "can't see the page" warning.
+    private static let opencodeVisionModels: Set<String> = [
+        "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
+        "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3-flash",
+        "mimo-v2-omni",
+    ]
+
+    /// Whether an OpenCode (Zen or Go) model can accept the page image.
+    static func opencodeSupportsVision(_ model: String) -> Bool {
+        opencodeVisionModels.contains(model)
+    }
 
     static func models(for provider: AiProvider) -> [String] {
         switch provider {
@@ -27,6 +66,7 @@ enum AiModelCatalog {
         case .openai: openAI
         case .chatgpt: chatgpt
         case .opencode: opencode
+        case .opencodeGo: opencodeGo
         case .openrouter: []
         }
     }
@@ -47,6 +87,15 @@ enum AiModelCatalog {
                     completionPrice: $0.completionPrice,
                     created: $0.created
                 )
+            }
+        }
+        if provider == .opencode || provider == .opencodeGo {
+            // OpenCode open models are mostly text-only; vision is looked up per
+            // id so we don't send a page image the model can't read.
+            return models(for: provider).map {
+                AiModelOption(id: $0, name: $0,
+                              supportsVision: opencodeSupportsVision($0), supportsTools: true,
+                              contextLength: nil, promptPrice: nil, created: nil)
             }
         }
         return models(for: provider).map {
@@ -132,7 +181,7 @@ struct AiSettingsPanel: View {
         }
         .font(.system(size: 10))
         .foregroundStyle(palette.gold)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -174,6 +223,7 @@ struct AiProviderOption: Identifiable {
         .init(provider: .openrouter, label: "OpenRouter"),
         .init(provider: .chatgpt, label: "ChatGPT (Codex)"),
         .init(provider: .opencode, label: "OpenCode Zen"),
+        .init(provider: .opencodeGo, label: "OpenCode Go"),
     ]
 }
 
@@ -214,7 +264,7 @@ struct ChatGPTSignInControl: View {
                 Text(error)
                     .font(.system(size: 10))
                     .foregroundStyle(palette.gold)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -241,6 +291,7 @@ extension AiStore {
                 case .openai: self.settings.openaiApiKey
                 case .openrouter: self.settings.openrouterApiKey
                 case .opencode: self.settings.opencodeApiKey
+                case .opencodeGo: self.settings.opencodeGoApiKey
                 default: self.settings.apiKey
                 }
             },
@@ -250,6 +301,7 @@ extension AiStore {
                 case .openai: settings.openaiApiKey = value
                 case .openrouter: settings.openrouterApiKey = value
                 case .opencode: settings.opencodeApiKey = value
+                case .opencodeGo: settings.opencodeGoApiKey = value
                 default: settings.apiKey = value
                 }
                 self.setSettings(settings)
@@ -266,6 +318,7 @@ extension AiStore {
                 case .openrouter: self.settings.openrouterModel
                 case .chatgpt: self.settings.chatgptModel
                 case .opencode: self.settings.opencodeModel
+                case .opencodeGo: self.settings.opencodeGoModel
                 }
             },
             set: { value in
@@ -276,6 +329,7 @@ extension AiStore {
                 case .openrouter: settings.openrouterModel = value
                 case .chatgpt: settings.chatgptModel = value
                 case .opencode: settings.opencodeModel = value
+                case .opencodeGo: settings.opencodeGoModel = value
                 }
                 self.setSettings(settings)
             }
@@ -318,6 +372,7 @@ extension AiStore {
         case .openai: "OpenAI API key"
         case .openrouter: "OpenRouter API key"
         case .opencode: "OpenCode Zen API key"
+        case .opencodeGo: "OpenCode Go API key"
         default: "Gemini API key"
         }
     }
@@ -326,7 +381,7 @@ extension AiStore {
         switch settings.provider {
         case .openai: "sk-…"
         case .openrouter: "sk-or-…"
-        case .opencode: "sk-…"
+        case .opencode, .opencodeGo: "sk-…"
         default: "AIza…"
         }
     }

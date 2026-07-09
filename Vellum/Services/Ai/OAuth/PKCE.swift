@@ -13,20 +13,25 @@ enum PKCE {
     }
 
     /// verifier = base64url(64 random bytes); challenge = base64url(sha256(verifier)).
-    static func generate() -> Pair {
-        let verifier = base64URLNoPad(randomBytes(64))
+    static func generate() throws -> Pair {
+        let verifier = base64URLNoPad(try randomBytes(64))
         let digest = SHA256.hash(data: Data(verifier.utf8))
         return Pair(verifier: verifier, challenge: base64URLNoPad(Data(digest)))
     }
 
     /// Opaque anti-forgery value echoed back on the callback (32 random bytes).
-    static func generateState() -> String {
-        base64URLNoPad(randomBytes(32))
+    static func generateState() throws -> String {
+        base64URLNoPad(try randomBytes(32))
     }
 
-    static func randomBytes(_ count: Int) -> Data {
+    /// Cryptographically secure random bytes. Throws rather than returning the
+    /// zero-filled (or partially written) buffer when the RNG fails.
+    static func randomBytes(_ count: Int) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
-        _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        guard status == errSecSuccess else {
+            throw AiClientError.message("Could not generate secure random bytes (OSStatus \(status)).")
+        }
         return Data(bytes)
     }
 

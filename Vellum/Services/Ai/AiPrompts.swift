@@ -8,6 +8,10 @@ struct AiPromptParameters {
 
 enum AiPrompts {
     static let maxContextCharacters = 120_000
+    /// Per-reference text cap so a single quoted reply or selection can't bloat
+    /// the prompt, plus an overall cap on the joined referenced block.
+    static let maxReferenceCharacters = 8_000
+    static let maxReferencedBlockCharacters = 32_000
 
     static func nativeSystemPrompt() throws -> String {
         try loadTemplate(named: "tool-mode-native")
@@ -60,7 +64,7 @@ enum AiPrompts {
             "attached (\($0.width)x\($0.height), \($0.mediaType))"
         } ?? "none"
 
-        let referenced = context.references.map(referenceLine).joined(separator: "\n")
+        let referenced = boundedReferencedBlock(context.references.map(referenceLine).joined(separator: "\n"))
 
         return [
             "User-referenced context (the user explicitly attached these to this message — prioritize them):",
@@ -89,16 +93,32 @@ enum AiPrompts {
     private static func referenceLine(_ reference: AiReference) -> String {
         switch reference.kind {
         case let .selection(text, page):
-            return "- [selected text, p.\(page)] \(quoted(text))"
+            return "- [selected text, p.\(page)] \(quoted(bounded(text)))"
         case let .highlight(text, page):
-            return "- [existing highlight, p.\(page)] \(quoted(text))"
+            return "- [existing highlight, p.\(page)] \(quoted(bounded(text)))"
         case let .region(image, page):
             return "- [region snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
         case let .pageSnapshot(image, page):
             return "- [page snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
         case let .quote(text, _):
-            return "- [quoted from an earlier assistant reply] \(quoted(text))"
+            return "- [quoted from an earlier assistant reply] \(quoted(bounded(text)))"
         }
+    }
+
+    /// Truncate a single reference's text so one large selection/quote can't
+    /// dominate the prompt.
+    private static func bounded(_ text: String) -> String {
+        guard text.count > maxReferenceCharacters else { return text }
+        let end = text.index(text.startIndex, offsetBy: maxReferenceCharacters)
+        return String(text[..<end]) + "…[truncated]"
+    }
+
+    /// Cap the whole referenced block after joining, in case many references add
+    /// up past the limit even when each fits under the per-item cap.
+    private static func boundedReferencedBlock(_ block: String) -> String {
+        guard block.count > maxReferencedBlockCharacters else { return block }
+        let end = block.index(block.startIndex, offsetBy: maxReferencedBlockCharacters)
+        return String(block[..<end]) + "\n[referenced context truncated]"
     }
 
     private static func annotationLine(_ annotation: Annotation) -> String {

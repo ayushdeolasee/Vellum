@@ -38,9 +38,12 @@ struct AiPanel: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 15))
                     .foregroundStyle(palette.primary)
-                Text("AI Assistant").font(.system(size: 14, weight: .medium))
+                Text("AI Assistant")
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            Spacer()
+            Spacer(minLength: 8)
             HStack(spacing: 2) {
                 IconButton(
                     variant: settingsOpen ? .active : .ghost,

@@ -1,12 +1,45 @@
 import Foundation
 
-/// OpenCode Zen chat client. Zen (https://opencode.ai/zen) is a multi-model
-/// gateway authenticated with a pasted API key (`sk-…` from opencode.ai/auth) —
-/// there is no OAuth flow for it. Its `/chat/completions` endpoint is
-/// OpenAI-compatible and works across the whole catalog (the gateway translates
-/// to each model's native backend), so this mirrors `OpenRouterClient`.
+/// OpenCode chat client, shared by the two OpenCode gateways:
+///
+/// - **Zen** (https://opencode.ai/zen) — curated multi-model gateway of both
+///   proprietary flagships and open-weight/free models.
+/// - **Go** (https://opencode.ai/go) — low-cost subscription of open coding
+///   models (GLM, Kimi, Qwen, DeepSeek, MiniMax, MiMo, …).
+///
+/// Each is authenticated with its own pasted API key (`sk-…` from
+/// opencode.ai/auth — the two keys are distinct) and exposes an
+/// OpenAI-compatible `/chat/completions` endpoint that the gateway translates to
+/// each model's native backend, so this mirrors `OpenRouterClient`.
 @MainActor
-final class OpenCodeZenClient {
+final class OpenCodeClient {
+    /// Which OpenCode gateway to talk to. Selects the endpoint and the name used
+    /// in surfaced error messages; the wire protocol is identical.
+    enum Gateway {
+        case zen
+        case go
+
+        var endpoint: String {
+            switch self {
+            case .zen: "https://opencode.ai/zen/v1/chat/completions"
+            case .go: "https://opencode.ai/zen/go/v1/chat/completions"
+            }
+        }
+
+        var name: String {
+            switch self {
+            case .zen: "OpenCode Zen"
+            case .go: "OpenCode Go"
+            }
+        }
+    }
+
+    private let gateway: Gateway
+
+    init(gateway: Gateway) {
+        self.gateway = gateway
+    }
+
     private struct ToolCallAccumulator {
         var id = ""
         var name = ""
@@ -23,8 +56,8 @@ final class OpenCodeZenClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
-        guard let url = URL(string: "https://opencode.ai/zen/v1/chat/completions") else {
-            throw AiClientError.message("Invalid OpenCode Zen endpoint.")
+        guard let url = URL(string: gateway.endpoint) else {
+            throw AiClientError.message("Invalid \(gateway.name) endpoint.")
         }
 
         var userContent: [[String: Any]] = [["type": "text", "text": userPrompt]]
@@ -126,29 +159,39 @@ final class OpenCodeZenClient {
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
+    /// Only the network call is wrapped in the retry `catch`; non-retryable HTTP
+    /// statuses and cancellation escape immediately instead of being retried.
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    throw AiClientError.message("OpenCode Zen returned an invalid HTTP response.")
-                }
-                if (200..<300).contains(http.statusCode) { return bytes }
-                let data = try await Self.drain(bytes)
-                let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-                let error = AiClientError.message(message.isEmpty ? "OpenCode Zen request failed with status \(http.statusCode)." : message)
-                if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                    lastError = error
-                    continue
-                }
-                throw error
+                (bytes, response) = try await URLSession.shared.bytes(for: request)
+            } catch is CancellationError {
+                throw CancellationError() // user-initiated abort: never retry
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError() // URLSession task cancelled: never retry
             } catch {
                 lastError = error
                 if attempt == 1 { throw error }
+                continue // transient network failure: retry once
             }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw AiClientError.message("\(gateway.name) returned an invalid HTTP response.")
+            }
+            if (200..<300).contains(http.statusCode) { return bytes }
+            let data = try await Self.drain(bytes)
+            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
+            let error = AiClientError.message(message.isEmpty ? "\(gateway.name) request failed with status \(http.statusCode)." : message)
+            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
+                lastError = error
+                continue // transient status: retry once
+            }
+            throw error // non-retryable status: escapes immediately
         }
-        throw lastError ?? AiClientError.message("OpenCode Zen request failed.")
+        throw lastError ?? AiClientError.message("\(gateway.name) request failed.")
     }
 
     private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
@@ -159,7 +202,7 @@ final class OpenCodeZenClient {
 
     private static func jsonObject(_ data: Data) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AiClientError.message("OpenCode Zen returned invalid JSON.")
+            throw AiClientError.message("OpenCode returned invalid JSON.")
         }
         return object
     }

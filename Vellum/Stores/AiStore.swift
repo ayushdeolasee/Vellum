@@ -16,6 +16,9 @@ enum AiProvider: String, Codable, Sendable {
     case chatgpt
     /// OpenCode Zen gateway, authenticated with a pasted `sk-…` API key.
     case opencode
+    /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
+    /// separate from Zen. See `OpenCodeClient.Gateway`.
+    case opencodeGo
 }
 
 enum VoiceMode: String, Codable, Sendable {
@@ -88,6 +91,8 @@ struct AiSettings: Codable, Equatable, Sendable {
     var chatgptModel: String = "gpt-5.5"
     var opencodeModel: String = "claude-opus-4-8"
     var opencodeApiKey: String = ""
+    var opencodeGoModel: String = "glm-5.2"
+    var opencodeGoApiKey: String = ""
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
     var voiceMode: VoiceMode = .off
@@ -303,6 +308,11 @@ final class AiStore {
             error = "Set your OpenCode Zen API key in AI settings."
             return
         }
+        if settingsAtStart.provider == .opencodeGo,
+           settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenCode Go API key in AI settings."
+            return
+        }
         if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
             error = "Sign in with ChatGPT in AI settings."
             return
@@ -393,7 +403,7 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
-                    image: supportsVision ? context.currentPageImage : nil,
+                    images: supportsVision ? images : [],
                     allowTools: supportsTools,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -418,12 +428,29 @@ final class AiStore {
                 guard !model.isEmpty else {
                     throw AiClientError.message("Choose an OpenCode Zen model in AI settings.")
                 }
-                result = try await OpenCodeZenClient().generate(
+                result = try await OpenCodeClient(gateway: .zen).generate(
                     apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
-                    image: context.currentPageImage,
+                    // Only text-only open models drop the page image; the gateway
+                    // rejects image parts for models that can't read them.
+                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine,
+                    onEvent: onEvent
+                )
+            case .opencodeGo:
+                let model = settingsAtStart.opencodeGoModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenCode Go model in AI settings.")
+                }
+                result = try await OpenCodeClient(gateway: .go).generate(
+                    apiKey: settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent

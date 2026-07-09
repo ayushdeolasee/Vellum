@@ -30,14 +30,21 @@ struct SelectableMessageText: NSViewRepresentable {
 
     func updateNSView(_ view: MessageContainerView, context: Context) {
         context.coordinator.onQuote = onQuote
+        let resolvedColor = NSColor(color)
+        let resolvedSecondary = NSColor(secondary)
         let attributed = AiAttributedRenderer.attributedString(
             for: content,
-            color: NSColor(color),
-            secondary: NSColor(secondary)
+            color: resolvedColor,
+            secondary: resolvedSecondary
         )
-        if view.textView.textStorage?.string != attributed.string
-            || view.textView.textStorage?.length != attributed.length {
-            view.setAttributed(attributed)
+        // Repaint when the content OR the palette-derived colors change, so a
+        // light/dark appearance switch restyles already-rendered messages.
+        let contentChanged = view.textView.textStorage?.string != attributed.string
+            || view.textView.textStorage?.length != attributed.length
+        let colorsChanged = view.appliedColor != resolvedColor
+            || view.appliedSecondary != resolvedSecondary
+        if contentChanged || colorsChanged {
+            view.setAttributed(attributed, color: resolvedColor, secondary: resolvedSecondary)
         }
     }
 
@@ -107,9 +114,15 @@ final class MessageContainerView: NSView {
     }
 
     private(set) var attributed = NSAttributedString()
+    /// The palette colors last rendered into `attributed`, so the SwiftUI layer
+    /// can detect an appearance change even when the text content is unchanged.
+    private(set) var appliedColor: NSColor?
+    private(set) var appliedSecondary: NSColor?
 
-    func setAttributed(_ attributed: NSAttributedString) {
+    func setAttributed(_ attributed: NSAttributedString, color: NSColor, secondary: NSColor) {
         self.attributed = attributed
+        self.appliedColor = color
+        self.appliedSecondary = secondary
         textView.textStorage?.setAttributedString(attributed)
         needsLayout = true
     }
