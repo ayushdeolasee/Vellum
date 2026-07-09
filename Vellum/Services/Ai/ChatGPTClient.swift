@@ -19,7 +19,7 @@ final class ChatGPTClient {
     func generate(
         model: String,
         systemPrompt: String,
-        userPrompt: String,
+        prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -28,7 +28,9 @@ final class ChatGPTClient {
         guard let url = URL(string: "https://chatgpt.com/backend-api/codex/responses") else {
             throw AiClientError.message("Invalid ChatGPT endpoint.")
         }
-        var content: [[String: Any]] = [["type": "input_text", "text": userPrompt]]
+        // Responses API caching is keyed by prompt_cache_key + prefix, not
+        // cache_control parts, so send the fused prompt as a single text part.
+        var content: [[String: Any]] = [["type": "input_text", "text": prompt.joined]]
         for image in images where !image.base64Data.isEmpty {
             content.append([
                 "type": "input_image",

@@ -15,7 +15,7 @@ final class GeminiClient {
         apiKey: String,
         model: String,
         systemPrompt: String,
-        userPrompt: String,
+        prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -26,7 +26,8 @@ final class GeminiClient {
             throw AiClientError.message("Invalid Gemini model name.")
         }
 
-        var userParts: [[String: Any]] = [["text": userPrompt]]
+        // Implicit caching (no cache_control breakpoints): send the fused prompt.
+        var userParts: [[String: Any]] = [["text": prompt.joined]]
         for image in images where !image.base64Data.isEmpty {
             userParts.append(["inline_data": ["mime_type": image.mediaType, "data": image.base64Data]])
         }

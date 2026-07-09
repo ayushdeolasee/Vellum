@@ -8,7 +8,7 @@ final class OpenAIClient {
         apiKey: String,
         model: String,
         systemPrompt: String,
-        userPrompt: String,
+        prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -17,7 +17,9 @@ final class OpenAIClient {
         guard let url = URL(string: "https://api.openai.com/v1/responses") else {
             throw AiClientError.message("Invalid OpenAI endpoint.")
         }
-        var content: [[String: Any]] = [["type": "input_text", "text": userPrompt]]
+        // Responses API caching is keyed by prompt_cache_key + prefix, not
+        // cache_control parts, so send the fused prompt as a single text part.
+        var content: [[String: Any]] = [["type": "input_text", "text": prompt.joined]]
         for image in images where !image.base64Data.isEmpty {
             content.append([
                 "type": "input_image",

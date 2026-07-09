@@ -22,7 +22,7 @@ final class OpenRouterClient {
         apiKey: String,
         model: String,
         systemPrompt: String,
-        userPrompt: String,
+        prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
         allowTools: Bool,
         sessionIdAtStart: String,
@@ -33,15 +33,29 @@ final class OpenRouterClient {
             throw AiClientError.message("Invalid OpenRouter endpoint.")
         }
 
-        var userContent: [[String: Any]] = [["type": "text", "text": userPrompt]]
+        // Structured content with cache_control breakpoints (PR A.5). Sent
+        // unconditionally: OpenRouter forwards cache_control to Anthropic/Gemini
+        // and ignores it for models that don't support it. Breakpoints nest
+        // outermost-stable-first (system ⊂ +document context ⊂ +page image) so a
+        // page navigation between messages misses the context breakpoint but the
+        // system breakpoint still hits.
+        var userContent: [[String: Any]] = [[
+            "type": "text", "text": prompt.stable,
+            "cache_control": ["type": "ephemeral"],          // breakpoint 2: + document context
+        ]]
         for image in images where !image.base64Data.isEmpty {
             userContent.append([
                 "type": "image_url",
                 "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
+                "cache_control": ["type": "ephemeral"],      // breakpoint 3: + page image
             ])
         }
+        userContent.append(["type": "text", "text": prompt.volatile])
         var messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
+            ["role": "system", "content": [[
+                "type": "text", "text": systemPrompt,
+                "cache_control": ["type": "ephemeral"],      // breakpoint 1: tools + system
+            ]]],
             ["role": "user", "content": userContent],
         ]
         var actionResults: [String] = []

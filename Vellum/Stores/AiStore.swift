@@ -393,6 +393,11 @@ final class AiStore {
                 context: AiPrompts.buildContextBlock(pageTexts: pageTexts, context: context),
                 latestUserRequest: trimmed
             )
+            // Built once and shared by every provider path. Clients with an
+            // Anthropic-style cache_control breakpoint (OpenRouter, OpenCode Zen)
+            // send the stable/volatile halves as separate parts; the rest send
+            // `prompt.joined` (PR A.5).
+            let prompt = AiPrompts.buildNativeToolUserPrompt(parameters)
             let engine = AiToolEngine(store: self, app: app, annotations: annotationStore)
             let result: AiProviderResult
             switch settingsAtStart.provider {
@@ -402,7 +407,7 @@ final class AiStore {
                     apiKey: settingsAtStart.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model.isEmpty ? "gemini-3.1-flash-lite-preview" : model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     images: images,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -414,7 +419,7 @@ final class AiStore {
                     apiKey: settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model.isEmpty ? "gpt-5.5" : model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     images: images,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -434,7 +439,7 @@ final class AiStore {
                     apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     images: supportsVision ? images : [],
                     allowTools: supportsTools,
                     sessionIdAtStart: sessionIdAtStart,
@@ -449,7 +454,7 @@ final class AiStore {
                 result = try await ChatGPTClient(auth: chatgptAuth).generate(
                     model: model.isEmpty ? "gpt-5.5" : model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     images: images,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -464,7 +469,7 @@ final class AiStore {
                     apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     // Only text-only open models drop the page image; the gateway
                     // rejects image parts for models that can't read them.
                     image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
@@ -481,7 +486,7 @@ final class AiStore {
                     apiKey: settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    prompt: prompt,
                     image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,

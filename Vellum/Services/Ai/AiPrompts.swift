@@ -6,6 +6,28 @@ struct AiPromptParameters {
     var latestUserRequest: String
 }
 
+/// The native-tool user prompt split into a cacheable prefix and a per-message
+/// tail (PR A.5). Providers that place an Anthropic-style `cache_control`
+/// breakpoint (OpenRouter, OpenCode Zen) send `stable` and `volatile` as
+/// separate content parts with the breakpoint on their boundary; providers
+/// without a breakpoint API (Gemini, OpenAI, ChatGPT) send `joined`.
+struct AiUserPrompt {
+    /// "### Document Context" header + the session-stable context block.
+    var stable: String
+    /// "### Recent Conversation" + conversation + "### Latest User Request" +
+    /// request — the part that changes every message.
+    var volatile: String
+
+    /// The commit-1 fused prompt joins these eight elements with "\n":
+    ///   ["### Document Context", context, "", "### Recent Conversation",
+    ///    conversation, "", "### Latest User Request", request]
+    /// Splitting after the stable half leaves a blank-line "" element between
+    /// the two halves, contributing "\n" + "" + "\n" == "\n\n". `stable` ends
+    /// at `context` and `volatile` starts at "### Recent Conversation", so
+    /// joining with "\n\n" reproduces the fused string byte-for-byte.
+    var joined: String { stable + "\n\n" + volatile }
+}
+
 enum AiPrompts {
     static let maxContextCharacters = 120_000
     /// Per-reference text cap so a single quoted reply or selection can't bloat
@@ -20,17 +42,21 @@ enum AiPrompts {
     /// Stable-first ordering (Document Context → Recent Conversation → Latest
     /// User Request) so the cacheable prefix — document context — leads and the
     /// per-message volatile tail (conversation + request) trails. See PR A.5.
-    static func buildNativeToolUserPrompt(_ parameters: AiPromptParameters) -> String {
-        [
+    /// Returns the two halves split on the section boundary; `AiUserPrompt.joined`
+    /// reproduces the fused single-string prompt byte-for-byte.
+    static func buildNativeToolUserPrompt(_ parameters: AiPromptParameters) -> AiUserPrompt {
+        let stable = [
             "### Document Context",
             parameters.context,
-            "",
+        ].joined(separator: "\n")
+        let volatile = [
             "### Recent Conversation",
             parameters.conversation,
             "",
             "### Latest User Request",
             parameters.latestUserRequest,
         ].joined(separator: "\n")
+        return AiUserPrompt(stable: stable, volatile: volatile)
     }
 
     static func buildConversationBlock(_ messages: [AiMessage]) -> String {

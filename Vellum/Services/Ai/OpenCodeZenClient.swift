@@ -50,7 +50,7 @@ final class OpenCodeClient {
         apiKey: String,
         model: String,
         systemPrompt: String,
-        userPrompt: String,
+        prompt: AiUserPrompt,
         image: AiPageImageSnapshot?,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -60,17 +60,51 @@ final class OpenCodeClient {
             throw AiClientError.message("Invalid \(gateway.name) endpoint.")
         }
 
-        var userContent: [[String: Any]] = [["type": "text", "text": userPrompt]]
-        if let image, !image.base64Data.isEmpty {
-            userContent.append([
-                "type": "image_url",
-                "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
-            ])
+        // cache_control breakpoints only help Anthropic-family models, and the
+        // Zen gateway is the only path here that can reach one. Zen can't be
+        // live-tested (no API key configured), so per the PR A.5 spec fallback we
+        // gate the structured form narrowly: use it only for Zen + a claude-family
+        // model. Every Go model and every non-claude Zen model keeps the plain
+        // system string and the fused single text part (zero behavior change).
+        let useCacheBreakpoints = gateway == .zen && model.lowercased().contains("claude")
+
+        var messages: [[String: Any]]
+        if useCacheBreakpoints {
+            // Breakpoints nest outermost-stable-first (system ⊂ +document context
+            // ⊂ +page image) so a page navigation between messages misses the
+            // context breakpoint but the system breakpoint still hits.
+            var userContent: [[String: Any]] = [[
+                "type": "text", "text": prompt.stable,
+                "cache_control": ["type": "ephemeral"],          // breakpoint 2: + document context
+            ]]
+            if let image, !image.base64Data.isEmpty {
+                userContent.append([
+                    "type": "image_url",
+                    "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
+                    "cache_control": ["type": "ephemeral"],      // breakpoint 3: + page image
+                ])
+            }
+            userContent.append(["type": "text", "text": prompt.volatile])
+            messages = [
+                ["role": "system", "content": [[
+                    "type": "text", "text": systemPrompt,
+                    "cache_control": ["type": "ephemeral"],      // breakpoint 1: tools + system
+                ]]],
+                ["role": "user", "content": userContent],
+            ]
+        } else {
+            var userContent: [[String: Any]] = [["type": "text", "text": prompt.joined]]
+            if let image, !image.base64Data.isEmpty {
+                userContent.append([
+                    "type": "image_url",
+                    "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
+                ])
+            }
+            messages = [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userContent],
+            ]
         }
-        var messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
-            ["role": "user", "content": userContent],
-        ]
         var actionResults: [String] = []
 
         onEvent(.status("Thinking"))
