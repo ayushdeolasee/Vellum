@@ -603,14 +603,16 @@ final class PdfViewerController {
         await persister?.flush()
     }
 
-    /// Synchronous flush-and-drop that survives `reset()`: the flush runs in a
-    /// detached task on the captured persister (which owns its own page data),
-    /// so nil'ing the property here can't lose pages. Idempotent — a clean
-    /// persister flushes to a no-op.
+    /// Synchronous flush-and-drop that survives `reset()`: the flush runs on
+    /// the captured persister (which owns its own page data), so nil'ing the
+    /// property here can't lose pages. Idempotent — a clean persister flushes
+    /// to a no-op. Registered via `flushDetached` so the quit path can await
+    /// writes whose controller is already gone (⌘Q right after a tab switch
+    /// must not truncate the outgoing document's flush).
     func flushAndDropPersister() {
         guard let persister else { return }
         self.persister = nil
-        Task.detached { await persister.flush() }
+        persister.flushDetached()
     }
 
     // MARK: - AI page-text feed (getTextContent pass)
@@ -620,12 +622,19 @@ final class PdfViewerController {
         guard let document else { return }
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
+        // Generation guard: a replacement viewer mounts BEFORE this view's
+        // onDisappear cancels the walk, and this controller's `document` stays
+        // non-nil until then — so without the tab check, an outgoing walk keeps
+        // writing the OLD document's text into the shared pageTexts while the
+        // new document loads, and the new walk's skip guard then persists it.
+        let tabId = app?.activeTabId
         extractionTask = Task { [weak self] in
             for pageNumber in 1...pageCount {
                 // Idle pacing stand-in for requestIdleCallback's 16 ms fallback.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
                 guard let self, self.document === document,
+                      self.app?.activeTabId == tabId,
                       let page = document.page(at: pageNumber - 1) else { return }
                 // Skip pages already restored from the cache: don't even read
                 // page.string (the expensive part) — true resume of a partial walk.
@@ -660,9 +669,12 @@ final class PdfViewerController {
         }
         var extracted = 0
         var sinceYield = 0
+        // Same generation guard as the walk: bail if the active tab changes
+        // mid-pass (this handler slot may still be draining for an old tab).
+        let tabId = app?.activeTabId
         for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
-            guard self.document === document,
-                  let page = document.page(at: pageNumber - 1) else { continue }
+            guard self.document === document, app?.activeTabId == tabId,
+                  let page = document.page(at: pageNumber - 1) else { break }
             if let normalized = ai.setPageText(page: pageNumber, text: page.string ?? "") {
                 persister?.noteExtracted(page: pageNumber, text: normalized)
             }

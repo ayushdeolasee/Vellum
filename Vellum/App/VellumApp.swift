@@ -19,8 +19,11 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // Persist the active document's in-flight page text after the
                 // last_page writes (each refreshed the cache's validation hash),
-                // so a reopen still hits (issue #37 PR B).
+                // so a reopen still hits (issue #37 PR B). Then drain detached
+                // flushes from persisters dropped by a recent tab switch, whose
+                // controller no longer exists to be flushed via the handler.
                 await appStore.flushPageTextCacheHandler?()
+                await PageTextPersister.awaitInFlightFlushes()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
@@ -67,11 +70,12 @@ struct VellumApp: App {
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
                     // Launch-time TTL eviction of the extracted-text cache
-                    // (issue #37 PR B). Time-based only: it never evicts because
-                    // a source file is missing, and never the currently open
-                    // document (the actor enforces both too — this is a hint).
-                    // Snapshot open-doc paths on the main actor; evict off-main
-                    // at low priority.
+                    // (issue #37 PR B). Time-based only — never because a source
+                    // file is missing. The open-paths snapshot excludes restored
+                    // tabs; a document opened AFTER it is still safe because the
+                    // cache actor serializes: its lookup either stamps lastOpened
+                    // first (excluding it by age) or re-extracts once after the
+                    // eviction — never corruption. Evict off-main at low priority.
                     let openPaths = Set(
                         appStore.tabs.compactMap(\.document)
                             .filter { $0.kind == .pdf }

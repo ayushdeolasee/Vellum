@@ -340,7 +340,11 @@ final class AiStore {
     /// normalized when first extracted — re-running the regex over a whole
     /// document on every open would be wasted work.
     func restorePageTexts(_ restored: [Int: String]) {
-        pageTexts.merge(restored) { _, new in new }
+        // Replace, don't merge: an outgoing tab's still-running extraction can
+        // write into pageTexts between clearDocumentContext and this restore,
+        // and merged stale pages would be skipped (and persisted) as if they
+        // belonged to the incoming document.
+        pageTexts = restored
     }
 
     /// Below this many extracted characters the current page is treated as

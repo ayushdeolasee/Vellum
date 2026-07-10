@@ -324,18 +324,23 @@ private struct StorageSettingsTab: View {
         isLoading = false
     }
 
+    // Optimistic local removal for immediate feedback, then a reload once the
+    // actor finishes — reconciling with disk in case a still-open document's
+    // persister recreated its entry (allowed; it re-persists harmlessly).
     private func delete(_ entry: PageTextCacheEntry) {
+        entries.removeAll { $0.pathKey == entry.pathKey }
         Task {
             await PageTextCache.shared.delete(pathKey: entry.pathKey)
+            entries = await PageTextCache.shared.listEntries()
         }
-        entries.removeAll { $0.pathKey == entry.pathKey }
     }
 
     private func eraseAll() {
+        entries = []
         Task {
             await PageTextCache.shared.deleteAll()
+            entries = await PageTextCache.shared.listEntries()
         }
-        entries = []
     }
 }
 
@@ -375,7 +380,9 @@ private struct StorageCacheRow: View {
             .accessibilityLabel("Delete cached text for \(entry.displayTitle)")
             .accessibilityIdentifier("storageRow.delete.\(entry.pathKey)")
         }
-        .accessibilityElement(children: .combine)
+        // .contain (not .combine): merging would swallow the delete button
+        // into one opaque element, unreachable for VoiceOver and UI tests.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("storageRow.\(entry.pathKey)")
     }
 

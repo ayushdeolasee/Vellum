@@ -23,6 +23,14 @@ final class PageTextPersister {
     /// Flush every N newly extracted pages (≈ one write per 0.8s at the walk's
     /// 16ms/page pacing).
     private let flushThreshold = 50
+    /// The in-flight threshold flush, kept so `flush()` is a real completion
+    /// barrier: without it, a quit right after page 50 would see `dirty ==
+    /// false` and return while the cache write is still pending.
+    private var flushTask: Task<Void, Never>?
+
+    /// Detached flushes from dropped persisters (tab switch / teardown), so the
+    /// quit path can await writes whose owning controller is already gone.
+    private static var inFlightFlushes: [UUID: Task<Void, Never>] = [:]
 
     init(
         path: String, title: String?, pageCount: Int,
@@ -45,13 +53,44 @@ final class PageTextPersister {
         newSinceFlush += 1
         if newSinceFlush >= flushThreshold {
             newSinceFlush = 0
-            Task { await self.flush() }
+            let previous = flushTask
+            flushTask = Task {
+                await previous?.value
+                await self.performFlush()
+            }
         }
     }
 
-    /// Persist the current page set if anything changed since the last flush.
-    /// Idempotent and a no-op when clean. `complete` is full 1…N key coverage.
+    /// Completion barrier: waits out any in-flight threshold flush, then writes
+    /// whatever changed since. Idempotent and a no-op when clean.
     func flush() async {
+        let pending = flushTask
+        flushTask = nil
+        await pending?.value
+        await performFlush()
+    }
+
+    /// Fire-and-forget flush for a persister being dropped (its controller is
+    /// resetting). Registered so `awaitInFlightFlushes` can act as the quit
+    /// barrier for writes no controller owns anymore.
+    func flushDetached() {
+        let id = UUID()
+        Self.inFlightFlushes[id] = Task {
+            await self.flush()
+            Self.inFlightFlushes[id] = nil
+        }
+    }
+
+    /// Awaited by the quit path after the active controller's own flush, so a
+    /// tab switched away from moments before ⌘Q still lands its cache write.
+    static func awaitInFlightFlushes() async {
+        while let task = inFlightFlushes.values.first {
+            await task.value
+        }
+    }
+
+    /// `complete` is full 1…N key coverage.
+    private func performFlush() async {
         guard dirty else { return }
         // Clear dirty before the await so a concurrent noteExtracted re-dirties
         // us and its page still lands in the next flush.

@@ -75,9 +75,10 @@ struct PdfViewerView: View {
     }
 
     private func load(tabId: String) async {
-        // Flush the OUTGOING document's pending page text before any teardown
-        // (the persister owns its own data, so this can't race the resets).
-        await controller.flushPersister()
+        // The OUTGOING document's pending page text is flushed by ITS OWN
+        // view's teardown/reset (flushAndDropPersister — this view's fresh
+        // controller has no persister to flush); the quit path additionally
+        // awaits those detached flushes via awaitInFlightFlushes.
         unregisterHandlers()
         handlersTabId = nil
         controller.reset()
@@ -103,9 +104,10 @@ struct PdfViewerView: View {
                 cached = nil
             }
             guard !Task.isCancelled, app.activeTabId == tabId else { return }
-            if let cached {
-                aiStore.restorePageTexts(cached)
-            }
+            // Unconditional replace (empty on a miss): anything an outgoing
+            // tab's extraction wrote into pageTexts during the awaits above
+            // belongs to the OLD document and must not survive into this one.
+            aiStore.restorePageTexts(cached ?? [:])
             controller.adopt(
                 document: document,
                 app: app,

@@ -203,17 +203,19 @@ actor PageTextCache {
         return out
     }
 
+    /// `latestHash` deliberately survives deletion: it tracks the FILE's
+    /// current bytes, not the cache entry. If the deleted document is open and
+    /// still extracting, its persister recreates the entry — with the correct
+    /// hash rather than a poisoned "" that would invalidate every reopen.
     func delete(pathKey: String) {
         try? FileManager.default.removeItem(at: cacheFileURL(pathKey: pathKey))
         var index = readIndex()
-        if let entry = index.entries[pathKey] { latestHash[entry.path] = nil }
         index.entries[pathKey] = nil
         writeIndex(index)
     }
 
     func deleteAll() {
         try? FileManager.default.removeItem(at: directory)
-        latestHash = [:]
     }
 
     /// Age-based eviction: drop entries whose `lastOpened` parses older than
@@ -228,7 +230,6 @@ actor PageTextCache {
                   opened < cutoff else { continue }
             try? FileManager.default.removeItem(at: cacheFileURL(pathKey: key))
             index.entries[key] = nil
-            latestHash[entry.path] = nil
             changed = true
         }
         if changed { writeIndex(index) }
