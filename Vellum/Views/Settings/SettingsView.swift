@@ -19,6 +19,9 @@ struct SettingsView: View {
 
             AiSettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+
+            StorageSettingsTab()
+                .tabItem { Label("Storage", systemImage: "internaldrive") }
         }
         .frame(width: 480)
     }
@@ -213,6 +216,178 @@ private struct AiSettingsTab: View {
             if !option.supportsTools {
                 Label(AiCapabilityWarning.noTools, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
+                    .foregroundStyle(palette.gold)
+            }
+        }
+    }
+}
+
+// MARK: - Storage
+
+/// Manages the on-disk extracted-text cache (`PageTextCache`): shows total size,
+/// a per-document breakdown sorted by size, and destructive controls to clear
+/// one document's cached text or all of it. Unlike its sibling tabs this one
+/// scrolls — the document list can grow unbounded — so it is height-bounded and
+/// deliberately does NOT set `.scrollDisabled(true)`.
+private struct StorageSettingsTab: View {
+    @Environment(\.palette) private var palette
+
+    @State private var entries: [PageTextCacheEntry] = []
+    @State private var isLoading = true
+    @State private var pendingDelete: PageTextCacheEntry?
+    @State private var confirmingEraseAll = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Total cache size") {
+                    Text(totalBytes.formatted(.byteCount(style: .file)))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Button("Erase all…", role: .destructive) {
+                    confirmingEraseAll = true
+                }
+                .disabled(entries.isEmpty)
+                .accessibilityIdentifier("storage.eraseAll")
+            } header: {
+                Text("Extracted-text cache")
+            } footer: {
+                Text("Vellum caches each PDF's extracted text so the AI assistant and search start instantly. It's rebuilt automatically the next time you open a document.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if entries.isEmpty {
+                    Text("No cached documents")
+                        .foregroundStyle(.secondary)
+                        .id("storage.empty")
+                } else {
+                    ForEach(entries) { entry in
+                        StorageCacheRow(entry: entry) { pendingDelete = entry }
+                    }
+                }
+            } header: {
+                Text("Cached documents")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(height: 460)
+        .task { await reload() }
+        .confirmationDialog(
+            pendingDelete.map { "Delete cached text for \"\($0.displayTitle)\"?" } ?? "",
+            isPresented: deleteDialogBinding,
+            presenting: pendingDelete
+        ) { entry in
+            Button("Delete Cached Text", role: .destructive) {
+                delete(entry)
+            }
+            .accessibilityIdentifier("storage.confirmDelete")
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes only the extracted-text cache Vellum uses to speed up AI and search. Your notes, highlights, and AI conversations are not affected. The text is rebuilt automatically the next time you open this document.")
+        }
+        .confirmationDialog(
+            "Erase all cached text?",
+            isPresented: $confirmingEraseAll
+        ) {
+            Button("Erase All Cached Text", role: .destructive) {
+                eraseAll()
+            }
+            .accessibilityIdentifier("storage.confirmEraseAll")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This clears the extracted-text cache for every document. Your notes, highlights, and AI conversations are not affected — only cached text is removed, and it's rebuilt automatically the next time you open each document.")
+        }
+    }
+
+    private var totalBytes: Int64 {
+        entries.reduce(0) { $0 + $1.byteSize }
+    }
+
+    /// Drive the per-row dialog off `pendingDelete`: dismiss clears the pending
+    /// entry so a re-tap re-presents it.
+    private var deleteDialogBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        )
+    }
+
+    private func reload() async {
+        isLoading = true
+        entries = await PageTextCache.shared.listEntries()
+        isLoading = false
+    }
+
+    private func delete(_ entry: PageTextCacheEntry) {
+        Task {
+            await PageTextCache.shared.delete(pathKey: entry.pathKey)
+        }
+        entries.removeAll { $0.pathKey == entry.pathKey }
+    }
+
+    private func eraseAll() {
+        Task {
+            await PageTextCache.shared.deleteAll()
+        }
+        entries = []
+    }
+}
+
+/// One cached document: title, when it was last opened, completeness (or a
+/// "source missing" hint that never triggers deletion), cache size, and a
+/// destructive per-row delete.
+private struct StorageCacheRow: View {
+    @Environment(\.palette) private var palette
+
+    let entry: PageTextCacheEntry
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayTitle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                statusLine
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Text(entry.byteSize.formatted(.byteCount(style: .file)))
+                .font(.callout)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("storageRow.size.\(entry.pathKey)")
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete cached text")
+            .accessibilityLabel("Delete cached text for \(entry.displayTitle)")
+            .accessibilityIdentifier("storageRow.delete.\(entry.pathKey)")
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("storageRow.\(entry.pathKey)")
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        let opened = entry.lastOpened.formatted(.relative(presentation: .named))
+        if entry.sourceExists {
+            Text("\(opened) · \(entry.isComplete ? "Complete" : "Partial")")
+        } else {
+            HStack(spacing: 4) {
+                Text("\(opened) · ")
+                Label("Original file not found", systemImage: "questionmark.circle")
                     .foregroundStyle(palette.gold)
             }
         }

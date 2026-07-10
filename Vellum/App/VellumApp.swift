@@ -65,6 +65,22 @@ struct VellumApp: App {
         Window("Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
+                .task {
+                    // Launch-time TTL eviction of the extracted-text cache
+                    // (issue #37 PR B). Time-based only: it never evicts because
+                    // a source file is missing, and never the currently open
+                    // document (the actor enforces both too — this is a hint).
+                    // Snapshot open-doc paths on the main actor; evict off-main
+                    // at low priority.
+                    let openPaths = Set(
+                        appStore.tabs.compactMap(\.document)
+                            .filter { $0.kind == .pdf }
+                            .map(\.pdfPath))
+                    let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
+                    Task.detached(priority: .background) {
+                        await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
+                    }
+                }
                 .environment(themeStore)
                 .environment(appStore)
                 .environment(annotationStore)
