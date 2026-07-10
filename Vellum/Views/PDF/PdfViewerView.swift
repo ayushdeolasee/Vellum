@@ -75,6 +75,9 @@ struct PdfViewerView: View {
     }
 
     private func load(tabId: String) async {
+        // Flush the OUTGOING document's pending page text before any teardown
+        // (the persister owns its own data, so this can't race the resets).
+        await controller.flushPersister()
         unregisterHandlers()
         handlersTabId = nil
         controller.reset()
@@ -89,6 +92,20 @@ struct PdfViewerView: View {
                 loadState = .parseFailed
                 return
             }
+            // Restore persisted page text before adopting (PDF only; this view
+            // is guarded to document.kind == .pdf). Hashing + JSON decode run
+            // off the main actor inside the cache actor.
+            let cached: [Int: String]?
+            if let path = app.document?.pdfPath {
+                cached = await PageTextCache.shared.lookup(
+                    path: path, data: data, title: app.document?.title)
+            } else {
+                cached = nil
+            }
+            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            if let cached {
+                aiStore.restorePageTexts(cached)
+            }
             controller.adopt(
                 document: document,
                 app: app,
@@ -97,6 +114,13 @@ struct PdfViewerView: View {
                 initialPage: app.currentPage
             )
             app.setNumPages(document.pageCount)
+            if document.pageCount >= 1, let path = app.document?.pdfPath {
+                controller.installPersister(PageTextPersister(
+                    path: path,
+                    title: app.document?.title,
+                    pageCount: document.pageCount,
+                    seeded: cached ?? [:]))
+            }
             registerHandlers()
             handlersTabId = tabId
             loadState = .loaded(document, tabId: tabId)
@@ -140,6 +164,9 @@ struct PdfViewerView: View {
         app.printHandler = { [weak controller] in
             MainActor.assumeIsolated { controller?.printDocument() }
         }
+        app.flushPageTextCacheHandler = { [weak controller] in
+            await controller?.flushPersister()
+        }
     }
 
     private func unregisterHandlers() {
@@ -152,6 +179,7 @@ struct PdfViewerView: View {
         app.findStepHandler = nil
         app.findClearHandler = nil
         app.printHandler = nil
+        app.flushPageTextCacheHandler = nil
     }
 
     private func teardown() {
@@ -163,6 +191,7 @@ struct PdfViewerView: View {
         // handlers never leak.
         if app.activeTabId == handlersTabId || app.document == nil {
             unregisterHandlers()
+            controller.flushAndDropPersister()
             aiStore.clearDocumentContext()
         }
         handlersTabId = nil

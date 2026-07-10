@@ -321,18 +321,38 @@ final class AiStore {
         pageTexts = [:]
     }
 
-    /// Whitespace-normalizes and stores extracted page text (no-op if unchanged).
-    func setPageText(page: Int, text: String) {
+    /// Whitespace-normalizes and stores extracted page text, returning the
+    /// normalized string when it actually stored (nil on a dedupe no-op). The
+    /// return lets the PDF viewer feed only genuinely new pages to the
+    /// persistent cache without re-normalizing.
+    @discardableResult
+    func setPageText(page: Int, text: String) -> String? {
         let normalized = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard pageTexts[page] != normalized else { return }
+        guard pageTexts[page] != normalized else { return nil }
         pageTexts[page] = normalized
+        return normalized
     }
+
+    /// Bulk-restore page text from the persistent cache. Bypasses setPageText's
+    /// per-page whitespace normalization because cached text was already
+    /// normalized when first extracted — re-running the regex over a whole
+    /// document on every open would be wasted work.
+    func restorePageTexts(_ restored: [Int: String]) {
+        pageTexts.merge(restored) { _, new in new }
+    }
+
+    /// Below this many extracted characters the current page is treated as
+    /// scanned/low-text and its rendered image is auto-attached so the model
+    /// can read it visually. Pages with real text send no image by default —
+    /// screenshots are volatile, expensive, and poor cache material (§6).
+    static let autoPageImageTextThreshold = 200
 
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
+        var context = context
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let app,

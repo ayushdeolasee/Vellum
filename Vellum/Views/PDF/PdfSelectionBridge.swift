@@ -55,6 +55,9 @@ final class PdfViewerController {
     @ObservationIgnored private var recomputeScheduled = false
     @ObservationIgnored private var suppressNextMouseUp = false
     @ObservationIgnored private var extractionTask: Task<Void, Never>?
+    /// Persists extracted page text for the current PDF (nil for web docs / 0-page
+    /// docs). Owned here so its lifecycle is tied to the viewed document.
+    @ObservationIgnored private var persister: PageTextPersister?
 
     // Find state (⌘F): every PDFSelection matching the current query, plus the
     // index of the one currently focused.
@@ -87,6 +90,9 @@ final class PdfViewerController {
     }
 
     func reset() {
+        // Never silently drop an unflushed persister — flush what it has first
+        // (idempotent, a no-op when clean).
+        flushAndDropPersister()
         extractionTask?.cancel()
         extractionTask = nil
         document = nil
@@ -586,6 +592,27 @@ final class PdfViewerController {
         }
     }
 
+    // MARK: - Persistent page-text cache
+
+    func installPersister(_ persister: PageTextPersister) {
+        self.persister = persister
+    }
+
+    /// Flush any pending page text to disk (outgoing doc on tab switch, quit).
+    func flushPersister() async {
+        await persister?.flush()
+    }
+
+    /// Synchronous flush-and-drop that survives `reset()`: the flush runs in a
+    /// detached task on the captured persister (which owns its own page data),
+    /// so nil'ing the property here can't lose pages. Idempotent — a clean
+    /// persister flushes to a no-op.
+    func flushAndDropPersister() {
+        guard let persister else { return }
+        self.persister = nil
+        Task.detached { await persister.flush() }
+    }
+
     // MARK: - AI page-text feed (getTextContent pass)
 
     func startTextExtraction() {
@@ -600,8 +627,15 @@ final class PdfViewerController {
                 if Task.isCancelled { return }
                 guard let self, self.document === document,
                       let page = document.page(at: pageNumber - 1) else { return }
-                self.ai?.setPageText(page: pageNumber, text: page.string ?? "")
+                // Skip pages already restored from the cache: don't even read
+                // page.string (the expensive part) — true resume of a partial walk.
+                if self.ai?.pageTexts[pageNumber] == nil,
+                   let normalized = self.ai?.setPageText(page: pageNumber, text: page.string ?? "") {
+                    self.persister?.noteExtracted(page: pageNumber, text: normalized)
+                }
             }
+            // Whole document walked: flush with complete = true.
+            await self?.persister?.flush()
         }
     }
 
@@ -629,7 +663,9 @@ final class PdfViewerController {
         for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
             guard self.document === document,
                   let page = document.page(at: pageNumber - 1) else { continue }
-            ai.setPageText(page: pageNumber, text: page.string ?? "")
+            if let normalized = ai.setPageText(page: pageNumber, text: page.string ?? "") {
+                persister?.noteExtracted(page: pageNumber, text: normalized)
+            }
             extracted += 1
             sinceYield += 1
             // PDFKit text extraction on a displayed document intentionally stays

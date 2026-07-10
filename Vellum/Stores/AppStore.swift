@@ -120,6 +120,10 @@ final class AppStore {
     var findClearHandler: (() -> Void)?
     /// Print the active document (PDF print operation / WKWebView print).
     var printHandler: (() -> Void)?
+    /// Registered by the PDF viewer: flush pending extracted page text to the
+    /// persistent cache. Awaited on quit so a mid-walk document keeps what it
+    /// has (issue #37 PR B).
+    var flushPageTextCacheHandler: (() async -> Void)?
 
     init(sessions: SessionService) {
         self.sessions = sessions

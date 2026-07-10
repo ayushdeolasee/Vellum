@@ -17,6 +17,10 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                         sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
                     try? await appStore.sessions.closeFile(sessionId: tab.id)
                 }
+                // Persist the active document's in-flight page text after the
+                // last_page writes (each refreshed the cache's validation hash),
+                // so a reopen still hits (issue #37 PR B).
+                await appStore.flushPageTextCacheHandler?()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater

@@ -223,7 +223,7 @@ actor PdfDocumentIO {
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
     /// bookmarks to outline creation. Saves the file; returns the full record.
-    func createAnnotation(_ input: CreateAnnotationInput) throws -> Annotation {
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard input.pageNumber >= 1, input.pageNumber <= raw.numberOfPages else {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
@@ -236,7 +236,7 @@ actor PdfDocumentIO {
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
                 normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return Annotation(
                 id: id,
                 type: .bookmark,
@@ -261,6 +261,8 @@ actor PdfDocumentIO {
         var data = try serialize(document)
         PdfBytePatch.apply(patches, to: &data)
         try PdfAtomicWriter.save(data, toPath: path)
+        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
+        await PageTextCache.shared.refreshHash(path: path, data: data)
 
         return Annotation(
             id: id,
@@ -277,7 +279,7 @@ actor PdfDocumentIO {
     /// included; un-NM'd ones get stamped with their derived id). Never
     /// matches outline bookmarks. Only provided fields change; /M and
     /// /VellumUpdatedAt always refresh.
-    func updateAnnotation(_ input: UpdateAnnotationInput) throws -> Bool {
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
         guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
@@ -308,12 +310,14 @@ actor PdfDocumentIO {
 
         let data = try serialize(document)
         try PdfAtomicWriter.save(data, toPath: path)
+        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
+        await PageTextCache.shared.refreshHash(path: path, data: data)
         return true
     }
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
-    func deleteAnnotation(id: String) throws -> Bool {
+    func deleteAnnotation(id: String) async throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
@@ -321,7 +325,7 @@ actor PdfDocumentIO {
             guard let patched = try PdfBookmarks.deleteBookmarkIncrement(normalizedData: normalized, id: id) else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return true
         }
 
@@ -346,24 +350,26 @@ actor PdfDocumentIO {
             else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return true
         }
 
         page.removeAnnotation(annotation)
         let data = try serialize(document)
         try PdfAtomicWriter.save(data, toPath: path)
+        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
+        await PageTextCache.shared.refreshHash(path: path, data: data)
         return true
     }
 
     /// set_metadata: `page_count` is ignored; everything else lands in the
     /// Info dictionary and rewrites the file.
-    func setMetadata(key: String, value: String) throws {
+    func setMetadata(key: String, value: String) async throws {
         if key == "page_count" { return }
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)
         let patched = try PdfMetadata.setMetadataIncrement(normalizedData: normalized, key: key, value: value)
-        try saveThroughPdfKit(patched)
+        try await saveThroughPdfKit(patched)
     }
 
     // MARK: Helpers
@@ -451,11 +457,17 @@ actor PdfDocumentIO {
 
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
-    private func saveThroughPdfKit(_ patchedData: Data) throws {
+    private func saveThroughPdfKit(_ patchedData: Data) async throws {
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
         let data = try serialize(document)
         try PdfAtomicWriter.save(data, toPath: path)
+        // In-app rewrites are text-neutral, so the persistent page-text cache
+        // re-keys (refreshes its validation hash) instead of invalidating; the
+        // IO actor serializes writes per document and the quit path awaits this,
+        // so the refresh always completes before a reopen or termination
+        // (issue #37 PR B).
+        await PageTextCache.shared.refreshHash(path: path, data: data)
     }
 }
