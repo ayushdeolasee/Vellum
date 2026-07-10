@@ -166,6 +166,9 @@ final class WebDocumentSession: DocumentSession {
             if let positionData = input.positionData {
                 record.annotations[index].positionData = positionData
             }
+            if let pageNumber = input.pageNumber {
+                record.annotations[index].pageNumber = pageNumber
+            }
             record.annotations[index].updatedAt = WebLibrary.rfc3339Now()
             return true
         }

@@ -49,6 +49,21 @@ final class AnnotationStore {
     /// for a point bookmark (window.__captureWebPosition in the original).
     var captureWebPositionHandler: (() async -> CapturedWebPosition?)?
 
+    /// In-flight optimistic creates, keyed by their temporary id. Each task
+    /// resolves to the persisted id (nil if the create failed). Mutations that
+    /// target a `temp-` id queue behind the create and retarget the real id —
+    /// the backends can only resolve persisted ids.
+    @ObservationIgnored private var pendingCreates: [String: Task<String?, Never>] = [:]
+
+    /// Resolve an annotation id a mutation can act on: real ids pass through;
+    /// `temp-` ids wait for their create to persist and return the swapped-in
+    /// id, or nil when the create failed (nothing left to mutate).
+    private func resolveId(_ id: String) async -> String? {
+        guard id.hasPrefix("temp-") else { return id }
+        guard let pending = pendingCreates[id] else { return nil }
+        return await pending.value
+    }
+
     init(app: AppStore) {
         self.app = app
     }
@@ -125,6 +140,12 @@ final class AnnotationStore {
 
     func updateAnnotation(_ input: UpdateAnnotationInput) async {
         guard let sessionId = app.activeTabId else { return }
+        // Edits against a still-optimistic row queue behind its create and
+        // retarget the persisted id.
+        var input = input
+        guard let realId = await resolveId(input.id) else { return }
+        input.id = realId
+        guard app.activeTabId == sessionId else { return }
         // Optimistic update
         annotations = annotations.map { annotation in
             guard annotation.id == input.id else { return annotation }
@@ -132,6 +153,7 @@ final class AnnotationStore {
             if let color = input.color { next.color = color }
             if let content = input.content { next.content = content }
             if let positionData = input.positionData { next.positionData = positionData }
+            if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
             next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
             return next
         }
@@ -151,6 +173,10 @@ final class AnnotationStore {
 
     func deleteAnnotation(id: String) async {
         guard let sessionId = app.activeTabId else { return }
+        // Deleting a still-optimistic row waits for its create to persist, then
+        // deletes the real record (the backends can't find a temp id).
+        guard let id = await resolveId(id) else { return }
+        guard app.activeTabId == sessionId else { return }
         // Optimistic delete
         let previous = annotations
         annotations = annotations.filter { $0.id != id }
@@ -186,16 +212,49 @@ final class AnnotationStore {
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
-        do {
-            let annotation = try await sessions.createAnnotation(sessionId: sessionId, input: input)
-            if app.activeTabId == sessionId {
-                annotations.append(annotation)
-                return annotation
+        // Optimistic create: render the annotation IMMEDIATELY with a temporary
+        // id, then persist off the main path and reconcile the real id (or
+        // revert) once the file write finishes. A full-file PDF rewrite can take
+        // seconds on a large document; the user must never wait on that to SEE
+        // their highlight/note — the same optimistic pattern update/delete use.
+        let now = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+        let tempId = "temp-" + UUID().uuidString.lowercased()
+        let optimistic = Annotation(
+            id: tempId,
+            type: input.type,
+            pageNumber: input.pageNumber,
+            color: input.color,
+            content: input.content,
+            positionData: input.positionData,
+            createdAt: now,
+            updatedAt: now)
+        annotations.append(optimistic)
+
+        pendingCreates[tempId] = Task { [weak self] in
+            guard let self else { return nil }
+            defer { self.pendingCreates[tempId] = nil }
+            do {
+                let persisted = try await self.sessions.createAnnotation(sessionId: sessionId, input: input)
+                guard self.app.activeTabId == sessionId else { return persisted.id }
+                // Swap the temp record for the persisted one (real id, server
+                // defaults like the applied highlight color), keeping selection.
+                if let index = self.annotations.firstIndex(where: { $0.id == tempId }) {
+                    self.annotations[index] = persisted
+                }
+                if self.selectedAnnotationId == tempId {
+                    self.selectedAnnotationId = persisted.id
+                }
+                return persisted.id
+            } catch {
+                NSLog("[annotation-store] Failed to create \(label): \(error)")
+                guard self.app.activeTabId == sessionId else { return nil }
+                self.annotations.removeAll { $0.id == tempId }
+                if self.selectedAnnotationId == tempId {
+                    self.selectedAnnotationId = nil
+                }
+                return nil
             }
-            return nil
-        } catch {
-            NSLog("[annotation-store] Failed to create \(label): \(error)")
-            return nil
         }
+        return optimistic
     }
 }

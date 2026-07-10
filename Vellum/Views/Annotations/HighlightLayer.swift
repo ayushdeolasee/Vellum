@@ -6,9 +6,15 @@ import SwiftUI
 // it); edit popover above the selected highlight's FIRST rect; sticky-note
 // overlays for the page's notes.
 
+/// Which end of a highlight a drag handle controls.
+enum HighlightEdge { case start, end }
+
 struct HighlightLayer: View {
     var annotations: [Annotation]
     var zoom: Double
+    /// Nil in the web viewer (no PDF page geometry to resize against); when
+    /// present, selected highlights grow draggable blue end bars.
+    var controller: PdfViewerController? = nil
 
     @Environment(AnnotationStore.self) private var annotationStore
 
@@ -25,11 +31,20 @@ struct HighlightLayer: View {
         return highlights.first { $0.id == id }
     }
 
+    /// The rects to draw for an annotation — the live resize preview overrides
+    /// the stored ones while its handle is being dragged.
+    private func effectiveRects(for annotation: Annotation) -> [AnnotationRect] {
+        if let resize = controller?.highlightResize, resize.id == annotation.id {
+            return resize.positionData.rects
+        }
+        return annotation.positionData?.rects ?? []
+    }
+
     var body: some View {
         if !(highlights.isEmpty && notes.isEmpty) {
             ZStack(alignment: .topLeading) {
                 ForEach(highlights) { annotation in
-                    let rects = annotation.positionData?.rects ?? []
+                    let rects = effectiveRects(for: annotation)
                     ForEach(Array(rects.enumerated()), id: \.offset) { _, rect in
                         HighlightRectView(
                             annotation: annotation,
@@ -41,15 +56,29 @@ struct HighlightLayer: View {
                     }
                 }
 
-                if let selected = selectedHighlight,
-                   let rect0 = selected.positionData?.rects.first {
-                    AnchoredAbove(point: CGPoint(
-                        x: (rect0.x + rect0.width / 2) * zoom,
-                        y: rect0.y * zoom - 8
-                    )) {
-                        HighlightEditPopover(annotation: selected)
+                if let selected = selectedHighlight {
+                    let rects = effectiveRects(for: selected)
+                    if let rect0 = rects.first {
+                        AnchoredAbove(point: CGPoint(
+                            x: (rect0.x + rect0.width / 2) * zoom,
+                            y: rect0.y * zoom - 8
+                        )) {
+                            HighlightEditPopover(annotation: selected)
+                        }
+                        .zIndex(30)
                     }
-                    .zIndex(30)
+                    // Draggable blue end bars — only in the PDF viewer, where we
+                    // can map a drag point back to text.
+                    if let controller, let first = rects.first, let last = rects.last {
+                        HighlightResizeHandle(
+                            annotation: selected, edge: .start, rect: first,
+                            zoom: zoom, controller: controller)
+                            .zIndex(40)
+                        HighlightResizeHandle(
+                            annotation: selected, edge: .end, rect: last,
+                            zoom: zoom, controller: controller)
+                            .zIndex(40)
+                    }
                 }
 
                 ForEach(notes) { note in
@@ -57,7 +86,82 @@ struct HighlightLayer: View {
                         .zIndex(10)
                 }
             }
+            .coordinateSpace(.named(Self.coordinateSpaceName))
+            // A drag can end without onEnded (SwiftUI cancels the gesture when
+            // the view tree rebuilds under it), leaving the live preview set.
+            // Reselecting that highlight later would draw the stale rects, so
+            // drop the preview whenever the selection changes.
+            .onChange(of: annotationStore.selectedAnnotationId) {
+                controller?.cancelHighlightResize()
+            }
         }
+    }
+
+    static let coordinateSpaceName = "highlightLayer"
+}
+
+/// A vertical blue bar with a round knob at the selected highlight's start or
+/// end. Dragging it re-runs text selection between the moved edge and the
+/// pinned opposite edge, previewing live and committing on release.
+private struct HighlightResizeHandle: View {
+    let annotation: Annotation
+    let edge: HighlightEdge
+    /// The end rect this handle sits on (first rect for .start, last for .end),
+    /// at zoom 1 in page-top-left coordinates.
+    let rect: AnnotationRect
+    let zoom: Double
+    let controller: PdfViewerController
+
+    /// Bar geometry in screen points (kept constant across zoom so the handle
+    /// stays grabbable). Position/height still scale with zoom.
+    private let barWidth: CGFloat = 3
+    private let knobSize: CGFloat = 11
+    private let hitPadding: CGFloat = 12
+
+    private var barHeight: CGFloat { rect.height * zoom }
+
+    /// The bar's center x in layer coordinates: left edge for start, right for end.
+    private var barCenterX: CGFloat {
+        switch edge {
+        case .start: return rect.x * zoom
+        case .end: return (rect.x + rect.width) * zoom
+        }
+    }
+
+    private var barTopY: CGFloat { rect.y * zoom }
+
+    var body: some View {
+        let color = Color(hex: "#2563eb") // blue-600
+        ZStack {
+            Capsule()
+                .fill(color)
+                .frame(width: barWidth, height: max(barHeight, knobSize))
+            // Knob sits at the outer end: top for the start bar, bottom for the end.
+            Circle()
+                .fill(color)
+                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                .frame(width: knobSize, height: knobSize)
+                .offset(y: edge == .start ? -barHeight / 2 : barHeight / 2)
+        }
+        .frame(width: knobSize + hitPadding, height: max(barHeight, knobSize) + knobSize + hitPadding)
+        .contentShape(Rectangle())
+        .pointerStyle(.grabActive)
+        .position(x: barCenterX, y: barTopY + barHeight / 2)
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(HighlightLayer.coordinateSpaceName))
+                .onChanged { value in
+                    controller.previewHighlightResize(
+                        annotation: annotation, edge: edge,
+                        toDisplayPoint: CGPoint(
+                            x: value.location.x / zoom, y: value.location.y / zoom))
+                }
+                .onEnded { value in
+                    controller.commitHighlightResize(
+                        annotation: annotation, edge: edge,
+                        toDisplayPoint: CGPoint(
+                            x: value.location.x / zoom, y: value.location.y / zoom))
+                }
+        )
     }
 }
 
@@ -143,6 +247,12 @@ struct HighlightEditPopover: View {
                 onDelete?()
             }
         }
+        // Hug horizontally BEFORE padding/glass: the swatch row's intrinsic
+        // width sets the popover width and the Unhighlight row's maxWidth:.infinity
+        // fills to match it. Without this the overlay's page-wide ZStack proposes
+        // its full width to the maxWidth:.infinity row and the glass panel
+        // stretches across the page.
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .glassEffect(.regular, in: .rect(cornerRadius: Radius.md))

@@ -101,14 +101,24 @@ enum PdfDocumentLoader {
 
 // MARK: - Session
 
+/// Thin @MainActor facade over a background `PdfDocumentIO` worker. Every
+/// method just hops to the actor, so the UI thread is NEVER blocked by the
+/// full-file read → parse → `dataRepresentation()` → atomic write that each
+/// annotation mutation performs (that whole pipeline used to run on the main
+/// actor, freezing the app for seconds on large PDFs; the optimistic store
+/// update never got a chance to render because `async` here didn't actually
+/// suspend off-main). PDFKit runs fine off the main actor. Do NOT move the I/O
+/// back onto @MainActor — see [[vellum-session-backends-offmain]].
 @MainActor
 final class PdfDocumentSession: DocumentSession {
     let path: String
     let info: DocumentInfo
+    private let io: PdfDocumentIO
 
     init(path: String, info: DocumentInfo) {
         self.path = path
         self.info = info
+        self.io = PdfDocumentIO(path: path)
     }
 
     /// save_session: annotation/metadata mutations are written immediately, so
@@ -118,18 +128,51 @@ final class PdfDocumentSession: DocumentSession {
     /// close_session runs the same no-op sync; the manager drops the session.
     func close() async throws {}
 
-    /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
-    /// Runs the disk read off the main actor — the session is @MainActor, so a
-    /// plain read here would block the UI (beachball) while loading a large PDF.
     func readPdfBytes() async throws -> Data {
-        let path = self.path
-        return try await Task.detached(priority: .userInitiated) {
-            do {
-                return try Data(contentsOf: URL(fileURLWithPath: path))
-            } catch {
-                throw SessionServiceError.io("Failed to read PDF at \(path): \(error.localizedDescription)")
-            }
-        }.value
+        try await io.readPdfBytes()
+    }
+
+    func annotations(pageNumber: Int?) async throws -> [Annotation] {
+        try await io.annotations(pageNumber: pageNumber)
+    }
+
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        try await io.createAnnotation(input)
+    }
+
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+        try await io.updateAnnotation(input)
+    }
+
+    func deleteAnnotation(id: String) async throws -> Bool {
+        try await io.deleteAnnotation(id: id)
+    }
+
+    func setMetadata(key: String, value: String) async throws {
+        try await io.setMetadata(key: key, value: value)
+    }
+}
+
+/// Per-document background worker. All disk/PDFKit/serialize work lives here so
+/// it runs off the main actor; the actor also serializes access to one file so
+/// overlapping writes can't race. Inputs/outputs are all `Sendable` value types
+/// (Annotation, PositionData, Data); the non-Sendable PDFKit objects are
+/// created and consumed entirely inside a single method and never cross the
+/// actor boundary.
+actor PdfDocumentIO {
+    let path: String
+
+    init(path: String) {
+        self.path = path
+    }
+
+    /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
+    func readPdfBytes() throws -> Data {
+        do {
+            return try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw SessionServiceError.io("Failed to read PDF at \(path): \(error.localizedDescription)")
+        }
     }
 
     // MARK: Annotations

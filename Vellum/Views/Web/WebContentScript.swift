@@ -59,6 +59,22 @@ enum WebContentScript {
   var noteMode = false;
   var initialized = false;
 
+  // Highlight edge-resize state. The app shell nominates the selected highlight
+  // (the one whose edit popover is open); we draw draggable blue end bars on it,
+  // mirroring the PDF viewer. Dragging a bar re-anchors that edge to the caret
+  // under the pointer while the opposite edge stays pinned.
+  var selectedHighlightId = null;
+  // Resolved raw offsets of the selected highlight this render, so a drag can
+  // read its pinned edge without re-resolving.
+  var selectedHighlightRange = null; // { start, end }
+  // Live drag preview: while set, renderHighlights draws these offsets for the
+  // matching id instead of the stored ones (the store is only written on drop).
+  var resizePreview = null; // { id, start, end }
+  var resizeState = null; // { id, edge, start, end, anchorOffset } during a drag
+  // True from a handle mousedown until just after the drop, so the trailing
+  // mouseup doesn't clear the selection / close the edit popover.
+  var resizing = false;
+
   // Find bar state (⌘F): matches are raw-offset {start,end} pairs, rendered in
   // their own overlay layer so the app's find never touches annotation layers.
   var findRoot = null;
@@ -527,13 +543,24 @@ enum WebContentScript {
     while (root.firstChild) root.removeChild(root.firstChild);
     resolveBookmarks();
     highlightHitRects = [];
+    selectedHighlightRange = null;
+    resizeHandleEls = null;
+    // First and last rendered rect of the selected highlight (viewport coords),
+    // where the drag handles get anchored after the fill divs are drawn.
+    var selectedFirstRect = null;
+    var selectedLastRect = null;
 
     for (var i = 0; i < appliedHighlights.length; i++) {
       var h = appliedHighlights[i];
-      var resolved = resolveHighlight(h);
+      var resolved =
+        resizePreview && resizePreview.id === h.id
+          ? { start: resizePreview.start, end: resizePreview.end }
+          : resolveHighlight(h);
       if (!resolved) continue;
       var range = rangeFromRaw(resolved.start, resolved.end);
       if (!range) continue;
+      var isSelected = h.id === selectedHighlightId;
+      if (isSelected) selectedHighlightRange = { start: resolved.start, end: resolved.end };
       var rects = range.getClientRects();
       for (var r = 0; r < rects.length; r++) {
         var rect = rects[r];
@@ -545,22 +572,23 @@ enum WebContentScript {
           width: rect.width,
           height: rect.height,
         });
-        var div = document.createElement("div");
-        div.setAttribute("data-vellum-id", h.id);
-        div.style.cssText =
-          "position:absolute;pointer-events:none;border-radius:2px;" +
-          "mix-blend-mode:multiply;opacity:0.55;";
-        div.style.left = rect.left + window.scrollX + "px";
-        div.style.top = rect.top + window.scrollY + "px";
-        div.style.width = rect.width + "px";
-        div.style.height = rect.height + "px";
-        try {
-          div.style.backgroundColor = h.color || "#fef08a";
-        } catch (err) {
-          div.style.backgroundColor = "#fef08a";
+        if (isSelected) {
+          if (!selectedFirstRect) selectedFirstRect = rect;
+          selectedLastRect = rect;
         }
-        root.appendChild(div);
+        root.appendChild(makeFillDiv(h.id, h.color, rect));
       }
+    }
+
+    // Draggable blue end bars on the selected highlight (matches the PDF viewer).
+    // Kept as persistent nodes so a drag repositions them in place rather than
+    // rebuilding (see drawResizePreview).
+    if (selectedHighlightRange && selectedFirstRect && selectedLastRect) {
+      var startHandle = makeResizeHandle("start", selectedFirstRect);
+      var endHandle = makeResizeHandle("end", selectedLastRect);
+      root.appendChild(startHandle);
+      root.appendChild(endHandle);
+      resizeHandleEls = { start: startHandle, end: endHandle };
     }
 
     // Sticky-note markers: a small clickable badge at the note's anchor. The
@@ -626,6 +654,368 @@ enum WebContentScript {
       });
     });
     root.appendChild(marker);
+  }
+
+  // ------------------------------------------------------------------
+  // Highlight edge resize (drag the blue end bars)
+  // ------------------------------------------------------------------
+
+  var RESIZE_COLOR = "#2563eb"; // blue-600, matches the PDF viewer handles
+  var RESIZE_BAR_W = 3;
+  var RESIZE_KNOB = 11;
+  var RESIZE_PAD = 10; // extra hit slop around the knob
+  // The two live handle elements while a highlight is selected. Persisting them
+  // lets a drag reposition the handles in place (layoutResizeHandle) instead of
+  // recreating them every frame — recreating the grabbed handle mid-drag is
+  // what made WebKit lose its mousedown anchor and select the whole page.
+  var resizeHandleEls = null; // { start, end }
+
+  function makeFillDiv(id, color, rect) {
+    var div = document.createElement("div");
+    div.setAttribute("data-vellum-id", id);
+    div.style.cssText =
+      "position:absolute;pointer-events:none;border-radius:2px;" +
+      "mix-blend-mode:multiply;opacity:0.55;";
+    div.style.left = rect.left + window.scrollX + "px";
+    div.style.top = rect.top + window.scrollY + "px";
+    div.style.width = rect.width + "px";
+    div.style.height = rect.height + "px";
+    try {
+      div.style.backgroundColor = color || "#fef08a";
+    } catch (err) {
+      div.style.backgroundColor = "#fef08a";
+    }
+    return div;
+  }
+
+  // Position an existing handle (outer + its ._bar / ._knob children) onto
+  // `rect` — the highlight's first (start) or last (end) client rect in viewport
+  // coordinates. The handle is placed in document coordinates so it tracks the
+  // page as it scrolls. The handle's high z-index keeps it above the fill divs
+  // regardless of DOM order, so a drag never has to re-append it.
+  function layoutResizeHandle(outer, edge, rect) {
+    var outerW = RESIZE_KNOB + RESIZE_PAD;
+    var outerH = rect.height + RESIZE_KNOB + RESIZE_PAD;
+    var barCenterX = (edge === "start" ? rect.left : rect.right) + window.scrollX;
+    var docTop = rect.top + window.scrollY;
+    outer.style.left = barCenterX - outerW / 2 + "px";
+    outer.style.top = docTop - RESIZE_PAD / 2 - RESIZE_KNOB / 2 + "px";
+    outer.style.width = outerW + "px";
+    outer.style.height = outerH + "px";
+
+    var barTop = (outerH - rect.height) / 2;
+    var bar = outer._bar;
+    bar.style.left = (outerW - RESIZE_BAR_W) / 2 + "px";
+    bar.style.top = barTop + "px";
+    bar.style.width = RESIZE_BAR_W + "px";
+    bar.style.height = Math.max(rect.height, RESIZE_KNOB) + "px";
+
+    var knob = outer._knob;
+    knob.style.left = (outerW - RESIZE_KNOB) / 2 + "px";
+    // Knob at the outer end: top for the start bar, bottom for the end bar.
+    knob.style.top =
+      (edge === "start" ? barTop : barTop + rect.height) - RESIZE_KNOB / 2 + "px";
+    knob.style.width = RESIZE_KNOB + "px";
+    knob.style.height = RESIZE_KNOB + "px";
+  }
+
+  // A vertical blue bar with a round knob sitting on one edge of the selected
+  // highlight.
+  function makeResizeHandle(edge, rect) {
+    var outer = document.createElement("div");
+    outer.setAttribute("data-vellum-resize", edge);
+    outer.style.cssText =
+      "position:absolute;pointer-events:auto;cursor:grab;z-index:2147483647;";
+
+    var bar = document.createElement("div");
+    bar.style.cssText =
+      "position:absolute;border-radius:2px;background:" + RESIZE_COLOR + ";";
+    outer.appendChild(bar);
+    outer._bar = bar;
+
+    var knob = document.createElement("div");
+    knob.style.cssText =
+      "position:absolute;border-radius:50%;box-sizing:border-box;background:" +
+      RESIZE_COLOR + ";border:1.5px solid #fff;";
+    outer.appendChild(knob);
+    outer._knob = knob;
+
+    layoutResizeHandle(outer, edge, rect);
+
+    outer.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      beginResize(edge);
+    });
+    return outer;
+  }
+
+  // Per-frame update during a drag: redraw ONLY the selected highlight's fill
+  // from the preview offsets and reposition the two handles, leaving every
+  // other overlay element — and, crucially, the grabbed handle's DOM node —
+  // untouched. This is the whole reason the drag no longer triggers a native
+  // page selection.
+  function drawResizePreview() {
+    if (!resizeState || !resizePreview) return;
+    var root = ensureOverlayRoot();
+    var id = resizeState.id;
+
+    var stale = [];
+    for (var c = 0; c < root.children.length; c++) {
+      var child = root.children[c];
+      if (child.getAttribute && child.getAttribute("data-vellum-id") === id) {
+        stale.push(child);
+      }
+    }
+    for (var s = 0; s < stale.length; s++) root.removeChild(stale[s]);
+
+    var range = rangeFromRaw(resizePreview.start, resizePreview.end);
+    if (!range) return;
+    var color = null;
+    for (var i = 0; i < appliedHighlights.length; i++) {
+      if (appliedHighlights[i].id === id) {
+        color = appliedHighlights[i].color;
+        break;
+      }
+    }
+    var rects = range.getClientRects();
+    var firstRect = null;
+    var lastRect = null;
+    for (var r = 0; r < rects.length; r++) {
+      var rect = rects[r];
+      if (rect.width < 1 || rect.height < 1) continue;
+      if (!firstRect) firstRect = rect;
+      lastRect = rect;
+      root.appendChild(makeFillDiv(id, color, rect));
+    }
+    if (firstRect && lastRect) {
+      selectedHighlightRange = { start: resizePreview.start, end: resizePreview.end };
+      if (resizeHandleEls && resizeHandleEls.start && resizeHandleEls.end) {
+        layoutResizeHandle(resizeHandleEls.start, "start", firstRect);
+        layoutResizeHandle(resizeHandleEls.end, "end", lastRect);
+      }
+    }
+  }
+
+  // Preventing a native text selection during the drag uses THREE guards, the
+  // first of which is decisive and mechanism-independent:
+  //  1. A full-viewport DRAG SHIELD: a transparent fixed div covering the whole
+  //     page while the drag is live. WebKit cannot select text the cursor never
+  //     touches, so this defeats the selection no matter HOW it would otherwise
+  //     start — including the "anchor-loss" case where the grabbed handle's
+  //     mousedown (which we preventDefault) is torn out from under WebKit and it
+  //     begins a fresh selection that a cancellable `selectstart` never fires
+  //     for. The one catch: `caretRangeFromPoint` (how we map the drag point to
+  //     a text offset) also respects the shield, so onResizeMove flips the
+  //     shield to pointer-events:none for that single synchronous hit-test and
+  //     back — no real event can slip through in the gap.
+  //  2. `selectstart`/`dragstart` cancellation: aborts a normal user-selection
+  //     the instant it tries to form (and blocks native image/text drag-drop).
+  //  3. `user-select:none` + grabbing cursor page-wide: extra insurance and the
+  //     visual affordance.
+  function onResizeSelectStart(e) {
+    e.preventDefault();
+  }
+  var resizeLockStyle = null;
+  var resizeShield = null;
+  function setResizeLock(on) {
+    if (on) {
+      if (!resizeShield) {
+        resizeShield = document.createElement("div");
+        resizeShield.id = "__vellum-resize-shield";
+        resizeShield.setAttribute("aria-hidden", "true");
+        resizeShield.style.cssText =
+          "position:fixed;left:0;top:0;width:100vw;height:100vh;" +
+          "z-index:2147483647;background:transparent;cursor:grabbing;";
+        (document.body || document.documentElement).appendChild(resizeShield);
+      }
+      document.addEventListener("selectstart", onResizeSelectStart, true);
+      document.addEventListener("dragstart", onResizeSelectStart, true);
+      if (!resizeLockStyle) {
+        resizeLockStyle = document.createElement("style");
+        resizeLockStyle.id = "__vellum-resize-lock";
+        // The overlay rule matters as much as the user-select one: the grabbed
+        // handle (and any note marker) is pointer-events:auto and sits directly
+        // under the cursor, so caretRangeFromPoint would hit IT instead of the
+        // text below. That boundary lives in the overlay root at the END of
+        // documentElement, which rawOffsetOfBoundary maps to rawText.length —
+        // snapping the dragged edge to the end of the document (the "resize
+        // selects the whole page" bug). Move/up are captured on document, so
+        // the handles need no events while the drag is live.
+        resizeLockStyle.textContent =
+          "*{-webkit-user-select:none!important;user-select:none!important;" +
+          "cursor:grabbing!important;}" +
+          "#__vellum-highlights *{pointer-events:none!important;}";
+        (document.head || document.documentElement).appendChild(resizeLockStyle);
+      }
+      var sel = window.getSelection();
+      if (sel && !sel.isCollapsed) sel.removeAllRanges();
+    } else {
+      if (resizeShield) {
+        if (resizeShield.parentNode) resizeShield.parentNode.removeChild(resizeShield);
+        resizeShield = null;
+      }
+      document.removeEventListener("selectstart", onResizeSelectStart, true);
+      document.removeEventListener("dragstart", onResizeSelectStart, true);
+      if (resizeLockStyle) {
+        if (resizeLockStyle.parentNode) {
+          resizeLockStyle.parentNode.removeChild(resizeLockStyle);
+        }
+        resizeLockStyle = null;
+      }
+    }
+  }
+
+  // The knobs are small and the highlight fill divs are pointer-events:none, so
+  // a mousedown that misses the knob lands on the page text underneath and
+  // starts a normal drag-selection ("finicky... it selects the whole page").
+  // Fix: while a highlight is selected, ANY mousedown on it (or within a margin
+  // of its handles) begins a resize of the nearest edge instead — no text
+  // selection can start. Capture phase + stopPropagation so it also pre-empts
+  // the per-handle listener (no double beginResize) and the link/click paths.
+  function onSelectedHighlightMouseDown(e) {
+    if (selectedHighlightId === null || resizing || noteMode || e.button !== 0) return;
+    var rects = [];
+    for (var i = 0; i < highlightHitRects.length; i++) {
+      if (highlightHitRects[i].id === selectedHighlightId) rects.push(highlightHitRects[i]);
+    }
+    if (rects.length === 0) return;
+    var docX = e.clientX + window.scrollX;
+    var docY = e.clientY + window.scrollY;
+    var margin = RESIZE_KNOB + RESIZE_PAD; // cover the knob/hit-slop past the text edges
+    var inside = false;
+    for (var r = 0; r < rects.length; r++) {
+      var rc = rects[r];
+      if (
+        docX >= rc.left - margin && docX <= rc.left + rc.width + margin &&
+        docY >= rc.top - margin && docY <= rc.top + rc.height + margin
+      ) { inside = true; break; }
+    }
+    if (!inside) return;
+    // Nearest edge: distance to the start (left of first rect) vs the end
+    // (right of last rect).
+    var first = rects[0], last = rects[rects.length - 1];
+    var dStart = Math.hypot(docX - first.left, docY - (first.top + first.height / 2));
+    var dEnd = Math.hypot(docX - (last.left + last.width), docY - (last.top + last.height / 2));
+    e.preventDefault();
+    e.stopPropagation();
+    beginResize(dStart <= dEnd ? "start" : "end");
+  }
+
+  function beginResize(edge) {
+    if (!selectedHighlightRange || selectedHighlightId === null) return;
+    resizing = true;
+    resizeState = {
+      id: selectedHighlightId,
+      edge: edge,
+      start: selectedHighlightRange.start,
+      end: selectedHighlightRange.end,
+      anchorOffset: edge === "start" ? selectedHighlightRange.end : selectedHighlightRange.start,
+    };
+    setResizeLock(true);
+    document.addEventListener("mousemove", onResizeMove, true);
+    document.addEventListener("mouseup", onResizeUp, true);
+  }
+
+  function onResizeMove(e) {
+    if (!resizeState) return;
+    e.preventDefault();
+    // Belt-and-suspenders: drop any selection the browser managed to start
+    // before the guards took hold.
+    var liveSel = window.getSelection();
+    if (liveSel && !liveSel.isCollapsed) liveSel.removeAllRanges();
+    // The shield sits over the text, so drop it to pointer-events:none for the
+    // single synchronous caret hit-test, then restore it. Nothing can select in
+    // this gap because no event is dispatched during a synchronous call.
+    if (resizeShield) resizeShield.style.pointerEvents = "none";
+    var caret = rawOffsetAtPoint(e.clientX, e.clientY);
+    if (resizeShield) resizeShield.style.pointerEvents = "auto";
+    if (caret === null) return; // over a gap/chrome: hold the last frame
+    // Plausibility guard: hit-testing in empty regions (page margins, space
+    // past the last paragraph, footer/header gaps) snaps the caret to a
+    // document-boundary position whole screens away from the pointer — most
+    // dangerously rawText.length, which yanks the dragged edge to the end of
+    // the page in one frame. Require the caret's rendered line to be near the
+    // pointer's y; otherwise hold the last frame like a missed hit-test.
+    // Probe the nearest rendered (non-space) character — a caret on collapsed
+    // whitespace (line breaks, the document's trailing whitespace nodes) has
+    // no box of its own to measure.
+    var probeAt = Math.min(caret, rawText.length - 1);
+    while (probeAt > 0 && isSpaceCode(rawText.charCodeAt(probeAt))) probeAt--;
+    var caretProbe = rangeFromRaw(probeAt, probeAt + 1);
+    if (caretProbe) {
+      var caretRect = caretProbe.getBoundingClientRect();
+      if (isFinite(caretRect.top) && (caretRect.width > 0 || caretRect.height > 0)) {
+        var dy = 0;
+        if (e.clientY < caretRect.top) dy = caretRect.top - e.clientY;
+        else if (e.clientY > caretRect.bottom) dy = e.clientY - caretRect.bottom;
+        if (dy > 80) return;
+      }
+    }
+    var start = resizeState.start;
+    var end = resizeState.end;
+    if (resizeState.edge === "start") {
+      // Dragged edge never crosses (or touches) the pinned end.
+      start = Math.max(0, Math.min(caret, resizeState.anchorOffset - 1));
+      end = resizeState.anchorOffset;
+    } else {
+      start = resizeState.anchorOffset;
+      end = Math.min(rawText.length, Math.max(caret, resizeState.anchorOffset + 1));
+    }
+    if (start === resizeState.start && end === resizeState.end) return;
+    resizeState.start = start;
+    resizeState.end = end;
+    resizePreview = { id: resizeState.id, start: start, end: end };
+    drawResizePreview();
+  }
+
+  function onResizeUp() {
+    document.removeEventListener("mousemove", onResizeMove, true);
+    document.removeEventListener("mouseup", onResizeUp, true);
+    setResizeLock(false);
+    var state = resizeState;
+    resizeState = null;
+    resizePreview = null;
+    // Let the trailing mouseup->reportSelection and click handlers see that a
+    // resize just finished, then release the flag.
+    setTimeout(function () {
+      resizing = false;
+    }, 60);
+    if (!state) return;
+    var start = state.start;
+    var end = state.end;
+    var text = collapseWs(rawText.slice(start, end)).trim();
+    // Collapsed range OR whitespace-only quote: bail like a no-op drag. An
+    // empty selectedText would be dropped by the app shell's hasQuote filter
+    // on the next apply-annotations round-trip, silently deleting the
+    // highlight.
+    if (end <= start || text.length === 0) {
+      renderHighlights();
+      return;
+    }
+    var ctx = quoteContext(start, end);
+    // Update the local record so the highlight stays at the new size until the
+    // app shell's apply-annotations round-trip lands (avoids a flicker back).
+    for (var i = 0; i < appliedHighlights.length; i++) {
+      if (appliedHighlights[i].id === state.id) {
+        appliedHighlights[i].start = start;
+        appliedHighlights[i].end = end;
+        appliedHighlights[i].text = text;
+        appliedHighlights[i].prefix = ctx.prefix;
+        appliedHighlights[i].suffix = ctx.suffix;
+        break;
+      }
+    }
+    renderHighlights();
+    post("highlight-resized", {
+      id: state.id,
+      start: start,
+      end: end,
+      text: text,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      pageNumber: pageForRaw(start),
+    });
   }
 
   // ------------------------------------------------------------------
@@ -829,6 +1219,9 @@ enum WebContentScript {
   // ------------------------------------------------------------------
 
   function reportSelection() {
+    // A handle drag ends in a mouseup too; don't let it clear the selection or
+    // dismiss the highlight's edit popover.
+    if (resizing) return;
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       post("selection-cleared");
@@ -1103,6 +1496,21 @@ enum WebContentScript {
         reportScroll(true);
         break;
 
+      case "set-selected-highlight": {
+        var nextId = d.id != null ? String(d.id) : null;
+        if (nextId !== selectedHighlightId) {
+          selectedHighlightId = nextId;
+          if (nextId === null) {
+            resizePreview = null;
+            resizeState = null;
+            resizing = false;
+            setResizeLock(false);
+          }
+          renderHighlights();
+        }
+        break;
+      }
+
       case "set-mode": {
         noteMode = d.mode === "note";
         try {
@@ -1319,6 +1727,8 @@ enum WebContentScript {
     initialize(true);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", relayout);
+    // Grab-anywhere-on-the-selected-highlight resize (see the function comment).
+    document.addEventListener("mousedown", onSelectedHighlightMouseDown, true);
 
     // Back/forward can restore this page from WebKit's page cache, where
     // user scripts don't re-run: without a fresh init the shell keeps the
@@ -1348,6 +1758,20 @@ enum WebContentScript {
         renderHighlights();
         reportScroll(true);
       }, 600);
+      // Our own transient drag chrome (the resize shield + user-select lock
+      // style) is added/removed on document.body/head during a drag; those
+      // mutations must not trigger a re-extract that rebuilds the handles
+      // mid-drag.
+      function isOwnResizeChrome(n) {
+        return !!n && (n.id === "__vellum-resize-shield" || n.id === "__vellum-resize-lock");
+      }
+      function onlyOwnChrome(list) {
+        if (!list || list.length === 0) return false;
+        for (var k = 0; k < list.length; k++) {
+          if (!isOwnResizeChrome(list[k])) return false;
+        }
+        return true;
+      }
       new MutationObserver(function (records) {
         for (var i = 0; i < records.length; i++) {
           var target = records[i].target;
@@ -1355,6 +1779,14 @@ enum WebContentScript {
             continue;
           }
           if (findRoot && (target === findRoot || findRoot.contains(target))) {
+            continue;
+          }
+          if (isOwnResizeChrome(target)) continue;
+          // Pure shield/lock add or remove: not a page change.
+          if (
+            records[i].type === "childList" &&
+            (onlyOwnChrome(records[i].addedNodes) || onlyOwnChrome(records[i].removedNodes))
+          ) {
             continue;
           }
           remap();
