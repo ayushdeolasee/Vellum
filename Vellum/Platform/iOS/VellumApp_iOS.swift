@@ -38,6 +38,9 @@ struct VellumApp_iOS: App {
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
         }
+        .commands {
+            VellumCommands_iOS(appStore: appStore, annotationStore: annotationStore)
+        }
         .onChange(of: scenePhase) { _, phase in
             // Persist last_page for every open tab when leaving the foreground,
             // the iOS analogue of the macOS terminate hook.

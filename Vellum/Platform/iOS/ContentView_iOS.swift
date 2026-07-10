@@ -55,6 +55,15 @@ struct ContentView_iOS: View {
             guard appStore.document != nil else { return }
             Task { await annotationStore.loadAnnotations() }
         }
+        // Keyboard-shortcut routing (VellumCommands_iOS): ⌘O opens the file
+        // importer, ⌘L presents the add-webpage sheet — both reach the shell
+        // here since a Commands struct can't drive this view's presentation.
+        .onReceive(NotificationCenter.default.publisher(for: .vellumOpenFile)) { _ in
+            presentImporter()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
+            addWebpagePresented = true
+        }
         .onChange(of: colorScheme, initial: true) { _, scheme in
             themeStore.systemAppearanceChanged(isDark: scheme == .dark)
         }

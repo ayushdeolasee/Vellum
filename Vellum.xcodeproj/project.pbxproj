@@ -66,6 +66,7 @@
 		C216FBF992CE583A32436389 /* InkToolPalette_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */; };
 		C70838E7CAE4DCE99455D99F /* PdfViewerView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
+		C91E39E971206E14521EB884 /* VellumCommands_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */; };
 		CB17BF693B55AF25352B366A /* WelcomeScreen_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
 		D0D4EC9C2F31C5D40C71A2AC /* CodexAiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445794DE3CECBDEB9414F5C2 /* CodexAiClient.swift */; };
@@ -165,6 +166,7 @@
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
 		D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickyNoteOverlay.swift; sourceTree = "<group>"; };
 		D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumCommands_iOS.swift; sourceTree = "<group>"; };
 		DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeScreen_iOS.swift; sourceTree = "<group>"; };
 		DB938214DCB295AEA743C5D3 /* DocumentImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentImport.swift; sourceTree = "<group>"; };
 		DF9C9C837F5B62D523BD8E97 /* AnnotationSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationSidebar.swift; sourceTree = "<group>"; };
@@ -201,6 +203,7 @@
 				255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */,
 				A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */,
 				721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */,
+				D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */,
 				BC65D72937E15736374B3533 /* WebViewerView_iOS.swift */,
 				DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */,
 			);
@@ -593,6 +596,7 @@
 				8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */,
 				771BABE71CDC9C9EA16510C8 /* VellumApp_iOS.swift in Sources */,
 				E902AE322CF4E85CD5937369 /* VellumCommands.swift in Sources */,
+				C91E39E971206E14521EB884 /* VellumCommands_iOS.swift in Sources */,
 				923DF93BFF82ECA377E4BEE9 /* WebArchive.swift in Sources */,
 				E6B0CB4F9698FD21D03270E1 /* WebContentScript.swift in Sources */,
 				82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */,

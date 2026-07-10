@@ -62,4 +62,6 @@ extension Notification.Name {
     static let vellumAnnotationsUpdated = Notification.Name("vellum.annotations-updated")
     /// Asks the toolbar to open its "add webpage" URL prompt. (vellum:add-webpage)
     static let vellumAddWebpage = Notification.Name("vellum.add-webpage")
+    /// Asks the shell to present the file importer (⌘O on iPad). (vellum:open-file)
+    static let vellumOpenFile = Notification.Name("vellum.open-file")
 }
