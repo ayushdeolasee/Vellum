@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UniformTypeIdentifiers
 
 // iPad reading chrome: a touch-first Liquid Glass toolbar (page nav, zoom, find,
 // note tool, bookmark, sidebar, more), a tab strip, and the sidebar content —
@@ -15,6 +16,7 @@ struct PdfToolbar_iOS: View {
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     @State private var pageFieldText = ""
@@ -132,9 +134,9 @@ struct PdfToolbar_iOS: View {
             GlassToolPod {
                 GlassToolButton(
                     system: "sidebar.right", label: "Toggle sidebar",
-                    active: appStore.sidebarOpen
+                    active: workspace.sidebarOpen
                 ) {
-                    appStore.sidebarOpen.toggle()
+                    workspace.sidebarOpen.toggle()
                 }
                 moreMenu
             }
@@ -166,6 +168,10 @@ struct PdfToolbar_iOS: View {
                         }
                     }
             }
+            // The Settings AI tab edits the workspace's dedicated settings
+            // store (not this pane's conversation), mirroring the macOS
+            // Settings scene; changes broadcast to every pane's AiStore.
+            .environment(workspace.settingsAi)
             .presentationDetents([.large])
         }
     }
@@ -217,6 +223,24 @@ struct PdfToolbar_iOS: View {
                 } label: {
                     Label("Actual Size", systemImage: "1.magnifyingglass")
                 }
+            }
+            Divider()
+            // Split-screen: this menu belongs to a pane, and tapping it focuses
+            // that pane (the pane's touch catcher fires first), so the focused-
+            // pane operations below always target the pane the menu lives in.
+            Button {
+                workspace.splitFocused(.horizontal)
+            } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
+            Button {
+                workspace.splitFocused(.vertical)
+            } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
+            if workspace.isSplit {
+                Button {
+                    workspace.mergeAll()
+                } label: { Label("Merge Panes", systemImage: "rectangle") }
+                Button {
+                    workspace.closePane(workspace.focusedPaneId)
+                } label: { Label("Close Pane", systemImage: "xmark.rectangle") }
             }
             Divider()
             Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
@@ -295,16 +319,21 @@ struct GlassToolButton: View {
 // MARK: - Tab strip
 
 struct TabStrip_iOS: View {
+    /// The pane this strip belongs to — carried in the tab drag payload so a
+    /// drop on another pane knows where the tab came from.
+    let paneId: String
     var onNewTab: () -> Void
 
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @State private var joinTargeted = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(appStore.tabs) { tab in
-                    TabChip_iOS(tab: tab, isActive: tab.id == appStore.activeTabId)
+                    TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
                 }
                 Button(action: onNewTab) {
                     Image(systemName: "plus")
@@ -320,14 +349,38 @@ struct TabStrip_iOS: View {
             .padding(.vertical, 6)
         }
         .background(.bar)
+        // Dropping a tab onto this strip moves it into this pane's group. When
+        // it empties the source pane, that pane collapses — this is how you undo
+        // a split: drag one pane's tab into the other pane's tab strip.
+        .background {
+            if joinTargeted && workspace.draggingTab != nil {
+                Rectangle().fill(palette.primary.opacity(0.16))
+            }
+        }
+        .onDrop(of: [.vellumTab], isTargeted: $joinTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            let targetPane = paneId
+            let workspace = self.workspace
+            _ = provider.loadDataRepresentation(for: .vellumTab) { data, _ in
+                guard let data,
+                      let payload = try? JSONDecoder().decode(TabDragPayload.self, from: data) else { return }
+                Task { @MainActor in
+                    workspace.moveTab(tabId: payload.tabId, from: payload.paneId, to: targetPane)
+                    workspace.endTabDrag()
+                }
+            }
+            return true
+        }
     }
 }
 
 private struct TabChip_iOS: View {
     let tab: PdfTab
+    let paneId: String
     let isActive: Bool
 
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     private var title: String {
@@ -368,36 +421,57 @@ private struct TabChip_iOS: View {
         .selectionSurface(selected: isActive, in: Capsule(), palette: palette)
         .contentShape(Capsule())
         .onTapGesture { appStore.activateTab(tab.id) }
+        // Long-press lifts the chip into a drag; dropping on another pane's
+        // strip joins that group, dropping on a pane edge splits it.
+        .onDrag {
+            let payload = TabDragPayload(paneId: paneId, tabId: tab.id)
+            workspace.beginTabDrag(payload)
+            let provider = NSItemProvider()
+            if let data = try? JSONEncoder().encode(payload) {
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.vellumTab.identifier, visibility: .ownProcess
+                ) { completion in
+                    completion(data, nil)
+                    return nil
+                }
+            }
+            return provider
+        }
     }
 }
 
 // MARK: - Sidebar content (hosted by the adaptive inspector)
 
 struct SidebarContent_iOS: View {
-    var ink: InkController_iOS
+    /// The focused pane's ink controller, from the registry — nil only in the
+    /// instant before that pane has appeared, so the Handwriting section just
+    /// skips rendering rather than holding a stale controller.
+    var ink: InkController_iOS?
 
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     var body: some View {
         VStack(spacing: 0) {
             GlassSegmentedPicker(
                 options: [
-                    (AppStore.SidebarTab.annotations, "Annotations"),
-                    (AppStore.SidebarTab.ai, "AI"),
+                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
+                    (WorkspaceStore.SidebarTab.ai, "AI"),
                 ],
                 selection: Binding(
-                    get: { appStore.sidebarTab },
-                    set: { appStore.sidebarTab = $0 }
+                    get: { workspace.sidebarTab },
+                    set: { workspace.sidebarTab = $0 }
                 ),
                 accessibilityIdentifierPrefix: "sidebarTab"
             )
             .padding(.vertical, 10)
             Divider()
             Group {
-                if appStore.sidebarTab == .annotations {
+                if workspace.sidebarTab == .annotations {
                     VStack(spacing: 0) {
-                        InkPagesSection_iOS(ink: ink)
+                        if let ink {
+                            InkPagesSection_iOS(ink: ink)
+                        }
                         AnnotationSidebar()
                     }
                 } else {

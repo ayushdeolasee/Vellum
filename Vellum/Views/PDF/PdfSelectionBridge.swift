@@ -62,11 +62,10 @@ final class PdfViewerController {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
-        // Mirror renderAnnotationLayer={false}: annotations render ONLY from
-        // store overlays; embedded ones must not double-draw underneath. The
-        // in-memory copy is display-only (mutations rewrite the on-disk file),
-        // so stripping them here never touches the document on disk.
-        stripEmbeddedAnnotations(from: document)
+        // Embedded annotations are stripped off-main by the caller (PdfViewerView
+        // .load) before adopt, so they render ONLY from store overlays and never
+        // double-draw. Stripping here would repeat that heavy work on the main
+        // thread — see PreparedPdf.
     }
 
     func reset() {

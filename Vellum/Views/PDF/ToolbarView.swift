@@ -632,21 +632,21 @@ private struct DocumentTitleField: View {
 // MARK: - Sidebar
 
 private struct SidebarToggleButton: View {
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
         Button {
-            appStore.sidebarOpen.toggle()
+            workspace.sidebarOpen.toggle()
         } label: {
             Label(
-                appStore.sidebarOpen ? "Hide side panel" : "Show side panel",
+                workspace.sidebarOpen ? "Hide side panel" : "Show side panel",
                 systemImage: "sidebar.trailing")
         }
         .help(
-            appStore.sidebarOpen
+            workspace.sidebarOpen
                 ? "Hide side panel (⌘⌥S)"
                 : "Show side panel (⌘⌥S) — annotations and AI chat")
-        .accessibilityAddTraits(appStore.sidebarOpen ? .isSelected : [])
+        .accessibilityAddTraits(workspace.sidebarOpen ? .isSelected : [])
         .accessibilityIdentifier("toolbar.sidebarToggle")
     }
 }

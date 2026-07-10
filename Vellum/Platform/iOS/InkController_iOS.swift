@@ -100,8 +100,8 @@ final class InkController_iOS {
                 // narrowed column otherwise). Restore the prior state on Done.
                 // Opt-out via the "auto-hide sidebar while inking" setting.
                 if Self.autoHideSidebarWhileInking {
-                    sidebarWasOpen = app?.sidebarOpen ?? false
-                    app?.sidebarOpen = false
+                    sidebarWasOpen = app?.workspace?.sidebarOpen ?? false
+                    app?.workspace?.sidebarOpen = false
                 }
             } else {
                 // Turning ink off can't lose the last stroke: write any pending
@@ -109,7 +109,7 @@ final class InkController_iOS {
                 flushPendingInk()
                 if sidebarWasOpen {
                     sidebarWasOpen = false
-                    app?.sidebarOpen = true
+                    app?.workspace?.sidebarOpen = true
                 }
             }
             inkProvider.refreshPolicies()

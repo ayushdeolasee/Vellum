@@ -2,34 +2,38 @@
 import SwiftUI
 
 /// Root shell for the iPad app. Empty state shows the full-screen library;
-/// once documents are open it becomes a tabbed reader with a Liquid Glass
-/// toolbar, tab strip, find bar, and an adaptive inspector sidebar.
+/// once documents are open it becomes the split-screen pane tree — each pane a
+/// tabbed reader with its own Liquid Glass toolbar — plus one adaptive
+/// inspector sidebar bound to the focused pane. File pickers and sheets are
+/// presented here, at the shell, and route to the focused pane.
 struct ContentView_iOS: View {
-    @Environment(AppStore.self) private var appStore
-    @Environment(AnnotationStore.self) private var annotationStore
-    @Environment(AiStore.self) private var aiStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(ThemeStore.self) private var themeStore
     @Environment(\.palette) private var palette
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var addWebpagePresented = false
+    @State private var inkRegistry = InkRegistry_iOS()
+
+    /// The pane the single inspector sidebar and shell-level pickers act on.
+    private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
-        Group {
-            if appStore.tabs.isEmpty {
-                WelcomeLibrary_iOS(
-                    onOpen: { presentImporter() },
-                    onAddWebpage: { addWebpagePresented = true }
-                )
-            } else {
-                TabbedShell_iOS(
-                    onOpenFile: { presentImporter() },
-                    onAddWebpage: { addWebpagePresented = true }
-                )
-            }
-        }
+        // The focused pane's store-triple is injected here, as an ANCESTOR of
+        // the subview that declares `.inspector` — inspector content is hosted
+        // separately and only inherits ancestor environment (same trap as the
+        // macOS toolbar). Each pane's subtree re-injects its own triple.
+        PaneShell_iOS(
+            onOpenFile: { presentImporter() },
+            onAddWebpage: { addWebpagePresented = true }
+        )
+        .environment(focused.app)
+        .environment(focused.annotations)
+        .environment(focused.ai)
+        .environment(inkRegistry)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background.ignoresSafeArea())
+        .task { await workspace.restoreFromDisk() }
         // Warm the document-picker subsystem shortly after launch so the first
         // "Open a PDF" tap doesn't pay the multi-second service-discovery cost.
         .task {
@@ -38,26 +42,13 @@ struct ContentView_iOS: View {
         }
         .sheet(isPresented: $addWebpagePresented) {
             AddWebpageSheet_iOS { url in
-                Task { await appStore.openUrl(url) }
+                let app = workspace.focusedPane.app
+                Task { await app.openUrl(url) }
             }
         }
-        // Reload annotations + AI context on document identity change, mirroring
-        // the macOS ContentView.
-        .task(id: documentIdentity) {
-            annotationStore.clearAnnotations()
-            aiStore.clearDocumentContext()
-            guard appStore.document?.pdfPath != nil else { return }
-            await annotationStore.loadAnnotations()
-            guard !Task.isCancelled else { return }
-            aiStore.loadConversationForDocument(appStore.document)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
-            guard appStore.document != nil else { return }
-            Task { await annotationStore.loadAnnotations() }
-        }
-        // Keyboard-shortcut routing (VellumCommands_iOS): ⌘O opens the file
-        // importer, ⌘L presents the add-webpage sheet — both reach the shell
-        // here since a Commands struct can't drive this view's presentation.
+        // Keyboard-shortcut / pane routing: ⌘O and every pane's "Open File…"
+        // post here since panes and Commands structs can't drive this view's
+        // presentation themselves.
         .onReceive(NotificationCenter.default.publisher(for: .vellumOpenFile)) { _ in
             presentImporter()
         }
@@ -73,99 +64,76 @@ struct ContentView_iOS: View {
     }
 
     private func presentImporter() {
+        let workspace = self.workspace
         DocumentPickerCoordinator_iOS.shared.present { urls in
             let paths = DocumentImport.importPicked(urls)
             guard !paths.isEmpty else { return }
-            Task { await appStore.openFiles(paths: paths) }
+            let app = workspace.focusedPane.app
+            Task { await app.openFiles(paths: paths) }
         }
-    }
-
-    private var documentIdentity: String {
-        "\(appStore.activeTabId ?? "none")|\(appStore.document?.pdfPath ?? "none")"
     }
 
     #if DEBUG
     private func autoOpenForTesting() async {
-        guard appStore.document == nil, appStore.tabs.isEmpty else { return }
+        let app = focused.app
+        guard app.document == nil, app.tabs.isEmpty else { return }
         if let url = ProcessInfo.processInfo.environment["VELLUM_AUTOOPEN_URL"] {
-            await appStore.openUrl(url)
+            await app.openUrl(url)
+            await autoSplitForTesting()
             return
         }
         guard let path = ProcessInfo.processInfo.environment["VELLUM_AUTOOPEN_PDF"],
               FileManager.default.fileExists(atPath: path) else { return }
         let paths = DocumentImport.importPicked([URL(fileURLWithPath: path)])
         guard !paths.isEmpty else { return }
-        await appStore.openFiles(paths: paths)
+        await app.openFiles(paths: paths)
+        await autoSplitForTesting()
+    }
+
+    /// QA hook: headless environments can't synthesize touches, so this stands
+    /// in for the More-menu "Split Right" tap when VELLUM_AUTOSPLIT is set.
+    private func autoSplitForTesting() async {
+        guard ProcessInfo.processInfo.environment["VELLUM_AUTOSPLIT"] != nil,
+              !workspace.isSplit else { return }
+        try? await Task.sleep(for: .seconds(1))
+        workspace.splitFocused(.horizontal)
     }
     #endif
 }
 
-// MARK: - Tabbed reader shell
+// MARK: - Pane shell
 
-private struct TabbedShell_iOS: View {
+/// Hosts the pane tree (or the full-screen library when nothing is open) and
+/// declares the one inspector sidebar, bound to the focused pane's stores.
+private struct PaneShell_iOS: View {
     var onOpenFile: () -> Void
     var onAddWebpage: () -> Void
 
-    @Environment(AppStore.self) private var appStore
-    @Environment(\.palette) private var palette
-    @State private var ink = InkController_iOS()
+    @Environment(WorkspaceStore.self) private var workspace
+    @Environment(InkRegistry_iOS.self) private var inkRegistry
+
+    private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabStrip_iOS(onNewTab: { appStore.newStartTab() })
-
-            if appStore.document == nil {
-                // Active start tab: the library, inside the tabbed shell.
-                WelcomeLibrary_iOS(onOpen: onOpenFile, onAddWebpage: onAddWebpage, compact: true)
+        Group {
+            if !workspace.isSplit && focused.app.tabs.isEmpty {
+                WelcomeLibrary_iOS(onOpen: onOpenFile, onAddWebpage: onAddWebpage)
             } else {
-                PdfToolbar_iOS(ink: ink, onOpenFile: onOpenFile, onAddWebpage: onAddWebpage)
-
-                if appStore.findVisible {
-                    FindBar()
-                }
-
-                documentViewer
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(edges: .bottom)
+                PaneTreeView(node: workspace.root)
             }
         }
         .inspector(isPresented: inspectorPresented) {
-            SidebarContent_iOS(ink: ink)
+            SidebarContent_iOS(ink: inkRegistry.controllers[workspace.focusedPaneId])
                 .inspectorColumnWidth(min: 280, ideal: 360, max: 560)
         }
-        #if DEBUG
-        .task(id: appStore.activeTabId) {
-            if ProcessInfo.processInfo.environment["VELLUM_AUTOINK"] != nil,
-               appStore.document?.kind == .pdf {
-                // Wait for the viewer's load() to adopt the document (it resets
-                // ink.isActive = false when it finishes, so a fixed delay races
-                // a slow cold launch), then activate past that reset.
-                for _ in 0..<40 where ink.pdfController?.document == nil {
-                    try? await Task.sleep(for: .milliseconds(250))
-                }
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                ink.isActive = true
-            }
-        }
-        #endif
     }
 
-    @ViewBuilder
-    private var documentViewer: some View {
-        if appStore.document?.kind == .web {
-            WebViewerView_iOS()
-                .id(appStore.activeTabId)
-        } else {
-            PdfViewerView_iOS(ink: ink)
-                .id(appStore.activeTabId)
-        }
-    }
-
+    /// Inspector only makes sense with a document in the focused pane; the open
+    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { appStore.document != nil && appStore.sidebarOpen },
-            set: { appStore.sidebarOpen = $0 }
+            get: { focused.app.document != nil && workspace.sidebarOpen },
+            set: { workspace.sidebarOpen = $0 }
         )
     }
 }

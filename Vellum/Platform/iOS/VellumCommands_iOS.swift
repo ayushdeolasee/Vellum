@@ -7,14 +7,17 @@ import SwiftUI
 /// discoverability HUD and fire the same actions as the Mac app.
 ///
 /// Unlike macOS — which routes through `@FocusedValue` for free menu validation
-/// — the iPad app is a single window with singleton stores, so we capture the
-/// stores directly and guard inside each action. That keeps every guard fresh at
-/// invocation time (no reliance on `Commands` re-evaluation to update
-/// `.disabled` state), so a shortcut never silently no-ops because a menu item
-/// was left stale.
+/// — the iPad app is a single window, so we capture the WorkspaceStore directly,
+/// resolve the focused pane's stores at invocation time, and guard inside each
+/// action. That keeps every guard fresh (no reliance on `Commands` re-evaluation
+/// to update `.disabled` state), so a shortcut never silently no-ops because a
+/// menu item was left stale — and every document command targets the pane the
+/// user is actually working in.
 struct VellumCommands_iOS: Commands {
-    let appStore: AppStore
-    let annotationStore: AnnotationStore
+    let workspace: WorkspaceStore
+
+    private var appStore: AppStore { workspace.focusedPane.app }
+    private var annotationStore: AnnotationStore { workspace.focusedPane.annotations }
 
     var body: some Commands {
         // MARK: File
@@ -113,9 +116,31 @@ struct VellumCommands_iOS: Commands {
 
             Button("Toggle Inspector") {
                 guard appStore.document != nil else { return }
-                appStore.sidebarOpen.toggle()
+                workspace.sidebarOpen.toggle()
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
+
+            Divider()
+
+            // Split shortcuts mirror macOS: they avoid the arrow keys, which
+            // ⌘⌥↑/↓ already use for First/Last Page. ⌘\ matches VS Code.
+            Button("Split Right") { workspace.splitFocused(.horizontal) }
+                .keyboardShortcut("\\", modifiers: .command)
+
+            Button("Split Down") { workspace.splitFocused(.vertical) }
+                .keyboardShortcut("\\", modifiers: [.command, .option])
+
+            Button("Merge Panes") {
+                guard workspace.isSplit else { return }
+                workspace.mergeAll()
+            }
+            .keyboardShortcut("j", modifiers: [.command, .option])
+
+            Button("Close Pane") {
+                guard workspace.isSplit else { return }
+                workspace.closePane(workspace.focusedPaneId)
+            }
+            .keyboardShortcut("\\", modifiers: [.command, .shift])
         }
 
         // MARK: Navigate

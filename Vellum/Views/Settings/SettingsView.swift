@@ -71,7 +71,7 @@ private struct GeneralSettingsTab: View {
 // MARK: - Reading
 
 private struct ReadingSettingsTab: View {
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
     @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
     @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
@@ -83,7 +83,7 @@ private struct ReadingSettingsTab: View {
             Section {
                 Slider(
                     value: fontSizeBinding,
-                    in: AppStore.minSidebarFontSize...AppStore.maxSidebarFontSize,
+                    in: WorkspaceStore.minSidebarFontSize...WorkspaceStore.maxSidebarFontSize,
                     step: 1
                 ) {
                     Text("Sidebar text size")
@@ -93,7 +93,7 @@ private struct ReadingSettingsTab: View {
                     Text("A").font(.system(size: 16))
                 }
                 LabeledContent("Current size") {
-                    Text("\(Int(appStore.sidebarFontSize)) pt")
+                    Text("\(Int(workspace.sidebarFontSize)) pt")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -139,8 +139,8 @@ private struct ReadingSettingsTab: View {
 
     private var fontSizeBinding: Binding<Double> {
         Binding(
-            get: { appStore.sidebarFontSize },
-            set: { appStore.sidebarFontSize = $0 }
+            get: { workspace.sidebarFontSize },
+            set: { workspace.sidebarFontSize = $0 }
         )
     }
 }
@@ -148,7 +148,7 @@ private struct ReadingSettingsTab: View {
 // MARK: - Annotations
 
 private struct AnnotationsSettingsTab: View {
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -174,9 +174,9 @@ private struct AnnotationsSettingsTab: View {
     }
 
     private func swatch(_ color: HighlightColor) -> some View {
-        let selected = appStore.defaultHighlightColor.caseInsensitiveCompare(color.value) == .orderedSame
+        let selected = workspace.defaultHighlightColor.caseInsensitiveCompare(color.value) == .orderedSame
         return Button {
-            appStore.defaultHighlightColor = color.value
+            workspace.defaultHighlightColor = color.value
         } label: {
             Circle()
                 .fill(Color(hex: color.value))

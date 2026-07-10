@@ -241,7 +241,7 @@ final class AnnotationStore {
     /// so the optimistic record matches what persistence writes.
     private func resolvedDefaultColor(for type: AnnotationType) -> String? {
         switch type {
-        case .highlight: return AppStore.storedDefaultHighlightColor()
+        case .highlight: return WorkspaceStore.storedDefaultHighlightColor()
         case .note, .bookmark: return nil
         }
     }

@@ -133,7 +133,7 @@ final class WebDocumentSession: DocumentSession {
         let now = WebLibrary.rfc3339Now()
         let defaultColor: String?
         switch input.type {
-        case .highlight: defaultColor = AppStore.storedDefaultHighlightColor()
+        case .highlight: defaultColor = WorkspaceStore.storedDefaultHighlightColor()
         case .note: defaultColor = defaultNoteColor
         case .bookmark: defaultColor = nil
         }

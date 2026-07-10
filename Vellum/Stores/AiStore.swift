@@ -78,6 +78,11 @@ final class AiStore {
     private(set) var pageTexts: [Int: String] = [:]
     private(set) var settings = AiSettings()
 
+    /// Observes `.vellumAiSettingsChanged` so this instance reloads the shared
+    /// disk-persisted settings when another instance (or the Settings window)
+    /// changes them — keeps every pane's AiStore in sync.
+    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+
     /// Registered by the PDF viewer: locate a verbatim phrase on a page at
     /// zoom 1 in top-left-origin PDF points (lib/highlight-locator.ts).
     var locatePdfTextHandler: ((Int, String) async -> LocatedText?)?
@@ -89,6 +94,19 @@ final class AiStore {
 
     init() {
         settings = AiPersistence.loadSettings()
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .vellumAiSettingsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.settings = AiPersistence.loadSettings()
+            }
+        }
+    }
+
+    isolated deinit {
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
     }
 
     // MARK: - Contract used by other modules (implemented by the AI module)
@@ -96,6 +114,9 @@ final class AiStore {
     func setSettings(_ settings: AiSettings) {
         self.settings = settings
         AiPersistence.saveSettings(settings)
+        // Every other AiStore instance (other panes, the Settings window's own)
+        // reloads from disk so the change is window-wide, not just local.
+        NotificationCenter.default.post(name: .vellumAiSettingsChanged, object: nil)
     }
 
     @discardableResult

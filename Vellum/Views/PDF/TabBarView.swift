@@ -4,8 +4,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct TabBarView: View {
+    /// The pane this strip belongs to — carried in the tab drag payload so a drop
+    /// on another pane knows where the tab came from.
+    let paneId: String
+
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @State private var joinTargeted = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -17,6 +23,7 @@ struct TabBarView: View {
                     ForEach(appStore.tabs) { tab in
                         TabItem(
                             tab: tab,
+                            paneId: paneId,
                             isActive: tab.id == appStore.activeTabId,
                             onActivate: { appStore.activateTab(tab.id) },
                             onClose: { Task { await appStore.closeTab(tab.id) } }
@@ -52,9 +59,36 @@ struct TabBarView: View {
         .padding(.trailing, 8)
         .frame(height: 38)
         .background(.bar)
+        // Dropping a tab onto this strip moves it into this pane's group. When
+        // it empties the source pane, that pane collapses — this is how you undo
+        // a split: drag one pane's tab into the other pane's tab bar.
+        .background {
+            if joinTargeted {
+                Rectangle().fill(palette.primary.opacity(0.16))
+            }
+        }
         .overlay(alignment: .bottom) {
             Divider()
         }
+        .onDrop(of: [.vellumTab], isTargeted: joinTargetedBinding) { providers in
+            guard let provider = providers.first else { return false }
+            let targetPane = paneId
+            _ = provider.loadDataRepresentation(for: .vellumTab) { data, _ in
+                guard let data,
+                      let payload = try? JSONDecoder().decode(TabDragPayload.self, from: data) else { return }
+                Task { @MainActor in
+                    workspace.moveTab(tabId: payload.tabId, from: payload.paneId, to: targetPane)
+                    workspace.endTabDrag()
+                }
+            }
+            return true
+        }
+    }
+
+    /// `isTargeted` only reflects hover while a drag is live; combined with the
+    /// authoritative `draggingTab` flag it never sticks after a cancelled drag.
+    private var joinTargetedBinding: Binding<Bool> {
+        Binding(get: { joinTargeted && workspace.draggingTab != nil }, set: { joinTargeted = $0 })
     }
 
     private func openPdf() {
@@ -70,10 +104,12 @@ struct TabBarView: View {
 
 private struct TabItem: View {
     let tab: PdfTab
+    let paneId: String
     let isActive: Bool
     let onActivate: () -> Void
     let onClose: () -> Void
 
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @State private var hovering = false
 
@@ -148,6 +184,20 @@ private struct TabItem: View {
         .help(tab.document?.pdfPath ?? "New Tab")
         .overlay {
             MiddleClickView(action: onClose)
+        }
+        .onDrag {
+            let payload = TabDragPayload(paneId: paneId, tabId: tab.id)
+            workspace.beginTabDrag(payload)
+            let provider = NSItemProvider()
+            if let data = try? JSONEncoder().encode(payload) {
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.vellumTab.identifier, visibility: .ownProcess
+                ) { completion in
+                    completion(data, nil)
+                    return nil
+                }
+            }
+            return provider
         }
     }
 }

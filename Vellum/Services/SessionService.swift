@@ -64,4 +64,8 @@ extension Notification.Name {
     static let vellumAddWebpage = Notification.Name("vellum.add-webpage")
     /// Asks the shell to present the file importer (⌘O on iPad). (vellum:open-file)
     static let vellumOpenFile = Notification.Name("vellum.open-file")
+    /// Broadcast after AI settings change so every pane's AiStore reloads the
+    /// shared, disk-persisted settings (multiple AiStore instances exist once
+    /// panes can be split). (vellum:ai-settings-changed)
+    static let vellumAiSettingsChanged = Notification.Name("vellum.ai-settings-changed")
 }
