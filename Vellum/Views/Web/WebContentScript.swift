@@ -834,9 +834,18 @@ enum WebContentScript {
       if (!resizeLockStyle) {
         resizeLockStyle = document.createElement("style");
         resizeLockStyle.id = "__vellum-resize-lock";
+        // The overlay rule matters as much as the user-select one: the grabbed
+        // handle (and any note marker) is pointer-events:auto and sits directly
+        // under the cursor, so caretRangeFromPoint would hit IT instead of the
+        // text below. That boundary lives in the overlay root at the END of
+        // documentElement, which rawOffsetOfBoundary maps to rawText.length —
+        // snapping the dragged edge to the end of the document (the "resize
+        // selects the whole page" bug). Move/up are captured on document, so
+        // the handles need no events while the drag is live.
         resizeLockStyle.textContent =
           "*{-webkit-user-select:none!important;user-select:none!important;" +
-          "cursor:grabbing!important;}";
+          "cursor:grabbing!important;}" +
+          "#__vellum-highlights *{pointer-events:none!important;}";
         (document.head || document.documentElement).appendChild(resizeLockStyle);
       }
       var sel = window.getSelection();
@@ -922,6 +931,27 @@ enum WebContentScript {
     var caret = rawOffsetAtPoint(e.clientX, e.clientY);
     if (resizeShield) resizeShield.style.pointerEvents = "auto";
     if (caret === null) return; // over a gap/chrome: hold the last frame
+    // Plausibility guard: hit-testing in empty regions (page margins, space
+    // past the last paragraph, footer/header gaps) snaps the caret to a
+    // document-boundary position whole screens away from the pointer — most
+    // dangerously rawText.length, which yanks the dragged edge to the end of
+    // the page in one frame. Require the caret's rendered line to be near the
+    // pointer's y; otherwise hold the last frame like a missed hit-test.
+    // Probe the nearest rendered (non-space) character — a caret on collapsed
+    // whitespace (line breaks, the document's trailing whitespace nodes) has
+    // no box of its own to measure.
+    var probeAt = Math.min(caret, rawText.length - 1);
+    while (probeAt > 0 && isSpaceCode(rawText.charCodeAt(probeAt))) probeAt--;
+    var caretProbe = rangeFromRaw(probeAt, probeAt + 1);
+    if (caretProbe) {
+      var caretRect = caretProbe.getBoundingClientRect();
+      if (isFinite(caretRect.top) && (caretRect.width > 0 || caretRect.height > 0)) {
+        var dy = 0;
+        if (e.clientY < caretRect.top) dy = caretRect.top - e.clientY;
+        else if (e.clientY > caretRect.bottom) dy = e.clientY - caretRect.bottom;
+        if (dy > 80) return;
+      }
+    }
     var start = resizeState.start;
     var end = resizeState.end;
     if (resizeState.edge === "start") {
