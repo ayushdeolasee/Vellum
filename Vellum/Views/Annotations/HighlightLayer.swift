@@ -87,6 +87,13 @@ struct HighlightLayer: View {
                 }
             }
             .coordinateSpace(.named(Self.coordinateSpaceName))
+            // A drag can end without onEnded (SwiftUI cancels the gesture when
+            // the view tree rebuilds under it), leaving the live preview set.
+            // Reselecting that highlight later would draw the stale rects, so
+            // drop the preview whenever the selection changes.
+            .onChange(of: annotationStore.selectedAnnotationId) {
+                controller?.cancelHighlightResize()
+            }
         }
     }
 

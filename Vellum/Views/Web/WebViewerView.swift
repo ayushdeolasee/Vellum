@@ -772,7 +772,10 @@ final class WebViewerController: NSObject {
                 viewportOffset: nil)
             Task {
                 await annotationStore.updateAnnotation(UpdateAnnotationInput(
-                    id: id, color: nil, content: nil, positionData: positionData))
+                    id: id, color: nil, content: nil, positionData: positionData,
+                    // A resize can drag the anchor across a virtual page break;
+                    // keep the sidebar grouping/navigation on the new page.
+                    pageNumber: intValue(data["pageNumber"])))
             }
 
         case "navigate":

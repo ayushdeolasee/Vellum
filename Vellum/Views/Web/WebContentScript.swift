@@ -984,11 +984,15 @@ enum WebContentScript {
     if (!state) return;
     var start = state.start;
     var end = state.end;
-    if (end <= start) {
+    var text = collapseWs(rawText.slice(start, end)).trim();
+    // Collapsed range OR whitespace-only quote: bail like a no-op drag. An
+    // empty selectedText would be dropped by the app shell's hasQuote filter
+    // on the next apply-annotations round-trip, silently deleting the
+    // highlight.
+    if (end <= start || text.length === 0) {
       renderHighlights();
       return;
     }
-    var text = collapseWs(rawText.slice(start, end)).trim();
     var ctx = quoteContext(start, end);
     // Update the local record so the highlight stays at the new size until the
     // app shell's apply-annotations round-trip lands (avoids a flicker back).
