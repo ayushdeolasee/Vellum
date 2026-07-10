@@ -179,36 +179,42 @@ actor PdfDocumentIO {
 
     /// get_annotations: every supported page annotation plus outline bookmarks,
     /// sorted by page_number then created_at (string compare, stable).
+    /// get_annotations re-parses the whole PDF from disk. Runs off the main
+    /// actor (the session is @MainActor) so annotation loading on a tab switch
+    /// never blocks the UI. Everything it touches derives from `path`.
     func annotations(pageNumber: Int?) async throws -> [Annotation] {
-        let document = try PdfDocumentLoader.loadRaw(path: path)
-        var annotations: [Annotation] = []
+        let path = self.path
+        return try await Task.detached(priority: .userInitiated) {
+            let document = try PdfDocumentLoader.loadRaw(path: path)
+            var annotations: [Annotation] = []
 
-        let pageCount = document.numberOfPages
-        if pageCount > 0 {
-            for page in 1...pageCount {
-                if let requested = pageNumber, requested != page { continue }
-                guard let pageDictionary = document.page(at: page)?.dictionary else {
-                    throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
+            let pageCount = document.numberOfPages
+            if pageCount > 0 {
+                for page in 1...pageCount {
+                    if let requested = pageNumber, requested != page { continue }
+                    guard let pageDictionary = document.page(at: page)?.dictionary else {
+                        throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
+                    }
+                    let geometry = try PageGeometry(pageDictionary: pageDictionary)
+                    annotations.append(contentsOf: PdfAnnotationReader.annotations(
+                        onPage: pageDictionary, pageNumber: page, geometry: geometry))
                 }
-                let geometry = try PageGeometry(pageDictionary: pageDictionary)
-                annotations.append(contentsOf: PdfAnnotationReader.annotations(
-                    onPage: pageDictionary, pageNumber: page, geometry: geometry))
             }
-        }
-        annotations.append(contentsOf: PdfBookmarks.readBookmarks(document: document, pageNumber: pageNumber))
+            annotations.append(contentsOf: PdfBookmarks.readBookmarks(document: document, pageNumber: pageNumber))
 
-        // Stable sort: page_number asc, then created_at as a plain string.
-        return annotations.enumerated()
-            .sorted { left, right in
-                if left.element.pageNumber != right.element.pageNumber {
-                    return left.element.pageNumber < right.element.pageNumber
+            // Stable sort: page_number asc, then created_at as a plain string.
+            return annotations.enumerated()
+                .sorted { left, right in
+                    if left.element.pageNumber != right.element.pageNumber {
+                        return left.element.pageNumber < right.element.pageNumber
+                    }
+                    if left.element.createdAt != right.element.createdAt {
+                        return left.element.createdAt < right.element.createdAt
+                    }
+                    return left.offset < right.offset
                 }
-                if left.element.createdAt != right.element.createdAt {
-                    return left.element.createdAt < right.element.createdAt
-                }
-                return left.offset < right.offset
-            }
-            .map(\.element)
+                .map(\.element)
+        }.value
     }
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
