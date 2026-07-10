@@ -10,6 +10,7 @@ final class OpenAIClient {
         systemPrompt: String,
         prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
+        thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
@@ -45,10 +46,12 @@ final class OpenAIClient {
                 // Cost guard: cap the visible output.
                 "max_output_tokens": 2048,
             ]
-            // Cost guard: minimal reasoning on the gpt-5 family (others reject
-            // the reasoning field, so only send it when it applies).
+            // Cost guard: reasoning effort on the gpt-5 family (others reject the
+            // reasoning field, so only send it when it applies). `.auto` maps to
+            // "minimal" (the prior hardcoded default); explicit modes override.
             if model.lowercased().hasPrefix("gpt-5") {
-                body["reasoning"] = ["effort": "minimal"]
+                let effort = thinkingMode.openAIEffort ?? "minimal"
+                body["reasoning"] = ["effort": effort]
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"

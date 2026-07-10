@@ -52,6 +52,7 @@ final class OpenCodeClient {
         systemPrompt: String,
         prompt: AiUserPrompt,
         image: AiPageImageSnapshot?,
+        thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
@@ -110,7 +111,7 @@ final class OpenCodeClient {
         onEvent(.status("Thinking"))
 
         for _ in 0..<8 {
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "model": model,
                 "messages": messages,
                 "tools": Self.functionTools,
@@ -118,6 +119,12 @@ final class OpenCodeClient {
                 // Cost guard: cap the visible output.
                 "max_tokens": 2048,
             ]
+            // Reasoning effort (user's thinking mode) via the OpenAI
+            // chat-completions field name. `.auto` sends nothing, preserving the
+            // prior behavior. Applies to both the Zen and Go gateways.
+            if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
+                body["reasoning_effort"] = effort
+            }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")

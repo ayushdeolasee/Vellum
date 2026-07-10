@@ -179,6 +179,11 @@ private struct AiSettingsTab: View {
                     AiModelSelectorField()
                 }
                 capabilityWarnings
+                Picker("Thinking", selection: aiStore.reasoningBinding) {
+                    ForEach(AiThinkingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
             } header: {
                 Text("Assistant")
             }

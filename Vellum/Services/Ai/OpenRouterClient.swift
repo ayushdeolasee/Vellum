@@ -25,6 +25,7 @@ final class OpenRouterClient {
         prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
         allowTools: Bool,
+        thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
@@ -73,6 +74,13 @@ final class OpenRouterClient {
                 // the final stream chunk. Harmless to keep permanently.
                 "usage": ["include": true],
             ]
+            // Reasoning effort (user's thinking mode). Sent unconditionally when
+            // set: OpenRouter forwards reasoning to models that support it and
+            // ignores it otherwise (same rationale as the cache_control above).
+            // `.auto` sends nothing, preserving the prior behavior.
+            if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
+                body["reasoning"] = ["effort": effort]
+            }
             if allowTools {
                 body["tools"] = Self.functionTools
             }

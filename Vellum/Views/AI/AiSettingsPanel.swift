@@ -137,6 +137,15 @@ struct AiSettingsPanel: View {
                 capabilityWarnings
             }
 
+            field("Thinking") {
+                Picker("", selection: aiStore.reasoningBinding) {
+                    ForEach(AiThinkingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .labelsHidden()
+            }
+
             field("Voice mode") {
                 Picker("", selection: aiStore.voiceBinding(onStop: onStopRecognition)) {
                     Text("Off").tag(VoiceMode.off)
@@ -363,6 +372,14 @@ extension AiStore {
         Binding(get: { self.settings.ttsEnabled }, set: { value in
             var settings = self.settings
             settings.ttsEnabled = value
+            self.setSettings(settings)
+        })
+    }
+
+    var reasoningBinding: Binding<AiThinkingMode> {
+        Binding(get: { self.settings.reasoningEffort }, set: { value in
+            var settings = self.settings
+            settings.reasoningEffort = value
             self.setSettings(settings)
         })
     }

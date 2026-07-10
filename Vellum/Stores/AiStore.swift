@@ -26,6 +26,36 @@ enum VoiceMode: String, Codable, Sendable {
     case pushToTalk = "push-to-talk"
 }
 
+/// User-selected reasoning/thinking effort, applied to whichever provider is
+/// active. Each provider maps it to its own API (Responses `reasoning.effort`,
+/// Gemini `thinkingConfig.thinkingBudget`, chat `reasoning_effort`, …).
+/// `.auto` preserves Vellum's prior cost-guarded per-provider defaults.
+enum AiThinkingMode: String, Codable, Sendable, CaseIterable {
+    case auto, instant, low, medium, high
+
+    var label: String {
+        switch self {
+        case .auto: "Auto"
+        case .instant: "Instant"
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        }
+    }
+    /// The `effort` string for providers that take Responses/OpenAI-style
+    /// reasoning effort (nil when the mode shouldn't set one). `.auto` returns nil
+    /// (caller supplies the provider's prior default).
+    var openAIEffort: String? {
+        switch self {
+        case .auto: nil
+        case .instant: "minimal"
+        case .low: "low"
+        case .medium: "medium"
+        case .high: "high"
+        }
+    }
+}
+
 struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var role: AiRole
@@ -100,6 +130,7 @@ struct AiSettings: Codable, Equatable, Sendable {
     var pinnedModels: [String] = []
     var voiceMode: VoiceMode = .off
     var ttsEnabled: Bool = false
+    var reasoningEffort: AiThinkingMode = .auto
 }
 
 struct AiPageImageSnapshot: Sendable {
@@ -409,6 +440,7 @@ final class AiStore {
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
                     images: images,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent
@@ -421,6 +453,7 @@ final class AiStore {
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
                     images: images,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent
@@ -442,6 +475,7 @@ final class AiStore {
                     prompt: prompt,
                     images: supportsVision ? images : [],
                     allowTools: supportsTools,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent
@@ -456,6 +490,7 @@ final class AiStore {
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
                     images: images,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent
@@ -473,6 +508,7 @@ final class AiStore {
                     // Only text-only open models drop the page image; the gateway
                     // rejects image parts for models that can't read them.
                     image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent
@@ -488,6 +524,7 @@ final class AiStore {
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
                     image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
                     onEvent: onEvent

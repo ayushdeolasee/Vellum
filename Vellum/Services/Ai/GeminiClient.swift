@@ -17,6 +17,7 @@ final class GeminiClient {
         systemPrompt: String,
         prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
+        thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
@@ -36,13 +37,19 @@ final class GeminiClient {
 
         onEvent(.status("Thinking"))
 
-        // Cost guard: cap output and, for the 2.5 flash family, disable extended
-        // thinking (0 budget). Newer families ignore an unknown thinkingConfig.
+        // Cost guard: cap output and map the user's thinking mode to a
+        // thinkingBudget. Newer families ignore an unknown thinkingConfig.
         var generationConfig: [String: Any] = ["temperature": 0.2, "maxOutputTokens": 2048]
-        // 2.5 Pro rejects thinkingBudget 0 (its minimum is 128); only 2.5
-        // Flash/Flash-Lite accept 0, so exclude Pro from the 0-budget gate.
-        if model.contains("2.5") && !model.lowercased().contains("pro") {
-            generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+        if thinkingMode == .auto {
+            // `.auto` preserves the prior default byte-for-byte: for the 2.5
+            // flash family disable extended thinking (0 budget); everything else
+            // omits thinkingConfig. 2.5 Pro rejects thinkingBudget 0 (its minimum
+            // is 128); only 2.5 Flash/Flash-Lite accept 0, so exclude Pro.
+            if model.contains("2.5") && !model.lowercased().contains("pro") {
+                generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+            }
+        } else if let budget = Self.geminiThinkingBudget(for: thinkingMode, model: model) {
+            generationConfig["thinkingConfig"] = ["thinkingBudget": budget]
         }
 
         for _ in 0..<8 {
@@ -168,6 +175,32 @@ final class GeminiClient {
             y: (value["y"] as? NSNumber)?.doubleValue,
             isRegex: value["isRegex"] as? Bool
         )
+    }
+
+    // Returns a thinkingBudget for the given effort, or nil to omit thinkingConfig
+    // (unknown families / 1.5 which has no thinking). 2.5 Pro cannot disable
+    // thinking (min 128); Flash/Lite/2.0 accept 0. -1 means dynamic (model decides).
+    //
+    // NOTE: `.auto` is handled by the caller and must never be routed here. Budget
+    // acceptance for the 3.x preview families is UNVERIFIED (no API key to live-test);
+    // the gate stays conservative and only sends thinkingConfig for families known
+    // (or believed) to accept it — 2.5, 2.0, and the 3.x previews. 1.5 has no
+    // thinking mode so it returns nil (thinkingConfig omitted).
+    private static func geminiThinkingBudget(for mode: AiThinkingMode, model: String) -> Int? {
+        let lowered = model.lowercased()
+        // 1.5 has no thinking; omit thinkingConfig entirely.
+        if lowered.contains("1.5") { return nil }
+        // Only send thinkingConfig for families believed to accept it.
+        guard model.contains("2.5") || model.contains("2.0") || model.contains("3") else { return nil }
+        // 2.5 Pro (and Pro generally) cannot disable thinking; floor at 128.
+        let isPro = lowered.contains("pro")
+        switch mode {
+        case .auto: return nil // handled by caller; never routed here
+        case .instant: return isPro ? 128 : 0
+        case .low: return isPro ? 128 : 512
+        case .medium: return -1 // dynamic: model decides
+        case .high: return 24576
+        }
     }
 
     /// Human-readable label for the activity indicator while a tool runs.

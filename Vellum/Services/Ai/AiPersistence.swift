@@ -41,6 +41,7 @@ enum AiPersistence {
         if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
         settings.voiceMode = value["voiceMode"] as? String == "push-to-talk" ? .pushToTalk : .off
         if let enabled = value["ttsEnabled"] as? Bool { settings.ttsEnabled = enabled }
+        if let effort = value["reasoningEffort"] as? String { settings.reasoningEffort = AiThinkingMode(rawValue: effort) ?? .auto }
 
         // Keys now live in the Keychain. Migrate any legacy plaintext keys still
         // present in the UserDefaults blob, then prefer the Keychain copy.

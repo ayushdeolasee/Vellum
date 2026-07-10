@@ -21,6 +21,7 @@ final class ChatGPTClient {
         systemPrompt: String,
         prompt: AiUserPrompt,
         images: [AiPageImageSnapshot],
+        thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
@@ -60,9 +61,11 @@ final class ChatGPTClient {
                 // Cost guard: cap the visible output.
                 "max_output_tokens": 2048,
             ]
-            // Cost guard: minimal reasoning on the gpt-5 family.
+            // Cost guard: reasoning effort on the gpt-5 family. `.auto` maps to
+            // "minimal" (the prior hardcoded default); explicit modes override.
             if model.lowercased().hasPrefix("gpt-5") {
-                body["reasoning"] = ["effort": "minimal"]
+                let effort = thinkingMode.openAIEffort ?? "minimal"
+                body["reasoning"] = ["effort": effort]
             }
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
