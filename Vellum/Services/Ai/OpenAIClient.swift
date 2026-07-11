@@ -69,6 +69,7 @@ final class OpenAIClient {
 
             var text = ""
             var calls: [[String: Any]] = []
+            var hitTokenLimit = false
             for try await payload in SSE.dataPayloads(bytes) {
                 guard let object = Self.jsonObjectOrNil(payload),
                       let type = object["type"] as? String else { continue }
@@ -83,6 +84,9 @@ final class OpenAIClient {
                        item["type"] as? String == "function_call" {
                         calls.append(item)
                     }
+                case "response.incomplete":
+                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
+                    if reason == "max_output_tokens" { hitTokenLimit = true }
                 case "response.failed", "error":
                     let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                         ?? (object["message"] as? String)
@@ -99,7 +103,14 @@ final class OpenAIClient {
             }
 
             if calls.isEmpty {
-                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
+                var reply = text
+                if hitTokenLimit {
+                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw AiClientError.message("OpenAI hit the output-token limit before producing any text. Try a lower thinking mode.")
+                    }
+                    reply += "\n\n_(reply truncated at the output-token limit)_"
+                }
+                return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             }
 
             for call in calls {
@@ -256,6 +267,15 @@ final class OpenAIClient {
                 "type": "object",
                 "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
                 "required": ["pageNumber"], "additionalProperties": false,
+            ],
+        ],
+        [
+            "type": "function", "name": "getAnnotations",
+            "description": "List the user's annotations (notes and highlights) across the WHOLE document, or for a single page when pageNumber is given. The context you receive only includes the current page's annotations — call this when the user asks about their notes or highlights elsewhere.",
+            "parameters": [
+                "type": "object",
+                "properties": ["pageNumber": ["type": "number", "description": "Optional 1-indexed page to filter by. Omit to list every page's annotations."]],
+                "additionalProperties": false,
             ],
         ],
         [

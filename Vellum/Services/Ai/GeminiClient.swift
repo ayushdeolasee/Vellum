@@ -37,8 +37,9 @@ final class GeminiClient {
 
         onEvent(.status("Thinking"))
 
-        // Cost guard: cap output and map the user's thinking mode to a
-        // thinkingBudget. Newer families ignore an unknown thinkingConfig.
+        // Cost guard: cap output (MAX_TOKENS truncation is surfaced below) and
+        // map the user's thinking mode to a thinkingBudget. Newer families
+        // ignore an unknown thinkingConfig.
         var generationConfig: [String: Any] = ["temperature": 0.2]
         var thinkingConfig: [String: Any]?
         if thinkingMode == .auto {
@@ -55,7 +56,7 @@ final class GeminiClient {
         if let thinkingConfig { generationConfig["thinkingConfig"] = thinkingConfig }
         // Reasoning tokens are drawn from the same output budget, so a flat cap
         // can be exhausted by thinking before any visible answer. Reserve
-        // headroom above the resolved thinking budget; unchanged (2048) when
+        // headroom above the resolved thinking budget; the flat 8192 base when
         // thinking is disabled.
         generationConfig["maxOutputTokens"] = Self.maxOutputTokens(thinkingConfig: thinkingConfig)
 
@@ -78,11 +79,28 @@ final class GeminiClient {
             var text = ""
             var calls: [[String: Any]] = []
             var replayParts: [[String: Any]] = []
+            var finishReason: String?
             for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload),
-                      let candidates = object["candidates"] as? [[String: Any]],
-                      let candidate = candidates.first,
-                      let parts = (candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]
+                guard let object = Self.jsonObjectOrNil(payload) else { continue }
+                // A 200 stream can carry an in-band error object instead of
+                // candidates; surface it rather than finishing with an empty reply.
+                if let error = object["error"] as? [String: Any],
+                   let message = error["message"] as? String, !message.isEmpty {
+                    throw AiClientError.message(message)
+                }
+                guard let candidates = object["candidates"] as? [[String: Any]],
+                      let candidate = candidates.first else {
+                    // No candidates at all: a prompt-level safety block.
+                    if let feedback = object["promptFeedback"] as? [String: Any],
+                       let reason = feedback["blockReason"] as? String {
+                        throw AiClientError.message("Gemini blocked the request (\(reason)).")
+                    }
+                    continue
+                }
+                if let reason = candidate["finishReason"] as? String, !reason.isEmpty {
+                    finishReason = reason
+                }
+                guard let parts = (candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]
                 else { continue }
                 for part in parts {
                     Self.accumulateReplayPart(part, into: &replayParts)
@@ -98,7 +116,8 @@ final class GeminiClient {
             }
 
             if calls.isEmpty {
-                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
+                let reply = try Self.applyFinishReason(finishReason, to: text)
+                return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             }
 
             contents.append(["role": "model", "parts": replayParts])
@@ -223,11 +242,12 @@ final class GeminiClient {
     }
 
     /// Output-token cap sized so thinking can't starve the visible answer.
-    /// Preserves the prior 2048 default when thinking is off (nil config or a
-    /// 0 thinkingBudget); otherwise reserves the resolved thinking budget plus
-    /// 2048 headroom for the reply. Gemini-3 thinkingLevel has no numeric
+    /// 8192 when thinking is off (nil config or a 0 thinkingBudget) — generous
+    /// enough that replies don't clip silently; truncation is surfaced via
+    /// finishReason regardless. Otherwise reserves the resolved thinking budget
+    /// plus 8192 headroom for the reply. Gemini-3 thinkingLevel has no numeric
     /// budget, so map each level to a generous cap.
-    static let baseMaxOutputTokens = 2048
+    static let baseMaxOutputTokens = 8192
     static func maxOutputTokens(thinkingConfig config: [String: Any]?) -> Int {
         let base = baseMaxOutputTokens
         guard let config else { return base }
@@ -307,6 +327,24 @@ final class GeminiClient {
         return actions.isEmpty ? "I couldn't produce a response." : "Done."
     }
 
+    /// Surface an abnormal finish instead of silently returning a clipped or
+    /// empty reply: MAX_TOKENS appends a visible truncation note (or errors when
+    /// nothing streamed); any other non-STOP reason with no text (SAFETY,
+    /// RECITATION, …) becomes an error naming the cause.
+    private static func applyFinishReason(_ finishReason: String?, to text: String) throws -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if finishReason == "MAX_TOKENS" {
+            guard !trimmed.isEmpty else {
+                throw AiClientError.message("Gemini hit the output-token limit before producing any text. Try a lower thinking mode.")
+            }
+            return text + "\n\n_(reply truncated at the output-token limit)_"
+        }
+        if trimmed.isEmpty, let finishReason, finishReason != "STOP" {
+            throw AiClientError.message("Gemini ended the reply without text (\(finishReason)).")
+        }
+        return text
+    }
+
     private static let functionDeclarations: [[String: Any]] = [
         [
             "name": "searchDocument",
@@ -327,6 +365,14 @@ final class GeminiClient {
                 "type": "object",
                 "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
                 "required": ["pageNumber"],
+            ],
+        ],
+        [
+            "name": "getAnnotations",
+            "description": "List the user's annotations (notes and highlights) across the WHOLE document, or for a single page when pageNumber is given. The context you receive only includes the current page's annotations — call this when the user asks about their notes or highlights elsewhere.",
+            "parameters": [
+                "type": "object",
+                "properties": ["pageNumber": ["type": "number", "description": "Optional 1-indexed page to filter by. Omit to list every page's annotations."]],
             ],
         ],
         [

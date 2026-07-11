@@ -60,6 +60,7 @@ final class OpenRouterClient {
 
             var text = ""
             var toolAccumulators: [Int: ToolCallAccumulator] = [:]
+            var finishReason: String?
             for try await payload in SSE.dataPayloads(bytes) {
                 guard let object = Self.jsonObjectOrNil(payload) else { continue }
                 // OpenRouter can deliver a mid-stream error as a JSON payload.
@@ -75,7 +76,11 @@ final class OpenRouterClient {
                 }
                 #endif
                 guard let choices = object["choices"] as? [[String: Any]],
-                      let delta = choices.first?["delta"] as? [String: Any] else { continue }
+                      let choice = choices.first else { continue }
+                if let reason = choice["finish_reason"] as? String, !reason.isEmpty {
+                    finishReason = reason
+                }
+                guard let delta = choice["delta"] as? [String: Any] else { continue }
                 if let chunk = delta["content"] as? String, !chunk.isEmpty {
                     text += chunk
                     onEvent(.textDelta(chunk))
@@ -97,7 +102,16 @@ final class OpenRouterClient {
             let calls = toolAccumulators.sorted { $0.key < $1.key }.map(\.value)
                 .filter { !$0.name.isEmpty }
             if calls.isEmpty {
-                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
+                var reply = text
+                // Surface a token-limit cutoff instead of silently returning a
+                // clipped (or empty) reply.
+                if finishReason == "length" {
+                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw AiClientError.message("The model hit the output-token limit before producing any text. Try a lower thinking mode.")
+                    }
+                    reply += "\n\n_(reply truncated at the output-token limit)_"
+                }
+                return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             }
 
             // Echo the assistant turn (with its tool_calls) before the results.
@@ -187,12 +201,19 @@ final class OpenRouterClient {
             "model": model,
             "messages": messages,
             "stream": true,
-            "max_tokens": 2048,                       // cost guard: cap the visible output
+            // Cost guard: cap the output. Reasoning tokens count against it
+            // for many models, so it stays generous; hitting it is surfaced
+            // via finish_reason "length" instead of clipping silently.
+            "max_tokens": 8192,
             "usage": ["include": true],
             "session_id": "vellum-\(sessionId)",
         ]
         if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
-            body["reasoning"] = ["effort": effort]
+            // "minimal" is an OpenAI-only effort value; other providers behind
+            // the gateway accept only low/medium/high, so Instant downgrades
+            // to "low" for non-OpenAI models.
+            let isOpenAIModel = model.lowercased().hasPrefix("openai/")
+            body["reasoning"] = ["effort": effort == "minimal" && !isOpenAIModel ? "low" : effort]
         }
         if allowTools {
             body["tools"] = Self.functionTools
@@ -303,6 +324,18 @@ final class OpenRouterClient {
                     "type": "object",
                     "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
                     "required": ["pageNumber"], "additionalProperties": false,
+                ],
+            ],
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "getAnnotations",
+                "description": "List the user's annotations (notes and highlights) across the WHOLE document, or for a single page when pageNumber is given. The context you receive only includes the current page's annotations — call this when the user asks about their notes or highlights elsewhere.",
+                "parameters": [
+                    "type": "object",
+                    "properties": ["pageNumber": ["type": "number", "description": "Optional 1-indexed page to filter by. Omit to list every page's annotations."]],
+                    "additionalProperties": false,
                 ],
             ],
         ],

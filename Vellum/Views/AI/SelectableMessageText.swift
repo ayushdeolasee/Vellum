@@ -116,13 +116,11 @@ final class MessageContainerView: NSView {
     }
 
     private(set) var attributed = NSAttributedString()
-    /// The palette colors last rendered into `attributed`, so the SwiftUI layer
-    /// can detect an appearance change even when the text content is unchanged.
+    /// The raw markdown last rendered into `attributed` plus the palette colors,
+    /// so the SwiftUI layer can skip the parse entirely when neither changed.
+    private(set) var appliedContent: String?
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
-    /// The raw markdown string the current attributed rendering was built
-    /// from. Compared by updateNSView to skip re-parsing unchanged messages.
-    private(set) var appliedContent: String?
 
     func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
         self.attributed = attributed

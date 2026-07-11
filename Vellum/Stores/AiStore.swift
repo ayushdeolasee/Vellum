@@ -346,11 +346,14 @@ final class AiStore {
     /// Whitespace-normalizes and stores extracted page text, returning the
     /// normalized string when it actually stored (nil on a dedupe no-op). The
     /// return lets the PDF viewer feed only genuinely new pages to the
-    /// persistent cache without re-normalizing.
+    /// persistent cache without re-normalizing. Line breaks survive as single
+    /// "\n"s so `searchDocument` regexes can use `^`/`$` anchors and span
+    /// lines; runs of horizontal whitespace collapse to one space.
     @discardableResult
     func setPageText(page: Int, text: String) -> String? {
         let normalized = text
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s*\\n\\s*", with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: "[ \\t\\p{Zs}]+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard pageTexts[page] != normalized else { return nil }
         pageTexts[page] = normalized
@@ -579,9 +582,10 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    // Only text-only open models drop the page image; the gateway
-                    // rejects image parts for models that can't read them.
-                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    // Only text-only open models drop the images (page snapshot +
+                    // user-attached references); the gateway rejects image parts
+                    // for models that can't read them.
+                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -597,7 +601,7 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,

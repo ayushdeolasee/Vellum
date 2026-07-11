@@ -27,9 +27,9 @@ final class AiToolEngine {
     static let defaultPageWidth = 612.0
     static let defaultPageHeight = 792.0
 
-    /// Tools that only read already-extracted text; budgeted separately from
-    /// writes and never counted against the write cap.
-    private static let readTools: Set<String> = ["searchDocument", "getPageText"]
+    /// Tools that only read already-extracted text or in-memory annotations;
+    /// budgeted separately from writes and never counted against the write cap.
+    private static let readTools: Set<String> = ["searchDocument", "getPageText", "getAnnotations"]
 
     private unowned let store: AiStore
     private unowned let app: AppStore
@@ -104,6 +104,9 @@ final class AiToolEngine {
                 query: action.args.text ?? "",
                 isRegex: action.args.isRegex ?? false
             )
+
+        case "getAnnotations":
+            return getAnnotations(pageNumber: action.args.pageNumber)
 
         case "goToPage":
             let page = clampPage(action.args.pageNumber)
@@ -251,7 +254,51 @@ final class AiToolEngine {
         return output
     }
 
-    /// Grep the whole document (already whitespace-normalized in `pageTexts`).
+    /// List the user's annotations (notes + highlights) — whole document by
+    /// default, or one page when `pageNumber` is given. The context block only
+    /// carries the current page's annotations, so this is how the model reaches
+    /// the rest.
+    private func getAnnotations(pageNumber: Double?) -> String {
+        var list = (annotations.annotations).sorted { $0.pageNumber < $1.pageNumber }
+        var scope = "in this document"
+        if let pageNumber {
+            let page = clampPage(pageNumber)
+            list = list.filter { $0.pageNumber == page }
+            scope = "on page \(page)"
+        }
+        guard !list.isEmpty else { return "No annotations \(scope)." }
+        let shown = list.prefix(Self.maxAnnotationLines)
+        var lines = shown.map { annotation in
+            "- p.\(annotation.pageNumber) (\(annotation.type.rawValue))"
+                + fieldSuffix("text", annotation.positionData?.selectedText)
+                + fieldSuffix("note", annotation.content)
+        }
+        if list.count > shown.count {
+            lines.append("…and \(list.count - shown.count) more (pass pageNumber to narrow).")
+        }
+        var output = (["\(list.count) annotation\(list.count == 1 ? "" : "s") \(scope):"] + lines)
+            .joined(separator: "\n")
+        if output.count > Self.maxSearchOutputCharacters {
+            output = String(output.prefix(Self.maxSearchOutputCharacters)) + "\n…[truncated]"
+        }
+        return output
+    }
+
+    private static let maxAnnotationLines = 200
+    private static let maxAnnotationFieldCharacters = 200
+
+    /// ` text="…"` fragment for an annotation line; empty when the field is.
+    private func fieldSuffix(_ label: String, _ value: String?) -> String {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return "" }
+        if value.count > Self.maxAnnotationFieldCharacters {
+            value = String(value.prefix(Self.maxAnnotationFieldCharacters)) + "…"
+        }
+        return " \(label)=\"\(value)\""
+    }
+
+    /// Grep the whole document (`pageTexts` is horizontal-whitespace-normalized
+    /// with line breaks preserved as single "\n"s).
     /// Ensures every page with a text layer is extracted first, then returns the
     /// top matches with surrounding context, output-capped and time-guarded
     /// against a pathological regex.
@@ -270,7 +317,7 @@ final class AiToolEngine {
         guard !trimmed.isEmpty else { return "Skipped searchDocument: empty query." }
         // Validate the regex up front so an invalid pattern fails fast with a
         // clear message rather than silently falling back to a literal search.
-        if isRegex, (try? NSRegularExpression(pattern: trimmed, options: [.caseInsensitive])) == nil {
+        if isRegex, (try? NSRegularExpression(pattern: trimmed, options: [.caseInsensitive, .anchorsMatchLines])) == nil {
             return "Skipped searchDocument: invalid regular expression."
         }
 
@@ -327,23 +374,29 @@ final class AiToolEngine {
     /// Cooperative: checks `Task.isCancelled` between pages and returns nil if the
     /// deadline fired mid-scan, so the caller can surface the timeout message.
     private nonisolated static func performSearch(pages: [Int: String], query: String, isRegex: Bool) -> String? {
-        let regex = isRegex ? try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) : nil
+        let regex = isRegex ? try? NSRegularExpression(pattern: query, options: [.caseInsensitive, .anchorsMatchLines]) : nil
         var hits: [String] = []
         for page in pages.keys.sorted() {
             if Task.isCancelled { return nil }
             guard let raw = pages[page], !raw.isEmpty else { continue }
             let text = raw.count > maxPageScanCharacters ? String(raw.prefix(maxPageScanCharacters)) : raw
+            // Literal queries were whitespace-collapsed by the caller, so match
+            // them against a newline-flattened copy; regexes see the real line
+            // structure (anchors and \s-spanning patterns work).
+            let haystack = regex == nil ? text.replacingOccurrences(of: "\n", with: " ") : text
             let matchRange: Range<String.Index>?
             if let regex {
-                let ns = text as NSString
+                let ns = haystack as NSString
                 matchRange = regex
-                    .firstMatch(in: text, options: [], range: NSRange(location: 0, length: ns.length))
-                    .flatMap { Range($0.range, in: text) }
+                    .firstMatch(in: haystack, options: [], range: NSRange(location: 0, length: ns.length))
+                    .flatMap { Range($0.range, in: haystack) }
             } else {
-                matchRange = text.range(of: query, options: .caseInsensitive)
+                matchRange = haystack.range(of: query, options: .caseInsensitive)
             }
             guard let matchRange else { continue }
-            hits.append("page \(page) — \"…\(snippet(around: matchRange, in: text))…\"")
+            let context = snippet(around: matchRange, in: haystack)
+                .replacingOccurrences(of: "\n", with: " ")
+            hits.append("page \(page) — \"…\(context)…\"")
             if hits.count >= maxSearchHits { break }
         }
 

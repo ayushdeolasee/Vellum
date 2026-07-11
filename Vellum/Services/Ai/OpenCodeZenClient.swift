@@ -51,7 +51,7 @@ final class OpenCodeClient {
         model: String,
         systemPrompt: String,
         prompt: AiUserPrompt,
-        image: AiPageImageSnapshot?,
+        images: [AiPageImageSnapshot],
         thinkingMode: AiThinkingMode,
         sessionIdAtStart: String,
         toolEngine: AiToolEngine,
@@ -78,7 +78,7 @@ final class OpenCodeClient {
                 "type": "text", "text": prompt.stable,
                 "cache_control": ["type": "ephemeral"],          // breakpoint 2: + document context
             ]]
-            if let image, !image.base64Data.isEmpty {
+            for image in images where !image.base64Data.isEmpty {
                 userContent.append([
                     "type": "image_url",
                     "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
@@ -95,7 +95,7 @@ final class OpenCodeClient {
             ]
         } else {
             var userContent: [[String: Any]] = [["type": "text", "text": prompt.joined]]
-            if let image, !image.base64Data.isEmpty {
+            for image in images where !image.base64Data.isEmpty {
                 userContent.append([
                     "type": "image_url",
                     "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
@@ -116,14 +116,20 @@ final class OpenCodeClient {
                 "messages": messages,
                 "tools": Self.functionTools,
                 "stream": true,
-                // Cost guard: cap the visible output.
-                "max_tokens": 2048,
+                // Cost guard: cap the output. Reasoning tokens count against it
+                // for many models, so it stays generous; hitting it is surfaced
+                // via finish_reason "length" below instead of clipping silently.
+                "max_tokens": 8192,
             ]
             // Reasoning effort (user's thinking mode) via the OpenAI
             // chat-completions field name. `.auto` sends nothing, preserving the
             // prior behavior. Applies to both the Zen and Go gateways.
             if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
-                body["reasoning_effort"] = effort
+                // "minimal" is an OpenAI-only effort value; the gateways' other
+                // model families accept only low/medium/high, so Instant
+                // downgrades to "low" for non-GPT models.
+                let isOpenAIModel = model.lowercased().hasPrefix("gpt")
+                body["reasoning_effort"] = effort == "minimal" && !isOpenAIModel ? "low" : effort
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -136,6 +142,7 @@ final class OpenCodeClient {
 
             var text = ""
             var toolAccumulators: [Int: ToolCallAccumulator] = [:]
+            var finishReason: String?
             for try await payload in SSE.dataPayloads(bytes) {
                 guard let object = Self.jsonObjectOrNil(payload) else { continue }
                 if let error = object["error"] as? [String: Any],
@@ -143,7 +150,11 @@ final class OpenCodeClient {
                     throw AiClientError.message(message)
                 }
                 guard let choices = object["choices"] as? [[String: Any]],
-                      let delta = choices.first?["delta"] as? [String: Any] else { continue }
+                      let choice = choices.first else { continue }
+                if let reason = choice["finish_reason"] as? String, !reason.isEmpty {
+                    finishReason = reason
+                }
+                guard let delta = choice["delta"] as? [String: Any] else { continue }
                 if let chunk = delta["content"] as? String, !chunk.isEmpty {
                     text += chunk
                     onEvent(.textDelta(chunk))
@@ -165,7 +176,16 @@ final class OpenCodeClient {
             let calls = toolAccumulators.sorted { $0.key < $1.key }.map(\.value)
                 .filter { !$0.name.isEmpty }
             if calls.isEmpty {
-                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
+                var reply = text
+                // Surface a token-limit cutoff instead of silently returning a
+                // clipped (or empty) reply.
+                if finishReason == "length" {
+                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw AiClientError.message("The model hit the output-token limit before producing any text. Try a lower thinking mode.")
+                    }
+                    reply += "\n\n_(reply truncated at the output-token limit)_"
+                }
+                return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             }
 
             let toolCallsPayload: [[String: Any]] = calls.map { call in
@@ -301,6 +321,18 @@ final class OpenCodeClient {
                     "type": "object",
                     "properties": ["pageNumber": ["type": "number", "description": "1-indexed page number to read. Out-of-range values are clamped."]],
                     "required": ["pageNumber"], "additionalProperties": false,
+                ],
+            ],
+        ],
+        [
+            "type": "function",
+            "function": [
+                "name": "getAnnotations",
+                "description": "List the user's annotations (notes and highlights) across the WHOLE document, or for a single page when pageNumber is given. The context you receive only includes the current page's annotations — call this when the user asks about their notes or highlights elsewhere.",
+                "parameters": [
+                    "type": "object",
+                    "properties": ["pageNumber": ["type": "number", "description": "Optional 1-indexed page to filter by. Omit to list every page's annotations."]],
+                    "additionalProperties": false,
                 ],
             ],
         ],

@@ -12,6 +12,29 @@ enum AiPersistence {
         var messages: [AiMessage]
     }
 
+    /// Last value synced with the Keychain per account this launch, so the
+    /// per-keystroke saves coming from the settings bindings only pay a Keychain
+    /// round-trip for the one account that actually changed. Main-actor-only in
+    /// practice (AiStore owns all load/save calls).
+    nonisolated(unsafe) private static var syncedKeys: [String: String] = [:]
+
+    /// Reads an account's key and primes the sync cache with what the Keychain
+    /// currently holds.
+    private static func readKey(_ account: String) -> String {
+        let value = KeychainStore.get(account) ?? ""
+        syncedKeys[account] = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value
+    }
+
+    /// Writes an account's key only when it differs from the last synced value.
+    private static func syncKeychain(_ account: String, _ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if syncedKeys[account] == trimmed { return true }
+        let written = KeychainStore.set(account, value)
+        if written { syncedKeys[account] = trimmed }
+        return written
+    }
+
     static func loadSettings() -> AiSettings {
         let defaults = AiSettings()
         guard let raw = UserDefaults.standard.string(forKey: settingsKey),
@@ -20,11 +43,11 @@ enum AiPersistence {
         else {
             // No stored blob yet: still surface any keys already in the Keychain.
             var settings = defaults
-            settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
-            settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
-            settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
-            settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
-            settings.opencodeGoApiKey = KeychainStore.get(KeychainStore.Account.opencodeGo) ?? ""
+            settings.apiKey = readKey(KeychainStore.Account.gemini)
+            settings.openaiApiKey = readKey(KeychainStore.Account.openai)
+            settings.openrouterApiKey = readKey(KeychainStore.Account.openrouter)
+            settings.opencodeApiKey = readKey(KeychainStore.Account.opencode)
+            settings.opencodeGoApiKey = readKey(KeychainStore.Account.opencodeGo)
             return settings
         }
 
@@ -51,11 +74,11 @@ enum AiPersistence {
         migrate(account: KeychainStore.Account.openrouter, legacy: value["openrouterApiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.opencode, legacy: value["opencodeApiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.opencodeGo, legacy: value["opencodeGoApiKey"] as? String, didMigrate: &didMigrate)
-        settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
-        settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
-        settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
-        settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
-        settings.opencodeGoApiKey = KeychainStore.get(KeychainStore.Account.opencodeGo) ?? ""
+        settings.apiKey = readKey(KeychainStore.Account.gemini)
+        settings.openaiApiKey = readKey(KeychainStore.Account.openai)
+        settings.openrouterApiKey = readKey(KeychainStore.Account.openrouter)
+        settings.opencodeApiKey = readKey(KeychainStore.Account.opencode)
+        settings.opencodeGoApiKey = readKey(KeychainStore.Account.opencodeGo)
 
         // Rewrite the blob without plaintext keys once migrated.
         if didMigrate { saveSettings(settings) }
@@ -83,14 +106,17 @@ enum AiPersistence {
     }
 
     static func saveSettings(_ settings: AiSettings) {
-        // Keys go to the Keychain, never the UserDefaults blob. Track per-key
-        // write success so we only strip the plaintext copy that actually landed
-        // in the Keychain; a failed write leaves its plaintext key in the blob.
-        let geminiWritten = KeychainStore.set(KeychainStore.Account.gemini, settings.apiKey)
-        let openaiWritten = KeychainStore.set(KeychainStore.Account.openai, settings.openaiApiKey)
-        let openrouterWritten = KeychainStore.set(KeychainStore.Account.openrouter, settings.openrouterApiKey)
-        let opencodeWritten = KeychainStore.set(KeychainStore.Account.opencode, settings.opencodeApiKey)
-        let opencodeGoWritten = KeychainStore.set(KeychainStore.Account.opencodeGo, settings.opencodeGoApiKey)
+        // Keys go to the Keychain, never the UserDefaults blob — and only the
+        // accounts whose value changed are written (this runs on every keystroke
+        // in the settings key fields, and each Keychain write is a synchronous
+        // securityd round-trip). Track per-key write success so we only strip
+        // the plaintext copy that actually landed in the Keychain; a failed
+        // write leaves its plaintext key in the blob.
+        let geminiWritten = syncKeychain(KeychainStore.Account.gemini, settings.apiKey)
+        let openaiWritten = syncKeychain(KeychainStore.Account.openai, settings.openaiApiKey)
+        let openrouterWritten = syncKeychain(KeychainStore.Account.openrouter, settings.openrouterApiKey)
+        let opencodeWritten = syncKeychain(KeychainStore.Account.opencode, settings.opencodeApiKey)
+        let opencodeGoWritten = syncKeychain(KeychainStore.Account.opencodeGo, settings.opencodeGoApiKey)
 
         var stripped = settings
         if geminiWritten { stripped.apiKey = "" }
