@@ -131,11 +131,8 @@ final class AnnotationStore {
 
     func updateAnnotation(_ input: UpdateAnnotationInput) async {
         guard let sessionId = app.activeTabId else { return }
-        // Edits against a still-optimistic row queue behind its create and
-        // retarget the persisted id.
-        var input = input
-        guard let realId = await resolveId(input.id) else { return }
-        input.id = realId
+        // The backend persists the client-assigned id, so update waits for a
+        // matching optimistic create rather than trying to mutate a temp id.
         guard app.activeTabId == sessionId else { return }
         // Optimistic update
         annotations = annotations.map { annotation in
@@ -168,9 +165,6 @@ final class AnnotationStore {
 
     func deleteAnnotation(id: String) async {
         guard let sessionId = app.activeTabId else { return }
-        // Deleting a still-optimistic row waits for its create to persist, then
-        // deletes the real record (the backends can't find a temp id).
-        guard let id = await resolveId(id) else { return }
         guard app.activeTabId == sessionId else { return }
         // Optimistic delete
         let previous = annotations
@@ -264,10 +258,9 @@ final class AnnotationStore {
     /// configured default; bookmarks have no color).
     private func defaultColor(for type: AnnotationType) -> String? {
         switch type {
-        case .highlight: return app.defaultHighlightColor
+        case .highlight: return WorkspaceStore.storedDefaultHighlightColor()
         case .note: return "#fde68a"
         case .bookmark: return nil
         }
-        return optimistic
     }
 }

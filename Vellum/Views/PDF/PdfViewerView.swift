@@ -94,14 +94,16 @@ struct PdfViewerView: View {
         // clears it alongside the local state reset).
         aiStore.clearDocumentContext()
         do {
+            // The persistent text cache is keyed by the current PDF bytes, so
+            // read them even when this tab can reuse an already prepared PDF.
+            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+            guard !Task.isCancelled, app.activeTabId == tabId else { return }
             let document: PDFDocument
             if let cached = app.cachedPreparedPdf(tabId: tabId) {
                 // Fast path: this tab was opened recently — reuse the prepared
                 // document, skipping the disk read, parse, and strip entirely.
                 document = cached
             } else {
-                let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-                guard !Task.isCancelled, app.activeTabId == tabId else { return }
                 // Parse the PDF and strip its embedded annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.

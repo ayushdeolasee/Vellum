@@ -192,6 +192,9 @@ final class AiStore {
     private(set) var pageTexts: [Int: String] = [:]
     private(set) var settings = AiSettings()
 
+    /// Keeps this pane's settings synchronized with changes made in Settings.
+    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+
     /// Context the user has attached to the next message (selection, highlight,
     /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
     private(set) var composerReferences: [AiReference] = []
@@ -282,8 +285,8 @@ final class AiStore {
     /// Attach a reference and reveal the AI panel so the user sees it land.
     func addReference(_ reference: AiReference) {
         composerReferences.append(reference)
-        app?.sidebarTab = .ai
-        app?.sidebarOpen = true
+        app?.workspace?.sidebarTab = .ai
+        app?.workspace?.sidebarOpen = true
     }
 
     func removeReference(id: String) {

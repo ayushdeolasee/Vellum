@@ -159,7 +159,7 @@ final class WebDocumentSession: DocumentSession {
 
     func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         // UserDefaults read stays on the main actor; pass the resolved default in.
-        try await io.createAnnotation(input, storedHighlightColor: AppStore.storedDefaultHighlightColor())
+        try await io.createAnnotation(input, storedHighlightColor: WorkspaceStore.storedDefaultHighlightColor())
     }
 
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {

@@ -30,81 +30,10 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
-            guard appStore.document != nil else { return }
-            Task { await annotationStore.loadAnnotations() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
-            addWebpagePresented = true
-        }
-        .sheet(isPresented: $addWebpagePresented) {
-            AddWebpageSheet()
-        }
-        // Publish the stores as a focused value so the app-level menu commands
-        // (VellumCommands) route here and disable themselves when the Settings
-        // window — which does not publish this value — is key.
-        .focusedValue(\.vellumFocus, VellumFocus(appStore: appStore, annotationStore: annotationStore))
-        .background(WindowAccessor { hostWindow = $0 })
-        .onAppear(perform: installKeyMonitor)
-        .onDisappear(perform: removeKeyMonitor)
-    }
-
-    @ViewBuilder
-    private var documentViewer: some View {
-        if appStore.document?.kind == .web {
-            WebViewerView()
-                .id(appStore.activeTabId)
-        } else {
-            PdfViewerView()
-                .id(appStore.activeTabId)
-        }
-    }
-
-    /// Inspector only makes sense with a document; opening state still lives
-    /// in AppStore so the toolbar toggle and restores keep working.
-    private var inspectorPresented: Binding<Bool> {
-        Binding(
-            get: { appStore.document != nil && appStore.sidebarOpen },
-            set: { appStore.sidebarOpen = $0 }
-        )
-    }
-
-    private var sidebarTabBinding: Binding<AppStore.SidebarTab> {
-        Binding(
-            get: { appStore.sidebarTab },
-            set: { appStore.sidebarTab = $0 }
-        )
-    }
-
-    private var sidebar: some View {
-        // Keep both panels mounted and toggle visibility rather than swapping via
-        // if/else: tearing AiPanel down on every tab switch loses its scroll
-        // position (returning would land mid-list) and any half-typed draft.
-        // Staying mounted preserves both exactly.
-        ZStack {
-            let showingAnnotations = appStore.sidebarTab == .annotations
-            AnnotationSidebar()
-                .opacity(showingAnnotations ? 1 : 0)
-                .allowsHitTesting(showingAnnotations)
-                .accessibilityHidden(!showingAnnotations)
-            AiPanel()
-                .opacity(showingAnnotations ? 0 : 1)
-                .allowsHitTesting(!showingAnnotations)
-                .accessibilityHidden(showingAnnotations)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .onHover { sidebarHovering = $0 }
-    }
-
-    private var documentIdentity: DocumentIdentity {
-        DocumentIdentity(tabId: appStore.activeTabId, path: appStore.document?.pdfPath)
-    }
-
-    private var autosaveIdentity: AutosaveIdentity? {
-        guard let tabId = appStore.activeTabId, appStore.document != nil else { return nil }
-        return AutosaveIdentity(tabId: tabId, path: appStore.document?.pdfPath)
+            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            .background(WindowAccessor { hostWindow = $0 })
+            .onAppear(perform: installKeyMonitor)
+            .onDisappear(perform: removeKeyMonitor)
     }
 
     private func installKeyMonitor() {
