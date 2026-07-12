@@ -10,6 +10,8 @@ python3 Benchmarks/vellum_bench.py model --provider openrouter --model YOUR_MODE
 python3 -m unittest Benchmarks/test_vellum_bench.py
 ```
 
+> Non-macOS (or non-PDFKit) runs shell out to Poppler's `pdftotext`/`pdftoppm` — install with `brew install poppler` (macOS) or your distro's poppler-utils.
+
 `doctor` extracts each PDF with PDFKit—the same `PDFPage.string` path used by Vellum—into a fingerprinted `.benchmark-cache/` entry and validates every gold page. On non-macOS systems it falls back to Poppler. The baseline mirrors `AiToolEngine.searchDocument`: case-insensitive literal matching, first match per page, eight hits, 200 characters of surrounding context, and a 100,000-character page scan cap.
 
 Provider credentials are read from `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`. They are never stored in reports. OpenRouter supplies provider-reported cost. OpenAI and Gemini require explicit current pricing so the report can estimate cost:
