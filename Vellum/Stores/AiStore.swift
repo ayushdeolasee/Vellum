@@ -11,7 +11,14 @@ enum AiRole: String, Codable, Sendable {
 enum AiProvider: String, Codable, Sendable {
     case gemini
     case openai
-    case codex
+    case openrouter
+    /// ChatGPT-subscription OAuth (Codex backend); no API key, uses `ChatGPTAuth`.
+    case chatgpt
+    /// OpenCode Zen gateway, authenticated with a pasted `sk-…` API key.
+    case opencode
+    /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
+    /// separate from Zen. See `OpenCodeClient.Gateway`.
+    case opencodeGo
 }
 
 enum VoiceMode: String, Codable, Sendable {
@@ -26,13 +33,68 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var createdAt: String
 }
 
+/// Coarse phase of an in-flight request, surfaced by the panel's activity
+/// indicator. `.streaming` means reply text is actively arriving.
+enum AiActivity: Equatable, Sendable {
+    case idle
+    case thinking
+    case reading
+    case streaming
+    case tool(String)
+}
+
+/// A piece of context the user has explicitly attached to the next message:
+/// selected PDF text, an existing highlight, a snapshot (region or full page),
+/// or a quote pulled from a previous AI reply. Rendered as chips in the
+/// composer and folded into the prompt / image inputs at send time.
+struct AiReference: Identifiable, Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case selection(text: String, page: Int)
+        case highlight(text: String, page: Int)
+        case region(image: AiPageImageSnapshot, page: Int)
+        case pageSnapshot(image: AiPageImageSnapshot, page: Int)
+        case quote(text: String, messageId: String)
+    }
+    let id: String
+    var kind: Kind
+
+    init(id: String = UUID().uuidString.lowercased(), kind: Kind) {
+        self.id = id
+        self.kind = kind
+    }
+
+    /// The image payload, if this reference carries one.
+    var image: AiPageImageSnapshot? {
+        switch kind {
+        case let .region(image, _), let .pageSnapshot(image, _): return image
+        default: return nil
+        }
+    }
+}
+
+extension AiPageImageSnapshot: Equatable {
+    static func == (lhs: AiPageImageSnapshot, rhs: AiPageImageSnapshot) -> Bool {
+        lhs.pageNumber == rhs.pageNumber
+            && lhs.base64Data == rhs.base64Data
+            && lhs.mediaType == rhs.mediaType
+    }
+}
+
 struct AiSettings: Codable, Equatable, Sendable {
     var provider: AiProvider = .gemini
     var model: String = "gemini-3.1-flash-lite-preview"
     var apiKey: String = ""
     var openaiModel: String = "gpt-5.5"
     var openaiApiKey: String = ""
-    var codexModel: String = "gpt-5.5"
+    var openrouterModel: String = ""
+    var openrouterApiKey: String = ""
+    var chatgptModel: String = "gpt-5.5"
+    var opencodeModel: String = "claude-opus-4-8"
+    var opencodeApiKey: String = ""
+    var opencodeGoModel: String = "glm-5.2"
+    var opencodeGoApiKey: String = ""
+    /// Model ids the user has pinned to the top of the model selector.
+    var pinnedModels: [String] = []
     var voiceMode: VoiceMode = .off
     var ttsEnabled: Bool = false
 }
@@ -55,6 +117,8 @@ struct AiContextSnapshot: Sendable {
     var visiblePages: [Int]
     var annotations: [Annotation]
     var currentPageImage: AiPageImageSnapshot?
+    /// User-attached references (selection / highlight / snapshot / quote).
+    var references: [AiReference] = []
 }
 
 /// Result of locating a phrase in a document (PDF text layer or web content
@@ -70,18 +134,33 @@ final class AiStore {
     // Wired in by VellumApp; used by sendMessage's tool engine.
     weak var app: AppStore?
     weak var annotationStore: AnnotationStore?
+    /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
+    weak var openRouterCatalog: OpenRouterCatalog?
+    /// Wired in by VellumApp; owns the ChatGPT-subscription OAuth lifecycle.
+    weak var chatgptAuth: ChatGPTAuth?
 
     private(set) var messages: [AiMessage] = []
-    private(set) var isThinking = false
+    /// Current request phase; drives the panel's activity indicator.
+    private(set) var activity: AiActivity = .idle
+    /// True while a request is in flight — kept as a computed alias so existing
+    /// call sites (submit guard, TTS, scroll triggers) are unaffected.
+    var isThinking: Bool { activity != .idle }
+    /// Id of the assistant message currently receiving streamed deltas (nil when
+    /// no stream is active). The panel uses it to suppress the activity pill once
+    /// text has started arriving.
+    private(set) var streamingMessageId: String?
     private(set) var error: String?
+    /// The in-flight request task (image capture + sendMessage), held so an
+    /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
+    /// interruptible.
+    private var sendTask: Task<Void, Never>?
     /// 1-indexed page → whitespace-normalized extracted text.
     private(set) var pageTexts: [Int: String] = [:]
     private(set) var settings = AiSettings()
 
-    /// Observes `.vellumAiSettingsChanged` so this instance reloads the shared
-    /// disk-persisted settings when another instance (or the Settings window)
-    /// changes them — keeps every pane's AiStore in sync.
-    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+    /// Context the user has attached to the next message (selection, highlight,
+    /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
+    private(set) var composerReferences: [AiReference] = []
 
     /// Registered by the PDF viewer: locate a verbatim phrase on a page at
     /// zoom 1 in top-left-origin PDF points (lib/highlight-locator.ts).
@@ -138,31 +217,69 @@ final class AiStore {
     }
 
     func setThinkingState(_ thinking: Bool) {
-        isThinking = thinking
+        activity = thinking ? .thinking : .idle
     }
 
     func setErrorState(_ error: String?) {
         self.error = error
     }
 
+    // MARK: - Composer references
+
+    /// Attach a reference and reveal the AI panel so the user sees it land.
+    func addReference(_ reference: AiReference) {
+        composerReferences.append(reference)
+        app?.sidebarTab = .ai
+        app?.sidebarOpen = true
+    }
+
+    func removeReference(id: String) {
+        composerReferences.removeAll { $0.id == id }
+    }
+
+    func clearComposerReferences() {
+        composerReferences = []
+    }
+
     /// Restore the persisted conversation for a document (or reset when nil).
     func loadConversationForDocument(_ document: DocumentInfo?) {
         messages = AiPersistence.loadConversation(for: document)
-        isThinking = false
+        activity = .idle
+        streamingMessageId = nil
+        composerReferences = []
         error = nil
+    }
+
+    /// Register the current in-flight request task so it can be cancelled.
+    func registerSendTask(_ task: Task<Void, Never>?) {
+        sendTask = task
+    }
+
+    /// Cancel any in-flight request and stop the thinking indicator.
+    func cancelActiveRequest() {
+        sendTask?.cancel()
+        sendTask = nil
+        activity = .idle
+        streamingMessageId = nil
     }
 
     /// Save an empty list (deleting the document's stored entry) and clear state.
+    /// Also cancels any in-flight request so a completing response can't
+    /// re-append the messages we just cleared.
     func clearConversation() {
+        cancelActiveRequest()
         AiPersistence.saveConversation(for: app?.document, messages: [])
         messages = []
+        composerReferences = []
         error = nil
     }
 
-    /// Wipes pageTexts, messages, isThinking, error (called on doc/tab change).
+    /// Wipes pageTexts, messages, activity, error (called on doc/tab change).
     func clearDocumentContext() {
         messages = []
-        isThinking = false
+        activity = .idle
+        streamingMessageId = nil
+        composerReferences = []
         error = nil
         pageTexts = [:]
     }
@@ -197,13 +314,61 @@ final class AiStore {
             error = "Set your Gemini API key in AI settings."
             return
         }
+        if settingsAtStart.provider == .openrouter,
+           settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenRouter API key in AI settings."
+            return
+        }
+        if settingsAtStart.provider == .opencode,
+           settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenCode Zen API key in AI settings."
+            return
+        }
+        if settingsAtStart.provider == .opencodeGo,
+           settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Set your OpenCode Go API key in AI settings."
+            return
+        }
+        if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
+            error = "Sign in with ChatGPT in AI settings."
+            return
+        }
 
         let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
         messages.append(userMessage)
-        isThinking = true
+        // Empty assistant placeholder the stream fills in-place. Kept out of the
+        // persisted list until it has content so a mid-stream crash leaves no
+        // empty bubble behind on reload.
+        let assistantPlaceholder = AiPersistence.makeMessage(role: .assistant, content: "")
+        messages.append(assistantPlaceholder)
+        let assistantId = assistantPlaceholder.id
+        streamingMessageId = assistantId
+        activity = .thinking
         error = nil
-        let messagesWithUser = messages
+        let messagesWithUser = Array(messages.dropLast())
         AiPersistence.saveConversation(for: documentAtStart, messages: messagesWithUser)
+
+        // Image inputs: the auto page snapshot first, then any snapshot the user
+        // explicitly attached as a reference.
+        var images: [AiPageImageSnapshot] = []
+        if let pageImage = context.currentPageImage { images.append(pageImage) }
+        images.append(contentsOf: context.references.compactMap(\.image))
+
+        // Guarded main-actor sink for provider events.
+        let onEvent: @MainActor (AiStreamEvent) -> Void = { [weak self] event in
+            guard let self, self.app?.activeTabId == sessionIdAtStart else { return }
+            switch event {
+            case .status(let label):
+                self.activity = label.lowercased().contains("read") ? .reading : .thinking
+            case .textDelta(let delta):
+                self.appendStreamDelta(id: assistantId, delta)
+                self.activity = .streaming
+            case .toolStarted(let summary):
+                self.activity = .tool(summary)
+            case .toolFinished:
+                break
+            }
+        }
 
         do {
             let conversation = AiPrompts.buildConversationBlock(messagesWithUser)
@@ -222,9 +387,10 @@ final class AiStore {
                     model: model.isEmpty ? "gemini-3.1-flash-lite-preview" : model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
-                    image: context.currentPageImage,
+                    images: images,
                     sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine
+                    toolEngine: engine,
+                    onEvent: onEvent
                 )
             case .openai:
                 let model = settingsAtStart.openaiModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,27 +399,83 @@ final class AiStore {
                     model: model.isEmpty ? "gpt-5.5" : model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
-                    image: context.currentPageImage,
+                    images: images,
                     sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine
+                    toolEngine: engine,
+                    onEvent: onEvent
                 )
-            case .codex:
-                let model = settingsAtStart.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                let image = context.currentPageImage.map {
-                    CodexAiImageInput(base64Data: $0.base64Data, mediaType: $0.mediaType)
+            case .openrouter:
+                let model = settingsAtStart.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenRouter model in AI settings.")
                 }
-                let raw = try await app.sessions.runCodexAi(
-                    prompt: AiPrompts.buildToolModePrompt(parameters),
-                    model: model.isEmpty ? "gpt-5.5" : model,
-                    image: image
-                )
-                result = await parseAndRunCodex(
-                    raw,
-                    engine: engine,
+                // Unknown ids (stale cache) default to permissive so we never
+                // silently strip a capability the model actually has.
+                let capabilities = openRouterCatalog?.model(for: model)
+                let supportsVision = capabilities?.supportsVision ?? true
+                let supportsTools = capabilities?.supportsTools ?? true
+                result = try await OpenRouterClient().generate(
+                    apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    images: supportsVision ? images : [],
+                    allowTools: supportsTools,
                     sessionIdAtStart: sessionIdAtStart,
-                    app: app
+                    toolEngine: engine,
+                    onEvent: onEvent
+                )
+            case .chatgpt:
+                guard let chatgptAuth else {
+                    throw AiClientError.message("Sign in with ChatGPT in AI settings.")
+                }
+                let model = settingsAtStart.chatgptModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                result = try await ChatGPTClient(auth: chatgptAuth).generate(
+                    model: model.isEmpty ? "gpt-5.5" : model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    images: images,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine,
+                    onEvent: onEvent
+                )
+            case .opencode:
+                let model = settingsAtStart.opencodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenCode Zen model in AI settings.")
+                }
+                result = try await OpenCodeClient(gateway: .zen).generate(
+                    apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    // Only text-only open models drop the page image; the gateway
+                    // rejects image parts for models that can't read them.
+                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine,
+                    onEvent: onEvent
+                )
+            case .opencodeGo:
+                let model = settingsAtStart.opencodeGoModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw AiClientError.message("Choose an OpenCode Go model in AI settings.")
+                }
+                result = try await OpenCodeClient(gateway: .go).generate(
+                    apiKey: settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: model,
+                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                    userPrompt: AiPrompts.buildNativeToolUserPrompt(parameters),
+                    image: AiModelCatalog.opencodeSupportsVision(model) ? context.currentPageImage : nil,
+                    sessionIdAtStart: sessionIdAtStart,
+                    toolEngine: engine,
+                    onEvent: onEvent
                 )
             }
+
+            // Cancelled mid-request (e.g. the user cleared the conversation):
+            // drop the result without persisting or re-appending messages.
+            guard !Task.isCancelled else { return }
 
             let assistantContent: String
             if result.actionResults.isEmpty {
@@ -262,79 +484,47 @@ final class AiStore {
                 assistantContent = result.reply + "\n\nActions:\n"
                     + result.actionResults.map { "- \($0)" }.joined(separator: "\n")
             }
-            let assistant = AiPersistence.makeMessage(
-                role: .assistant,
-                content: assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-            let completed = messagesWithUser + [assistant]
+            let finalContent = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let completed = messagesWithUser + [
+                AiPersistence.makeMessage(role: .assistant, content: finalContent, id: assistantId)
+            ]
             AiPersistence.saveConversation(for: documentAtStart, messages: completed)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed
-                isThinking = false
+                activity = .idle
+                streamingMessageId = nil
             }
         } catch {
+            // A cancelled request surfaces here as a URLSession cancellation
+            // error — swallow it silently instead of showing a failure banner.
+            guard !Task.isCancelled else { return }
+
             let detail = error.localizedDescription
-            let assistant = AiPersistence.makeMessage(
-                role: .assistant,
-                content: "I couldn't complete that request: \(detail)"
-            )
-            let failed = messagesWithUser + [assistant]
+            // Keep whatever streamed before the failure; otherwise show the error
+            // in place of the empty placeholder.
+            let streamed = messages.first(where: { $0.id == assistantId })?.content
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let content = streamed.isEmpty
+                ? "I couldn't complete that request: \(detail)"
+                : streamed + "\n\n_(interrupted: \(detail))_"
+            let failed = messagesWithUser + [
+                AiPersistence.makeMessage(role: .assistant, content: content, id: assistantId)
+            ]
             AiPersistence.saveConversation(for: documentAtStart, messages: failed)
             if app.activeTabId == sessionIdAtStart {
                 messages = failed
-                isThinking = false
+                activity = .idle
+                streamingMessageId = nil
                 self.error = detail
             }
         }
     }
 
-    private func parseAndRunCodex(
-        _ raw: String,
-        engine: AiToolEngine,
-        sessionIdAtStart: String,
-        app: AppStore
-    ) async -> AiProviderResult {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return AiProviderResult(reply: "I couldn't produce a response.", actionResults: [])
-        }
-        let jsonText: String
-        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
-            jsonText = String(trimmed[first...last])
-        } else {
-            jsonText = trimmed
-        }
-        guard let data = jsonText.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return AiProviderResult(reply: trimmed, actionResults: [])
-        }
-        let parsedReply = (object["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reply = parsedReply?.isEmpty == false ? parsedReply! : trimmed
-        let rawActions = object["actions"] as? [[String: Any]] ?? []
-        var actionResults: [String] = []
-        for rawAction in rawActions {
-            guard actionResults.count < AiToolEngine.maxActions,
-                  app.activeTabId == sessionIdAtStart,
-                  let tool = rawAction["tool"] as? String,
-                  ["goToPage", "addNote", "addHighlight"].contains(tool),
-                  let args = rawAction["args"] as? [String: Any] else { continue }
-            let action = AiToolAction(
-                tool: tool,
-                args: AiToolArguments(
-                    pageNumber: (args["pageNumber"] as? NSNumber)?.doubleValue,
-                    text: args["text"] as? String,
-                    color: args["color"] as? String,
-                    x: (args["x"] as? NSNumber)?.doubleValue,
-                    y: (args["y"] as? NSNumber)?.doubleValue
-                )
-            )
-            let result = await engine.run(
-                action,
-                sessionIdAtStart: sessionIdAtStart,
-                actionCount: actionResults.count
-            )
-            actionResults.append(result)
-        }
-        return AiProviderResult(reply: reply, actionResults: actionResults)
+    /// Append a streamed delta to the in-flight assistant message without
+    /// persisting on every token (the final content is saved once at the end).
+    private func appendStreamDelta(id: String, _ delta: String) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index].content += delta
     }
+
 }

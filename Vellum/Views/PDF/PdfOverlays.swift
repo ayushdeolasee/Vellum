@@ -10,6 +10,7 @@ struct PdfOverlayStack: View {
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
     /// One per-page overlay layer with its frame resolved. Frames are computed
@@ -44,13 +45,27 @@ struct PdfOverlayStack: View {
             // exactly one placement fires). Sits below annotation overlays so
             // sticky pills keep their own cursor and drag behavior.
             if app.mode == .note {
+                // No SwiftUI `.pointerStyle` here: note mode uses a custom "+"
+                // NSCursor (NSCursor.addNote) asserted by PdfKitView's mouse
+                // monitor across the whole viewer, which a `.pointerStyle` on
+                // this overlay would override with a plain crosshair.
                 Color.clear
                     .contentShape(Rectangle())
-                    .pointerStyle(.rectSelection) // crosshair-style pointer
                     .onTapGesture(coordinateSpace: .local) { location in
                         controller.handleNoteOverlayClick(atTopLeft: location)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            if app.mode == .snapshotRegion {
+                RegionCaptureOverlay { rect in
+                    if let snapshot = controller.capturePageRegion(viewerRect: rect) {
+                        aiStore.addReference(AiReference(
+                            kind: .region(image: snapshot, page: snapshot.pageNumber)))
+                    }
+                    app.setMode(.view)
+                }
+                .zIndex(60)
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
@@ -103,6 +118,59 @@ struct PdfOverlayStack: View {
         let high = min(numPages, (center.last ?? 1) + 2)
         guard low <= high else { return [] }
         return Array(low...high)
+    }
+}
+
+/// Drag-to-crop overlay for `.snapshotRegion` mode: draws a dashed marquee and
+/// reports the final rectangle (viewer top-left coordinates) on release.
+struct RegionCaptureOverlay: View {
+    let onCapture: (CGRect) -> Void
+
+    @Environment(\.palette) private var palette
+    @State private var start: CGPoint?
+    @State private var current: CGPoint?
+
+    private var rect: CGRect? {
+        guard let start, let current else { return nil }
+        return CGRect(
+            x: min(start.x, current.x), y: min(start.y, current.y),
+            width: abs(current.x - start.x), height: abs(current.y - start.y))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(0.08)
+                .contentShape(Rectangle())
+            if let rect {
+                Rectangle()
+                    .fill(palette.primary.opacity(0.12))
+                    .overlay {
+                        Rectangle().strokeBorder(
+                            palette.primary,
+                            style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // No `.pointerStyle` here: the snapshot-region crosshair is a custom
+        // NSCursor (NSCursor.snapshotCrosshair) asserted by PdfKitView's mouse
+        // monitor across the whole viewer, which a `.pointerStyle` on this
+        // overlay would override with a plain system pointer.
+        .gesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                .onChanged { value in
+                    if start == nil { start = value.startLocation }
+                    current = value.location
+                }
+                .onEnded { value in
+                    let final = rect ?? CGRect(origin: value.startLocation, size: .zero)
+                    start = nil
+                    current = nil
+                    onCapture(final)
+                }
+        )
     }
 }
 

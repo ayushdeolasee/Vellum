@@ -73,6 +73,11 @@ struct CreateAnnotationInput: Sendable {
     var color: String?
     var content: String?
     var positionData: PositionData?
+    /// Client-assigned id for optimistic creation: the store renders the
+    /// annotation immediately under this id and the backend persists it under
+    /// the same id, so an immediate drag/edit targets the right record. When
+    /// nil, the backend mints its own id (legacy behavior).
+    var id: String?
 }
 
 struct UpdateAnnotationInput: Sendable {
@@ -148,6 +153,9 @@ struct WebPageText: Sendable {
 enum InteractionMode: String, Codable, Sendable {
     case view
     case note
+    /// Drag a rectangle over the page to snapshot that region as an AI
+    /// reference. Transient (never persisted to a tab); returns to `.view`.
+    case snapshotRegion
 }
 
 struct WebVisibleRange: Equatable, Sendable {

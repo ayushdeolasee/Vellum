@@ -1,11 +1,22 @@
 import Foundation
 
+/// Streams a reply from the ChatGPT-subscription Codex backend
+/// (`https://chatgpt.com/backend-api/codex/responses`) using the Responses API,
+/// authenticated with the OAuth access token from `ChatGPTAuth` rather than an
+/// API key. Shape mirrors `OpenAIClient` (same tool loop, same SSE events); the
+/// differences are the base URL, the OAuth/account headers, and per-turn token
+/// refresh.
 @MainActor
-final class OpenAIClient {
-    /// Streams a reply from the Responses API (`stream: true`). Text deltas are
-    /// forwarded live; function-call items run the tool loop between turns.
+final class ChatGPTClient {
+    private let auth: ChatGPTAuth
+    /// Stable id for this conversation turn, sent as `session-id` like the CLI.
+    private let sessionId = UUID().uuidString
+
+    init(auth: ChatGPTAuth) {
+        self.auth = auth
+    }
+
     func generate(
-        apiKey: String,
         model: String,
         systemPrompt: String,
         userPrompt: String,
@@ -14,8 +25,8 @@ final class OpenAIClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
-        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
-            throw AiClientError.message("Invalid OpenAI endpoint.")
+        guard let url = URL(string: "https://chatgpt.com/backend-api/codex/responses") else {
+            throw AiClientError.message("Invalid ChatGPT endpoint.")
         }
         var content: [[String: Any]] = [["type": "input_text", "text": userPrompt]]
         for image in images where !image.base64Data.isEmpty {
@@ -35,16 +46,12 @@ final class OpenAIClient {
                 "instructions": systemPrompt,
                 "input": input,
                 "tools": Self.functionTools,
+                "tool_choice": "auto",
+                "parallel_tool_calls": true,
                 "store": false,
                 "stream": true,
             ]
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
+            let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
             var text = ""
@@ -66,7 +73,7 @@ final class OpenAIClient {
                 case "response.failed", "error":
                     let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                         ?? (object["message"] as? String)
-                    throw AiClientError.message(message ?? "OpenAI streaming failed.")
+                    throw AiClientError.message(message ?? "ChatGPT streaming failed.")
                 default:
                     break
                 }
@@ -103,29 +110,55 @@ final class OpenAIClient {
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
+    /// Builds a Responses request with fresh OAuth credentials and the CLI's
+    /// account/session headers. Refreshes the token first if it's near expiry.
+    private func makeRequest(url: URL, body: [String: Any]) async throws -> URLRequest {
+        let credentials = try await auth.validCredentials()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(credentials.accountId, forHTTPHeaderField: "ChatGPT-Account-ID")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue(sessionId, forHTTPHeaderField: "session-id")
+        request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    /// Only the network call is wrapped in the retry `catch`; non-retryable HTTP
+    /// statuses and cancellation escape immediately instead of being retried.
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    throw AiClientError.message("OpenAI returned an invalid HTTP response.")
-                }
-                if (200..<300).contains(http.statusCode) { return bytes }
-                let data = try await Self.drain(bytes)
-                let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-                let error = AiClientError.message(message.isEmpty ? "OpenAI request failed with status \(http.statusCode)." : message)
-                if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                    lastError = error
-                    continue
-                }
-                throw error
+                (bytes, response) = try await URLSession.shared.bytes(for: request)
+            } catch is CancellationError {
+                throw CancellationError() // user-initiated abort: never retry
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError() // URLSession task cancelled: never retry
             } catch {
                 lastError = error
                 if attempt == 1 { throw error }
+                continue // transient network failure: retry once
             }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw AiClientError.message("ChatGPT returned an invalid HTTP response.")
+            }
+            if (200..<300).contains(http.statusCode) { return bytes }
+            let data = try await Self.drain(bytes)
+            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
+            let error = AiClientError.message(message.isEmpty ? "ChatGPT request failed with status \(http.statusCode)." : message)
+            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
+                lastError = error
+                continue // transient status: retry once
+            }
+            throw error // non-retryable status: escapes immediately
         }
-        throw lastError ?? AiClientError.message("OpenAI request failed.")
+        throw lastError ?? AiClientError.message("ChatGPT request failed.")
     }
 
     private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
@@ -136,7 +169,7 @@ final class OpenAIClient {
 
     private static func jsonObject(_ data: Data) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AiClientError.message("OpenAI returned invalid JSON.")
+            throw AiClientError.message("ChatGPT returned invalid JSON.")
         }
         return object
     }
@@ -147,7 +180,9 @@ final class OpenAIClient {
     }
 
     private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
-        ((object["error"] as? [String: Any])?["message"] as? String) ?? fallback
+        ((object["error"] as? [String: Any])?["message"] as? String)
+            ?? (object["detail"] as? String)
+            ?? fallback
     }
 
     private static func toolArguments(from value: [String: Any]) -> AiToolArguments {

@@ -33,15 +33,31 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
 struct VellumApp: App {
     @NSApplicationDelegateAdaptor(VellumAppDelegate.self) private var appDelegate
     @State private var themeStore: ThemeStore
-    @State private var workspace: WorkspaceStore
+    @State private var appStore: AppStore
+    @State private var annotationStore: AnnotationStore
+    @State private var aiStore: AiStore
+    @State private var openRouterCatalog: OpenRouterCatalog
+    @State private var chatgptAuth: ChatGPTAuth
 
     init() {
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let workspace = WorkspaceStore(sessions: sessions)
+        let app = AppStore(sessions: sessions)
+        let annotations = AnnotationStore(app: app)
+        let ai = AiStore()
+        let openRouter = OpenRouterCatalog()
+        let chatgpt = ChatGPTAuth()
+        ai.app = app
+        ai.annotationStore = annotations
+        ai.openRouterCatalog = openRouter
+        ai.chatgptAuth = chatgpt
         _themeStore = State(initialValue: theme)
-        _workspace = State(initialValue: workspace)
-        VellumAppDelegate.workspace = workspace
+        _appStore = State(initialValue: app)
+        _annotationStore = State(initialValue: annotations)
+        _aiStore = State(initialValue: ai)
+        _openRouterCatalog = State(initialValue: openRouter)
+        _chatgptAuth = State(initialValue: chatgpt)
+        VellumAppDelegate.appStore = app
     }
 
     var body: some Scene {
@@ -51,7 +67,11 @@ struct VellumApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .environment(themeStore)
-                .environment(workspace)
+                .environment(appStore)
+                .environment(annotationStore)
+                .environment(aiStore)
+                .environment(openRouterCatalog)
+                .environment(chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -68,8 +88,10 @@ struct VellumApp: App {
         Settings {
             SettingsView()
                 .environment(themeStore)
-                .environment(workspace)
-                .environment(workspace.settingsAi)
+                .environment(appStore)
+                .environment(aiStore)
+                .environment(openRouterCatalog)
+                .environment(chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

@@ -67,6 +67,7 @@ final class PdfViewerController {
     @ObservationIgnored private var findIndex = -1
 
     var isNoteMode: Bool { app?.mode == .note }
+    var isSnapshotRegionMode: Bool { app?.mode == .snapshotRegion }
 
     // MARK: - Lifecycle
 
@@ -668,6 +669,9 @@ final class PdfViewerController {
         pageNumber: Int, clickX: Double, clickY: Double,
         pageWidth: Double, pageHeight: Double
     ) async {
+        // An AI "Add as note" click carries the reply text; a plain note tool
+        // click leaves it nil so the sticky opens empty for typing.
+        let pendingContent = app?.consumePendingNoteContent()
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth,
@@ -680,7 +684,7 @@ final class PdfViewerController {
             viewportOffset: nil
         )
         let input = CreateAnnotationInput(
-            type: .note, pageNumber: pageNumber, color: nil, content: nil,
+            type: .note, pageNumber: pageNumber, color: nil, content: pendingContent,
             positionData: position)
         if let annotation = await annotationStore?.addNote(input) {
             annotationStore?.selectAnnotation(annotation.id)
@@ -692,6 +696,7 @@ final class PdfViewerController {
     func addNoteFromContextMenu() {
         guard let menu = contextMenu else { return }
         contextMenu = nil
+        let pendingContent = app?.consumePendingNoteContent()
         Task {
             let position = PositionData(
                 rects: [AnnotationRect(x: menu.clickX, y: menu.clickY, width: 0, height: 0)],
@@ -705,7 +710,7 @@ final class PdfViewerController {
                 viewportOffset: nil
             )
             let input = CreateAnnotationInput(
-                type: .note, pageNumber: menu.pageNumber, color: nil, content: nil,
+                type: .note, pageNumber: menu.pageNumber, color: nil, content: pendingContent,
                 positionData: position)
             if let annotation = await annotationStore?.addNote(input) {
                 annotationStore?.selectAnnotation(annotation.id)
@@ -888,6 +893,72 @@ final class PdfViewerController {
             return CGSize(width: crop.height, height: crop.width)
         }
         return CGSize(width: crop.width, height: crop.height)
+    }
+
+    // MARK: - AI region snapshot (drag-to-crop)
+
+    /// Crop a JPEG snapshot of the page under `viewerRect` (viewer top-left
+    /// coordinates, the SwiftUI overlay space). Returns nil if the rect misses
+    /// any page or is too small to be useful.
+    func capturePageRegion(viewerRect rect: CGRect) -> AiPageImageSnapshot? {
+        guard let pdfView, let document else { return nil }
+        let nativeCenter = topLeftPoint(CGPoint(x: rect.midX, y: rect.midY))
+        guard let page = pdfView.page(for: nativeCenter, nearest: true) else { return nil }
+        let pageNumber = document.index(for: page) + 1
+        guard let pageFrame = pageViewFrame(pageNumber: pageNumber) else { return nil }
+        let zoom = max(pdfView.scaleFactor, 0.0001)
+        let dims = Self.displayDimensions(of: page)
+        guard dims.width >= 1, dims.height >= 1 else { return nil }
+
+        // Region in zoom-1, top-left page points, clamped to the page.
+        var rx = Double((rect.minX - pageFrame.minX) / zoom)
+        var ry = Double((rect.minY - pageFrame.minY) / zoom)
+        rx = max(0, min(rx, Double(dims.width)))
+        ry = max(0, min(ry, Double(dims.height)))
+        let rw = max(1, min(Double(rect.width / zoom), Double(dims.width) - rx))
+        let rh = max(1, min(Double(rect.height / zoom), Double(dims.height) - ry))
+        guard rw >= 4, rh >= 4 else { return nil }
+
+        // Render the whole page upright, then crop. Scale so the region is
+        // legible (≤1280 on its long side) without blowing up tiny selections.
+        let scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        let fullW = Int((Double(dims.width) * scale).rounded())
+        let fullH = Int((Double(dims.height) * scale).rounded())
+        guard fullW > 0, fullH > 0 else { return nil }
+
+        let image = page.thumbnail(
+            of: NSSize(width: CGFloat(fullW), height: CGFloat(fullH)),
+            for: pdfView.displayBox)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: fullW, pixelsHigh: fullH,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        let target = NSRect(x: 0, y: 0, width: CGFloat(fullW), height: CGFloat(fullH))
+        NSColor.white.setFill()
+        target.fill()
+        image.draw(in: target, from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // rep.cgImage is top-down, so the crop rect uses top-left origin.
+        guard let full = rep.cgImage else { return nil }
+        let cropRect = CGRect(
+            x: rx * scale, y: ry * scale, width: rw * scale, height: rh * scale
+        ).integral
+        guard let cropped = full.cropping(to: cropRect) else { return nil }
+        let outRep = NSBitmapImageRep(cgImage: cropped)
+        guard let jpeg = outRep.representation(using: .jpeg, properties: [.compressionFactor: 0.72])
+        else { return nil }
+        return AiPageImageSnapshot(
+            pageNumber: pageNumber,
+            base64Data: jpeg.base64EncodedString(),
+            mediaType: "image/jpeg",
+            width: cropped.width,
+            height: cropped.height
+        )
     }
 
     // MARK: - AI page snapshot (AiPanel.captureCurrentPageImage)

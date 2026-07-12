@@ -28,18 +28,15 @@ protocol DocumentSession: AnyObject {
 final class DocumentSessionManager: SessionService {
     let pdfBackend: PdfSessionBackend
     let webBackend: WebSessionBackend
-    let codex: CodexAiClient
 
     private(set) var sessions: [String: any DocumentSession] = [:]
 
     init(
         pdfBackend: PdfSessionBackend = PdfSessionBackend(),
-        webBackend: WebSessionBackend = WebSessionBackend(),
-        codex: CodexAiClient = CodexAiClient()
+        webBackend: WebSessionBackend = WebSessionBackend()
     ) {
         self.pdfBackend = pdfBackend
         self.webBackend = webBackend
-        self.codex = codex
     }
 
     private func session(_ id: String) throws -> any DocumentSession {
@@ -151,11 +148,5 @@ final class DocumentSessionManager: SessionService {
 
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {
         try await session(sessionId).setMetadata(key: key, value: value)
-    }
-
-    // MARK: - AI
-
-    func runCodexAi(prompt: String, model: String, image: CodexAiImageInput?) async throws -> String {
-        try await codex.run(prompt: prompt, model: model, image: image)
     }
 }

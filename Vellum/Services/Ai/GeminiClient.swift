@@ -7,26 +7,33 @@ struct AiProviderResult: Sendable {
 
 @MainActor
 final class GeminiClient {
+    /// Streams a reply over `:streamGenerateContent?alt=sse`. Text deltas are
+    /// forwarded as they arrive; function calls run the tool loop between turns
+    /// (up to 6 iterations, matching the buffered original). `onEvent` is invoked
+    /// on the main actor for every delta / status / tool event.
     func generate(
         apiKey: String,
         model: String,
         systemPrompt: String,
         userPrompt: String,
-        image: AiPageImageSnapshot?,
+        images: [AiPageImageSnapshot],
         sessionIdAtStart: String,
-        toolEngine: AiToolEngine
+        toolEngine: AiToolEngine,
+        onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):generateContent") else {
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):streamGenerateContent?alt=sse") else {
             throw AiClientError.message("Invalid Gemini model name.")
         }
 
         var userParts: [[String: Any]] = [["text": userPrompt]]
-        if let image, !image.base64Data.isEmpty {
+        for image in images where !image.base64Data.isEmpty {
             userParts.append(["inline_data": ["mime_type": image.mediaType, "data": image.base64Data]])
         }
         var contents: [[String: Any]] = [["role": "user", "parts": userParts]]
         var actionResults: [String] = []
+
+        onEvent(.status("Thinking"))
 
         for _ in 0..<6 {
             let body: [String: Any] = [
@@ -39,51 +46,72 @@ final class GeminiClient {
             request.httpMethod = "POST"
             request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let response = try await sendWithRetry(request)
-            let root = try Self.jsonObject(response)
-            guard let candidates = root["candidates"] as? [[String: Any]],
-                  let candidate = candidates.first else {
-                throw AiClientError.message(Self.providerMessage(root, fallback: "Gemini returned an invalid response."))
-            }
-            // Safety-blocked / MAX_TOKENS candidates omit content.parts; the
-            // original AI SDK tolerates that and yields empty text.
-            let parts = ((candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? []
 
-            let text = parts.compactMap { $0["text"] as? String }.joined()
-            let calls = parts.compactMap { $0["functionCall"] as? [String: Any] }
+            let bytes = try await openStream(request)
+
+            var text = ""
+            var calls: [[String: Any]] = []
+            for try await payload in SSE.dataPayloads(bytes) {
+                guard let object = Self.jsonObjectOrNil(payload),
+                      let candidates = object["candidates"] as? [[String: Any]],
+                      let candidate = candidates.first,
+                      let parts = (candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]
+                else { continue }
+                for part in parts {
+                    if let chunk = part["text"] as? String, !chunk.isEmpty {
+                        text += chunk
+                        onEvent(.textDelta(chunk))
+                    }
+                    if let call = part["functionCall"] as? [String: Any] {
+                        calls.append(call)
+                    }
+                }
+            }
+
             if calls.isEmpty {
                 return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
 
-            contents.append(["role": "model", "parts": parts])
+            var modelParts: [[String: Any]] = []
+            if !text.isEmpty { modelParts.append(["text": text]) }
+            for call in calls { modelParts.append(["functionCall": call]) }
+            contents.append(["role": "model", "parts": modelParts])
+
             var responseParts: [[String: Any]] = []
             for call in calls {
                 guard let name = call["name"] as? String else { continue }
                 let arguments = Self.toolArguments(from: call["args"] as? [String: Any] ?? [:])
                 let action = AiToolAction(tool: name, args: arguments)
+                onEvent(.toolStarted(summary: Self.toolSummary(action)))
                 let result = await toolEngine.run(
                     action,
                     sessionIdAtStart: sessionIdAtStart,
                     actionCount: actionResults.count
                 )
                 actionResults.append(result)
+                onEvent(.toolFinished(result: result))
                 responseParts.append(["functionResponse": ["name": name, "response": ["result": result]]])
             }
             contents.append(["role": "user", "parts": responseParts])
+            onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
-    private func sendWithRetry(_ request: URLRequest) async throws -> Data {
+    /// Open the SSE stream, retrying once on transient failures before any bytes
+    /// are consumed. Reads the (small) error body to surface a real message.
+    private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw AiClientError.message("Gemini returned an invalid HTTP response.")
                 }
-                if (200..<300).contains(http.statusCode) { return data }
+                if (200..<300).contains(http.statusCode) { return bytes }
+                let data = try await Self.drain(bytes)
                 let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
                 let error = AiClientError.message(message.isEmpty ? "Gemini request failed with status \(http.statusCode)." : message)
                 if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
@@ -99,11 +127,22 @@ final class GeminiClient {
         throw lastError ?? AiClientError.message("Gemini request failed.")
     }
 
+    private static func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes { data.append(byte) }
+        return data
+    }
+
     private static func jsonObject(_ data: Data) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AiClientError.message("Gemini returned invalid JSON.")
         }
         return object
+    }
+
+    private static func jsonObjectOrNil(_ payload: String) -> [String: Any]? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     private static func providerMessage(_ object: [String: Any], fallback: String) -> String {
@@ -118,6 +157,18 @@ final class GeminiClient {
             x: (value["x"] as? NSNumber)?.doubleValue,
             y: (value["y"] as? NSNumber)?.doubleValue
         )
+    }
+
+    /// Human-readable label for the activity indicator while a tool runs.
+    static func toolSummary(_ action: AiToolAction) -> String {
+        switch action.tool {
+        case "goToPage":
+            if let page = action.args.pageNumber { return "Navigating to page \(Int(page.rounded()))" }
+            return "Navigating"
+        case "addNote": return "Adding a note"
+        case "addHighlight": return "Adding a highlight"
+        default: return "Working"
+        }
     }
 
     private static func finalize(_ text: String, actions: [String]) -> String {

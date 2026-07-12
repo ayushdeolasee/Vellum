@@ -17,24 +17,87 @@ enum AiPersistence {
         guard let raw = UserDefaults.standard.string(forKey: settingsKey),
               let data = raw.data(using: .utf8),
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return defaults }
+        else {
+            // No stored blob yet: still surface any keys already in the Keychain.
+            var settings = defaults
+            settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
+            settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
+            settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+            settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
+            settings.opencodeGoApiKey = KeychainStore.get(KeychainStore.Account.opencodeGo) ?? ""
+            return settings
+        }
 
         var settings = defaults
         if let provider = value["provider"] as? String {
-            settings.provider = provider == "codex" ? .codex : (provider == "openai" ? .openai : .gemini)
+            settings.provider = AiProvider(rawValue: provider) ?? .gemini
         }
         if let model = value["model"] as? String { settings.model = model }
-        if let apiKey = value["apiKey"] as? String { settings.apiKey = apiKey }
         if let model = value["openaiModel"] as? String { settings.openaiModel = model }
-        if let apiKey = value["openaiApiKey"] as? String { settings.openaiApiKey = apiKey }
-        if let model = value["codexModel"] as? String { settings.codexModel = model }
+        if let model = value["openrouterModel"] as? String { settings.openrouterModel = model }
+        if let model = value["chatgptModel"] as? String { settings.chatgptModel = model }
+        if let model = value["opencodeModel"] as? String { settings.opencodeModel = model }
+        if let model = value["opencodeGoModel"] as? String { settings.opencodeGoModel = model }
+        if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
         settings.voiceMode = value["voiceMode"] as? String == "push-to-talk" ? .pushToTalk : .off
         if let enabled = value["ttsEnabled"] as? Bool { settings.ttsEnabled = enabled }
+
+        // Keys now live in the Keychain. Migrate any legacy plaintext keys still
+        // present in the UserDefaults blob, then prefer the Keychain copy.
+        var didMigrate = false
+        migrate(account: KeychainStore.Account.gemini, legacy: value["apiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.openai, legacy: value["openaiApiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.openrouter, legacy: value["openrouterApiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.opencode, legacy: value["opencodeApiKey"] as? String, didMigrate: &didMigrate)
+        migrate(account: KeychainStore.Account.opencodeGo, legacy: value["opencodeGoApiKey"] as? String, didMigrate: &didMigrate)
+        settings.apiKey = KeychainStore.get(KeychainStore.Account.gemini) ?? ""
+        settings.openaiApiKey = KeychainStore.get(KeychainStore.Account.openai) ?? ""
+        settings.openrouterApiKey = KeychainStore.get(KeychainStore.Account.openrouter) ?? ""
+        settings.opencodeApiKey = KeychainStore.get(KeychainStore.Account.opencode) ?? ""
+        settings.opencodeGoApiKey = KeychainStore.get(KeychainStore.Account.opencodeGo) ?? ""
+
+        // Rewrite the blob without plaintext keys once migrated.
+        if didMigrate { saveSettings(settings) }
         return settings
     }
 
+    /// Copies a legacy plaintext key into the Keychain if the Keychain slot is
+    /// empty and the legacy value is non-empty. Only flags `didMigrate` once the
+    /// Keychain actually holds the value, so a failed write keeps the plaintext
+    /// copy in the blob rather than silently dropping the only recoverable key.
+    private static func migrate(account: String, legacy: String?, didMigrate: inout Bool) {
+        let value = legacy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !value.isEmpty else {
+            if legacy != nil { didMigrate = true } // strip empty key field on rewrite
+            return
+        }
+        // Already migrated: the Keychain copy exists, so the blob can drop it.
+        if !(KeychainStore.get(account)?.isEmpty ?? true) {
+            didMigrate = true
+            return
+        }
+        if KeychainStore.set(account, value) {
+            didMigrate = true
+        }
+    }
+
     static func saveSettings(_ settings: AiSettings) {
-        guard let data = try? JSONEncoder().encode(settings),
+        // Keys go to the Keychain, never the UserDefaults blob. Track per-key
+        // write success so we only strip the plaintext copy that actually landed
+        // in the Keychain; a failed write leaves its plaintext key in the blob.
+        let geminiWritten = KeychainStore.set(KeychainStore.Account.gemini, settings.apiKey)
+        let openaiWritten = KeychainStore.set(KeychainStore.Account.openai, settings.openaiApiKey)
+        let openrouterWritten = KeychainStore.set(KeychainStore.Account.openrouter, settings.openrouterApiKey)
+        let opencodeWritten = KeychainStore.set(KeychainStore.Account.opencode, settings.opencodeApiKey)
+        let opencodeGoWritten = KeychainStore.set(KeychainStore.Account.opencodeGo, settings.opencodeGoApiKey)
+
+        var stripped = settings
+        if geminiWritten { stripped.apiKey = "" }
+        if openaiWritten { stripped.openaiApiKey = "" }
+        if openrouterWritten { stripped.openrouterApiKey = "" }
+        if opencodeWritten { stripped.opencodeApiKey = "" }
+        if opencodeGoWritten { stripped.opencodeGoApiKey = "" }
+        guard let data = try? JSONEncoder().encode(stripped),
               let raw = String(data: data, encoding: .utf8) else { return }
         UserDefaults.standard.set(raw, forKey: settingsKey)
     }

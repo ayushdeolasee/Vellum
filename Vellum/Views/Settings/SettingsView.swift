@@ -154,37 +154,41 @@ private struct AnnotationsSettingsTab: View {
 
 private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
+    @Environment(\.palette) private var palette
 
     var body: some View {
         Form {
             Section {
-                Picker("Provider", selection: providerBinding) {
-                    Text("Gemini").tag(AiProvider.gemini)
-                    Text("OpenAI API").tag(AiProvider.openai)
-                    Text("Codex CLI").tag(AiProvider.codex)
+                Picker("Provider", selection: aiStore.providerBinding) {
+                    ForEach(AiProviderOption.all) { option in
+                        Text(option.label).tag(option.provider)
+                    }
                 }
 
-                if aiStore.settings.provider != .codex {
-                    SecureField(
-                        aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key",
-                        text: apiKeyBinding,
-                        prompt: Text(aiStore.settings.provider == .openai ? "sk-…" : "AIza…")
-                    )
+                if aiStore.settings.provider == .chatgpt {
+                    LabeledContent("Account") { ChatGPTSignInControl() }
+                } else {
+                    LabeledContent(aiStore.keyFieldLabel) {
+                        RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
+                            .id(aiStore.settings.provider)
+                    }
                 }
 
-                Picker("Model", selection: modelBinding) {
-                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                LabeledContent("Model") {
+                    AiModelSelectorField()
                 }
+                capabilityWarnings
             } header: {
                 Text("Assistant")
             }
 
             Section {
-                Picker("Voice mode", selection: voiceBinding) {
+                Picker("Voice mode", selection: aiStore.voiceBinding()) {
                     Text("Off").tag(VoiceMode.off)
                     Text("Push-to-talk").tag(VoiceMode.pushToTalk)
                 }
-                Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
+                Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
             } header: {
                 Text("Voice")
             }
@@ -193,63 +197,19 @@ private struct AiSettingsTab: View {
         .scrollDisabled(true)
     }
 
-    private var models: [String] {
-        AiModelCatalog.models(for: aiStore.settings.provider)
-    }
-
-    private var providerBinding: Binding<AiProvider> {
-        Binding(get: { aiStore.settings.provider }, set: { value in
-            var settings = aiStore.settings
-            settings.provider = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var apiKeyBinding: Binding<String> {
-        Binding(
-            get: { aiStore.settings.provider == .openai ? aiStore.settings.openaiApiKey : aiStore.settings.apiKey },
-            set: { value in
-                var settings = aiStore.settings
-                if settings.provider == .openai { settings.openaiApiKey = value } else { settings.apiKey = value }
-                aiStore.setSettings(settings)
+    @ViewBuilder
+    private var capabilityWarnings: some View {
+        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
+            if !option.supportsVision {
+                Label(AiCapabilityWarning.noVision, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
             }
-        )
-    }
-
-    private var modelBinding: Binding<String> {
-        Binding(
-            get: {
-                switch aiStore.settings.provider {
-                case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
-                }
-            },
-            set: { value in
-                var settings = aiStore.settings
-                switch settings.provider {
-                case .gemini: settings.model = value
-                case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
-                }
-                aiStore.setSettings(settings)
+            if !option.supportsTools {
+                Label(AiCapabilityWarning.noTools, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
             }
-        )
-    }
-
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            var settings = aiStore.settings
-            settings.voiceMode = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
-            settings.ttsEnabled = value
-            aiStore.setSettings(settings)
-        })
+        }
     }
 }

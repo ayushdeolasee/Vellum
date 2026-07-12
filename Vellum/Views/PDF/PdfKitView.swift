@@ -1,6 +1,67 @@
 import PDFKit
 import SwiftUI
 
+extension NSCursor {
+    /// Cursor shown while placing a sticky note (note tool / "Add as note"): a
+    /// bold "+" with a white halo so it stays legible over any page content.
+    /// The hotspot sits at the crossing, marking exactly where the note lands.
+    nonisolated(unsafe) static let addNote: NSCursor = {
+        let side: CGFloat = 24
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let center = CGPoint(x: side / 2, y: side / 2)
+            let arm: CGFloat = 7  // half-length of each arm from the crossing
+            func drawPlus(width: CGFloat, color: NSColor) {
+                color.setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(
+                        x: center.x - arm, y: center.y - width / 2, width: arm * 2, height: width),
+                    xRadius: width / 2, yRadius: width / 2
+                ).fill()
+                NSBezierPath(
+                    roundedRect: NSRect(
+                        x: center.x - width / 2, y: center.y - arm, width: width, height: arm * 2),
+                    xRadius: width / 2, yRadius: width / 2
+                ).fill()
+            }
+            drawPlus(width: 5, color: .white)   // halo
+            drawPlus(width: 2.5, color: .black)  // core
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: side / 2, y: side / 2))
+    }()
+
+    /// Cursor shown while dragging out a snapshot region for the AI ("Snapshot
+    /// region…"): a crosshair with a small center gap — the macOS screen-capture
+    /// idiom — signalling "drag to grab a screenshot." A white halo keeps it
+    /// legible over any page content; the hotspot sits at the exact crossing.
+    nonisolated(unsafe) static let snapshotCrosshair: NSCursor = {
+        let side: CGFloat = 28
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let center = side / 2
+            let gap: CGFloat = 3.5  // clear window around the exact target point
+            func drawCross(width: CGFloat, color: NSColor) {
+                color.setStroke()
+                let path = NSBezierPath()
+                path.lineWidth = width
+                path.lineCapStyle = .round
+                path.move(to: NSPoint(x: 1.5, y: center))
+                path.line(to: NSPoint(x: center - gap, y: center))
+                path.move(to: NSPoint(x: center + gap, y: center))
+                path.line(to: NSPoint(x: side - 1.5, y: center))
+                path.move(to: NSPoint(x: center, y: 1.5))
+                path.line(to: NSPoint(x: center, y: center - gap))
+                path.move(to: NSPoint(x: center, y: center + gap))
+                path.line(to: NSPoint(x: center, y: side - 1.5))
+                path.stroke()
+            }
+            drawCross(width: 3.5, color: .white)  // halo
+            drawCross(width: 1.5, color: .black)  // core
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: side / 2, y: side / 2))
+    }()
+}
+
 // NSViewRepresentable around PDFKit's PDFView: continuous vertical layout,
 // zoom clamped 0.25–4.0, well background, scroll/zoom tracking, and local
 // event monitors feeding PdfViewerController (note placement, selection
@@ -49,8 +110,11 @@ struct PdfKitView: NSViewRepresentable {
         if app.zoomToHandler == nil, abs(nsView.scaleFactor - app.zoom) > 0.0001 {
             nsView.scaleFactor = app.zoom
         }
-        // Note-mode crosshair (the original's cursor-crosshair container class).
-        context.coordinator.noteModeChanged(app.mode == .note)
+        // Custom mode cursors: note-placement "+" and the snapshot-region
+        // crosshair (the original's cursor-crosshair container class). Reading
+        // app.mode here registers the SwiftUI dependency so this runs on every
+        // mode change.
+        context.coordinator.cursorModeChanged(for: app.mode)
     }
 
     /// Always adopt the container's proposed size and never the PDFView's own
@@ -80,7 +144,7 @@ struct PdfKitView: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var monitors: [Any] = []
         private var trackingArea: NSTrackingArea?
-        private var noteModeActive = false
+        private var activeCursor: NSCursor?
 
         init(controller: PdfViewerController) {
             self.controller = controller
@@ -244,15 +308,15 @@ struct PdfKitView: NSViewRepresentable {
 
             if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .cursorUpdate], handler: { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, self.controller.isNoteMode,
-                          self.pdfPoint(for: event) != nil else { return }
-                    // PDFView re-sets its own cursor (arrow / I-beam) while it
-                    // handles this event, so asserting the crosshair here would
-                    // be immediately overridden. Re-assert on the next runloop
-                    // turn, after PDFView's handling ran.
+                    guard let self, let cursor = self.modeCursor,
+                          self.pointerOverViewer(event) else { return }
+                    // The PDFView (and the SwiftUI overlay above it) re-set their
+                    // own cursor while handling this event, so asserting here
+                    // would be immediately overridden. Re-assert on the next
+                    // runloop turn, after their handling ran.
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, self.controller.isNoteMode else { return }
-                        NSCursor.crosshair.set()
+                        guard let self, let cursor = self.modeCursor else { return }
+                        cursor.set()
                     }
                 }
                 return event
@@ -261,21 +325,48 @@ struct PdfKitView: NSViewRepresentable {
             }
         }
 
-        /// Mode-change hook from updateNSView: show the crosshair immediately
-        /// when note mode turns on with the pointer already over the viewer
-        /// (the monitor above keeps it asserted while the mouse moves), and
-        /// restore the arrow when note mode ends.
-        func noteModeChanged(_ active: Bool) {
-            guard active != noteModeActive else { return }
-            noteModeActive = active
+        /// The custom cursor for a given interaction mode (note-placement "+" or
+        /// the snapshot-region crosshair), or nil for modes with the plain arrow.
+        private func cursor(for mode: InteractionMode) -> NSCursor? {
+            switch mode {
+            case .note: return .addNote
+            case .snapshotRegion: return .snapshotCrosshair
+            default: return nil
+            }
+        }
+
+        /// The custom cursor for the live mode, read from the controller — used
+        /// by the mouse-moved monitor, which fires outside SwiftUI's update pass.
+        private var modeCursor: NSCursor? {
+            if controller.isNoteMode { return .addNote }
+            if controller.isSnapshotRegionMode { return .snapshotCrosshair }
+            return nil
+        }
+
+        /// Mode-change hook from updateNSView: assert the mode cursor immediately
+        /// when a custom-cursor mode turns on with the pointer already over the
+        /// viewer (the monitor above keeps it asserted while the mouse moves),
+        /// and restore the arrow when it ends.
+        func cursorModeChanged(for mode: InteractionMode) {
+            let cursor = cursor(for: mode)
+            guard cursor !== activeCursor else { return }
+            activeCursor = cursor
             guard let view, let window = view.window else { return }
             let mouse = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
             guard view.bounds.contains(mouse) else { return }
-            if active {
-                NSCursor.crosshair.set()
-            } else {
-                NSCursor.arrow.set()
-            }
+            (cursor ?? .arrow).set()
+        }
+
+        /// True when `event` belongs to the viewer's window and the pointer sits
+        /// within the PDFView's bounds — used to keep the note-placement cursor
+        /// asserted across BOTH the PDFView and the SwiftUI note overlay layered
+        /// above it (the overlay hit-tests away from the PDFView, so the tighter
+        /// `pdfPoint` check would drop the cursor over the very region where
+        /// notes are placed).
+        private func pointerOverViewer(_ event: NSEvent) -> Bool {
+            guard let view, let window = view.window, event.window === window else { return false }
+            let point = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            return view.bounds.contains(point)
         }
 
         /// Location in PDFView coords when the event targets the PDFView's own
