@@ -131,6 +131,12 @@ final class AnnotationStore {
 
     func updateAnnotation(_ input: UpdateAnnotationInput) async {
         guard let sessionId = app.activeTabId else { return }
+        // Edits against a still-optimistic row queue behind its create and
+        // retarget the persisted id.
+        var input = input
+        guard let realId = await resolveId(input.id) else { return }
+        input.id = realId
+        guard app.activeTabId == sessionId else { return }
         // Optimistic update
         annotations = annotations.map { annotation in
             guard annotation.id == input.id else { return annotation }
@@ -138,6 +144,7 @@ final class AnnotationStore {
             if let color = input.color { next.color = color }
             if let content = input.content { next.content = content }
             if let positionData = input.positionData { next.positionData = positionData }
+            if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
             next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
             return next
         }
@@ -161,6 +168,10 @@ final class AnnotationStore {
 
     func deleteAnnotation(id: String) async {
         guard let sessionId = app.activeTabId else { return }
+        // Deleting a still-optimistic row waits for its create to persist, then
+        // deletes the real record (the backends can't find a temp id).
+        guard let id = await resolveId(id) else { return }
+        guard app.activeTabId == sessionId else { return }
         // Optimistic delete
         let previous = annotations
         annotations = annotations.filter { $0.id != id }
@@ -257,5 +268,6 @@ final class AnnotationStore {
         case .note: return "#fde68a"
         case .bookmark: return nil
         }
+        return optimistic
     }
 }

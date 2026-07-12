@@ -117,6 +117,7 @@ final class PdfDocumentSession: DocumentSession {
         self.io = io
         self.path = path
         self.info = info
+        self.io = PdfDocumentIO(path: path)
     }
 
     /// save_session: annotation/metadata mutations are written immediately, so
@@ -200,25 +201,22 @@ actor PdfDocumentIO {
                 guard let pageDictionary = document.page(at: page)?.dictionary else {
                     throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
                 }
-                let geometry = try PageGeometry(pageDictionary: pageDictionary)
-                annotations.append(contentsOf: PdfAnnotationReader.annotations(
-                    onPage: pageDictionary, pageNumber: page, geometry: geometry))
             }
-        }
-        annotations.append(contentsOf: PdfBookmarks.readBookmarks(document: document, pageNumber: pageNumber))
+            annotations.append(contentsOf: PdfBookmarks.readBookmarks(document: document, pageNumber: pageNumber))
 
-        // Stable sort: page_number asc, then created_at as a plain string.
-        return annotations.enumerated()
-            .sorted { left, right in
-                if left.element.pageNumber != right.element.pageNumber {
-                    return left.element.pageNumber < right.element.pageNumber
+            // Stable sort: page_number asc, then created_at as a plain string.
+            return annotations.enumerated()
+                .sorted { left, right in
+                    if left.element.pageNumber != right.element.pageNumber {
+                        return left.element.pageNumber < right.element.pageNumber
+                    }
+                    if left.element.createdAt != right.element.createdAt {
+                        return left.element.createdAt < right.element.createdAt
+                    }
+                    return left.offset < right.offset
                 }
-                if left.element.createdAt != right.element.createdAt {
-                    return left.element.createdAt < right.element.createdAt
-                }
-                return left.offset < right.offset
-            }
-            .map(\.element)
+                .map(\.element)
+        }.value
     }
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
