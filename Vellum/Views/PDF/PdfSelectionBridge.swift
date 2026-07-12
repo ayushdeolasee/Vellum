@@ -48,6 +48,11 @@ final class PdfViewerController {
     private(set) var selectionPopoverPosition: CGPoint?
     private(set) var contextMenu: PdfContextMenuState?
 
+    /// Live preview of a highlight whose end handle is being dragged. While set,
+    /// the overlay draws this position instead of the stored one; the store is
+    /// only written on drag end so we don't rewrite the PDF on every mouse move.
+    private(set) var highlightResize: (id: String, positionData: PositionData)?
+
     @ObservationIgnored private var initialPage = 1
     @ObservationIgnored private var didInitialScroll = false
     @ObservationIgnored private var lastScrollOrigin: CGPoint?
@@ -82,11 +87,10 @@ final class PdfViewerController {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
-        // Mirror renderAnnotationLayer={false}: annotations render ONLY from
-        // store overlays; embedded ones must not double-draw underneath. The
-        // in-memory copy is display-only (mutations rewrite the on-disk file),
-        // so stripping them here never touches the document on disk.
-        stripEmbeddedAnnotations(from: document)
+        // Embedded annotations are stripped off-main by the caller (PdfViewerView
+        // .load) before adopt, so they render ONLY from store overlays and never
+        // double-draw. Stripping here would repeat that heavy work on the main
+        // thread — see PreparedPdf.
     }
 
     func reset() {
@@ -537,6 +541,134 @@ final class PdfViewerController {
         pdfView?.setCurrentSelection(nil, animate: false)
     }
 
+    // MARK: - Highlight edge resize (drag the blue end bars)
+
+    /// Update the live preview as a handle is dragged. `displayPoint` is in the
+    /// annotation's own page space at zoom 1, top-left origin — the same
+    /// coordinate system as the stored rects (the overlay divides the drag
+    /// location by the live scale before calling in).
+    func previewHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) {
+        guard let position = resizedPosition(
+            annotation: annotation, edge: edge, toDisplayPoint: displayPoint) else { return }
+        highlightResize = (id: annotation.id, positionData: position)
+    }
+
+    /// Commit the drag: persist the final position (falling back to the last
+    /// preview if the release point missed a glyph) and clear the preview.
+    func commitHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) {
+        let final = resizedPosition(annotation: annotation, edge: edge, toDisplayPoint: displayPoint)
+            ?? (highlightResize?.id == annotation.id ? highlightResize?.positionData : nil)
+        highlightResize = nil
+        guard let final, final.rects != annotation.positionData?.rects else { return }
+        Task { [weak self] in
+            await self?.annotationStore?.updateAnnotation(UpdateAnnotationInput(
+                id: annotation.id, color: nil, content: nil, positionData: final))
+        }
+    }
+
+    func cancelHighlightResize() {
+        highlightResize = nil
+    }
+
+    /// Rebuild a highlight's position with one edge moved to `displayPoint`,
+    /// keeping the opposite edge anchored. Returns nil when the drag point (or
+    /// the anchor) doesn't land on a glyph, so the caller keeps the last frame.
+    private func resizedPosition(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) -> PositionData? {
+        guard let document,
+              annotation.pageNumber >= 1, annotation.pageNumber <= document.pageCount,
+              let page = document.page(at: annotation.pageNumber - 1),
+              let current = annotation.positionData else { return nil }
+        return Self.resizedPosition(
+            page: page, current: current, edge: edge, toDisplayPoint: displayPoint)
+    }
+
+    /// Pure resize core (testable without the controller/app). See the instance
+    /// wrapper for what it does.
+    static func resizedPosition(
+        page: PDFPage, current: PositionData, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) -> PositionData? {
+        guard let firstRect = current.rects.first,
+              let lastRect = current.rects.last else { return nil }
+        guard page.numberOfCharacters > 0 else { return nil }
+
+        // Resize by re-running PDFKit's own point-to-point text selection between
+        // the PINNED edge and the dragged point — the same engine that backs
+        // click-drag selection. We deliberately DON'T use `characterIndex(at:)` /
+        // `characterBounds(at:)`: on real-world PDFs those live in a different
+        // internal coordinate basis than `selectionsByLine()` (e.g. this book
+        // reports a word at glyph-x 441 but selection-line-x 271), so mixing them
+        // made a purely horizontal drag jump to a different line — and
+        // `characterBounds(at:)` can trap past the last glyph. `selection(from:
+        // to:)` is consistent with the stored rects (both selection-space) and
+        // clamps to line ends on its own, so the edge tracks the cursor cleanly.
+        //
+        // The pinned edge stays put: dragging the end anchors the START (left edge
+        // of the first rect); dragging the start anchors the END (right edge of
+        // the last rect). Re-deriving the anchor from the unchanged fixed rect
+        // each frame keeps it rock-stable across repeated drags.
+        let anchorDisplay: CGPoint
+        switch edge {
+        case .end:
+            anchorDisplay = CGPoint(x: firstRect.x, y: firstRect.y + firstRect.height / 2)
+        case .start:
+            anchorDisplay = CGPoint(x: lastRect.x + lastRect.width, y: lastRect.y + lastRect.height / 2)
+        }
+        let anchorPoint = Self.pageSpacePoint(fromDisplay: anchorDisplay, page: page)
+
+        // Clamp the dragged point to the page so an overshoot past an edge still
+        // resolves to the nearest glyph on that side.
+        let clampedDrag = CGPoint(
+            x: min(max(displayPoint.x, 0), current.pageWidth),
+            y: min(max(displayPoint.y, 0), current.pageHeight)
+        )
+        let dragPoint = Self.pageSpacePoint(fromDisplay: clampedDrag, page: page)
+
+        // The dragged edge NEVER crosses the pinned edge: dragging the end past
+        // the start (or the start past the end) would otherwise flip the selection
+        // and make the pinned end travel (the "beginning moves when I drag the
+        // end" bug). Compare in reading order using page-space geometry (y grows
+        // upward, so a smaller y is a lower/later line); if the drag has crossed,
+        // hold the last frame instead of inverting.
+        let lineTol = max(firstRect.height, lastRect.height) * 0.6
+        func isAfter(_ p: CGPoint, _ ref: CGPoint) -> Bool {
+            if p.y < ref.y - lineTol { return true }
+            if p.y > ref.y + lineTol { return false }
+            return p.x > ref.x
+        }
+        switch edge {
+        case .end:   guard isAfter(dragPoint, anchorPoint) else { return nil }
+        case .start: guard isAfter(anchorPoint, dragPoint) else { return nil }
+        }
+
+        guard let selection = page.selection(from: anchorPoint, to: dragPoint),
+              let text = selection.string, !text.isEmpty else { return nil }
+
+        var rects: [AnnotationRect] = []
+        for line in selection.selectionsByLine() {
+            guard let linePage = line.pages.first else { continue }
+            let bounds = line.bounds(for: linePage)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            rects.append(Self.uiRect(fromPageSpace: bounds, page: linePage))
+        }
+        let merged = Self.mergeLineRects(rects)
+        guard !merged.isEmpty else { return nil }
+
+        var next = current
+        next.rects = merged
+        next.selectedText = text
+        // The anchor is geometry-derived from the pinned rect, not a stored index,
+        // so clear any stale offsets from an earlier index-based resize.
+        next.startOffset = nil
+        next.endOffset = nil
+        return next
+    }
+
     // MARK: - Note placement
 
     private func placeNote(
@@ -825,6 +957,20 @@ final class PdfViewerController {
         return AnnotationRect(
             x: Double(minX), y: Double(minY),
             width: Double(maxX - minX), height: Double(maxY - minY))
+    }
+
+    /// Inverse of `uiRect`'s per-corner map: top-left display point (CropBox
+    /// relative, zoom 1) → PDF page space (bottom-left origin) for hit-testing
+    /// with `characterIndex(at:)`.
+    static func pageSpacePoint(fromDisplay point: CGPoint, page: PDFPage) -> CGPoint {
+        let crop = page.bounds(for: .cropBox)
+        let rotation = ((page.rotation % 360) + 360) % 360
+        switch rotation {
+        case 90: return CGPoint(x: point.y + crop.minX, y: point.x + crop.minY)
+        case 180: return CGPoint(x: crop.maxX - point.x, y: point.y + crop.minY)
+        case 270: return CGPoint(x: crop.maxX - point.y, y: crop.maxY - point.x)
+        default: return CGPoint(x: point.x + crop.minX, y: crop.maxY - point.y)
+        }
     }
 
     /// Rotation-aware page display size at zoom 1.

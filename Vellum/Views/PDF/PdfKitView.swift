@@ -239,7 +239,12 @@ struct PdfKitView: NSViewRepresentable {
         }
 
         /// Tracking-area owner hook; the mouse-moved monitor does the work.
-        @objc func mouseMoved(with event: NSEvent) {}
+        /// MUST be `@objc(mouseMoved:)`: `Coordinator` is an `NSObject`, not an
+        /// `NSResponder`, so a bare `@objc func mouseMoved(with:)` would export the
+        /// selector `mouseMovedWith:` while `NSTrackingArea` sends `mouseMoved:` —
+        /// every mouse-move over the PDF would then throw `unrecognized selector`
+        /// (an NSInvalidArgumentException that crashes under NSApplicationCrashOnExceptions).
+        @objc(mouseMoved:) func mouseMoved(with event: NSEvent) {}
 
         // MARK: - Event monitors
 

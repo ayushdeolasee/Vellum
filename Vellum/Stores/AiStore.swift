@@ -212,6 +212,19 @@ final class AiStore {
 
     init() {
         settings = AiPersistence.loadSettings()
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .vellumAiSettingsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.settings = AiPersistence.loadSettings()
+            }
+        }
+    }
+
+    isolated deinit {
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
     }
 
     // MARK: - Contract used by other modules (implemented by the AI module)
@@ -219,6 +232,9 @@ final class AiStore {
     func setSettings(_ settings: AiSettings) {
         self.settings = settings
         AiPersistence.saveSettings(settings)
+        // Every other AiStore instance (other panes, the Settings window's own)
+        // reloads from disk so the change is window-wide, not just local.
+        NotificationCenter.default.post(name: .vellumAiSettingsChanged, object: nil)
     }
 
     @discardableResult

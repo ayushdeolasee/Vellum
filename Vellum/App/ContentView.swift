@@ -3,85 +3,32 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @Environment(AppStore.self) private var appStore
-    @Environment(AnnotationStore.self) private var annotationStore
-    @Environment(AiStore.self) private var aiStore
-    @Environment(\.palette) private var palette
+    @Environment(WorkspaceStore.self) private var workspace
 
     @State private var keyMonitor: Any?
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
     @State private var hostWindow: NSWindow?
 
+    /// The pane the single toolbar, inspector, find bar, and menu commands act on.
+    private var focused: PaneModel { workspace.focusedPane }
+
     var body: some View {
-        VStack(spacing: 0) {
-            if !appStore.tabs.isEmpty {
-                TabBarView()
+        // The focused pane's store-triple is injected here, as an ANCESTOR of the
+        // subview that declares `.toolbar`/`.inspector`. Toolbar/inspector content
+        // is hosted separately and only inherits ancestor environment — injecting
+        // inside WindowChrome's own body would leave the toolbar without an
+        // AppStore. Each pane's subtree re-injects its own triple, overriding this.
+        WindowChrome(sidebarHovering: $sidebarHovering)
+            .environment(focused.app)
+            .environment(focused.annotations)
+            .environment(focused.ai)
+            .task { await workspace.restoreFromDisk() }
+            .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
+                addWebpagePresented = true
             }
-
-            if appStore.findVisible && appStore.document != nil {
-                FindBar()
-            }
-
-            if appStore.document == nil {
-                WelcomeScreen()
-            } else {
-                documentViewer
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.background)
-        .toolbar {
-            VellumToolbar()
-        }
-        .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
-                .toolbar {
-                    // Declared inside the inspector so the switcher lands in
-                    // the inspector's own toolbar section, Xcode-style. The
-                    // explicit condition matters: inspector toolbar items stay
-                    // visible even while the inspector itself is closed.
-                    if inspectorPresented.wrappedValue {
-                        // Flexible spacers on both sides center the switcher
-                        // over the inspector instead of pinning it leading.
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (AppStore.SidebarTab.annotations, "Annotations"),
-                                    (AppStore.SidebarTab.ai, "AI"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
-        }
-        .task(id: documentIdentity) {
-            annotationStore.clearAnnotations()
-            aiStore.clearDocumentContext()
-            guard appStore.document?.pdfPath != nil else { return }
-            await annotationStore.loadAnnotations()
-            guard !Task.isCancelled else { return }
-            aiStore.loadConversationForDocument(appStore.document)
-        }
-        .task(id: autosaveIdentity) {
-            guard let identity = autosaveIdentity else { return }
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(30))
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled,
-                      appStore.activeTabId == identity.tabId,
-                      appStore.document != nil else { return }
-                try? await appStore.sessions.saveFile(sessionId: identity.tabId)
+            .sheet(isPresented: $addWebpagePresented) {
+                AddWebpageSheet()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
@@ -175,72 +122,47 @@ struct ContentView: View {
     }
 
     /// Returns true when the event matches a Vellum shortcut and must not be
-    /// passed on to AppKit.
+    /// passed on to AppKit. Everything document-scoped routes to the *focused*
+    /// pane's store; sidebar text size is window-global (WorkspaceStore).
     ///
-    /// The bulk of the keyboard surface now lives in native menu commands
-    /// (`VellumCommands`). This monitor is deliberately reduced to only the
-    /// interactions SwiftUI's `.commands` cannot express, plus two shortcuts
-    /// that must be intercepted here defensively:
-    ///   • bare `N` to toggle sticky-note mode,
-    ///   • `Escape` to leave note mode / deselect,
-    ///   • the pointer-contextual `⌘+ / ⌘− / ⌘=`, which resize the side panel's
-    ///     text (instead of zooming the document) only while the pointer hovers
-    ///     the open panel — a hover condition a menu shortcut can't carry.
-    ///   • `⌘L` (Add Webpage) and `⌘O` (Open…) — `PDFView` and `WKWebView` both
-    ///     override `performKeyEquivalent(with:)` and can swallow command-key
-    ///     events before `NSWindow` ever offers them to the main menu, so once
-    ///     one of those views becomes first responder (any open PDF or web
-    ///     tab) the equivalent `VellumCommands` menu items silently stop
-    ///     firing from the keyboard even though they still work from a click.
-    ///     A local monitor runs before that responder-chain dispatch, so
-    ///     handling the two shortcuts here guarantees they always reach us
-    ///     regardless of which document view currently holds first responder.
+    /// The interactions handled here are the ones `.commands` cannot express,
+    /// plus the ⌘-key shortcuts a focused PDFView/WKWebView can swallow via
+    /// performKeyEquivalent before the menu ever sees them (⌘F/⌘G/⌘P/⌘L/⌘O and
+    /// the tab-cycle chords).
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        // Local monitors see every window's events; only act on events aimed
-        // at the window hosting this view. A positive identity check (rather
-        // than filtering out windows whose identifier "looks like Settings")
-        // also excludes sheets, panels, and any future auxiliary windows.
         guard let window = event.window, window === hostWindow else { return false }
+        let app = focused.app
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
         let key = event.charactersIgnoringModifiers ?? ""
         let lowerKey = key.lowercased()
 
-        // Escape dismisses the find bar first — this must run before the
-        // text-field guard below, since the find field is itself a text field.
-        if (key == "\u{1b}" || event.keyCode == 53), appStore.findVisible {
-            appStore.hideFind()
+        if (key == "\u{1b}" || event.keyCode == 53), app.findVisible {
+            app.hideFind()
             return true
         }
 
-        // ⌘F / ⌘G / ⌘⇧G / ⌘P: PDFView and WKWebView can swallow these via
-        // performKeyEquivalent before the menu sees them (same reasoning as
-        // ⌘L/⌘O below), so intercept them here. Guards mirror the menu
-        // validation; when a guard fails the event falls through untouched.
         if modifiers == .command && lowerKey == "f" {
-            guard appStore.document != nil else { return false }
-            appStore.showFind()
+            guard app.document != nil else { return false }
+            app.showFind()
             return true
         }
         if modifiers == [.command, .shift] && lowerKey == "g" {
-            guard appStore.findVisible else { return false }
-            appStore.findPrev()
+            guard app.findVisible else { return false }
+            app.findPrev()
             return true
         }
         if modifiers == .command && lowerKey == "g" {
-            guard appStore.findVisible else { return false }
-            appStore.findNext()
+            guard app.findVisible else { return false }
+            app.findNext()
             return true
         }
         if modifiers == .command && lowerKey == "p" {
-            guard appStore.document != nil else { return false }
-            appStore.printDocument()
+            guard app.document != nil else { return false }
+            app.printDocument()
             return true
         }
 
-        // ⌘L / ⌘O: see the doc comment above — PDFView/WKWebView can eat these
-        // via performKeyEquivalent before the menu ever sees them, so handle
-        // them unconditionally here rather than relying on the menu shortcut.
         if modifiers == .command && key == "l" {
             NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
             return true
@@ -250,44 +172,38 @@ struct ContentView: View {
             return true
         }
 
-        // ⌘⇧[ / ⌘⇧] previous/next tab. Handled here for the same reason as
-        // ⌘L/⌘O: an open PDF/web view can consume the command-key event via
-        // performKeyEquivalent before the Navigate-menu shortcut is offered.
-        // With Shift held, charactersIgnoringModifiers yields "{" / "}", so
-        // accept both the shifted and unshifted glyphs.
         if modifiers == [.command, .shift] {
             if key == "[" || key == "{" {
-                appStore.cycleTab(-1)
+                app.cycleTab(-1)
                 return true
             }
             if key == "]" || key == "}" {
-                appStore.cycleTab(1)
+                app.cycleTab(1)
                 return true
             }
         }
 
-        // Sidebar text sizing: only intercept ⌘+/⌘− while hovering the open
-        // side panel. Otherwise fall through so the View-menu zoom command
-        // handles the document zoom.
+        // Sidebar text sizing: only intercept ⌘+/⌘− while hovering the open side
+        // panel. Otherwise fall through so the View-menu zoom command handles it.
         if command && !modifiers.contains(.option) && (key == "=" || key == "+") {
-            guard sidebarHovering && appStore.sidebarOpen else { return false }
-            appStore.increaseSidebarFont()
+            guard sidebarHovering && workspace.sidebarOpen else { return false }
+            workspace.increaseSidebarFont()
             return true
         }
         if command && !modifiers.contains(.option) && key == "-" {
-            guard sidebarHovering && appStore.sidebarOpen else { return false }
-            appStore.decreaseSidebarFont()
+            guard sidebarHovering && workspace.sidebarOpen else { return false }
+            workspace.decreaseSidebarFont()
             return true
         }
         if key == "\u{1b}" || event.keyCode == 53 {
             guard !isTextInputFirstResponder else { return false }
-            annotationStore.selectAnnotation(nil)
-            appStore.setMode(.view)
+            focused.annotations.selectAnnotation(nil)
+            app.setMode(.view)
             return false
         }
         if !command && !modifiers.contains(.control) && key == "n" {
-            guard !isTextInputFirstResponder, appStore.document != nil else { return false }
-            appStore.setMode(appStore.mode == .note ? .view : .note)
+            guard !isTextInputFirstResponder, app.document != nil else { return false }
+            app.setMode(app.mode == .note ? .view : .note)
             return true
         }
         return false
@@ -298,10 +214,7 @@ struct ContentView: View {
         return responder is NSTextView || responder is NSTextField || responder is NSSearchField
     }
 
-    /// Mirrors `VellumCommands.openPanel()`. Duplicated (rather than shared)
-    /// because the menu command and this defensive key-monitor path have no
-    /// common owner to hang a shared helper off without new plumbing; both
-    /// are small and intentionally identical.
+    /// Mirrors `VellumCommands.openPanel()`. Opens into the focused pane.
     private func openFilePanel() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -312,13 +225,85 @@ struct ContentView: View {
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK else { return }
         let paths = panel.urls.map(\.path)
-        Task { await appStore.openFiles(paths: paths) }
+        let app = focused.app
+        Task { await app.openFiles(paths: paths) }
     }
 }
 
-private struct DocumentIdentity: Hashable {
-    var tabId: String?
-    var path: String?
+/// The window chrome (find bar, pane tree, toolbar, inspector). Split out from
+/// ContentView so the focused-pane environment injection lives on an ancestor of
+/// the `.toolbar`/`.inspector` declarations — those are hosted separately and
+/// only see ancestor environment.
+private struct WindowChrome: View {
+    @Environment(WorkspaceStore.self) private var workspace
+    @Environment(\.palette) private var palette
+    @Binding var sidebarHovering: Bool
+
+    private var focused: PaneModel { workspace.focusedPane }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if focused.app.findVisible && focused.app.document != nil {
+                FindBar()
+            }
+            PaneTreeView(node: workspace.root)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
+        .toolbar {
+            VellumToolbar()
+        }
+        .inspector(isPresented: inspectorPresented) {
+            sidebar
+                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
+                .toolbar {
+                    if inspectorPresented.wrappedValue {
+                        ToolbarSpacer(.flexible)
+                        ToolbarItem {
+                            GlassSegmentedPicker(
+                                options: [
+                                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
+                                    (WorkspaceStore.SidebarTab.ai, "AI"),
+                                ],
+                                selection: sidebarTabBinding,
+                                accessibilityIdentifierPrefix: "sidebarTab"
+                            )
+                        }
+                        ToolbarSpacer(.flexible)
+                    }
+                }
+        }
+    }
+
+    /// Inspector only makes sense with a document in the focused pane; the open
+    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    private var inspectorPresented: Binding<Bool> {
+        Binding(
+            get: { focused.app.document != nil && workspace.sidebarOpen },
+            set: { workspace.sidebarOpen = $0 }
+        )
+    }
+
+    private var sidebarTabBinding: Binding<WorkspaceStore.SidebarTab> {
+        Binding(
+            get: { workspace.sidebarTab },
+            set: { workspace.sidebarTab = $0 }
+        )
+    }
+
+    private var sidebar: some View {
+        Group {
+            if workspace.sidebarTab == .annotations {
+                AnnotationSidebar()
+            } else {
+                AiPanel()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .onHover { sidebarHovering = $0 }
+    }
 }
 
 /// Reports the NSWindow hosting this view so the key monitor can positively
@@ -336,9 +321,3 @@ private struct WindowAccessor: NSViewRepresentable {
         DispatchQueue.main.async { [weak nsView] in onWindow(nsView?.window) }
     }
 }
-
-private struct AutosaveIdentity: Hashable {
-    var tabId: String
-    var path: String?
-}
-

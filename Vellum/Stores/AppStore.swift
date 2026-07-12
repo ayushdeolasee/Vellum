@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PDFKit
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -12,6 +13,37 @@ final class AppStore {
     static let zoomStep: Double = 0.1
 
     let sessions: SessionService
+
+    // MARK: - Prepared-PDF cache
+    //
+    // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
+    // without a cache every switch re-reads + re-parses + re-strips the whole PDF
+    // (now off-main, but still a visible delay for large docs). Cache the display-
+    // ready PDFDocument per tab so switching back is instant. A stripped display
+    // doc stays valid across annotation edits (annotations render from overlays,
+    // page content is unchanged), so no invalidation is needed beyond close/LRU.
+    private static let maxPreparedCache = 3
+    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
+
+    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
+        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
+        // Touch: move to most-recently-used.
+        let entry = preparedPdfCache.remove(at: index)
+        preparedPdfCache.append(entry)
+        return entry.doc
+    }
+
+    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
+        preparedPdfCache.removeAll { $0.tabId == tabId }
+        preparedPdfCache.append((tabId, doc))
+        if preparedPdfCache.count > Self.maxPreparedCache {
+            preparedPdfCache.removeFirst()
+        }
+    }
+
+    func evictPreparedPdf(tabId: String) {
+        preparedPdfCache.removeAll { $0.tabId == tabId }
+    }
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -47,61 +79,11 @@ final class AppStore {
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
-    // Shell state (App.tsx locals)
-    var sidebarOpen = true
-    var sidebarTab: SidebarTab = .annotations
-
-    enum SidebarTab { case annotations, ai }
-
-    // Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
-    static let minSidebarFontSize: Double = 10
-    static let maxSidebarFontSize: Double = 24
-    private static let sidebarFontSizeKey = "sidebarFontSize"
-
-    var sidebarFontSize: Double = {
-        let stored = UserDefaults.standard.double(forKey: "sidebarFontSize")
-        return stored == 0 ? 14 : min(AppStore.maxSidebarFontSize, max(AppStore.minSidebarFontSize, stored))
-    }() {
-        didSet {
-            UserDefaults.standard.set(sidebarFontSize, forKey: Self.sidebarFontSizeKey)
-        }
-    }
-
-    // Default highlight color — applied to new highlights created without an
-    // explicit color (e.g. AI tool highlights, webpage sidecar defaults). One of
-    // HIGHLIGHT_COLORS[*].value; editable from Settings ▸ Annotations.
-    static let defaultHighlightColorKey = "vellum.defaultHighlightColor"
-
-    var defaultHighlightColor: String = {
-        let stored = UserDefaults.standard.string(forKey: AppStore.defaultHighlightColorKey)
-        // Reject stale values no longer in the palette.
-        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
-            return stored
-        }
-        return HIGHLIGHT_COLORS[0].value
-    }() {
-        didSet {
-            UserDefaults.standard.set(defaultHighlightColor, forKey: Self.defaultHighlightColorKey)
-        }
-    }
-
-    /// The persisted default highlight color read without an AppStore instance
-    /// (services that create annotations off the main store, e.g. web sidecars).
-    static func storedDefaultHighlightColor() -> String {
-        let stored = UserDefaults.standard.string(forKey: defaultHighlightColorKey)
-        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
-            return stored
-        }
-        return HIGHLIGHT_COLORS[0].value
-    }
-
-    func increaseSidebarFont() {
-        sidebarFontSize = min(Self.maxSidebarFontSize, sidebarFontSize + 1)
-    }
-
-    func decreaseSidebarFont() {
-        sidebarFontSize = max(Self.minSidebarFontSize, sidebarFontSize - 1)
-    }
+    /// The window's workspace. One AppStore now backs one *pane*; app-global
+    /// shell state (inspector open/tab, sidebar text size, default highlight
+    /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
+    /// workspace owns the pane which owns this store.
+    weak var workspace: WorkspaceStore?
 
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
@@ -231,6 +213,7 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
+        evictPreparedPdf(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
@@ -243,15 +226,20 @@ final class AppStore {
         remaining.removeAll { $0.id == tabId }
         if activeTabId != tabId {
             tabs = remaining
+            workspace?.scheduleSave()
             return
         }
         tabs = remaining
         if remaining.isEmpty {
             applyEmptyActiveState()
+            // Closing a pane's last tab collapses the pane when the window is
+            // split; a lone pane stays open on the Welcome screen.
+            workspace?.paneDidEmpty(self)
         } else {
             let next = remaining[min(closingIndex, remaining.count - 1)]
             applyActiveState(from: next)
         }
+        workspace?.scheduleSave()
     }
 
     func activateTab(_ tabId: String) {
@@ -287,6 +275,61 @@ final class AppStore {
         )
         tabs.append(tab)
         applyActiveState(from: tab)
+        workspace?.scheduleSave()
+    }
+
+    // MARK: - Moving tabs between panes (split screen)
+
+    /// Remove a tab and hand back its `PdfTab` so another pane can adopt it.
+    /// Unlike `closeTab`, the backend session is left open — the tab (and its
+    /// session id) simply migrates to another pane's store, which shares the one
+    /// SessionService. Returns nil if the tab isn't here.
+    func detachTab(_ tabId: String) -> PdfTab? {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return nil }
+        let tab = tabs.remove(at: index)
+        if activeTabId == tabId {
+            if tabs.isEmpty {
+                applyEmptyActiveState()
+            } else {
+                applyActiveState(from: tabs[min(index, tabs.count - 1)])
+            }
+        }
+        workspace?.scheduleSave()
+        return tab
+    }
+
+    /// Adopt a tab detached from another pane, appending it and activating it.
+    func attachTab(_ tab: PdfTab) {
+        tabs.append(tab)
+        applyActiveState(from: tab)
+        workspace?.scheduleSave()
+    }
+
+    /// Rebuild this pane's tabs from persisted descriptors (launch restore).
+    /// Opens each document with a fresh session; missing files are skipped.
+    /// Applies each tab's saved page/zoom/mode, then activates the saved tab.
+    func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
+        for descriptor in descriptors {
+            guard let doc = descriptor.document else {
+                newStartTab()
+                continue
+            }
+            let before = tabs.count
+            if doc.kind == .web {
+                await openUrl(doc.pdfPath)
+            } else {
+                await openFiles(paths: [doc.pdfPath])
+            }
+            // Apply the saved viewport only if a new tab actually opened.
+            if tabs.count > before {
+                setZoom(descriptor.zoom)
+                setCurrentPage(descriptor.currentPage)
+                setMode(descriptor.mode)
+            }
+        }
+        if let activeIndex, tabs.indices.contains(activeIndex) {
+            activateTab(tabs[activeIndex].id)
+        }
     }
 
     /// Cycle the active tab by `delta`, wrapping at both ends. Backs the
@@ -480,7 +523,7 @@ final class AppStore {
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         RecentFilesService.record(doc)
         // Reveal the side panel by default whenever a document is opened.
-        sidebarOpen = true
+        workspace?.sidebarOpen = true
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it
         // by id, not index — `tabs` can be mutated by other main-actor work
@@ -515,6 +558,7 @@ final class AppStore {
             tabs.append(tab)
         }
         applyActiveState(from: tab)
+        workspace?.scheduleSave()
     }
 
     private func applyActiveState(from tab: PdfTab) {

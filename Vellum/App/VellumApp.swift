@@ -4,18 +4,23 @@ import SwiftUI
 /// Persists reading positions before quit — the Tauri app wrote last_page on
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor static weak var appStore: AppStore?
+    @MainActor static weak var workspace: WorkspaceStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            guard let appStore = Self.appStore, !appStore.tabs.isEmpty else {
-                return .terminateNow
-            }
+            guard let workspace = Self.workspace else { return .terminateNow }
+            let leaves = workspace.root.allLeaves()
+            let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
+            // Persist the split layout before tearing down sessions.
+            workspace.saveNow()
+            guard hasTabs else { return .terminateNow }
             Task { @MainActor in
-                for tab in appStore.tabs {
-                    try? await appStore.sessions.setDocumentMetadata(
-                        sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
-                    try? await appStore.sessions.closeFile(sessionId: tab.id)
+                for leaf in leaves {
+                    for tab in leaf.app.tabs {
+                        try? await workspace.sessions.setDocumentMetadata(
+                            sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                        try? await workspace.sessions.closeFile(sessionId: tab.id)
+                    }
                 }
                 // Persist the active document's in-flight page text after the
                 // last_page writes (each refreshed the cache's validation hash),

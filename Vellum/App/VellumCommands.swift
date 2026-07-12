@@ -7,13 +7,13 @@ import UniformTypeIdentifiers
 /// free menu validation: when the Settings window (or any scene that does not
 /// publish this value) is key, the value is nil and every command disables.
 struct VellumFocus: Equatable {
-    var appStore: AppStore
-    var annotationStore: AnnotationStore
+    var workspace: WorkspaceStore
 
-    // Compare by object identity so re-publishing the same singletons each
-    // render does not thrash SwiftUI's focus machinery.
+    // Compare by object identity so re-publishing the same workspace each render
+    // does not thrash SwiftUI's focus machinery. The focused pane is resolved
+    // live off the workspace, so commands always target the current pane.
     static func == (lhs: VellumFocus, rhs: VellumFocus) -> Bool {
-        lhs.appStore === rhs.appStore && lhs.annotationStore === rhs.annotationStore
+        lhs.workspace === rhs.workspace
     }
 }
 
@@ -38,8 +38,11 @@ struct VellumCommands: Commands {
     // MARK: Availability (drives menu validation)
 
     private var hasFocus: Bool { focus != nil }
-    private var appStore: AppStore? { focus?.appStore }
+    private var workspace: WorkspaceStore? { focus?.workspace }
+    private var appStore: AppStore? { focus?.workspace.focusedPane.app }
+    private var annotationStore: AnnotationStore? { focus?.workspace.focusedPane.annotations }
     private var hasDocument: Bool { appStore?.document != nil }
+    private var isSplit: Bool { workspace?.isSplit ?? false }
     /// Any tab at all, including a document-less start tab — Close Tab must
     /// work on a lone start tab too, not just on open documents.
     private var hasTab: Bool { !(appStore?.tabs.isEmpty ?? true) }
@@ -122,10 +125,30 @@ struct VellumCommands: Commands {
             Divider()
 
             Button(inspectorOpen ? "Hide Inspector" : "Show Inspector") {
-                appStore?.sidebarOpen.toggle()
+                workspace?.sidebarOpen.toggle()
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(!hasDocument)
+
+            Divider()
+
+            // Split shortcuts avoid the arrow keys, which ⌘⌥↑/↓ already use for
+            // First/Last Page. ⌘\ mirrors VS Code's "Split Editor".
+            Button("Split Right") { workspace?.splitFocused(.horizontal) }
+                .keyboardShortcut("\\", modifiers: .command)
+                .disabled(!hasFocus)
+
+            Button("Split Down") { workspace?.splitFocused(.vertical) }
+                .keyboardShortcut("\\", modifiers: [.command, .option])
+                .disabled(!hasFocus)
+
+            Button("Merge Panes") { workspace?.mergeAll() }
+                .keyboardShortcut("j", modifiers: [.command, .option])
+                .disabled(!isSplit)
+
+            Button("Close Pane") { if let workspace { workspace.closePane(workspace.focusedPaneId) } }
+                .keyboardShortcut("\\", modifiers: [.command, .shift])
+                .disabled(!isSplit)
         }
 
         // MARK: Navigate
@@ -184,7 +207,7 @@ struct VellumCommands: Commands {
         // MARK: Annotations
         CommandMenu("Annotations") {
             Button(isBookmarked ? "Remove Bookmark" : "Bookmark Page") {
-                if let store = focus?.annotationStore { Task { await store.toggleBookmark() } }
+                if let store = annotationStore { Task { await store.toggleBookmark() } }
             }
             .keyboardShortcut("d", modifiers: .command)
             .disabled(!hasDocument)
@@ -194,12 +217,12 @@ struct VellumCommands: Commands {
     // MARK: - Derived state
 
     private var inspectorOpen: Bool {
-        guard let appStore else { return false }
-        return appStore.document != nil && appStore.sidebarOpen
+        guard let appStore, let workspace else { return false }
+        return appStore.document != nil && workspace.sidebarOpen
     }
 
     private var isBookmarked: Bool {
-        guard let appStore, let store = focus?.annotationStore else { return false }
+        guard let appStore, let store = annotationStore else { return false }
         return findCurrentBookmark(
             annotations: store.annotations,
             docKind: appStore.document?.kind,
