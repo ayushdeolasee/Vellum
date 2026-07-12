@@ -4,6 +4,10 @@ options:
   deploymentTarget:
     macOS: "26.0"
   createIntermediateGroups: true
+packages:
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath
+    from: 1.7.3
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -42,6 +46,8 @@ targets:
     platform: macOS
     sources:
       - path: Vellum
+    dependencies:
+      - package: SwiftMath
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app

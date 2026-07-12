@@ -80,12 +80,14 @@
 		D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F38132FDC803C6ACEB43CC /* AiStore.swift */; };
 		D529B1BD4F7B9FA1E791246F /* PageTextPersister.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504DC8725E6198531EC21429 /* PageTextPersister.swift */; };
 		D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */ = {isa = PBXBuildFile; fileRef = 3E954582457ABFF5574EC93C /* tool-descriptions.md */; };
+		DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 0F9E9D97558DCF004997C26D /* SwiftMath */; };
 		E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A774391C8C286453B790F75 /* MarkdownMessage.swift */; };
 		E6B0CB4F9698FD21D03270E1 /* WebContentScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F083E5C02A66A025F06638 /* WebContentScript.swift */; };
 		E902AE322CF4E85CD5937369 /* VellumCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */; };
 		E93DB0D79E7D460ADFDD6C84 /* 2507.18074v1.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 3ED3A8BE316142DCFED718E9 /* 2507.18074v1.pdf */; };
 		EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 89E21441131E7C57CE324E83 /* AppIcon.icns */; };
 		EAE379048674CB8DF953D09D /* ChatGPTAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BA2FED5E906C5D311882E3 /* ChatGPTAuth.swift */; };
+		ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */; };
 		EF7A65F99A00454F851FA17C /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
 		F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */; };
 		F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */; };
@@ -178,6 +180,7 @@
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
 		C75C2F535B12256E191B781C /* PdfKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView.swift; sourceTree = "<group>"; };
 		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
+		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
 		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
 		D3CAB49027A12E44326845CD /* mathematics-for-ML-book copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "mathematics-for-ML-book copy.pdf"; sourceTree = "<group>"; };
@@ -196,6 +199,17 @@
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
 		FD01D08235008A4E602D0373 /* PaneTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2649524F179832AF4CB65B6C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		0A893C9E10BE8275414AA01D /* Models */ = {
@@ -306,6 +320,7 @@
 				C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */,
 				43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */,
 				8A774391C8C286453B790F75 /* MarkdownMessage.swift */,
+				C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */,
 				7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */,
 				7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */,
 				7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */,
@@ -486,6 +501,7 @@
 			buildPhases = (
 				BF0A340894FBDD78876EEC2F /* Sources */,
 				1199ADBC7B0F2A71B2D171FA /* Resources */,
+				2649524F179832AF4CB65B6C /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -493,6 +509,7 @@
 			);
 			name = Vellum;
 			packageProductDependencies = (
+				0F9E9D97558DCF004997C26D /* SwiftMath */,
 			);
 			productName = Vellum;
 			productReference = 9D58D6980122701CBA30200F /* Vellum.app */;
@@ -537,6 +554,9 @@
 			);
 			mainGroup = FD07E6C24C59CD1DC1943393;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 29E69E12C0148CACEECA83B2 /* Products */;
 			projectDirPath = "";
@@ -603,6 +623,7 @@
 				4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */,
 				D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */,
 				E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */,
+				ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */,
 				6D737237057DD944A4616889 /* ModelSelector.swift in Sources */,
 				290AF491B1EFDE622262DCD7 /* Models.swift in Sources */,
 				F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */,
@@ -911,6 +932,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.7.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0F9E9D97558DCF004997C26D /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0C9BCB1EF43154BF1DE74BAE /* Project object */;
 }

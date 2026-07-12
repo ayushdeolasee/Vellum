@@ -152,7 +152,7 @@ struct AiPanel: View {
                     }
                 )
             } else {
-                MarkdownMessage(content: message.content)
+                MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
                     .font(.system(size: 14))
                     .foregroundStyle(palette.primaryForeground)
             }

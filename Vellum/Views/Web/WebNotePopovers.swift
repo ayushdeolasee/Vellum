@@ -315,8 +315,7 @@ struct WebNoteViewerView: View {
                         }
                     } else {
                         ScrollView {
-                            Text(annotation.content ?? "")
-                                .font(.system(size: 13))
+                            MarkdownMessage(content: annotation.content ?? "", textColor: palette.foreground, baseSize: 13)
                                 .foregroundStyle(palette.foreground)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 2)

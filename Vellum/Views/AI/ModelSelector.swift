@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One selectable model, unified across providers. Built-in provider models
@@ -82,8 +83,15 @@ struct ModelSelector: View {
 
     var body: some View {
         Button {
-            isPresented = true
             onOpen?()
+            // If a text field is focused (typically the API-key SecureField
+            // above this control), its system autofill/completion overlay tears
+            // down in the same runloop turn as this click. Presenting the
+            // popover in that turn races the teardown inside AppKit's
+            // ViewBridge and aborts the app (NSRemoteView "expected (null)"
+            // assertion). Resign focus first, then present on the next turn.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            DispatchQueue.main.async { isPresented = true }
         } label: {
             triggerLabel
         }

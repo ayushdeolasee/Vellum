@@ -220,6 +220,9 @@ final class QuoteButton: NSView {
 
 // MARK: - Attributed rendering
 
+// Main-actor because math spans are typeset through `MathRenderer` (which
+// drives an offscreen AppKit label); every caller is already main-actor UI code.
+@MainActor
 enum AiAttributedRenderer {
     static func attributedString(for content: String, color: NSColor, secondary: NSColor) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -255,14 +258,66 @@ enum AiAttributedRenderer {
             let italic = NSFont(descriptor: base.fontDescriptor.withSymbolicTraits(.italic), size: base.pointSize) ?? base
             return inline(text, font: italic, color: secondary, paragraph: paragraph)
 
-        case let .code(text), let .table(text):
+        case let .code(text):
+            // A run background is the closest an attributed string gets to the
+            // SwiftUI renderer's boxed code block.
+            let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 8)
+            return NSAttributedString(string: text, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: color,
+                .backgroundColor: color.withAlphaComponent(0.08),
+                .paragraphStyle: paragraph,
+            ])
+
+        case let .table(text):
             let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 8)
             return NSAttributedString(string: text, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                 .foregroundColor: color,
                 .paragraphStyle: paragraph,
             ])
+
+        case let .math(latex):
+            return displayMath(latex, color: color)
         }
+    }
+
+    /// Display equation as a centered typeset image on its own paragraph;
+    /// unparseable LaTeX falls back to monospaced source.
+    private static func displayMath(_ latex: String, color: NSColor) -> NSAttributedString {
+        guard let rendered = MathRenderer.render(latex: latex, fontSize: 16, color: color, display: true) else {
+            let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 8)
+            return NSAttributedString(string: latex, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: color,
+                .paragraphStyle: paragraph,
+            ])
+        }
+        let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
+        paragraph.alignment = .center
+        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240))
+        result.addAttributes(
+            [.paragraphStyle: paragraph, .foregroundColor: color],
+            range: NSRange(location: 0, length: result.length)
+        )
+        return result
+    }
+
+    /// Wrap a rendered equation in a text attachment whose bounds sit the image
+    /// on the text baseline (negative y = the math's descent below it), scaled
+    /// down proportionally when wider than the bubble.
+    private static func attachment(for rendered: MathRenderer.Rendered, maxWidth: CGFloat) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = rendered.image
+        var size = rendered.size
+        var descent = rendered.descent
+        if size.width > maxWidth {
+            let scale = maxWidth / size.width
+            size = CGSize(width: maxWidth, height: size.height * scale)
+            descent *= scale
+        }
+        attachment.bounds = CGRect(x: 0, y: -descent, width: size.width, height: size.height)
+        return NSAttributedString(attachment: attachment)
     }
 
     private static var base: NSFont { NSFont.systemFont(ofSize: 14) }
@@ -294,22 +349,49 @@ enum AiAttributedRenderer {
         return result
     }
 
-    /// Inline emphasis/strong/code/strikethrough/link handling via Foundation's
-    /// markdown parser, mapped onto concrete AppKit fonts. Mirrors the SwiftUI
-    /// renderer's `$math$` → italic-monospace substitution.
+    /// Inline handling: math spans become baseline-aligned typeset attachments,
+    /// the prose between them goes through Foundation's markdown parser for
+    /// emphasis/strong/code/strikethrough/links, mapped onto concrete AppKit
+    /// fonts. Mirrors the SwiftUI `MarkdownMessage` renderer.
     private static func inline(
         _ source: String,
         font: NSFont,
         color: NSColor,
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
-        let mathStyled = source.replacingOccurrences(
-            of: #"\$([^$\n]+)\$"#,
-            with: "*`$1`*",
-            options: .regularExpression
-        )
+        let result = NSMutableAttributedString()
+        for segment in MathRenderer.segments(in: source) {
+            switch segment {
+            case .text(let text):
+                result.append(inlineProse(text, font: font, color: color, paragraph: paragraph))
+            case .math(let latex):
+                if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
+                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240))
+                    // Keep the run's paragraph style so line spacing stays even.
+                    math.addAttributes(
+                        [.paragraphStyle: paragraph, .foregroundColor: color],
+                        range: NSRange(location: 0, length: math.length)
+                    )
+                    result.append(math)
+                } else {
+                    let italic = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(.italic), size: font.pointSize) ?? font
+                    result.append(NSAttributedString(string: "$\(latex)$", attributes: [
+                        .font: italic, .foregroundColor: color, .paragraphStyle: paragraph,
+                    ]))
+                }
+            }
+        }
+        return result
+    }
+
+    private static func inlineProse(
+        _ source: String,
+        font: NSFont,
+        color: NSColor,
+        paragraph: NSParagraphStyle
+    ) -> NSAttributedString {
         guard let attributed = try? AttributedString(
-            markdown: mathStyled,
+            markdown: source,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) else {
             return NSAttributedString(string: source, attributes: [

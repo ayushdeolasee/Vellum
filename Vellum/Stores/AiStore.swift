@@ -578,12 +578,16 @@ final class AiStore {
             // drop the result without persisting or re-appending messages.
             guard !Task.isCancelled else { return }
 
+            // Show the engine's compact per-action summaries, not the raw tool
+            // results in `result.actionResults` — those carry full search/page
+            // payloads that only the model should see.
+            let displayActions = engine.displayActions
             let assistantContent: String
-            if result.actionResults.isEmpty {
+            if displayActions.isEmpty {
                 assistantContent = result.reply
             } else {
                 assistantContent = result.reply + "\n\nActions:\n"
-                    + result.actionResults.map { "- \($0)" }.joined(separator: "\n")
+                    + displayActions.map { "- \($0)" }.joined(separator: "\n")
             }
             let finalContent = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
             let completed = messagesWithUser + [
