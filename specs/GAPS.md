@@ -1,3 +1,9 @@
+> **HISTORICAL — describes the pre-port Tauri app, not the current SwiftUI app.**
+> Written as reference material for the Tauri→SwiftUI port (2025–2026). The current
+> app has diverged (e.g. 5 streaming AI providers and 5 tools vs. the 3 non-streaming
+> providers / 3 tools described here; no Codex CLI provider; repo-root layout, not
+> `macos/`). Do not treat file paths, behavior, or UI specs here as current.
+
 ## Coverage gap analysis
 
 Overall verdict: coverage is **very close to complete**. All 18 Tauri commands registered in `src-tauri/src/lib.rs` are accounted for across the five digests (`open_file`, `open_web_document`, `save_file`, `close_file`, `read_pdf_bytes`, `get_annotations`, `create_annotation`, `update_annotation`, `delete_annotation`, `set_document_metadata`, `set_webpage_saved`, `get_webpage_saved`, `list_saved_webpages`, `remove_saved_webpage`, `export_vellumweb`, `open_vellumweb_file`, `archive_webpage_default`, `run_codex_ai`). No drag-drop, no deep links, no Tauri event listeners, no custom native menu exist in the code. The gaps below are small but real.

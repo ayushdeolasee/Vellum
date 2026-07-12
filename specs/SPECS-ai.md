@@ -1,3 +1,9 @@
+> **HISTORICAL — describes the pre-port Tauri app, not the current SwiftUI app.**
+> Written as reference material for the Tauri→SwiftUI port (2025–2026). The current
+> app has diverged (e.g. 5 streaming AI providers and 5 tools vs. the 3 non-streaming
+> providers / 3 tools described here; no Codex CLI provider; repo-root layout, not
+> `macos/`). Do not treat file paths, behavior, or UI specs here as current.
+
 # SPEC: ai
 
 ## Overview

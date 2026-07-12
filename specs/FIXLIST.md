@@ -1,3 +1,10 @@
+> **HISTORICAL — all findings below are RESOLVED as of commit `314cf9f` (verified 2026-07-12).**
+> Shift-shortcuts: fixed in `Vellum/App/ContentView.swift`. Open-file handling: fixed via
+> `VellumAppDelegate` in `Vellum/App/VellumApp.swift`. Gemini `additionalProperties` and
+> OpenAI `strict`: removed from the current clients. SpeechService 0-Hz tap: guarded.
+> Codex-CLI findings: obsolete (provider no longer exists). Paths below use the old
+> `macos/` prefix; the app now lives at the repo root.
+
 # Confirmed review findings (adversarially verified) — fix list
 
 ## Finding 1
