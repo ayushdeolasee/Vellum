@@ -11,7 +11,7 @@ import UIKit
 // NSEvent monitors, and geometry is UIKit-native (top-left origin, no flip).
 @MainActor
 @Observable
-final class PdfViewerControlleriOS {
+final class PdfViewerControlleriOS: HighlightResizeControlling {
     weak var pdfView: PDFView?
     private(set) var document: PDFDocument?
 
@@ -27,6 +27,10 @@ final class PdfViewerControlleriOS {
     /// Selection popover anchor (bottom-center) in viewer top-left coordinates.
     private(set) var selectionPopoverPosition: CGPoint?
     private(set) var contextMenu: PdfContextMenuState?
+
+    /// Live resize geometry. The overlay reads this instead of persisted rects
+    /// during a drag; persistence occurs once, when the gesture ends.
+    private(set) var highlightResize: (id: String, positionData: PositionData)?
 
     @ObservationIgnored private var initialPage = 1
     @ObservationIgnored private var didInitialScroll = false
@@ -66,6 +70,7 @@ final class PdfViewerControlleriOS {
         selection = nil
         selectionPopoverPosition = nil
         contextMenu = nil
+        highlightResize = nil
         didInitialScroll = false
         findMatches = []
         findIndex = -1
@@ -396,6 +401,58 @@ final class PdfViewerControlleriOS {
         selection = nil
         selectionPopoverPosition = nil
         pdfView?.setCurrentSelection(nil, animate: false)
+    }
+
+    // MARK: - Highlight edge resize
+
+    func previewHighlightResize(
+        annotation: Annotation,
+        edge: HighlightEdge,
+        toDisplayPoint displayPoint: CGPoint
+    ) {
+        guard let position = resizedPosition(
+            annotation: annotation, edge: edge, toDisplayPoint: displayPoint) else { return }
+        highlightResize = (id: annotation.id, positionData: position)
+    }
+
+    func commitHighlightResize(
+        annotation: Annotation,
+        edge: HighlightEdge,
+        toDisplayPoint displayPoint: CGPoint
+    ) {
+        let final = resizedPosition(
+            annotation: annotation, edge: edge, toDisplayPoint: displayPoint)
+            ?? (highlightResize?.id == annotation.id ? highlightResize?.positionData : nil)
+        highlightResize = nil
+        guard let final, final != annotation.positionData else { return }
+        Task { [weak self] in
+            await self?.annotationStore?.updateAnnotation(UpdateAnnotationInput(
+                id: annotation.id,
+                color: nil,
+                content: nil,
+                positionData: final))
+        }
+    }
+
+    func cancelHighlightResize() {
+        highlightResize = nil
+    }
+
+    private func resizedPosition(
+        annotation: Annotation,
+        edge: HighlightEdge,
+        toDisplayPoint displayPoint: CGPoint
+    ) -> PositionData? {
+        guard let document,
+              annotation.pageNumber >= 1,
+              annotation.pageNumber <= document.pageCount,
+              let page = document.page(at: annotation.pageNumber - 1),
+              let current = annotation.positionData else { return nil }
+        return PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: edge,
+            toDisplayPoint: displayPoint)
     }
 
     // MARK: - Note placement

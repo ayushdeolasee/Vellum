@@ -1,6 +1,7 @@
 import XCTest
 import PDFKit
 import CoreGraphics
+import CoreText
 @testable import Vellum
 
 /// MainActor-isolated box for sampling the largest scheduling gap observed while
@@ -9,6 +10,147 @@ import CoreGraphics
 private final class GapTracker {
     var maxGap: Double = 0
     func record(_ gap: Double) { maxGap = max(maxGap, gap) }
+}
+
+@MainActor
+final class HighlightResizeTests: XCTestCase {
+    private func textPage(_ string: String = "The quick brown fox jumps over the lazy dog") -> PDFPage {
+        let data = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
+        let attributed = CFAttributedStringCreate(
+            nil,
+            string as CFString,
+            [kCTFontAttributeName: font] as CFDictionary)!
+        context.textPosition = CGPoint(x: 40, y: 700)
+        CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+        context.endPDFPage()
+        context.closePDF()
+        return PDFDocument(data: data as Data)!.page(at: 0)!
+    }
+
+    private func position(for range: NSRange, on page: PDFPage) -> PositionData {
+        let selection = page.selection(for: range)!
+        let rects = selection.selectionsByLine().compactMap { line -> AnnotationRect? in
+            guard let linePage = line.pages.first else { return nil }
+            return PdfTextLocator.uiRect(
+                fromPageSpace: line.bounds(for: linePage), page: linePage)
+        }
+        let dimensions = PdfTextLocator.displayDimensions(of: page)
+        return PositionData(
+            rects: PdfTextLocator.mergeLineRects(rects),
+            pageWidth: Double(dimensions.width),
+            pageHeight: Double(dimensions.height),
+            selectedText: selection.string,
+            startOffset: nil,
+            endOffset: nil,
+            prefix: nil,
+            suffix: nil,
+            viewportOffset: nil)
+    }
+
+    private func midpointY(_ position: PositionData) -> Double {
+        let rect = position.rects.first!
+        return rect.y + rect.height / 2
+    }
+
+    func testDragEndPastTextEndDoesNotCrash() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: current.pageWidth + 1_000, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasPrefix("quick") == true)
+        XCTAssertTrue(result?.selectedText?.hasSuffix("dog") == true)
+    }
+
+    func testDragEndPastStartHoldsLastFrame() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let targetCharacter = position(for: NSRange(location: 1, length: 1), on: page)
+        let targetRect = targetCharacter.rects.first!
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current))))
+    }
+
+    func testDragEndIntoLeftMarginHoldsLastFrame() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: 0, y: midpointY(current))))
+    }
+
+    func testDragEndExtendsWhileStartStaysPinned() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let targetWord = position(for: NSRange(location: 20, length: 5), on: page)
+        let targetRect = targetWord.rects.first!
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasPrefix("quick") == true)
+        XCTAssertTrue(result?.selectedText?.contains("fox") == true)
+    }
+
+    func testDragStartExtendsWhileEndStaysPinned() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 16, length: 3), on: page)
+        let targetWord = position(for: NSRange(location: 0, length: 3), on: page)
+        let targetRect = targetWord.rects.first!
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .start,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasSuffix("fox") == true)
+        let text = result?.selectedText ?? ""
+        XCTAssertTrue(text.contains("The") || text.hasPrefix("he"))
+    }
+
+    func testResizeOnEmptyPageReturnsNil() {
+        let data = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        context.endPDFPage()
+        context.closePDF()
+        let page = PDFDocument(data: data as Data)!.page(at: 0)!
+        let current = PositionData(
+            rects: [AnnotationRect(x: 10, y: 10, width: 50, height: 12)],
+            pageWidth: 612,
+            pageHeight: 792,
+            selectedText: "x",
+            startOffset: nil,
+            endOffset: nil,
+            prefix: nil,
+            suffix: nil,
+            viewportOffset: nil)
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: 100, y: 16)))
+    }
 }
 
 // Round-trip tests for the PDF persistence engine (Services/Pdf/*). These

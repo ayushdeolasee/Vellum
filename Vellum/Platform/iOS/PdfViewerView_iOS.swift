@@ -191,7 +191,10 @@ struct PdfOverlayStack_iOS: View {
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
-                HighlightLayer(annotations: overlay.annotations, zoom: scale)
+                HighlightLayer(
+                    annotations: overlay.annotations,
+                    zoom: scale,
+                    controller: controller)
                     .frame(width: overlay.frame.width, height: overlay.frame.height,
                            alignment: .topLeading)
                     .offset(x: overlay.frame.minX, y: overlay.frame.minY)

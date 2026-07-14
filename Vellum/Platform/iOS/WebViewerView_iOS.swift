@@ -119,6 +119,7 @@ struct WebViewerView_iOS: View {
             .onChange(of: controller.initCount) {
                 controller.pushAnnotations(annotationStore.annotations)
                 controller.pushMode(app.mode)
+                controller.pushSelectedHighlight()
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
                     selectedId: annotationStore.selectedAnnotationId)
@@ -188,7 +189,12 @@ final class WebViewerController_iOS: NSObject {
     private(set) var noteComposer: WebNoteComposerState?
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
-    private(set) var highlightEditor: WebHighlightEditorState?
+    private(set) var highlightEditor: WebHighlightEditorState? {
+        didSet {
+            guard highlightEditor?.id != oldValue?.id else { return }
+            pushSelectedHighlight()
+        }
+    }
 
     @ObservationIgnored private weak var app: AppStore?
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
@@ -476,6 +482,11 @@ final class WebViewerController_iOS: NSObject {
         post("set-mode", ["mode": mode.rawValue])
     }
 
+    func pushSelectedHighlight() {
+        guard initCount > 0 else { return }
+        post("set-selected-highlight", ["id": orNull(highlightEditor?.id)])
+    }
+
     func scrollToSelected(annotations: [Annotation], selectedId: String?) {
         guard initCount > 0, let selectedId else { return }
         guard let annotation = annotations.first(where: { $0.id == selectedId }) else { return }
@@ -668,6 +679,31 @@ final class WebViewerController_iOS: NSObject {
                 noteViewer = nil
                 hideContextMenu()
                 highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
+            }
+
+        case "highlight-resized":
+            guard let id = data["id"] as? String,
+                  let start = intValue(data["start"]),
+                  let end = intValue(data["end"]),
+                  let text = data["text"] as? String,
+                  let annotationStore else { break }
+            let positionData = PositionData(
+                rects: [],
+                pageWidth: 1,
+                pageHeight: 1,
+                selectedText: text,
+                startOffset: start,
+                endOffset: end,
+                prefix: data["prefix"] as? String,
+                suffix: data["suffix"] as? String,
+                viewportOffset: nil)
+            Task {
+                await annotationStore.updateAnnotation(UpdateAnnotationInput(
+                    id: id,
+                    color: nil,
+                    content: nil,
+                    positionData: positionData,
+                    pageNumber: intValue(data["pageNumber"])))
             }
 
         case "navigate":
