@@ -116,7 +116,7 @@ struct StorageLocationChoiceSheet: View {
                 title: "Keep on This Mac",
                 badge: nil,
                 systemImage: "internaldrive",
-                description: "Everything stays in Vellum's private app folder, like before. No syncing.",
+                description: "Everything stays in Vellum's private app folder. No syncing.",
                 disabled: false,
                 identifier: "storageChoice.local"
             ) {
