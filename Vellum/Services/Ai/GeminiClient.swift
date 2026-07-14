@@ -9,7 +9,7 @@ struct AiProviderResult: Sendable {
 final class GeminiClient {
     /// Streams a reply over `:streamGenerateContent?alt=sse`. Text deltas are
     /// forwarded as they arrive; function calls run the tool loop between turns
-    /// (up to 6 iterations, matching the buffered original). `onEvent` is invoked
+    /// (up to 8 iterations, matching the buffered original). `onEvent` is invoked
     /// on the main actor for every delta / status / tool event.
     func generate(
         apiKey: String,
@@ -48,8 +48,8 @@ final class GeminiClient {
             if model.contains("2.5") && !model.lowercased().contains("pro") {
                 generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
             }
-        } else if let budget = Self.geminiThinkingBudget(for: thinkingMode, model: model) {
-            generationConfig["thinkingConfig"] = ["thinkingBudget": budget]
+        } else if let config = Self.thinkingConfig(for: thinkingMode, model: model) {
+            generationConfig["thinkingConfig"] = config
         }
 
         for _ in 0..<8 {
@@ -70,6 +70,7 @@ final class GeminiClient {
 
             var text = ""
             var calls: [[String: Any]] = []
+            var replayParts: [[String: Any]] = []
             for try await payload in SSE.dataPayloads(bytes) {
                 guard let object = Self.jsonObjectOrNil(payload),
                       let candidates = object["candidates"] as? [[String: Any]],
@@ -77,7 +78,9 @@ final class GeminiClient {
                       let parts = (candidate["content"] as? [String: Any])?["parts"] as? [[String: Any]]
                 else { continue }
                 for part in parts {
-                    if let chunk = part["text"] as? String, !chunk.isEmpty {
+                    Self.accumulateReplayPart(part, into: &replayParts)
+                    if let chunk = part["text"] as? String, !chunk.isEmpty,
+                       (part["thought"] as? Bool) != true {
                         text += chunk
                         onEvent(.textDelta(chunk))
                     }
@@ -91,10 +94,7 @@ final class GeminiClient {
                 return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
 
-            var modelParts: [[String: Any]] = []
-            if !text.isEmpty { modelParts.append(["text": text]) }
-            for call in calls { modelParts.append(["functionCall": call]) }
-            contents.append(["role": "model", "parts": modelParts])
+            contents.append(["role": "model", "parts": replayParts])
 
             var responseParts: [[String: Any]] = []
             for call in calls {
@@ -115,6 +115,29 @@ final class GeminiClient {
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// Accumulates a streamed model part for verbatim replay in the next tool
+    /// turn. Plain unsigned visible text merges into a preceding part of the
+    /// same kind; functionCall parts, thoughtSignature-carrying parts, and
+    /// thought parts are kept as-is — Gemini 3 rejects tool turns whose signed
+    /// parts were merged or dropped.
+    static func accumulateReplayPart(_ part: [String: Any], into parts: inout [[String: Any]]) {
+        func isPlainUnsignedText(_ candidate: [String: Any]) -> Bool {
+            candidate["functionCall"] == nil
+                && candidate["thoughtSignature"] == nil
+                && (candidate["thought"] as? Bool) != true
+                && candidate["text"] is String
+        }
+        if isPlainUnsignedText(part),
+           let lastIndex = parts.indices.last,
+           isPlainUnsignedText(parts[lastIndex]),
+           let previous = parts[lastIndex]["text"] as? String,
+           let chunk = part["text"] as? String {
+            parts[lastIndex]["text"] = previous + chunk
+            return
+        }
+        parts.append(part)
     }
 
     /// Open the SSE stream, retrying once on transient failures before any bytes
@@ -177,29 +200,35 @@ final class GeminiClient {
         )
     }
 
-    // Returns a thinkingBudget for the given effort, or nil to omit thinkingConfig
-    // (unknown families / 1.5 which has no thinking). 2.5 Pro cannot disable
-    // thinking (min 128); Flash/Lite/2.0 accept 0. -1 means dynamic (model decides).
-    //
-    // NOTE: `.auto` is handled by the caller and must never be routed here. Budget
-    // acceptance for the 3.x preview families is UNVERIFIED (no API key to live-test);
-    // the gate stays conservative and only sends thinkingConfig for families known
-    // (or believed) to accept it — 2.5, 2.0, and the 3.x previews. 1.5 has no
-    // thinking mode so it returns nil (thinkingConfig omitted).
-    private static func geminiThinkingBudget(for mode: AiThinkingMode, model: String) -> Int? {
+    /// thinkingConfig payload for the given effort, or nil to omit it.
+    /// Gemini 3 families take a discrete thinkingLevel — numeric budgets are a
+    /// request error there. 2.x keeps numeric budgets (Pro floors at 128, its
+    /// minimum — 2.5 Pro cannot disable thinking; -1 means dynamic, the model
+    /// decides). 1.5 and unknown families send nothing. `.auto` is the
+    /// caller's branch and must never be routed here.
+    static func thinkingConfig(for mode: AiThinkingMode, model: String) -> [String: Any]? {
+        guard mode != .auto else { return nil }
         let lowered = model.lowercased()
-        // 1.5 has no thinking; omit thinkingConfig entirely.
         if lowered.contains("1.5") { return nil }
-        // Only send thinkingConfig for families believed to accept it.
-        guard model.contains("2.5") || model.contains("2.0") || model.contains("3") else { return nil }
-        // 2.5 Pro (and Pro generally) cannot disable thinking; floor at 128.
+        if lowered.contains("gemini-3") {
+            // gemini-3-pro (not 3.1) supports only low/high; round toward them.
+            let onlyLowHigh = lowered.contains("gemini-3-pro")
+            switch mode {
+            case .instant: return ["thinkingLevel": onlyLowHigh ? "low" : "minimal"]
+            case .low:     return ["thinkingLevel": "low"]
+            case .medium:  return ["thinkingLevel": onlyLowHigh ? "high" : "medium"]
+            case .high:    return ["thinkingLevel": "high"]
+            case .auto:    return nil
+            }
+        }
+        guard lowered.contains("2.5") || lowered.contains("2.0") else { return nil }
         let isPro = lowered.contains("pro")
         switch mode {
-        case .auto: return nil // handled by caller; never routed here
-        case .instant: return isPro ? 128 : 0
-        case .low: return isPro ? 128 : 512
-        case .medium: return -1 // dynamic: model decides
-        case .high: return 24576
+        case .instant: return ["thinkingBudget": isPro ? 128 : 0]
+        case .low:     return ["thinkingBudget": isPro ? 128 : 512]
+        case .medium:  return ["thinkingBudget": -1]  // dynamic: model decides
+        case .high:    return ["thinkingBudget": 24576]
+        case .auto:    return nil
         }
     }
 

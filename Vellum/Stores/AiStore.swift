@@ -61,6 +61,9 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var role: AiRole
     var content: String
     var createdAt: String
+    /// Per-response token/cost telemetry; absent on messages persisted
+    /// before telemetry existed and on user messages.
+    var usage: AiUsage? = nil
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -372,6 +375,27 @@ final class AiStore {
     /// screenshots are volatile, expensive, and poor cache material (§6).
     static let autoPageImageTextThreshold = 200
 
+    /// Persisted assistant content = reply + compact per-action receipts.
+    /// Raw tool payloads (full page text / search results) must never reach
+    /// the persisted message — only these one-line receipts do.
+    static func composeAssistantContent(reply: String, receipts: [String]) -> String {
+        guard !receipts.isEmpty else {
+            return reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return (reply + "\n\nActions:\n" + receipts.map { "- \($0)" }.joined(separator: "\n"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The conversation-block slice: everything BEFORE the newest user message.
+    /// The newest request is sent separately under "### Latest User Request",
+    /// so including it here would duplicate it in every prompt.
+    static func promptHistory(from messages: [AiMessage]) -> [AiMessage] {
+        guard let lastUserIndex = messages.lastIndex(where: { $0.role == .user }) else {
+            return messages
+        }
+        return Array(messages[..<lastUserIndex])
+    }
+
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
@@ -461,7 +485,7 @@ final class AiStore {
             guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else { return }
             activity = .thinking
 
-            let conversation = AiPrompts.buildConversationBlock(messagesWithUser)
+            let conversation = AiPrompts.buildConversationBlock(Self.promptHistory(from: messagesWithUser))
             let parameters = AiPromptParameters(
                 conversation: conversation.isEmpty ? "(start of conversation)" : conversation,
                 context: AiPrompts.buildContextBlock(pageTexts: pageTexts, context: context),
@@ -581,15 +605,7 @@ final class AiStore {
             // Show the engine's compact per-action summaries, not the raw tool
             // results in `result.actionResults` — those carry full search/page
             // payloads that only the model should see.
-            let displayActions = engine.displayActions
-            let assistantContent: String
-            if displayActions.isEmpty {
-                assistantContent = result.reply
-            } else {
-                assistantContent = result.reply + "\n\nActions:\n"
-                    + displayActions.map { "- \($0)" }.joined(separator: "\n")
-            }
-            let finalContent = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalContent = Self.composeAssistantContent(reply: result.reply, receipts: engine.displayActions)
             let completed = messagesWithUser + [
                 AiPersistence.makeMessage(role: .assistant, content: finalContent, id: assistantId)
             ]

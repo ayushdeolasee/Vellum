@@ -34,56 +34,19 @@ final class OpenRouterClient {
             throw AiClientError.message("Invalid OpenRouter endpoint.")
         }
 
-        // Structured content with cache_control breakpoints (PR A.5). Sent
-        // unconditionally: OpenRouter forwards cache_control to Anthropic/Gemini
-        // and ignores it for models that don't support it. Breakpoints nest
-        // outermost-stable-first (system ⊂ +document context ⊂ +page image) so a
-        // page navigation between messages misses the context breakpoint but the
-        // system breakpoint still hits.
-        var userContent: [[String: Any]] = [[
-            "type": "text", "text": prompt.stable,
-            "cache_control": ["type": "ephemeral"],          // breakpoint 2: + document context
-        ]]
-        for image in images where !image.base64Data.isEmpty {
-            userContent.append([
-                "type": "image_url",
-                "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
-                "cache_control": ["type": "ephemeral"],      // breakpoint 3: + page image
-            ])
-        }
-        userContent.append(["type": "text", "text": prompt.volatile])
-        var messages: [[String: Any]] = [
-            ["role": "system", "content": [[
-                "type": "text", "text": systemPrompt,
-                "cache_control": ["type": "ephemeral"],      // breakpoint 1: tools + system
-            ]]],
-            ["role": "user", "content": userContent],
-        ]
+        var messages = Self.initialMessages(systemPrompt: systemPrompt, prompt: prompt, images: images)
         var actionResults: [String] = []
 
         onEvent(.status("Thinking"))
 
         for _ in 0..<8 {
-            var body: [String: Any] = [
-                "model": model,
-                "messages": messages,
-                "stream": true,
-                // Cost guard: cap the visible output.
-                "max_tokens": 2048,
-                // Ask OpenRouter to report token usage (incl. cached tokens) on
-                // the final stream chunk. Harmless to keep permanently.
-                "usage": ["include": true],
-            ]
-            // Reasoning effort (user's thinking mode). Sent unconditionally when
-            // set: OpenRouter forwards reasoning to models that support it and
-            // ignores it otherwise (same rationale as the cache_control above).
-            // `.auto` sends nothing, preserving the prior behavior.
-            if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
-                body["reasoning"] = ["effort": effort]
-            }
-            if allowTools {
-                body["tools"] = Self.functionTools
-            }
+            let body = Self.requestBody(
+                model: model,
+                messages: messages,
+                thinkingMode: thinkingMode,
+                allowTools: allowTools,
+                sessionId: sessionIdAtStart
+            )
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -170,6 +133,71 @@ final class OpenRouterClient {
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// Initial message list with exactly two cache_control breakpoints —
+    /// system (tools + system prompt) and document context — regardless of how
+    /// many images are attached. Anthropic rejects requests with more than
+    /// four breakpoints, and volatile page screenshots are poor cache material.
+    /// Sent unconditionally: OpenRouter forwards cache_control to
+    /// Anthropic/Gemini and ignores it for models that don't support it.
+    /// Breakpoints nest outermost-stable-first (system ⊂ +document context) so
+    /// a page navigation between messages misses the context breakpoint but
+    /// the system breakpoint still hits (PR A.5).
+    static func initialMessages(
+        systemPrompt: String,
+        prompt: AiUserPrompt,
+        images: [AiPageImageSnapshot]
+    ) -> [[String: Any]] {
+        var userContent: [[String: Any]] = [[
+            "type": "text", "text": prompt.stable,
+            "cache_control": ["type": "ephemeral"],   // breakpoint 2: + document context
+        ]]
+        for image in images where !image.base64Data.isEmpty {
+            userContent.append([
+                "type": "image_url",
+                "image_url": ["url": "data:\(image.mediaType);base64,\(image.base64Data)"],
+            ])
+        }
+        userContent.append(["type": "text", "text": prompt.volatile])
+        return [
+            ["role": "system", "content": [[
+                "type": "text", "text": systemPrompt,
+                "cache_control": ["type": "ephemeral"],   // breakpoint 1: tools + system
+            ]]],
+            ["role": "user", "content": userContent],
+        ]
+    }
+
+    /// Request body for one tool-loop turn. `session_id` pins OpenRouter's
+    /// provider routing per tab so cache hits land on the same upstream.
+    /// Reasoning effort is sent unconditionally when set: OpenRouter forwards
+    /// reasoning to models that support it and ignores it otherwise (same
+    /// rationale as the cache_control above); `.auto` sends nothing,
+    /// preserving the prior behavior. `usage.include` asks OpenRouter to
+    /// report token usage (incl. cached tokens) on the final stream chunk.
+    static func requestBody(
+        model: String,
+        messages: [[String: Any]],
+        thinkingMode: AiThinkingMode,
+        allowTools: Bool,
+        sessionId: String
+    ) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "messages": messages,
+            "stream": true,
+            "max_tokens": 2048,                       // cost guard: cap the visible output
+            "usage": ["include": true],
+            "session_id": "vellum-\(sessionId)",
+        ]
+        if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
+            body["reasoning"] = ["effort": effort]
+        }
+        if allowTools {
+            body["tools"] = Self.functionTools
+        }
+        return body
     }
 
     /// Open the SSE stream, retrying once on transient failures before any bytes

@@ -186,11 +186,17 @@ enum AiPersistence {
               let content = value["content"] as? String else { return nil }
         let rawId = (value["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawDate = (value["createdAt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var usage: AiUsage? = nil
+        if let usageValue = value["usage"] as? [String: Any],
+           let usageData = try? JSONSerialization.data(withJSONObject: usageValue) {
+            usage = try? JSONDecoder().decode(AiUsage.self, from: usageData)
+        }
         return AiMessage(
             id: rawId?.isEmpty == false ? rawId! : UUID().uuidString.lowercased(),
             role: role,
             content: content,
-            createdAt: rawDate?.isEmpty == false ? rawDate! : ISO8601DateFormatter.aiTimestamp.string(from: Date())
+            createdAt: rawDate?.isEmpty == false ? rawDate! : ISO8601DateFormatter.aiTimestamp.string(from: Date()),
+            usage: usage
         )
     }
 

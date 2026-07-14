@@ -32,6 +32,12 @@ final class OpenAIClient {
 
         onEvent(.status("Thinking"))
 
+        // Cost guard: reasoning effort applies to the gpt-5 family only (others
+        // reject the reasoning field). `.auto` maps to "minimal" (the prior
+        // hardcoded default); explicit modes override. Computed up front so the
+        // output-token budget can scale with it.
+        let effort = model.lowercased().hasPrefix("gpt-5") ? (thinkingMode.openAIEffort ?? "minimal") : "minimal"
+
         for _ in 0..<8 {
             var body: [String: Any] = [
                 "model": model,
@@ -43,14 +49,10 @@ final class OpenAIClient {
                 // prefix is reused across tool-loop iterations and follow-ups.
                 "prompt_cache_key": "vellum-\(sessionIdAtStart)",
                 "stream": true,
-                // Cost guard: cap the visible output.
-                "max_output_tokens": 2048,
+                // Cost guard: cap the visible output, scaled to the thinking mode.
+                "max_output_tokens": Self.maxOutputTokens(forEffort: effort),
             ]
-            // Cost guard: reasoning effort on the gpt-5 family (others reject the
-            // reasoning field, so only send it when it applies). `.auto` maps to
-            // "minimal" (the prior hardcoded default); explicit modes override.
             if model.lowercased().hasPrefix("gpt-5") {
-                let effort = thinkingMode.openAIEffort ?? "minimal"
                 body["reasoning"] = ["effort": effort]
             }
             var request = URLRequest(url: url)
@@ -116,6 +118,25 @@ final class OpenAIClient {
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// Output budget scaled to the user's thinking mode: reasoning models burn
+    /// output tokens on thinking, so a flat cap starves high-effort answers.
+    static func maxOutputTokens(forEffort effort: String) -> Int {
+        switch effort {
+        case "low": return 8192
+        case "medium": return 16384
+        case "high": return 32768
+        default: return 4096   // "minimal" and anything unrecognized
+        }
+    }
+
+    /// User-facing note when the Responses API reports an incomplete response.
+    static func incompleteMessage(reason: String) -> String {
+        if reason == "max_output_tokens" {
+            return "The response hit the output token limit before finishing. Try a higher thinking mode or a more specific request."
+        }
+        return "The response ended early (reason: \(reason))."
     }
 
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
