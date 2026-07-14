@@ -792,13 +792,14 @@ final class WebViewerController: NSObject {
             guard let url = data["url"] as? String else { break }
             navigateTo(url)
 
-        case "open-external":
-            // Content that can't work inside the reader (e.g. YouTube embeds,
-            // which require an http(s) Referer the proxy origin can't send)
-            // hands off to the system browser.
-            guard let raw = data["url"] as? String,
-                  let url = URL(string: raw),
-                  url.scheme == "https" || url.scheme == "http" else { break }
+        case "open-youtube":
+            // The YouTube facade (WebContentScript) hands embeds off to the system
+            // browser — embeds need an http(s) Referer the proxy origin can't send.
+            // Only a validated video id crosses the bridge, never a full URL, so a
+            // hostile page script can at worst open a youtube.com/watch page.
+            guard let id = data["id"] as? String,
+                  id.range(of: "^[A-Za-z0-9_-]{6,20}$", options: .regularExpression) != nil,
+                  let url = URL(string: "https://www.youtube.com/watch?v=\(id)") else { break }
             NSWorkspace.shared.open(url)
 
         case "viewport-scrolled":

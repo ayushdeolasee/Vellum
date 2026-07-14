@@ -179,7 +179,7 @@ enum WebContentScript {
     facade.addEventListener("click", function (e) {
       e.preventDefault();
       e.stopPropagation();
-      post("open-external", { url: "https://www.youtube.com/watch?v=" + id });
+      post("open-youtube", { id: id });
     });
     frame.parentNode.replaceChild(facade, frame);
   }
