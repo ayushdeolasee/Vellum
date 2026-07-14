@@ -1092,6 +1092,26 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
               navigationAction.targetFrame?.isMainFrame == true else {
             return .allow
         }
+        // A same-page anchor click resolves against the injected <base href> to
+        // the real https origin, so WebKit sees a cross-origin navigation instead
+        // of a scroll. When only the fragment differs from the current page,
+        // scroll in place via location.hash (a same-document navigation) rather
+        // than rebinding and reloading the whole reader. normalize strips
+        // fragments, so equal normalized URLs == same page.
+        if let fragment = url.fragment,
+           let currentProxy = webView.url,
+           let currentReal = VellumWebSchemeHandler.realUrl(from: currentProxy),
+           let incoming = try? WebUrl.normalize(url.absoluteString),
+           let current = try? WebUrl.normalize(currentReal),
+           incoming == current {
+            // JSON-encode the fragment so quotes/backslashes can't break out of
+            // the JS string.
+            if let data = try? JSONEncoder().encode("#" + fragment),
+               let literal = String(data: data, encoding: .utf8) {
+                webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+            }
+            return .cancel
+        }
         navigateTo(url.absoluteString)
         return .cancel
     }
