@@ -3,6 +3,51 @@
 All notable changes to Vellum are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Restores the AI-experience features that were lost in the scratchpad merge
+(which also committed literal conflict markers, leaving `main` uncompilable),
+and lands the final `ai-experiance` review commit that had never been merged.
+
+### Added
+
+- **Screenshots into the AI chat.** The AI panel's "+" attach menu offers
+  "Attach current page" (full-page snapshot) and "Snapshot region…"
+  (drag-to-crop a marquee over the PDF); both attach the image as a composer
+  reference sent with the next message. The one `.snapshotRegion` mode is now
+  shared with the scratchpad via `AppStore.regionCaptureTarget`, so each
+  panel's crop lands in the panel that armed it.
+- **Reference reading-material text in the AI chat.** Selecting text in a PDF
+  shows an "Ask AI about this" (sparkles) button in the selection popover; the
+  selected text attaches as a quoted reference chip in the AI composer.
+- **`getAnnotations` AI tool** — the model can list your notes and highlights
+  across the whole document (or one page), so cross-page annotation questions
+  work again now that the context block only carries the current page.
+- Scratchpad is per-pane in split view: each pane keeps its own note, scoped
+  to the document that pane is showing.
+
+### Fixed
+
+- **Add-note-from-selection works again**: repaired the scratchpad merge so
+  the selection popover (highlight swatches, note input, Ask AI) is wired up
+  in the shipped ContentView; `main` now compiles.
+- AI replies no longer clip silently: output caps raised (2048 → 8192 base)
+  on every provider, and token-limit cutoffs surface as a visible truncation
+  note (or an error when nothing streamed).
+- Gemini in-band stream errors and safety blocks now surface instead of
+  producing an empty reply.
+- User-attached reference snapshots are forwarded to OpenCode Zen/Go (they
+  previously only received the automatic page image).
+- ChatGPT "Auto" thinking mode lets the backend apply its default reasoning
+  effort; OpenRouter/OpenCode downgrade the OpenAI-only "minimal" effort to
+  "low" for non-OpenAI models.
+- `searchDocument` regexes match across line breaks and support `^`/`$`
+  anchors; extracted page text preserves line structure.
+- Settings no longer performs five synchronous Keychain writes per keystroke
+  in the API-key fields — only the account that changed is written.
+- Streaming no longer re-parses every visible message's markdown on each
+  token (was O(n²) on the main thread).
+
 ## [0.1.0] — 2026-07-14
 
 First versioned release, covering the `ai-ondemand-retrieval` branch
