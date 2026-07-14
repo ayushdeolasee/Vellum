@@ -73,8 +73,13 @@ enum WebLibrary {
         return base.appendingPathComponent(bundleId, isDirectory: true)
     }
 
+    /// Test seam: point the whole web store at a scratch directory (mirrors
+    /// `ScratchpadAttachmentStore.directoryOverride`). Every path below derives
+    /// from `storeDir`, so overriding this redirects records and artifacts alike.
+    nonisolated(unsafe) static var storeDirOverride: URL?
+
     static var storeDir: URL {
-        appDataDir.appendingPathComponent("web", isDirectory: true)
+        storeDirOverride ?? appDataDir.appendingPathComponent("web", isDirectory: true)
     }
 
     static func recordPath(forKey key: String) -> URL {
@@ -196,18 +201,6 @@ enum WebLibrary {
 
     // MARK: - Saved-pages library
 
-    /// Mark a page saved without disturbing an existing `saved_at`. Used by
-    /// the automatic on-open archiver so opened pages land in the library.
-    static func markSavedIfAbsent(recordPath: URL, url: String) throws {
-        try withRecord(url: url, recordPath: recordPath) { record in
-            record.url = url
-            record.saved = true
-            if record.savedAt == nil {
-                record.savedAt = rfc3339Now()
-            }
-        }
-    }
-
     static func hasLocalSnapshot(forKey key: String) -> Bool {
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -274,4 +267,133 @@ enum WebLibrary {
         }
         removeLocalSnapshots(forKey: key)
     }
+
+    // MARK: - Snapshot storage management (Settings ▸ Storage)
+
+    /// One page's on-disk snapshot footprint. Sizes cover only the derived
+    /// artifacts (plain snapshot, managed `.vellumweb`, installed archive dir),
+    /// never the sidecar record — that holds the user's annotations and reading
+    /// state and is not deletable from the Storage tab.
+    struct SnapshotStorageEntry: Identifiable, Sendable, Equatable {
+        var key: String
+        var url: String
+        var title: String?
+        var saved: Bool
+        var hasAnnotations: Bool
+        var lastOpened: Date?
+        var byteSize: Int64
+
+        var id: String { key }
+
+        var displayTitle: String {
+            if let title, !title.isEmpty { return title }
+            return url
+        }
+    }
+
+    /// Every page that currently has snapshot artifacts on disk, largest first.
+    static func listSnapshotStorage() -> [SnapshotStorageEntry] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: storeDir.path) else {
+            return []
+        }
+        var out: [SnapshotStorageEntry] = []
+        for name in names where name.hasSuffix(".json") {
+            guard let record = loadRecord(at: storeDir.appendingPathComponent(name)) else { continue }
+            let key = pageKey(record.url)
+            let size = snapshotArtifactsSize(forKey: key)
+            guard size > 0 else { continue }
+            out.append(SnapshotStorageEntry(
+                key: key,
+                url: record.url,
+                title: record.title,
+                saved: record.saved,
+                hasAnnotations: !record.annotations.isEmpty,
+                lastOpened: parseRfc3339(record.openedAt) ?? parseRfc3339(record.savedAt),
+                byteSize: size))
+        }
+        out.sort { $0.byteSize > $1.byteSize }
+        return out
+    }
+
+    /// Launch-time TTL eviction of snapshot artifacts for pages the user never
+    /// kept: not saved, no annotations (annotating promotes to saved, so any
+    /// annotations mean "keep" defensively), not currently open, and last
+    /// opened before `cutoff`. Only ever deletes the derived artifacts — the
+    /// sidecar record (reading state) always survives, and a record with no
+    /// parseable timestamp is never evicted.
+    static func evictStaleUnsavedSnapshots(olderThan cutoff: Date, excludingUrls: Set<String>) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: storeDir.path) else {
+            return
+        }
+        for name in names where name.hasSuffix(".json") {
+            guard let record = loadRecord(at: storeDir.appendingPathComponent(name)),
+                  !record.saved, record.annotations.isEmpty,
+                  !excludingUrls.contains(record.url),
+                  let opened = parseRfc3339(record.openedAt) ?? parseRfc3339(record.savedAt),
+                  opened < cutoff
+            else { continue }
+            removeLocalSnapshots(forKey: pageKey(record.url))
+        }
+    }
+
+    /// Delete every snapshot artifact in the store (records stay). Sweeps the
+    /// directory listing rather than the records so orphaned artifacts whose
+    /// record was lost are removed too.
+    static func removeAllSnapshotArtifacts() {
+        let fm = FileManager.default
+        try? fm.removeItem(at: storeDir.appendingPathComponent("archives", isDirectory: true))
+        guard let names = try? fm.contentsOfDirectory(atPath: storeDir.path) else { return }
+        for name in names where name.hasSuffix(".snapshot.html") || name.hasSuffix(".vellumweb") {
+            try? fm.removeItem(at: storeDir.appendingPathComponent(name))
+        }
+    }
+
+    private static func snapshotArtifactsSize(forKey key: String) -> Int64 {
+        let fm = FileManager.default
+        var total: Int64 = 0
+        for file in [snapshotPath(forKey: key), managedArchivePath(forKey: key)] {
+            let attributes = try? fm.attributesOfItem(atPath: file.path)
+            total += (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        }
+        total += directorySize(at: archiveDir(forKey: key))
+        return total
+    }
+
+    private static func directorySize(at url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [],
+            errorHandler: nil)
+        else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Lenient parse for record timestamps: our writer's 6-digit-fraction
+    /// RFC3339 first, then ISO8601 with/without fractional seconds (Tauri-era
+    /// chrono emitted variable fraction widths).
+    static func parseRfc3339(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        if let date = rfc3339Formatter.date(from: value) { return date }
+        if let date = iso8601Fractional.date(from: value) { return date }
+        return iso8601Plain.date(from: value)
+    }
+
+    nonisolated(unsafe) private static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    nonisolated(unsafe) private static let iso8601Plain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }

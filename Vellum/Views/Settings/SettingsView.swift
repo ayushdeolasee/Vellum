@@ -237,6 +237,11 @@ private struct StorageSettingsTab: View {
     @State private var pendingDelete: PageTextCacheEntry?
     @State private var confirmingEraseAll = false
 
+    @State private var webEntries: [WebLibrary.SnapshotStorageEntry] = []
+    @State private var isLoadingWeb = true
+    @State private var pendingWebDelete: WebLibrary.SnapshotStorageEntry?
+    @State private var confirmingWebRemoveAll = false
+
     var body: some View {
         Form {
             Section {
@@ -274,6 +279,42 @@ private struct StorageSettingsTab: View {
             } header: {
                 Text("Cached documents")
             }
+
+            Section {
+                LabeledContent("Total size") {
+                    Text(webTotalBytes.formatted(.byteCount(style: .file)))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Button("Remove all…", role: .destructive) {
+                    confirmingWebRemoveAll = true
+                }
+                .disabled(webEntries.isEmpty)
+                .accessibilityIdentifier("storage.webRemoveAll")
+            } header: {
+                Text("Downloaded web pages")
+            } footer: {
+                Text("Vellum keeps an offline copy of each web page you open so it loads without a connection and the AI can read it. Copies of pages you never saved or annotated are removed automatically after six months. Removing a copy never affects your saved-pages list, highlights, or notes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if isLoadingWeb {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if webEntries.isEmpty {
+                    Text("No downloaded pages")
+                        .foregroundStyle(.secondary)
+                        .id("storage.webEmpty")
+                } else {
+                    ForEach(webEntries) { entry in
+                        WebStorageRow(entry: entry) { pendingWebDelete = entry }
+                    }
+                }
+            } header: {
+                Text("Pages with offline copies")
+            }
         }
         .formStyle(.grouped)
         .frame(height: 460)
@@ -303,10 +344,39 @@ private struct StorageSettingsTab: View {
         } message: {
             Text("This clears the extracted-text cache for every document. Your notes, highlights, and AI conversations are not affected — only cached text is removed, and it's rebuilt automatically the next time you open each document.")
         }
+        .confirmationDialog(
+            pendingWebDelete.map { "Remove the offline copy of \"\($0.displayTitle)\"?" } ?? "",
+            isPresented: webDeleteDialogBinding,
+            presenting: pendingWebDelete
+        ) { entry in
+            Button("Remove Offline Copy", role: .destructive) {
+                deleteWeb(entry)
+            }
+            .accessibilityIdentifier("storage.confirmWebDelete")
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes only the downloaded offline copy — your saved-pages list, highlights, and notes are not affected. Vellum downloads a fresh copy the next time you open this page.")
+        }
+        .confirmationDialog(
+            "Remove all offline copies?",
+            isPresented: $confirmingWebRemoveAll
+        ) {
+            Button("Remove All Offline Copies", role: .destructive) {
+                removeAllWeb()
+            }
+            .accessibilityIdentifier("storage.confirmWebRemoveAll")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the downloaded copy of every web page. Your saved-pages list, highlights, and notes are not affected — pages just load from the network (and re-download) the next time you open them.")
+        }
     }
 
     private var totalBytes: Int64 {
         entries.reduce(0) { $0 + $1.byteSize }
+    }
+
+    private var webTotalBytes: Int64 {
+        webEntries.reduce(0) { $0 + $1.byteSize }
     }
 
     /// Drive the per-row dialog off `pendingDelete`: dismiss clears the pending
@@ -318,10 +388,28 @@ private struct StorageSettingsTab: View {
         )
     }
 
+    private var webDeleteDialogBinding: Binding<Bool> {
+        Binding(
+            get: { pendingWebDelete != nil },
+            set: { if !$0 { pendingWebDelete = nil } }
+        )
+    }
+
     private func reload() async {
         isLoading = true
         entries = await PageTextCache.shared.listEntries()
         isLoading = false
+        isLoadingWeb = true
+        webEntries = await Self.listWebStorage()
+        isLoadingWeb = false
+    }
+
+    /// WebLibrary's listing walks the store directory and stats archive dirs —
+    /// keep it off the main thread (same reason PageTextCache is an actor).
+    private static func listWebStorage() async -> [WebLibrary.SnapshotStorageEntry] {
+        await Task.detached(priority: .userInitiated) {
+            WebLibrary.listSnapshotStorage()
+        }.value
     }
 
     // Optimistic local removal for immediate feedback, then a reload once the
@@ -340,6 +428,26 @@ private struct StorageSettingsTab: View {
         Task {
             await PageTextCache.shared.deleteAll()
             entries = await PageTextCache.shared.listEntries()
+        }
+    }
+
+    private func deleteWeb(_ entry: WebLibrary.SnapshotStorageEntry) {
+        webEntries.removeAll { $0.key == entry.key }
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                WebLibrary.removeLocalSnapshots(forKey: entry.key)
+            }.value
+            webEntries = await Self.listWebStorage()
+        }
+    }
+
+    private func removeAllWeb() {
+        webEntries = []
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                WebLibrary.removeAllSnapshotArtifacts()
+            }.value
+            webEntries = await Self.listWebStorage()
         }
     }
 }
@@ -398,5 +506,49 @@ private struct StorageCacheRow: View {
                     .foregroundStyle(palette.gold)
             }
         }
+    }
+}
+
+/// One downloaded web page: title (or URL), last-opened recency, whether the
+/// user saved it, artifact size, and a destructive per-row remove. Mirrors
+/// `StorageCacheRow` so the Storage tab reads as one system.
+private struct WebStorageRow: View {
+    let entry: WebLibrary.SnapshotStorageEntry
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayTitle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Text(entry.byteSize.formatted(.byteCount(style: .file)))
+                .font(.callout)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("webStorageRow.size.\(entry.key)")
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove offline copy")
+            .accessibilityLabel("Remove offline copy of \(entry.displayTitle)")
+            .accessibilityIdentifier("webStorageRow.delete.\(entry.key)")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("webStorageRow.\(entry.key)")
+    }
+
+    private var statusText: String {
+        let opened = entry.lastOpened?.formatted(.relative(presentation: .named)) ?? "—"
+        return "\(opened) · \(entry.saved ? "Saved" : "Not saved")"
     }
 }

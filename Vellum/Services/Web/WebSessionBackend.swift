@@ -190,8 +190,11 @@ final class WebDocumentSession: DocumentSession {
         try await writeWebArchive(pages: pages, dest: URL(fileURLWithPath: destPath))
     }
 
-    /// Automatic on-open archiver: writes the managed `.vellumweb` and marks
-    /// the record saved-if-absent so opened pages land in the library.
+    /// Automatic on-open archiver: writes the managed `.vellumweb` so the page
+    /// reloads offline and the AI can read it. Deliberately does NOT mark the
+    /// page saved — saving is an explicit user action (toolbar toggle) or an
+    /// implicit one (annotating promotes, see `WebDocumentIO.createAnnotation`);
+    /// artifacts for never-saved pages are TTL-evicted at launch.
     /// Returns false when the tab navigated away during the debounce.
     func archiveDefault(pages: [WebPageText], expectedUrl: String) async throws -> Bool {
         let expectedNormalized = (try? WebUrl.normalize(expectedUrl)) ?? expectedUrl
@@ -200,7 +203,6 @@ final class WebDocumentSession: DocumentSession {
         }
         let dest = WebLibrary.managedArchivePath(forKey: key)
         _ = try await writeWebArchive(pages: pages, dest: dest)
-        try await io.markSavedIfAbsent()
         return true
     }
 
@@ -337,6 +339,13 @@ actor WebDocumentIO {
             updatedAt: now)
         try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
             record.annotations.append(annotation)
+            // Annotating is user investment: promote the page into the saved
+            // library so explicit-save semantics can never strand highlights or
+            // notes on a page whose snapshots are eligible for TTL eviction.
+            if !record.saved {
+                record.saved = true
+                record.savedAt = record.savedAt ?? WebLibrary.rfc3339Now()
+            }
         }
         return annotation
     }
@@ -398,9 +407,5 @@ actor WebDocumentIO {
 
     func isSaved() -> Bool {
         WebLibrary.loadRecord(at: recordPath)?.saved ?? false
-    }
-
-    func markSavedIfAbsent() throws {
-        try WebLibrary.markSavedIfAbsent(recordPath: recordPath, url: url)
     }
 }
