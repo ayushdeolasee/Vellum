@@ -143,7 +143,7 @@ enum WebUrl {
         }
 
         var out = "\(scheme)://"
-        if let userinfo, !userinfo.isEmpty { out += "\(userinfo)@" }
+        if let userinfo, !userinfo.isEmpty { out += "\(encodeUserinfo(userinfo))@" }
         out += host
         if let port { out += ":\(port)" }
         out += path
@@ -285,9 +285,27 @@ enum WebUrl {
     }
 
     private static func encodePathSegment(_ segment: String) -> String {
+        let bytes = Array(segment.utf8)
         var out = ""
-        for byte in segment.utf8 {
+        var i = 0
+        func isHex(_ b: UInt8) -> Bool {
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+        }
+        while i < bytes.count {
+            let byte = bytes[i]
             let c = Character(UnicodeScalar(byte))
+            if c == "%" {
+                // Keep valid %XX escapes verbatim (they're already-encoded input);
+                // a stray % would otherwise produce an invalid URL that
+                // URL(string:) rejects or re-encodes, breaking round-trip identity.
+                if i + 2 < bytes.count, isHex(bytes[i + 1]), isHex(bytes[i + 2]) {
+                    out.append("%")
+                } else {
+                    out += "%25"
+                }
+                i += 1
+                continue
+            }
             let needsEncoding = byte < 0x20 || byte > 0x7e
                 || c == " " || c == "\"" || c == "<" || c == ">" || c == "`"
                 || c == "#" || c == "?" || c == "{" || c == "}"
@@ -296,6 +314,45 @@ enum WebUrl {
             } else {
                 out.append(c)
             }
+            i += 1
+        }
+        return out
+    }
+
+    /// RFC 3986 userinfo: unreserved / pct-encoded / sub-delims / ":".
+    /// Everything else — including a raw "@" from a multi-@ authority — gets
+    /// percent-encoded so normalize's WHATWG-style split (last "@") and
+    /// Foundation's URLComponents re-parse in realUrl agree on the same host.
+    private static func encodeUserinfo(_ userinfo: String) -> String {
+        let bytes = Array(userinfo.utf8)
+        var out = ""
+        var i = 0
+        func isHex(_ b: UInt8) -> Bool {
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+        }
+        // unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~"
+        // sub-delims: "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+        // plus ":" — all allowed verbatim in userinfo.
+        let allowedExtras: Set<Character> = ["-", ".", "_", "~", "!", "$", "&", "'", "(", ")", "*", "+", ",", ";", "=", ":"]
+        while i < bytes.count {
+            let byte = bytes[i]
+            let c = Character(UnicodeScalar(byte))
+            if c == "%" {
+                if i + 2 < bytes.count, isHex(bytes[i + 1]), isHex(bytes[i + 2]) {
+                    out.append("%")
+                } else {
+                    out += "%25"
+                }
+                i += 1
+                continue
+            }
+            let isUnreserved = (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A) || (byte >= 0x30 && byte <= 0x39)
+            if isUnreserved || allowedExtras.contains(c) {
+                out.append(c)
+            } else {
+                out += String(format: "%%%02X", byte)
+            }
+            i += 1
         }
         return out
     }
@@ -707,7 +764,14 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         } else {
             mapped = "\(scheme)://\(target)"
         }
-        return URL(string: mapped) ?? URL(string: "\(scheme)://\(snapshotHost)/")!
+        guard let url = URL(string: mapped) else {
+            // Normalize's output should always be URL(string:)-parseable; reaching
+            // here means an encoding gap upstream — surface it in debug instead of
+            // silently rebinding the tab to an empty snapshot page.
+            assertionFailure("proxyUrl: unparseable mapped URL for target \(target)")
+            return URL(string: "\(scheme)://\(snapshotHost)/")!
+        }
+        return url
     }
 
     /// Reader URL that explicitly requests the offline snapshot for a page
