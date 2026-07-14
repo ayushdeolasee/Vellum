@@ -983,12 +983,14 @@ final class PdfViewerController {
         return CGSize(width: crop.width, height: crop.height)
     }
 
-    // MARK: - AI region snapshot (drag-to-crop)
+    // MARK: - Scratchpad region snapshot (drag-to-crop)
 
     /// Crop a JPEG snapshot of the page under `viewerRect` (viewer top-left
-    /// coordinates, the SwiftUI overlay space). Returns nil if the rect misses
-    /// any page or is too small to be useful.
-    func capturePageRegion(viewerRect rect: CGRect) -> AiPageImageSnapshot? {
+    /// coordinates, the SwiftUI overlay space) for the scratchpad. Returns nil
+    /// if the rect misses any page or is too small to be useful. Adapted from
+    /// the AI branch's `capturePageRegion`, but yields raw bytes so the
+    /// attachment store can write them straight to disk.
+    func capturePageRegionData(viewerRect rect: CGRect) -> ScratchpadImageCapture? {
         guard let pdfView, let document else { return nil }
         let nativeCenter = topLeftPoint(CGPoint(x: rect.midX, y: rect.midY))
         guard let page = pdfView.page(for: nativeCenter, nearest: true) else { return nil }
@@ -1009,7 +1011,13 @@ final class PdfViewerController {
 
         // Render the whole page upright, then crop. Scale so the region is
         // legible (≤1280 on its long side) without blowing up tiny selections.
-        let scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        var scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        // The scale drives the *whole* page bitmap, so a tiny selection on a
+        // large page (big dims × up to 3×) could allocate a huge image on the
+        // main actor. Cap the full-page long side to keep the allocation bounded.
+        let maxFullSide = 4096.0
+        let fullLong = Double(max(dims.width, dims.height)) * scale
+        if fullLong > maxFullSide { scale *= maxFullSide / fullLong }
         let fullW = Int((Double(dims.width) * scale).rounded())
         let fullH = Int((Double(dims.height) * scale).rounded())
         guard fullW > 0, fullH > 0 else { return nil }
@@ -1038,14 +1046,15 @@ final class PdfViewerController {
         ).integral
         guard let cropped = full.cropping(to: cropRect) else { return nil }
         let outRep = NSBitmapImageRep(cgImage: cropped)
-        guard let jpeg = outRep.representation(using: .jpeg, properties: [.compressionFactor: 0.72])
-        else { return nil }
-        return AiPageImageSnapshot(
-            pageNumber: pageNumber,
-            base64Data: jpeg.base64EncodedString(),
+        guard let jpeg = outRep.representation(
+            using: .jpeg, properties: [.compressionFactor: 0.72]) else { return nil }
+        return ScratchpadImageCapture(
+            data: jpeg,
+            fileExtension: "jpg",
             mediaType: "image/jpeg",
             width: cropped.width,
-            height: cropped.height
+            height: cropped.height,
+            pageNumber: pageNumber
         )
     }
 

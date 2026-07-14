@@ -15,11 +15,11 @@
 		0D3CE241E348F29664150A60 /* 2106.09685v2.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 2F713F483B16BF74AFBF8BDB /* 2106.09685v2.pdf */; };
 		115E39AAB39E90058E9718A7 /* PdfMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */; };
 		18277300524A92AEDAAAEA7E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027E09C0BD7A98F4590A5878 /* ContentView.swift */; };
-		19026EE9153EC91FE9D3DB80 /* ComposerReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */; };
+		19AFBFF3BAA5766009AF0249 /* ScratchpadPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */; };
 		1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */; };
 		1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4C07C56943274B9E062A70 /* RecentFilesService.swift */; };
 		1FCCAC565DBDC21D62F833FB /* PdfBookmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */; };
-		20E616379933A3084F6D8559 /* Sandler Nora - Writing a C Compiler - 2024 copy.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 73687C1C3BFE42DA8360A30B /* Sandler Nora - Writing a C Compiler - 2024 copy.pdf */; };
+		23A2C045833B0AC94C796A25 /* ScratchpadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */; };
 		2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54417DBF142FD33E6B2F6672 /* SettingsView.swift */; };
 		249CCA82E8B519D78426C055 /* PageTextCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5513F929B10D107AED515D1E /* PageTextCache.swift */; };
 		25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */; };
@@ -37,8 +37,8 @@
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
 		4E8BAA1F3AEC100D4C768AFA /* PaneTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B863B676278E0E8D3C2EDB /* PaneTree.swift */; };
 		4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */; };
-		51EFE28F82BCABBB7BDCB589 /* WebProxyUrlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */; };
-		52FA425B6737E6A4717AEC4E /* PdfSelectionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */; };
+		52970DA91096DD662E90F79C /* katex in Resources */ = {isa = PBXBuildFile; fileRef = 2CADEC4841692F5B4AC0D752 /* katex */; };
+    	52FA425B6737E6A4717AEC4E /* PdfSelectionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */; };
 		53621485E83DB998CCBA6163 /* Controls.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2630E8BE36D65B9E485FD6F /* Controls.swift */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
 		5B03B492166927E475F24088 /* webpages.txt in Resources */ = {isa = PBXBuildFile; fileRef = 76F848D6FF94C070FE015FC1 /* webpages.txt */; };
@@ -52,6 +52,7 @@
 		7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */; };
 		7D9B2DD341CC211DB9B8D87B /* gpt-5-5.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 117E03CBB763404A8E264080 /* gpt-5-5.pdf */; };
 		806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5003641A54B311693588C6C /* PdfPersistenceTests.swift */; };
+		AA01AA01AA01AA01AA01AA01 /* ScratchpadImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */; };
 		82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B19F1048CA6DE0E71C521DB /* VellumApp.swift */; };
 		885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */ = {isa = PBXBuildFile; fileRef = 8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */; };
@@ -76,6 +77,7 @@
 		BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
 		C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
+		C98B0CB3FF706457724E5EF2 /* ScratchpadPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
 		D0E1C1D4A6D6A54C194A3389 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
@@ -123,6 +125,7 @@
 		195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAnnotationCodec.swift; sourceTree = "<group>"; };
 		1F46B61030259DEFD1791C35 /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf"; sourceTree = "<group>"; };
 		2423823E0BE86C417B6ABBC6 /* AiPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPanel.swift; sourceTree = "<group>"; };
+		2CADEC4841692F5B4AC0D752 /* katex */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder; name = katex; path = katex; sourceTree = "<group>"; };
 		2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionPopover.swift; sourceTree = "<group>"; };
 		2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAtomicWriter.swift; sourceTree = "<group>"; };
 		2F713F483B16BF74AFBF8BDB /* 2106.09685v2.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = 2106.09685v2.pdf; sourceTree = "<group>"; };
@@ -154,9 +157,8 @@
 		7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSelector.swift; sourceTree = "<group>"; };
 		7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMessageText.swift; sourceTree = "<group>"; };
 		7E4C07C56943274B9E062A70 /* RecentFilesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentFilesService.swift; sourceTree = "<group>"; };
-		7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField.swift; sourceTree = "<group>"; };
-		7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
-		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
+		8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScratchpadPersistence.swift; path = Scratchpad/ScratchpadPersistence.swift; sourceTree = "<group>"; };
+    	87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
 		88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-native.md"; sourceTree = "<group>"; };
 		8909CC21C72AF947D20B4B6C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		89E21441131E7C57CE324E83 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -172,20 +174,21 @@
 		9D58D6980122701CBA30200F /* Vellum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vellum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A17D3131ADA1819B327BDBB6 /* AiUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiUsage.swift; sourceTree = "<group>"; };
 		A5003641A54B311693588C6C /* PdfPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfPersistenceTests.swift; sourceTree = "<group>"; };
+		BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadImportTests.swift; sourceTree = "<group>"; };
 		ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebNotePopovers.swift; sourceTree = "<group>"; };
 		ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolEngine.swift; sourceTree = "<group>"; };
 		B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationStore.swift; sourceTree = "<group>"; };
 		B6E95679B108A0702A0657D8 /* PKCE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PKCE.swift; sourceTree = "<group>"; };
 		B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfBookmarks.swift; sourceTree = "<group>"; };
+		B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScratchpadPanel.swift; path = Scratchpad/ScratchpadPanel.swift; sourceTree = "<group>"; };
 		BE90299DD7109284EF8AE43D /* OpenAIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIClient.swift; sourceTree = "<group>"; };
 		C1F083E5C02A66A025F06638 /* WebContentScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebContentScript.swift; sourceTree = "<group>"; };
 		C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfMetadata.swift; sourceTree = "<group>"; };
 		C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiClient.swift; sourceTree = "<group>"; };
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
 		C75C2F535B12256E191B781C /* PdfKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView.swift; sourceTree = "<group>"; };
-		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
-		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
-		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScratchpadStore.swift; sourceTree = "<group>"; };
+    	D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
 		D3CAB49027A12E44326845CD /* mathematics-for-ML-book copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "mathematics-for-ML-book copy.pdf"; sourceTree = "<group>"; };
 		D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickyNoteOverlay.swift; sourceTree = "<group>"; };
@@ -272,7 +275,7 @@
 				01F38132FDC803C6ACEB43CC /* AiStore.swift */,
 				B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */,
 				8909CC21C72AF947D20B4B6C /* AppStore.swift */,
-				D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */,
+				CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */,
 			);
 			path = Stores;
 			sourceTree = "<group>";
@@ -285,10 +288,8 @@
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
-				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
-				9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */,
-				43B4EBD839E1995466CD1BB0 /* Texts */,
-			);
+				BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */,
+		);
 			path = Tests;
 			sourceTree = "<group>";
 		};
@@ -319,6 +320,14 @@
 			path = Pdf;
 			sourceTree = "<group>";
 		};
+		4BF748CF688186B499A529BB /* Scratchpad */ = {
+			isa = PBXGroup;
+			children = (
+				B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */,
+			);
+			name = Scratchpad;
+			sourceTree = "<group>";
+		};
 		56D87A80DF8E1AA17B98162B /* AI */ = {
 			isa = PBXGroup;
 			children = (
@@ -345,6 +354,7 @@
 				1B073A6D74EA890EC3F5822C /* Ai */,
 				47FAD68CA0A1ACEF82AC6427 /* Pdf */,
 				C66AF06BB00C617BFD3DEA2D /* Web */,
+				98C20ACA5E313BF50857224B /* Scratchpad */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -371,8 +381,17 @@
 				E885B27438CC0785E6E14E58 /* Shared */,
 				C6CDE13664DE990BD98250D1 /* Web */,
 				CF0E2D9A717E39ABDB39C16B /* Welcome */,
+				4BF748CF688186B499A529BB /* Scratchpad */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		98C20ACA5E313BF50857224B /* Scratchpad */ = {
+			isa = PBXGroup;
+			children = (
+				8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */,
+			);
+			name = Scratchpad;
 			sourceTree = "<group>";
 		};
 		9E8E2E8E13FD91020A96EDCA /* Vellum */ = {
@@ -442,6 +461,7 @@
 				89E21441131E7C57CE324E83 /* AppIcon.icns */,
 				460DC0522689EC17EC0D233B /* Info.plist */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
+				2CADEC4841692F5B4AC0D752 /* katex */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -514,10 +534,7 @@
 			dependencies = (
 			);
 			name = Vellum;
-			packageProductDependencies = (
-				0F9E9D97558DCF004997C26D /* SwiftMath */,
-			);
-			productName = Vellum;
+		productName = Vellum;
 			productReference = 9D58D6980122701CBA30200F /* Vellum.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -534,8 +551,6 @@
 				AF0218184581BFCA23F3D3BA /* PBXTargetDependency */,
 			);
 			name = VellumTests;
-			packageProductDependencies = (
-			);
 			productName = VellumTests;
 			productReference = 775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -583,6 +598,7 @@
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
 				AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */,
 				885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */,
+				52970DA91096DD662E90F79C /* katex in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -676,9 +692,10 @@
 				25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */,
 				41BD8A6E46D11F7BC0BF6D13 /* WebViewerView.swift in Sources */,
 				29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */,
-				776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */,
-				96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */,
-			);
+				C98B0CB3FF706457724E5EF2 /* ScratchpadPersistence.swift in Sources */,
+				23A2C045833B0AC94C796A25 /* ScratchpadStore.swift in Sources */,
+				19AFBFF3BAA5766009AF0249 /* ScratchpadPanel.swift in Sources */,
+		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		FCD73DBD5880085D87802AB3 /* Sources */ = {
@@ -690,9 +707,8 @@
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
 				806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */,
-				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
-				51EFE28F82BCABBB7BDCB589 /* WebProxyUrlTests.swift in Sources */,
-			);
+				AA01AA01AA01AA01AA01AA01 /* ScratchpadImportTests.swift in Sources */,
+		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */

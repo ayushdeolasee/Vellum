@@ -79,12 +79,61 @@ final class AppStore {
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
-    /// The window's workspace. One AppStore now backs one *pane*; app-global
-    /// shell state (inspector open/tab, sidebar text size, default highlight
-    /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
-    /// workspace owns the pane which owns this store.
-    weak var workspace: WorkspaceStore?
+    // Shell state (App.tsx locals)
+    var sidebarOpen = true
+    var sidebarTab: SidebarTab = .annotations
 
+    enum SidebarTab { case annotations, ai, scratchpad }
+
+    // Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
+    static let minSidebarFontSize: Double = 10
+    static let maxSidebarFontSize: Double = 24
+    private static let sidebarFontSizeKey = "sidebarFontSize"
+
+    var sidebarFontSize: Double = {
+        let stored = UserDefaults.standard.double(forKey: "sidebarFontSize")
+        return stored == 0 ? 14 : min(AppStore.maxSidebarFontSize, max(AppStore.minSidebarFontSize, stored))
+    }() {
+        didSet {
+            UserDefaults.standard.set(sidebarFontSize, forKey: Self.sidebarFontSizeKey)
+        }
+    }
+
+    // Default highlight color — applied to new highlights created without an
+    // explicit color (e.g. AI tool highlights, webpage sidecar defaults). One of
+    // HIGHLIGHT_COLORS[*].value; editable from Settings ▸ Annotations.
+    static let defaultHighlightColorKey = "vellum.defaultHighlightColor"
+
+    var defaultHighlightColor: String = {
+        let stored = UserDefaults.standard.string(forKey: AppStore.defaultHighlightColorKey)
+        // Reject stale values no longer in the palette.
+        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
+            return stored
+        }
+        return HIGHLIGHT_COLORS[0].value
+    }() {
+        didSet {
+            UserDefaults.standard.set(defaultHighlightColor, forKey: Self.defaultHighlightColorKey)
+        }
+    }
+
+    /// The persisted default highlight color read without an AppStore instance
+    /// (services that create annotations off the main store, e.g. web sidecars).
+    static func storedDefaultHighlightColor() -> String {
+        let stored = UserDefaults.standard.string(forKey: defaultHighlightColorKey)
+        if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
+            return stored
+        }
+        return HIGHLIGHT_COLORS[0].value
+    }
+
+    func increaseSidebarFont() {
+        sidebarFontSize = min(Self.maxSidebarFontSize, sidebarFontSize + 1)
+    }
+
+    func decreaseSidebarFont() {
+        sidebarFontSize = max(Self.minSidebarFontSize, sidebarFontSize - 1)
+    }
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
     var zoomToHandler: ((Double) -> Void)?
@@ -476,27 +525,10 @@ final class AppStore {
 
     func setMode(_ mode: InteractionMode) {
         self.mode = mode
-        // Leaving note placement (or entering the plain note tool) drops any
-        // AI-reply payload queued for the next placement.
-        if mode != .note { pendingNoteContent = nil }
         // `snapshotRegion` is a transient capture gesture — never persist it to
-        // the tab, or restoring the tab would reopen the marquee overlay.
+        // a tab (a reopened tab must not resurrect a half-started crop).
         if mode != .snapshotRegion { updateActiveTab { $0.mode = mode } }
-    }
 
-    /// Enter note-placement mode carrying an AI reply: the next click on the
-    /// page drops a pre-filled sticky note instead of an empty one. Used by the
-    /// AI panel's "Add as note" action.
-    func beginNoteWithContent(_ content: String) {
-        pendingNoteContent = content
-        setMode(.note)
-    }
-
-    /// Consumed by the viewer when it places a note; nil once used.
-    func consumePendingNoteContent() -> String? {
-        let content = pendingNoteContent
-        pendingNoteContent = nil
-        return content
     }
 
     // MARK: - Internals
