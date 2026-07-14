@@ -24,11 +24,17 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
-    enum SidebarTab: Sendable { case annotations, ai }
+    enum SidebarTab: Sendable { case annotations, ai, scratchpad }
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
     let settingsAi: AiStore
+
+    /// Window-wide, shared by every pane's AiStore: the OpenRouter model catalog
+    /// (fetched once, capability lookups) and the ChatGPT-subscription OAuth
+    /// session (sign-in state + token refresh).
+    let openRouterCatalog: OpenRouterCatalog
+    let chatgptAuth: ChatGPTAuth
 
     // MARK: Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
 
@@ -147,8 +153,15 @@ final class WorkspaceStore {
 
     init(sessions: SessionService) {
         self.sessions = sessions
-        self.settingsAi = AiStore()
-        let pane = PaneModel(sessions: sessions)
+        let catalog = OpenRouterCatalog()
+        let auth = ChatGPTAuth()
+        let settingsAi = AiStore()
+        settingsAi.openRouterCatalog = catalog
+        settingsAi.chatgptAuth = auth
+        self.settingsAi = settingsAi
+        self.openRouterCatalog = catalog
+        self.chatgptAuth = auth
+        let pane = PaneModel(sessions: sessions, openRouterCatalog: catalog, chatgptAuth: auth)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
@@ -173,7 +186,8 @@ final class WorkspaceStore {
     // MARK: - Pane construction
 
     private func makePane(startTab: Bool) -> PaneModel {
-        let pane = PaneModel(sessions: sessions)
+        let pane = PaneModel(
+            sessions: sessions, openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
         return pane

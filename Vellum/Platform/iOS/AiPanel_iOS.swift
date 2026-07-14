@@ -4,9 +4,12 @@ import UIKit
 
 // Touch-first port of the macOS AI chat panel (Views/AI/AiPanel.swift). Same
 // message list, thinking/error/empty states, and settings — but the composer
-// is a native SwiftUI TextField/TextEditor instead of an NSTextView, and the
-// push-to-talk mic is a plain tap toggle instead of a click-drag gesture
-// (there's no mouse-down/mouse-up on a touch surface).
+// is a native SwiftUI TextField/TextEditor instead of an NSTextView.
+//
+// NOTE (Phase 1): this is a minimal compile-only shim against the new AiStore
+// API (AiActivity/AiThinkingMode). Voice/TTS was removed to mirror main; the
+// full feature rewrite (streaming UI, activity pill, references, image
+// attachments, usage) lands in Phase 2.
 struct AiPanel_iOS: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(AppStore.self) private var appStore
@@ -15,29 +18,19 @@ struct AiPanel_iOS: View {
 
     @State private var input = ""
     @State private var settingsOpen = false
-    @State private var isListening = false
-    @State private var speechService = SpeechService()
     @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
             if settingsOpen {
-                AiSettingsPanel(onStopRecognition: stopListening)
+                AiSettingsPanel()
             }
             messages
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.surface)
-        .onAppear { speakLatestIfNeeded() }
-        .onChange(of: aiStore.messages) { _, _ in speakLatestIfNeeded() }
-        .onChange(of: aiStore.isThinking) { _, _ in speakLatestIfNeeded() }
-        .onChange(of: aiStore.settings.ttsEnabled) { _, _ in speakLatestIfNeeded() }
-        .onDisappear {
-            speechService.stopRecognition()
-            speechService.cancelSpeech()
-        }
     }
 
     // MARK: - Header
@@ -216,10 +209,6 @@ struct AiPanel_iOS: View {
                 .padding(.horizontal, 10)
                 .frame(minHeight: 40)
 
-            if aiStore.settings.voiceMode == .pushToTalk {
-                micButton
-            }
-
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 15))
@@ -237,26 +226,6 @@ struct AiPanel_iOS: View {
         .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
         .padding(12)
         .overlay(alignment: .top) { Divider() }
-    }
-
-    /// Push-to-talk on a touch surface: tap to start, tap again to stop —
-    /// the macOS mouse-down/mouse-up gesture has no touch equivalent, so this
-    /// is a simple toggle rather than a hold gesture.
-    private var micButton: some View {
-        Button {
-            isListening ? stopListening() : startListening()
-        } label: {
-            Image(systemName: isListening ? "stop.fill" : "mic")
-                .font(.system(size: 15))
-                .foregroundStyle(isListening ? palette.destructiveForeground : palette.mutedForeground)
-                .frame(width: 44, height: 44)
-                .background(isListening ? palette.destructive : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isListening ? "Stop listening" : "Push to talk")
-        .accessibilityIdentifier("aiPanel.pushToTalk")
     }
 
     private var isSendDisabled: Bool {
@@ -289,39 +258,6 @@ struct AiPanel_iOS: View {
             )
             await aiStore.sendMessage(trimmed, context: context)
         }
-    }
-
-    // MARK: - Voice
-
-    private func startListening() {
-        guard aiStore.settings.voiceMode == .pushToTalk else { return }
-        aiStore.setErrorState(nil)
-        Task {
-            do {
-                try await speechService.startRecognition(
-                    onTranscript: { transcript in
-                        input = input.isEmpty ? transcript : "\(input) \(transcript)"
-                    },
-                    onStateChange: { isListening = $0 }
-                )
-            } catch {
-                isListening = false
-                if error.localizedDescription == SpeechService.unavailableMessage {
-                    aiStore.setErrorState(SpeechService.unavailableMessage)
-                }
-            }
-        }
-    }
-
-    private func stopListening() {
-        speechService.stopRecognition()
-        isListening = false
-    }
-
-    private func speakLatestIfNeeded() {
-        guard aiStore.settings.ttsEnabled, !aiStore.isThinking,
-              let message = aiStore.messages.last(where: { $0.role == .assistant }) else { return }
-        speechService.speak(message: message)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {

@@ -4,6 +4,10 @@ options:
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
+packages:
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath
+    exactVersion: 1.7.3
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -46,6 +50,8 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Info-iOS.plist"
+    dependencies:
+      - package: SwiftMath
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum

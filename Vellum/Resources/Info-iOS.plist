@@ -99,10 +99,6 @@
 			<dict/>
 		</dict>
 	</array>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Vellum uses the microphone for voice input to the AI assistant.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Vellum uses speech recognition for push-to-talk voice input.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

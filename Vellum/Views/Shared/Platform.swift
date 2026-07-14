@@ -35,3 +35,27 @@ extension Color {
     /// (PDFView backgrounds, PDFAnnotation colors, etc.).
     var platformColor: PlatformColor { PlatformColor(self) }
 }
+
+extension Image {
+    /// Bridge a platform image (NSImage/UIImage) into a SwiftUI `Image` without
+    /// callers needing to branch on the platform.
+    init(platformImage: PlatformImage) {
+        #if os(macOS)
+        self.init(nsImage: platformImage)
+        #else
+        self.init(uiImage: platformImage)
+        #endif
+    }
+}
+
+extension PlatformImage {
+    /// Set the VoiceOver description in a cross-platform way. On AppKit this is
+    /// `accessibilityDescription`; on UIKit the informal `accessibilityLabel`.
+    func setAccessibilityDescription(_ description: String) {
+        #if os(macOS)
+        accessibilityDescription = description
+        #else
+        accessibilityLabel = description
+        #endif
+    }
+}

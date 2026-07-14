@@ -9,6 +9,13 @@ import SwiftUI
 // locator/snapshot handlers on the stores — the same contract as the macOS
 // PdfViewerView.
 
+/// Carries a prepared (parsed + stripped) PDFDocument out of a detached task.
+/// PDFDocument isn't Sendable, but this instance is freshly created there and
+/// never touched off-main again, so the crossing is safe.
+private struct PreparedPdf: @unchecked Sendable {
+    let document: PDFDocument?
+}
+
 struct PdfViewerView_iOS: View {
     var ink: InkController_iOS
 
@@ -81,11 +88,35 @@ struct PdfViewerView_iOS: View {
         loadState = .loading
         aiStore.clearDocumentContext()
         do {
-            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
-            guard let document = PDFDocument(data: data) else {
-                loadState = .parseFailed
-                return
+            let document: PDFDocument
+            if let cached = app.cachedPreparedPdf(tabId: tabId) {
+                // Fast path: this tab was opened recently — reuse the prepared
+                // document, skipping the disk read, parse, and strip entirely.
+                document = cached
+            } else {
+                let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+                guard !Task.isCancelled, app.activeTabId == tabId else { return }
+                // Parse the PDF and strip its embedded annotations OFF the main
+                // thread — both are heavy CGPDF work that would otherwise freeze
+                // the UI (beachball) on every tab switch for a large document.
+                // The document isn't attached to any view yet, so this is safe.
+                let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
+                    guard let document = PDFDocument(data: data) else { return PreparedPdf(document: nil) }
+                    for index in 0..<document.pageCount {
+                        guard let page = document.page(at: index) else { continue }
+                        for annotation in page.annotations {
+                            page.removeAnnotation(annotation)
+                        }
+                    }
+                    return PreparedPdf(document: document)
+                }.value
+                guard !Task.isCancelled, app.activeTabId == tabId else { return }
+                guard let parsed = prepared.document else {
+                    loadState = .parseFailed
+                    return
+                }
+                app.storePreparedPdf(parsed, tabId: tabId)
+                document = parsed
             }
             controller.adopt(
                 document: document,

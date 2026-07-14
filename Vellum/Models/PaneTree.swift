@@ -20,13 +20,20 @@ final class PaneModel: Identifiable {
     let annotations: AnnotationStore
     let ai: AiStore
 
-    init(id: String = "pane-" + UUID().uuidString.lowercased(), sessions: SessionService) {
+    init(
+        id: String = "pane-" + UUID().uuidString.lowercased(),
+        sessions: SessionService,
+        openRouterCatalog: OpenRouterCatalog,
+        chatgptAuth: ChatGPTAuth
+    ) {
         self.id = id
         let app = AppStore(sessions: sessions)
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
         ai.app = app
         ai.annotationStore = annotations
+        ai.openRouterCatalog = openRouterCatalog
+        ai.chatgptAuth = chatgptAuth
         self.app = app
         self.annotations = annotations
         self.ai = ai

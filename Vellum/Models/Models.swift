@@ -153,6 +153,9 @@ struct WebPageText: Sendable {
 enum InteractionMode: String, Codable, Sendable {
     case view
     case note
+    /// Drag a rectangle over the page to snapshot that region into the
+    /// scratchpad. Transient (never persisted to a tab); returns to `.view`.
+    case snapshotRegion
 }
 
 struct WebVisibleRange: Equatable, Sendable {

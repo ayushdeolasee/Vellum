@@ -130,7 +130,15 @@ struct WebViewerView_iOS: View {
             .onChange(of: app.mode) {
                 controller.pushMode(app.mode)
             }
+            // Observe the request counter too: re-tapping the already-selected
+            // sidebar highlight leaves `selectedAnnotationId` unchanged, so the
+            // counter is what forces the scroll-into-view to re-run.
             .onChange(of: annotationStore.selectedAnnotationId) {
+                controller.scrollToSelected(
+                    annotations: annotationStore.annotations,
+                    selectedId: annotationStore.selectedAnnotationId)
+            }
+            .onChange(of: annotationStore.selectionRequestCount) {
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
                     selectedId: annotationStore.selectedAnnotationId)

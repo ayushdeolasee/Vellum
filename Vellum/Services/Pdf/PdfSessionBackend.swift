@@ -278,7 +278,7 @@ final class PdfDocumentSession: DocumentSession {
 
         var data = try serialize(document)
         PdfBytePatch.apply(patches, to: &data)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try Self.writeAndRefreshCache(data, path: path)
 
         return Annotation(
             id: id,
@@ -325,7 +325,7 @@ final class PdfDocumentSession: DocumentSession {
         }
 
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try Self.writeAndRefreshCache(data, path: path)
         return true
     }
 
@@ -370,7 +370,7 @@ final class PdfDocumentSession: DocumentSession {
 
         page.removeAnnotation(annotation)
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try Self.writeAndRefreshCache(data, path: path)
         return true
     }
 
@@ -467,6 +467,18 @@ final class PdfDocumentSession: DocumentSession {
         return data
     }
 
+    /// Atomically write already-serialized PDF data and re-key the persistent
+    /// page-text cache to the rewrite. In-app writes are text-neutral
+    /// (annotations render from overlays; page content is unchanged), so the
+    /// cache refreshes its validation hash instead of invalidating — avoids a
+    /// full re-extraction on the next read (issue #37 PR B). Detached because
+    /// the `PdfFileGate` closure is synchronous; `PageTextCache` is an actor, so
+    /// concurrent refreshes serialize and the latest write's data wins.
+    nonisolated private static func writeAndRefreshCache(_ data: Data, path: String) throws {
+        try PdfAtomicWriter.save(data, toPath: path)
+        Task { await PageTextCache.shared.refreshHash(path: path, data: data) }
+    }
+
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
     nonisolated private static func saveThroughPdfKit(_ patchedData: Data, path: String) throws {
@@ -474,6 +486,6 @@ final class PdfDocumentSession: DocumentSession {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try Self.writeAndRefreshCache(data, path: path)
     }
 }

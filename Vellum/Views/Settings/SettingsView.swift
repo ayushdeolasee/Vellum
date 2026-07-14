@@ -206,32 +206,19 @@ private struct AiSettingsTab: View {
                 Picker("Provider", selection: providerBinding) {
                     Text("Gemini").tag(AiProvider.gemini)
                     Text("OpenAI API").tag(AiProvider.openai)
-                    Text("Codex CLI").tag(AiProvider.codex)
                 }
 
-                if aiStore.settings.provider != .codex {
-                    SecureField(
-                        aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key",
-                        text: apiKeyBinding,
-                        prompt: Text(aiStore.settings.provider == .openai ? "sk-…" : "AIza…")
-                    )
-                }
+                SecureField(
+                    aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key",
+                    text: apiKeyBinding,
+                    prompt: Text(aiStore.settings.provider == .openai ? "sk-…" : "AIza…")
+                )
 
                 Picker("Model", selection: modelBinding) {
                     ForEach(models, id: \.self) { Text($0).tag($0) }
                 }
             } header: {
                 Text("Assistant")
-            }
-
-            Section {
-                Picker("Voice mode", selection: voiceBinding) {
-                    Text("Off").tag(VoiceMode.off)
-                    Text("Push-to-talk").tag(VoiceMode.pushToTalk)
-                }
-                Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
-            } header: {
-                Text("Voice")
             }
         }
         .formStyle(.grouped)
@@ -266,35 +253,17 @@ private struct AiSettingsTab: View {
             get: {
                 switch aiStore.settings.provider {
                 case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
+                default: aiStore.settings.openaiModel
                 }
             },
             set: { value in
                 var settings = aiStore.settings
                 switch settings.provider {
                 case .gemini: settings.model = value
-                case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
+                default: settings.openaiModel = value
                 }
                 aiStore.setSettings(settings)
             }
         )
-    }
-
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            var settings = aiStore.settings
-            settings.voiceMode = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
-            settings.ttsEnabled = value
-            aiStore.setSettings(settings)
-        })
     }
 }

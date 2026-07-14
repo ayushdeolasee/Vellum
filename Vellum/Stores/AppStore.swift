@@ -68,12 +68,22 @@ final class AppStore {
     // Active interaction mode
     private(set) var mode: InteractionMode = .view
 
+    /// AI reply queued for the next note placement (see `beginNoteWithContent`).
+    /// Not per-tab: it is short-lived and consumed on the very next click.
+    private(set) var pendingNoteContent: String?
+
     // Find bar (⌘F). `findVisible` drives the slim bar under the toolbar; the
     // counts are reported back by whichever viewer is active.
     var findVisible = false
     private(set) var findMatchCount = 0
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
+
+    /// Where a `.snapshotRegion` drag sends its crop. Both the AI panel and the
+    /// scratchpad panel arm the same capture mode, so the viewer overlays read
+    /// this to know which store to hand the snapshot to.
+    enum RegionCaptureTarget { case ai, scratchpad }
+    private(set) var regionCaptureTarget: RegionCaptureTarget = .ai
 
     /// The window's workspace. One AppStore now backs one *pane*; app-global
     /// shell state (inspector open/tab, sidebar text size, default highlight
@@ -98,6 +108,10 @@ final class AppStore {
     var findClearHandler: (() -> Void)?
     /// Print the active document (PDF print operation / WKWebView print).
     var printHandler: (() -> Void)?
+    /// Registered by the PDF viewer: flush pending extracted page text to the
+    /// persistent cache. Awaited on quit so a mid-walk document keeps what it
+    /// has (issue #37 PR B).
+    var flushPageTextCacheHandler: (() async -> Void)?
 
     init(sessions: SessionService) {
         self.sessions = sessions
@@ -468,7 +482,34 @@ final class AppStore {
 
     func setMode(_ mode: InteractionMode) {
         self.mode = mode
-        updateActiveTab { $0.mode = mode }
+        // Leaving note placement (or entering the plain note tool) drops any
+        // AI-reply payload queued for the next placement.
+        if mode != .note { pendingNoteContent = nil }
+        // `snapshotRegion` is a transient capture gesture — never persist it to
+        // the tab, or restoring the tab would reopen the marquee overlay.
+        if mode != .snapshotRegion { updateActiveTab { $0.mode = mode } }
+    }
+
+    /// Arm drag-to-crop region capture, recording which panel asked for it so
+    /// the viewer overlay routes the resulting snapshot to the right store.
+    func beginRegionCapture(target: RegionCaptureTarget) {
+        regionCaptureTarget = target
+        setMode(.snapshotRegion)
+    }
+
+    /// Enter note-placement mode carrying an AI reply: the next click on the
+    /// page drops a pre-filled sticky note instead of an empty one. Used by the
+    /// AI panel's "Add as note" action.
+    func beginNoteWithContent(_ content: String) {
+        pendingNoteContent = content
+        setMode(.note)
+    }
+
+    /// Consumed by the viewer when it places a note; nil once used.
+    func consumePendingNoteContent() -> String? {
+        let content = pendingNoteContent
+        pendingNoteContent = nil
+        return content
     }
 
     // MARK: - Internals
@@ -537,6 +578,7 @@ final class AppStore {
         // The find bar belongs to the outgoing viewer; the incoming one
         // registers its own handlers on mount.
         resetFindState()
+        pendingNoteContent = nil
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -550,6 +592,7 @@ final class AppStore {
 
     private func applyEmptyActiveState() {
         resetFindState()
+        pendingNoteContent = nil
         activeTabId = nil
         document = nil
         currentPage = 1

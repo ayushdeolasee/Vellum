@@ -2,6 +2,12 @@ import SwiftUI
 
 /// Model catalogs shared between the in-panel AI settings and the Settings
 /// window's AI tab so the two never drift.
+///
+/// The catalog *data* + `supportsVision` (used by the AI send path) is complete
+/// for every provider. The Phase-1 settings UI only surfaces the two API-key
+/// providers (Gemini, OpenAI) in its pickers; the OpenRouter / ChatGPT /
+/// OpenCode selectors and `options(for:catalog:)` (which needs `AiModelOption`)
+/// ship with the AI-UI rewrite (ModelSelector) in Phase 2.
 enum AiModelCatalog {
     static let gemini = [
         "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview", "gemini-3-flash-preview",
@@ -12,20 +18,75 @@ enum AiModelCatalog {
         "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
         "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
     ]
-    static let codex = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+    /// Slugs valid on the ChatGPT-subscription Codex backend.
+    static let chatgpt = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
+    /// Models on the OpenCode **Zen** gateway: proprietary flagships plus the
+    /// open-weight and free models Zen also hosts. See `opencodeGo` for the
+    /// separate Go gateway.
+    static let opencode = [
+        "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
+        "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3-flash",
+        "deepseek-v4-pro", "deepseek-v4-flash",
+        "glm-5.2", "glm-5.1", "glm-5",
+        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+        "qwen3.6-plus", "qwen3.5-plus",
+        "big-pickle", "deepseek-v4-flash-free", "mimo-v2.5-free",
+        "hy3-free", "nemotron-3-ultra-free", "north-mini-code-free",
+    ]
+    /// Models on the OpenCode **Go** gateway — low-cost open coding models,
+    /// authenticated with a Go-specific API key that is separate from Zen's.
+    static let opencodeGo = [
+        "glm-5.2", "glm-5.1", "glm-5",
+        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "deepseek-v4-pro", "deepseek-v4-flash",
+        "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+        "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+        "mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5-pro", "mimo-v2.5",
+        "hy3-preview",
+    ]
+
+    /// Vision-capable model ids across both OpenCode gateways. Everything else is
+    /// treated as text-only, so the page image is withheld.
+    private static let opencodeVisionModels: Set<String> = [
+        "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
+        "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gemini-3.1-pro", "gemini-3.5-flash", "gemini-3-flash",
+        "mimo-v2-omni",
+    ]
+
+    /// Whether an OpenCode (Zen or Go) model can accept the page image.
+    static func opencodeSupportsVision(_ model: String) -> Bool {
+        opencodeVisionModels.contains(model)
+    }
+
+    /// Whether `model` on `provider` accepts image inputs. Single source of truth
+    /// for the send path (which withholds images from text-only models) and for
+    /// the composer's image-attach affordances. Unknown OpenRouter ids (catalog
+    /// still loading, or a stale pick) stay permissive.
+    @MainActor
+    static func supportsVision(provider: AiProvider, model: String, catalog: OpenRouterCatalog?) -> Bool {
+        switch provider {
+        case .openrouter: catalog?.model(for: model)?.supportsVision ?? true
+        case .opencode, .opencodeGo: opencodeSupportsVision(model)
+        case .gemini, .openai, .chatgpt: true
+        }
+    }
 
     static func models(for provider: AiProvider) -> [String] {
         switch provider {
         case .gemini: gemini
         case .openai: openAI
-        case .codex: codex
+        case .chatgpt: chatgpt
+        case .opencode: opencode
+        case .opencodeGo: opencodeGo
+        case .openrouter: []
         }
     }
 }
 
 struct AiSettingsPanel: View {
-    var onStopRecognition: () -> Void = {}
-
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
@@ -35,20 +96,17 @@ struct AiSettingsPanel: View {
                 Picker("", selection: providerBinding) {
                     Text("Gemini").tag(AiProvider.gemini)
                     Text("OpenAI API").tag(AiProvider.openai)
-                    Text("Codex CLI").tag(AiProvider.codex)
                 }
                 .labelsHidden()
             }
 
-            if aiStore.settings.provider != .codex {
-                field(aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key") {
-                    SecureField(
-                        aiStore.settings.provider == .openai ? "sk-..." : "AIza...",
-                        text: apiKeyBinding
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                }
+            field(aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key") {
+                SecureField(
+                    aiStore.settings.provider == .openai ? "sk-..." : "AIza...",
+                    text: apiKeyBinding
+                )
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
             }
 
             field("Model") {
@@ -57,22 +115,6 @@ struct AiSettingsPanel: View {
                 }
                 .labelsHidden()
             }
-
-            field("Voice mode") {
-                Picker("", selection: voiceBinding) {
-                    Text("Off").tag(VoiceMode.off)
-                    Text("Push-to-talk").tag(VoiceMode.pushToTalk)
-                }
-                .labelsHidden()
-            }
-
-            Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
-                #if os(macOS)
-                .toggleStyle(.checkbox)
-                #else
-                .toggleStyle(.switch)
-                #endif
-                .foregroundStyle(palette.mutedForeground)
         }
         .font(.system(size: 12))
         .padding(12)
@@ -115,36 +157,17 @@ struct AiSettingsPanel: View {
             get: {
                 switch aiStore.settings.provider {
                 case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
+                default: aiStore.settings.openaiModel
                 }
             },
             set: { value in
                 var settings = aiStore.settings
                 switch settings.provider {
                 case .gemini: settings.model = value
-                case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
+                default: settings.openaiModel = value
                 }
                 aiStore.setSettings(settings)
             }
         )
-    }
-
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            if value != .pushToTalk { onStopRecognition() }
-            var settings = aiStore.settings
-            settings.voiceMode = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
-            settings.ttsEnabled = value
-            aiStore.setSettings(settings)
-        })
     }
 }

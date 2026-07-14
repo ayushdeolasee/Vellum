@@ -28,23 +28,9 @@ protocol DocumentSession: AnyObject {
 final class DocumentSessionManager: SessionService {
     let pdfBackend: PdfSessionBackend
     let webBackend: WebSessionBackend
-    #if os(macOS)
-    let codex: CodexAiClient
-    #endif
 
     private(set) var sessions: [String: any DocumentSession] = [:]
 
-    #if os(macOS)
-    init(
-        pdfBackend: PdfSessionBackend = PdfSessionBackend(),
-        webBackend: WebSessionBackend = WebSessionBackend(),
-        codex: CodexAiClient = CodexAiClient()
-    ) {
-        self.pdfBackend = pdfBackend
-        self.webBackend = webBackend
-        self.codex = codex
-    }
-    #else
     init(
         pdfBackend: PdfSessionBackend = PdfSessionBackend(),
         webBackend: WebSessionBackend = WebSessionBackend()
@@ -52,7 +38,6 @@ final class DocumentSessionManager: SessionService {
         self.pdfBackend = pdfBackend
         self.webBackend = webBackend
     }
-    #endif
 
     private func session(_ id: String) throws -> any DocumentSession {
         guard let session = sessions[id] else {
@@ -163,19 +148,5 @@ final class DocumentSessionManager: SessionService {
 
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {
         try await session(sessionId).setMetadata(key: key, value: value)
-    }
-
-    // MARK: - AI
-
-    func runCodexAi(prompt: String, model: String, image: CodexAiImageInput?) async throws -> String {
-        #if os(macOS)
-        return try await codex.run(prompt: prompt, model: model, image: image)
-        #else
-        // The Codex CLI is a desktop subprocess; unavailable on iPadOS. The AI
-        // store never routes here on iOS (the .codex provider is gated out), but
-        // the protocol conformance still needs an implementation.
-        throw SessionServiceError.invalidDocument(
-            "The Codex provider isn’t available on iPad. Choose Gemini or OpenAI in AI settings.")
-        #endif
     }
 }

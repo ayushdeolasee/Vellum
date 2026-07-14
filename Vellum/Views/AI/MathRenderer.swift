@@ -1,0 +1,192 @@
+import SwiftUI
+import SwiftMath
+
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+// Shared LaTeX rendering for the AI chat bubbles. The message renderers hand
+// math spans here and get back a typeset image plus the baseline metrics needed
+// to sit it on the surrounding text line. Cross-platform: NSImage/NSColor on
+// AppKit, UIImage/UIColor on UIKit (see Platform.swift for the type aliases).
+
+/// One piece of an inline-markdown string after splitting out math spans.
+enum MathSegment: Equatable {
+    case text(String)
+    /// LaTeX source with the `$...$` / `\(...\)` delimiters stripped.
+    case math(String)
+}
+
+@MainActor
+enum MathRenderer {
+    struct Rendered {
+        let image: PlatformImage
+        /// Distance from the image's bottom edge down to the math baseline, so
+        /// text hosts can offset the image and keep `x` level with prose.
+        let descent: CGFloat
+        var size: CGSize { image.size }
+    }
+
+    /// Typeset images are cheap but not free (font table lookups + layout), and
+    /// streaming re-renders a growing message on every delta — cache by
+    /// (latex, size, color, mode).
+    private static let cache: NSCache<NSString, CachedRender> = {
+        let cache = NSCache<NSString, CachedRender>()
+        // Rendered equations are small, but keys are exact LaTeX strings —
+        // long sessions with many one-off renders shouldn't grow unbounded.
+        cache.countLimit = 300
+        return cache
+    }()
+
+    private final class CachedRender {
+        let rendered: Rendered
+        init(_ rendered: Rendered) { self.rendered = rendered }
+    }
+
+    /// Render a LaTeX string (no delimiters) to an image. Returns nil when the
+    /// source fails to parse, so callers can fall back to styled plain text.
+    static func render(latex: String, fontSize: CGFloat, color: PlatformColor, display: Bool) -> Rendered? {
+        let trimmed = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Resolve dynamic (catalog/appearance) colors to concrete sRGB so the
+        // cache key can't alias a light-mode render into dark mode.
+        let resolved = resolvedColor(color)
+        let key = "\(display ? "D" : "T")|\(fontSize)|\(colorKey(resolved))|\(trimmed)" as NSString
+        if let hit = cache.object(forKey: key) { return hit.rendered }
+
+        // SwiftMath 1.7.3 keeps its typesetter internal, so build the display
+        // list through an offscreen MTMathUILabel (the public API). The label's
+        // layout centers the math vertically inside its bounds with the
+        // baseline `descent` above the content's bottom edge — giving the label
+        // bounds of exactly the fitted content height makes the baseline land
+        // at `descent` from the image's bottom, which is what text hosts need.
+        let label = MTMathUILabel()
+        label.labelMode = display ? .display : .text
+        label.fontSize = fontSize
+        label.textColor = resolved
+        label.textAlignment = .left
+        label.latex = trimmed
+        guard label.error == nil, label.mathList != nil else { return nil }
+
+        // NSView exposes the fitted content as `fittingSize`; MTMathUILabel's
+        // UIView backing computes the same value through `intrinsicContentSize`.
+        #if os(macOS)
+        let fitted = label.fittingSize
+        #else
+        let fitted = label.intrinsicContentSize
+        #endif
+        guard fitted.width > 0, fitted.height > 0, fitted.width.isFinite, fitted.height.isFinite else { return nil }
+        // The label clamps very short content to half the font size when
+        // centering; matching that clamp keeps the baseline math exact.
+        let size = CGSize(width: ceil(fitted.width), height: ceil(max(fitted.height, fontSize / 2)))
+        label.frame = CGRect(origin: .zero, size: size)
+        // Force the layout pass that typesets `displayList` at the frame size.
+        #if os(macOS)
+        label.layout()
+        #else
+        label.setNeedsLayout()
+        label.layoutIfNeeded()
+        #endif
+        guard let line = label.displayList else { return nil }
+        let descent = line.descent
+
+        #if os(macOS)
+        // Handler-based NSImage re-draws the display list at the destination
+        // context's scale, so the math stays vector-crisp on retina.
+        let image = NSImage(size: size, flipped: false) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
+            line.draw(context)
+            context.restoreGState()
+            return true
+        }
+        #else
+        // UIGraphicsImageRenderer draws at the trait scale, so the math stays
+        // vector-crisp on retina. Its context is top-left/y-down; SwiftMath's
+        // display list expects a bottom-left/y-up (Core Text) context, so flip.
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            let context = ctx.cgContext
+            context.saveGState()
+            context.translateBy(x: 0, y: size.height)
+            context.scaleBy(x: 1, y: -1)
+            line.draw(context)
+            context.restoreGState()
+        }
+        #endif
+
+        let rendered = Rendered(image: image, descent: descent)
+        cache.setObject(CachedRender(rendered), forKey: key)
+        return rendered
+    }
+
+    // MARK: - Platform color helpers
+
+    #if os(macOS)
+    private static func resolvedColor(_ color: PlatformColor) -> PlatformColor {
+        color.usingColorSpace(.sRGB) ?? color
+    }
+    private static func colorKey(_ color: PlatformColor) -> String { color.description }
+    #else
+    private static func resolvedColor(_ color: PlatformColor) -> PlatformColor { color }
+    private static func colorKey(_ color: PlatformColor) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return "\(r),\(g),\(b),\(a)"
+    }
+    #endif
+
+    /// Compiled once: `segments(in:)` runs on every streamed delta, so building
+    /// the fixed pattern per call would be pure overhead. `nonisolated` because
+    /// `segments` is nonisolated; safe since `NSRegularExpression` is immutable
+    /// and documented thread-safe (Sendable).
+    nonisolated private static let inlineMathRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\\\((.+?)\\\)|\$(?![\s$])([^$\n]*[^\s$])\$"#)
+
+    /// Number of consecutive backslashes immediately preceding `index`. An
+    /// odd count means the character at `index` is escaped.
+    nonisolated private static func backslashRun(before index: Int, in ns: NSString) -> Int {
+        let backslash = UInt16(UnicodeScalar("\\").value)
+        var count = 0
+        var i = index - 1
+        while i >= 0, ns.character(at: i) == backslash { count += 1; i -= 1 }
+        return count
+    }
+
+    /// Split inline text into prose and math spans. Recognizes `\(...\)` and
+    /// single-`$` spans; a `$` span must not butt against whitespace on the
+    /// inside ("$5 and $10" stays currency, "$x^2$" is math). A `$` escaped by
+    /// an odd number of backslashes ("literal \$x$") is left as prose.
+    nonisolated static func segments(in source: String) -> [MathSegment] {
+        guard source.contains("$") || source.contains("\\(") else { return [.text(source)] }
+        guard let regex = inlineMathRegex else { return [.text(source)] }
+        let ns = source as NSString
+        var segments: [MathSegment] = []
+        var cursor = 0
+        for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            let isDollar = match.range(at: 1).location == NSNotFound
+            if isDollar {
+                // Skip when the opening or closing `$` is escaped; the region
+                // stays unconsumed and folds into the surrounding prose.
+                let opener = match.range.location
+                let closer = match.range.location + match.range.length - 1
+                if backslashRun(before: opener, in: ns) % 2 == 1
+                    || backslashRun(before: closer, in: ns) % 2 == 1 {
+                    continue
+                }
+            }
+            if match.range.location > cursor {
+                segments.append(.text(ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))))
+            }
+            let latexRange = match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range(at: 2)
+            segments.append(.math(ns.substring(with: latexRange)))
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            segments.append(.text(ns.substring(from: cursor)))
+        }
+        return segments.isEmpty ? [.text(source)] : segments
+    }
+}
