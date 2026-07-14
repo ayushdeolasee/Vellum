@@ -142,24 +142,32 @@ final class OpenAIClient {
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {
         var lastError: Error?
         for attempt in 0...1 {
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    throw AiClientError.message("OpenAI returned an invalid HTTP response.")
-                }
-                if (200..<300).contains(http.statusCode) { return bytes }
-                let data = try await Self.drain(bytes)
-                let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
-                let error = AiClientError.message(message.isEmpty ? "OpenAI request failed with status \(http.statusCode)." : message)
-                if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
-                    lastError = error
-                    continue
-                }
-                throw error
+                (bytes, response) = try await URLSession.shared.bytes(for: request)
+            } catch is CancellationError {
+                throw CancellationError() // user-initiated abort: never retry
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError() // URLSession task cancelled: never retry
             } catch {
                 lastError = error
                 if attempt == 1 { throw error }
+                continue // transient network failure: retry once
             }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw AiClientError.message("OpenAI returned an invalid HTTP response.")
+            }
+            if (200..<300).contains(http.statusCode) { return bytes }
+            let data = try await Self.drain(bytes)
+            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
+            let error = AiClientError.message(message.isEmpty ? "OpenAI request failed with status \(http.statusCode)." : message)
+            if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
+                lastError = error
+                continue // transient status: retry once
+            }
+            throw error // non-retryable status: escapes immediately
         }
         throw lastError ?? AiClientError.message("OpenAI request failed.")
     }
