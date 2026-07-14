@@ -8,6 +8,18 @@ enum ImageDropPayload {
     case data(Data, name: String)
 }
 
+/// `NSItemProvider.loadItem` for a file URL hands back whichever of these the
+/// drag source happened to register — a `URL`, an `NSURL`, or the URL's bytes.
+/// Nonisolated: it runs on the provider's completion queue, off the main actor.
+func fileURL(fromDropItem item: NSSecureCoding?) -> URL? {
+    switch item {
+    case let url as URL: url
+    case let url as NSURL: url as URL
+    case let data as Data: URL(dataRepresentation: data, relativeTo: nil)
+    default: nil
+    }
+}
+
 /// Drag-destination plumbing shared by the AI panel's AppKit text views.
 ///
 /// AppKit gives a drag to the registered destination under the cursor, and the

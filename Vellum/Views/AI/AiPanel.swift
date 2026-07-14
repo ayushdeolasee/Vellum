@@ -9,9 +9,6 @@ struct AiPanel: View {
 
     @State private var input = ""
     @State private var settingsOpen = false
-    @State private var isListening = false
-    @State private var pressingMic = false
-    @State private var speechService = SpeechService()
     /// True while an image drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
@@ -20,7 +17,7 @@ struct AiPanel: View {
         VStack(spacing: 0) {
             header
             if settingsOpen {
-                AiSettingsPanel(onStopRecognition: stopListening)
+                AiSettingsPanel()
             }
             messages
             composer
@@ -34,11 +31,16 @@ struct AiPanel: View {
                     .allowsHitTesting(false)
             }
         }
+        // Both types are needed: a drag out of Finder advertises its item as a
+        // file URL and NOT as an image, so `.image` alone never matches it and the
+        // panel would never even highlight. Preview and browsers hand over the
+        // bytes, which `.image` does match.
+        //
         // Registering no types at all when the model can't see images is the gate
         // itself: the panel never highlights and the drag springs back to its
         // source, instead of accepting an attachment we'd silently strip at send.
         .onDrop(
-            of: aiStore.activeModelSupportsImages ? [.image] : [],
+            of: aiStore.activeModelSupportsImages ? [.fileURL, .image] : [],
             isTargeted: $dropTargeted,
             perform: handleImageDrop
         )
@@ -49,14 +51,6 @@ struct AiPanel: View {
         ) { result in
             guard case let .success(urls) = result else { return }
             attachImages(at: urls)
-        }
-        .onAppear { speakLatestIfNeeded() }
-        .onChange(of: aiStore.messages) { _, _ in speakLatestIfNeeded() }
-        .onChange(of: aiStore.isThinking) { _, _ in speakLatestIfNeeded() }
-        .onChange(of: aiStore.settings.ttsEnabled) { _, _ in speakLatestIfNeeded() }
-        .onDisappear {
-            speechService.stopRecognition()
-            speechService.cancelSpeech()
         }
     }
 
@@ -311,24 +305,6 @@ struct AiPanel: View {
                 onImageDrop: imageDropHandler,
                 onDropTargeted: { dropTargeted = $0 }
             )
-            if aiStore.settings.voiceMode == .pushToTalk {
-                Image(systemName: isListening ? "stop.fill" : "mic")
-                    .font(.system(size: 15))
-                    .foregroundStyle(isListening ? palette.destructiveForeground : palette.mutedForeground)
-                    .frame(width: 36, height: 36)
-                    .background(isListening ? palette.destructive : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                    .contentShape(RoundedRectangle(cornerRadius: Radius.md))
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { _ in startListening() }
-                            .onEnded { _ in stopListening() }
-                    )
-                    .help("Push to talk")
-                    .accessibilityLabel(isListening ? "Stop listening" : "Push to talk")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityIdentifier("aiPanel.pushToTalk")
-            }
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 15))
@@ -460,26 +436,45 @@ struct AiPanel: View {
     /// out of Preview / a browser (`loadDataRepresentation` on `UTType.image`
     /// covers both, and every conforming subtype, in one request).
     private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
-        let imageProviders = providers.filter {
-            $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
-        }
-        guard !imageProviders.isEmpty else { return false }
         let store = aiStore
         let app = appStore
         let sessionId = appStore.activeTabId
-        for provider in imageProviders {
-            let name = provider.suggestedName ?? "Dropped image"
-            // The completion runs off the main actor, so the decode/resize lands
-            // there too; only the attach hops back.
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                guard let data, let snapshot = aiImageSnapshot(from: data) else { return }
-                Task { @MainActor in
-                    guard app.activeTabId == sessionId else { return }
-                    store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+        var handled = false
+
+        for provider in providers {
+            // Finder: the item is a file URL. Resolve it, then let attachImages do
+            // the read/decode/resize off the main actor. Non-image files dropped
+            // alongside are ignored rather than attached as garbage.
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                provider.loadItem(
+                    forTypeIdentifier: UTType.fileURL.identifier
+                ) { item, _ in
+                    guard let url = fileURL(fromDropItem: item),
+                          let type = UTType(filenameExtension: url.pathExtension),
+                          type.conforms(to: .image) else { return }
+                    Task { @MainActor in attachImages(at: [url]) }
+                }
+                continue
+            }
+            // Preview, a browser: the bytes are already on the pasteboard. The
+            // completion runs off the main actor, so the decode/resize lands there
+            // too; only the attach hops back.
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                handled = true
+                let name = provider.suggestedName ?? "Dropped image"
+                provider.loadDataRepresentation(
+                    forTypeIdentifier: UTType.image.identifier
+                ) { data, _ in
+                    guard let data, let snapshot = aiImageSnapshot(from: data) else { return }
+                    Task { @MainActor in
+                        guard app.activeTabId == sessionId else { return }
+                        store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+                    }
                 }
             }
         }
-        return true
+        return handled
     }
 
     /// Attaching is gated on vision support, but the model can be switched
@@ -548,40 +543,6 @@ struct AiPanel: View {
         }
         // Hand the task to the store so clearing the conversation can cancel it.
         aiStore.registerSendTask(task)
-    }
-
-    private func startListening() {
-        guard !pressingMic, aiStore.settings.voiceMode == .pushToTalk else { return }
-        pressingMic = true
-        aiStore.setErrorState(nil)
-        Task {
-            do {
-                try await speechService.startRecognition(
-                    onTranscript: { transcript in
-                        input = input.isEmpty ? transcript : "\(input) \(transcript)"
-                    },
-                    onStateChange: { isListening = $0 }
-                )
-                if !pressingMic { speechService.stopRecognition() }
-            } catch {
-                isListening = false
-                if error.localizedDescription == SpeechService.unavailableMessage {
-                    aiStore.setErrorState(SpeechService.unavailableMessage)
-                }
-            }
-        }
-    }
-
-    private func stopListening() {
-        pressingMic = false
-        speechService.stopRecognition()
-        isListening = false
-    }
-
-    private func speakLatestIfNeeded() {
-        guard aiStore.settings.ttsEnabled, !aiStore.isThinking,
-              let message = aiStore.messages.last(where: { $0.role == .assistant }) else { return }
-        speechService.speak(message: message)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -653,14 +614,17 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = ComposerDropScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = false
+        scroll.onImageDrop = onImageDrop
+        scroll.onDropTargeted = onDropTargeted
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
         textView.submit = onSubmit
         textView.onImageDrop = onImageDrop
         textView.onDropTargeted = onDropTargeted
+        textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
@@ -682,10 +646,15 @@ private struct ComposerTextViewRep: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? SubmitTextView else { return }
+        if let dropScroll = scroll as? ComposerDropScrollView {
+            dropScroll.onImageDrop = onImageDrop
+            dropScroll.onDropTargeted = onDropTargeted
+        }
         context.coordinator.parent = self
         textView.submit = onSubmit
         textView.onImageDrop = onImageDrop
         textView.onDropTargeted = onDropTargeted
+        textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
@@ -715,6 +684,59 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     }
 }
 
+/// The scroll view is the stable AppKit surface underneath the composer. Depending
+/// on where the pointer lands (padding, clip view, or text), AppKit may select this
+/// view instead of its document `NSTextView` as the drag destination, so both
+/// surfaces forward the same image payload.
+private final class ComposerDropScrollView: NSScrollView {
+    var onImageDrop: ((ImageDropPayload) -> Void)? {
+        didSet { updateDropRegistration() }
+    }
+    var onDropTargeted: ((Bool) -> Void)?
+
+    private func updateDropRegistration() {
+        if onImageDrop == nil {
+            unregisterDraggedTypes()
+        } else {
+            registerForDraggedTypes(ImageDrop.draggedTypes)
+        }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onImageDrop != nil, ImageDrop.carriesImage(sender) else {
+            return super.draggingEntered(sender)
+        }
+        onDropTargeted?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onImageDrop != nil, ImageDrop.carriesImage(sender) else {
+            return super.draggingUpdated(sender)
+        }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDropTargeted?(false)
+        super.draggingEnded(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDropTargeted?(false)
+        guard let onImageDrop, let payload = ImageDrop.payload(sender) else {
+            return super.performDragOperation(sender)
+        }
+        onImageDrop(payload)
+        return true
+    }
+}
+
 private final class SubmitTextView: NSTextView {
     var submit: (() -> Void)?
     var placeholder = ""
@@ -727,6 +749,17 @@ private final class SubmitTextView: NSTextView {
     /// Drives the panel's drop outline; the field is its own drag destination, so
     /// SwiftUI's `isTargeted` never fires for a drag that ends up here.
     var onDropTargeted: ((Bool) -> Void)?
+
+    /// NSTextView is itself a drag destination. Register the image types here so
+    /// Finder drops that land directly on the composer are delivered to this
+    /// view instead of disappearing before the panel's SwiftUI `.onDrop` runs.
+    override func updateDragTypeRegistration() {
+        if onImageDrop == nil {
+            unregisterDraggedTypes()
+        } else {
+            registerForDraggedTypes(ImageDrop.draggedTypes)
+        }
+    }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard isImageDrag(sender) else { return super.draggingEntered(sender) }

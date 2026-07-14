@@ -122,8 +122,6 @@ enum AiModelCatalog {
 }
 
 struct AiSettingsPanel: View {
-    var onStopRecognition: () -> Void = {}
-
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
@@ -161,18 +159,6 @@ struct AiSettingsPanel: View {
                 }
                 .labelsHidden()
             }
-
-            field("Voice mode") {
-                Picker("", selection: aiStore.voiceBinding(onStop: onStopRecognition)) {
-                    Text("Off").tag(VoiceMode.off)
-                    Text("Push-to-talk").tag(VoiceMode.pushToTalk)
-                }
-                .labelsHidden()
-            }
-
-            Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
-                .toggleStyle(.checkbox)
-                .foregroundStyle(palette.mutedForeground)
         }
         .font(.system(size: 12))
         .padding(12)
@@ -385,26 +371,6 @@ extension AiStore {
                 self.setSettings(settings)
             }
         )
-    }
-
-    /// Voice-mode binding. `onStop` fires when the mode leaves push-to-talk so
-    /// the in-panel host can tear down an active recognition session; the
-    /// Settings host passes the default no-op.
-    func voiceBinding(onStop: @escaping () -> Void = {}) -> Binding<VoiceMode> {
-        Binding(get: { self.settings.voiceMode }, set: { value in
-            if value != .pushToTalk { onStop() }
-            var settings = self.settings
-            settings.voiceMode = value
-            self.setSettings(settings)
-        })
-    }
-
-    var ttsBinding: Binding<Bool> {
-        Binding(get: { self.settings.ttsEnabled }, set: { value in
-            var settings = self.settings
-            settings.ttsEnabled = value
-            self.setSettings(settings)
-        })
     }
 
     var reasoningBinding: Binding<AiThinkingMode> {

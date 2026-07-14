@@ -21,11 +21,6 @@ enum AiProvider: String, Codable, Sendable {
     case opencodeGo
 }
 
-enum VoiceMode: String, Codable, Sendable {
-    case off
-    case pushToTalk = "push-to-talk"
-}
-
 /// User-selected reasoning/thinking effort, applied to whichever provider is
 /// active. Each provider maps it to its own API (Responses `reasoning.effort`,
 /// Gemini `thinkingConfig.thinkingBudget`, chat `reasoning_effort`, …).
@@ -140,8 +135,6 @@ struct AiSettings: Codable, Equatable, Sendable {
     var opencodeGoApiKey: String = ""
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
-    var voiceMode: VoiceMode = .off
-    var ttsEnabled: Bool = false
     var reasoningEffort: AiThinkingMode = .auto
 }
 
@@ -192,7 +185,7 @@ final class AiStore {
     /// Current request phase; drives the panel's activity indicator.
     private(set) var activity: AiActivity = .idle
     /// True while a request is in flight — kept as a computed alias so existing
-    /// call sites (submit guard, TTS, scroll triggers) are unaffected.
+    /// call sites (submit guard, scroll triggers) are unaffected.
     var isThinking: Bool { activity != .idle }
     /// Id of the assistant message currently receiving streamed deltas (nil when
     /// no stream is active). The panel uses it to suppress the activity pill once

@@ -20,7 +20,7 @@ struct SelectableMessageText: NSViewRepresentable {
     /// leaves the bubble a plain non-destination.
     var onImageDrop: ((ImageDropPayload) -> Void)?
     /// Drives the panel's drop outline while such a drag is over the bubble.
-    var onDropTargeted: (Bool) -> Void
+    var onDropTargeted: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(onQuote: onQuote) }
 
