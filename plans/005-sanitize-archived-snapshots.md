@@ -1,5 +1,10 @@
 # Plan 005: Neutralize scripts in archived webpage snapshots (stored-XSS in `.vellumweb`)
 
+> **Canonical Plan 005.** A partial draft of this plan previously existed as
+> `plans/005-neutralize-archived-snapshot-scripts.md`; it has been deleted and its
+> unique requirements folded in here. If you encounter a reference to that
+> filename, it means this document.
+
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
@@ -69,7 +74,10 @@ Two layers:
 **In scope** (the only files you should modify/create):
 - `Vellum/Services/Web/WebArchive.swift` (the `sanitizeSnapshotHtml` implementation and its regexes)
 - `Vellum/Views/Web/WebViewerView.swift` (the `allowsContentJavaScript` decision only)
+- `Vellum/Services/Web/WebPageExtractor.swift` — **only if** needed to expose "this navigation serves a snapshot" to the controller (see step 1)
 - `Tests/SnapshotSanitizerTests.swift` (create)
+- `Vellum.xcodeproj/*` (regenerated for the new test file)
+- `plans/README.md` — status-row update only (per the executor instructions above)
 
 **Out of scope** (do NOT touch):
 - The archive binary format / MiniZip code in `WebArchive.swift` (that's covered by plan 006's tests, not this plan).
@@ -82,6 +90,7 @@ Two layers:
 - Fresh worktree: `git worktree add 005-sanitize-snapshots` from the parent folder. Do not touch the shared worktree's uncommitted work.
 - Commit style: sentence-case imperative, e.g. "Sanitize archived snapshots and disable JS on snapshot navigations".
 - Do NOT push or open a PR unless the operator instructed it.
+- Test fixtures must use inert markers (e.g. `onerror="document.title='XSS-RAN'"`), never real exfiltration payloads.
 
 ## Steps
 
@@ -94,6 +103,8 @@ Read `WebViewerView.swift`'s navigation delegate and `WebPageExtractor.swift`'s 
 ### Step 2: Disable content JS for snapshot navigations
 
 Implement the navigation-delegate `preferences` variant and set `preferences.allowsContentJavaScript = false` on snapshot navigations only. If the controller doesn't yet implement that delegate method, add it (it coexists with the existing `decidePolicyFor navigationAction` — WebKit calls the `preferences` overload when present).
+
+If the controller cannot know the snapshot outcome before the scheme handler runs (the offline fallback happens *inside* the handler after a live fetch fails), take the conservative documented alternative: have the scheme handler mark the session/tab as offline-mode on shared state the controller reads, and **reload once with JS disabled** when a snapshot response is detected on a navigation that started with JS enabled. Choose the smaller correct mechanism and record which you used. Explicitly-offline opens (the user opens a saved `.vellumweb`) must always start with JS disabled — no first-pass-enabled window there.
 
 **Verify**: `xcodebuild ... build` → `BUILD SUCCEEDED`.
 

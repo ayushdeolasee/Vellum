@@ -107,6 +107,20 @@ than its own initializer — if any code captures it before the bootstrap runs, 
 would capture the proxied `vellum-web://` href instead of the real page URL. Verify
 this before relying on step 3, and if something does read it early, STOP and report.
 
+**Known limitation (accepted, with mitigations)**: the meta tags live in the shared
+DOM, so page JavaScript *can* rewrite them before the deferred bootstrap reads them.
+A page can only spoof metadata about **itself** — the blast radius is a wrong
+anchoring URL / offline flag for that page, not bridge access — but treat the values
+as untrusted anyway: the bootstrap must validate `vellum-page-url` (accept only a
+parseable `http(s)` URL, else fall back to `location.href`) and coerce
+`vellum-offline` to a strict `"true"` comparison. On archived snapshots (plan 005)
+the vector disappears entirely because page JS is disabled. **Follow-up hardening**
+(out of this plan's scope, record it in the backlog if not done here): deliver the
+config through a native-controlled path instead — after the navigation commits, the
+controller pushes `{pageUrl, offline}` into the bridge world via the world-scoped
+`evaluateJavaScript` channel that `post(_:_:)` already uses, which page JS cannot
+observe or mutate.
+
 ## Superseded design (v1 — do not implement)
 
 1. A single named world: `static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")`.
@@ -136,6 +150,8 @@ The scratchpad editor's WKWebView (`ScratchpadPanel.swift`) loads only bundled l
 - `Vellum/Views/Web/WebViewerView.swift`
 - `Vellum/Services/Web/WebPageExtractor.swift` (only the `prepareHtml` injection block)
 - `Vellum/Views/Web/WebContentScript.swift` — **only if** a minimal readyState guard is needed for the new injection timing; the anchoring algorithm itself must not change.
+- `plans/README.md` — status-row update only (per the executor instructions above).
+- `Tests/WebHtmlPrepareTests.swift` (create — see "Test plan").
 
 **Out of scope** (do NOT touch):
 - `Vellum/Views/Web/WebArchive.swift` / snapshot sanitization — that is plan 005.
@@ -157,32 +173,57 @@ Confirm (and note line numbers for your report): (a) where `WebViewerController`
 
 **Verify**: you can state where per-navigation config values will come from. If the offline flag is genuinely unknowable outside the scheme handler, trigger the STOP condition instead of inventing plumbing.
 
-### Step 2: Register handler + user script in the named world
+### Step 2: Register handler + static user script in the named world (v2)
 
-Implement the target design's items 1–3 in `WebViewerView.swift`. The per-navigation script source is:
+Implement the v2 target design's items 2 and 4 in `WebViewerView.swift`, inside
+`makeWebView()`. The script is registered **once**, with no per-navigation config
+prefix — the config travels as meta tags (step 3):
 
 ```swift
-let config = "window.__VELLUM_PAGE_URL__=\(WebHtml.jsonString(pageUrl));"
-    + "window.__VELLUM_OFFLINE__=\(offline);\n"
-let script = WKUserScript(source: config + WebContentScript.source,
+static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")
+
+let script = WKUserScript(source: WebContentScript.source,
     injectionTime: .atDocumentStart, forMainFrameOnly: true, in: Self.bridgeWorld)
+configuration.userContentController.addUserScript(script)
+configuration.userContentController.add(
+    WeakScriptMessageHandler(self), contentWorld: Self.bridgeWorld, name: "vellum")
 ```
 
-(If `WebHtml.jsonString` is private, replicate its JSON-escaping locally rather than widening its access — or widen to `internal` if that's the smaller diff; note which you chose.)
+Do **not** build a script source from `pageUrl`/`offline`, do not call
+`removeAllUserScripts()`, and do not add a navigation delegate — those are v1
+mechanics, rejected above.
 
 **Verify**: `xcodebuild ... build` → `BUILD SUCCEEDED`.
 
-### Step 3: Route outbound JS through the world and strip the inline injection
+### Step 3: Route outbound JS through the world; swap the inline script for meta tags
 
-- Change `post(_:_:)` to the world-scoped overload. Account for **every** `evaluateJavaScript` hit from the grep in "Commands" — each must either target `bridgeWorld` (web reader) or be justified out of scope (scratchpad editor's own coordinator).
-- In `prepareHtml`, delete the `<script>…</script>` portion of the injection, keeping `<base href>`:
+- Change `post(_:_:)` to the world-scoped overload
+  (`evaluateJavaScript(js, in: nil, in: Self.bridgeWorld)`). Account for **every**
+  `evaluateJavaScript` hit from the grep in "Commands" — each must either target
+  `bridgeWorld` (web reader) or be justified out of scope (scratchpad editor's own
+  coordinator).
+- In `prepareHtml`, delete the `<script>…</script>` portion of the injection and
+  replace it with the two config meta tags, keeping `<base href>`. Escape the
+  `content` attribute values with the same attribute-escaping used for
+  `safeUrlAttr`:
   ```swift
   let injection = "<base href=\"\(safeUrlAttr)\">"
+      + "<meta name=\"vellum-page-url\" content=\"\(safeUrlAttr)\">"
+      + "<meta name=\"vellum-offline\" content=\"\(offline)\">"
   ```
-  Remove the now-unused config lines. If `WebContentScript.source` has no remaining references from `WebPageExtractor.swift`, that's expected (its only consumer is now `WebViewerView.swift`).
+  Remove the now-unused `window.__VELLUM_*` config lines. If
+  `WebContentScript.source` has no remaining references from
+  `WebPageExtractor.swift`, that's expected (its only consumer is now
+  `WebViewerView.swift`).
+- In `WebContentScript.source`, apply the target design's item 3: keep
+  `var PAGE_URL = location.href;` as the top-level default, reassign it inside the
+  existing deferred bootstrap from the `vellum-page-url` meta tag (validated per the
+  "Known limitation" note), and read `vellum-offline` from the meta tag at its
+  point of use.
 
 **Verify**: `xcodebuild ... build` → `BUILD SUCCEEDED`.
 **Verify**: `grep -n "WebContentScript.source" Vellum/Services/Web/WebPageExtractor.swift` → 0 matches.
+**Verify**: `grep -n "vellum-page-url" Vellum/Services/Web/WebPageExtractor.swift` → 1 match.
 
 ### Step 4: Adjust script timing if needed
 
@@ -202,7 +243,7 @@ If you cannot drive the GUI in your environment, report exactly which of these t
 
 ## Test plan
 
-The isolation property is inherently behavioral (it lives in WebKit), so the primary tests are step 5's checks. Additionally: if `prepareHtml` is unit-testable as a pure function (it is — static, string in/out), add `Tests/WebHtmlPrepareTests.swift` asserting the output of `prepareHtml("<html><head></head></html>", pageUrl:..., offline: false) `contains `<base href` and does **not** contain `<script`. Model on `Tests/ScratchpadImportTests.swift`.
+The isolation property is inherently behavioral (it lives in WebKit), so the primary tests are step 5's checks. Additionally: if `prepareHtml` is unit-testable as a pure function (it is — static, string in/out), add `Tests/WebHtmlPrepareTests.swift` asserting the output of `prepareHtml("<html><head></head></html>", pageUrl:..., offline: false)` contains `<base href` and does **not** contain `<script`. Model on `Tests/ScratchpadImportTests.swift`.
 
 ## Done criteria
 

@@ -110,7 +110,11 @@
     // Neutralize any raw HTML from the note (e.g. pasted from the web) before it
     // reaches innerHTML. Runs before the math splice so the trusted KaTeX markup
     // below isn't re-sanitized; the private-use sentinels survive as plain text.
-    if (window.DOMPurify) html = DOMPurify.sanitize(html);
+    // Fail closed: if purify.min.js didn't load, show escaped plain text rather
+    // than letting unsanitized markup through.
+    html = window.DOMPurify
+      ? DOMPurify.sanitize(html)
+      : "<pre>" + escapeHtml(src) + "</pre>";
 
     html = html.replace(new RegExp(OPEN + "(\\d+)" + CLOSE, "g"), function (m, i) {
       var item = store[+i];

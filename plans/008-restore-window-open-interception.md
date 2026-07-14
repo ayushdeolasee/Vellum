@@ -86,6 +86,14 @@ Returning `nil` is what tells WebKit not to open a real second webview. Feed the
 into the same code path `handleMessage`'s `navigate` case uses — call that shared
 routine directly rather than synthesizing a fake script message.
 
+**Preserve the active-tab guard.** `handleMessage` requires
+`app.activeTabId == mountTabId` before it acts, and the shared routine must keep
+that check on this native path too — a stale, backgrounded web view receiving a
+`createWebViewWith:` callback must not be able to navigate the currently active
+tab. If step 2's extraction pulls the logic out of the switch, the guard moves
+*with* it (or is re-checked inside the extracted routine), not left behind in the
+message path only.
+
 **Only route http/https URLs.** A page can request `javascript:`, `data:`, `file:`,
 or a custom scheme here; anything that isn't `http`/`https` must be dropped, not
 navigated to. Reuse `WebUrl.normalize` if it already enforces this (check — it is
@@ -103,6 +111,8 @@ referenced in `WebPageExtractor.swift`).
 
 **In scope**:
 - `Vellum/Views/Web/WebViewerView.swift` (add `WKUIDelegate` conformance + the one method + the `uiDelegate` assignment)
+- One new test file under `Tests/` (e.g. `Tests/WebNavigateUrlGuardTests.swift`) — **only if** step 2's extraction yields a pure, testable URL-validation helper (see "Test plan"); plus `Vellum.xcodeproj/*` if regeneration is needed for it.
+- `plans/README.md` — status-row update only (per the executor instructions above).
 
 **Out of scope** (do NOT touch):
 - `Vellum/Views/Web/WebContentScript.swift` — the JS override stays as-is.

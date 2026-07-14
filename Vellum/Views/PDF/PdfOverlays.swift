@@ -69,6 +69,10 @@ struct PdfOverlayStack: View {
                         scratchpadStore.warnRegionCaptureFailed()
                     }
                     app.setMode(.view)
+                } onCancel: {
+                    // Plain click or tiny wobble: back out of capture mode
+                    // without a warning — the user changed their mind.
+                    app.setMode(.view)
                 }
                 .zIndex(60)
             }
@@ -127,9 +131,16 @@ struct PdfOverlayStack: View {
 }
 
 /// Drag-to-crop overlay for `.snapshotRegion` mode: draws a dashed marquee and
-/// reports the final rectangle (viewer top-left coordinates) on release.
+/// reports the final rectangle (viewer top-left coordinates) on release. A
+/// plain click or a sub-threshold wobble calls `onCancel` instead, so the
+/// capture mode never gets stuck behind the scrim.
 struct RegionCaptureOverlay: View {
     let onCapture: (CGRect) -> Void
+    let onCancel: () -> Void
+
+    /// Drags smaller than this in either dimension are treated as an
+    /// accidental click and cancel the capture instead of cropping.
+    private static let minimumCaptureSize: CGFloat = 4
 
     @Environment(\.palette) private var palette
     @State private var start: CGPoint?
@@ -161,16 +172,25 @@ struct RegionCaptureOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .pointerStyle(.rectSelection)
         .gesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .local)
+            // minimumDistance of 0 so even a plain click ends the gesture and
+            // reaches the cancel path below — with a positive threshold a bare
+            // click never fires onEnded and the overlay stays up forever.
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { value in
                     if start == nil { start = value.startLocation }
                     current = value.location
                 }
                 .onEnded { value in
-                    let final = rect ?? CGRect(origin: value.startLocation, size: .zero)
+                    let final = rect
                     start = nil
                     current = nil
-                    onCapture(final)
+                    if let final,
+                       final.width >= Self.minimumCaptureSize,
+                       final.height >= Self.minimumCaptureSize {
+                        onCapture(final)
+                    } else {
+                        onCancel()
+                    }
                 }
         )
     }

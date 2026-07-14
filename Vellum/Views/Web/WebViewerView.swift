@@ -86,6 +86,10 @@ struct WebViewerView: View {
                                 scratchpadStore.warnRegionCaptureFailed()
                             }
                         }
+                    } onCancel: {
+                        // Plain click or tiny wobble: back out of capture mode
+                        // without a warning — the user changed their mind.
+                        appStore.setMode(.view)
                     }
                     .zIndex(60)
                 }

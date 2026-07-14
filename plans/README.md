@@ -56,6 +56,14 @@ in `PdfSessionBackend` (007).
 | 003 | Move AI provider API keys to the Keychain | — | — | — | — | **REJECTED — already implemented on the trunk** (`Vellum/Services/KeychainStore.swift`, 5 providers). Adopt the trunk's version when `scratchpad` merges; do not build a competing one. |
 | 007 | Move PDF annotation writes off the main actor | — | — | — | — | **REJECTED — already implemented on the trunk.** `PdfDocumentSession` is a thin `@MainActor` facade hopping to `actor PdfDocumentIO`, which runs create/update/delete + `PdfAtomicWriter.save` off the main actor (`PdfSessionBackend.swift:106-160`). The file's own comment records the fix: "the earlier port pinned everything to `@MainActor`". The finding was true of `scratchpad`, not the trunk. |
 
+**Base ≠ `origin/main` for 005 and 008.** The default executor-dispatch flow
+creates worktrees from `origin/main` (see "Base correction" item 2), which does
+**not** contain plan 004's work. Plans based on `65a8bad` must instead be run in a
+hand-made worktree created from branch `worktree-agent-a1adc64230e2b5594`, or —
+as plan 008's own instructions do — start from a default worktree and first
+`git merge --no-edit worktree-agent-a1adc64230e2b5594`, confirming a green
+baseline before changing anything.
+
 ### Plan 004 — web bridge isolation (reviewed)
 
 Diff is +135 / −12 across 5 files. Verified independently: 38/38 tests,
@@ -70,8 +78,9 @@ must **also** name the content world, or teardown silently fails to remove the
 handler. Good catch.
 
 **Accepted regression → plan 008.** The content script overrides `window.open`
-(`WebContentScript.swift:1477`) to route JS-initiated navigation back into the
-reader. That override now patches only the *bridge world's* `window`, so page-JS
+(the `window.open = function (u)` override in `WebContentScript.swift` — ~line
+1075 on `scratchpad`; line numbers differ per branch) to route JS-initiated
+navigation back into the reader. That override now patches only the *bridge world's* `window`, so page-JS
 `window.open(...)` calls no longer reach the app. Link **clicks** are unaffected
 (DOM events cross worlds fine) — this only affects JS-initiated opens. Restoring it
 needs a `WKUIDelegate` (`createWebViewWith:` → `post("navigate")`), which is new
@@ -143,17 +152,19 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | DEFERRED 
 
 ## Dependency notes
 
-- **Everything depends on 000.** Until the trunk compiles, every plan's
-  verification gate (`xcodebuild build` / `test`) fails at its baseline check,
-  and executors correctly refuse to proceed. Three did exactly that.
+- **All trunk-targeted plans depend on 000** (001 and 006 are scratchpad-only and
+  exempt — see below). Until the trunk compiles, every trunk plan's verification
+  gate (`xcodebuild build` / `test`) fails at its baseline check, and executors
+  correctly refuse to proceed. Three did exactly that.
 - **005 hard-depends on 004.** 005 disables page JavaScript for archived
   snapshots; that is only safe once 004 has moved the Vellum content script out
   of the page HTML and into a private `WKContentWorld`. 005's first STOP
   condition checks this.
-- 002 before 007: on the trunk, `create()` is now *optimistic with a background
-  `Task` and silent rollback* (`AnnotationStore.swift:219-250`) — so a failed
-  write is already invisible, and 007 pushes more of the write path into the
-  background. 002 gives those failures a UI first.
+- *(Historical — 007 was later REJECTED as already implemented on the trunk; kept
+  as rationale only.)* 002 before 007: on the trunk, `create()` is now *optimistic
+  with a background `Task` and silent rollback* (`AnnotationStore.swift:219-250`) —
+  so a failed write is already invisible, and 007 pushes more of the write path
+  into the background. 002 gives those failures a UI first.
 - 001 and 006 are scratchpad-branch work and are independent of the trunk plans.
 
 ## Excerpt-refresh notes for the trunk
@@ -174,9 +185,11 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | DEFERRED 
   and `sanitizeSnapshotHtml` at `WebArchive.swift:187` with the same
   `srcset|sizes|integrity|crossorigin`-only `attrStripRegex`. Refresh the line
   numbers; the substance stands.
-- **007**: `PdfSessionBackend.swift` is one of the two files plan 000 repairs —
-  refresh its excerpts only after 000 lands, since the stray `}.value` suggests
-  a partially-applied `Task.detached` that may change what remains to do.
+- **007**: *(Historical — 007 was REJECTED; no excerpt refresh is needed.)* The
+  note below is kept only as rationale for the rejection: `PdfSessionBackend.swift`
+  is one of the two files plan 000 repairs, and the stray `}.value` turned out to
+  be a partially-applied `Task.detached` — the completed version of exactly the
+  work 007 proposed, confirming it was already done on the trunk.
 
 ## Backlog — findings recorded but not planned
 
