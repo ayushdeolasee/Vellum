@@ -592,3 +592,34 @@ Stop and report back (do not improvise) if:
 - `maxPageReadCharacters = 12_000` (~3k tokens) is a judgment call not pinned by tests (tests only require consistency with the constant); tune freely later.
 - Plan 003 (cancellation-retry fix) touches `openStream` in these same two client files — land this plan first to avoid conflicts.
 - Reviewer scrutiny: step 5's replay change is the riskiest (Gemini tool turns now replay thought/signature parts verbatim); manually exercise a Gemini tool-calling chat if a key is available.
+
+---
+
+## Addendum (2026-07-14, verified at commit `c874e13`) — one more compile blocker this plan must clear
+
+Re-audit at `c874e13` confirmed all six in-scope files are byte-identical to `314cf9f` (no drift; the excerpts above remain exact), and a fresh `build-for-testing` run reproduced the same missing-symbol list — **plus one failure this plan did not originally account for**:
+
+- `Tests/AiPipelineTests.swift:338` feeds a test fixture (`FixtureBytes`, a custom `AsyncSequence` of bytes) to `SSE.dataPayloads(...)`, but the live signature in `Vellum/Services/Ai/AiStreaming.swift:27-29` is hard-typed to the concrete network type:
+
+```swift
+enum SSE {
+    static func dataPayloads(
+        _ bytes: URLSession.AsyncBytes
+    ) -> AsyncCompactMapSequence<AsyncLineSequence<URLSession.AsyncBytes>, String> {
+```
+
+  Compiler error: `cannot convert value of type 'FixtureBytes' to expected argument type 'URLSession.AsyncBytes'`. This contradicts the "Current state" line above claiming `AiStreaming.swift` "already satisfies its tests" — it does not; disregard that line.
+
+**Additional step (do together with the other helper work; scope grows by one file — `Vellum/Services/Ai/AiStreaming.swift`):** widen `dataPayloads` to any async byte sequence, keeping the body unchanged:
+
+```swift
+static func dataPayloads<Bytes: AsyncSequence>(
+    _ bytes: Bytes
+) -> AsyncCompactMapSequence<AsyncLineSequence<Bytes>, String> where Bytes.Element == UInt8 {
+```
+
+`URLSession.AsyncBytes` satisfies `AsyncSequence where Element == UInt8`, and `.lines` is available on any such sequence via `AsyncLineSequence`, so all five provider clients compile unchanged — do not edit them for this. (If the compiler disagrees about `.lines` availability on the generic, STOP and report; do not restructure the providers.)
+
+**Verify**: `xcodebuild -project Vellum.xcodeproj -scheme Vellum -destination 'platform=macOS' build-for-testing` → `** TEST BUILD SUCCEEDED **` with `Tests/AiPipelineTests.swift` compiling; then the plan's existing step-9 full-suite gate.
+
+**Done-criteria delta**: the "six in-scope files" bullet becomes seven (`+ Vellum/Services/Ai/AiStreaming.swift`); everything else stands.
