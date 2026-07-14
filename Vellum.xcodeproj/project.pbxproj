@@ -58,6 +58,7 @@
 		8DDA7D560DAB61C377817B0D /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7870954383EAE833F32ABF /* FindBar.swift */; };
 		918DFC344E014C07E6F9DD69 /* ChatGPTClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 028998E6FC55C768B398E4AA /* ChatGPTClient.swift */; };
 		91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */; };
+		FEEDA1B2C3D4E5F600000002 /* WebProxyUrlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDA1B2C3D4E5F600000001 /* WebProxyUrlTests.swift */; };
 		923DF93BFF82ECA377E4BEE9 /* WebArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = E064C75923B5E7D98E256470 /* WebArchive.swift */; };
 		96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */; };
 		9AC827DE4385CD8EC4201A49 /* AnnotationSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9C9C837F5B62D523BD8E97 /* AnnotationSidebar.swift */; };
@@ -117,6 +118,7 @@
 		102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfGeometry.swift; sourceTree = "<group>"; };
 		117E03CBB763404A8E264080 /* gpt-5-5.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "gpt-5-5.pdf"; sourceTree = "<group>"; };
 		13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCacheTests.swift; sourceTree = "<group>"; };
+		FEEDA1B2C3D4E5F600000001 /* WebProxyUrlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebProxyUrlTests.swift; sourceTree = "<group>"; };
 		14BA2FED5E906C5D311882E3 /* ChatGPTAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTAuth.swift; sourceTree = "<group>"; };
 		195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAnnotationCodec.swift; sourceTree = "<group>"; };
 		1F46B61030259DEFD1791C35 /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf"; sourceTree = "<group>"; };
@@ -278,6 +280,7 @@
 			children = (
 				4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */,
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
+				FEEDA1B2C3D4E5F600000001 /* WebProxyUrlTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
@@ -681,6 +684,7 @@
 			files = (
 				C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */,
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
+				FEEDA1B2C3D4E5F600000002 /* WebProxyUrlTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
 				806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */,
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,

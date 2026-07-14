@@ -37,6 +37,175 @@ enum WebContentScript {
   var PAGE_TARGET_CHARS = 3600;
   var MAX_PAGES = 200;
 
+  // ------------------------------------------------------------------
+  // History API shim (see plans/web-proxy-truthful-urls.html)
+  //
+  // The injected <base href> points at the real https origin so
+  // subresources resolve — but it also makes RELATIVE
+  // history.pushState/replaceState URLs resolve against it, which is
+  // cross-origin to this vellum-web document, so WebKit throws a
+  // SecurityError mid-hydration in SPA routers (Next.js does exactly
+  // this). Resolve url arguments against location.href instead, and map
+  // absolute real-origin URLs back onto the reader origin. Afterwards
+  // keep PAGE_URL fresh so re-inits attribute extraction, archives, and
+  // annotations to the right record.
+  // ------------------------------------------------------------------
+  var REAL_PROTOCOL = "https:";
+  var REAL_HOST = "";
+  try {
+    var realParsed = new URL(PAGE_URL);
+    REAL_PROTOCOL = realParsed.protocol;
+    REAL_HOST = realParsed.host;
+  } catch (e) {
+    /* PAGE_URL not absolute; shim stays inert */
+  }
+
+  var TRACKING_KEYS = ["fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "ref_src", "twclid"];
+
+  function remapHistoryUrl(url) {
+    if (url === undefined || url === null) return url;
+    try {
+      var abs = new URL(String(url), location.href);
+      if ((abs.protocol === "http:" || abs.protocol === "https:") && abs.host === REAL_HOST) {
+        return location.protocol + "//" + location.host + abs.pathname + abs.search + abs.hash;
+      }
+      return abs.href;
+    } catch (e) {
+      return url;
+    }
+  }
+
+  // The real-URL equivalent of the current location, with tracking params
+  // dropped like the app-side normalizer — PAGE_URL comparisons and init
+  // reports must not thrash on utm noise.
+  function currentRealUrl() {
+    var search = "";
+    if (location.search && location.search.length > 1) {
+      var kept = [];
+      var pairs = location.search.slice(1).split("&");
+      for (var i = 0; i < pairs.length; i++) {
+        var keyName = pairs[i].split("=")[0].replace(/\+/g, " ");
+        try {
+          keyName = decodeURIComponent(keyName);
+        } catch (e) {
+          /* keep raw */
+        }
+        if (/^utm_/.test(keyName)) continue;
+        if (TRACKING_KEYS.indexOf(keyName) !== -1) continue;
+        kept.push(pairs[i]);
+      }
+      if (kept.length) search = "?" + kept.join("&");
+    }
+    return REAL_PROTOCOL + "//" + location.host + location.pathname + search;
+  }
+
+  var urlReinitTimer = null;
+  function noteUrlChange() {
+    if (!REAL_HOST) return;
+    var real = currentRealUrl();
+    if (real === PAGE_URL) return;
+    PAGE_URL = real;
+    // Soft navigation: re-extract and re-init (debounced — the router is
+    // still swapping DOM in) so the shell rebinds to the new address.
+    if (urlReinitTimer) clearTimeout(urlReinitTimer);
+    urlReinitTimer = setTimeout(function () {
+      urlReinitTimer = null;
+      initialize(true);
+    }, 400);
+  }
+
+  var nativePushState = history.pushState.bind(history);
+  var nativeReplaceState = history.replaceState.bind(history);
+  history.pushState = function (state, title, url) {
+    nativePushState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+  history.replaceState = function (state, title, url) {
+    nativeReplaceState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+  window.addEventListener("popstate", noteUrlChange);
+
+  // ------------------------------------------------------------------
+  // YouTube embed fallback facade
+  //
+  // YouTube's embed player refuses to play when the embedding document
+  // cannot send an http(s) Referer header. WebKit never sends one from
+  // a custom-scheme (vellum-web://) page, so every embed variant dies
+  // with "Error 153 — Video player configuration error" (verified
+  // empirically against bare, autoplay, and jsapi+origin embeds; the
+  // origin query param does not help). Unfixable client-side — replace
+  // the dead player with a clickable thumbnail that opens the video in
+  // the system browser via the app shell.
+  // ------------------------------------------------------------------
+  function youtubeVideoId(raw) {
+    if (!raw) return null;
+    try {
+      var u = new URL(String(raw), location.href);
+      if (!/(^|\.)youtube(-nocookie)?\.com$/.test(u.hostname)) return null;
+      var m = u.pathname.match(/^\/embed\/([\w-]{6,})/);
+      return m ? m[1] : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function replaceWithFacade(frame) {
+    var id = youtubeVideoId(frame.getAttribute("src"));
+    if (!id || !frame.parentNode) return;
+    var facade = document.createElement("div");
+    facade.setAttribute("data-vellum-youtube", id);
+    var w = +(frame.getAttribute("width") || 0);
+    var h = +(frame.getAttribute("height") || 0);
+    facade.style.cssText =
+      "position:relative;cursor:pointer;background:#000 center/cover no-repeat;" +
+      "background-image:url('https://i.ytimg.com/vi/" + id + "/hqdefault.jpg');" +
+      (w > 0 && h > 0
+        ? "width:" + w + "px;height:" + h + "px;"
+        : "width:100%;aspect-ratio:16/9;");
+    var badge = document.createElement("div");
+    badge.style.cssText =
+      "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+      "flex-direction:column;gap:8px;color:#fff;font:500 14px -apple-system,sans-serif;" +
+      "background:rgba(0,0,0,0.35);text-shadow:0 1px 3px rgba(0,0,0,0.8);";
+    badge.innerHTML =
+      '<svg width="68" height="48" viewBox="0 0 68 48"><path d="M66.52 7.74a8 8 0 0 0' +
+      "-5.6-5.66C55.98.86 34 .86 34 .86s-21.98 0-26.92 1.22a8 8 0 0 0-5.6 5.66C.26 " +
+      "12.72.26 24 .26 24s0 11.28 1.22 16.26a8 8 0 0 0 5.6 5.66C12.02 47.14 34 47.14 " +
+      '34 47.14s21.98 0 26.92-1.22a8 8 0 0 0 5.6-5.66C67.74 35.28 67.74 24 67.74 24s0' +
+      '-11.28-1.22-16.26z" fill="#f00"/><path d="M45 24 27 14v20z" fill="#fff"/></svg>' +
+      "<span>Watch on YouTube</span>";
+    facade.appendChild(badge);
+    facade.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      post("open-external", { url: "https://www.youtube.com/watch?v=" + id });
+    });
+    frame.parentNode.replaceChild(facade, frame);
+  }
+
+  if (REAL_HOST) {
+    // Catch player iframes however they arrive: SSR markup, innerHTML,
+    // or the IFrame API's createElement path.
+    new MutationObserver(function (mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        var added = mutations[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var node = added[j];
+          if (!node) continue;
+          if (node.tagName === "IFRAME") {
+            replaceWithFacade(node);
+          } else if (node.querySelectorAll) {
+            node.querySelectorAll("iframe[src]").forEach(replaceWithFacade);
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll("iframe[src]").forEach(replaceWithFacade);
+    });
+  }
+
   // Raw text domain: concatenation of all accepted text nodes.
   var entries = []; // [{ node, start, end }] raw offsets per text node
   var rawText = "";

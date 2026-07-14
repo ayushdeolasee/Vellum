@@ -263,6 +263,11 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var outgoingNavUrl: String?
     // URL whose reading position has already been restored this mount.
     @ObservationIgnored private var restoredUrl: String?
+    // One-shot guards: the URL already reloaded to chase a server redirect
+    // (a redirect loop must not ping-pong the webview), and the URL already
+    // reloaded after a web-content-process crash (second crash → snapshot).
+    @ObservationIgnored private var redirectReloadedUrl: String?
+    @ObservationIgnored private var processReloadedUrl: String?
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
@@ -272,11 +277,16 @@ final class WebViewerController: NSObject {
 
     private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        let schemeHandler = VellumWebSchemeHandler()
         configuration.setURLSchemeHandler(
-            VellumWebSchemeHandler(), forURLScheme: VellumWebSchemeHandler.scheme)
+            schemeHandler, forURLScheme: VellumWebSchemeHandler.scheme)
+        configuration.setURLSchemeHandler(
+            schemeHandler, forURLScheme: VellumWebSchemeHandler.insecureScheme)
         configuration.userContentController.add(
             WeakScriptMessageHandler(self), name: "vellum")
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
         return webView
     }
@@ -779,22 +789,17 @@ final class WebViewerController: NSObject {
             }
 
         case "navigate":
-            guard let url = data["url"] as? String, let tabId = app.activeTabId else { break }
-            // A pending auto-archive for the outgoing page must not fire
-            // against the rebound session.
-            cancelPendingArchive()
-            clearSelection()
-            closeNotePopovers()
-            let outgoing = app.document?.pdfPath
-            Task { [weak self] in
-                guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                      let self else { return }
-                self.pendingNavUrl = rebound.pdfPath
-                self.outgoingNavUrl = outgoing
-                self.initCount = 0
-                self.webView.load(
-                    URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
-            }
+            guard let url = data["url"] as? String else { break }
+            navigateTo(url)
+
+        case "open-external":
+            // Content that can't work inside the reader (e.g. YouTube embeds,
+            // which require an http(s) Referer the proxy origin can't send)
+            // hands off to the system browser.
+            guard let raw = data["url"] as? String,
+                  let url = URL(string: raw),
+                  url.scheme == "https" || url.scheme == "http" else { break }
+            NSWorkspace.shared.open(url)
 
         case "viewport-scrolled":
             // Popovers are positioned from event-time rects; scrolling the
@@ -867,6 +872,28 @@ final class WebViewerController: NSObject {
         }
     }
 
+    /// Rebind the tab to a new page and reload the reader — used by the
+    /// content script's link interception, the navigation delegate's escape
+    /// hatch for router-driven top-level loads, and window.open routing.
+    func navigateTo(_ url: String) {
+        guard let app, let tabId = app.activeTabId else { return }
+        // A pending auto-archive for the outgoing page must not fire
+        // against the rebound session.
+        cancelPendingArchive()
+        clearSelection()
+        closeNotePopovers()
+        let outgoing = app.document?.pdfPath
+        Task { [weak self] in
+            guard let rebound = await app.webNavigated(tabId: tabId, url: url),
+                  let self else { return }
+            self.pendingNavUrl = rebound.pdfPath
+            self.outgoingNavUrl = outgoing
+            self.initCount = 0
+            self.webView.load(
+                URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+        }
+    }
+
     private func handleInit(_ data: [String: Any], app: AppStore) {
         guard let tabId = app.activeTabId, let currentDoc = app.document else { return }
 
@@ -887,17 +914,41 @@ final class WebViewerController: NSObject {
         isOffline = data["offline"] as? Bool ?? false
         supportsPositions = data["positionAnchors"] as? Bool ?? false
 
-        if let reportedUrl, reportedUrl != currentDoc.pdfPath {
-            // The page navigated (back/forward or a redirect changed the
-            // effective URL): rebind the session, then ask the page to report
-            // again so the fresh context lands after the App-level document
-            // reset. Any open note popovers belong to the outgoing document.
+        // Compare normalized identities: the content script's history shim
+        // reports un-normalized URLs after soft navigations (tracking params
+        // and all), and a raw != comparison would rebind forever.
+        let reportedNormalized = reportedUrl.map { (try? WebUrl.normalize($0)) ?? $0 }
+        if let reportedUrl, let reportedNormalized, reportedNormalized != currentDoc.pdfPath {
+            // The page navigated (back/forward, a server redirect changed the
+            // effective URL, or an SPA soft-navigated): rebind the session,
+            // then ask the page to report again so the fresh context lands
+            // after the App-level document reset. Any open note popovers
+            // belong to the outgoing document.
             cancelPendingArchive()
             closeNotePopovers()
             Task { [weak self] in
-                let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl)
-                if rebound != nil {
-                    self?.post("request-init")
+                guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
+                      let self else { return }
+                // Server redirect: the destination's HTML was served under
+                // the pre-redirect request URL, so window.location still
+                // shows the old path and strict client routers would hydrate
+                // against it — reload under the truthful address. One-shot
+                // per URL so a redirect loop can't ping-pong the webview.
+                // Soft navigations (pushState) already updated location and
+                // skip the reload; snapshot serving (nil realUrl) does too.
+                let serving = self.webView.url
+                    .flatMap(VellumWebSchemeHandler.realUrl(from:))
+                    .flatMap { try? WebUrl.normalize($0) }
+                if let serving, serving != rebound.pdfPath,
+                   self.redirectReloadedUrl != rebound.pdfPath {
+                    self.redirectReloadedUrl = rebound.pdfPath
+                    self.pendingNavUrl = rebound.pdfPath
+                    self.outgoingNavUrl = nil
+                    self.initCount = 0
+                    self.webView.load(
+                        URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+                } else {
+                    self.post("request-init")
                 }
             }
             return
@@ -1021,6 +1072,88 @@ extension WebViewerController: WKScriptMessageHandler {
         didReceive message: WKScriptMessage
     ) {
         handleMessage(message.body)
+    }
+}
+
+extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
+        // The injected <base href> makes any link the content script misses —
+        // and router location.assign calls — resolve to the real https
+        // origin; without this the webview would leave the reader entirely.
+        // Main frame only: subframes (article embeds, video iframes) load
+        // their real content directly.
+        guard let url = navigationAction.request.url,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              navigationAction.targetFrame?.isMainFrame == true else {
+            return .allow
+        }
+        navigateTo(url.absoluteString)
+        return .cancel
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        // window.open / target=_blank: no popup windows in the reader —
+        // route http(s) targets through the normal rebind flow instead of
+        // silently dropping them.
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            navigateTo(url.absoluteString)
+        }
+        return nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        handleLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let doc = app?.document, doc.kind == .web else { return }
+        if processReloadedUrl == doc.pdfPath {
+            loadSnapshotFallback()
+        } else {
+            processReloadedUrl = doc.pdfPath
+            initCount = 0
+            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        }
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        // Our own decidePolicyFor cancels and superseded loads arrive here
+        // too — only real failures fall through to the snapshot fallback.
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
+        // WebKitErrorFrameLoadInterruptedByPolicyChange
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
+        loadSnapshotFallback()
+    }
+
+    /// Serve the offline snapshot (or Vellum's own error page) instead of
+    /// ever leaving the user on WebKit's native error screen.
+    private func loadSnapshotFallback() {
+        guard let app, let doc = app.document, doc.kind == .web else { return }
+        // The fallback itself failing must not loop.
+        guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
+        initCount = 0
+        webView.load(URLRequest(
+            url: VellumWebSchemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }
 }
 

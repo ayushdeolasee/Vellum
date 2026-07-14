@@ -49,7 +49,7 @@
 <body>
 <main>
 <h1>Truthful proxy URLs for Vellum&rsquo;s web viewer</h1>
-<p class="meta">Plan v2 &mdash; 2026-07-12 &middot; branch <code>ai-ondemand-retrieval</code> (fix is branch-independent) &middot; reviewed adversarially by three independent Fable agents (codebase-correctness, WebKit-empirical, regression/migration); all findings incorporated. Status: <strong>awaiting user review</strong>.</p>
+<p class="meta">Plan v2 &mdash; 2026-07-12 &middot; branch <code>ai-ondemand-retrieval</code> (fix is branch-independent) &middot; reviewed adversarially by three independent Fable agents (codebase-correctness, WebKit-empirical, regression/migration); all findings incorporated. Status: <strong>implemented &amp; QA-verified 2026-07-12</strong> (headline bug fixed; user opted to drop the legacy <code>?url=</code> route entirely — pre-ship, no compat needed. Offline snapshot-only render still unverified live: fresh QA launches were blocked by a keychain prompt from a synchronous main-thread <code>SecItemCopyMatching</code> in app init — separate bug).</p>
 
 <h2>1 &middot; The bug</h2>
 <p>Opening <code>https://www.anthropic.com/research/global-workspace</code> in Vellum shows WebKit&rsquo;s native &ldquo;This page couldn&rsquo;t load&rdquo; screen (or a blank page). Confirmed by live QA reproduction: <strong>Vellum&rsquo;s fetch of the page succeeds</strong> (the on-disk snapshot was rewritten with the exact 216&nbsp;KB live body during the failure); the page destroys itself after rendering.</p>
@@ -130,6 +130,7 @@ vellum-web://www.anthropic.com/research/global-workspace</code></pre>
   <li>No move to direct https browsing + <code>WKUserScript</code>: the probe results remove the need &mdash; the proxy architecture works with truthful URLs.</li>
   <li><code>location.protocol/origin</code> still aren&rsquo;t <code>https:</code> &mdash; frameworks that branch on protocol may still misbehave; only live QA settles residual cases. Cookie-gated hydration still won&rsquo;t work (cookies are a no-op on custom schemes, unchanged).</li>
   <li>Sites hard-requiring service workers degrade exactly as today.</li>
+  <li><strong>YouTube embeds cannot play in the reader</strong> (discovered post-ship): YouTube&rsquo;s embed player hard-requires an http(s) <code>Referer</code>, which WebKit never sends from a custom-scheme document — every variant (bare, autoplay, jsapi+https-origin) returns &ldquo;Error 153: Video player configuration error&rdquo;; rewriting the <code>origin</code> query param does not help (all verified empirically). Mitigation shipped: the content script replaces YouTube embed iframes with a thumbnail facade (<code>i.ytimg.com</code> poster + play badge) that opens the video in the system browser via a new <code>open-external</code> message.</li>
   <li>Docs cleanup (<code>specs/SPECS-web.md</code> etc. mention <code>vellum-web://localhost</code>) is optional follow-up.</li>
 </ul>
 
