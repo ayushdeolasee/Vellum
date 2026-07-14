@@ -161,14 +161,24 @@ enum MarkdownParser {
     /// math delimiters for surfaces (collapsed pills, tooltips) that can't
     /// render markdown.
     static func plainPreview(_ source: String) -> String {
-        var text = source
+        // Inline math: same definition as the renderers (MathRenderer.segments),
+        // so "$5 and $10" stays currency in the pill exactly as it renders in
+        // the note body, while "$x^2$" strips to its LaTeX body.
+        var text = source.components(separatedBy: .newlines).map { line in
+            MathRenderer.segments(in: line).map { segment in
+                switch segment {
+                case .text(let t): return t
+                case .math(let latex): return latex
+                }
+            }.joined()
+        }.joined(separator: "\n")
         for pattern in [
             #"(?m)^#{1,3}\s+"#,       // headings
             #"(?m)^>\s?"#,            // quotes
             #"(?m)^[-*+]\s+"#,        // bullets
             #"(?m)^\d+\.\s+"#,        // ordered lists
             "```[a-zA-Z]*",           // code fences
-            #"\*\*|\*|__|`|\\\[|\\\]|\\\(|\\\)|\$\$|\$"#, // emphasis + math delimiters
+            #"\*\*|\*|__|`|\$\$|\\\[|\\\]"#, // emphasis + display-math delimiters
         ] {
             text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
@@ -198,17 +208,25 @@ enum MarkdownParser {
             if line.hasPrefix("$$") || line.hasPrefix("\\[") {
                 let close = line.hasPrefix("$$") ? "$$" : "\\]"
                 var math = String(line.dropFirst(2))
-                if math.hasSuffix(close), !math.isEmpty { math = String(math.dropLast(2)); index += 1 }
-                else {
+                var closed = false
+                if math.hasSuffix(close), !math.isEmpty {
+                    math = String(math.dropLast(2)); index += 1; closed = true
+                } else {
                     index += 1
                     var parts = [math]
                     while index < lines.count, !lines[index].hasSuffix(close) {
                         parts.append(lines[index]); index += 1
                     }
-                    if index < lines.count { parts.append(String(lines[index].dropLast(2))); index += 1 }
+                    if index < lines.count {
+                        parts.append(String(lines[index].dropLast(2))); index += 1; closed = true
+                    }
                     math = parts.joined(separator: "\n")
                 }
-                blocks.append(.math(math))
+                // Still-open block (mid-stream): typesetting a partial equation is a
+                // guaranteed MathRenderer cache miss per token — show it as code until
+                // the closing delimiter arrives (same treatment as an unterminated
+                // code fence above).
+                blocks.append(closed ? .math(math) : .code(math))
                 continue
             }
             if let heading = heading(line) { blocks.append(heading); index += 1; continue }

@@ -57,4 +57,15 @@ final class WebProxyUrlTests: XCTestCase {
                 from: URL(string: "vellum-web://example.com/asset/whatever")!),
             "https://example.com/asset/whatever")
     }
+
+    func testRoundTripAdversarial() throws {
+        try assertRoundTrip("https://example.com/a%20b")        // valid escape preserved
+        try assertRoundTrip("https://example.com/50%discount")  // bare % — expected to FAIL before the fix
+        try assertRoundTrip("https://example.com/100%")         // trailing bare %
+        try assertRoundTrip("https://example.com/%ZZbad")       // invalid escape — expected to FAIL before the fix
+        try assertRoundTrip("https://a%40b@example.com/x")      // pre-encoded @ in userinfo
+        try assertRoundTrip("https://a@b@example.com/x")        // multi-@ authority — may FAIL before the fix
+        try assertRoundTrip("https://example.com/?p=50%off")    // bare % in query (characterization: if this FAILS, STOP — see conditions)
+        try assertRoundTrip("https://example.com/a%2F")         // valid escape as the final characters
+    }
 }

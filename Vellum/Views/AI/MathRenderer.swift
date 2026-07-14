@@ -27,7 +27,13 @@ enum MathRenderer {
     /// Typeset images are cheap but not free (font table lookups + layout), and
     /// streaming re-renders a growing message on every delta — cache by
     /// (latex, size, color, mode).
-    private static let cache = NSCache<NSString, CachedRender>()
+    private static let cache: NSCache<NSString, CachedRender> = {
+        let cache = NSCache<NSString, CachedRender>()
+        // Rendered equations are small, but keys are exact LaTeX strings —
+        // long sessions with many one-off renders shouldn't grow unbounded.
+        cache.countLimit = 300
+        return cache
+    }()
 
     private final class CachedRender {
         let rendered: Rendered

@@ -408,4 +408,45 @@ final class AiPipelineTests: XCTestCase {
         let legacy = Data(#"{"id":"a","role":"assistant","content":"old","createdAt":"2026-01-01T00:00:00.000Z"}"#.utf8)
         XCTAssertNil(try JSONDecoder().decode(AiMessage.self, from: legacy).usage)
     }
+
+    // MARK: - Auto page-image gating
+
+    /// Pages with real text send no auto screenshot; scanned/low-text pages
+    /// (and pages not yet extracted) do.
+    func testAutoPageImageAttachesOnlyForLowTextPages() {
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(pageText: nil))
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(pageText: ""))
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(
+            pageText: String(repeating: "a", count: AiStore.autoPageImageTextThreshold - 1)))
+        XCTAssertFalse(AiStore.shouldAutoAttachPageImage(
+            pageText: String(repeating: "a", count: AiStore.autoPageImageTextThreshold)))
+    }
+
+    // MARK: - Conversation persistence write-behind
+
+    /// A save is visible to an immediate load (via the in-memory cache) even
+    /// before the coalesced disk flush has run.
+    func testSaveIsImmediatelyVisibleToLoad() {
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/ai-persistence-test-a.pdf", title: "A", pageCount: 1, lastPage: 1)
+        let message = AiPersistence.makeMessage(role: .user, content: "hello persistence")
+        AiPersistence.saveConversation(for: document, messages: [message])
+        let loaded = AiPersistence.loadConversation(for: document)
+        XCTAssertEqual(loaded.map(\.content), ["hello persistence"])
+        // Cleanup so repeated test runs don't accumulate:
+        AiPersistence.saveConversation(for: document, messages: [])
+    }
+
+    /// awaitPendingFlush drains the coalesced write.
+    func testAwaitPendingFlushCompletes() async {
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/ai-persistence-test-b.pdf", title: "B", pageCount: 1, lastPage: 1)
+        AiPersistence.saveConversation(
+            for: document,
+            messages: [AiPersistence.makeMessage(role: .user, content: "flush me")]
+        )
+        await AiPersistence.awaitPendingFlush()
+        AiPersistence.saveConversation(for: document, messages: [])
+        await AiPersistence.awaitPendingFlush()
+    }
 }

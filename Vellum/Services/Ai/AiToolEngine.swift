@@ -173,6 +173,64 @@ final class AiToolEngine {
 
     // MARK: - Read tools (over in-memory pageTexts)
 
+    /// Caps for what a single getPageText call may return: a page read is
+    /// bounded so one dense page can't blow the prompt budget, and annotation
+    /// echoes are clipped per entry and capped in count (newest kept).
+    static let maxPageReadCharacters = 12_000
+    static let maxAnnotationReadCharacters = 300
+    static let maxAnnotationsPerRead = 20
+
+    static func boundedPageRead(page: Int, text: String) -> String {
+        let header = "Page \(page):\n"
+        guard text.count > maxPageReadCharacters else { return header + text }
+        let clipped = String(text.prefix(maxPageReadCharacters))
+        return header + clipped + "\n[truncated — page text continues beyond \(maxPageReadCharacters) characters]"
+    }
+
+    /// getPageText appends the page's highlights and notes so the model sees
+    /// what the user marked. Highlights quote their selected text (plus any
+    /// user comment), notes list their content; bookmarks and empty entries
+    /// are skipped; long text is clipped; at most maxAnnotationsPerRead
+    /// entries are listed, keeping the NEWEST (input is creation-ordered).
+    static func annotationsSection(page: Int, annotations: [Annotation]) -> String? {
+        func clip(_ string: String) -> String {
+            string.count > maxAnnotationReadCharacters
+                ? String(string.prefix(maxAnnotationReadCharacters)) + "…"
+                : string
+        }
+        var lines: [String] = []
+        for annotation in annotations {
+            let comment = (annotation.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            switch annotation.type {
+            case .highlight:
+                let selected = (annotation.positionData?.selectedText ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !selected.isEmpty, !comment.isEmpty {
+                    lines.append("- Highlight: \"\(clip(selected))\" — user comment: \(clip(comment))")
+                } else if !selected.isEmpty {
+                    lines.append("- Highlight: \"\(clip(selected))\"")
+                } else if !comment.isEmpty {
+                    lines.append("- Highlight comment: \(clip(comment))")
+                }
+            case .note:
+                if !comment.isEmpty { lines.append("- Note: \(clip(comment))") }
+            default:
+                continue
+            }
+        }
+        guard !lines.isEmpty else { return nil }
+        var hidden = 0
+        if lines.count > maxAnnotationsPerRead {
+            hidden = lines.count - maxAnnotationsPerRead
+            lines = Array(lines.suffix(maxAnnotationsPerRead))
+        }
+        var output = ["User highlights and notes on page \(page):"] + lines
+        if hidden > 0 {
+            output.append("…and \(hidden) earlier annotations on this page (not shown).")
+        }
+        return output.joined(separator: "\n")
+    }
+
     /// Read one page's extracted text. Extracts on demand if the background
     /// walk hasn't reached it yet, so it never returns empty for a page that
     /// actually has a text layer.
@@ -186,7 +244,11 @@ final class AiToolEngine {
         guard !text.isEmpty else {
             return "Page \(page) has no extractable text (it may be a scanned image). Request a page image to read it visually."
         }
-        return "Page \(page):\n\(text)"
+        var output = Self.boundedPageRead(page: page, text: text)
+        if let section = Self.annotationsSection(page: page, annotations: annotations.annotationsForPage(page)) {
+            output += "\n\n" + section
+        }
+        return output
     }
 
     /// Grep the whole document (already whitespace-normalized in `pageTexts`).

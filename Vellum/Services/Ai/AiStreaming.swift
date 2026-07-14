@@ -24,9 +24,9 @@ enum AiStreamEvent: Sendable {
 /// terminates an event, but every provider we target emits one JSON object per
 /// `data:` line, so we surface payloads line-by-line).
 enum SSE {
-    static func dataPayloads(
-        _ bytes: URLSession.AsyncBytes
-    ) -> AsyncCompactMapSequence<AsyncLineSequence<URLSession.AsyncBytes>, String> {
+    static func dataPayloads<Bytes: AsyncSequence>(
+        _ bytes: Bytes
+    ) -> AsyncCompactMapSequence<AsyncLineSequence<Bytes>, String> where Bytes.Element == UInt8 {
         bytes.lines.compactMap { line -> String? in
             guard line.hasPrefix("data:") else { return nil }
             let payload = line.dropFirst("data:".count)

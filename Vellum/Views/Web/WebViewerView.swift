@@ -792,13 +792,14 @@ final class WebViewerController: NSObject {
             guard let url = data["url"] as? String else { break }
             navigateTo(url)
 
-        case "open-external":
-            // Content that can't work inside the reader (e.g. YouTube embeds,
-            // which require an http(s) Referer the proxy origin can't send)
-            // hands off to the system browser.
-            guard let raw = data["url"] as? String,
-                  let url = URL(string: raw),
-                  url.scheme == "https" || url.scheme == "http" else { break }
+        case "open-youtube":
+            // The YouTube facade (WebContentScript) hands embeds off to the system
+            // browser — embeds need an http(s) Referer the proxy origin can't send.
+            // Only a validated video id crosses the bridge, never a full URL, so a
+            // hostile page script can at worst open a youtube.com/watch page.
+            guard let id = data["id"] as? String,
+                  id.range(of: "^[A-Za-z0-9_-]{6,20}$", options: .regularExpression) != nil,
+                  let url = URL(string: "https://www.youtube.com/watch?v=\(id)") else { break }
             NSWorkspace.shared.open(url)
 
         case "viewport-scrolled":
@@ -1090,6 +1091,26 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
               scheme == "http" || scheme == "https",
               navigationAction.targetFrame?.isMainFrame == true else {
             return .allow
+        }
+        // A same-page anchor click resolves against the injected <base href> to
+        // the real https origin, so WebKit sees a cross-origin navigation instead
+        // of a scroll. When only the fragment differs from the current page,
+        // scroll in place via location.hash (a same-document navigation) rather
+        // than rebinding and reloading the whole reader. normalize strips
+        // fragments, so equal normalized URLs == same page.
+        if let fragment = url.fragment,
+           let currentProxy = webView.url,
+           let currentReal = VellumWebSchemeHandler.realUrl(from: currentProxy),
+           let incoming = try? WebUrl.normalize(url.absoluteString),
+           let current = try? WebUrl.normalize(currentReal),
+           incoming == current {
+            // JSON-encode the fragment so quotes/backslashes can't break out of
+            // the JS string.
+            if let data = try? JSONEncoder().encode("#" + fragment),
+               let literal = String(data: data, encoding: .utf8) {
+                webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+            }
+            return .cancel
         }
         navigateTo(url.absoluteString)
         return .cancel

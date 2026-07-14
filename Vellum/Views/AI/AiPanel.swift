@@ -353,8 +353,14 @@ struct AiPanel: View {
         let numPages = appStore.numPages
         let visiblePages = appStore.visiblePages
         let annotations = annotationStore.annotations
+        let pageText = aiStore.pageTexts[currentPage]
         let task = Task {
-            let image = await aiStore.capturePageImageHandler?(currentPage)
+            let image: AiPageImageSnapshot?
+            if AiStore.shouldAutoAttachPageImage(pageText: pageText) {
+                image = await aiStore.capturePageImageHandler?(currentPage)
+            } else {
+                image = nil
+            }
             guard !Task.isCancelled, appStore.activeTabId == sessionId else { return }
             let context = AiContextSnapshot(
                 title: document?.title,
