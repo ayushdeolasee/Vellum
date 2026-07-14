@@ -1715,32 +1715,53 @@ enum WebContentScript {
       }
 
       case "scroll-to-annotation": {
-        var match = null;
+        var record = null;
         var annotationLists = [appliedHighlights, appliedNotes];
-        for (var li = 0; li < annotationLists.length && !match; li++) {
+        for (var li = 0; li < annotationLists.length && !record; li++) {
           var list = annotationLists[li];
           for (var i = 0; i < list.length; i++) {
             if (list[i].id === d.id) {
-              match = resolveHighlight(list[i]);
+              record = list[i];
               break;
             }
           }
         }
-        if (match) {
-          var range = rangeFromRaw(match.start, match.end);
-          if (range) {
-            var rect = range.getBoundingClientRect();
-            // Already fully on screen (e.g. selected by clicking it in the
-            // page): scrolling would just yank the viewport — and dismiss
-            // the popover the click opened.
-            if (rect.top < 0 || rect.bottom > window.innerHeight) {
-              window.scrollTo({
-                top: Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3),
-                behavior: "auto",
-              });
-            }
-          }
+        if (!record) break;
+        // Re-resolved per call: hydration/lazy-load keeps reflowing the page
+        // after the jump, so the target must be measured fresh each time.
+        // Returns the current scrollY when the annotation is already fully on
+        // screen (e.g. selected by clicking it in the page): scrolling then
+        // would just yank the viewport — and dismiss the popover the click
+        // opened.
+        var annotationTop = function () {
+          var resolved = resolveHighlight(record);
+          var range = resolved ? rangeFromRaw(resolved.start, resolved.end) : null;
+          if (!range) return null;
+          var rect = range.getBoundingClientRect();
+          if (rect.top >= 0 && rect.bottom <= window.innerHeight) return window.scrollY;
+          return Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3);
+        };
+        var annotationFirstTop = annotationTop();
+        if (annotationFirstTop === null) break;
+        if (annotationFirstTop !== window.scrollY) {
+          window.scrollTo({ top: annotationFirstTop, behavior: "auto" });
         }
+        // Late-loading content above the annotation (lazy images, embeds,
+        // SPA hydration) shifts layout after the jump, leaving the viewport
+        // above the highlight. Re-correct briefly — same pattern as
+        // scroll-to-position — but back off as soon as the user scrolls
+        // somewhere else themselves.
+        var annotationExpectedY = window.scrollY;
+        var settleAnnotation = function () {
+          if (Math.abs(window.scrollY - annotationExpectedY) > 150) return;
+          var top = annotationTop();
+          if (top !== null && Math.abs(top - window.scrollY) > 24) {
+            window.scrollTo({ top: top, behavior: "auto" });
+            annotationExpectedY = window.scrollY;
+          }
+        };
+        setTimeout(settleAnnotation, 400);
+        setTimeout(settleAnnotation, 1200);
         break;
       }
 

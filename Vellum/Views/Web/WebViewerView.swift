@@ -176,7 +176,10 @@ struct WebViewerView: View {
         .onChange(of: appStore.mode) {
             controller.pushMode(appStore.mode)
         }
-        .onChange(of: annotationStore.selectedAnnotationId) {
+        // Keyed to the request counter, not selectedAnnotationId: clicking the
+        // sidebar row of the already-selected annotation re-selects the same id
+        // (no id change, no onChange) but must still scroll back to it.
+        .onChange(of: annotationStore.selectionRequestCount) {
             controller.scrollToSelected(
                 annotations: annotationStore.annotations,
                 selectedId: annotationStore.selectedAnnotationId)

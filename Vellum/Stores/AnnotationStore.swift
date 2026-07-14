@@ -44,6 +44,11 @@ final class AnnotationStore {
     private(set) var annotations: [Annotation] = []
     private(set) var isLoading = false
     private(set) var selectedAnnotationId: String?
+    /// Bumped on every non-nil selectAnnotation. The web viewer scrolls on this
+    /// (not on selectedAnnotationId): re-selecting the already-selected
+    /// annotation from the sidebar must still scroll to it, and the id alone
+    /// doesn't change then, so an onChange keyed to it never fires.
+    private(set) var selectionRequestCount = 0
 
     /// Registered by the web viewer to capture the current reading position
     /// for a point bookmark (window.__captureWebPosition in the original).
@@ -190,6 +195,7 @@ final class AnnotationStore {
 
     func selectAnnotation(_ id: String?) {
         selectedAnnotationId = id
+        if id != nil { selectionRequestCount &+= 1 }
     }
 
     func clearAnnotations() {
