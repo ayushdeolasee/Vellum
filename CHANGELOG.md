@@ -8,7 +8,7 @@ All notable changes to Vellum are documented here. The format follows
 Adds a user-chosen storage location for the web library (iCloud Drive, a
 custom folder, or this Mac), and restores the AI-experience features that
 were lost in the scratchpad merge (which also committed literal conflict
-markers, leaving `main` uncompilable), landing the final `ai-experiance`
+markers, leaving `main` uncompilable), landing the final `ai-experience`
 review commit that had never been merged.
 
 ### Added

@@ -516,11 +516,24 @@ enum WebStorageMigrator {
            WebArchiveIndex.load(at: indexPath).entries.isEmpty {
             try? fm.removeItem(at: indexPath)
         }
-        for dir in [layout.archivesDir, layout.recordsDir, layout.indexPath?.deletingLastPathComponent()].compactMap({ $0 }) {
-            if let contents = try? fm.contentsOfDirectory(atPath: dir.path),
-               contents.filter({ $0 != ".DS_Store" }).isEmpty {
-                try? fm.removeItem(at: dir)
+        // A custom layout's records dir IS the shared local store — home to
+        // derived caches for every mode, not something this migration created.
+        // Never a removal candidate, even when it happens to be empty.
+        var dirs = [layout.archivesDir]
+        if layout.recordsDir != WebLibrary.storeDir { dirs.append(layout.recordsDir) }
+        if let internalDir = layout.indexPath?.deletingLastPathComponent() {
+            dirs.append(internalDir) // last: it contains the two above in iCloud mode
+        }
+        for dir in dirs {
+            if (try? fm.contentsOfDirectory(atPath: dir.path)) == [".DS_Store"] {
+                try? fm.removeItem(at: dir.appendingPathComponent(".DS_Store"))
             }
+            // rmdir, not removeItem: it is atomic and only succeeds while the
+            // directory is still empty at the syscall itself. A check-then-
+            // remove would recursively delete a record a still-open tab wrote
+            // in between (the same concurrency this migration handles
+            // elsewhere via `adoptRecordFile`).
+            _ = rmdir(dir.path)
         }
     }
 }

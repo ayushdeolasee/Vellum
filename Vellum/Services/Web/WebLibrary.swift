@@ -113,12 +113,33 @@ enum WebLibrary {
     /// Load a record wherever it currently lives, downloading an evicted
     /// iCloud copy if needed (blocking; call off the main thread when the
     /// active layout may be iCloud).
-    static func loadRecord(forKey key: String) -> WebPageRecord? {
+    static func loadRecord(forKey key: String, timeout: TimeInterval = 10) -> WebPageRecord? {
         for path in candidateRecordPaths(forKey: key) {
-            _ = WebICloud.materialize(at: path)
+            _ = WebICloud.materialize(at: path, timeout: timeout)
             if let record = loadRecord(at: path) { return record }
         }
         return nil
+    }
+
+    /// Record read for the page-serving path, which must not stall on iCloud.
+    /// A local copy resolves with no wait at all; only an evicted record waits,
+    /// and then briefly and on a dedicated thread — `WebICloud.materialize`
+    /// blocks with `Thread.sleep`, which must never happen on a cooperative
+    /// (async) thread. The record still has to be read rather than skipped: it
+    /// carries `saved` and the pinned-snapshot loading policy, so treating an
+    /// evicted one as absent would silently serve a live page in place of an
+    /// imported archive's snapshot.
+    static func loadRecordForServing(forKey key: String) async -> WebPageRecord? {
+        let paths = candidateRecordPaths(forKey: key)
+        for path in paths {
+            if let record = loadRecord(at: path) { return record }
+        }
+        guard paths.contains(where: { WebICloud.itemExists(at: $0) }) else { return nil }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: loadRecord(forKey: key, timeout: 2))
+            }
+        }
     }
 
     static func snapshotPath(forKey key: String) -> URL {

@@ -343,6 +343,9 @@ private struct OverflowMenu: View {
     /// Serializes save/remove so a rapid Remove can't finish before a slow
     /// Save's archive write and get its deletion undone by it.
     @State private var saveToggleTask: Task<Void, Never>?
+    /// Identifies the newest queued toggle, so a superseded one's failure can't
+    /// revert the toolbar to a state the user has already toggled away from.
+    @State private var saveToggleGeneration = 0
 
     private var isWeb: Bool { appStore.document?.kind == .web }
     private var hasDocument: Bool { appStore.document != nil }
@@ -458,6 +461,8 @@ private struct OverflowMenu: View {
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
         let prior = saveToggleTask
+        saveToggleGeneration += 1
+        let generation = saveToggleGeneration
         saveToggleTask = Task {
             await prior?.value
             do {
@@ -470,7 +475,11 @@ private struct OverflowMenu: View {
                         sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
                 }
             } catch {
-                if appStore.activeTabId == sessionId { pageSaved = !next }
+                // Only the newest toggle owns the button: an older one failing
+                // behind a queued newer one must not resurrect its own state.
+                if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
+                    pageSaved = !next
+                }
             }
         }
     }

@@ -84,8 +84,10 @@ struct VellumApp: App {
                     Task.detached(priority: .background) {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
-                        // evictors walk the store.
-                        WebStorageMigrator.sweepAtLaunch()
+                        // evictors walk the store. Routed through the relocator
+                        // so it can't run concurrently with a location change
+                        // the user makes in the first-launch sheet below.
+                        await WebStorageRelocator.sweepAtLaunch()
                         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
                         WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
                     }

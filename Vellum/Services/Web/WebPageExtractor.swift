@@ -858,7 +858,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
             return serveArchiveAsset(rest: String(url.path.dropFirst()))
         }
         if host == snapshotHost {
-            return serveSnapshotFallback(key: String(url.path.dropFirst()))
+            return await serveSnapshotFallback(key: String(url.path.dropFirst()))
         }
 
         // Everything else is the page authority: map the truthful proxy URL
@@ -892,7 +892,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         // Sidecar state drives snapshot refresh and the loading policy.
         let key = WebLibrary.pageKey(pageUrl)
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
-        let record = WebLibrary.loadRecord(forKey: key)
+        let record = await WebLibrary.loadRecordForServing(forKey: key)
         let recordSaved = record?.saved ?? false
         let snapshotOnly = record?.loadingPolicy == "snapshot-only"
 
@@ -918,7 +918,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                 } else {
                     let effectiveKey = WebLibrary.pageKey(effectiveUrl)
-                    let effectiveRecord = WebLibrary.loadRecord(forKey: effectiveKey)
+                    let effectiveRecord = await WebLibrary.loadRecordForServing(forKey: effectiveKey)
                     if effectiveRecord?.saved == true {
                         WebFetch.writeSnapshotAtomic(
                             path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
@@ -997,11 +997,11 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     /// Explicit snapshot request (navigation-failure fallback): installed
     /// archive snapshot first, then the plain saved snapshot, else Vellum's
     /// own error page — the webview must never end up on WebKit's native one.
-    private static func serveSnapshotFallback(key: String) -> WebProxyResponse {
+    private static func serveSnapshotFallback(key: String) async -> WebProxyResponse {
         guard !key.isEmpty, key.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
             return .html(404, "<h1>Snapshot not found</h1>")
         }
-        let record = WebLibrary.loadRecord(forKey: key)
+        let record = await WebLibrary.loadRecordForServing(forKey: key)
         let pageUrl = record?.url ?? ""
         if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response

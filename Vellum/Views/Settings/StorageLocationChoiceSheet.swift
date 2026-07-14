@@ -10,12 +10,36 @@ import SwiftUI
 /// Applies a storage-location change: persist the preference, then move the
 /// store in the background. The pending-relocation marker makes an interrupted
 /// move resume at next launch.
+///
+/// Every relocation in the app — the launch sweep and each user change — goes
+/// through here, because they all move the same files and share one resume
+/// marker. Two passes running at once would race on both.
 @MainActor
 enum WebStorageRelocator {
-    /// Back-to-back changes chain (each move awaits the previous one), and
+    /// Back-to-back moves chain (each awaits the previous one), and
     /// only the newest change may clear the shared resume marker.
     private static var relocationChain: Task<Void, Never>?
     private static var relocationGeneration = 0
+
+    /// Queue relocation work behind whatever is already in flight.
+    @discardableResult
+    private static func enqueue(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        let prior = relocationChain
+        let task = Task.detached(priority: .utility) {
+            await prior?.value
+            await work()
+        }
+        relocationChain = task
+        return task
+    }
+
+    /// Launch pass: resume an interrupted move and fold in legacy-local strays.
+    /// Awaits its turn on the chain — the first-launch sheet can hand us a new
+    /// destination while this is still queued — and awaits completion, since
+    /// callers go on to walk the store this sweep is still moving.
+    static func sweepAtLaunch() async {
+        await enqueue { WebStorageMigrator.sweepAtLaunch() }.value
+    }
 
     static func apply(mode: WebStorageMode, customPath: String? = nil) {
         let previous = WebStorageSettings.chosenMode ?? .local
@@ -38,15 +62,11 @@ enum WebStorageRelocator {
 
         relocationGeneration += 1
         let generation = relocationGeneration
-        let prior = relocationChain
-        relocationChain = Task.detached(priority: .utility) {
-            await prior?.value
-            let clean = WebStorageMigrator.relocate(from: source, to: destination)
-            if clean {
-                await MainActor.run {
-                    if generation == relocationGeneration {
-                        WebStorageMigrator.clearPendingRelocation()
-                    }
+        enqueue {
+            guard WebStorageMigrator.relocate(from: source, to: destination) else { return }
+            await MainActor.run {
+                if generation == relocationGeneration {
+                    WebStorageMigrator.clearPendingRelocation()
                 }
             }
         }
