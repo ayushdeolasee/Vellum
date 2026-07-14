@@ -63,6 +63,10 @@ struct PdfOverlayStack: View {
                     if let capture = controller.capturePageRegionData(viewerRect: rect) {
                         let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
                         scratchpadStore.addImage(capture, label: label)
+                    } else {
+                        // Drag missed a page or was too small to crop — tell the
+                        // user rather than silently reverting to view mode.
+                        scratchpadStore.warnRegionCaptureFailed()
                     }
                     app.setMode(.view)
                 }

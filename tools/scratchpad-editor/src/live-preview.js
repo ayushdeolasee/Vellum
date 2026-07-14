@@ -5,6 +5,7 @@
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
+import DOMPurify from "dompurify";
 
 const HIDDEN = Decoration.replace({});
 const INLINE_CODE = Decoration.mark({ class: "cm-inline-code" });
@@ -75,7 +76,9 @@ class TableWidget extends WidgetType {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-table";
     try {
-      wrap.innerHTML = window.marked.parse(this.src, { gfm: true });
+      // Sanitize before insertion — a note could contain raw HTML (e.g. pasted
+      // from the web) whose inline event handlers would otherwise execute.
+      wrap.innerHTML = DOMPurify.sanitize(window.marked.parse(this.src, { gfm: true }));
     } catch (e) {
       wrap.textContent = this.src;
     }

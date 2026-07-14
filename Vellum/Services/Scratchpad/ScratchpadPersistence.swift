@@ -28,16 +28,16 @@ enum ScratchpadPersistence {
     static func save(for key: String, text: String) {
         var entries = readEntries()
         let bounded = String(text.prefix(maxCharacters))
+        // Drop any existing entry for this key; a non-empty write re-appends it
+        // to the end so recency is tracked by position (most-recently-written
+        // last) and eviction below is true LRU rather than insertion-order.
         if let index = entries.firstIndex(where: { $0.key == key }) {
-            if bounded.isEmpty {
-                entries.remove(at: index)
-            } else {
-                entries[index].text = bounded
-            }
-        } else if !bounded.isEmpty {
+            entries.remove(at: index)
+        }
+        if !bounded.isEmpty {
             entries.append(Entry(key: key, text: bounded))
         }
-        // Evict oldest documents first once the cap is exceeded.
+        // Evict least-recently-written documents first once the cap is exceeded.
         if entries.count > maxDocuments {
             entries.removeFirst(entries.count - maxDocuments)
         }
@@ -104,15 +104,25 @@ enum ScratchpadAttachmentStore {
         }
     }
 
-    /// The file backing `id` (matches `<id>.<any-extension>`), if present.
+    /// Extensions a saved attachment can carry (`save(data:fileExtension:)`
+    /// only ever writes one of these), probed directly so a lookup is O(1)
+    /// rather than scanning the whole global attachments directory.
+    private static let knownExtensions = [
+        "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "heic",
+    ]
+
+    /// The file backing `id` (`<id>.<known-extension>`), if present. Probes the
+    /// candidate extensions instead of listing the directory, so cost is fixed
+    /// no matter how many attachments exist across all documents.
     static func fileURL(for id: String) -> URL? {
         let clean = id.lowercased()
-        guard !clean.isEmpty,
-              let entries = try? FileManager.default.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: nil) else { return nil }
-        return entries.first {
-            $0.deletingPathExtension().lastPathComponent.lowercased() == clean
+        guard !clean.isEmpty else { return nil }
+        let dir = directory
+        for ext in knownExtensions {
+            let url = dir.appendingPathComponent("\(clean).\(ext)")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
         }
+        return nil
     }
 
     /// Every attachment id referenced by `text`.

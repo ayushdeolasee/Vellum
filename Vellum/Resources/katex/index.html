@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="katex.min.css">
 <script src="katex.min.js"></script>
 <script src="marked.min.js"></script>
+<script src="purify.min.js"></script>
 <style>
   :root { color-scheme: light dark; }
   html, body { margin: 0; padding: 0; background: transparent; -webkit-text-size-adjust: 100%; }
@@ -105,6 +106,11 @@
     } catch (e) {
       html = "<pre>" + escapeHtml(src) + "</pre>";
     }
+
+    // Neutralize any raw HTML from the note (e.g. pasted from the web) before it
+    // reaches innerHTML. Runs before the math splice so the trusted KaTeX markup
+    // below isn't re-sanitized; the private-use sentinels survive as plain text.
+    if (window.DOMPurify) html = DOMPurify.sanitize(html);
 
     html = html.replace(new RegExp(OPEN + "(\\d+)" + CLOSE, "g"), function (m, i) {
       var item = store[+i];

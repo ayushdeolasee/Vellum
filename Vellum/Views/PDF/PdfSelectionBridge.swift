@@ -62,7 +62,6 @@ final class PdfViewerController {
     @ObservationIgnored private var findIndex = -1
 
     var isNoteMode: Bool { app?.mode == .note }
-    var isSnapshotRegionMode: Bool { app?.mode == .snapshotRegion }
 
     // MARK: - Lifecycle
 
@@ -773,7 +772,13 @@ final class PdfViewerController {
 
         // Render the whole page upright, then crop. Scale so the region is
         // legible (≤1280 on its long side) without blowing up tiny selections.
-        let scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        var scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        // The scale drives the *whole* page bitmap, so a tiny selection on a
+        // large page (big dims × up to 3×) could allocate a huge image on the
+        // main actor. Cap the full-page long side to keep the allocation bounded.
+        let maxFullSide = 4096.0
+        let fullLong = Double(max(dims.width, dims.height)) * scale
+        if fullLong > maxFullSide { scale *= maxFullSide / fullLong }
         let fullW = Int((Double(dims.width) * scale).rounded())
         let fullH = Int((Double(dims.height) * scale).rounded())
         guard fullW > 0, fullH > 0 else { return nil }

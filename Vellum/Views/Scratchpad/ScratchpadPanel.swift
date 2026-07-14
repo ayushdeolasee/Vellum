@@ -263,10 +263,24 @@ final class ScratchpadWebView: WKWebView {
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let data = droppedImageData(sender), let capture = scratchpadCapture(from: data) {
-            onImageDrop?(capture)
-        } else {
+        // Read the pasteboard on the main thread (it's tied to the drag event),
+        // but push the heavy decode/resize/encode off it so a large drop can't
+        // stall the UI — mirroring the SwiftUI item-provider path — then report
+        // back on the main queue.
+        guard let data = droppedImageData(sender) else {
             onUnsupportedDrop?()
+            return true
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let capture = scratchpadCapture(from: data)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let capture {
+                    self.onImageDrop?(capture)
+                } else {
+                    self.onUnsupportedDrop?()
+                }
+            }
         }
         return true
     }
@@ -365,6 +379,11 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         private var editorText: String?
         private var pendingText: String?
         private var pendingStyle: (fontSize: Double, palette: ThemePalette)?
+        /// The style last handed to the editor. `apply` runs on every keystroke,
+        /// so we diff against this and only re-queue a `setTheme` when the font
+        /// size or a themed color actually changed — mirroring the `pendingText`
+        /// guard rather than pushing JS on every character.
+        private var appliedStyleKey: String?
         /// Markdown snippets to append once the editor is ready. Buffered so a
         /// snapshot/drop that lands before `ready` isn't dropped on the floor.
         private var pendingInserts: [String] = []
@@ -372,7 +391,12 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         init(parent: ScratchpadLiveEditor) { self.parent = parent }
 
         func apply(text: String, fontSize: Double, palette: ThemePalette) {
-            pendingStyle = (fontSize, palette)
+            let styleKey = "\(Int(fontSize))|\(hex(palette.foreground))|" +
+                "\(hex(palette.mutedForeground))|\(hex(palette.primary))|\(hex(palette.destructive))"
+            if styleKey != appliedStyleKey {
+                appliedStyleKey = styleKey
+                pendingStyle = (fontSize, palette)
+            }
             if text != editorText { pendingText = text }
             flush()
         }

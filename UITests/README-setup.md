@@ -19,7 +19,7 @@ by hand. It's a ~20-second step:
 
 ## Run
 
-```
+```shell
 xcodebuild test -project Vellum.xcodeproj -scheme Vellum \
   -destination 'platform=macOS' \
   -only-testing:VellumUITests/ScratchpadSnapshotUITests

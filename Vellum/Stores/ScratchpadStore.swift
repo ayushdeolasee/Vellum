@@ -76,7 +76,19 @@ final class ScratchpadStore {
     /// Show the "only image files are accepted" notice for a few seconds.
     /// Re-dropping resets the timer so the message stays visible.
     func warnUnsupportedDrop() {
-        dropWarning = "Only image files (PNG, JPEG, HEIC, GIF…) can be added to the scratchpad."
+        showWarning("Only image files (PNG, JPEG, HEIC, GIF…) can be added to the scratchpad.")
+    }
+
+    /// Show a notice when a region-snapshot crop produced nothing — the drag
+    /// missed a page or was too small — so a failed crop isn't silent.
+    func warnRegionCaptureFailed() {
+        showWarning("Couldn't capture that region. Drag a larger rectangle over the page.")
+    }
+
+    /// Display `message` in the panel banner for a few seconds; re-showing
+    /// resets the timer so the latest message stays visible.
+    private func showWarning(_ message: String) {
+        dropWarning = message
         dropWarningTask?.cancel()
         dropWarningTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
@@ -88,8 +100,12 @@ final class ScratchpadStore {
     /// Best-effort removal of attachment files no longer referenced by any
     /// note. Runs off the main actor on document load; cheap and idempotent.
     private func pruneOrphanedAttachments() {
-        let referenced = ScratchpadPersistence.allReferencedAttachmentIds()
+        // Compute the reference set inside the detached task, not here on the
+        // main actor: it reads every persisted note, and deferring it also lets
+        // any in-flight debounced save (e.g. from a just-added image) settle
+        // before we decide what to collect, avoiding a delete-then-referenced race.
         Task.detached(priority: .utility) {
+            let referenced = ScratchpadPersistence.allReferencedAttachmentIds()
             ScratchpadAttachmentStore.collectGarbage(referencedIds: referenced)
         }
     }

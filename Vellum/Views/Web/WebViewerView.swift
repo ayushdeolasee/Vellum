@@ -80,6 +80,10 @@ struct WebViewerView: View {
                         Task {
                             if let capture = await controller.captureRegion(viewerRect: rect) {
                                 scratchpadStore.addImage(capture, label: "Web region")
+                            } else {
+                                // Crop missed the page or was too small — warn
+                                // instead of silently doing nothing.
+                                scratchpadStore.warnRegionCaptureFailed()
                             }
                         }
                     }

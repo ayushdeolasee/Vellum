@@ -17,7 +17,7 @@ import XCTest
 final class ScratchpadSnapshotUITests: XCTestCase {
     /// A small on-disk PDF to open. Point this at a real file.
     private let testPDFPath = ProcessInfo.processInfo.environment["VELLUM_TEST_PDF"]
-        ?? "/Users/ayushdeolasee/Developer/Vellum-worktree-cc/scratchpad/UITests/fixtures/sample.pdf"
+        ?? "UITests/fixtures/sample.pdf"
 
     /// Must match the built app's bundle identifier (Build Settings →
     /// PRODUCT_BUNDLE_IDENTIFIER of the Vellum target).
