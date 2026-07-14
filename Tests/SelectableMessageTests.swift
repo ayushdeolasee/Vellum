@@ -32,10 +32,11 @@ final class SelectableMessageTests: XCTestCase {
 
     func testContainerHeightIsFiniteForVariousWidths() {
         let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
+        let content = "The quick brown fox jumps over the lazy dog, again and again and again."
         let attributed = AiAttributedRenderer.attributedString(
-            for: "The quick brown fox jumps over the lazy dog, again and again and again.",
+            for: content,
             color: .labelColor, secondary: .secondaryLabelColor)
-        container.setAttributed(attributed, color: .labelColor, secondary: .secondaryLabelColor)
+        container.setAttributed(attributed, content: content, color: .labelColor, secondary: .secondaryLabelColor)
         for width in [1.0, 40.0, 80.0, 200.0, 248.0] as [CGFloat] {
             let height = container.height(forWidth: width)
             XCTAssertTrue(height.isFinite, "height was not finite at width \(width): \(height)")
@@ -74,9 +75,54 @@ final class SelectableMessageTests: XCTestCase {
         let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
         container.setAttributed(AiAttributedRenderer.attributedString(
             for: "", color: .labelColor, secondary: .secondaryLabelColor),
-            color: .labelColor, secondary: .secondaryLabelColor)
+            content: "", color: .labelColor, secondary: .secondaryLabelColor)
         let height = container.height(forWidth: 248)
         XCTAssertTrue(height.isFinite)
         container.updateQuoteButton()
+    }
+
+    /// The early-return in `updateNSView` compares the raw `content` input
+    /// rather than the rendered output string. That distinction matters
+    /// because math spans typeset to a single NSTextAttachment whose
+    /// contribution to `textStorage.string` is one U+FFFC placeholder no
+    /// matter what the LaTeX inside says — an output-string comparison would
+    /// have called "$a$" → "$b$" a no-op and left the stale equation on
+    /// screen. Drives the real SwiftUI update path (not a direct
+    /// `setAttributed` call) so it exercises `updateNSView` itself.
+    func testRerenderWithDifferentMathContentUpdatesAppliedContent() {
+        let hosting = NSHostingView(rootView: SelectableMessageText(
+            content: "$a$", color: .primary, secondary: .secondary, onQuote: { _ in }
+        ))
+        hosting.frame = NSRect(x: 0, y: 0, width: 248, height: 200)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView?.addSubview(hosting)
+        hosting.layoutSubtreeIfNeeded()
+
+        guard let container = Self.firstSubview(of: MessageContainerView.self, in: hosting) else {
+            return XCTFail("could not locate MessageContainerView in the hosted hierarchy")
+        }
+        XCTAssertEqual(container.appliedContent, "$a$")
+        let firstAttributed = container.attributed
+
+        hosting.rootView = SelectableMessageText(
+            content: "$b$", color: .primary, secondary: .secondary, onQuote: { _ in }
+        )
+        hosting.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(container.appliedContent, "$b$")
+        XCTAssertFalse(
+            firstAttributed.isEqual(to: container.attributed),
+            "re-render with a different equation must replace the typeset attachment"
+        )
+    }
+
+    private static func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
+        if let match = root as? T { return match }
+        for subview in root.subviews {
+            if let match = firstSubview(of: type, in: subview) { return match }
+        }
+        return nil
     }
 }

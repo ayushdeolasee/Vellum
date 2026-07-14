@@ -32,20 +32,22 @@ struct SelectableMessageText: NSViewRepresentable {
         context.coordinator.onQuote = onQuote
         let resolvedColor = NSColor(color)
         let resolvedSecondary = NSColor(secondary)
+        // Compare inputs, not rendered output: attributedString(for:) is a pure
+        // function of (content, colors), and parsing is the expensive part —
+        // during streaming this runs once per delta on the growing message, and
+        // once per message on every unrelated update pass.
+        // Repaint when the content OR the palette-derived colors change, so a
+        // light/dark appearance switch restyles already-rendered messages.
+        let contentChanged = view.appliedContent != content
+        let colorsChanged = view.appliedColor != resolvedColor
+            || view.appliedSecondary != resolvedSecondary
+        guard contentChanged || colorsChanged else { return }
         let attributed = AiAttributedRenderer.attributedString(
             for: content,
             color: resolvedColor,
             secondary: resolvedSecondary
         )
-        // Repaint when the content OR the palette-derived colors change, so a
-        // light/dark appearance switch restyles already-rendered messages.
-        let contentChanged = view.textView.textStorage?.string != attributed.string
-            || view.textView.textStorage?.length != attributed.length
-        let colorsChanged = view.appliedColor != resolvedColor
-            || view.appliedSecondary != resolvedSecondary
-        if contentChanged || colorsChanged {
-            view.setAttributed(attributed, color: resolvedColor, secondary: resolvedSecondary)
-        }
+        view.setAttributed(attributed, content: content, color: resolvedColor, secondary: resolvedSecondary)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MessageContainerView, context: Context) -> CGSize? {
@@ -118,9 +120,13 @@ final class MessageContainerView: NSView {
     /// can detect an appearance change even when the text content is unchanged.
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
+    /// The raw markdown string the current attributed rendering was built
+    /// from. Compared by updateNSView to skip re-parsing unchanged messages.
+    private(set) var appliedContent: String?
 
-    func setAttributed(_ attributed: NSAttributedString, color: NSColor, secondary: NSColor) {
+    func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
         self.attributed = attributed
+        self.appliedContent = content
         self.appliedColor = color
         self.appliedSecondary = secondary
         textView.textStorage?.setAttributedString(attributed)
