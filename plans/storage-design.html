@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vellum Storage Architecture — Design (Issue #29)</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1c1e; --muted: #6e6e73; --accent: #b4530a;
+    --card: #f6f5f2; --border: #e2e0da; --code-bg: #f0efe9; --good: #2f7d32;
+    --bad: #b3261e; --warn: #9a6b00; --th-bg: #ece9e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131313; --fg: #e8e6e1; --muted: #9a988f; --accent: #e8955c;
+      --card: #1d1c1a; --border: #33312c; --code-bg: #232220; --good: #7cc47f;
+      --bad: #e08c86; --warn: #d9b45b; --th-bg: #262521;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; max-width: 880px; padding: 3rem 1.5rem 6rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 .3rem; letter-spacing: -.01em; }
+  .subtitle { color: var(--muted); margin-bottom: 2.2rem; }
+  h2 { font-size: 1.35rem; margin: 3rem 0 .8rem; padding-top: 1.2rem; border-top: 1px solid var(--border); letter-spacing: -.01em; }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { max-width: 74ch; }
+  code, pre { font: 13px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0 1.5rem; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--th-bg); font-weight: 600; }
+  .tldr { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 1.1rem 1.4rem; margin: 1.5rem 0 2rem; }
+  .tldr strong { color: var(--accent); }
+  .good { color: var(--good); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .pill { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: .1em .55em; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); margin-right: .4em; }
+  .note { color: var(--muted); font-size: .9rem; }
+  .decision { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .9rem 1.2rem; margin: 1rem 0; }
+  .decision .label { font-size: .75rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+  ul { padding-left: 1.3rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Vellum Storage Architecture</h1>
+<div class="subtitle">Design for Issue #29 · accounts for scratchpad (PR #44), ai-experience (PR #41), on-demand retrieval (PR #46 / Issue #37) · July 11, 2026 · <strong>revised July 14</strong> after #41/#44/#45/#46/#48 merged to main</div>
+
+<div class="decision"><span class="label">Revision status — July 14, 2026</span><br>
+All feature branches this plan accounted for have <strong>merged to main</strong>, and PR #48 shipped two pieces of this plan early, in slightly different form than designed:
+<ul>
+  <li><span class="good">Shipped:</span> <strong>the persistent page-text cache</strong> (<code>PageTextCache.swift</code>, at <code>App Support/text-cache/</code>) — including this plan's key insight, hash-as-<em>validator</em>-not-key, refreshed after Vellum's own rewrites so annotating doesn't nuke the cache. Deviation: it keys by <code>sha256(path)</code> rather than a stable <code>DocumentID</code> (§3/§5 below, updated).</li>
+  <li><span class="good">Shipped:</span> <strong>Storage settings tab v1</strong> — cache-only: total size, per-document rows with size/recency/completeness, per-row delete + erase-all, the exact "notes and conversations are NOT affected" copy, a never-auto-delete "original file not found" hint, and launch-time 6-month TTL eviction.</li>
+  <li><span class="good">Shipped:</span> conversations got a <strong>write-behind cache</strong> (in-memory entries, coalesced 200 ms background flush, awaited on quit) fixing the worst of the blob-rewrite cost — though still in UserDefaults, still path-keyed. Messages now also persist per-response token/cost <code>usage</code>.</li>
+  <li><span class="warn">Unchanged:</span> scratchpad storage merged exactly as analyzed (UserDefaults blob, path keys, flat attachment pool, non-atomic writes); auto-archive still silently saves every opened page; no <code>DocumentID</code> anywhere.</li>
+</ul>
+§7's build plan is re-sequenced accordingly; the biggest remaining storage-growth hole is now the <strong>web archives</strong> (no size UI, no TTL, opening = permanent saving).
+</div>
+
+<div class="tldr">
+<strong>TL;DR.</strong> Vellum's best storage idea is already shipped: <em>annotations live inside the document</em>, so sharing a PDF shares the work. The problem is that everything the three in-flight branches add — scratchpad markdown, attachment images, AI conversations, extracted page text — is keyed by a <em>raw file path</em> and stored in UserDefaults or a flat app directory, so none of it survives a rename, move, or share. The fix is three moves, no backend, no accounts:
+<ol>
+  <li><strong>One document identity</strong> — a <code>/VellumDocId</code> UUID stamped into the PDF's Info dictionary (the app already writes custom Info keys), so identity travels with the file. Web docs keep their existing URL hash.</li>
+  <li><strong>A per-document folder</strong> under a relocatable library root — <code>documents/&lt;docId&gt;/</code> holding <code>scratchpad.md</code>, <code>attachments/</code>, <code>conversations.json</code>, <code>meta.json</code> — replacing the UserDefaults blobs. Derived data (page-text cache, auto-archives) moves to <code>~/Library/Caches</code> where eviction is guilt-free.</li>
+  <li><strong>A <code>.vellum</code> export bundle</strong> — document + its folder zipped with the existing MiniZip/manifest machinery — for "share with notes." A bare PDF share still carries annotations for free.</li>
+  <li><strong>A Settings → Storage pane</strong> governed by one rule — <em>nothing invisible</em>: every persisted byte is either visible in its document's context or listed here with a delete button. Per-document size rows (notes / chat / cache / archive), safe "clear all caches," TTL eviction, and an orphaned-data section. Needed because auto-archiving currently grows storage ~2× per page ever opened.</li>
+</ol>
+This is the issue thread's Option C (local-first, user-relocatable, iCloud-ready later), extended to cover the new features and made rename/move/share-proof.
+</div>
+
+<h2>1 · Where every byte lives today</h2>
+<p>Complete inventory across <code>main</code> and the three feature branches (verified in source, July 2026):</p>
+
+<table>
+<tr><th>Data</th><th>Branch</th><th>Location</th><th>Keyed by</th><th>Portable?</th></tr>
+<tr><td>PDF annotations, bookmarks, last page</td><td>main</td><td><strong>Inside the PDF</strong> (<code>/Annots</code>, <code>/Outlines</code>, <code>/Info</code>) via <code>PdfAnnotationCodec</code> + atomic rewrite</td><td>— (they <em>are</em> the file)</td><td class="good">Yes</td></tr>
+<tr><td>Web annotations + page record</td><td>main</td><td><code>App Support/web/&lt;key&gt;.json</code> sidecar</td><td><code>sha256(normalized URL)</code></td><td class="warn">Via .vellumweb export only</td></tr>
+<tr><td>.vellumweb archives (manifest, snapshot, assets, text, annotations)</td><td>main</td><td>Export path, or managed copy in <code>web/</code></td><td>URL in manifest; sha256 per part (integrity only)</td><td class="good">Yes — designed for it</td></tr>
+<tr><td>Recents (8 entries)</td><td>main</td><td>UserDefaults <code>vellum.recent-pdfs</code></td><td>raw path / URL</td><td class="bad">No</td></tr>
+<tr><td>AI conversations (25 docs × 120 msgs × 12K chars; per-message token <code>usage</code> since #48)</td><td>main / #41 / #48</td><td>UserDefaults <code>research-reader-ai-conversations-v1</code>, hand-serialized JSON string; since #48 fronted by an in-memory cache with a coalesced 200 ms background flush awaited on quit</td><td><code>DocumentInfo.pdfPath</code> raw string</td><td class="bad">No</td></tr>
+<tr><td>API keys + ChatGPT OAuth tokens</td><td>#41</td><td>macOS Keychain (<code>com.vellum.ai</code>), migrated out of plaintext UserDefaults</td><td>provider name</td><td>Correctly not portable</td></tr>
+<tr><td>AI settings (provider, models, pins), OpenRouter catalog cache</td><td>#41</td><td>UserDefaults</td><td>app-global</td><td>Fine as-is</td></tr>
+<tr><td>Scratchpad markdown (200 docs × 200K chars)</td><td>#44</td><td>UserDefaults <code>vellum.scratchpad.notes.v1</code> — <strong>one JSON blob for all documents</strong></td><td><code>DocumentInfo.pdfPath</code> raw string</td><td class="bad">No</td></tr>
+<tr><td>Scratchpad attachments (region snapshots, dropped images)</td><td>#44</td><td><code>App Support/scratchpad-attachments/&lt;uuid&gt;.&lt;ext&gt;</code> — flat pool, no per-doc namespace, O(n) dir-scan lookup</td><td>random UUID via <code>vellum-scratchpad://</code> refs</td><td class="bad">No</td></tr>
+<tr><td>Extracted page text (<code>pageTexts</code>)</td><td>#46 / <strong>#48: now persistent</strong></td><td><code>App Support/text-cache/&lt;pathKey&gt;.json</code> + <code>index.json</code> (<code>PageTextCache</code>): atomic writes, 6-month launch-time TTL, Settings UI. PDFs only; web docs load text up front</td><td><code>sha256(path)</code> key + partial content hash (size + first/last 4 MB) as validator, refreshed on in-app rewrites</td><td>n/a (derived)</td></tr>
+</table>
+
+<h3>The identity problem underneath everything</h3>
+<p>The app uses <strong>three inconsistent identity schemes</strong>: PDFs are their canonicalized filesystem path (<code>realpath</code>), web docs are <code>sha256(normalized URL)</code>, and every sidecar store (conversations, scratchpad, recents) keys on the raw <code>DocumentInfo.pdfPath</code> string. Nothing is content-addressed. Consequences:</p>
+<ul>
+  <li>Rename or move a PDF → its scratchpad, conversation history, and recents entry are silently orphaned. The data still exists, unreachable, counting against the 200/25-document eviction caps.</li>
+  <li>Share a PDF with someone (or with yourself on another Mac) → annotations arrive (embedded), but the scratchpad and chat stay behind — and could never re-attach anyway, because the recipient's path differs.</li>
+  <li>PR B's planned page-text cache wants content-hash keying — a <em>fourth</em> scheme — and a naive full-file hash breaks under Vellum's own design: every highlight atomically rewrites the whole PDF, so the hash churns on every annotation.</li>
+</ul>
+
+<h3>The efficiency problem</h3>
+<ul>
+  <li>PR #44's scratchpad debounce re-encodes <strong>every document's note</strong> into one blob and rewrites it through CFPreferences on each 400 ms save. At the design caps that's a ~40 MB value serialized per keystroke-pause. Same pattern as conversations (which additionally hand-roll JSON key ordering to fake LRU semantics — ~30 lines of byte-scanning workaround that exists only because UserDefaults was the wrong container).</li>
+  <li>Attachment resolution is a directory scan per image load; GC is a global scan of all notes on every tab switch.</li>
+  <li><span class="good">Fixed in #48:</span> a 900-page PDF used to re-extract its text every open; <code>PageTextCache</code> now restores it from disk. Remaining alignment items: it keys by path (rename = orphaned cache entry until TTL sweeps it) and lives in App Support rather than Caches — both cheap to fix once <code>DocumentID</code> exists, since all keying funnels through one <code>pathKey()</code> function.</li>
+  <li>Derived, re-creatable data (auto-archived <code>.vellumweb</code> copies, future text cache) sits in Application Support next to irreplaceable user data, so nothing can ever be safely evicted and backups/sync carry dead weight.</li>
+</ul>
+
+<h2>2 · Data taxonomy — four classes, four homes</h2>
+<p>Every current and future piece of state falls into one of four classes. The rule: <em>class determines home; no exceptions.</em></p>
+<table>
+<tr><th>Class</th><th>Examples</th><th>Home</th><th>Properties</th></tr>
+<tr><td><strong>A. Document-embedded</strong></td><td>PDF annotations, bookmarks, last page, <code>/VellumDocId</code>; .vellumweb contents</td><td>The document file itself</td><td>Travels with the file, zero effort. Keep exactly as-is.</td></tr>
+<tr><td><strong>B. Document-adjacent user data</strong></td><td>Scratchpad text + attachments, AI conversations, web sidecar records, per-doc metadata</td><td><code>&lt;libraryRoot&gt;/documents/&lt;docId&gt;/</code></td><td>Irreplaceable. Syncable. Exportable in a bundle. One folder per document.</td></tr>
+<tr><td><strong>C. Derived / re-creatable</strong></td><td>Page-text cache (PR B), managed auto-archives, OpenRouter catalog, future OCR/RAG indexes</td><td><code>~/Library/Caches/com.vellum.app/</code></td><td>Evictable without loss. Never synced, never exported, TTL cleanup guilt-free.</td></tr>
+<tr><td><strong>D. Device-scoped</strong></td><td>API keys, OAuth tokens → Keychain; theme, font size, provider/model prefs, recents → UserDefaults</td><td>Keychain / UserDefaults</td><td>Small scalars and secrets only. Never document data, never blobs.</td></tr>
+</table>
+<p>PR #41 already put class D right (Keychain migration — keep it verbatim). PR #44 put class B data in class D's home; PR B would put class C data in class B's home unless redirected. This taxonomy is the one-line review criterion for every future feature: <em>"which class is this, and is it in that class's home?"</em></p>
+
+<h2>3 · Document identity: <code>DocumentID</code></h2>
+<div class="decision"><span class="label">Decision</span><br>
+A single <code>DocumentID</code> string used by every class-B and class-C store, resolved per document kind:
+<ul>
+  <li><strong>Web</strong>: the existing <code>sha256(normalized URL)</code> — unchanged, byte-compatible with the Tauri-era library, nothing re-keys.</li>
+  <li><strong>PDF</strong>: a UUID stamped once into the Info dictionary as <code>/VellumDocId</code> — the same mechanism as the existing <code>/VellumLastPage</code>. The ID lives <em>in the file</em>, so move/rename/copy/AirDrop all preserve it, and a recipient's Vellum recognizes the document.</li>
+  <li><strong>Read-only PDF fallback</strong> (no write permission / locked): <code>sha256</code> of file bytes. Safe precisely because Vellum can't rewrite a file it can't write to, so the hash is stable. Final fallback: canonical path (today's behavior).</li>
+</ul>
+</div>
+<h3>Stamp lazily — never touch a file the user hasn't invested in</h3>
+<p>Do <strong>not</strong> stamp on open. Stamp on the first write Vellum was going to make anyway — first annotation, first metadata save — or on the first creation of class-B data (first scratchpad keystroke, first AI message). Until then, nothing needs a durable identity. This avoids "I opened a PDF and the app modified it," avoids an extra multi-MB atomic rewrite on every open, and piggybacks the stamp on an existing rewrite so it costs nothing.</p>
+<h3>Copies share an ID — that's a feature</h3>
+<p>Duplicating a PDF duplicates its ID, so both copies resolve to the same <code>documents/&lt;docId&gt;/</code> folder: your notes follow the document, not the path. This is the behavior a user who reorganizes folders actually wants. (If true fork-the-notes semantics are ever needed, "Duplicate as new document" can re-stamp — don't build it until asked for.)</p>
+<h3>Cache keying: half of this shipped in #48</h3>
+<p>The design called for the text cache to be keyed by <code>DocumentID</code> (stable under Vellum's own annotation rewrites) with a content hash used only as a <em>validation stamp</em>, refreshed when Vellum itself rewrites the PDF and invalidating only on external edits. The shipped <code>PageTextCache</code> implements the stamp mechanism exactly (partial hash over size + first/last 4 MB; <code>refreshHash</code> called by <code>PdfDocumentIO</code> after in-app writes) — independently arriving at the same reasoning, documented in its header comment. What it lacks is the stable key: it keys by <code>sha256(path)</code>, so a renamed PDF orphans its cache entry (shown as "original file not found" in Settings, swept by TTL, rebuilt from scratch at the new path). When <code>DocumentID</code> lands, re-keying is mechanical: all keying funnels through <code>PageTextCache.pathKey()</code>, and the validator logic transfers unchanged.</p>
+
+<h2>4 · Library layout</h2>
+<pre><code>&lt;libraryRoot&gt;/                      # default: ~/Library/Application Support/com.vellum.app/
+                                    # user-relocatable via Settings (Dropbox/iCloud Drive/syncthing)
+├── documents/
+│   └── &lt;docId&gt;/
+│       ├── meta.json               # kind, title, last-known path/URL(s), lastOpened, schema version
+│       ├── scratchpad.md           # plain markdown; image refs are RELATIVE: ![x](attachments/&lt;id&gt;.jpg)
+│       ├── attachments/
+│       │   └── &lt;uuid&gt;.jpg|png|gif  # region snapshots + dropped images, scoped to this document
+│       ├── conversations.json      # AI chat history for this document
+│       └── record.json             # (web docs) the sidecar record — later unification, see §7
+├── ai/
+│   ├── USER.md                     # agent memory (issue #37 follow-up): app-level, size-capped,
+│   └── SOUL.md                     #   user-editable, syncs with the library
+└── web/                            # existing store, unchanged initially (Tauri-compatible keys)
+
+~/Library/Caches/com.vellum.app/    # class C — never synced, evictable, TTL-cleaned
+├── text/&lt;docId&gt;.json               # PR B page-text cache: pages, scanned-page markers,
+│                                   #   completion flag, validation stamp; incremental/resumable
+└── archives/&lt;key&gt;/…                # managed auto-archives move here (user-SAVED pages stay in web/)
+</code></pre>
+<p>Why files, per document, instead of one database or one blob:</p>
+<ul>
+  <li><strong>Write cost is proportional to the edit.</strong> A scratchpad keystroke rewrites one small <code>scratchpad.md</code>, not an all-documents blob through CFPreferences. Use the existing tmp-file + <code>rename(2)</code> pattern (<code>WebLibrary.saveRecord</code> already does this) — PR #44's plain <code>Data.write</code> attachment saves should adopt it too.</li>
+  <li><strong>Sync conflict granularity = one document.</strong> Two Macs editing different documents never conflict; same document → last-writer-wins on a per-file basis, which is the acceptable worst case the issue thread already accepted for annotations.</li>
+  <li><strong>Human-legible and tool-friendly.</strong> <code>scratchpad.md</code> with <em>relative</em> image paths opens in Obsidian/any editor; the folder is greppable and Spotlight-indexable. (The editor's <code>vellum-scratchpad://</code> scheme handler becomes a load/save-time rewrite to relative paths, or resolves relative paths directly — implementation detail, but persist the portable form.)</li>
+  <li><strong>GC becomes trivial and correct.</strong> Attachments are scoped per document: prune = scan one note, not all 200; delete a document's data = delete one folder. The O(n) global directory scan and cross-document GC in PR #44 disappear.</li>
+  <li><strong>Eviction caps become unnecessary.</strong> The 25-conversation / 200-note LRU caps exist because a single plist value can't grow unbounded. Per-document files can just… exist. Settings can show per-document sizes (PR B already planned this UI for the cache — same list, one more column).</li>
+</ul>
+<h3>The auto-archive catch: today, opening = saving</h3>
+<p>The layout above assumes a distinction between pages the user chose to keep (<code>web/</code>) and archives created as a side effect (Caches). That distinction <strong>does not exist today</strong>: 1.5 s after any webpage loads, <code>archiveDefault</code> (<code>WebSessionBackend.swift:225</code>, triggered from <code>WebViewerView.swift:896</code>) re-fetches the page, writes the <code>.vellumweb</code> <em>and</em> the unpacked <code>archives/&lt;key&gt;/</code> mirror (~2× the bytes), and calls <code>markSavedIfAbsent</code> — so every page ever opened is silently promoted to "saved" and its archives are permanent. A user who reads widely accumulates storage they never asked for and can only shed one page at a time.</p>
+<div class="decision"><span class="label">Recommendation</span><br>
+Make saving explicit (a save button/toggle, as the sidecar's <code>saved</code> flag was clearly designed for) and demote on-open archives to class C: they live in Caches, still give instant offline reload and AI text, but are TTL-evictable and deletable in bulk from the Storage pane. Explicitly saved pages get the durable <code>web/</code> treatment. Annotating a page should auto-promote it to saved — annotations are user investment. If instead "everything I open is my library" is the intended UX, the Storage pane below still keeps it manageable — but the default should not be <em>permanent</em> either way.</div>
+
+<h2>5 · Portability: three tiers of sharing</h2>
+<table>
+<tr><th>Tier</th><th>What the user does</th><th>What travels</th><th>Cost to build</th></tr>
+<tr><td><strong>1. Share the file</strong></td><td>AirDrop / email the PDF or .vellumweb as-is</td><td>Annotations, bookmarks, reading position, <code>/VellumDocId</code></td><td class="good">Already works today</td></tr>
+<tr><td><strong>2. <code>.vellum</code> bundle</strong> — "Export with notes…"</td><td>One zip: the document + <code>manifest.json</code> + <code>scratchpad.md</code> + <code>attachments/</code> + (opt-in checkbox) <code>conversations.json</code></td><td>Everything</td><td>Small — reuse <code>MiniZip</code>, the manifest/sha256-verification pattern, and zip-slip guards from <code>WebArchive.swift</code> wholesale</td></tr>
+<tr><td><strong>3. Synced library</strong></td><td>Point <code>libraryRoot</code> at iCloud Drive / Dropbox in Settings</td><td>All class-B data across the user's Macs, continuously</td><td>Settings picker + one-time copy migration (the issue thread's Option C, ~150 lines)</td></tr>
+</table>
+<p>On import of a <code>.vellum</code> bundle: verify hashes, write the document where the user chooses, unpack the sidecar into <code>documents/&lt;docId&gt;/</code> (merge-prompt if the ID already exists locally). Because identity is embedded in the PDF, the recipient's app links everything with zero configuration. Conversations default to <em>excluded</em> from export — they're chat logs, often semi-private, and the checkbox makes sharing intent explicit.</p>
+<p class="note">Considered and rejected — embedding the scratchpad inside the PDF itself (PDF <code>/EmbeddedFiles</code> attachments): maximal portability, but every debounced scratchpad save would atomically rewrite the entire (possibly 500 MB) PDF, images bloat the document permanently, other viewers surface mystery attachments, and web documents have no equivalent. Wrong write-amplification trade for live data; tier 2 gets the same result at export time only.</p>
+
+<h2>6 · Sync &amp; backend posture</h2>
+<p>Local-first, no accounts, no server — confirming the issue thread's recommendation, now with more evidence:</p>
+<ul>
+  <li><strong>Supabase/backend: rejected.</strong> The document model is file-embedded by design; a central annotation database fights the architecture's best property. Accounts are friction for a reader app; you'd be hosting user data for no feature gain. Revisit only if collaboration/multi-user ever becomes a goal.</li>
+  <li><strong>SQLite/Core Data: rejected for class B.</strong> A single DB file is the worst possible sync-conflict unit, is opaque to users, and buys nothing at this scale (a power user has hundreds of documents, not millions of rows). Class C caches may use whatever format is convenient — they're disposable.</li>
+  <li><strong>iCloud: deferred, path preserved.</strong> Tier 3 gives motivated users sync now with any provider. When native sync is worth the entitlement + testing overhead, swap <code>libraryRoot</code> for the ubiquity container and add <code>NSFilePresenter</code> observation — the per-document-folder layout is exactly what iCloud Drive syncs well. Nothing in this design has to be redone.</li>
+</ul>
+
+<h2>7 · Migration &amp; sequencing <span class="note">(re-sequenced July 14 — all feature PRs merged; PR B + Storage tab v1 shipped in #48)</span></h2>
+<h3>Storage PR 0 — web-archive management + explicit save <span class="pill">new · next up</span></h3>
+<p>With the text cache shipped and UI-managed, the web archives are now the only storage surface that grows unbounded with zero visibility: every opened page permanently stores a <code>.vellumweb</code> + an unpacked mirror (~2×) and is silently marked saved. Independent of <code>DocumentID</code>, so it can ship first:</p>
+<ul>
+  <li>Decide the §4 question (recommendation: explicit save; annotating auto-promotes; on-open archives become evictable, TTL'd like the text cache).</li>
+  <li>Extend the shipped Storage tab with a <em>Web pages</em> section: per-page rows (title, size of record + archives, last opened, saved vs auto), row delete, bulk "remove archives older than…". Reuses the exact row/dialog/TTL patterns <code>StorageSettingsTab</code> and <code>PageTextCache.evictStale</code> just established.</li>
+</ul>
+<h3>Storage PR 1 — identity + document store (the core)</h3>
+<ul>
+  <li><code>DocumentID</code> resolver (web hash / <code>/VellumDocId</code> read + lazy stamp / byte-hash fallback / path fallback).</li>
+  <li><code>DocumentDataStore</code>: the <code>documents/&lt;docId&gt;/</code> layout, atomic writes, one facade API that <code>ScratchpadStore</code>/<code>ScratchpadPersistence</code> and <code>AiPersistence</code> retarget to. Both already isolate persistence behind small enums, so this is a backend swap, not a refactor. Preserve #48's semantics in the swap: the in-memory-cache + coalesced-flush + await-on-quit contract for conversations (simpler now — flushing one document writes one small file, not the cross-document blob), and round-trip the new per-message <code>usage</code> field.</li>
+  <li>Re-key <code>PageTextCache</code> from <code>sha256(path)</code> to <code>DocumentID</code> (single <code>pathKey()</code> chokepoint; validator untouched) and optionally relocate <code>text-cache/</code> to <code>~/Library/Caches</code> per the §2 taxonomy — a one-time move, since a cold cache just rebuilds.</li>
+  <li>Cleanups inherited from the merged scratchpad PR: tmp+rename for attachment writes; persist markdown image refs as relative <code>attachments/…</code> paths (so a document's folder is portable standard Markdown).</li>
+  <li><strong>Lazy migration</strong>, not big-bang: legacy UserDefaults blobs stay as a read-fallback. When a document is opened and acquires its ID, its scratchpad + conversation entries migrate into the folder and are removed from the blobs. No mass PDF-stamping pass, no touching files at migration time. After ~a release cycle, an idle-time sweep migrates leftovers whose paths still resolve; truly orphaned entries surface in Settings for export-or-delete.</li>
+  <li>Attachment ownership for migration: the markdown refs in each note identify which document owns which attachment — move files into the owning folder during that document's lazy migration.</li>
+  <li>Recents gain a <code>docId</code> field beside the path: when the path 404s, re-resolve by ID before giving up (fixes the silent dead-recent today).</li>
+</ul>
+<h3><s>Storage PR 2 — PR B lands in Caches</s> <span class="pill">shipped in #48</span></h3>
+<p class="note">The page-text cache, TTL eviction, and the cache section of the Storage pane all shipped in PR #48 (see revision status at top). The two deviations from this plan — path keying and the App Support location — are absorbed into Storage PR 1 above as small alignment items. The archive sections originally scoped here moved up to Storage PR 0.</p>
+<h3>Storage PR 3 — portability surface</h3>
+<ul>
+  <li>Relocatable <code>libraryRoot</code> setting + copy-migration (the issue thread's Option C sketch, applied to <code>documents/</code> + <code>ai/</code> + <code>web/</code>).</li>
+  <li><code>.vellum</code> bundle export/import (tier 2).</li>
+  <li><strong>Storage pane v2</strong>: the per-document user-data list and the orphans/relink section of §8 (needs PR 1's <code>DocumentID</code> + <code>meta.json</code> to exist and lazy migration to have run for a while).</li>
+  <li>Later, separately: unify <code>web/&lt;key&gt;.json</code> into <code>documents/&lt;docId&gt;/record.json</code> (web <code>docId</code> = the same sha256 key, so this is a file move, not a re-key). Keep it out of PR 1 to avoid destabilizing Tauri-era compatibility while the identity layer beds in.</li>
+</ul>
+<p class="note">The original "review checklist for in-flight PRs" is obsolete — all merged. Its asks are folded into Storage PR 1 above. One durable observation survives: every store kept its identity logic behind a single <code>documentKey()</code>/<code>pathKey()</code> chokepoint (scratchpad, conversations, text cache alike), so the <code>DocumentID</code> swap remains a four-call-site change.</p>
+
+<h2>8 · Storage management UI — the "nothing invisible" rule</h2>
+<p>Guiding principle (owner decision, July 11 2026): <strong>the app must not persist anything the user cannot see and delete.</strong> Storage that only ever grows, in places only Finder archaeology can find, is a bug even when each individual write is justified. Two consequences:</p>
+<ul>
+  <li><strong>Delete means delete.</strong> The chat panel's clear button already hard-deletes the persisted conversation — <code>clearConversation()</code> (<code>AiStore.swift:135</code>) saves an empty list and <code>AiPersistence</code> removes the entry outright. The new <code>DocumentDataStore</code> must preserve this as a contract: clearing chat deletes <code>conversations.json</code>; clearing the scratchpad deletes <code>scratchpad.md</code> and its now-unreferenced attachments; a folder with no remaining files is removed. Same for the Storage pane's row actions.</li>
+  <li><strong>No invisible hoards.</strong> Today's design violates the rule twice: conversations are retained for up to 25 documents but <em>no UI lists them</em> — only the active document's history is ever visible — and path-keyed entries orphaned by a rename can never be seen again by anyone. The <code>DocumentID</code> layer fixes the orphaning; the Storage pane fixes the visibility.</li>
+</ul>
+<h3>Settings → Storage pane</h3>
+<p>One pane covering all four data classes. <strong>v1 shipped in #48</strong> (<code>StorageSettingsTab</code>): the extracted-text-cache sections — total size, per-document rows with size/recency/completeness, per-row delete and erase-all with exactly the reassurance copy specified below, a "original file not found" hint that never auto-deletes, and a fixed 6-month launch-time TTL. The table below is the target end state; unshipped parts are the summary tiles, the <em>web archives</em> section (→ Storage PR 0), the per-document <em>user data</em> breakdown and orphans/relink (→ Storage PR 3, needs <code>DocumentID</code>), and making the TTL user-adjustable.</p>
+<table>
+<tr><th>Section</th><th>Shows</th><th>Actions</th></tr>
+<tr><td><strong>Summary tiles</strong></td><td>Three totals: <em>Your data</em> (documents/ + web/ sidecars), <em>Web archives</em>, <em>Caches</em> — with one line of copy each stating what is irreplaceable vs re-creatable</td><td>"Clear all caches" (always safe); "Remove archives older than…" bulk action</td></tr>
+<tr><td><strong>Per-document list</strong></td><td>One row per <code>documents/&lt;docId&gt;/</code> ∪ cache entry ∪ web record: title, kind, last opened (own stamp from <code>meta.json</code>, not filesystem atime), total size, expandable breakdown — notes+attachments / chat / text cache / archive</td><td>Row-level: delete chat · delete notes · delete cache · remove archive · <em>delete everything for this document</em>. Sort by size / last opened. Active document's cache excluded from bulk eviction (per PR B plan)</td></tr>
+<tr><td><strong>Orphans &amp; unlinked</strong></td><td>Entries whose source file no longer resolves at its last-known path (from <code>meta.json</code>), plus legacy path-keyed blobs left after lazy migration</td><td>Relink (pick the moved file — ID re-verifies it) · export bundle · delete. Never auto-deleted: a missing path may be an unplugged drive or offloaded cloud file, per PR B's own caution</td></tr>
+<tr><td><strong>Housekeeping</strong></td><td>TTL settings: text-cache eviction (~6 months unopened, PR B default) and — if the §4 recommendation is adopted — on-open archive retention</td><td>Toggle/adjust; "run cleanup now"</td></tr>
+</table>
+<p>Copy rules for every destructive control: state exactly what is lost and what is not (PR B's planned "notes, highlights and conversations are NOT affected" warning generalizes: cache/archive deletions reassure; chat/notes deletions warn). Deleting derived data never asks twice; deleting user data always confirms with the document title in the prompt.</p>
+<p class="note">Everything the pane needs is already in the design: sizes from <code>FileManager</code> over per-document folders, recency from <code>meta.json</code>'s own stamp, identity from <code>DocumentID</code>. No index or database required — the directory layout <em>is</em> the data model.</p>
+
+<h2>9 · Open questions</h2>
+<ul>
+  <li><strong>Explicit save vs. everything-saved for webpages</strong> — §4's recommendation (explicit save; on-open archives become evictable cache; annotating auto-promotes). Owner call on the UX; the Storage pane works under either.</li>
+  <li><strong>Conversations in bundles</strong> — default-off checkbox proposed above; confirm.</li>
+  <li><strong>Sandboxing</strong> — the app is currently unsandboxed (no entitlements file), which is why bare paths work. If Mac App Store distribution ever matters, recents/meta.json paths need security-scoped bookmarks; the <code>DocumentID</code> layer makes that an additive change, but decide before building tier-3 sync UI.</li>
+  <li><strong>.vellumweb v2</strong> — fold <code>scratchpad.md</code> + attachments into the archive itself (bump manifest <code>version</code>) vs. always using the <code>.vellum</code> wrapper for web docs too. Wrapper-always is simpler; one format fewer to version.</li>
+  <li><strong>USER.md / SOUL.md caps</strong> — the Hermes-style bounded-write policy from issue #37 (per-write character budget, app-level file) — spec when that feature is picked up; the layout already reserves <code>ai/</code>.</li>
+</ul>
+
+<p class="note" style="margin-top:3rem">Sources: source-verified inventories of branch <code>storage</code> (= main), PR #44 (<code>scratchpad</code>), PR #41 (<code>ai-experience</code>), PR #46 (<code>ai-ondemand-retrieval</code>); issue #29 thread (matrix-hermes Options A/B/C analysis); issue #37 decision comments and cost audit.</p>
+
+</body>
+</html>

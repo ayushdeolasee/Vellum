@@ -5,12 +5,31 @@ All notable changes to Vellum are documented here. The format follows
 
 ## [Unreleased]
 
-Restores the AI-experience features that were lost in the scratchpad merge
-(which also committed literal conflict markers, leaving `main` uncompilable),
-and lands the final `ai-experiance` review commit that had never been merged.
+Adds a user-chosen storage location for the web library (iCloud Drive, a
+custom folder, or this Mac), and restores the AI-experience features that
+were lost in the scratchpad merge (which also committed literal conflict
+markers, leaving `main` uncompilable), landing the final `ai-experience`
+review commit that had never been merged.
 
 ### Added
 
+- **Choose where your web library lives.** A one-time choice at launch (and
+  in Settings ▸ Storage): iCloud Drive — everything (offline copies,
+  highlights, notes, reading positions) lives in `iCloud Drive ▸ Vellum` and
+  syncs across Macs — a custom folder (offline copies only; reading state
+  stays local and does not sync, stated in the UI), or this Mac (the previous
+  layout). Existing libraries migrate in the background, and interrupted
+  moves resume at the next launch.
+- Offline copies are now human-navigable: one `<Page Title>.vellumweb` per
+  page in a visible `Web Pages` folder instead of SHA-256 filenames.
+- **Automatically save every page for offline use** (Settings ▸ Storage, off
+  by default): restores the old open-means-keep behavior as an opt-in; pages
+  saved this way are exempt from the six-month cleanup.
+- The web toolbar's two actions are now one **Save for Offline Use / Remove
+  Offline Copy** toggle — saving also (re)writes the offline copy if it is
+  missing, removing deletes the copy but never highlights, notes, or reading
+  position. Exporting a portable archive elsewhere lives on as
+  "Export a Copy…".
 - **Screenshots into the AI chat.** The AI panel's "+" attach menu offers
   "Attach current page" (full-page snapshot) and "Snapshot region…"
   (drag-to-crop a marquee over the PDF); both attach the image as a composer

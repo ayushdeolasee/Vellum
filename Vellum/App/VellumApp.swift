@@ -46,6 +46,7 @@ struct VellumApp: App {
     @NSApplicationDelegateAdaptor(VellumAppDelegate.self) private var appDelegate
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
+    @State private var showStorageChoice = false
 
     init() {
         let theme = ThemeStore()
@@ -63,21 +64,38 @@ struct VellumApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
-                    // Launch-time TTL eviction of the extracted-text cache
-                    // (issue #37 PR B). Time-based only — never because a source
-                    // file is missing. The open-paths snapshot excludes restored
-                    // tabs; a document opened AFTER it is still safe because the
-                    // cache actor serializes: its lookup either stamps lastOpened
-                    // first (excluding it by age) or re-extracts once after the
-                    // eviction — never corruption. Evict off-main at low priority.
+                    // Launch-time TTL eviction of derived data (issue #37 PR B /
+                    // issue #29): the extracted-text cache, plus web-snapshot
+                    // artifacts for pages the user never saved or annotated.
+                    // Time-based only — never because a source file is missing.
+                    // The open-documents snapshot excludes restored tabs; a
+                    // document opened AFTER it is still safe because the cache
+                    // actor serializes (its lookup either stamps lastOpened
+                    // first, excluding it by age, or re-extracts once after the
+                    // eviction) and the web store re-archives on the open
+                    // debounce. Evict off-main at low priority.
+                    let openDocuments = workspace.root.allLeaves()
+                        .flatMap { $0.app.tabs }.compactMap(\.document)
                     let openPaths = Set(
-                        workspace.root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
-                            .filter { $0.kind == .pdf }
-                            .map(\.pdfPath))
+                        openDocuments.filter { $0.kind == .pdf }.map(\.pdfPath))
+                    let openWebUrls = Set(
+                        openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
                     let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
                     Task.detached(priority: .background) {
+                        // Finish any interrupted storage-location move and fold
+                        // legacy-local strays into the active layout before the
+                        // evictors walk the store. Routed through the relocator
+                        // so it can't run concurrently with a location change
+                        // the user makes in the first-launch sheet below.
+                        await WebStorageRelocator.sweepAtLaunch()
                         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
+                        WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
                     }
+                    showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                }
+                .sheet(isPresented: $showStorageChoice) {
+                    StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
                 .environment(workspace)
