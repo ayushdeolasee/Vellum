@@ -161,14 +161,24 @@ enum MarkdownParser {
     /// math delimiters for surfaces (collapsed pills, tooltips) that can't
     /// render markdown.
     static func plainPreview(_ source: String) -> String {
-        var text = source
+        // Inline math: same definition as the renderers (MathRenderer.segments),
+        // so "$5 and $10" stays currency in the pill exactly as it renders in
+        // the note body, while "$x^2$" strips to its LaTeX body.
+        var text = source.components(separatedBy: .newlines).map { line in
+            MathRenderer.segments(in: line).map { segment in
+                switch segment {
+                case .text(let t): return t
+                case .math(let latex): return latex
+                }
+            }.joined()
+        }.joined(separator: "\n")
         for pattern in [
             #"(?m)^#{1,3}\s+"#,       // headings
             #"(?m)^>\s?"#,            // quotes
             #"(?m)^[-*+]\s+"#,        // bullets
             #"(?m)^\d+\.\s+"#,        // ordered lists
             "```[a-zA-Z]*",           // code fences
-            #"\*\*|\*|__|`|\\\[|\\\]|\\\(|\\\)|\$\$|\$"#, // emphasis + math delimiters
+            #"\*\*|\*|__|`|\$\$|\\\[|\\\]"#, // emphasis + display-math delimiters
         ] {
             text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
