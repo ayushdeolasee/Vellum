@@ -35,8 +35,11 @@ final class OpenAIClient {
         // Cost guard: reasoning effort applies to the gpt-5 family only (others
         // reject the reasoning field). `.auto` maps to "minimal" (the prior
         // hardcoded default); explicit modes override. Computed up front so the
-        // output-token budget can scale with it.
-        let effort = model.lowercased().hasPrefix("gpt-5") ? (thinkingMode.openAIEffort ?? "minimal") : "minimal"
+        // output-token budget can scale with it. `reasoningEffort` is the value
+        // actually sent (nil = omit the field): some variants reject certain
+        // efforts, so we omit rather than 400 before streaming starts.
+        let requestedEffort = model.lowercased().hasPrefix("gpt-5") ? (thinkingMode.openAIEffort ?? "minimal") : "minimal"
+        let reasoningEffort = Self.supportedReasoningEffort(model: model, requested: requestedEffort)
 
         for _ in 0..<8 {
             var body: [String: Any] = [
@@ -50,10 +53,10 @@ final class OpenAIClient {
                 "prompt_cache_key": "vellum-\(sessionIdAtStart)",
                 "stream": true,
                 // Cost guard: cap the visible output, scaled to the thinking mode.
-                "max_output_tokens": Self.maxOutputTokens(forEffort: effort),
+                "max_output_tokens": Self.maxOutputTokens(forEffort: reasoningEffort ?? requestedEffort),
             ]
-            if model.lowercased().hasPrefix("gpt-5") {
-                body["reasoning"] = ["effort": effort]
+            if let reasoningEffort {
+                body["reasoning"] = ["effort": reasoningEffort]
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -84,6 +87,12 @@ final class OpenAIClient {
                     let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                         ?? (object["message"] as? String)
                     throw AiClientError.message(message ?? "OpenAI streaming failed.")
+                case "response.incomplete":
+                    // Terminal event when the response was cut off (e.g. by
+                    // max_output_tokens). Surface why instead of finalizing
+                    // silently as if it completed normally.
+                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
+                    throw AiClientError.message(Self.incompleteMessage(reason: reason ?? "unknown"))
                 default:
                     break
                 }
@@ -118,6 +127,22 @@ final class OpenAIClient {
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// The reasoning `effort` to send for `model`, or nil to omit the field.
+    /// Only gpt-5 models take reasoning at all, and some variants reject values:
+    /// gpt-5-pro accepts only "high", and gpt-5.1 rejects "minimal". When unsure
+    /// we omit the field rather than send a value that 400s before streaming.
+    /// Explicit user overrides (low/medium/high) are preserved.
+    static func supportedReasoningEffort(model: String, requested: String) -> String? {
+        let lowered = model.lowercased()
+        guard lowered.hasPrefix("gpt-5") else { return nil }
+        // gpt-5-pro (and gpt-5.1-pro) accept only "high".
+        if lowered.contains("gpt-5-pro") || lowered.contains("gpt-5.1-pro") { return "high" }
+        // gpt-5.1 rejects "minimal"; send explicit low/medium/high, else omit.
+        if lowered.contains("gpt-5.1") { return requested == "minimal" ? nil : requested }
+        // Classic gpt-5 / gpt-5-mini / gpt-5-nano accept every effort incl. minimal.
+        return requested
     }
 
     /// Output budget scaled to the user's thinking mode: reasoning models burn

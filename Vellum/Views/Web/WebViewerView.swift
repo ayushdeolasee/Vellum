@@ -275,6 +275,14 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
 
+    /// Isolated content world for the bridge: the content script and the
+    /// "vellum" message handler live here, out of reach of page scripts (a
+    /// hostile page could otherwise post open-youtube/navigate messages or
+    /// call __vellumCmd directly). Isolated worlds share the DOM, so all the
+    /// script's overlays, selection handling, and the YouTube facade work
+    /// unchanged.
+    private static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")
+
     private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         let schemeHandler = VellumWebSchemeHandler()
@@ -283,7 +291,18 @@ final class WebViewerController: NSObject {
         configuration.setURLSchemeHandler(
             schemeHandler, forURLScheme: VellumWebSchemeHandler.insecureScheme)
         configuration.userContentController.add(
-            WeakScriptMessageHandler(self), name: "vellum")
+            WeakScriptMessageHandler(self), contentWorld: Self.bridgeWorld, name: "vellum")
+        // The content script is world-scoped, not inlined into the page HTML
+        // (WebHtml.prepareHtml injects only the unprivileged page-world
+        // bootstrap). Registered once: it runs on every main-frame load this
+        // webview performs — live pages, snapshot fallbacks, and error pages
+        // alike. .atDocumentEnd so the bootstrap's data- attributes are set;
+        // the script's own start() waits for the load event regardless.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: WebContentScript.source,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true,
+            in: Self.bridgeWorld))
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -357,7 +376,7 @@ final class WebViewerController: NSObject {
             app.printHandler = nil
         }
         webView.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vellum")
+            .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
         webView.stopLoading()
     }
 
@@ -369,7 +388,10 @@ final class WebViewerController: NSObject {
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.__vellumCmd && window.__vellumCmd(\(json));") { _, _ in }
+        // Evaluated in the bridge world — __vellumCmd only exists there.
+        webView.evaluateJavaScript(
+            "window.__vellumCmd && window.__vellumCmd(\(json));",
+            in: nil, in: Self.bridgeWorld)
     }
 
     func applyZoom(_ zoom: Double) {
@@ -881,6 +903,13 @@ final class WebViewerController: NSObject {
         // A pending auto-archive for the outgoing page must not fire
         // against the rebound session.
         cancelPendingArchive()
+        // Reset the one-shot redirect/crash reload guards for this fresh
+        // navigation: they only need to prevent a reload *loop* within a single
+        // navigation attempt. Left uncleared, revisiting a URL that was
+        // reload-fixed once earlier this mount would skip its corrective reload
+        // (redirect) or its crash-recovery reload (process crash) and recur.
+        redirectReloadedUrl = nil
+        processReloadedUrl = nil
         clearSelection()
         closeNotePopovers()
         let outgoing = app.document?.pdfPath
@@ -1086,12 +1115,31 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
         // origin; without this the webview would leave the reader entirely.
         // Main frame only: subframes (article embeds, video iframes) load
         // their real content directly.
-        guard let url = navigationAction.request.url,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              navigationAction.targetFrame?.isMainFrame == true else {
-            return .allow
+        guard let url = navigationAction.request.url else { return .allow }
+        let scheme = url.scheme?.lowercased()
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame == true
+
+        // Non-http(s) main-frame navigations (mailto:/tel:/… link clicks):
+        // letting WebKit try to load these fails the provisional load, which
+        // handleLoadFailure turns into the offline-snapshot fallback for what
+        // was just an external-scheme click. Hand common external schemes to
+        // the system and cancel; cancel (never allow) any other unsupported
+        // scheme so the snapshot fallback isn't triggered. Subframes keep their
+        // real content, so only the main frame is intercepted here.
+        if scheme != "http" && scheme != "https" {
+            // The reader's own content is served over the vellum-web(i) proxy
+            // schemes — those loads must always proceed.
+            if scheme == VellumWebSchemeHandler.scheme
+                || scheme == VellumWebSchemeHandler.insecureScheme {
+                return .allow
+            }
+            guard isMainFrame else { return .allow }
+            if let scheme, ["mailto", "tel", "facetime"].contains(scheme) {
+                NSWorkspace.shared.open(url)
+            }
+            return .cancel
         }
+        guard isMainFrame else { return .allow }
         // A same-page anchor click resolves against the injected <base href> to
         // the real https origin, so WebKit sees a cross-origin navigation instead
         // of a scroll. When only the fragment differs from the current page,

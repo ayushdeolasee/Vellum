@@ -21,8 +21,7 @@ fixes a math-staleness bug). 006 gained two new items (pbxproj re-baseline, Swif
 
 All 11 plans were executed by dispatched executor subagents and reviewed (diff read, done
 criteria re-run, scope checked) by the advisor. The work lives as 15 commits on branch
-`advisor/round2-execution` (final commit `1381e07`), worktree
-`/Users/ayushdeolasee/Developer/Vellum-worktree-cc/advisor-round2-execution`. Final state:
+`advisor/round2-execution` (final commit `1381e07`). Final state:
 87 tests + all suites green, build green, `xcodegen generate` idempotent. **Merging is the
 maintainer's decision — nothing was merged or pushed.** Merge caveats: (1) merging deletes
 `.benchmark-cache/` from disk (it's regenerable; now gitignored); (2) plan 008's

@@ -90,17 +90,45 @@ enum MathRenderer {
         return rendered
     }
 
+    /// Compiled once: `segments(in:)` runs on every streamed delta, so building
+    /// the fixed pattern per call would be pure overhead. `nonisolated` because
+    /// `segments` is nonisolated; safe since `NSRegularExpression` is immutable
+    /// and documented thread-safe (Sendable).
+    nonisolated private static let inlineMathRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\\\((.+?)\\\)|\$(?![\s$])([^$\n]*[^\s$])\$"#)
+
+    /// Number of consecutive backslashes immediately preceding `index`. An
+    /// odd count means the character at `index` is escaped.
+    nonisolated private static func backslashRun(before index: Int, in ns: NSString) -> Int {
+        let backslash = UInt16(UnicodeScalar("\\").value)
+        var count = 0
+        var i = index - 1
+        while i >= 0, ns.character(at: i) == backslash { count += 1; i -= 1 }
+        return count
+    }
+
     /// Split inline text into prose and math spans. Recognizes `\(...\)` and
     /// single-`$` spans; a `$` span must not butt against whitespace on the
-    /// inside ("$5 and $10" stays currency, "$x^2$" is math).
+    /// inside ("$5 and $10" stays currency, "$x^2$" is math). A `$` escaped by
+    /// an odd number of backslashes ("literal \$x$") is left as prose.
     nonisolated static func segments(in source: String) -> [MathSegment] {
         guard source.contains("$") || source.contains("\\(") else { return [.text(source)] }
-        let pattern = #"\\\((.+?)\\\)|\$(?![\s$])([^$\n]*[^\s$])\$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [.text(source)] }
+        guard let regex = inlineMathRegex else { return [.text(source)] }
         let ns = source as NSString
         var segments: [MathSegment] = []
         var cursor = 0
         for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            let isDollar = match.range(at: 1).location == NSNotFound
+            if isDollar {
+                // Skip when the opening or closing `$` is escaped; the region
+                // stays unconsumed and folds into the surrounding prose.
+                let opener = match.range.location
+                let closer = match.range.location + match.range.length - 1
+                if backslashRun(before: opener, in: ns) % 2 == 1
+                    || backslashRun(before: closer, in: ns) % 2 == 1 {
+                    continue
+                }
+            }
             if match.range.location > cursor {
                 segments.append(.text(ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))))
             }

@@ -43,6 +43,7 @@ struct MarkdownMessage: View {
                     }
                 }
             }
+            .font(.system(size: baseSize))
             .padding(.leading, 12)
             .padding(.bottom, 8)
         case .ordered(let items):
@@ -54,6 +55,7 @@ struct MarkdownMessage: View {
                     }
                 }
             }
+            .font(.system(size: baseSize))
             .padding(.leading, 12)
             .padding(.bottom, 8)
         case .quote(let text):
@@ -61,6 +63,7 @@ struct MarkdownMessage: View {
                 Rectangle().fill(palette.border.opacity(0.6)).frame(width: 2)
                 inlineText(text).italic().lineSpacing(3)
             }
+            .font(.system(size: baseSize))
             .padding(.bottom, 8)
         case .code(let text):
             ScrollView(.horizontal) {
@@ -101,6 +104,7 @@ struct MarkdownMessage: View {
                     alignment: .center
                 )
                 .frame(maxWidth: .infinity, alignment: .center)
+                .accessibilityLabel(latex)
                 .padding(.vertical, 2)
                 .padding(.bottom, 8)
         } else {
@@ -127,6 +131,10 @@ struct MarkdownMessage: View {
                 if let rendered = MathRenderer.render(
                     latex: latex, fontSize: baseSize, color: NSColor(textColor), display: false
                 ) {
+                    // VoiceOver reads the LaTeX source; the image itself carries
+                    // no text, and it's interpolated into a Text run so a SwiftUI
+                    // .accessibilityLabel can't reach it.
+                    rendered.image.accessibilityDescription = latex
                     result = result + Text(Image(nsImage: rendered.image))
                         .baselineOffset(-rendered.descent)
                 } else {
@@ -161,10 +169,18 @@ enum MarkdownParser {
     /// math delimiters for surfaces (collapsed pills, tooltips) that can't
     /// render markdown.
     static func plainPreview(_ source: String) -> String {
+        // Strip display-math delimiters first: MathRenderer.segments only
+        // understands inline `$...$`, so for "$$E=mc^2$$" it consumes the inner
+        // "$E=mc^2$" and leaves stray outer dollars that the later delimiter
+        // replacement can't remove. Unwrap $$...$$ and \[...\] to their bodies
+        // up front (dot matches newlines for multi-line display blocks).
+        let unwrapped = source
+            .replacingOccurrences(of: #"(?s)\$\$(.+?)\$\$"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?s)\\\[(.+?)\\\]"#, with: "$1", options: .regularExpression)
         // Inline math: same definition as the renderers (MathRenderer.segments),
         // so "$5 and $10" stays currency in the pill exactly as it renders in
         // the note body, while "$x^2$" strips to its LaTeX body.
-        var text = source.components(separatedBy: .newlines).map { line in
+        var text = unwrapped.components(separatedBy: .newlines).map { line in
             MathRenderer.segments(in: line).map { segment in
                 switch segment {
                 case .text(let t): return t

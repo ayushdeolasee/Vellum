@@ -133,7 +133,6 @@ final class AnnotationStore {
         guard let sessionId = app.activeTabId else { return }
         // The backend persists the client-assigned id, so update waits for a
         // matching optimistic create rather than trying to mutate a temp id.
-        guard app.activeTabId == sessionId else { return }
         // Optimistic update
         annotations = annotations.map { annotation in
             guard annotation.id == input.id else { return annotation }
@@ -165,7 +164,6 @@ final class AnnotationStore {
 
     func deleteAnnotation(id: String) async {
         guard let sessionId = app.activeTabId else { return }
-        guard app.activeTabId == sessionId else { return }
         // Optimistic delete
         let previous = annotations
         annotations = annotations.filter { $0.id != id }

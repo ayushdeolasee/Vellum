@@ -15,13 +15,13 @@
 - **Priority**: P3
 - **Effort**: S
 - **Risk**: LOW
-- **Depends on**: none (no code changes; can run in parallel with any plan)
+- **Depends on**: none in terms of ordering, but steps 5–6 touch build configuration (`project.yml`, the committed `Vellum.xcodeproj/project.pbxproj`) — do not run concurrently with any other plan that adds/renames source files or edits `project.yml`, since both would race on `xcodegen generate` output and the pbxproj diff
 - **Category**: dx / docs
 - **Planned at**: commit `314cf9f`, 2026-07-12
 
 ## Why this matters
 
-Three small, unrelated hygiene problems, bundled because each is a few minutes of mechanical work:
+Five small, unrelated hygiene problems, bundled because each is a few minutes of mechanical work:
 
 1. **7.5 MB of regenerable cache is tracked in git.** Commit `314cf9f` committed `.benchmark-cache/` — 15 files including 800KB PNGs, a 22k-line extracted-text file, and a **compiled binary** (`bin/pdfkit-extract-93c0ca71ac5990ff`). `Benchmarks/README.md` itself describes this directory as a fingerprinted cache that the benchmark tooling regenerates. Every clone pays for it, and the binary will churn on every machine/Xcode difference.
 2. **README requirements are actively wrong.** `README.md` says "macOS 15.0+ / Xcode 16+", but `project.yml` sets `deploymentTarget macOS: "26.0"`. A contributor following the README installs a toolchain that cannot build the project.

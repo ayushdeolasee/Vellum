@@ -11,8 +11,8 @@ It supports:
 
 ## Requirements
 
-- macOS 26.0+ (pre-release; the project's deployment target — see `project.yml`)
-- A current Xcode beta with the macOS 26 SDK (Swift 6)
+- macOS 26.0+ (the project's deployment target — see `project.yml`)
+- Xcode 26 with the macOS 26 SDK (Swift 6)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 
 ## Development

@@ -355,8 +355,18 @@ struct AiPanel: View {
         let annotations = annotationStore.annotations
         let pageText = aiStore.pageTexts[currentPage]
         let task = Task {
+            // Resolve the page's text before the vision-fallback decision. On a
+            // cache miss `pageText` is nil, which would wrongly attach an image
+            // for a page that actually has a text layer (sendMessage extracts it
+            // anyway). Extract first so the decision uses the real text; pages
+            // already cached skip the extraction and behave as before.
+            var resolvedPageText = pageText
+            if resolvedPageText == nil {
+                _ = await aiStore.ensureExtracted(pages: [currentPage])
+                resolvedPageText = aiStore.pageTexts[currentPage]
+            }
             let image: AiPageImageSnapshot?
-            if AiStore.shouldAutoAttachPageImage(pageText: pageText) {
+            if AiStore.shouldAutoAttachPageImage(pageText: resolvedPageText) {
                 image = await aiStore.capturePageImageHandler?(currentPage)
             } else {
                 image = nil

@@ -77,6 +77,33 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(content.contains("a+b"), "expected math body to contain a+b, got \(content)")
     }
 
+    // MARK: - Blocks: display math via \[ ... \] (same behavior as $$)
+
+    func testDisplayMathBracketSingleLine() {
+        XCTAssertEqual(MarkdownParser.parse("\\[E=mc^2\\]"), [.math("E=mc^2")])
+    }
+
+    func testDisplayMathBracketMultiLine() {
+        let blocks = MarkdownParser.parse("\\[\na+b\n\\]")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .math(let content) = blocks.first else {
+            XCTFail("expected a single .math block, got \(blocks)")
+            return
+        }
+        XCTAssertTrue(content.contains("a+b"), "expected math body to contain a+b, got \(content)")
+    }
+
+    func testDisplayMathBracketUnclosedDegradesToCode() {
+        // No closing \] yet — mirrors the unterminated $$ case: degrade to .code.
+        let blocks = MarkdownParser.parse("\\[\n\\frac{a}{b}")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .code(let content) = blocks.first else {
+            XCTFail("expected a single .code block, got \(blocks)")
+            return
+        }
+        XCTAssertTrue(content.contains("\\frac{a}{b}"), "expected code body to contain \\frac{a}{b}, got \(content)")
+    }
+
     // MARK: - Blocks: display math (streaming gate, advisor-plans/009)
 
     func testDisplayMathClosedSingleLineStillTypesets() {
@@ -131,6 +158,29 @@ final class MarkdownParserTests: XCTestCase {
             [.text("a "), .math("y"), .text(" b")])
     }
 
+    func testSegmentsEscapedDollarOpenerIsLiteral() {
+        // "literal \$x$" — the opener is escaped, so no math span: the whole
+        // string stays prose (markdown handles the \$ escape downstream).
+        XCTAssertEqual(
+            MathRenderer.segments(in: "literal \\$x$"),
+            [.text("literal \\$x$")])
+    }
+
+    func testSegmentsEscapedDollarCloserIsLiteral() {
+        // "$x\$" — the closing $ is escaped, so the span never closes as math.
+        XCTAssertEqual(
+            MathRenderer.segments(in: "$x\\$"),
+            [.text("$x\\$")])
+    }
+
+    func testSegmentsEvenBackslashesRemainMath() {
+        // "\\$x$" — the $ is preceded by an even (2) backslash run, so it is
+        // NOT escaped and still opens a math span.
+        XCTAssertTrue(
+            MathRenderer.segments(in: "\\\\$x$").contains(.math("x")),
+            "expected .math(\"x\") for even-backslash opener, got \(MathRenderer.segments(in: "\\\\$x$"))")
+    }
+
     func testSegmentsMixedCurrencyAndMath() {
         let segments = MathRenderer.segments(in: "pay $5 for $x^2$")
         // "$5" stays inside a .text segment; "x^2" is its own .math segment.
@@ -158,6 +208,13 @@ final class MarkdownParserTests: XCTestCase {
 
     func testPlainPreviewStripsMathDelimiters() {
         XCTAssertEqual(MarkdownParser.plainPreview("solve $x^2$ now"), "solve x^2 now")
+    }
+
+    func testPlainPreviewStripsDisplayMathDelimiters() {
+        // Display math ($$...$$) is unwrapped before inline segmentation, so no
+        // stray outer dollars survive into the preview.
+        XCTAssertEqual(MarkdownParser.plainPreview("$$E=mc^2$$"), "E=mc^2")
+        XCTAssertEqual(MarkdownParser.plainPreview("\\[E=mc^2\\]"), "E=mc^2")
     }
 
     func testPlainPreviewStripsBlockMarkers() {

@@ -242,7 +242,7 @@ final class AiToolEngine {
         }
         let text = store.pageTexts[page] ?? ""
         guard !text.isEmpty else {
-            return "Page \(page) has no extractable text (it may be a scanned image). Request a page image to read it visually."
+            return "Page \(page) has no extractable text (it may be a scanned image)."
         }
         var output = Self.boundedPageRead(page: page, text: text)
         if let section = Self.annotationsSection(page: page, annotations: annotations.annotationsForPage(page)) {
@@ -302,6 +302,11 @@ final class AiToolEngine {
             }
         } catch is SearchTimedOut {
             return "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
+        } catch is CancellationError {
+            // The request was aborted (user cancel / tab switch). Don't stringify
+            // this as a tool failure — the whole response is being torn down; the
+            // network layer surfaces the cancellation to the caller.
+            return "Skipped searchDocument: cancelled."
         } catch {
             return "searchDocument failed: \(String(describing: error))"
         }

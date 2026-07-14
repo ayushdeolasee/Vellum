@@ -39,18 +39,25 @@ final class GeminiClient {
 
         // Cost guard: cap output and map the user's thinking mode to a
         // thinkingBudget. Newer families ignore an unknown thinkingConfig.
-        var generationConfig: [String: Any] = ["temperature": 0.2, "maxOutputTokens": 2048]
+        var generationConfig: [String: Any] = ["temperature": 0.2]
+        var thinkingConfig: [String: Any]?
         if thinkingMode == .auto {
             // `.auto` preserves the prior default byte-for-byte: for the 2.5
             // flash family disable extended thinking (0 budget); everything else
             // omits thinkingConfig. 2.5 Pro rejects thinkingBudget 0 (its minimum
             // is 128); only 2.5 Flash/Flash-Lite accept 0, so exclude Pro.
             if model.contains("2.5") && !model.lowercased().contains("pro") {
-                generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+                thinkingConfig = ["thinkingBudget": 0]
             }
-        } else if let config = Self.thinkingConfig(for: thinkingMode, model: model) {
-            generationConfig["thinkingConfig"] = config
+        } else {
+            thinkingConfig = Self.thinkingConfig(for: thinkingMode, model: model)
         }
+        if let thinkingConfig { generationConfig["thinkingConfig"] = thinkingConfig }
+        // Reasoning tokens are drawn from the same output budget, so a flat cap
+        // can be exhausted by thinking before any visible answer. Reserve
+        // headroom above the resolved thinking budget; unchanged (2048) when
+        // thinking is disabled.
+        generationConfig["maxOutputTokens"] = Self.maxOutputTokens(thinkingConfig: thinkingConfig)
 
         for _ in 0..<8 {
             let body: [String: Any] = [
@@ -156,6 +163,10 @@ final class GeminiClient {
             } catch {
                 lastError = error
                 if attempt == 1 { throw error }
+                // Brief backoff before the single retry (try? keeps cancellation
+                // working: a cancelled sleep just falls through to retry, where
+                // the request throws CancellationError).
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 continue // transient network failure: retry once
             }
 
@@ -164,10 +175,13 @@ final class GeminiClient {
             }
             if (200..<300).contains(http.statusCode) { return bytes }
             let data = try await Self.drain(bytes)
-            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(decoding: data, as: UTF8.self))
+            let message = Self.providerMessage((try? Self.jsonObject(data)) ?? [:], fallback: String(bytes: data, encoding: .utf8) ?? "")
             let error = AiClientError.message(message.isEmpty ? "Gemini request failed with status \(http.statusCode)." : message)
             if attempt == 0, http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500 {
                 lastError = error
+                // Back off before retrying — immediate retry on 429 usually
+                // just re-hits the limit.
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 continue // transient status: retry once
             }
             throw error // non-retryable status: escapes immediately
@@ -208,6 +222,31 @@ final class GeminiClient {
         )
     }
 
+    /// Output-token cap sized so thinking can't starve the visible answer.
+    /// Preserves the prior 2048 default when thinking is off (nil config or a
+    /// 0 thinkingBudget); otherwise reserves the resolved thinking budget plus
+    /// 2048 headroom for the reply. Gemini-3 thinkingLevel has no numeric
+    /// budget, so map each level to a generous cap.
+    static let baseMaxOutputTokens = 2048
+    static func maxOutputTokens(thinkingConfig config: [String: Any]?) -> Int {
+        let base = baseMaxOutputTokens
+        guard let config else { return base }
+        if let budget = config["thinkingBudget"] as? Int {
+            if budget == 0 { return base }          // thinking disabled
+            if budget < 0 { return 24576 + base }   // dynamic: model decides
+            return budget + base                    // reserve budget + reply headroom
+        }
+        if let level = config["thinkingLevel"] as? String {
+            switch level {
+            case "low": return 8192 + base
+            case "medium": return 16384 + base
+            case "high": return 24576 + base
+            default: return base                    // "minimal" / unknown
+            }
+        }
+        return base
+    }
+
     /// thinkingConfig payload for the given effort, or nil to omit it.
     /// Gemini 3 families take a discrete thinkingLevel — numeric budgets are a
     /// request error there. 2.x keeps numeric budgets (Pro floors at 128, its
@@ -229,7 +268,11 @@ final class GeminiClient {
             case .auto:    return nil
             }
         }
-        guard lowered.contains("2.5") || lowered.contains("2.0") else { return nil }
+        // 2.5 accepts numeric thinkingBudget across the family. Of the 2.0
+        // models only the documented *-thinking variants do — plain
+        // gemini-2.0-flash / -flash-lite 400 on thinkingConfig, so omit it.
+        let is20Thinking = lowered.contains("2.0") && lowered.contains("thinking")
+        guard lowered.contains("2.5") || is20Thinking else { return nil }
         let isPro = lowered.contains("pro")
         switch mode {
         case .instant: return ["thinkingBudget": isPro ? 128 : 0]

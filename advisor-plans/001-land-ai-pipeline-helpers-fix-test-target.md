@@ -544,6 +544,10 @@ static func requestBody(
         "usage": ["include": true],
         "session_id": "vellum-\(sessionId)",
     ]
+    // NOTE: unlike the OpenAI client's `maxOutputTokens(forEffort:)` scaling added
+    // elsewhere in this plan, OpenRouter's cap is intentionally left flat at 2048
+    // regardless of thinking mode — an explicit scope boundary for this plan, not
+    // an oversight. Verified unchanged in the shipped `OpenRouterClient.swift`.
     if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
         body["reasoning"] = ["effort": effort]
     }

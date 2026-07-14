@@ -666,7 +666,11 @@ enum WebHtml {
     /// - strip `<meta http-equiv="refresh">` tags,
     /// - inject `<base href>` so relative subresources resolve against the
     ///   real origin,
-    /// - inject the Vellum content script with the normalized page URL.
+    /// - inject the unprivileged page-world bootstrap with the normalized
+    ///   page URL and offline flag (only this handler knows them at serve
+    ///   time). The content script itself runs as a WKUserScript in an
+    ///   isolated content world (see WebViewerController.makeWebView) so
+    ///   page scripts can never reach the message bridge.
     static func prepareHtml(_ html: String, pageUrl: String, offline: Bool) -> String {
         var stripped = replaceAll(cspMetaRegex, in: html)
         stripped = replaceAll(refreshMetaRegex, in: stripped)
@@ -675,7 +679,7 @@ enum WebHtml {
         let injection = "<base href=\"\(safeUrlAttr)\"><script>"
             + "window.__VELLUM_PAGE_URL__=\(jsonString(pageUrl));"
             + "window.__VELLUM_OFFLINE__=\(offline);\n"
-            + WebContentScript.source
+            + WebContentScript.pageWorldSource
             + "</script>"
 
         let ns = stripped as NSString

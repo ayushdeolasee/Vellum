@@ -79,7 +79,9 @@ enum AiPrompts {
         }
 
         let currentAnnotations = context.annotations
-            .filter { $0.pageNumber == context.currentPage }
+            // Bookmarks carry no content/selectedText, so they'd render as empty
+            // noise here — skip them, mirroring getPageText's annotations section.
+            .filter { $0.pageNumber == context.currentPage && $0.type != .bookmark }
             .suffix(50)
             .map(annotationLine)
             .joined(separator: "\n")

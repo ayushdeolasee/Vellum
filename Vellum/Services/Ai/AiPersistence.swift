@@ -142,20 +142,39 @@ enum AiPersistence {
     }
 
     @MainActor private static var pendingFlush: Task<Void, Never>?
+    /// Bumped by every scheduleFlush — even one that lands while a flush is
+    /// already running — so the active flush task can detect a save that arrived
+    /// mid-write and loop to persist it. This keeps `pendingFlush` registered
+    /// until the FINAL snapshot is on disk, so `awaitPendingFlush()` (called from
+    /// applicationShouldTerminate) never returns while a write is still in flight.
+    @MainActor private static var flushRevision = 0
 
     /// Encode + write off the main actor, coalescing bursts (a turn saves up to
     /// three times). ConversationEntry is Codable value data, safe to move.
     @MainActor private static func scheduleFlush() {
-        guard pendingFlush == nil else { return }   // a scheduled flush will pick up the latest cache
+        flushRevision &+= 1
+        guard pendingFlush == nil else { return }   // the running flush will pick up this revision
         pendingFlush = Task { @MainActor in
             // Let same-turn saves coalesce, but stay well under a second so the
             // "user message persisted before the request" crash contract holds.
             try? await Task.sleep(for: .milliseconds(200))
-            let snapshot = entries()
-            pendingFlush = nil
-            await Task.detached(priority: .utility) {
-                writeConversations(snapshot)
-            }.value
+            // Write, then re-check the revision: a save that landed during the
+            // detached write bumped it, so loop and persist the newer snapshot.
+            // Only one detached write is awaited at a time, so writes are
+            // serialized — a later snapshot can never overtake an earlier one.
+            while true {
+                let revision = flushRevision
+                let snapshot = entries()
+                await Task.detached(priority: .utility) {
+                    writeConversations(snapshot)
+                }.value
+                // No await between this check and clearing pendingFlush, so on the
+                // main actor a concurrent save can't slip in unnoticed here.
+                if flushRevision == revision {
+                    pendingFlush = nil
+                    return
+                }
+            }
         }
     }
 

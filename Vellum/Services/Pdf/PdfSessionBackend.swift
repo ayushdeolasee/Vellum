@@ -260,9 +260,7 @@ actor PdfDocumentIO {
 
         var data = try serialize(document)
         PdfBytePatch.apply(patches, to: &data)
-        try PdfAtomicWriter.save(data, toPath: path)
-        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
-        await PageTextCache.shared.refreshHash(path: path, data: data)
+        try await writeAndRefreshCache(data)
 
         return Annotation(
             id: id,
@@ -309,9 +307,7 @@ actor PdfDocumentIO {
         }
 
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
-        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
-        await PageTextCache.shared.refreshHash(path: path, data: data)
+        try await writeAndRefreshCache(data)
         return true
     }
 
@@ -356,9 +352,7 @@ actor PdfDocumentIO {
 
         page.removeAnnotation(annotation)
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
-        // Re-key the page-text cache to this rewrite (text-neutral; see saveThroughPdfKit).
-        await PageTextCache.shared.refreshHash(path: path, data: data)
+        try await writeAndRefreshCache(data)
         return true
     }
 
@@ -453,6 +447,13 @@ actor PdfDocumentIO {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit produced no data")
         }
         return data
+    }
+
+    /// Atomically write already-serialized PDF data and re-key the page-text
+    /// cache to the rewrite (text-neutral; see saveThroughPdfKit).
+    private func writeAndRefreshCache(_ data: Data) async throws {
+        try PdfAtomicWriter.save(data, toPath: path)
+        await PageTextCache.shared.refreshHash(path: path, data: data)
     }
 
     /// Reload increment-patched data through PDFKit and write the resulting

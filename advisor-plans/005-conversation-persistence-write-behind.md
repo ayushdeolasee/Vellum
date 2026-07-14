@@ -134,10 +134,10 @@ Replace the direct `writeConversations(entries)` call in `saveConversation` with
         // "user message persisted before the request" crash contract holds.
         try? await Task.sleep(for: .milliseconds(200))
         let snapshot = entries()
-        pendingFlush = nil
         await Task.detached(priority: .utility) {
             writeConversations(snapshot)
         }.value
+        pendingFlush = nil
     }
 }
 
@@ -150,7 +150,7 @@ Replace the direct `writeConversations(entries)` call in `saveConversation` with
 ```
 
 Notes for correctness:
-- `pendingFlush = nil` is set BEFORE the detached write starts, so a save arriving during the write schedules a fresh flush (no lost update). The `while` in `awaitPendingFlush` handles a flush scheduled while awaiting the previous one.
+- `pendingFlush = nil` is set AFTER the detached write completes, so `awaitPendingFlush` cannot return while a write is still in flight; a save arriving mid-write is coalesced into the next scheduled flush instead of racing the in-progress one. The `while` in `awaitPendingFlush` handles a flush scheduled while awaiting the previous one. (Note: the shipped implementation also serializes saves that arrive mid-flush rather than racing them, though it may do so via a different mechanism than the exact snippet above — check `AiPersistence.swift` for the current code.)
 - `writeConversations` only touches `UserDefaults` (thread-safe) and `JSONEncoder` — if reading it reveals any other shared state, STOP.
 - `ConversationEntry` must be `Sendable` (it's Codable structs of `String`/`[AiMessage]`, and `AiMessage` is `Sendable`); add the conformance if the compiler asks.
 

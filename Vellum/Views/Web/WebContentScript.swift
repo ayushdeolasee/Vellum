@@ -1,6 +1,6 @@
 import Foundation
 
-// The Vellum content script — a verbatim port of
+// The Vellum content script — a port of
 // src-tauri/assets/vellum-content-script.js with only the transport adapted
 // for WKWebView:
 //  - the top-frame guard is removed (the page is the webview's main frame,
@@ -12,12 +12,25 @@ import Foundation
 // Everything else — the whitespace table, 3600-char page chunking, quote
 // contexts, resolveHighlight scoring — is byte-for-byte the anchor
 // compatibility contract and must not drift.
+//
+// The code is split across two JS worlds:
+//  - `source` runs in an isolated WKContentWorld ("VellumBridge", see
+//    WebViewerController.makeWebView) as a WKUserScript, so page scripts can
+//    never reach the webkit message bridge or window.__vellumCmd. Isolated
+//    worlds share the DOM (overlays, selection, events all work) but not JS
+//    state, so the per-page constants arrive as data- attributes on
+//    <html> rather than window globals.
+//  - `pageWorldSource` is a small unprivileged bootstrap injected inline into
+//    the served HTML by WebHtml.prepareHtml. It publishes those attributes
+//    and hosts the two hooks that only work from the page's own world:
+//    wrapping history.pushState/replaceState and overriding window.open.
 
 enum WebContentScript {
     static let source = #"""
 /*
- * Vellum content script — injected into reader webpages. Runs inside the
- * page's own JS context and talks to the app via the webkit message bridge.
+ * Vellum content script — injected into reader webpages as a WKUserScript in
+ * the isolated "VellumBridge" content world (page scripts cannot reach the
+ * webkit message bridge). Shares the page's DOM but not its JS state.
  *
  * Responsibilities:
  *  - extract readable text and chunk it into "virtual pages"
@@ -33,22 +46,22 @@ enum WebContentScript {
   if (window.__vellumLoaded) return;
   window.__vellumLoaded = true;
 
-  var PAGE_URL = window.__VELLUM_PAGE_URL__ || location.href;
+  // Per-page constants published by the page-world bootstrap as DOM
+  // attributes (the DOM is the only state the two worlds share).
+  var PAGE_URL =
+    document.documentElement.getAttribute("data-vellum-page-url") || location.href;
   var PAGE_TARGET_CHARS = 3600;
   var MAX_PAGES = 200;
 
   // ------------------------------------------------------------------
-  // History API shim (see plans/web-proxy-truthful-urls.html)
+  // Soft-navigation tracking (see plans/web-proxy-truthful-urls.html)
   //
-  // The injected <base href> points at the real https origin so
-  // subresources resolve — but it also makes RELATIVE
-  // history.pushState/replaceState URLs resolve against it, which is
-  // cross-origin to this vellum-web document, so WebKit throws a
-  // SecurityError mid-hydration in SPA routers (Next.js does exactly
-  // this). Resolve url arguments against location.href instead, and map
-  // absolute real-origin URLs back onto the reader origin. Afterwards
-  // keep PAGE_URL fresh so re-inits attribute extraction, archives, and
-  // annotations to the right record.
+  // The history.pushState/replaceState remap shim lives in the page-world
+  // bootstrap (pageWorldSource) — an isolated-world override can't touch
+  // the page's own history binding. It dispatches "__vellum-url-changed"
+  // on the shared document after each call; from here we keep PAGE_URL
+  // fresh so re-inits attribute extraction, archives, and annotations to
+  // the right record.
   // ------------------------------------------------------------------
   var REAL_PROTOCOL = "https:";
   var REAL_HOST = "";
@@ -57,23 +70,10 @@ enum WebContentScript {
     REAL_PROTOCOL = realParsed.protocol;
     REAL_HOST = realParsed.host;
   } catch (e) {
-    /* PAGE_URL not absolute; shim stays inert */
+    /* PAGE_URL not absolute; tracking stays inert */
   }
 
   var TRACKING_KEYS = ["fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "ref_src", "twclid"];
-
-  function remapHistoryUrl(url) {
-    if (url === undefined || url === null) return url;
-    try {
-      var abs = new URL(String(url), location.href);
-      if ((abs.protocol === "http:" || abs.protocol === "https:") && abs.host === REAL_HOST) {
-        return location.protocol + "//" + location.host + abs.pathname + abs.search + abs.hash;
-      }
-      return abs.href;
-    } catch (e) {
-      return url;
-    }
-  }
 
   // The real-URL equivalent of the current location, with tracking params
   // dropped like the app-side normalizer — PAGE_URL comparisons and init
@@ -114,16 +114,7 @@ enum WebContentScript {
     }, 400);
   }
 
-  var nativePushState = history.pushState.bind(history);
-  var nativeReplaceState = history.replaceState.bind(history);
-  history.pushState = function (state, title, url) {
-    nativePushState(state, title, remapHistoryUrl(url));
-    noteUrlChange();
-  };
-  history.replaceState = function (state, title, url) {
-    nativeReplaceState(state, title, remapHistoryUrl(url));
-    noteUrlChange();
-  };
+  document.addEventListener("__vellum-url-changed", noteUrlChange);
   window.addEventListener("popstate", noteUrlChange);
 
   // ------------------------------------------------------------------
@@ -144,7 +135,11 @@ enum WebContentScript {
       var u = new URL(String(raw), location.href);
       if (!/(^|\.)youtube(-nocookie)?\.com$/.test(u.hostname)) return null;
       var m = u.pathname.match(/^\/embed\/([\w-]{6,})/);
-      return m ? m[1] : null;
+      // `/embed/videoseries?list=...` is a playlist embed, not a video — its
+      // literal "videoseries" id yields a broken thumbnail and a dead
+      // watch?v=videoseries link. Leave the playlist iframe alone.
+      if (!m || m[1] === "videoseries") return null;
+      return m[1];
     } catch (e) {
       return null;
     }
@@ -155,6 +150,10 @@ enum WebContentScript {
     if (!id || !frame.parentNode) return;
     var facade = document.createElement("div");
     facade.setAttribute("data-vellum-youtube", id);
+    // Keyboard/AT-reachable: the facade is the only way to reach the video.
+    facade.setAttribute("role", "button");
+    facade.setAttribute("tabindex", "0");
+    facade.setAttribute("aria-label", "Watch on YouTube");
     var w = +(frame.getAttribute("width") || 0);
     var h = +(frame.getAttribute("height") || 0);
     facade.style.cssText =
@@ -181,6 +180,14 @@ enum WebContentScript {
       e.stopPropagation();
       post("open-youtube", { id: id });
     });
+    // Enter/Space activate it the same way a click does, for keyboard users.
+    facade.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        e.stopPropagation();
+        post("open-youtube", { id: id });
+      }
+    });
     frame.parentNode.replaceChild(facade, frame);
   }
 
@@ -201,9 +208,16 @@ enum WebContentScript {
         }
       }
     }).observe(document.documentElement, { childList: true, subtree: true });
-    document.addEventListener("DOMContentLoaded", function () {
+    // This script is injected at document end, so DOMContentLoaded may
+    // already be behind us — scan immediately in that case.
+    var scanFrames = function () {
       document.querySelectorAll("iframe[src]").forEach(replaceWithFacade);
-    });
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", scanFrames);
+    } else {
+      scanFrames();
+    }
   }
 
   // Raw text domain: concatenation of all accepted text nodes.
@@ -1634,15 +1648,15 @@ enum WebContentScript {
     true
   );
 
-  window.open = function (u) {
-    try {
-      var abs = new URL(u, PAGE_URL).toString();
-      if (/^https?:/i.test(abs)) post("navigate", { url: abs });
-    } catch (err) {
-      /* ignore */
-    }
-    return null;
-  };
+  // window.open is overridden by the page-world bootstrap (only the page's
+  // own world can replace the binding page scripts call); it publishes the
+  // target on the shared <html> element and pings this event. Routing the
+  // URL through the reader here grants the page nothing it can't already do
+  // with location.assign.
+  document.addEventListener("__vellum-open-url", function () {
+    var u = document.documentElement.getAttribute("data-vellum-open-url");
+    if (u && /^https?:/i.test(u)) post("navigate", { url: u });
+  });
 
   // ------------------------------------------------------------------
   // Commands from the app shell (invoked via evaluateJavaScript)
@@ -1874,7 +1888,7 @@ enum WebContentScript {
     post("init", {
       url: PAGE_URL,
       title: document.title || null,
-      offline: !!window.__VELLUM_OFFLINE__,
+      offline: document.documentElement.getAttribute("data-vellum-offline") === "true",
       // Capability handshake: this script understands capture-position /
       // scroll-to-position. Lets the app shell degrade to page bookmarks
       // when an older embedded script is running.
@@ -1991,6 +2005,95 @@ enum WebContentScript {
     // Fall back in case load stalls on a slow subresource.
     setTimeout(start, 4000);
   }
+})();
+"""#
+
+    /// Unprivileged page-world bootstrap, injected inline into the served
+    /// HTML by `WebHtml.prepareHtml` (which prefixes the
+    /// `window.__VELLUM_PAGE_URL__` / `window.__VELLUM_OFFLINE__` constants —
+    /// only the scheme handler knows the redirect-followed URL and the
+    /// offline flag at serve time). Runs in the page's own JS context — it
+    /// must, because it wraps the page's history binding and window.open —
+    /// but has no bridge access: it only publishes shared DOM attributes and
+    /// dispatches DOM events the isolated-world content script listens for,
+    /// none of which grant a page more than location.assign already does.
+    static let pageWorldSource = #"""
+(function () {
+  "use strict";
+  if (window.__vellumPageShimLoaded) return;
+  window.__vellumPageShimLoaded = true;
+
+  var PAGE_URL = window.__VELLUM_PAGE_URL__ || location.href;
+  var root = document.documentElement;
+  // Republish the per-page constants where the isolated world can see them.
+  root.setAttribute("data-vellum-page-url", PAGE_URL);
+  root.setAttribute("data-vellum-offline", window.__VELLUM_OFFLINE__ ? "true" : "false");
+
+  // ------------------------------------------------------------------
+  // History API shim (see plans/web-proxy-truthful-urls.html)
+  //
+  // The injected <base href> points at the real https origin so
+  // subresources resolve — but it also makes RELATIVE
+  // history.pushState/replaceState URLs resolve against it, which is
+  // cross-origin to this vellum-web document, so WebKit throws a
+  // SecurityError mid-hydration in SPA routers (Next.js does exactly
+  // this). Resolve url arguments against location.href instead, and map
+  // absolute real-origin URLs back onto the reader origin. The isolated
+  // world is pinged afterwards so it can refresh its PAGE_URL.
+  // ------------------------------------------------------------------
+  var REAL_HOST = "";
+  try {
+    REAL_HOST = new URL(PAGE_URL).host;
+  } catch (e) {
+    /* PAGE_URL not absolute; remap degrades to absolute resolution */
+  }
+
+  function remapHistoryUrl(url) {
+    if (url === undefined || url === null) return url;
+    try {
+      var abs = new URL(String(url), location.href);
+      if ((abs.protocol === "http:" || abs.protocol === "https:") && abs.host === REAL_HOST) {
+        return location.protocol + "//" + location.host + abs.pathname + abs.search + abs.hash;
+      }
+      return abs.href;
+    } catch (e) {
+      return url;
+    }
+  }
+
+  function noteUrlChange() {
+    try {
+      document.dispatchEvent(new Event("__vellum-url-changed"));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  var nativePushState = history.pushState.bind(history);
+  var nativeReplaceState = history.replaceState.bind(history);
+  history.pushState = function (state, title, url) {
+    nativePushState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+  history.replaceState = function (state, title, url) {
+    nativeReplaceState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+
+  // No popups in the reader: hand window.open targets to the isolated world
+  // (via the shared DOM) so they become normal reader navigations.
+  window.open = function (u) {
+    try {
+      var abs = new URL(u, PAGE_URL).toString();
+      if (/^https?:/i.test(abs)) {
+        root.setAttribute("data-vellum-open-url", abs);
+        document.dispatchEvent(new Event("__vellum-open-url"));
+      }
+    } catch (err) {
+      /* ignore */
+    }
+    return null;
+  };
 })();
 """#
 }

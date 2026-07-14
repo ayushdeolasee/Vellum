@@ -115,7 +115,7 @@ Model the file on `Tests/WebProxyUrlTests.swift` (XCTest, `@testable import Vell
 
 Then `xcodegen generate` (adds the new file to the target).
 
-**Verify**: `xcodebuild ... test -only-testing:VellumTests/MarkdownParserTests` → the blocks/segments tests PASS; the two currency `plainPreview` tests FAIL (expected red before the fix). If any blocks/segments test fails, the plan's excerpts have drifted — STOP.
+**Verify**: `xcodebuild ... test -only-testing:VellumTests/MarkdownParserTests` → the blocks/segments tests PASS; the currency-preservation `plainPreview` test FAILS (expected red before the fix). If any blocks/segments test fails, the plan's excerpts have drifted — STOP.
 
 ### Step 2: Route `plainPreview`'s math handling through `MathRenderer.segments`
 

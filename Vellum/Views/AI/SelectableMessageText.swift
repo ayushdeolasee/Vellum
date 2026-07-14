@@ -301,7 +301,7 @@ enum AiAttributedRenderer {
         }
         let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
         paragraph.alignment = .center
-        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240))
+        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
         result.addAttributes(
             [.paragraphStyle: paragraph, .foregroundColor: color],
             range: NSRange(location: 0, length: result.length)
@@ -312,9 +312,12 @@ enum AiAttributedRenderer {
     /// Wrap a rendered equation in a text attachment whose bounds sit the image
     /// on the text baseline (negative y = the math's descent below it), scaled
     /// down proportionally when wider than the bubble.
-    private static func attachment(for rendered: MathRenderer.Rendered, maxWidth: CGFloat) -> NSAttributedString {
+    private static func attachment(for rendered: MathRenderer.Rendered, maxWidth: CGFloat, latex: String) -> NSAttributedString {
         let attachment = NSTextAttachment()
         attachment.image = rendered.image
+        // The attachment renders as an image with no text; expose the LaTeX
+        // source so VoiceOver can read the equation.
+        attachment.image?.accessibilityDescription = latex
         var size = rendered.size
         var descent = rendered.descent
         if size.width > maxWidth {
@@ -372,7 +375,7 @@ enum AiAttributedRenderer {
                 result.append(inlineProse(text, font: font, color: color, paragraph: paragraph))
             case .math(let latex):
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
-                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240))
+                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
                     // Keep the run's paragraph style so line spacing stays even.
                     math.addAttributes(
                         [.paragraphStyle: paragraph, .foregroundColor: color],
