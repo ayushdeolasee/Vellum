@@ -45,6 +45,34 @@ final class DocumentPickerCoordinator_iOS: NSObject, UIDocumentPickerDelegate {
         presenter.present(picker, animated: true)
     }
 
+    /// Present the folder picker (Settings ▸ Storage custom location). `onPick`
+    /// receives the chosen security-scoped folder URL; not called on cancel.
+    func presentFolderPicker(onPick: @escaping (URL) -> Void) {
+        self.onPick = { urls in
+            guard let first = urls.first else { return }
+            onPick(first)
+        }
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.folder], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = self
+        guard let presenter = Self.topViewController() else {
+            self.onPick = nil
+            return
+        }
+        presenter.present(picker, animated: true)
+    }
+
+    /// Present the export picker (web tab "Export a Copy…"). The system copies
+    /// the temporary archive to the destination the user chooses in Files.
+    /// Fire-and-forget: there is no result to report back.
+    func presentExport(urls: [URL]) {
+        let picker = UIDocumentPickerViewController(forExporting: urls, asCopy: true)
+        picker.delegate = self
+        guard let presenter = Self.topViewController() else { return }
+        presenter.present(picker, animated: true)
+    }
+
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         let handler = onPick
         onPick = nil

@@ -41,6 +41,7 @@
 		41BD8A6E46D11F7BC0BF6D13 /* WebViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FAA454DB63CD5DAEB44B17B /* WebViewerView.swift */; };
 		41EDFC3445164FFD63A268C8 /* OpenCodeZenClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */; };
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
+		4B759FBB179307FE097DA861 /* StorageLocationChoiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */; };
 		4E8BAA1F3AEC100D4C768AFA /* PaneTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B863B676278E0E8D3C2EDB /* PaneTree.swift */; };
 		4F0CAF425277CA915B0EEFDB /* WebLibraryStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB8C07E2E3B6096D5FBD0510 /* WebLibraryStorageTests.swift */; };
 		4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */; };
@@ -167,6 +168,7 @@
 		59A23802792908CA275A878C /* HighlightSwatchButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSwatchButton.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
 		65C4546D0D679437B876586A /* WebViewerTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewerTypes.swift; sourceTree = "<group>"; };
+		672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageLocationChoiceSheet.swift; sourceTree = "<group>"; };
 		6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParserTests.swift; sourceTree = "<group>"; };
 		6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSessionBackend.swift; sourceTree = "<group>"; };
 		709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMessageTests.swift; sourceTree = "<group>"; };
@@ -445,6 +447,7 @@
 			isa = PBXGroup;
 			children = (
 				54417DBF142FD33E6B2F6672 /* SettingsView.swift */,
+				672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -738,6 +741,7 @@
 				B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */,
 				2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */,
 				7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */,
+				4B759FBB179307FE097DA861 /* StorageLocationChoiceSheet.swift in Sources */,
 				6BA39956BEE5A9BB036F74E7 /* TabBarView.swift in Sources */,
 				07AE67F8DC12B0AAD737C3FD /* TabDrag.swift in Sources */,
 				1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */,

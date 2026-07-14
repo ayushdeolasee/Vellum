@@ -192,7 +192,7 @@ vs `8f02bff` where useful. Each phase: build + tests green on
 - [x] Phase 0: highlight-resize port committed (899b23f)
 - [x] Phase 1 — AI backend (3ec11e2; build green, 93/93 tests)
 - [x] Phase 2 — AI UI (75ed4c0; build green, 98/98 tests)
-- [ ] Phase 3 — Web stack
+- [x] Phase 3 — Web stack (398c12e; build green, 120/120 tests)
 - [ ] Phase 4 — Storage UI/lifecycle
 - [ ] Phase 5 — Scratchpad
 - [ ] Phase 6 — Region capture + AI references

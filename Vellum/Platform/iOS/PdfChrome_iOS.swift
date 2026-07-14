@@ -16,6 +16,7 @@ struct PdfToolbar_iOS: View {
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
@@ -23,6 +24,16 @@ struct PdfToolbar_iOS: View {
     @State private var showPageJump = false
     @State private var showSettings = false
     @State private var toolbarWidth: CGFloat = 0
+
+    // Web-tab offline-copy state, mirroring the macOS OverflowMenu.
+    @State private var pageSaved = false
+    @State private var exporting = false
+    /// Serializes save/remove so a rapid Remove can't finish before a slow
+    /// Save's archive write and get its deletion undone by it.
+    @State private var saveToggleTask: Task<Void, Never>?
+    /// Identifies the newest queued toggle, so a superseded one's failure can't
+    /// revert the toolbar to a state the user has already toggled away from.
+    @State private var saveToggleGeneration = 0
 
     private var isWeb: Bool { appStore.document?.kind == .web }
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
@@ -211,6 +222,18 @@ struct PdfToolbar_iOS: View {
                     }
                 } label: { Label("Save", systemImage: "square.and.arrow.down") }
             }
+            if isWeb {
+                Button(action: toggleSavedPage) {
+                    Label(
+                        pageSaved ? "Remove Offline Copy" : "Save for Offline Use",
+                        systemImage: pageSaved ? "arrow.down.circle.fill" : "arrow.down.circle")
+                }
+                .accessibilityIdentifier("toolbar.saveForOffline")
+                Button(action: exportVellumweb) {
+                    Label("Export a Copy…", systemImage: "square.and.arrow.up")
+                }
+                .disabled(exporting)
+            }
             if !isWeb, !showZoomPod {
                 Divider()
                 Button { appStore.zoomIn() } label: {
@@ -254,6 +277,11 @@ struct PdfToolbar_iOS: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("More actions")
+        // Toolbar state (offline-copy flag) resets whenever the active tab or
+        // its backing document changes.
+        .task(id: DocumentKey_iOS(appStore)) {
+            await loadSavedState(for: DocumentKey_iOS(appStore))
+        }
     }
 
     /// In-page history for web tabs — same channel the macOS toolbar uses.
@@ -268,6 +296,114 @@ struct PdfToolbar_iOS: View {
             appStore.goToPage(page)
         }
         pageFieldText = String(appStore.currentPage)
+    }
+
+    // MARK: - Web offline copy
+
+    private func loadSavedState(for identity: DocumentKey_iOS) async {
+        pageSaved = false
+        guard isWeb, let sessionId = appStore.activeTabId else { return }
+        let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
+        if DocumentKey_iOS(appStore) == identity {
+            pageSaved = saved
+        }
+    }
+
+    /// Save = mark the page kept AND make sure its offline copy exists (the
+    /// re-archive covers a copy the user deleted from Settings ▸ Storage).
+    /// Remove = un-keep and delete the offline copy; the record — highlights,
+    /// notes, reading position — always survives.
+    private func toggleSavedPage() {
+        guard let sessionId = appStore.activeTabId else { return }
+        let next = !pageSaved
+        pageSaved = next
+        let expectedUrl = appStore.document?.pdfPath ?? ""
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        let prior = saveToggleTask
+        saveToggleGeneration += 1
+        let generation = saveToggleGeneration
+        saveToggleTask = Task {
+            await prior?.value
+            do {
+                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
+                if next {
+                    // Best-effort: membership is saved even if the archive
+                    // write fails (offline, no snapshot yet) — the copy is
+                    // rewritten on the next open of the page.
+                    _ = try? await appStore.sessions.archiveWebpageDefault(
+                        sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+                }
+            } catch {
+                // Only the newest toggle owns the button: an older one failing
+                // behind a queued newer one must not resurrect its own state.
+                if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
+                    pageSaved = !next
+                }
+            }
+        }
+    }
+
+    /// Export the active webpage as a .vellumweb archive. macOS uses NSSavePanel;
+    /// iOS writes the archive to a temporary file and hands it to the Files
+    /// export picker, which copies it to the destination the user chooses.
+    private func exportVellumweb() {
+        guard !exporting,
+              let sessionId = appStore.activeTabId,
+              appStore.document?.kind == .web else { return }
+
+        let slug = slugifiedTitle()
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        exporting = true
+        Task {
+            defer { exporting = false }
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(slug).vellumweb")
+            try? FileManager.default.removeItem(at: tmp)
+            guard (try? await appStore.sessions.exportVellumweb(
+                sessionId: sessionId, destPath: tmp.path, pages: pages)) != nil else { return }
+            DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
+        }
+    }
+
+    /// Slug for the export default filename: lowercased title, non-alphanumeric
+    /// runs collapsed to "-", trimmed, max 60 chars, fallback "article".
+    private func slugifiedTitle() -> String {
+        let title = appStore.document?.title ?? ""
+        var slug = ""
+        var lastWasDash = false
+        for scalar in title.lowercased().unicodeScalars {
+            if (scalar.value >= 97 && scalar.value <= 122)
+                || (scalar.value >= 48 && scalar.value <= 57) {
+                slug.unicodeScalars.append(scalar)
+                lastWasDash = false
+            } else if !lastWasDash, !slug.isEmpty {
+                slug.append("-")
+                lastWasDash = true
+            }
+        }
+        while slug.hasSuffix("-") { slug.removeLast() }
+        if slug.count > 60 {
+            slug = String(slug.prefix(60))
+            while slug.hasSuffix("-") { slug.removeLast() }
+        }
+        return slug.isEmpty ? "article" : slug
+    }
+}
+
+/// Identity of the active document — web offline-copy state resets whenever the
+/// tab or backing file changes. Mirrors ToolbarView's `DocumentKey` on macOS.
+private struct DocumentKey_iOS: Hashable {
+    var tabId: String?
+    var path: String?
+
+    @MainActor
+    init(_ appStore: AppStore) {
+        tabId = appStore.activeTabId
+        path = appStore.document?.pdfPath
     }
 }
 
