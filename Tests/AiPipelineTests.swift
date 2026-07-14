@@ -408,4 +408,17 @@ final class AiPipelineTests: XCTestCase {
         let legacy = Data(#"{"id":"a","role":"assistant","content":"old","createdAt":"2026-01-01T00:00:00.000Z"}"#.utf8)
         XCTAssertNil(try JSONDecoder().decode(AiMessage.self, from: legacy).usage)
     }
+
+    // MARK: - Auto page-image gating
+
+    /// Pages with real text send no auto screenshot; scanned/low-text pages
+    /// (and pages not yet extracted) do.
+    func testAutoPageImageAttachesOnlyForLowTextPages() {
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(pageText: nil))
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(pageText: ""))
+        XCTAssertTrue(AiStore.shouldAutoAttachPageImage(
+            pageText: String(repeating: "a", count: AiStore.autoPageImageTextThreshold - 1)))
+        XCTAssertFalse(AiStore.shouldAutoAttachPageImage(
+            pageText: String(repeating: "a", count: AiStore.autoPageImageTextThreshold)))
+    }
 }

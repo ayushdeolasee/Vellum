@@ -375,6 +375,13 @@ final class AiStore {
     /// screenshots are volatile, expensive, and poor cache material (§6).
     static let autoPageImageTextThreshold = 200
 
+    /// Whether the current page's screenshot should be auto-attached: only
+    /// when the page looks scanned/low-text (or hasn't been extracted yet, so
+    /// a scan with no extractable text still gets visual context).
+    static func shouldAutoAttachPageImage(pageText: String?) -> Bool {
+        (pageText?.count ?? 0) < autoPageImageTextThreshold
+    }
+
     /// Persisted assistant content = reply + compact per-action receipts.
     /// Raw tool payloads (full page text / search results) must never reach
     /// the persisted message — only these one-line receipts do.
