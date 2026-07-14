@@ -7,7 +7,7 @@ enum AiPersistence {
     static let maxMessageCharacters = 12_000
     static let maxDocuments = 25
 
-    private struct ConversationEntry {
+    private struct ConversationEntry: Sendable {
         var key: String
         var messages: [AiMessage]
     }
@@ -103,29 +103,67 @@ enum AiPersistence {
         UserDefaults.standard.set(raw, forKey: settingsKey)
     }
 
-    static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
-        guard let key = documentKey(document) else { return [] }
-        return readConversations().first(where: { $0.key == key })?.messages ?? []
+    /// Decoded conversation entries, parsed from the UserDefaults blob once and
+    /// kept authoritative in memory afterwards. Confined to the main actor —
+    /// every caller (AiStore, PaneView) already is.
+    @MainActor private static var cachedEntries: [ConversationEntry]?
+
+    @MainActor private static func entries() -> [ConversationEntry] {
+        if let cachedEntries { return cachedEntries }
+        let loaded = readConversations()
+        cachedEntries = loaded
+        return loaded
     }
 
-    static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
+    @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
+        guard let key = documentKey(document) else { return [] }
+        return entries().first(where: { $0.key == key })?.messages ?? []
+    }
+
+    @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let key = documentKey(document) else { return }
-        var entries = readConversations()
+        var updated = entries()
         let bounded = limit(messages)
-        if let index = entries.firstIndex(where: { $0.key == key }) {
+        if let index = updated.firstIndex(where: { $0.key == key }) {
             if bounded.isEmpty {
-                entries.remove(at: index)
+                updated.remove(at: index)
             } else {
                 // Replacing a JS object property does not change insertion order.
-                entries[index].messages = bounded
+                updated[index].messages = bounded
             }
         } else if !bounded.isEmpty {
-            entries.append(ConversationEntry(key: key, messages: bounded))
+            updated.append(ConversationEntry(key: key, messages: bounded))
         }
-        if entries.count > maxDocuments {
-            entries.removeFirst(entries.count - maxDocuments)
+        if updated.count > maxDocuments {
+            updated.removeFirst(updated.count - maxDocuments)
         }
-        writeConversations(entries)
+        cachedEntries = updated
+        scheduleFlush()
+    }
+
+    @MainActor private static var pendingFlush: Task<Void, Never>?
+
+    /// Encode + write off the main actor, coalescing bursts (a turn saves up to
+    /// three times). ConversationEntry is Codable value data, safe to move.
+    @MainActor private static func scheduleFlush() {
+        guard pendingFlush == nil else { return }   // a scheduled flush will pick up the latest cache
+        pendingFlush = Task { @MainActor in
+            // Let same-turn saves coalesce, but stay well under a second so the
+            // "user message persisted before the request" crash contract holds.
+            try? await Task.sleep(for: .milliseconds(200))
+            let snapshot = entries()
+            pendingFlush = nil
+            await Task.detached(priority: .utility) {
+                writeConversations(snapshot)
+            }.value
+        }
+    }
+
+    /// Await any scheduled write — called from applicationShouldTerminate.
+    @MainActor static func awaitPendingFlush() async {
+        while let flush = pendingFlush {
+            await flush.value
+        }
     }
 
     static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {

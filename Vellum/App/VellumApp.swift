@@ -31,6 +31,7 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     await leaf.app.flushPageTextCacheHandler?()
                 }
                 await PageTextPersister.awaitInFlightFlushes()
+                await AiPersistence.awaitPendingFlush()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
