@@ -190,7 +190,7 @@ vs `8f02bff` where useful. Each phase: build + tests green on
 
 ## Status
 - [x] Phase 0: highlight-resize port committed (899b23f)
-- [ ] Phase 1 — AI backend
+- [x] Phase 1 — AI backend (3ec11e2; build green, 93/93 tests)
 - [ ] Phase 2 — AI UI
 - [ ] Phase 3 — Web stack
 - [ ] Phase 4 — Storage UI/lifecycle

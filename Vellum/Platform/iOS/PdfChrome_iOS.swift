@@ -172,6 +172,8 @@ struct PdfToolbar_iOS: View {
             // store (not this pane's conversation), mirroring the macOS
             // Settings scene; changes broadcast to every pane's AiStore.
             .environment(workspace.settingsAi)
+            .environment(workspace.openRouterCatalog)
+            .environment(workspace.chatgptAuth)
             .presentationDetents([.large])
         }
     }

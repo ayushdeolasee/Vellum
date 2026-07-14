@@ -81,6 +81,11 @@ struct PaneView_iOS: View {
         .environment(app)
         .environment(pane.annotations)
         .environment(pane.ai)
+        // Window-global AI singletons the in-panel AI settings read from the
+        // environment (OpenRouter catalog for the model selector, ChatGPT OAuth
+        // for the sign-in control).
+        .environment(workspace.openRouterCatalog)
+        .environment(workspace.chatgptAuth)
         .background(PaneFocusCatcher_iOS(isActive: workspace.isSplit) {
             if !isFocused { workspace.focus(pane.id) }
         })

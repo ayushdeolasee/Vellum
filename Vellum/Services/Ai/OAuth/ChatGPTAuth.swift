@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import Observation
 import UIKit
@@ -93,12 +94,29 @@ final class ChatGPTAuth {
         guard let authorizeURL = Self.authorizeURL(pkce: pkce, state: state, redirectURI: redirectURI) else {
             throw AuthError.tokenExchangeFailed("could not build authorization URL")
         }
-        // iOS: opening the authorize URL in Safari backgrounds the app, which
-        // can suspend the loopback NWListener. Phase 2 (which wires the sign-in
-        // button) should adopt ASWebAuthenticationSession so the app stays
-        // foreground and the listener survives; for now this keeps ChatGPTAuth
-        // compiling and functional when the app is not suspended.
-        UIApplication.shared.open(authorizeURL, options: [:], completionHandler: nil)
+        // iOS: opening the authorize URL in Safari would background the app and
+        // suspend the loopback NWListener. ASWebAuthenticationSession presents the
+        // page in an in-app browser, so the app stays foreground and the listener
+        // survives to catch the http://localhost callback. The redirect is a
+        // loopback HTTP URL (not a custom scheme), so the session never
+        // self-completes via `callbackURLScheme` — the loopback server resolves
+        // the flow, and we cancel the session once it has the code.
+        //
+        // TODO(runtime): the full OAuth round-trip can't be exercised in the
+        // simulator without a real ChatGPT account; verify sign-in end-to-end on
+        // a signed-in device (app kept foreground in Split View).
+        let anchorProvider = AuthPresentationAnchorProvider()
+        let webSession = ASWebAuthenticationSession(
+            url: authorizeURL, callbackURLScheme: nil) { _, _ in }
+        webSession.presentationContextProvider = anchorProvider
+        webSession.prefersEphemeralWebBrowserSession = false
+        if !webSession.start() {
+            // Fall back to the system browser if the in-app session can't start
+            // (e.g. no foreground scene); the listener still catches the callback
+            // as long as the app is not suspended.
+            UIApplication.shared.open(authorizeURL, options: [:], completionHandler: nil)
+        }
+        defer { webSession.cancel() }
 
         let callback = try await server.waitForCallback()
         guard callback.state == state else { throw AuthError.stateMismatch }
@@ -295,4 +313,17 @@ private extension JSONDecoder {
         decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
     }()
+}
+
+/// Anchors the in-app `ASWebAuthenticationSession` to the app's key window so it
+/// presents over the foreground scene (kept alive so the loopback listener does
+/// not get suspended). Retained by `signIn` for the session's lifetime.
+private final class AuthPresentationAnchorProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+            ?? ASPresentationAnchor()
+    }
 }
