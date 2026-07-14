@@ -77,6 +77,43 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(content.contains("a+b"), "expected math body to contain a+b, got \(content)")
     }
 
+    // MARK: - Blocks: display math (streaming gate, advisor-plans/009)
+
+    func testDisplayMathClosedSingleLineStillTypesets() {
+        XCTAssertEqual(MarkdownParser.parse("$$E = mc^2$$"), [.math("E = mc^2")])
+    }
+
+    func testDisplayMathClosedMultiLineStillTypesets() {
+        let blocks = MarkdownParser.parse("$$\na + b\n= c\n$$")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .math(let content) = blocks.first else {
+            XCTFail("expected a single .math block, got \(blocks)")
+            return
+        }
+        XCTAssertTrue(content.contains("a + b"), "expected math body to contain a + b, got \(content)")
+        XCTAssertTrue(content.contains("= c"), "expected math body to contain = c, got \(content)")
+    }
+
+    func testDisplayMathUnclosedDegradesToCode() {
+        // No closing $$ yet — the mid-stream shape. Typesetting this on every
+        // streamed token is exactly the per-token cache-miss cost this plan
+        // removes, so it must degrade to .code (like an unterminated fence)
+        // rather than .math.
+        let blocks = MarkdownParser.parse("$$\n\\frac{a}{b}")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .code(let content) = blocks.first else {
+            XCTFail("expected a single .code block, got \(blocks)")
+            return
+        }
+        XCTAssertTrue(content.contains("\\frac{a}{b}"), "expected code body to contain \\frac{a}{b}, got \(content)")
+    }
+
+    func testDisplayMathClosingDoesNotLeakIntoNeighbors() {
+        XCTAssertEqual(
+            MarkdownParser.parse("before\n$$x$$\nafter"),
+            [.paragraph("before"), .math("x"), .paragraph("after")])
+    }
+
     // MARK: - Segments: MathRenderer.segments(in:)
 
     func testSegmentsCurrencyIsNotMath() {

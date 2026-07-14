@@ -208,17 +208,25 @@ enum MarkdownParser {
             if line.hasPrefix("$$") || line.hasPrefix("\\[") {
                 let close = line.hasPrefix("$$") ? "$$" : "\\]"
                 var math = String(line.dropFirst(2))
-                if math.hasSuffix(close), !math.isEmpty { math = String(math.dropLast(2)); index += 1 }
-                else {
+                var closed = false
+                if math.hasSuffix(close), !math.isEmpty {
+                    math = String(math.dropLast(2)); index += 1; closed = true
+                } else {
                     index += 1
                     var parts = [math]
                     while index < lines.count, !lines[index].hasSuffix(close) {
                         parts.append(lines[index]); index += 1
                     }
-                    if index < lines.count { parts.append(String(lines[index].dropLast(2))); index += 1 }
+                    if index < lines.count {
+                        parts.append(String(lines[index].dropLast(2))); index += 1; closed = true
+                    }
                     math = parts.joined(separator: "\n")
                 }
-                blocks.append(.math(math))
+                // Still-open block (mid-stream): typesetting a partial equation is a
+                // guaranteed MathRenderer cache miss per token — show it as code until
+                // the closing delimiter arrives (same treatment as an unterminated
+                // code fence above).
+                blocks.append(closed ? .math(math) : .code(math))
                 continue
             }
             if let heading = heading(line) { blocks.append(heading); index += 1; continue }
