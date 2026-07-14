@@ -117,16 +117,19 @@ final class WebDocumentSession: DocumentSession {
     /// Normalized page URL — the document identity.
     let url: String
     private let key: String
-    private let recordPath: URL
     private let snapshotPath: URL
     /// DocumentInfo captured at open time (mirrors the Rust command's return).
     private let openInfo: DocumentInfo
     private let io: WebDocumentIO
 
+    /// Resolved per operation, NOT cached: a storage-location switch mid-
+    /// session must not leave this session writing to (and resurrecting) the
+    /// old location after the migration sweep moved its record.
+    private var recordPath: URL { WebLibrary.recordPath(forKey: key) }
+
     init(url: String, record: WebPageRecord) {
         self.url = url
         key = WebLibrary.pageKey(url)
-        recordPath = WebLibrary.recordPath(forKey: key)
         snapshotPath = WebLibrary.snapshotPath(forKey: key)
         openInfo = DocumentInfo(
             kind: .web,
@@ -134,7 +137,7 @@ final class WebDocumentSession: DocumentSession {
             title: record.title,
             pageCount: record.pageCount,
             lastPage: record.lastPage)
-        io = WebDocumentIO(url: url, key: key, recordPath: recordPath)
+        io = WebDocumentIO(url: url, key: key)
     }
 
     var info: DocumentInfo { openInfo }
@@ -193,16 +196,35 @@ final class WebDocumentSession: DocumentSession {
     /// Automatic on-open archiver: writes the managed `.vellumweb` so the page
     /// reloads offline and the AI can read it. Deliberately does NOT mark the
     /// page saved — saving is an explicit user action (toolbar toggle) or an
-    /// implicit one (annotating promotes, see `WebDocumentIO.createAnnotation`);
-    /// artifacts for never-saved pages are TTL-evicted at launch.
+    /// implicit one (annotating promotes, see `WebDocumentIO.createAnnotation`)
+    /// — unless the user opted into Settings ▸ Storage ▸ "Automatically save
+    /// every page", which restores the old open-means-keep behavior; artifacts
+    /// for never-saved pages are TTL-evicted at launch.
     /// Returns false when the tab navigated away during the debounce.
     func archiveDefault(pages: [WebPageText], expectedUrl: String) async throws -> Bool {
         let expectedNormalized = (try? WebUrl.normalize(expectedUrl)) ?? expectedUrl
         if expectedNormalized != url {
             return false
         }
-        let dest = WebLibrary.managedArchivePath(forKey: key)
+        let localKey = key
+        // Resolve after the record exists (openWebDocument already wrote it),
+        // so the pretty filename can come from the page title; do it off-main —
+        // it may read the record and touch the index file.
+        let dest = await Task.detached(priority: .userInitiated) {
+            WebLibrary.managedArchiveDestination(forKey: localKey)
+        }.value
         _ = try await writeWebArchive(pages: pages, dest: dest)
+        if WebStorageSettings.autoSavePages {
+            let localUrl = url
+            let localRecordPath = recordPath
+            try await Task.detached(priority: .userInitiated) {
+                try WebLibrary.withRecord(url: localUrl, recordPath: localRecordPath) { record in
+                    guard !record.saved else { return }
+                    record.saved = true
+                    record.savedAt = record.savedAt ?? WebLibrary.rfc3339Now()
+                }
+            }.value
+        }
         return true
     }
 
@@ -306,16 +328,18 @@ final class WebDocumentSession: DocumentSession {
 actor WebDocumentIO {
     let url: String
     let key: String
-    let recordPath: URL
 
-    init(url: String, key: String, recordPath: URL) {
+    /// Resolved per operation so a storage-location switch mid-session
+    /// redirects the very next write instead of resurrecting the old path.
+    private var recordPath: URL { WebLibrary.recordPath(forKey: key) }
+
+    init(url: String, key: String) {
         self.url = url
         self.key = key
-        self.recordPath = recordPath
     }
 
     func annotations(pageNumber: Int?) -> [Annotation] {
-        let record = WebLibrary.loadRecord(at: recordPath) ?? WebPageRecord(url: url)
+        let record = WebLibrary.loadRecord(forKey: key) ?? WebPageRecord(url: url)
         guard let pageNumber else { return record.annotations }
         return record.annotations.filter { $0.pageNumber == pageNumber }
     }
@@ -406,6 +430,6 @@ actor WebDocumentIO {
     }
 
     func isSaved() -> Bool {
-        WebLibrary.loadRecord(at: recordPath)?.saved ?? false
+        WebLibrary.loadRecord(forKey: key)?.saved ?? false
     }
 }

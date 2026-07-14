@@ -85,7 +85,7 @@ final class WebLibraryStorageTests: XCTestCase {
         try WebLibrary.saveRecord(WebPageRecord(url: url), at: recordPath)
         XCTAssertFalse(WebLibrary.loadRecord(at: recordPath)?.saved ?? true)
 
-        let io = WebDocumentIO(url: url, key: key, recordPath: recordPath)
+        let io = WebDocumentIO(url: url, key: key)
         _ = try await io.createAnnotation(
             CreateAnnotationInput(type: .highlight, pageNumber: 1, content: "hi"),
             storedHighlightColor: "#fde68a")
@@ -102,7 +102,7 @@ final class WebLibraryStorageTests: XCTestCase {
         let recordPath = WebLibrary.recordPath(forKey: key)
         let originalSavedAt = WebLibrary.loadRecord(at: recordPath)?.savedAt
 
-        let io = WebDocumentIO(url: url, key: key, recordPath: recordPath)
+        let io = WebDocumentIO(url: url, key: key)
         _ = try await io.createAnnotation(
             CreateAnnotationInput(type: .note, pageNumber: 1, content: "note"),
             storedHighlightColor: "#fde68a")

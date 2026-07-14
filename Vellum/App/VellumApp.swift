@@ -46,6 +46,7 @@ struct VellumApp: App {
     @NSApplicationDelegateAdaptor(VellumAppDelegate.self) private var appDelegate
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
+    @State private var showStorageChoice = false
 
     init() {
         let theme = ThemeStore()
@@ -81,9 +82,18 @@ struct VellumApp: App {
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
                     let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
                     Task.detached(priority: .background) {
+                        // Finish any interrupted storage-location move and fold
+                        // legacy-local strays into the active layout before the
+                        // evictors walk the store.
+                        WebStorageMigrator.sweepAtLaunch()
                         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
                         WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
                     }
+                    showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                }
+                .sheet(isPresented: $showStorageChoice) {
+                    StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
                 .environment(workspace)

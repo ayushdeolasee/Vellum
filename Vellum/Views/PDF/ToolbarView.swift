@@ -340,6 +340,9 @@ private struct OverflowMenu: View {
     @State private var updateChecker = UpdateChecker()
     @State private var pageSaved = false
     @State private var exporting = false
+    /// Serializes save/remove so a rapid Remove can't finish before a slow
+    /// Save's archive write and get its deletion undone by it.
+    @State private var saveToggleTask: Task<Void, Never>?
 
     private var isWeb: Bool { appStore.document?.kind == .web }
     private var hasDocument: Bool { appStore.document != nil }
@@ -369,11 +372,12 @@ private struct OverflowMenu: View {
                 Section {
                     Button(action: toggleSavedPage) {
                         Label(
-                            pageSaved ? "Remove from Library" : "Save Page to Library",
-                            systemImage: pageSaved ? "archivebox.fill" : "archivebox")
+                            pageSaved ? "Remove Offline Copy" : "Save for Offline Use",
+                            systemImage: pageSaved ? "arrow.down.circle.fill" : "arrow.down.circle")
                     }
+                    .accessibilityIdentifier("toolbar.saveForOffline")
                     Button(action: exportVellumweb) {
-                        Label("Export as .vellumweb…", systemImage: "square.and.arrow.up")
+                        Label("Export a Copy…", systemImage: "square.and.arrow.up")
                     }
                     .disabled(exporting)
                 }
@@ -441,13 +445,30 @@ private struct OverflowMenu: View {
         }
     }
 
+    /// Save = mark the page kept AND make sure its offline copy exists (the
+    /// re-archive covers a copy the user deleted from Settings ▸ Storage).
+    /// Remove = un-keep and delete the offline copy; the record — highlights,
+    /// notes, reading position — always survives.
     private func toggleSavedPage() {
         guard let sessionId = appStore.activeTabId else { return }
         let next = !pageSaved
         pageSaved = next
-        Task {
+        let expectedUrl = appStore.document?.pdfPath ?? ""
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        let prior = saveToggleTask
+        saveToggleTask = Task {
+            await prior?.value
             do {
                 try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
+                if next {
+                    // Best-effort: membership is saved even if the archive
+                    // write fails (offline, no snapshot yet) — the copy is
+                    // rewritten on the next open of the page.
+                    _ = try? await appStore.sessions.archiveWebpageDefault(
+                        sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+                }
             } catch {
                 if appStore.activeTabId == sessionId { pageSaved = !next }
             }

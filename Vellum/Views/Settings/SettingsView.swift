@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// App settings window (⌘, / Vellum ▸ Settings…). A durable macOS preferences
@@ -242,8 +243,13 @@ private struct StorageSettingsTab: View {
     @State private var pendingWebDelete: WebLibrary.SnapshotStorageEntry?
     @State private var confirmingWebRemoveAll = false
 
+    @State private var storageMode: WebStorageMode = .local
+    @State private var autoSavePages = false
+
     var body: some View {
         Form {
+            storageLocationSection
+
             Section {
                 LabeledContent("Total cache size") {
                     Text(totalBytes.formatted(.byteCount(style: .file)))
@@ -281,6 +287,8 @@ private struct StorageSettingsTab: View {
             }
 
             Section {
+                Toggle("Automatically save every page for offline use", isOn: autoSaveBinding)
+                    .accessibilityIdentifier("storage.autoSavePages")
                 LabeledContent("Total size") {
                     Text(webTotalBytes.formatted(.byteCount(style: .file)))
                         .foregroundStyle(.secondary)
@@ -294,7 +302,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 Text("Downloaded web pages")
             } footer: {
-                Text("Vellum keeps an offline copy of each web page you open so it loads without a connection and the AI can read it. Copies of pages you never saved or annotated are removed automatically after six months. Removing a copy never affects your saved-pages list, highlights, or notes.")
+                Text("Vellum keeps an offline copy of each web page you open so it loads without a connection and the AI can read it. Copies of pages you never saved or annotated are removed automatically after six months — with automatic saving on, every page you open is kept until you remove it. Removing a copy never affects your saved-pages list, highlights, or notes.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -318,7 +326,10 @@ private struct StorageSettingsTab: View {
         }
         .formStyle(.grouped)
         .frame(height: 460)
-        .task { await reload() }
+        .task {
+            refreshStorageSettings()
+            await reload()
+        }
         .confirmationDialog(
             pendingDelete.map { "Delete cached text for \"\($0.displayTitle)\"?" } ?? "",
             isPresented: deleteDialogBinding,
@@ -369,6 +380,119 @@ private struct StorageSettingsTab: View {
         } message: {
             Text("This removes the downloaded copy of every web page. Your saved-pages list, highlights, and notes are not affected — pages just load from the network (and re-download) the next time you open them.")
         }
+    }
+
+    // MARK: - Storage location
+
+    @ViewBuilder
+    private var storageLocationSection: some View {
+        Section {
+            Picker("Location", selection: locationBinding) {
+                Text("iCloud Drive").tag(WebStorageMode.icloud)
+                Text("Custom Folder").tag(WebStorageMode.custom)
+                Text("This Mac").tag(WebStorageMode.local)
+            }
+            .accessibilityIdentifier("storage.locationPicker")
+
+            if storageMode != .local, let path = currentLocationPath {
+                LabeledContent("Folder") {
+                    Text(path)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [URL(fileURLWithPath: path, isDirectory: true)])
+                }
+                .accessibilityIdentifier("storage.showInFinder")
+            }
+            if storageMode == .custom {
+                Button("Change Folder…") {
+                    guard let path = WebStorageRelocator.pickCustomFolder() else { return }
+                    WebStorageRelocator.apply(mode: .custom, customPath: path)
+                    refreshStorageSettings()
+                }
+                .accessibilityIdentifier("storage.changeFolder")
+            }
+        } header: {
+            Text("Storage location")
+        } footer: {
+            Text(locationFooterText)
+                .font(.footnote)
+                .foregroundStyle(WebStorageSettings.modeIsDegraded ? .orange : Color.secondary)
+        }
+    }
+
+    private var currentLocationPath: String? {
+        switch storageMode {
+        case .icloud: return WebStorageSettings.icloudVellumRoot?.path
+        case .custom: return UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
+        case .local: return nil
+        }
+    }
+
+    private var locationFooterText: String {
+        if WebStorageSettings.modeIsDegraded {
+            switch storageMode {
+            case .icloud:
+                return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on this Mac until it comes back."
+            case .custom:
+                return "The chosen folder can't be found. Vellum is storing everything on this Mac until you pick a folder again."
+            case .local:
+                return ""
+            }
+        }
+        switch storageMode {
+        case .icloud:
+            return "Everything — offline copies, highlights, notes, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your Macs."
+        case .custom:
+            return "Offline copies live in your folder. iCloud syncing is not available for a custom folder: highlights, notes, and reading positions stay on this Mac."
+        case .local:
+            return "Everything stays in Vellum's private app folder on this Mac. No syncing."
+        }
+    }
+
+    private var locationBinding: Binding<WebStorageMode> {
+        Binding(
+            get: { storageMode },
+            set: { newMode in
+                guard newMode != storageMode else { return }
+                switch newMode {
+                case .custom:
+                    // Cancelling the folder picker leaves the mode unchanged.
+                    guard let path = WebStorageRelocator.pickCustomFolder() else { return }
+                    WebStorageRelocator.apply(mode: .custom, customPath: path)
+                case .icloud:
+                    guard WebStorageSettings.icloudVellumRoot != nil else { return }
+                    WebStorageRelocator.apply(mode: .icloud)
+                case .local:
+                    WebStorageRelocator.apply(mode: .local)
+                }
+                refreshStorageSettings()
+                // The move runs in the background; refresh the listings once
+                // it has had a moment to relocate the artifacts.
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    await reload()
+                }
+            }
+        )
+    }
+
+    private var autoSaveBinding: Binding<Bool> {
+        Binding(
+            get: { autoSavePages },
+            set: { on in
+                autoSavePages = on
+                WebStorageSettings.setAutoSavePages(on)
+            }
+        )
+    }
+
+    private func refreshStorageSettings() {
+        storageMode = WebStorageSettings.chosenMode ?? .local
+        autoSavePages = WebStorageSettings.autoSavePages
     }
 
     private var totalBytes: Int64 {

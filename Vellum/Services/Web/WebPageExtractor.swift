@@ -892,7 +892,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         // Sidecar state drives snapshot refresh and the loading policy.
         let key = WebLibrary.pageKey(pageUrl)
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
-        let record = WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))
+        let record = WebLibrary.loadRecord(forKey: key)
         let recordSaved = record?.saved ?? false
         let snapshotOnly = record?.loadingPolicy == "snapshot-only"
 
@@ -918,8 +918,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                 } else {
                     let effectiveKey = WebLibrary.pageKey(effectiveUrl)
-                    let effectiveRecord = WebLibrary.loadRecord(
-                        at: WebLibrary.recordPath(forKey: effectiveKey))
+                    let effectiveRecord = WebLibrary.loadRecord(forKey: effectiveKey)
                     if effectiveRecord?.saved == true {
                         WebFetch.writeSnapshotAtomic(
                             path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
@@ -1002,7 +1001,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         guard !key.isEmpty, key.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
             return .html(404, "<h1>Snapshot not found</h1>")
         }
-        let record = WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))
+        let record = WebLibrary.loadRecord(forKey: key)
         let pageUrl = record?.url ?? ""
         if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
