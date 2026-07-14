@@ -402,6 +402,10 @@ struct WebSelectionPopover: View {
     var position: CGPoint
     var onHighlight: (String) -> Void
     var onNote: (String) -> Void
+    /// Fired as the note field opens, so the controller can pin the selection
+    /// before the field steals first responder from the web view.
+    var onBeginNote: () -> Void
+    var onAskAi: () -> Void
     var onClose: () -> Void
 
     @Environment(\.palette) private var palette
@@ -427,7 +431,19 @@ struct WebSelectionPopover: View {
                     .padding(.horizontal, 4)
                 NoteToggleButton {
                     showNoteInput.toggle()
+                    // Must run here, not from the field's onAppear: the pin has
+                    // to be taken while the page still holds the selection.
+                    if showNoteInput { onBeginNote() }
                 }
+                .accessibilityIdentifier("webSelectionPopover.addNote")
+                AskAiButton {
+                    // Same ordering trap as the swatches: onClose drops both the
+                    // live selection and the pinned draft, and the reference is
+                    // built from one of them.
+                    onAskAi()
+                    onClose()
+                }
+                .accessibilityIdentifier("webSelectionPopover.askAi")
             }
             .padding(6)
             .darkGlassSurface(in: .capsule)
@@ -469,8 +485,9 @@ struct WebSelectionPopover: View {
     private func submitNote() {
         let trimmed = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        // The action must run before onClose: onClose clears
-        // controller.selection, which addSelectionNote reads.
+        // The action must run before onClose: onClose drops both the live
+        // selection and the pinned draft, and addSelectionNote needs one of
+        // them for the note's anchor.
         onNote(trimmed)
         onClose()
     }
@@ -519,5 +536,29 @@ private struct NoteToggleButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Add note")
+    }
+}
+
+/// Attaches the selection to the AI composer as a reference chip (the web twin
+/// of SelectionPopover's sparkles button).
+private struct AskAiButton: View {
+    let action: () -> Void
+
+    @Environment(\.palette) private var palette
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 14))
+                .foregroundStyle(hovering ? palette.foreground : palette.mutedForeground)
+                .frame(width: 24, height: 24)
+                .background(hovering ? palette.accent : .clear)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Ask AI about this")
     }
 }

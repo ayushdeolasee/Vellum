@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Vellum
 
@@ -448,5 +449,63 @@ final class AiPipelineTests: XCTestCase {
         await AiPersistence.awaitPendingFlush()
         AiPersistence.saveConversation(for: document, messages: [])
         await AiPersistence.awaitPendingFlush()
+    }
+
+    // MARK: - §6 Arbitrary image attachments
+
+    /// An oversized opaque image is downscaled to the request budget and
+    /// re-encoded as JPEG, with no page (it isn't part of the document).
+    func testAttachedImageIsDownscaledAndTranscoded() throws {
+        let data = Self.bitmap(width: 3000, height: 1000, alpha: false)
+        let snapshot = try XCTUnwrap(aiImageSnapshot(from: data, maxSide: 1568))
+        XCTAssertEqual(snapshot.width, 1568)
+        XCTAssertEqual(snapshot.height, 523)  // aspect preserved
+        XCTAssertEqual(snapshot.mediaType, "image/jpeg")
+        XCTAssertNil(snapshot.pageNumber)
+        XCTAssertFalse(snapshot.base64Data.isEmpty)
+    }
+
+    /// Transparency only survives in PNG, so an alpha image must not become JPEG.
+    func testAttachedImageWithAlphaStaysPng() throws {
+        let snapshot = try XCTUnwrap(aiImageSnapshot(from: Self.bitmap(width: 40, height: 40, alpha: true)))
+        XCTAssertEqual(snapshot.mediaType, "image/png")
+        XCTAssertEqual(snapshot.width, 40)  // under the cap: not upscaled
+    }
+
+    func testAttachedImageRejectsNonImageBytes() {
+        XCTAssertNil(aiImageSnapshot(from: Data("not an image".utf8)))
+    }
+
+    /// The prompt names an attached image by file name and claims no page.
+    func testReferenceLineForAttachedImageHasNoPage() {
+        let snapshot = AiPageImageSnapshot(
+            pageNumber: nil, base64Data: "aGVsbG8=", mediaType: "image/png", width: 12, height: 9)
+        let context = AiContextSnapshot(
+            title: "Doc", numPages: 3, currentPage: 1, visiblePages: [1], annotations: [],
+            currentPageImage: nil,
+            references: [AiReference(kind: .image(image: snapshot, name: "diagram.png"))]
+        )
+        let block = AiPrompts.buildContextBlock(pageTexts: [1: "text"], context: context)
+        XCTAssertTrue(block.contains("[attached image: diagram.png] image attached (12x9)"))
+        XCTAssertFalse(block.contains("[attached image: diagram.png] image attached (12x9), p."))
+    }
+
+    /// The gate the attach affordances read: text-only models say no, built-in
+    /// multimodal catalogs say yes, and an OpenRouter id we don't know about
+    /// stays permissive (the catalog may still be loading).
+    func testSupportsVisionResolution() {
+        XCTAssertFalse(AiModelCatalog.supportsVision(provider: .opencode, model: "kimi-k2.6", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .opencode, model: "claude-sonnet-5", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .gemini, model: "anything", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .openrouter, model: "vendor/unknown", catalog: nil))
+    }
+
+    /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file.
+    private static func bitmap(width: Int, height: Int, alpha: Bool) -> Data {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: alpha ? 4 : 3, hasAlpha: alpha,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        return rep.representation(using: .png, properties: [:])!
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AiPanel: View {
     @Environment(AiStore.self) private var aiStore
@@ -11,6 +12,9 @@ struct AiPanel: View {
     @State private var isListening = false
     @State private var pressingMic = false
     @State private var speechService = SpeechService()
+    /// True while an image drag hovers the panel (drives the dashed outline).
+    @State private var dropTargeted = false
+    @State private var imagePickerOpen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +26,30 @@ struct AiPanel: View {
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .strokeBorder(palette.primary, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
+        // Registering no types at all when the model can't see images is the gate
+        // itself: the panel never highlights and the drag springs back to its
+        // source, instead of accepting an attachment we'd silently strip at send.
+        .onDrop(
+            of: aiStore.activeModelSupportsImages ? [.image] : [],
+            isTargeted: $dropTargeted,
+            perform: handleImageDrop
+        )
+        .fileImporter(
+            isPresented: $imagePickerOpen,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case let .success(urls) = result else { return }
+            attachImages(at: urls)
+        }
         .onAppear { speakLatestIfNeeded() }
         .onChange(of: aiStore.messages) { _, _ in speakLatestIfNeeded() }
         .onChange(of: aiStore.isThinking) { _, _ in speakLatestIfNeeded() }
@@ -226,8 +254,14 @@ struct AiPanel: View {
         }
     }
 
-    private func errorBanner(_ error: String) -> some View {
-        Text(error)
+    private func errorBanner(_ error: String, icon: String? = nil) -> some View {
+        Group {
+            if let icon {
+                Label(error, systemImage: icon)
+            } else {
+                Text(error)
+            }
+        }
             .font(.system(size: 12))
             .foregroundStyle(palette.destructive)
             .padding(.horizontal, 12)
@@ -240,6 +274,10 @@ struct AiPanel: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
+            if let notice = strandedImagesNotice {
+                errorBanner(notice, icon: "exclamationmark.triangle")
+                    .accessibilityIdentifier("aiPanel.imagesUnsupportedNotice")
+            }
             if !aiStore.composerReferences.isEmpty {
                 ReferenceChipRow(
                     references: aiStore.composerReferences,
@@ -257,7 +295,16 @@ struct AiPanel: View {
     private var composerControls: some View {
         HStack(alignment: .bottom, spacing: 8) {
             attachMenu
-            ComposerTextView(text: $input, placeholder: "Ask about this document…", onSubmit: submit)
+            ComposerTextView(
+                text: $input,
+                placeholder: "Ask about this document…",
+                onSubmit: submit,
+                // The composer's NSTextView is a registered drag destination and
+                // AppKit hands it any drop over its bounds before SwiftUI's
+                // `.onDrop` sees it — so it forwards image drops here instead of
+                // pasting a file path. nil means "don't intercept" (no vision).
+                onImageDrop: composerImageDrop
+            )
             if aiStore.settings.voiceMode == .pushToTalk {
                 Image(systemName: isListening ? "stop.fill" : "mic")
                     .font(.system(size: 15))
@@ -292,18 +339,34 @@ struct AiPanel: View {
         }
     }
 
-    /// "+" attach menu: full current-page snapshot or a drag-to-crop region.
+    /// "+" attach menu: a current-page snapshot or drag-to-crop region of the
+    /// open document, plus an arbitrary image from disk.
     private var attachMenu: some View {
         Menu {
-            Button {
-                attachCurrentPage()
-            } label: {
-                Label("Attach current page", systemImage: "doc.richtext")
+            // Both document entries work on web too (the web viewer registers
+            // capturePageImageHandler and mounts the same RegionCaptureOverlay);
+            // only "no document at all" leaves nothing to snapshot.
+            if appStore.document != nil {
+                Button {
+                    attachCurrentPage()
+                } label: {
+                    Label("Attach current page", systemImage: "doc.richtext")
+                }
+                Button {
+                    appStore.beginRegionCapture(target: .ai)
+                } label: {
+                    Label("Snapshot region…", systemImage: "square.dashed")
+                }
             }
-            Button {
-                appStore.beginRegionCapture(target: .ai)
-            } label: {
-                Label("Snapshot region…", systemImage: "square.dashed")
+            // An arbitrary image has nothing to do with the document, so it's
+            // offered with or without one — but only to a model that can read it.
+            if aiStore.activeModelSupportsImages {
+                Button {
+                    imagePickerOpen = true
+                } label: {
+                    Label("Attach image…", systemImage: "photo")
+                }
+                .accessibilityIdentifier("aiPanel.attachImage")
             }
         } label: {
             Image(systemName: "plus")
@@ -316,8 +379,8 @@ struct AiPanel: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(appStore.document?.kind != .pdf)
-        .help("Attach page or region")
+        .disabled(appStore.document == nil && !aiStore.activeModelSupportsImages)
+        .help("Attach page, region, or image")
         .accessibilityIdentifier("aiPanel.attach")
     }
 
@@ -327,6 +390,99 @@ struct AiPanel: View {
             guard let image = await aiStore.capturePageImageHandler?(page) else { return }
             aiStore.addReference(AiReference(kind: .pageSnapshot(image: image, page: page)))
         }
+    }
+
+    // MARK: - Arbitrary image attachments
+
+    /// Read and normalize each picked file off the main actor (a 48MP photo
+    /// spends real time in decode + resize), then attach it as a chip.
+    private func attachImages(at urls: [URL]) {
+        // App sandbox is off (project.yml), so the picked URL needs no
+        // security-scoped bookmark — plain file reads are enough.
+        let sessionId = appStore.activeTabId
+        for url in urls {
+            let name = url.lastPathComponent
+            Task {
+                let snapshot = await Task.detached(priority: .userInitiated) {
+                    guard let data = try? Data(contentsOf: url) else { return AiPageImageSnapshot?.none }
+                    return aiImageSnapshot(from: data)
+                }.value
+                guard let snapshot else { return }
+                attachIfCurrent(
+                    AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
+            }
+        }
+    }
+
+    /// A pane's AiStore is shared by all of its tabs, and a tab switch wipes the
+    /// composer — so a decode that finishes after the switch would otherwise drop
+    /// document A's image into document B's next message. Same session capture
+    /// `submit` uses.
+    private func attachIfCurrent(_ reference: AiReference, session: String?) {
+        guard appStore.activeTabId == session else { return }
+        aiStore.addReference(reference)
+    }
+
+    /// nil when the model can't read images, which leaves the composer field's
+    /// own AppKit drag handling untouched.
+    private var composerImageDrop: ((ComposerImageDrop) -> Void)? {
+        guard aiStore.activeModelSupportsImages else { return nil }
+        return { drop in
+            switch drop {
+            case let .file(url): attachImages(at: [url])
+            case let .data(data, name): attachImage(data: data, name: name)
+            }
+        }
+    }
+
+    /// Normalize already-loaded image bytes off the main actor and attach them.
+    private func attachImage(data: Data, name: String) {
+        let store = aiStore
+        let app = appStore
+        let sessionId = appStore.activeTabId
+        Task {
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                aiImageSnapshot(from: data)
+            }.value
+            guard let snapshot, app.activeTabId == sessionId else { return }
+            store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+        }
+    }
+
+    /// Take image drops on the panel — a file from Finder, or raw bytes dragged
+    /// out of Preview / a browser (`loadDataRepresentation` on `UTType.image`
+    /// covers both, and every conforming subtype, in one request).
+    private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
+        let imageProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+        }
+        guard !imageProviders.isEmpty else { return false }
+        let store = aiStore
+        let app = appStore
+        let sessionId = appStore.activeTabId
+        for provider in imageProviders {
+            let name = provider.suggestedName ?? "Dropped image"
+            // The completion runs off the main actor, so the decode/resize lands
+            // there too; only the attach hops back.
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                guard let data, let snapshot = aiImageSnapshot(from: data) else { return }
+                Task { @MainActor in
+                    guard app.activeTabId == sessionId else { return }
+                    store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+                }
+            }
+        }
+        return true
+    }
+
+    /// Attaching is gated on vision support, but the model can be switched
+    /// afterwards — and AiStore then sends the message with `images: []` while the
+    /// prompt still names the attachment. The chips are the user's, so say what
+    /// will happen rather than deleting them.
+    private var strandedImagesNotice: String? {
+        guard !aiStore.activeModelSupportsImages,
+              aiStore.composerReferences.contains(where: { $0.image != nil }) else { return nil }
+        return "Image attachments won't be sent — \(aiStore.activeModelName) doesn't support images."
     }
 
     private var canSend: Bool {
@@ -450,10 +606,20 @@ private struct AnimatedDots: View {
 /// text height in the coordinator and drive an explicit SwiftUI `frame(height:)`.
 /// That keeps the box hugging one centered line when empty (aligned with the
 /// +/send buttons) and expanding only as lines are added.
+/// An image handed from the composer field's AppKit drop to the panel. The file
+/// case is deliberately unread: the bytes are loaded off the main actor.
+private enum ComposerImageDrop {
+    case file(URL)
+    case data(Data, name: String)
+}
+
 private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
+    /// An image dropped onto the field itself; nil disables interception, so
+    /// AppKit's own drag handling (text, file paths) is left alone.
+    let onImageDrop: ((ComposerImageDrop) -> Void)?
 
     /// One line + vertical insets. Also the floor the box collapses to.
     static let minHeight: CGFloat = 36
@@ -466,6 +632,7 @@ private struct ComposerTextView: View {
             text: $text,
             placeholder: placeholder,
             onSubmit: onSubmit,
+            onImageDrop: onImageDrop,
             contentHeight: $contentHeight
         )
         .frame(height: min(max(contentHeight, Self.minHeight), Self.maxHeight))
@@ -476,6 +643,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
+    let onImageDrop: ((ComposerImageDrop) -> Void)?
     @Binding var contentHeight: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -487,6 +655,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
         textView.submit = onSubmit
+        textView.onImageDrop = onImageDrop
         textView.placeholder = placeholder
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
@@ -510,6 +679,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         guard let textView = scroll.documentView as? SubmitTextView else { return }
         context.coordinator.parent = self
         textView.submit = onSubmit
+        textView.onImageDrop = onImageDrop
         textView.placeholder = placeholder
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
@@ -542,6 +712,66 @@ private struct ComposerTextViewRep: NSViewRepresentable {
 private final class SubmitTextView: NSTextView {
     var submit: (() -> Void)?
     var placeholder = ""
+    /// Set when the active model can read images: an editable NSTextView is a
+    /// registered drag destination, so AppKit routes a drop over the composer to
+    /// it rather than to the panel's SwiftUI `.onDrop`. Take image drops here and
+    /// forward the bytes; everything else still falls through to `super`, which
+    /// keeps ordinary text drags working.
+    var onImageDrop: ((ComposerImageDrop) -> Void)?
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isImageDrag(sender) ? .copy : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isImageDrag(sender) ? .copy : super.draggingUpdated(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isImageDrag(sender), let drop = droppedImage(sender) else {
+            return super.performDragOperation(sender)
+        }
+        onImageDrop?(drop)
+        return true
+    }
+
+    /// Cheap test used by the per-mouse-move dragging callbacks: does this drag
+    /// carry an image at all? (Deliberately does not touch the file — reading
+    /// bytes on every `draggingUpdated` would stall the drag.)
+    private func isImageDrag(_ sender: NSDraggingInfo) -> Bool {
+        guard onImageDrop != nil else { return false }
+        let pasteboard = sender.draggingPasteboard
+        return pasteboard.canReadObject(forClasses: [NSURL.self], options: Self.imageURLOptions)
+            || NSImage.canInit(with: pasteboard)
+    }
+
+    /// What the drag carries — a file (Finder) or raw image bytes (Preview, a
+    /// browser). `performDragOperation` runs on the main thread, so this only
+    /// *names* the payload: the file is never read here (a 60MB TIFF, or anything
+    /// on iCloud Drive, would stall the drag while it materializes), and raw bytes
+    /// are taken straight off the pasteboard rather than round-tripped through
+    /// `NSImage.tiffRepresentation`, which would allocate the full uncompressed
+    /// bitmap on the main actor. Reading, decoding and resizing all happen off the
+    /// main actor in the handler.
+    private func droppedImage(_ sender: NSDraggingInfo) -> ComposerImageDrop? {
+        let pasteboard = sender.draggingPasteboard
+        if let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: Self.imageURLOptions) as? [URL],
+           let url = urls.first {
+            return .file(url)
+        }
+        if let type = pasteboard.types?.first(where: {
+            UTType($0.rawValue)?.conforms(to: .image) == true
+        }), let data = pasteboard.data(forType: type) {
+            return .data(data, name: "Dropped image")
+        }
+        return nil
+    }
+
+    private static let imageURLOptions: [NSPasteboard.ReadingOptionKey: Any] = [
+        .urlReadingFileURLsOnly: true,
+        .urlReadingContentsConformToTypes: [UTType.image.identifier],
+    ]
 
     /// Height of the laid-out text plus vertical insets — one line when empty,
     /// growing as content is added.

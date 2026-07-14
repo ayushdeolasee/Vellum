@@ -129,6 +129,9 @@ enum AiPrompts {
             return "- [page snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
         case let .quote(text, _):
             return "- [quoted from an earlier assistant reply] \(quoted(bounded(text)))"
+        case let .image(image, name):
+            // No page: an attached image comes from outside the document.
+            return "- [attached image: \(name)] image attached (\(image.width)x\(image.height))"
         }
     }
 

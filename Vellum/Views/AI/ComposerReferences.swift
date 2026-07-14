@@ -85,6 +85,7 @@ private struct ReferenceChip: View {
         case .region: return "square.dashed"
         case .pageSnapshot: return "doc.richtext"
         case .quote: return "quote.bubble"
+        case .image: return "photo"
         }
     }
 
@@ -95,6 +96,7 @@ private struct ReferenceChip: View {
         case let .region(_, page): return "Region · p.\(page)"
         case let .pageSnapshot(_, page): return "Page \(page)"
         case let .quote(text, _): return "“\(collapse(text))”"
+        case let .image(_, name): return name
         }
     }
 

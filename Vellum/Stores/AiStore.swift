@@ -84,12 +84,21 @@ enum AiActivity: Equatable, Sendable {
 /// or a quote pulled from a previous AI reply. Rendered as chips in the
 /// composer and folded into the prompt / image inputs at send time.
 struct AiReference: Identifiable, Equatable, Sendable {
+    /// `page` is meaningful for web documents too: the injected content script
+    /// paginates an archived page into virtual pages (it reports pageCount and
+    /// per-page text, and the AI's scroll/read tools address those numbers), so
+    /// a web selection or snapshot carries a real page locator. Don't "fix" this
+    /// by making the page optional.
     enum Kind: Equatable, Sendable {
         case selection(text: String, page: Int)
         case highlight(text: String, page: Int)
         case region(image: AiPageImageSnapshot, page: Int)
         case pageSnapshot(image: AiPageImageSnapshot, page: Int)
         case quote(text: String, messageId: String)
+        /// An arbitrary image the user dropped on the panel or picked from
+        /// Finder. It has no document position at all — unlike the cases above,
+        /// which all point back into the open document.
+        case image(image: AiPageImageSnapshot, name: String)
     }
     let id: String
     var kind: Kind
@@ -102,7 +111,7 @@ struct AiReference: Identifiable, Equatable, Sendable {
     /// The image payload, if this reference carries one.
     var image: AiPageImageSnapshot? {
         switch kind {
-        case let .region(image, _), let .pageSnapshot(image, _): return image
+        case let .region(image, _), let .pageSnapshot(image, _), let .image(image, _): return image
         default: return nil
         }
     }
@@ -137,7 +146,10 @@ struct AiSettings: Codable, Equatable, Sendable {
 }
 
 struct AiPageImageSnapshot: Sendable {
-    var pageNumber: Int
+    /// Source page for a page/region capture; nil for an arbitrary attached
+    /// image (a Finder drop or file pick), which has no document position.
+    /// Mirrors `ScratchpadImageCapture.pageNumber`.
+    var pageNumber: Int?
     /// Raw base64, no data: prefix.
     var base64Data: String
     /// "image/jpeg"
@@ -285,8 +297,23 @@ final class AiStore {
 
     // MARK: - Composer references
 
+    /// Ceiling on image-carrying references in one message. Providers cap both a
+    /// single image (Anthropic ~5 MB) and the whole inline request (Gemini
+    /// ~20 MB), and a multi-file drop can otherwise queue a dozen photos in one
+    /// gesture — blowing the request budget, and the bill.
+    static let maxImageReferences = 8
+
+    /// Whether another image can still be attached to the next message.
+    var canAttachMoreImages: Bool {
+        composerReferences.filter { $0.image != nil }.count < Self.maxImageReferences
+    }
+
     /// Attach a reference and reveal the AI panel so the user sees it land.
     func addReference(_ reference: AiReference) {
+        if reference.image != nil, !canAttachMoreImages {
+            error = "You can attach at most \(Self.maxImageReferences) images to one message."
+            return
+        }
         composerReferences.append(reference)
         app?.workspace?.sidebarTab = .ai
         app?.workspace?.sidebarOpen = true
@@ -542,9 +569,9 @@ final class AiStore {
                 }
                 // Unknown ids (stale cache) default to permissive so we never
                 // silently strip a capability the model actually has.
-                let capabilities = openRouterCatalog?.model(for: model)
-                let supportsVision = capabilities?.supportsVision ?? true
-                let supportsTools = capabilities?.supportsTools ?? true
+                let supportsVision = AiModelCatalog.supportsVision(
+                    provider: .openrouter, model: model, catalog: openRouterCatalog)
+                let supportsTools = openRouterCatalog?.model(for: model)?.supportsTools ?? true
                 result = try await OpenRouterClient().generate(
                     apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
@@ -585,7 +612,8 @@ final class AiStore {
                     // Only text-only open models drop the images (page snapshot +
                     // user-attached references); the gateway rejects image parts
                     // for models that can't read them.
-                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
+                    images: AiModelCatalog.supportsVision(
+                        provider: .opencode, model: model, catalog: openRouterCatalog) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -601,7 +629,8 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
+                    images: AiModelCatalog.supportsVision(
+                        provider: .opencodeGo, model: model, catalog: openRouterCatalog) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
