@@ -46,11 +46,13 @@ review commit that had never been merged.
   viewport. Web pages are already split into virtual pages by the reader, so
   references carry a real page number the model can navigate to.
 - **Attach any image to the AI chat.** Drag an image onto the AI panel from
-  Finder (or drop raw image bytes from Preview or a browser), or pick one via
-  "Attach image…" in the "+" menu. Both entry points appear only when the
-  selected model supports image input; if you attach an image and then switch to
-  a text-only model, the composer warns you that the attachment won't be sent
-  rather than silently dropping it.
+  Finder (or drop raw image bytes from Preview or a browser) — anywhere on the
+  panel, including over a message bubble or the text field — or pick one via
+  "Attach image…" in the "+" menu. A dashed outline tracks the drag across the
+  whole panel. Both entry points appear only when the selected model supports
+  image input; if you attach an image and then switch to a text-only model, the
+  composer warns you that the attachment won't be sent rather than silently
+  dropping it.
 - **`getAnnotations` AI tool** — the model can list your notes and highlights
   across the whole document (or one page), so cross-page annotation questions
   work again now that the context block only carries the current page.

@@ -177,7 +177,12 @@ struct AiPanel: View {
                     secondary: palette.mutedForeground,
                     onQuote: { text in
                         aiStore.addReference(AiReference(kind: .quote(text: text, messageId: message.id)))
-                    }
+                    },
+                    // The bubble's NSTextView covers most of the transcript, and
+                    // AppKit hands a drop over it to that view rather than to the
+                    // panel's `.onDrop` — so it forwards image drops here too.
+                    onImageDrop: imageDropHandler,
+                    onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
                 MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
@@ -303,7 +308,8 @@ struct AiPanel: View {
                 // AppKit hands it any drop over its bounds before SwiftUI's
                 // `.onDrop` sees it — so it forwards image drops here instead of
                 // pasting a file path. nil means "don't intercept" (no vision).
-                onImageDrop: composerImageDrop
+                onImageDrop: imageDropHandler,
+                onDropTargeted: { dropTargeted = $0 }
             )
             if aiStore.settings.voiceMode == .pushToTalk {
                 Image(systemName: isListening ? "stop.fill" : "mic")
@@ -423,9 +429,10 @@ struct AiPanel: View {
         aiStore.addReference(reference)
     }
 
-    /// nil when the model can't read images, which leaves the composer field's
-    /// own AppKit drag handling untouched.
-    private var composerImageDrop: ((ComposerImageDrop) -> Void)? {
+    /// Handler the panel's AppKit text views forward their drops to. nil when the
+    /// model can't read images, which leaves their own drag handling untouched and
+    /// matches the SwiftUI `.onDrop` gate above (the drag just springs back).
+    private var imageDropHandler: ((ImageDropPayload) -> Void)? {
         guard aiStore.activeModelSupportsImages else { return nil }
         return { drop in
             switch drop {
@@ -606,20 +613,15 @@ private struct AnimatedDots: View {
 /// text height in the coordinator and drive an explicit SwiftUI `frame(height:)`.
 /// That keeps the box hugging one centered line when empty (aligned with the
 /// +/send buttons) and expanding only as lines are added.
-/// An image handed from the composer field's AppKit drop to the panel. The file
-/// case is deliberately unread: the bytes are loaded off the main actor.
-private enum ComposerImageDrop {
-    case file(URL)
-    case data(Data, name: String)
-}
-
 private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
     /// An image dropped onto the field itself; nil disables interception, so
     /// AppKit's own drag handling (text, file paths) is left alone.
-    let onImageDrop: ((ComposerImageDrop) -> Void)?
+    let onImageDrop: ((ImageDropPayload) -> Void)?
+    /// Drives the panel's drop outline while such a drag is over the field.
+    let onDropTargeted: (Bool) -> Void
 
     /// One line + vertical insets. Also the floor the box collapses to.
     static let minHeight: CGFloat = 36
@@ -633,6 +635,7 @@ private struct ComposerTextView: View {
             placeholder: placeholder,
             onSubmit: onSubmit,
             onImageDrop: onImageDrop,
+            onDropTargeted: onDropTargeted,
             contentHeight: $contentHeight
         )
         .frame(height: min(max(contentHeight, Self.minHeight), Self.maxHeight))
@@ -643,7 +646,8 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
-    let onImageDrop: ((ComposerImageDrop) -> Void)?
+    let onImageDrop: ((ImageDropPayload) -> Void)?
+    let onDropTargeted: (Bool) -> Void
     @Binding var contentHeight: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -656,6 +660,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.submit = onSubmit
         textView.onImageDrop = onImageDrop
+        textView.onDropTargeted = onDropTargeted
         textView.placeholder = placeholder
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
@@ -680,6 +685,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         context.coordinator.parent = self
         textView.submit = onSubmit
         textView.onImageDrop = onImageDrop
+        textView.onDropTargeted = onDropTargeted
         textView.placeholder = placeholder
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
@@ -717,61 +723,43 @@ private final class SubmitTextView: NSTextView {
     /// it rather than to the panel's SwiftUI `.onDrop`. Take image drops here and
     /// forward the bytes; everything else still falls through to `super`, which
     /// keeps ordinary text drags working.
-    var onImageDrop: ((ComposerImageDrop) -> Void)?
+    var onImageDrop: ((ImageDropPayload) -> Void)?
+    /// Drives the panel's drop outline; the field is its own drag destination, so
+    /// SwiftUI's `isTargeted` never fires for a drag that ends up here.
+    var onDropTargeted: ((Bool) -> Void)?
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        isImageDrag(sender) ? .copy : super.draggingEntered(sender)
+        guard isImageDrag(sender) else { return super.draggingEntered(sender) }
+        onDropTargeted?(true)
+        return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         isImageDrag(sender) ? .copy : super.draggingUpdated(sender)
     }
 
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDropTargeted?(false)
+        super.draggingEnded(sender)
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard isImageDrag(sender), let drop = droppedImage(sender) else {
+        onDropTargeted?(false)
+        guard isImageDrag(sender), let drop = ImageDrop.payload(sender) else {
             return super.performDragOperation(sender)
         }
         onImageDrop?(drop)
         return true
     }
 
-    /// Cheap test used by the per-mouse-move dragging callbacks: does this drag
-    /// carry an image at all? (Deliberately does not touch the file — reading
-    /// bytes on every `draggingUpdated` would stall the drag.)
     private func isImageDrag(_ sender: NSDraggingInfo) -> Bool {
-        guard onImageDrop != nil else { return false }
-        let pasteboard = sender.draggingPasteboard
-        return pasteboard.canReadObject(forClasses: [NSURL.self], options: Self.imageURLOptions)
-            || NSImage.canInit(with: pasteboard)
+        onImageDrop != nil && ImageDrop.carriesImage(sender)
     }
-
-    /// What the drag carries — a file (Finder) or raw image bytes (Preview, a
-    /// browser). `performDragOperation` runs on the main thread, so this only
-    /// *names* the payload: the file is never read here (a 60MB TIFF, or anything
-    /// on iCloud Drive, would stall the drag while it materializes), and raw bytes
-    /// are taken straight off the pasteboard rather than round-tripped through
-    /// `NSImage.tiffRepresentation`, which would allocate the full uncompressed
-    /// bitmap on the main actor. Reading, decoding and resizing all happen off the
-    /// main actor in the handler.
-    private func droppedImage(_ sender: NSDraggingInfo) -> ComposerImageDrop? {
-        let pasteboard = sender.draggingPasteboard
-        if let urls = pasteboard.readObjects(
-            forClasses: [NSURL.self], options: Self.imageURLOptions) as? [URL],
-           let url = urls.first {
-            return .file(url)
-        }
-        if let type = pasteboard.types?.first(where: {
-            UTType($0.rawValue)?.conforms(to: .image) == true
-        }), let data = pasteboard.data(forType: type) {
-            return .data(data, name: "Dropped image")
-        }
-        return nil
-    }
-
-    private static let imageURLOptions: [NSPasteboard.ReadingOptionKey: Any] = [
-        .urlReadingFileURLsOnly: true,
-        .urlReadingContentsConformToTypes: [UTType.image.identifier],
-    ]
 
     /// Height of the laid-out text plus vertical insets — one line when empty,
     /// growing as content is added.
