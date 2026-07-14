@@ -16,7 +16,15 @@ import WebKit
 struct ScratchpadPanel: View {
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+
+    /// True only while a capture *this* panel armed is in flight — the AI panel
+    /// arms the same `.snapshotRegion` mode, and its crop must not light up the
+    /// scratchpad's crop button.
+    private var isCapturingRegion: Bool {
+        appStore.mode == .snapshotRegion && appStore.regionCaptureTarget == .scratchpad
+    }
 
     @State private var dropTargeted = false
 
@@ -27,7 +35,7 @@ struct ScratchpadPanel: View {
             ScratchpadLiveEditor(
                 text: $store.text,
                 store: scratchpadStore,
-                fontSize: appStore.sidebarFontSize,
+                fontSize: workspace.sidebarFontSize,
                 palette: palette
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -91,14 +99,14 @@ struct ScratchpadPanel: View {
             Spacer(minLength: 8)
             if appStore.document != nil {
                 IconButton(
-                    variant: appStore.mode == .snapshotRegion ? .active : .ghost,
+                    variant: isCapturingRegion ? .active : .ghost,
                     help: "Snapshot a region of the page into the note",
                     action: toggleSnapshotRegion
                 ) {
                     Image(systemName: "crop").font(.system(size: 15))
                 }
                 .accessibilityIdentifier("scratchpad.snapshotRegion")
-                .accessibilityAddTraits(appStore.mode == .snapshotRegion ? .isSelected : [])
+                .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
             }
             IconButton(help: "Clear scratchpad", action: clear) {
                 Image(systemName: "trash").font(.system(size: 15))
@@ -112,7 +120,11 @@ struct ScratchpadPanel: View {
     }
 
     private func toggleSnapshotRegion() {
-        appStore.setMode(appStore.mode == .snapshotRegion ? .view : .snapshotRegion)
+        if isCapturingRegion {
+            appStore.setMode(.view)
+        } else {
+            appStore.beginRegionCapture(target: .scratchpad)
+        }
     }
 
     private func clear() {

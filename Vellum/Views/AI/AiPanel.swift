@@ -301,7 +301,7 @@ struct AiPanel: View {
                 Label("Attach current page", systemImage: "doc.richtext")
             }
             Button {
-                appStore.setMode(.snapshotRegion)
+                appStore.beginRegionCapture(target: .ai)
             } label: {
                 Label("Snapshot region…", systemImage: "square.dashed")
             }

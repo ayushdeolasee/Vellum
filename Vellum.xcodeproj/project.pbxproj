@@ -7,55 +7,71 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		016BFAA281D7CA51CCED4B92 /* ScratchpadPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E72498058A69F542C2A4CCF /* ScratchpadPanel.swift */; };
 		019D03DA6C4B054E963D7C4C /* PdfAnnotationCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */; };
 		07AE67F8DC12B0AAD737C3FD /* TabDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8C1E511D20D7A383214A940 /* TabDrag.swift */; };
 		08677253114CE30123D3BD54 /* OpenAIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE90299DD7109284EF8AE43D /* OpenAIClient.swift */; };
 		09358F1893F52DC19029DF03 /* PdfOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */; };
 		0CB718F359EABB9D0B724732 /* AiPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2423823E0BE86C417B6ABBC6 /* AiPanel.swift */; };
-		0D3CE241E348F29664150A60 /* 2106.09685v2.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 2F713F483B16BF74AFBF8BDB /* 2106.09685v2.pdf */; };
+		0F794D4A0D0E512001684D97 /* KaTeX_Math-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = B313F26C338D071377D89FE9 /* KaTeX_Math-BoldItalic.woff2 */; };
 		115E39AAB39E90058E9718A7 /* PdfMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */; };
+		17AD2204484B61C7A2F1DCD6 /* KaTeX_Fraktur-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 96B5040705B954B3A0A26A2E /* KaTeX_Fraktur-Bold.woff2 */; };
 		18277300524A92AEDAAAEA7E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027E09C0BD7A98F4590A5878 /* ContentView.swift */; };
-		19AFBFF3BAA5766009AF0249 /* ScratchpadPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */; };
+		19026EE9153EC91FE9D3DB80 /* ComposerReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */; };
 		1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */; };
 		1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4C07C56943274B9E062A70 /* RecentFilesService.swift */; };
 		1FCCAC565DBDC21D62F833FB /* PdfBookmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */; };
-		23A2C045833B0AC94C796A25 /* ScratchpadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */; };
 		2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54417DBF142FD33E6B2F6672 /* SettingsView.swift */; };
 		249CCA82E8B519D78426C055 /* PageTextCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5513F929B10D107AED515D1E /* PageTextCache.swift */; };
 		25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */; };
 		2759D19C5033A1DC130A9E15 /* AiToolEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */; };
+		28D823706C07BC798FF866F6 /* KaTeX_Main-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = D3AD047DB403B0B0530AC89B /* KaTeX_Main-Bold.woff2 */; };
 		290AF491B1EFDE622262DCD7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1784468C7F465AAEB5C63E9 /* Models.swift */; };
 		29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E282C555B1B420914134C74 /* WelcomeScreen.swift */; };
+		295053CF2F22E8765D18B315 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */; };
+		2A30A8B49C2A710A8CBB0008 /* index.html in Resources */ = {isa = PBXBuildFile; fileRef = 73294273D1991135AD0F100E /* index.html */; };
 		2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */; };
+		2F52BBA445E0EE94526EC6E5 /* editor.bundle.js in Resources */ = {isa = PBXBuildFile; fileRef = 88261ED7614D2528C41ED0E5 /* editor.bundle.js */; };
 		309920512501052A787792CF /* PKCE.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6E95679B108A0702A0657D8 /* PKCE.swift */; };
 		30F9DFF4371A901244DAD7BE /* AiUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17D3131ADA1819B327BDBB6 /* AiUsage.swift */; };
 		32DBC725A181B5D35FB41434 /* PdfKitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75C2F535B12256E191B781C /* PdfKitView.swift */; };
+		32F89094157CF2CB633E7E52 /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */; };
+		332DDCE78567FAF8C323DE23 /* auto-render.min.js in Resources */ = {isa = PBXBuildFile; fileRef = AEC0C786A891A12086DE4A53 /* auto-render.min.js */; };
+		34579619A421805FCB205864 /* KaTeX_SansSerif-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = BC7137577C6CF02DC6CEA65D /* KaTeX_SansSerif-Bold.woff2 */; };
+		3472BAA39BF1973EDCE4D2C5 /* katex.min.js in Resources */ = {isa = PBXBuildFile; fileRef = DC887AD1DA9C8FD08D72104C /* katex.min.js */; };
+		369FF45FEAF108F46A582CF7 /* KaTeX_Size2-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = B06DA428592587D5CC42B840 /* KaTeX_Size2-Regular.woff2 */; };
+		36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */; };
 		3F4C2E045464817FDB1ED160 /* PdfViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87B22387C1A8E19F0316151E /* PdfViewerView.swift */; };
 		40D4C8C74B050905AF690FD5 /* PdfSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */; };
 		41BD8A6E46D11F7BC0BF6D13 /* WebViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FAA454DB63CD5DAEB44B17B /* WebViewerView.swift */; };
 		41EDFC3445164FFD63A268C8 /* OpenCodeZenClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */; };
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
+		46937483DA3925D41C984167 /* KaTeX_SansSerif-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */; };
 		4E8BAA1F3AEC100D4C768AFA /* PaneTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B863B676278E0E8D3C2EDB /* PaneTree.swift */; };
 		4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */; };
-		52970DA91096DD662E90F79C /* katex in Resources */ = {isa = PBXBuildFile; fileRef = 2CADEC4841692F5B4AC0D752 /* katex */; };
-    	52FA425B6737E6A4717AEC4E /* PdfSelectionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */; };
+		51EFE28F82BCABBB7BDCB589 /* WebProxyUrlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */; };
+		52FA425B6737E6A4717AEC4E /* PdfSelectionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */; };
 		53621485E83DB998CCBA6163 /* Controls.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2630E8BE36D65B9E485FD6F /* Controls.swift */; };
+		536B2EF932D371C1473CAE18 /* KaTeX_Main-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 1DE37DD793875C0DBF92E050 /* KaTeX_Main-BoldItalic.woff2 */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
-		5B03B492166927E475F24088 /* webpages.txt in Resources */ = {isa = PBXBuildFile; fileRef = 76F848D6FF94C070FE015FC1 /* webpages.txt */; };
+		65858805EE10C9DAA53531F5 /* KaTeX_Script-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */; };
 		67B320CA1556DCBF8C2A8507 /* PdfGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */; };
+		6AF2B59C76A57D0A112B2015 /* KaTeX_Caligraphic-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */; };
 		6BA39956BEE5A9BB036F74E7 /* TabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30CD609AEA2C0A662890153 /* TabBarView.swift */; };
 		6D737237057DD944A4616889 /* ModelSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */; };
-		74E3C6D181814E8E10C7EC2A /* mathematics-for-ML-book copy.pdf in Resources */ = {isa = PBXBuildFile; fileRef = D3CAB49027A12E44326845CD /* mathematics-for-ML-book copy.pdf */; };
+		73A1100267EF4F5415AC7147 /* KaTeX_Caligraphic-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9F7F3D4199D08A3DEE3D8641 /* KaTeX_Caligraphic-Bold.woff2 */; };
 		74F87D19B20B4A7A23919B5F /* PaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD01D08235008A4E602D0373 /* PaneTreeView.swift */; };
+		74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */; };
 		75B9FA69511BBE233AAB665A /* WebPageExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E209F0AEC418389859234E /* WebPageExtractor.swift */; };
 		776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */; };
 		7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */; };
-		7D9B2DD341CC211DB9B8D87B /* gpt-5-5.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 117E03CBB763404A8E264080 /* gpt-5-5.pdf */; };
 		806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5003641A54B311693588C6C /* PdfPersistenceTests.swift */; };
-		AA01AA01AA01AA01AA01AA01 /* ScratchpadImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */; };
 		82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B19F1048CA6DE0E71C521DB /* VellumApp.swift */; };
 		885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */ = {isa = PBXBuildFile; fileRef = 8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */; };
+		889BFC3E6FAFB10762344CA6 /* KaTeX_Math-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 20B2D17372EC7164FEB6B7AF /* KaTeX_Math-Italic.woff2 */; };
+		8912F0CB33DDA24E764B2C9F /* KaTeX_Size4-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 71A415874AABA26AABBEF9B8 /* KaTeX_Size4-Regular.woff2 */; };
+		89BBCA6E35EEE59FEE34ADB1 /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = D9E0BDD943EF88D3BD193D7B /* marked.min.js */; };
 		8D58E063EF882C7E725B81A0 /* AiPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */; };
 		8DDA7D560DAB61C377817B0D /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7870954383EAE833F32ABF /* FindBar.swift */; };
 		8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */; };
@@ -65,38 +81,45 @@
 		96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */; };
 		9AC827DE4385CD8EC4201A49 /* AnnotationSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9C9C837F5B62D523BD8E97 /* AnnotationSidebar.swift */; };
 		9C7F3F0B4C0CDEE7ED83CBB4 /* AnnotationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */; };
-		9D902263F3AACF40E6FA300A /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 1F46B61030259DEFD1791C35 /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf */; };
 		9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E2B3DF66E30481C363C740 /* ToolbarView.swift */; };
 		9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */; };
 		A5E5A42BE09B4A7911646AFF /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723EC058218A6DF8D994CC26 /* UpdateChecker.swift */; };
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */ = {isa = PBXBuildFile; fileRef = 88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */; };
 		AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */; };
+		AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */; };
 		B127FEC17DDF285AD902A52B /* OpenRouterCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0C63462421A1E994C543BB /* OpenRouterCatalog.swift */; };
 		B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7280818785023514C87C04C9 /* SessionService.swift */; };
 		BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
+		BF75A2925C8FCE36AD43F41B /* KaTeX_Typewriter-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */; };
+		C4998709FBAE647C23BF3E5A /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */; };
 		C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
-		C98B0CB3FF706457724E5EF2 /* ScratchpadPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */; };
+		C82D9FC05EC46B7D699B8B0F /* KaTeX_Size1-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */; };
+		CA6BCC8D048C1E43CBC52E99 /* KaTeX_SansSerif-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
 		D0E1C1D4A6D6A54C194A3389 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
+		D3E15D784AC0EF97D1BE22E8 /* purify.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B707464546ECFFA1A49EBDE /* purify.min.js */; };
 		D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F38132FDC803C6ACEB43CC /* AiStore.swift */; };
 		D529B1BD4F7B9FA1E791246F /* PageTextPersister.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504DC8725E6198531EC21429 /* PageTextPersister.swift */; };
+		D657C92463B102EF093DC4CB /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */; };
 		D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */ = {isa = PBXBuildFile; fileRef = 3E954582457ABFF5574EC93C /* tool-descriptions.md */; };
 		DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 0F9E9D97558DCF004997C26D /* SwiftMath */; };
+		E0C67279AC30EA86F477747B /* KaTeX_AMS-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 920042E47739D0327A193A1C /* KaTeX_AMS-Regular.woff2 */; };
 		E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A774391C8C286453B790F75 /* MarkdownMessage.swift */; };
 		E6B0CB4F9698FD21D03270E1 /* WebContentScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F083E5C02A66A025F06638 /* WebContentScript.swift */; };
 		E902AE322CF4E85CD5937369 /* VellumCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */; };
-		E93DB0D79E7D460ADFDD6C84 /* 2507.18074v1.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 3ED3A8BE316142DCFED718E9 /* 2507.18074v1.pdf */; };
 		EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 89E21441131E7C57CE324E83 /* AppIcon.icns */; };
 		EAE379048674CB8DF953D09D /* ChatGPTAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BA2FED5E906C5D311882E3 /* ChatGPTAuth.swift */; };
 		ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */; };
 		EF7A65F99A00454F851FA17C /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
 		F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */; };
+		F33467F1BF882C20214E4EB4 /* editor.html in Resources */ = {isa = PBXBuildFile; fileRef = C024B0FD91AE2990C4277000 /* editor.html */; };
 		F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */; };
 		F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8909CC21C72AF947D20B4B6C /* AppStore.swift */; };
 		F9DA8014506FBB48C440F718 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
+		FE3F6412427EE4948EC38358 /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = BA27035FFAE43080C7118AC4 /* katex.min.css */; };
 		FE7D8E1CF0734B927687D5AF /* OpenRouterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96768879872A93B8FD39C342 /* OpenRouterClient.swift */; };
 		FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */; };
 /* End PBXBuildFile section */
@@ -119,46 +142,53 @@
 		0A7870954383EAE833F32ABF /* FindBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindBar.swift; sourceTree = "<group>"; };
 		0D0C63462421A1E994C543BB /* OpenRouterCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterCatalog.swift; sourceTree = "<group>"; };
 		102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfGeometry.swift; sourceTree = "<group>"; };
-		117E03CBB763404A8E264080 /* gpt-5-5.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "gpt-5-5.pdf"; sourceTree = "<group>"; };
 		13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCacheTests.swift; sourceTree = "<group>"; };
 		14BA2FED5E906C5D311882E3 /* ChatGPTAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTAuth.swift; sourceTree = "<group>"; };
 		195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAnnotationCodec.swift; sourceTree = "<group>"; };
-		1F46B61030259DEFD1791C35 /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf"; sourceTree = "<group>"; };
+		1DE37DD793875C0DBF92E050 /* KaTeX_Main-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-BoldItalic.woff2"; sourceTree = "<group>"; };
+		20B2D17372EC7164FEB6B7AF /* KaTeX_Math-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-Italic.woff2"; sourceTree = "<group>"; };
 		2423823E0BE86C417B6ABBC6 /* AiPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPanel.swift; sourceTree = "<group>"; };
-		2CADEC4841692F5B4AC0D752 /* katex */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder; name = katex; path = katex; sourceTree = "<group>"; };
+		287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPersistence.swift; sourceTree = "<group>"; };
 		2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionPopover.swift; sourceTree = "<group>"; };
+		2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadImportTests.swift; sourceTree = "<group>"; };
 		2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAtomicWriter.swift; sourceTree = "<group>"; };
-		2F713F483B16BF74AFBF8BDB /* 2106.09685v2.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = 2106.09685v2.pdf; sourceTree = "<group>"; };
+		3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
 		35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPersistence.swift; sourceTree = "<group>"; };
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
-		3ED3A8BE316142DCFED718E9 /* 2507.18074v1.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = 2507.18074v1.pdf; sourceTree = "<group>"; };
 		3F3AC0340E126F7BB9CDC0B6 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReferences.swift; sourceTree = "<group>"; };
 		460DC0522689EC17EC0D233B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfOverlays.swift; sourceTree = "<group>"; };
 		4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPipelineTests.swift; sourceTree = "<group>"; };
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
+		4B707464546ECFFA1A49EBDE /* purify.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = purify.min.js; sourceTree = "<group>"; };
 		4E282C555B1B420914134C74 /* WelcomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeScreen.swift; sourceTree = "<group>"; };
 		4FAA454DB63CD5DAEB44B17B /* WebViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewerView.swift; sourceTree = "<group>"; };
 		504DC8725E6198531EC21429 /* PageTextPersister.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextPersister.swift; sourceTree = "<group>"; };
+		511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size3-Regular.woff2"; sourceTree = "<group>"; };
 		524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeTests.swift; sourceTree = "<group>"; };
+		529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Script-Regular.woff2"; sourceTree = "<group>"; };
 		54417DBF142FD33E6B2F6672 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5513F929B10D107AED515D1E /* PageTextCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCache.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
+		6E72498058A69F542C2A4CCF /* ScratchpadPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPanel.swift; sourceTree = "<group>"; };
 		6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParserTests.swift; sourceTree = "<group>"; };
 		6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSessionBackend.swift; sourceTree = "<group>"; };
 		709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMessageTests.swift; sourceTree = "<group>"; };
+		71A415874AABA26AABBEF9B8 /* KaTeX_Size4-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size4-Regular.woff2"; sourceTree = "<group>"; };
 		723EC058218A6DF8D994CC26 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		7280818785023514C87C04C9 /* SessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionService.swift; sourceTree = "<group>"; };
-		73687C1C3BFE42DA8360A30B /* Sandler Nora - Writing a C Compiler - 2024 copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "Sandler Nora - Writing a C Compiler - 2024 copy.pdf"; sourceTree = "<group>"; };
-		76F848D6FF94C070FE015FC1 /* webpages.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = webpages.txt; sourceTree = "<group>"; };
+		73294273D1991135AD0F100E /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
 		775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VellumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		78E2B3DF66E30481C363C740 /* ToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarView.swift; sourceTree = "<group>"; };
 		7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSelector.swift; sourceTree = "<group>"; };
 		7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMessageText.swift; sourceTree = "<group>"; };
 		7E4C07C56943274B9E062A70 /* RecentFilesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentFilesService.swift; sourceTree = "<group>"; };
-		8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScratchpadPersistence.swift; path = Scratchpad/ScratchpadPersistence.swift; sourceTree = "<group>"; };
-    	87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
+		7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField.swift; sourceTree = "<group>"; };
+		7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
+		81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Italic.woff2"; sourceTree = "<group>"; };
+		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
+		88261ED7614D2528C41ED0E5 /* editor.bundle.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = editor.bundle.js; sourceTree = "<group>"; };
 		88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-native.md"; sourceTree = "<group>"; };
 		8909CC21C72AF947D20B4B6C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		89E21441131E7C57CE324E83 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -167,43 +197,60 @@
 		8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-system.md"; sourceTree = "<group>"; };
 		90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumCommands.swift; sourceTree = "<group>"; };
 		90963B42EE17356826E8DE90 /* AiPrompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPrompts.swift; sourceTree = "<group>"; };
+		90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Regular.woff2"; sourceTree = "<group>"; };
+		920042E47739D0327A193A1C /* KaTeX_AMS-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_AMS-Regular.woff2"; sourceTree = "<group>"; };
+		9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Regular.woff2"; sourceTree = "<group>"; };
 		96768879872A93B8FD39C342 /* OpenRouterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterClient.swift; sourceTree = "<group>"; };
+		96B5040705B954B3A0A26A2E /* KaTeX_Fraktur-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Bold.woff2"; sourceTree = "<group>"; };
 		9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSelectionBridge.swift; sourceTree = "<group>"; };
 		9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebProxyUrlTests.swift; sourceTree = "<group>"; };
 		9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthLoopbackServer.swift; sourceTree = "<group>"; };
 		9D58D6980122701CBA30200F /* Vellum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vellum.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9F7F3D4199D08A3DEE3D8641 /* KaTeX_Caligraphic-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Bold.woff2"; sourceTree = "<group>"; };
 		A17D3131ADA1819B327BDBB6 /* AiUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiUsage.swift; sourceTree = "<group>"; };
 		A5003641A54B311693588C6C /* PdfPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfPersistenceTests.swift; sourceTree = "<group>"; };
-		BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadImportTests.swift; sourceTree = "<group>"; };
+		A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Regular.woff2"; sourceTree = "<group>"; };
 		ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebNotePopovers.swift; sourceTree = "<group>"; };
 		ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolEngine.swift; sourceTree = "<group>"; };
+		AEC0C786A891A12086DE4A53 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
+		B06DA428592587D5CC42B840 /* KaTeX_Size2-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size2-Regular.woff2"; sourceTree = "<group>"; };
 		B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationStore.swift; sourceTree = "<group>"; };
+		B313F26C338D071377D89FE9 /* KaTeX_Math-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-BoldItalic.woff2"; sourceTree = "<group>"; };
 		B6E95679B108A0702A0657D8 /* PKCE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PKCE.swift; sourceTree = "<group>"; };
 		B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfBookmarks.swift; sourceTree = "<group>"; };
-		B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScratchpadPanel.swift; path = Scratchpad/ScratchpadPanel.swift; sourceTree = "<group>"; };
+		BA27035FFAE43080C7118AC4 /* katex.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = katex.min.css; sourceTree = "<group>"; };
+		BC7137577C6CF02DC6CEA65D /* KaTeX_SansSerif-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Bold.woff2"; sourceTree = "<group>"; };
 		BE90299DD7109284EF8AE43D /* OpenAIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIClient.swift; sourceTree = "<group>"; };
+		C024B0FD91AE2990C4277000 /* editor.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = editor.html; sourceTree = "<group>"; };
 		C1F083E5C02A66A025F06638 /* WebContentScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebContentScript.swift; sourceTree = "<group>"; };
 		C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfMetadata.swift; sourceTree = "<group>"; };
+		C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Italic.woff2"; sourceTree = "<group>"; };
 		C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiClient.swift; sourceTree = "<group>"; };
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
 		C75C2F535B12256E191B781C /* PdfKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView.swift; sourceTree = "<group>"; };
-		CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScratchpadStore.swift; sourceTree = "<group>"; };
-    	D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
+		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
+		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
-		D3CAB49027A12E44326845CD /* mathematics-for-ML-book copy.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "mathematics-for-ML-book copy.pdf"; sourceTree = "<group>"; };
+		D3AD047DB403B0B0530AC89B /* KaTeX_Main-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Bold.woff2"; sourceTree = "<group>"; };
 		D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickyNoteOverlay.swift; sourceTree = "<group>"; };
 		D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		D82487970E20F6628200C4BE /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		D8C1E511D20D7A383214A940 /* TabDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabDrag.swift; sourceTree = "<group>"; };
 		D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
+		D9E0BDD943EF88D3BD193D7B /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
+		DC887AD1DA9C8FD08D72104C /* katex.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = katex.min.js; sourceTree = "<group>"; };
 		DF9C9C837F5B62D523BD8E97 /* AnnotationSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationSidebar.swift; sourceTree = "<group>"; };
 		E064C75923B5E7D98E256470 /* WebArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebArchive.swift; sourceTree = "<group>"; };
 		E201F2530645C6348ECC59AA /* AiStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiStreaming.swift; sourceTree = "<group>"; };
 		E30CD609AEA2C0A662890153 /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
+		E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Typewriter-Regular.woff2"; sourceTree = "<group>"; };
+		E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadStore.swift; sourceTree = "<group>"; };
 		EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSessionBackend.swift; sourceTree = "<group>"; };
 		EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibrary.swift; sourceTree = "<group>"; };
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
+		F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Regular.woff2"; sourceTree = "<group>"; };
 		FD01D08235008A4E602D0373 /* PaneTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -275,7 +322,8 @@
 				01F38132FDC803C6ACEB43CC /* AiStore.swift */,
 				B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */,
 				8909CC21C72AF947D20B4B6C /* AppStore.swift */,
-				CB3175880F9C24B69A8CFA50 /* ScratchpadStore.swift */,
+				E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */,
+				D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */,
 			);
 			path = Stores;
 			sourceTree = "<group>";
@@ -288,23 +336,11 @@
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
-				BB02BB02BB02BB02BB02BB02 /* ScratchpadImportTests.swift */,
-		);
-			path = Tests;
-			sourceTree = "<group>";
-		};
-		43B4EBD839E1995466CD1BB0 /* Texts */ = {
-			isa = PBXGroup;
-			children = (
-				2F713F483B16BF74AFBF8BDB /* 2106.09685v2.pdf */,
-				3ED3A8BE316142DCFED718E9 /* 2507.18074v1.pdf */,
-				1F46B61030259DEFD1791C35 /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf */,
-				117E03CBB763404A8E264080 /* gpt-5-5.pdf */,
-				D3CAB49027A12E44326845CD /* mathematics-for-ML-book copy.pdf */,
-				73687C1C3BFE42DA8360A30B /* Sandler Nora - Writing a C Compiler - 2024 copy.pdf */,
-				76F848D6FF94C070FE015FC1 /* webpages.txt */,
+				2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */,
+				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
+				9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */,
 			);
-			path = Texts;
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		47FAD68CA0A1ACEF82AC6427 /* Pdf */ = {
@@ -318,14 +354,6 @@
 				6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */,
 			);
 			path = Pdf;
-			sourceTree = "<group>";
-		};
-		4BF748CF688186B499A529BB /* Scratchpad */ = {
-			isa = PBXGroup;
-			children = (
-				B992CFD78D371ABE4F6AFD29 /* ScratchpadPanel.swift */,
-			);
-			name = Scratchpad;
 			sourceTree = "<group>";
 		};
 		56D87A80DF8E1AA17B98162B /* AI */ = {
@@ -353,10 +381,26 @@
 				7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */,
 				1B073A6D74EA890EC3F5822C /* Ai */,
 				47FAD68CA0A1ACEF82AC6427 /* Pdf */,
+				F271A96845AFED2A54F2E5E3 /* Scratchpad */,
 				C66AF06BB00C617BFD3DEA2D /* Web */,
-				98C20ACA5E313BF50857224B /* Scratchpad */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		6C7E25AE58824F0184077A94 /* katex */ = {
+			isa = PBXGroup;
+			children = (
+				AEC0C786A891A12086DE4A53 /* auto-render.min.js */,
+				88261ED7614D2528C41ED0E5 /* editor.bundle.js */,
+				C024B0FD91AE2990C4277000 /* editor.html */,
+				73294273D1991135AD0F100E /* index.html */,
+				BA27035FFAE43080C7118AC4 /* katex.min.css */,
+				DC887AD1DA9C8FD08D72104C /* katex.min.js */,
+				D9E0BDD943EF88D3BD193D7B /* marked.min.js */,
+				4B707464546ECFFA1A49EBDE /* purify.min.js */,
+				B9CB30F11C2A59C7A15BFBE6 /* fonts */,
+			);
+			path = katex;
 			sourceTree = "<group>";
 		};
 		76D226C5BF26487AF44B0712 /* App */ = {
@@ -377,21 +421,21 @@
 				CE4FA83AAE6CD5E8E1762748 /* Annotations */,
 				E88E15139E66057A48646625 /* Panes */,
 				FC0145F37992F31D4FB690C0 /* PDF */,
+				85F8503557B6ADE266C2D67B /* Scratchpad */,
 				C1D4282C52504165457363DE /* Settings */,
 				E885B27438CC0785E6E14E58 /* Shared */,
 				C6CDE13664DE990BD98250D1 /* Web */,
 				CF0E2D9A717E39ABDB39C16B /* Welcome */,
-				4BF748CF688186B499A529BB /* Scratchpad */,
 			);
 			path = Views;
 			sourceTree = "<group>";
 		};
-		98C20ACA5E313BF50857224B /* Scratchpad */ = {
+		85F8503557B6ADE266C2D67B /* Scratchpad */ = {
 			isa = PBXGroup;
 			children = (
-				8378CA66EAC56D1865D5E6FA /* ScratchpadPersistence.swift */,
+				6E72498058A69F542C2A4CCF /* ScratchpadPanel.swift */,
 			);
-			name = Scratchpad;
+			path = Scratchpad;
 			sourceTree = "<group>";
 		};
 		9E8E2E8E13FD91020A96EDCA /* Vellum */ = {
@@ -405,6 +449,33 @@
 				813D09872115F51BC0ABDBFD /* Views */,
 			);
 			path = Vellum;
+			sourceTree = "<group>";
+		};
+		B9CB30F11C2A59C7A15BFBE6 /* fonts */ = {
+			isa = PBXGroup;
+			children = (
+				920042E47739D0327A193A1C /* KaTeX_AMS-Regular.woff2 */,
+				9F7F3D4199D08A3DEE3D8641 /* KaTeX_Caligraphic-Bold.woff2 */,
+				A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */,
+				96B5040705B954B3A0A26A2E /* KaTeX_Fraktur-Bold.woff2 */,
+				9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */,
+				D3AD047DB403B0B0530AC89B /* KaTeX_Main-Bold.woff2 */,
+				1DE37DD793875C0DBF92E050 /* KaTeX_Main-BoldItalic.woff2 */,
+				C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */,
+				90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */,
+				B313F26C338D071377D89FE9 /* KaTeX_Math-BoldItalic.woff2 */,
+				20B2D17372EC7164FEB6B7AF /* KaTeX_Math-Italic.woff2 */,
+				BC7137577C6CF02DC6CEA65D /* KaTeX_SansSerif-Bold.woff2 */,
+				81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */,
+				F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */,
+				529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */,
+				3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */,
+				B06DA428592587D5CC42B840 /* KaTeX_Size2-Regular.woff2 */,
+				511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */,
+				71A415874AABA26AABBEF9B8 /* KaTeX_Size4-Regular.woff2 */,
+				E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */,
+			);
+			path = fonts;
 			sourceTree = "<group>";
 		};
 		C1D4282C52504165457363DE /* Settings */ = {
@@ -460,8 +531,8 @@
 			children = (
 				89E21441131E7C57CE324E83 /* AppIcon.icns */,
 				460DC0522689EC17EC0D233B /* Info.plist */,
+				6C7E25AE58824F0184077A94 /* katex */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
-				2CADEC4841692F5B4AC0D752 /* katex */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -484,6 +555,14 @@
 				D8C1E511D20D7A383214A940 /* TabDrag.swift */,
 			);
 			path = Panes;
+			sourceTree = "<group>";
+		};
+		F271A96845AFED2A54F2E5E3 /* Scratchpad */ = {
+			isa = PBXGroup;
+			children = (
+				287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */,
+			);
+			path = Scratchpad;
 			sourceTree = "<group>";
 		};
 		FC0145F37992F31D4FB690C0 /* PDF */ = {
@@ -534,7 +613,10 @@
 			dependencies = (
 			);
 			name = Vellum;
-		productName = Vellum;
+			packageProductDependencies = (
+				0F9E9D97558DCF004997C26D /* SwiftMath */,
+			);
+			productName = Vellum;
 			productReference = 9D58D6980122701CBA30200F /* Vellum.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -543,7 +625,6 @@
 			buildConfigurationList = ABC0550DA0118B5728183D75 /* Build configuration list for PBXNativeTarget "VellumTests" */;
 			buildPhases = (
 				FCD73DBD5880085D87802AB3 /* Sources */,
-				E71F3B85EE1284A603502AF5 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -551,6 +632,8 @@
 				AF0218184581BFCA23F3D3BA /* PBXTargetDependency */,
 			);
 			name = VellumTests;
+			packageProductDependencies = (
+			);
 			productName = VellumTests;
 			productReference = 775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -595,24 +678,37 @@
 			buildActionMask = 2147483647;
 			files = (
 				EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */,
+				E0C67279AC30EA86F477747B /* KaTeX_AMS-Regular.woff2 in Resources */,
+				73A1100267EF4F5415AC7147 /* KaTeX_Caligraphic-Bold.woff2 in Resources */,
+				6AF2B59C76A57D0A112B2015 /* KaTeX_Caligraphic-Regular.woff2 in Resources */,
+				17AD2204484B61C7A2F1DCD6 /* KaTeX_Fraktur-Bold.woff2 in Resources */,
+				32F89094157CF2CB633E7E52 /* KaTeX_Fraktur-Regular.woff2 in Resources */,
+				28D823706C07BC798FF866F6 /* KaTeX_Main-Bold.woff2 in Resources */,
+				536B2EF932D371C1473CAE18 /* KaTeX_Main-BoldItalic.woff2 in Resources */,
+				295053CF2F22E8765D18B315 /* KaTeX_Main-Italic.woff2 in Resources */,
+				D657C92463B102EF093DC4CB /* KaTeX_Main-Regular.woff2 in Resources */,
+				0F794D4A0D0E512001684D97 /* KaTeX_Math-BoldItalic.woff2 in Resources */,
+				889BFC3E6FAFB10762344CA6 /* KaTeX_Math-Italic.woff2 in Resources */,
+				34579619A421805FCB205864 /* KaTeX_SansSerif-Bold.woff2 in Resources */,
+				CA6BCC8D048C1E43CBC52E99 /* KaTeX_SansSerif-Italic.woff2 in Resources */,
+				46937483DA3925D41C984167 /* KaTeX_SansSerif-Regular.woff2 in Resources */,
+				65858805EE10C9DAA53531F5 /* KaTeX_Script-Regular.woff2 in Resources */,
+				C82D9FC05EC46B7D699B8B0F /* KaTeX_Size1-Regular.woff2 in Resources */,
+				369FF45FEAF108F46A582CF7 /* KaTeX_Size2-Regular.woff2 in Resources */,
+				C4998709FBAE647C23BF3E5A /* KaTeX_Size3-Regular.woff2 in Resources */,
+				8912F0CB33DDA24E764B2C9F /* KaTeX_Size4-Regular.woff2 in Resources */,
+				BF75A2925C8FCE36AD43F41B /* KaTeX_Typewriter-Regular.woff2 in Resources */,
+				332DDCE78567FAF8C323DE23 /* auto-render.min.js in Resources */,
+				2F52BBA445E0EE94526EC6E5 /* editor.bundle.js in Resources */,
+				F33467F1BF882C20214E4EB4 /* editor.html in Resources */,
+				2A30A8B49C2A710A8CBB0008 /* index.html in Resources */,
+				FE3F6412427EE4948EC38358 /* katex.min.css in Resources */,
+				3472BAA39BF1973EDCE4D2C5 /* katex.min.js in Resources */,
+				89BBCA6E35EEE59FEE34ADB1 /* marked.min.js in Resources */,
+				D3E15D784AC0EF97D1BE22E8 /* purify.min.js in Resources */,
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
 				AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */,
 				885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */,
-				52970DA91096DD662E90F79C /* katex in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		E71F3B85EE1284A603502AF5 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				0D3CE241E348F29664150A60 /* 2106.09685v2.pdf in Resources */,
-				E93DB0D79E7D460ADFDD6C84 /* 2507.18074v1.pdf in Resources */,
-				9D902263F3AACF40E6FA300A /* Data-Science-from-Scratch-First-Principles-with-Python-by-Joel-Grus-z-lib.org_.epub_ copy.pdf in Resources */,
-				20E616379933A3084F6D8559 /* Sandler Nora - Writing a C Compiler - 2024 copy.pdf in Resources */,
-				7D9B2DD341CC211DB9B8D87B /* gpt-5-5.pdf in Resources */,
-				74E3C6D181814E8E10C7EC2A /* mathematics-for-ML-book copy.pdf in Resources */,
-				5B03B492166927E475F24088 /* webpages.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -671,6 +767,9 @@
 				3F4C2E045464817FDB1ED160 /* PdfViewerView.swift in Sources */,
 				1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */,
 				AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */,
+				016BFAA281D7CA51CCED4B92 /* ScratchpadPanel.swift in Sources */,
+				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,
+				74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */,
 				9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */,
 				CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */,
 				B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */,
@@ -692,10 +791,9 @@
 				25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */,
 				41BD8A6E46D11F7BC0BF6D13 /* WebViewerView.swift in Sources */,
 				29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */,
-				C98B0CB3FF706457724E5EF2 /* ScratchpadPersistence.swift in Sources */,
-				23A2C045833B0AC94C796A25 /* ScratchpadStore.swift in Sources */,
-				19AFBFF3BAA5766009AF0249 /* ScratchpadPanel.swift in Sources */,
-		);
+				776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */,
+				96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		FCD73DBD5880085D87802AB3 /* Sources */ = {
@@ -707,8 +805,10 @@
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
 				806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */,
-				AA01AA01AA01AA01AA01AA01 /* ScratchpadImportTests.swift in Sources */,
-		);
+				36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */,
+				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
+				51EFE28F82BCABBB7BDCB589 /* WebProxyUrlTests.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */

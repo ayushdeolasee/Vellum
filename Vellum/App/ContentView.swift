@@ -3,12 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-<<<<<<< HEAD
-    @Environment(AppStore.self) private var appStore
-    @Environment(AnnotationStore.self) private var annotationStore
-    @Environment(AiStore.self) private var aiStore
-    @Environment(ScratchpadStore.self) private var scratchpadStore
-    @Environment(\.palette) private var palette
+    @Environment(WorkspaceStore.self) private var workspace
+
     @State private var keyMonitor: Any?
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
@@ -27,6 +23,7 @@ struct ContentView: View {
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
+            .environment(focused.scratchpad)
             .task { await workspace.restoreFromDisk() }
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
@@ -34,162 +31,11 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-            if appStore.document == nil {
-                WelcomeScreen()
-            } else {
-                documentViewer
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.background)
-        .toolbar {
-            VellumToolbar()
-        }
-        .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
-                .toolbar {
-                    // Declared inside the inspector so the switcher lands in
-                    // the inspector's own toolbar section, Xcode-style. The
-                    // explicit condition matters: inspector toolbar items stay
-                    // visible even while the inspector itself is closed.
-                    if inspectorPresented.wrappedValue {
-                        // Flexible spacers on both sides center the switcher
-                        // over the inspector instead of pinning it leading.
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (AppStore.SidebarTab.annotations, "Annotations"),
-                                    (AppStore.SidebarTab.ai, "AI"),
-                                    (AppStore.SidebarTab.scratchpad, "Scratchpad"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
-        }
-        .task(id: documentIdentity) {
-            annotationStore.clearAnnotations()
-            aiStore.clearDocumentContext()
-            scratchpadStore.clearDocumentContext()
-            guard appStore.document?.pdfPath != nil else { return }
-            await annotationStore.loadAnnotations()
-            guard !Task.isCancelled else { return }
-            aiStore.loadConversationForDocument(appStore.document)
-            scratchpadStore.loadForDocument(appStore.document)
-        }
-        .task(id: autosaveIdentity) {
-            guard let identity = autosaveIdentity else { return }
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(30))
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled,
-                      appStore.activeTabId == identity.tabId,
-                      appStore.document != nil else { return }
-                try? await appStore.sessions.saveFile(sessionId: identity.tabId)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
-            guard appStore.document != nil else { return }
-            Task { await annotationStore.loadAnnotations() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
-            addWebpagePresented = true
-        }
-        .sheet(isPresented: $addWebpagePresented) {
-            AddWebpageSheet()
-        }
-        // Publish the stores as a focused value so the app-level menu commands
-        // (VellumCommands) route here and disable themselves when the Settings
-        // window — which does not publish this value — is key.
-        .focusedValue(\.vellumFocus, VellumFocus(appStore: appStore, annotationStore: annotationStore))
-        .background(WindowAccessor { hostWindow = $0 })
-        .onAppear(perform: installKeyMonitor)
-        .onDisappear(perform: removeKeyMonitor)
+            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            .background(WindowAccessor { hostWindow = $0 })
+            .onAppear(perform: installKeyMonitor)
+            .onDisappear(perform: removeKeyMonitor)
     }
-
-    @ViewBuilder
-    private var documentViewer: some View {
-        if appStore.document?.kind == .web {
-            WebViewerView()
-                .id(appStore.activeTabId)
-        } else {
-            PdfViewerView()
-                .id(appStore.activeTabId)
-        }
-    }
-
-    /// Inspector only makes sense with a document; opening state still lives
-    /// in AppStore so the toolbar toggle and restores keep working.
-    private var inspectorPresented: Binding<Bool> {
-        Binding(
-            get: { appStore.document != nil && appStore.sidebarOpen },
-            set: { appStore.sidebarOpen = $0 }
-        )
-    }
-
-    private var sidebarTabBinding: Binding<AppStore.SidebarTab> {
-        Binding(
-            get: { appStore.sidebarTab },
-            set: { appStore.sidebarTab = $0 }
-        )
-    }
-
-    /// All three panels stay mounted in a ZStack; only visibility toggles as
-    /// the tab changes. Keeping them alive (rather than switching, which
-    /// destroys the inactive ones) preserves each panel's transient state
-    /// across tab flips — the AI panel's scroll position and half-typed
-    /// composer draft, and the scratchpad editor's caret/scroll/selection in
-    /// its live-preview WebView. The persisted text itself already survives via
-    /// the stores; this keeps the *view* state that the stores don't hold.
-    ///
-    /// Trade-off mirrored from the AI panel: because the inactive panels no
-    /// longer unmount on a tab switch, their `onDisappear` fires only when the
-    /// document (and thus the inspector) closes — not when flipping tabs.
-    private var sidebar: some View {
-        ZStack {
-            panel(.annotations) { AnnotationSidebar() }
-            panel(.ai) { AiPanel() }
-            panel(.scratchpad) { ScratchpadPanel() }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .onHover { sidebarHovering = $0 }
-    }
-
-    /// Wraps a sidebar panel so only the active tab is visible, hit-testable,
-    /// and exposed to accessibility — the inactive panels stay mounted but
-    /// inert.
-    @ViewBuilder
-    private func panel<Content: View>(
-        _ tab: AppStore.SidebarTab,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        let isActive = appStore.sidebarTab == tab
-        content()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .opacity(isActive ? 1 : 0)
-            .allowsHitTesting(isActive)
-            .accessibilityHidden(!isActive)
-    }
-
-    private var documentIdentity: DocumentIdentity {
-        DocumentIdentity(tabId: appStore.activeTabId, path: appStore.document?.pdfPath)
-    }
-
-    private var autosaveIdentity: AutosaveIdentity? {
-        guard let tabId = appStore.activeTabId, appStore.document != nil else { return nil }
-        return AutosaveIdentity(tabId: tabId, path: appStore.document?.pdfPath)
-   }
 
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
@@ -363,6 +209,7 @@ private struct WindowChrome: View {
                                 options: [
                                     (WorkspaceStore.SidebarTab.annotations, "Annotations"),
                                     (WorkspaceStore.SidebarTab.ai, "AI"),
+                                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
                                 ],
                                 selection: sidebarTabBinding,
                                 accessibilityIdentifierPrefix: "sidebarTab"
@@ -390,17 +237,42 @@ private struct WindowChrome: View {
         )
     }
 
+    /// All three panels stay mounted in a ZStack; only visibility toggles as
+    /// the tab changes. Keeping them alive (rather than switching, which
+    /// destroys the inactive ones) preserves each panel's transient state
+    /// across tab flips — the AI panel's scroll position and half-typed
+    /// composer draft, and the scratchpad editor's caret/scroll/selection in
+    /// its live-preview WebView. The persisted text itself already survives via
+    /// the stores; this keeps the *view* state that the stores don't hold.
+    ///
+    /// Trade-off mirrored from the AI panel: because the inactive panels no
+    /// longer unmount on a tab switch, their `onDisappear` fires only when the
+    /// document (and thus the inspector) closes — not when flipping tabs.
     private var sidebar: some View {
-        Group {
-            if workspace.sidebarTab == .annotations {
-                AnnotationSidebar()
-            } else {
-                AiPanel()
-            }
+        ZStack {
+            panel(.annotations) { AnnotationSidebar() }
+            panel(.ai) { AiPanel() }
+            panel(.scratchpad) { ScratchpadPanel() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onHover { sidebarHovering = $0 }
+    }
+
+    /// Wraps a sidebar panel so only the active tab is visible, hit-testable,
+    /// and exposed to accessibility — the inactive panels stay mounted but
+    /// inert.
+    @ViewBuilder
+    private func panel<Content: View>(
+        _ tab: WorkspaceStore.SidebarTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isActive = workspace.sidebarTab == tab
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
     }
 }
 

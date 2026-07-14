@@ -10,6 +10,7 @@ struct PdfOverlayStack: View {
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
@@ -56,20 +57,14 @@ struct PdfOverlayStack: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            // Drag-to-crop region snapshot → scratchpad. Sits above the page
-            // layers so its marquee owns the drag; a full-viewer hit-testable
-            // scrim means PdfKitView's mouse monitors ignore these events (they
-            // hit-test into this SwiftUI overlay, not the PDFView).
+            // Drag-to-crop region snapshot. Sits above the page layers so its
+            // marquee owns the drag; a full-viewer hit-testable scrim means
+            // PdfKitView's mouse monitors ignore these events (they hit-test
+            // into this SwiftUI overlay, not the PDFView). The crop goes to
+            // whichever panel armed the mode (AppStore.regionCaptureTarget).
             if app.mode == .snapshotRegion {
                 RegionCaptureOverlay { rect in
-                    if let capture = controller.capturePageRegionData(viewerRect: rect) {
-                        let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
-                        scratchpadStore.addImage(capture, label: label)
-                    } else {
-                        // Drag missed a page or was too small to crop — tell the
-                        // user rather than silently reverting to view mode.
-                        scratchpadStore.warnRegionCaptureFailed()
-                    }
+                    captureRegion(rect)
                     app.setMode(.view)
                 } onCancel: {
                     // Plain click or tiny wobble: back out of capture mode
@@ -107,6 +102,28 @@ struct PdfOverlayStack: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
+    }
+
+    /// Hand the finished crop to whichever panel armed the capture. The AI path
+    /// stays silent on a miss (it just re-arms nothing); the scratchpad path
+    /// warns, since its button is the one the user pressed to get here.
+    private func captureRegion(_ rect: CGRect) {
+        switch app.regionCaptureTarget {
+        case .ai:
+            if let snapshot = controller.capturePageRegion(viewerRect: rect) {
+                aiStore.addReference(AiReference(
+                    kind: .region(image: snapshot, page: snapshot.pageNumber)))
+            }
+        case .scratchpad:
+            if let capture = controller.capturePageRegionData(viewerRect: rect) {
+                let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
+                scratchpadStore.addImage(capture, label: label)
+            } else {
+                // Drag missed a page or was too small to crop — tell the user
+                // rather than silently reverting to view mode.
+                scratchpadStore.warnRegionCaptureFailed()
+            }
+        }
     }
 
     private var pageOverlays: [PageOverlay] {

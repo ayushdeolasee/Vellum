@@ -64,6 +64,7 @@ struct PaneView: View {
         .environment(app)
         .environment(pane.annotations)
         .environment(pane.ai)
+        .environment(pane.scratchpad)
         .background(PaneFocusCatcher(isActive: workspace.isSplit) {
             if !isFocused { workspace.focus(pane.id) }
         })
@@ -93,10 +94,12 @@ struct PaneView: View {
     private func loadDocumentState() async {
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
+        pane.scratchpad.clearDocumentContext()
         guard app.document?.pdfPath != nil else { return }
         await pane.annotations.loadAnnotations()
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
+        pane.scratchpad.loadForDocument(app.document)
     }
 
     private func runAutosave() async {

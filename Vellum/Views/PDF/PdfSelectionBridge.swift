@@ -1058,6 +1058,22 @@ final class PdfViewerController {
         )
     }
 
+    /// The AI's view of the same drag-to-crop: identical pixels, wrapped as the
+    /// base64 snapshot an `AiReference` carries. Both panels arm the one
+    /// `.snapshotRegion` mode; `AppStore.regionCaptureTarget` says which of
+    /// these two the overlay calls.
+    func capturePageRegion(viewerRect rect: CGRect) -> AiPageImageSnapshot? {
+        guard let capture = capturePageRegionData(viewerRect: rect),
+              let pageNumber = capture.pageNumber else { return nil }
+        return AiPageImageSnapshot(
+            pageNumber: pageNumber,
+            base64Data: capture.data.base64EncodedString(),
+            mediaType: capture.mediaType,
+            width: capture.width,
+            height: capture.height
+        )
+    }
+
     // MARK: - AI page snapshot (AiPanel.captureCurrentPageImage)
 
     /// JPEG snapshot of the page's rendered content: rendered at the current

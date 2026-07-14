@@ -22,7 +22,7 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
-    enum SidebarTab: Sendable { case annotations, ai }
+    enum SidebarTab: Sendable { case annotations, ai, scratchpad }
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.

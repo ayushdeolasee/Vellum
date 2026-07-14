@@ -4,17 +4,19 @@ import SwiftUI
 /// Persists reading positions before quit — the Tauri app wrote last_page on
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor static weak var appStore: AppStore?
-    @MainActor static weak var scratchpadStore: ScratchpadStore?
+    @MainActor static weak var workspace: WorkspaceStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            // Persist any pending scratchpad edit before we tear down.
-            Self.scratchpadStore?.flush()
-            guard let appStore = Self.appStore, !appStore.tabs.isEmpty else {
-                return .terminateNow
-            }
-           Task { @MainActor in
+            guard let workspace = Self.workspace else { return .terminateNow }
+            let leaves = workspace.root.allLeaves()
+            let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
+            // Persist the split layout, and every pane's pending scratchpad
+            // edit (each pane owns its own note), before tearing down sessions.
+            workspace.saveNow()
+            for leaf in leaves { leaf.scratchpad.flush() }
+            guard hasTabs else { return .terminateNow }
+            Task { @MainActor in
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
                         try? await workspace.sessions.setDocumentMetadata(
@@ -43,27 +45,15 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
 struct VellumApp: App {
     @NSApplicationDelegateAdaptor(VellumAppDelegate.self) private var appDelegate
     @State private var themeStore: ThemeStore
-    @State private var appStore: AppStore
-    @State private var annotationStore: AnnotationStore
-    @State private var aiStore: AiStore
-    @State private var scratchpadStore: ScratchpadStore
+    @State private var workspace: WorkspaceStore
 
     init() {
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let app = AppStore(sessions: sessions)
-        let annotations = AnnotationStore(app: app)
-        let ai = AiStore()
-        ai.app = app
-        ai.annotationStore = annotations
-        let scratchpad = ScratchpadStore()
+        let workspace = WorkspaceStore(sessions: sessions)
         _themeStore = State(initialValue: theme)
-        _appStore = State(initialValue: app)
-        _annotationStore = State(initialValue: annotations)
-        _aiStore = State(initialValue: ai)
-        _scratchpadStore = State(initialValue: scratchpad)
-        VellumAppDelegate.appStore = app
-        VellumAppDelegate.scratchpadStore = scratchpad
+        _workspace = State(initialValue: workspace)
+        VellumAppDelegate.workspace = workspace
     }
 
     var body: some Scene {
@@ -90,10 +80,9 @@ struct VellumApp: App {
                     }
                 }
                 .environment(themeStore)
-                .environment(appStore)
-                .environment(annotationStore)
-                .environment(aiStore)
-                .environment(scratchpadStore)
+                .environment(workspace)
+                .environment(workspace.openRouterCatalog)
+                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)

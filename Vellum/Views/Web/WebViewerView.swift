@@ -73,8 +73,11 @@ struct WebViewerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // Drag-to-crop region snapshot → scratchpad. The scrim
-                // intercepts the drag before the web view sees it.
-                if appStore.mode == .snapshotRegion {
+                // intercepts the drag before the web view sees it. Only the
+                // scratchpad crops web pages; the AI's region capture is a
+                // PDF-page snapshot and has no web equivalent.
+                if appStore.mode == .snapshotRegion,
+                   appStore.regionCaptureTarget == .scratchpad {
                     RegionCaptureOverlay { rect in
                         appStore.setMode(.view)
                         Task {
