@@ -73,6 +73,11 @@ struct CreateAnnotationInput: Sendable {
     var color: String?
     var content: String?
     var positionData: PositionData?
+    /// Client-assigned id for optimistic creation: the store renders the
+    /// annotation immediately under this id and the backend persists it under
+    /// the same id, so an immediate drag/edit targets the right record. When
+    /// nil, the backend mints its own id (legacy behavior).
+    var id: String?
 }
 
 struct UpdateAnnotationInput: Sendable {
@@ -80,6 +85,9 @@ struct UpdateAnnotationInput: Sendable {
     var color: String?
     var content: String?
     var positionData: PositionData?
+    /// Web highlight resizes can cross a virtual page break; PDF annotations
+    /// never move pages, so the PDF backend ignores this.
+    var pageNumber: Int? = nil
 }
 
 enum DocumentKind: String, Codable, Sendable {
@@ -142,7 +150,7 @@ struct WebPageText: Sendable {
     var text: String
 }
 
-enum InteractionMode: String, Sendable {
+enum InteractionMode: String, Codable, Sendable {
     case view
     case note
     /// Drag a rectangle over the page to snapshot that region into the

@@ -45,15 +45,17 @@ struct PdfOverlayStack: View {
             // exactly one placement fires). Sits below annotation overlays so
             // sticky pills keep their own cursor and drag behavior.
             if app.mode == .note {
+                // No SwiftUI `.pointerStyle` here: note mode uses a custom "+"
+                // NSCursor (NSCursor.addNote) asserted by PdfKitView's mouse
+                // monitor across the whole viewer, which a `.pointerStyle` on
+                // this overlay would override with a plain crosshair.
                 Color.clear
                     .contentShape(Rectangle())
-                    .pointerStyle(.rectSelection) // crosshair-style pointer
                     .onTapGesture(coordinateSpace: .local) { location in
                         controller.handleNoteOverlayClick(atTopLeft: location)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
             // Drag-to-crop region snapshot → scratchpad. Sits above the page
             // layers so its marquee owns the drag; a full-viewer hit-testable
             // scrim means PdfKitView's mouse monitors ignore these events (they
@@ -78,7 +80,7 @@ struct PdfOverlayStack: View {
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
-                HighlightLayer(annotations: overlay.annotations, zoom: scale)
+                HighlightLayer(annotations: overlay.annotations, zoom: scale, controller: controller)
                     .frame(
                         width: overlay.frame.width, height: overlay.frame.height,
                         alignment: .topLeading)
@@ -141,7 +143,6 @@ struct RegionCaptureOverlay: View {
     /// Drags smaller than this in either dimension are treated as an
     /// accidental click and cancel the capture instead of cropping.
     private static let minimumCaptureSize: CGFloat = 4
-
     @Environment(\.palette) private var palette
     @State private var start: CGPoint?
     @State private var current: CGPoint?

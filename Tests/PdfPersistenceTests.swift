@@ -703,3 +703,139 @@ final class PdfPersistenceTests: XCTestCase {
         try await session.close()
     }
 }
+
+// Deterministic tests for the highlight edge-resize core
+// (PdfViewerController.resizedPosition). Uses a real one-line text PDF so
+// PDFKit's point-to-point selection behaves like it does in the app.
+@MainActor
+final class HighlightResizeTests: XCTestCase {
+    /// One-page PDF with a single line of extractable text, drawn with CoreText.
+    private func textPage(_ string: String = "The quick brown fox jumps over the lazy dog") -> PDFPage {
+        let data = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        ctx.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
+        let attr = CFAttributedStringCreate(nil, string as CFString, [kCTFontAttributeName: font] as CFDictionary)!
+        let line = CTLineCreateWithAttributedString(attr)
+        ctx.textPosition = CGPoint(x: 40, y: 700)
+        CTLineDraw(line, ctx)
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return PDFDocument(data: data as Data)!.page(at: 0)!
+    }
+
+    /// Display-space PositionData for a character range, matching how the app
+    /// derives a highlight's rects (uiRect + mergeLineRects).
+    private func position(for range: NSRange, on page: PDFPage) -> PositionData {
+        let sel = page.selection(for: range)!
+        var rects: [AnnotationRect] = []
+        for line in sel.selectionsByLine() {
+            guard let p = line.pages.first else { continue }
+            rects.append(PdfViewerController.uiRect(fromPageSpace: line.bounds(for: p), page: p))
+        }
+        let dims = PdfViewerController.displayDimensions(of: page)
+        return PositionData(
+            rects: PdfViewerController.mergeLineRects(rects),
+            pageWidth: Double(dims.width), pageHeight: Double(dims.height),
+            selectedText: sel.string, startOffset: nil, endOffset: nil,
+            prefix: nil, suffix: nil, viewportOffset: nil)
+    }
+
+    private func midY(_ pos: PositionData) -> Double {
+        let r = pos.rects.first!
+        return r.y + r.height / 2
+    }
+
+    // THE CRASH: the old index-based core called characterBounds(at:) with an
+    // out-of-range index when the end handle was dragged past the text, trapping.
+    // The selection-based core must not crash and must extend to the last word.
+    func testDragEndPastTextEndDoesNotCrash() throws {
+        let page = textPage()
+        XCTAssertGreaterThan(page.numberOfCharacters, 10)
+        let pos = position(for: NSRange(location: 4, length: 11), on: page) // "quick brown"
+        let farRight = CGPoint(x: pos.pageWidth + 1000, y: midY(pos))
+        let result = PdfViewerController.resizedPosition(
+            page: page, current: pos, edge: .end, toDisplayPoint: farRight)
+        XCTAssertNotNil(result, "dragging end past the text end must extend, not crash/fail")
+        let text = result?.selectedText ?? ""
+        XCTAssertTrue(text.hasPrefix("quick"), "start stays pinned at 'quick': \(text)")
+        XCTAssertTrue(text.hasSuffix("dog"), "end extends to the last word: \(text)")
+    }
+
+    // Dragging the END handle LEFT past the START must NOT drag the beginning
+    // along — crossing the pinned edge holds the last frame (returns nil) instead
+    // of inverting the selection (the "beginning moves when I drag the end" bug).
+    func testDragEndPastStartHolds() throws {
+        let page = textPage()
+        let pos = position(for: NSRange(location: 4, length: 11), on: page) // starts at 'q' (idx 4)
+        // Target 'h' in "The" (index 1), which is BEFORE the start anchor.
+        let h = position(for: NSRange(location: 1, length: 1), on: page)
+        let target = CGPoint(x: h.rects.first!.x + h.rects.first!.width / 2, y: midY(pos))
+        XCTAssertNil(
+            PdfViewerController.resizedPosition(
+                page: page, current: pos, edge: .end, toDisplayPoint: target),
+            "over-dragging the end past the start must hold, not move the start")
+    }
+
+    // Dragging into the left margin (before the pinned start) must HOLD the last
+    // frame, not jump — jumping is exactly the "not smooth" behavior.
+    func testDragIntoLeftMarginHolds() throws {
+        let page = textPage()
+        let pos = position(for: NSRange(location: 4, length: 11), on: page)
+        let farLeft = CGPoint(x: 0, y: midY(pos))
+        XCTAssertNil(
+            PdfViewerController.resizedPosition(
+                page: page, current: pos, edge: .end, toDisplayPoint: farLeft),
+            "an off-text margin point must hold, not jump the highlight")
+    }
+
+    // Dragging the END rightward to a point inside a later word extends the
+    // highlight to track the cursor, with the start unchanged.
+    func testDragEndExtendsToCursor() throws {
+        let page = textPage()
+        let pos = position(for: NSRange(location: 4, length: 11), on: page) // "quick brown"
+        // Target the middle of "jumps" (index 20..24 in the sample string).
+        let jumps = position(for: NSRange(location: 20, length: 5), on: page)
+        let target = CGPoint(x: jumps.rects.first!.x + jumps.rects.first!.width / 2, y: midY(pos))
+        let result = PdfViewerController.resizedPosition(
+            page: page, current: pos, edge: .end, toDisplayPoint: target)
+        XCTAssertNotNil(result)
+        let text = result?.selectedText ?? ""
+        XCTAssertTrue(text.hasPrefix("quick"), "start stays pinned near the original start: \(text)")
+        XCTAssertTrue(text.contains("fox"), "end extends past the original end ('quick brown'): \(text)")
+    }
+
+    // Dragging the START handle leftward extends the highlight to the left while
+    // the END stays pinned.
+    func testDragStartExtendsLeftKeepsEndPinned() throws {
+        let page = textPage()
+        let pos = position(for: NSRange(location: 16, length: 3), on: page) // "fox"
+        // Target the middle of "The" (index 0..2), to the left of "fox".
+        let the = position(for: NSRange(location: 0, length: 3), on: page)
+        let target = CGPoint(x: the.rects.first!.x + the.rects.first!.width / 2, y: midY(pos))
+        let result = PdfViewerController.resizedPosition(
+            page: page, current: pos, edge: .start, toDisplayPoint: target)
+        XCTAssertNotNil(result)
+        let text = result?.selectedText ?? ""
+        XCTAssertTrue(text.hasSuffix("fox"), "end stays pinned at 'fox': \(text)")
+        XCTAssertTrue(text.contains("The") || text.hasPrefix("he"), "start extends leftward: \(text)")
+    }
+
+    // Empty / no-text page must fail gracefully (not crash).
+    func testResizeOnEmptyPageReturnsNil() throws {
+        let data = NSMutableData()
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let ctx = CGContext(consumer: consumer, mediaBox: &box, nil)!
+        ctx.beginPDFPage(nil); ctx.endPDFPage(); ctx.closePDF()
+        let page = PDFDocument(data: data as Data)!.page(at: 0)!
+        let pos = PositionData(
+            rects: [AnnotationRect(x: 10, y: 10, width: 50, height: 12)],
+            pageWidth: 612, pageHeight: 792, selectedText: "x",
+            startOffset: nil, endOffset: nil, prefix: nil, suffix: nil, viewportOffset: nil)
+        XCTAssertNil(PdfViewerController.resizedPosition(
+            page: page, current: pos, edge: .end, toDisplayPoint: CGPoint(x: 100, y: 16)))
+    }
+}

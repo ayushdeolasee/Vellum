@@ -7,6 +7,13 @@ import SwiftUI
 // from store overlays), hosts PdfKitView plus the overlay stack, and registers
 // the zoom/scroll/locator/snapshot handlers on the stores.
 
+/// Carries a prepared (parsed + stripped) PDFDocument out of a detached task.
+/// PDFDocument isn't Sendable, but this instance is freshly created there and
+/// never touched off-main again, so the crossing is safe.
+private struct PreparedPdf: @unchecked Sendable {
+    let document: PDFDocument?
+}
+
 struct PdfViewerView: View {
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -75,6 +82,10 @@ struct PdfViewerView: View {
     }
 
     private func load(tabId: String) async {
+        // The OUTGOING document's pending page text is flushed by ITS OWN
+        // view's teardown/reset (flushAndDropPersister — this view's fresh
+        // controller has no persister to flush); the quit path additionally
+        // awaits those detached flushes via awaitInFlightFlushes.
         unregisterHandlers()
         handlersTabId = nil
         controller.reset()
@@ -83,12 +94,53 @@ struct PdfViewerView: View {
         // clears it alongside the local state reset).
         aiStore.clearDocumentContext()
         do {
+            // The persistent text cache is keyed by the current PDF bytes, so
+            // read them even when this tab can reuse an already prepared PDF.
             let data = try await app.sessions.readPdfBytes(sessionId: tabId)
             guard !Task.isCancelled, app.activeTabId == tabId else { return }
-            guard let document = PDFDocument(data: data) else {
-                loadState = .parseFailed
-                return
+            let document: PDFDocument
+            if let cached = app.cachedPreparedPdf(tabId: tabId) {
+                // Fast path: this tab was opened recently — reuse the prepared
+                // document, skipping the disk read, parse, and strip entirely.
+                document = cached
+            } else {
+                // Parse the PDF and strip its embedded annotations OFF the main
+                // thread — both are heavy CGPDF work that would otherwise freeze
+                // the UI (beachball) on every tab switch for a large document.
+                // The document isn't attached to any view yet, so this is safe.
+                let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
+                    guard let document = PDFDocument(data: data) else { return PreparedPdf(document: nil) }
+                    for index in 0..<document.pageCount {
+                        guard let page = document.page(at: index) else { continue }
+                        for annotation in page.annotations {
+                            page.removeAnnotation(annotation)
+                        }
+                    }
+                    return PreparedPdf(document: document)
+                }.value
+                guard !Task.isCancelled, app.activeTabId == tabId else { return }
+                guard let parsed = prepared.document else {
+                    loadState = .parseFailed
+                    return
+                }
+                app.storePreparedPdf(parsed, tabId: tabId)
+                document = parsed
             }
+            // Restore persisted page text before adopting (PDF only; this view
+            // is guarded to document.kind == .pdf). Hashing + JSON decode run
+            // off the main actor inside the cache actor.
+            let cached: [Int: String]?
+            if let path = app.document?.pdfPath {
+                cached = await PageTextCache.shared.lookup(
+                    path: path, data: data, title: app.document?.title)
+            } else {
+                cached = nil
+            }
+            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            // Unconditional replace (empty on a miss): anything an outgoing
+            // tab's extraction wrote into pageTexts during the awaits above
+            // belongs to the OLD document and must not survive into this one.
+            aiStore.restorePageTexts(cached ?? [:])
             controller.adopt(
                 document: document,
                 app: app,
@@ -97,6 +149,13 @@ struct PdfViewerView: View {
                 initialPage: app.currentPage
             )
             app.setNumPages(document.pageCount)
+            if document.pageCount >= 1, let path = app.document?.pdfPath {
+                controller.installPersister(PageTextPersister(
+                    path: path,
+                    title: app.document?.title,
+                    pageCount: document.pageCount,
+                    seeded: cached ?? [:]))
+            }
             registerHandlers()
             handlersTabId = tabId
             loadState = .loaded(document, tabId: tabId)
@@ -125,6 +184,9 @@ struct PdfViewerView: View {
         aiStore.capturePageImageHandler = { [weak controller] page in
             await controller?.capturePageImage(pageNumber: page)
         }
+        aiStore.ensureExtractedHandler = { [weak controller] pages in
+            await controller?.ensureExtracted(pages: pages) ?? 0
+        }
         app.findQueryHandler = { [weak controller] query in
             MainActor.assumeIsolated { controller?.findQuery(query) }
         }
@@ -137,6 +199,9 @@ struct PdfViewerView: View {
         app.printHandler = { [weak controller] in
             MainActor.assumeIsolated { controller?.printDocument() }
         }
+        app.flushPageTextCacheHandler = { [weak controller] in
+            await controller?.flushPersister()
+        }
     }
 
     private func unregisterHandlers() {
@@ -144,10 +209,12 @@ struct PdfViewerView: View {
         app.scrollToPageHandler = nil
         aiStore.locatePdfTextHandler = nil
         aiStore.capturePageImageHandler = nil
+        aiStore.ensureExtractedHandler = nil
         app.findQueryHandler = nil
         app.findStepHandler = nil
         app.findClearHandler = nil
         app.printHandler = nil
+        app.flushPageTextCacheHandler = nil
     }
 
     private func teardown() {
@@ -159,6 +226,7 @@ struct PdfViewerView: View {
         // handlers never leak.
         if app.activeTabId == handlersTabId || app.document == nil {
             unregisterHandlers()
+            controller.flushAndDropPersister()
             aiStore.clearDocumentContext()
         }
         handlersTabId = nil

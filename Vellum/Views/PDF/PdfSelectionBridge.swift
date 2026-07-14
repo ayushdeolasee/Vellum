@@ -48,6 +48,11 @@ final class PdfViewerController {
     private(set) var selectionPopoverPosition: CGPoint?
     private(set) var contextMenu: PdfContextMenuState?
 
+    /// Live preview of a highlight whose end handle is being dragged. While set,
+    /// the overlay draws this position instead of the stored one; the store is
+    /// only written on drag end so we don't rewrite the PDF on every mouse move.
+    private(set) var highlightResize: (id: String, positionData: PositionData)?
+
     @ObservationIgnored private var initialPage = 1
     @ObservationIgnored private var didInitialScroll = false
     @ObservationIgnored private var lastScrollOrigin: CGPoint?
@@ -55,6 +60,9 @@ final class PdfViewerController {
     @ObservationIgnored private var recomputeScheduled = false
     @ObservationIgnored private var suppressNextMouseUp = false
     @ObservationIgnored private var extractionTask: Task<Void, Never>?
+    /// Persists extracted page text for the current PDF (nil for web docs / 0-page
+    /// docs). Owned here so its lifecycle is tied to the viewed document.
+    @ObservationIgnored private var persister: PageTextPersister?
 
     // Find state (⌘F): every PDFSelection matching the current query, plus the
     // index of the one currently focused.
@@ -62,6 +70,7 @@ final class PdfViewerController {
     @ObservationIgnored private var findIndex = -1
 
     var isNoteMode: Bool { app?.mode == .note }
+    var isSnapshotRegionMode: Bool { app?.mode == .snapshotRegion }
 
     // MARK: - Lifecycle
 
@@ -78,14 +87,16 @@ final class PdfViewerController {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
-        // Mirror renderAnnotationLayer={false}: annotations render ONLY from
-        // store overlays; embedded ones must not double-draw underneath. The
-        // in-memory copy is display-only (mutations rewrite the on-disk file),
-        // so stripping them here never touches the document on disk.
-        stripEmbeddedAnnotations(from: document)
+        // Embedded annotations are stripped off-main by the caller (PdfViewerView
+        // .load) before adopt, so they render ONLY from store overlays and never
+        // double-draw. Stripping here would repeat that heavy work on the main
+        // thread — see PreparedPdf.
     }
 
     func reset() {
+        // Never silently drop an unflushed persister — flush what it has first
+        // (idempotent, a no-op when clean).
+        flushAndDropPersister()
         extractionTask?.cancel()
         extractionTask = nil
         document = nil
@@ -530,12 +541,143 @@ final class PdfViewerController {
         pdfView?.setCurrentSelection(nil, animate: false)
     }
 
+    // MARK: - Highlight edge resize (drag the blue end bars)
+
+    /// Update the live preview as a handle is dragged. `displayPoint` is in the
+    /// annotation's own page space at zoom 1, top-left origin — the same
+    /// coordinate system as the stored rects (the overlay divides the drag
+    /// location by the live scale before calling in).
+    func previewHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) {
+        guard let position = resizedPosition(
+            annotation: annotation, edge: edge, toDisplayPoint: displayPoint) else { return }
+        highlightResize = (id: annotation.id, positionData: position)
+    }
+
+    /// Commit the drag: persist the final position (falling back to the last
+    /// preview if the release point missed a glyph) and clear the preview.
+    func commitHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) {
+        let final = resizedPosition(annotation: annotation, edge: edge, toDisplayPoint: displayPoint)
+            ?? (highlightResize?.id == annotation.id ? highlightResize?.positionData : nil)
+        highlightResize = nil
+        guard let final, final.rects != annotation.positionData?.rects else { return }
+        Task { [weak self] in
+            await self?.annotationStore?.updateAnnotation(UpdateAnnotationInput(
+                id: annotation.id, color: nil, content: nil, positionData: final))
+        }
+    }
+
+    func cancelHighlightResize() {
+        highlightResize = nil
+    }
+
+    /// Rebuild a highlight's position with one edge moved to `displayPoint`,
+    /// keeping the opposite edge anchored. Returns nil when the drag point (or
+    /// the anchor) doesn't land on a glyph, so the caller keeps the last frame.
+    private func resizedPosition(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) -> PositionData? {
+        guard let document,
+              annotation.pageNumber >= 1, annotation.pageNumber <= document.pageCount,
+              let page = document.page(at: annotation.pageNumber - 1),
+              let current = annotation.positionData else { return nil }
+        return Self.resizedPosition(
+            page: page, current: current, edge: edge, toDisplayPoint: displayPoint)
+    }
+
+    /// Pure resize core (testable without the controller/app). See the instance
+    /// wrapper for what it does.
+    static func resizedPosition(
+        page: PDFPage, current: PositionData, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint
+    ) -> PositionData? {
+        guard let firstRect = current.rects.first,
+              let lastRect = current.rects.last else { return nil }
+        guard page.numberOfCharacters > 0 else { return nil }
+
+        // Resize by re-running PDFKit's own point-to-point text selection between
+        // the PINNED edge and the dragged point — the same engine that backs
+        // click-drag selection. We deliberately DON'T use `characterIndex(at:)` /
+        // `characterBounds(at:)`: on real-world PDFs those live in a different
+        // internal coordinate basis than `selectionsByLine()` (e.g. this book
+        // reports a word at glyph-x 441 but selection-line-x 271), so mixing them
+        // made a purely horizontal drag jump to a different line — and
+        // `characterBounds(at:)` can trap past the last glyph. `selection(from:
+        // to:)` is consistent with the stored rects (both selection-space) and
+        // clamps to line ends on its own, so the edge tracks the cursor cleanly.
+        //
+        // The pinned edge stays put: dragging the end anchors the START (left edge
+        // of the first rect); dragging the start anchors the END (right edge of
+        // the last rect). Re-deriving the anchor from the unchanged fixed rect
+        // each frame keeps it rock-stable across repeated drags.
+        let anchorDisplay: CGPoint
+        switch edge {
+        case .end:
+            anchorDisplay = CGPoint(x: firstRect.x, y: firstRect.y + firstRect.height / 2)
+        case .start:
+            anchorDisplay = CGPoint(x: lastRect.x + lastRect.width, y: lastRect.y + lastRect.height / 2)
+        }
+        let anchorPoint = Self.pageSpacePoint(fromDisplay: anchorDisplay, page: page)
+
+        // Clamp the dragged point to the page so an overshoot past an edge still
+        // resolves to the nearest glyph on that side.
+        let clampedDrag = CGPoint(
+            x: min(max(displayPoint.x, 0), current.pageWidth),
+            y: min(max(displayPoint.y, 0), current.pageHeight)
+        )
+        let dragPoint = Self.pageSpacePoint(fromDisplay: clampedDrag, page: page)
+
+        // The dragged edge NEVER crosses the pinned edge: dragging the end past
+        // the start (or the start past the end) would otherwise flip the selection
+        // and make the pinned end travel (the "beginning moves when I drag the
+        // end" bug). Compare in reading order using page-space geometry (y grows
+        // upward, so a smaller y is a lower/later line); if the drag has crossed,
+        // hold the last frame instead of inverting.
+        let lineTol = max(firstRect.height, lastRect.height) * 0.6
+        func isAfter(_ p: CGPoint, _ ref: CGPoint) -> Bool {
+            if p.y < ref.y - lineTol { return true }
+            if p.y > ref.y + lineTol { return false }
+            return p.x > ref.x
+        }
+        switch edge {
+        case .end:   guard isAfter(dragPoint, anchorPoint) else { return nil }
+        case .start: guard isAfter(anchorPoint, dragPoint) else { return nil }
+        }
+
+        guard let selection = page.selection(from: anchorPoint, to: dragPoint),
+              let text = selection.string, !text.isEmpty else { return nil }
+
+        var rects: [AnnotationRect] = []
+        for line in selection.selectionsByLine() {
+            guard let linePage = line.pages.first else { continue }
+            let bounds = line.bounds(for: linePage)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            rects.append(Self.uiRect(fromPageSpace: bounds, page: linePage))
+        }
+        let merged = Self.mergeLineRects(rects)
+        guard !merged.isEmpty else { return nil }
+
+        var next = current
+        next.rects = merged
+        next.selectedText = text
+        // The anchor is geometry-derived from the pinned rect, not a stored index,
+        // so clear any stale offsets from an earlier index-based resize.
+        next.startOffset = nil
+        next.endOffset = nil
+        return next
+    }
+
     // MARK: - Note placement
 
     private func placeNote(
         pageNumber: Int, clickX: Double, clickY: Double,
         pageWidth: Double, pageHeight: Double
     ) async {
+        // An AI "Add as note" click carries the reply text; a plain note tool
+        // click leaves it nil so the sticky opens empty for typing.
+        let pendingContent = app?.consumePendingNoteContent()
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth,
@@ -548,7 +690,7 @@ final class PdfViewerController {
             viewportOffset: nil
         )
         let input = CreateAnnotationInput(
-            type: .note, pageNumber: pageNumber, color: nil, content: nil,
+            type: .note, pageNumber: pageNumber, color: nil, content: pendingContent,
             positionData: position)
         if let annotation = await annotationStore?.addNote(input) {
             annotationStore?.selectAnnotation(annotation.id)
@@ -560,6 +702,7 @@ final class PdfViewerController {
     func addNoteFromContextMenu() {
         guard let menu = contextMenu else { return }
         contextMenu = nil
+        let pendingContent = app?.consumePendingNoteContent()
         Task {
             let position = PositionData(
                 rects: [AnnotationRect(x: menu.clickX, y: menu.clickY, width: 0, height: 0)],
@@ -573,12 +716,35 @@ final class PdfViewerController {
                 viewportOffset: nil
             )
             let input = CreateAnnotationInput(
-                type: .note, pageNumber: menu.pageNumber, color: nil, content: nil,
+                type: .note, pageNumber: menu.pageNumber, color: nil, content: pendingContent,
                 positionData: position)
             if let annotation = await annotationStore?.addNote(input) {
                 annotationStore?.selectAnnotation(annotation.id)
             }
         }
+    }
+
+    // MARK: - Persistent page-text cache
+
+    func installPersister(_ persister: PageTextPersister) {
+        self.persister = persister
+    }
+
+    /// Flush any pending page text to disk (outgoing doc on tab switch, quit).
+    func flushPersister() async {
+        await persister?.flush()
+    }
+
+    /// Synchronous flush-and-drop that survives `reset()`: the flush runs on
+    /// the captured persister (which owns its own page data), so nil'ing the
+    /// property here can't lose pages. Idempotent — a clean persister flushes
+    /// to a no-op. Registered via `flushDetached` so the quit path can await
+    /// writes whose controller is already gone (⌘Q right after a tab switch
+    /// must not truncate the outgoing document's flush).
+    func flushAndDropPersister() {
+        guard let persister else { return }
+        self.persister = nil
+        persister.flushDetached()
     }
 
     // MARK: - AI page-text feed (getTextContent pass)
@@ -588,16 +754,75 @@ final class PdfViewerController {
         guard let document else { return }
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
+        // Generation guard: a replacement viewer mounts BEFORE this view's
+        // onDisappear cancels the walk, and this controller's `document` stays
+        // non-nil until then — so without the tab check, an outgoing walk keeps
+        // writing the OLD document's text into the shared pageTexts while the
+        // new document loads, and the new walk's skip guard then persists it.
+        let tabId = app?.activeTabId
         extractionTask = Task { [weak self] in
             for pageNumber in 1...pageCount {
                 // Idle pacing stand-in for requestIdleCallback's 16 ms fallback.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
                 guard let self, self.document === document,
+                      self.app?.activeTabId == tabId,
                       let page = document.page(at: pageNumber - 1) else { return }
-                self.ai?.setPageText(page: pageNumber, text: page.string ?? "")
+                // Skip pages already restored from the cache: don't even read
+                // page.string (the expensive part) — true resume of a partial walk.
+                if self.ai?.pageTexts[pageNumber] == nil,
+                   let normalized = self.ai?.setPageText(page: pageNumber, text: page.string ?? "") {
+                    self.persister?.noteExtracted(page: pageNumber, text: normalized)
+                }
+            }
+            // Whole document walked: flush with complete = true.
+            await self?.persister?.flush()
+        }
+    }
+
+    /// On-demand text extraction for the AI request path: fill `pageTexts` for
+    /// the requested 1-indexed pages (or the whole document when `pages` is nil)
+    /// with no idle pacing, so a search/read never misses a page the background
+    /// 1→N walk hasn't reached yet. `AiStore.setPageText`'s dedupe keeps this
+    /// idempotent with that walk. Returns how many pages it newly populated
+    /// (drives the `.indexing` indicator). A cooperative yield every so often
+    /// keeps the run loop responsive during a big whole-document pass without
+    /// reintroducing the walk's 16 ms sleep.
+    @discardableResult
+    func ensureExtracted(pages: Set<Int>?) async -> Int {
+        guard let document, let ai else { return 0 }
+        let pageCount = document.pageCount
+        guard pageCount >= 1 else { return 0 }
+        let targets: [Int]
+        if let pages {
+            targets = pages.filter { $0 >= 1 && $0 <= pageCount }.sorted()
+        } else {
+            targets = Array(1...pageCount)
+        }
+        var extracted = 0
+        var sinceYield = 0
+        // Same generation guard as the walk: bail if the active tab changes
+        // mid-pass (this handler slot may still be draining for an old tab).
+        let tabId = app?.activeTabId
+        for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
+            guard self.document === document, app?.activeTabId == tabId,
+                  let page = document.page(at: pageNumber - 1) else { break }
+            if let normalized = ai.setPageText(page: pageNumber, text: page.string ?? "") {
+                persister?.noteExtracted(page: pageNumber, text: normalized)
+            }
+            extracted += 1
+            sinceYield += 1
+            // PDFKit text extraction on a displayed document intentionally stays
+            // on the main actor (thread-safety), so this yield cadence is the only
+            // responsiveness lever — smaller bursts keep the UI more responsive at
+            // the cost of more hops. A persistent text cache (PR B) will make
+            // whole-document on-demand extraction rare.
+            if sinceYield >= 8 {
+                sinceYield = 0
+                await Task.yield()
             }
         }
+        return extracted
     }
 
     // MARK: - AI highlight locator (highlight-locator.ts)
@@ -732,6 +957,20 @@ final class PdfViewerController {
         return AnnotationRect(
             x: Double(minX), y: Double(minY),
             width: Double(maxX - minX), height: Double(maxY - minY))
+    }
+
+    /// Inverse of `uiRect`'s per-corner map: top-left display point (CropBox
+    /// relative, zoom 1) → PDF page space (bottom-left origin) for hit-testing
+    /// with `characterIndex(at:)`.
+    static func pageSpacePoint(fromDisplay point: CGPoint, page: PDFPage) -> CGPoint {
+        let crop = page.bounds(for: .cropBox)
+        let rotation = ((page.rotation % 360) + 360) % 360
+        switch rotation {
+        case 90: return CGPoint(x: point.y + crop.minX, y: point.x + crop.minY)
+        case 180: return CGPoint(x: crop.maxX - point.x, y: point.y + crop.minY)
+        case 270: return CGPoint(x: crop.maxX - point.y, y: crop.maxY - point.x)
+        default: return CGPoint(x: point.x + crop.minX, y: crop.maxY - point.y)
+        }
     }
 
     /// Rotation-aware page display size at zoom 1.

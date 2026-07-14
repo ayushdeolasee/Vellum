@@ -10,11 +10,13 @@ struct SelectionPopover: View {
     let onClose: () -> Void
 
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
     @State private var showNoteInput = false
     @State private var noteText = ""
     @State private var noteButtonHovering = false
+    @State private var askAiHovering = false
     @FocusState private var noteFieldFocused: Bool
 
     var body: some View {
@@ -51,6 +53,21 @@ struct SelectionPopover: View {
                 .help("Add note")
                 .accessibilityLabel("Add note")
                 .accessibilityIdentifier("selectionPopover.addNote")
+
+                Button(action: handleAskAi) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                        .clipShape(Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .onHover { askAiHovering = $0 }
+                .help("Ask AI about this")
+                .accessibilityLabel("Ask AI about this")
+                .accessibilityIdentifier("selectionPopover.askAi")
             }
             .padding(6)
             .darkGlassSurface(in: .capsule)
@@ -74,6 +91,13 @@ struct SelectionPopover: View {
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
+    }
+
+    private func handleAskAi() {
+        let text = selection.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        onClose()
+        guard !text.isEmpty else { return }
+        aiStore.addReference(AiReference(kind: .selection(text: text, page: selection.pageNumber)))
     }
 
     private func handleHighlight(_ color: String) {

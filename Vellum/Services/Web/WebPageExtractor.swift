@@ -2,10 +2,12 @@ import Foundation
 import WebKit
 
 // Live-page pipeline — port of the fetch/normalize/prepare half of
-// src-tauri/src/web_page.rs plus the `vellum-web://` protocol routing from
-// src-tauri/src/lib.rs (handle_vellum_web_request, lines 75–210). The Tauri
-// custom protocol becomes a WKURLSchemeHandler with identical routes and
-// fallback chain, including the redirect snapshot-freshening rules.
+// src-tauri/src/web_page.rs. The Tauri custom protocol became a
+// WKURLSchemeHandler; unlike the original's `?url=<encoded>` route, pages are
+// served under TRUTHFUL proxy URLs (`vellum-web://<real-host>/<real-path>`)
+// so window.location matches the page's server-rendered route and SPA
+// hydration survives (see plans/web-proxy-truthful-urls.html). The redirect
+// snapshot-freshening rules and offline fallback chain are unchanged.
 
 // MARK: - URL normalization (Rust `normalize_url`)
 
@@ -141,7 +143,7 @@ enum WebUrl {
         }
 
         var out = "\(scheme)://"
-        if let userinfo, !userinfo.isEmpty { out += "\(userinfo)@" }
+        if let userinfo, !userinfo.isEmpty { out += "\(encodeUserinfo(userinfo))@" }
         out += host
         if let port { out += ":\(port)" }
         out += path
@@ -283,9 +285,27 @@ enum WebUrl {
     }
 
     private static func encodePathSegment(_ segment: String) -> String {
+        let bytes = Array(segment.utf8)
         var out = ""
-        for byte in segment.utf8 {
+        var i = 0
+        func isHex(_ b: UInt8) -> Bool {
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+        }
+        while i < bytes.count {
+            let byte = bytes[i]
             let c = Character(UnicodeScalar(byte))
+            if c == "%" {
+                // Keep valid %XX escapes verbatim (they're already-encoded input);
+                // a stray % would otherwise produce an invalid URL that
+                // URL(string:) rejects or re-encodes, breaking round-trip identity.
+                if i + 2 < bytes.count, isHex(bytes[i + 1]), isHex(bytes[i + 2]) {
+                    out.append("%")
+                } else {
+                    out += "%25"
+                }
+                i += 1
+                continue
+            }
             let needsEncoding = byte < 0x20 || byte > 0x7e
                 || c == " " || c == "\"" || c == "<" || c == ">" || c == "`"
                 || c == "#" || c == "?" || c == "{" || c == "}"
@@ -294,6 +314,45 @@ enum WebUrl {
             } else {
                 out.append(c)
             }
+            i += 1
+        }
+        return out
+    }
+
+    /// RFC 3986 userinfo: unreserved / pct-encoded / sub-delims / ":".
+    /// Everything else — including a raw "@" from a multi-@ authority — gets
+    /// percent-encoded so normalize's WHATWG-style split (last "@") and
+    /// Foundation's URLComponents re-parse in realUrl agree on the same host.
+    private static func encodeUserinfo(_ userinfo: String) -> String {
+        let bytes = Array(userinfo.utf8)
+        var out = ""
+        var i = 0
+        func isHex(_ b: UInt8) -> Bool {
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+        }
+        // unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~"
+        // sub-delims: "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+        // plus ":" — all allowed verbatim in userinfo.
+        let allowedExtras: Set<Character> = ["-", ".", "_", "~", "!", "$", "&", "'", "(", ")", "*", "+", ",", ";", "=", ":"]
+        while i < bytes.count {
+            let byte = bytes[i]
+            let c = Character(UnicodeScalar(byte))
+            if c == "%" {
+                if i + 2 < bytes.count, isHex(bytes[i + 1]), isHex(bytes[i + 2]) {
+                    out.append("%")
+                } else {
+                    out += "%25"
+                }
+                i += 1
+                continue
+            }
+            let isUnreserved = (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A) || (byte >= 0x30 && byte <= 0x39)
+            if isUnreserved || allowedExtras.contains(c) {
+                out.append(c)
+            } else {
+                out += String(format: "%%%02X", byte)
+            }
+            i += 1
         }
         return out
     }
@@ -607,7 +666,11 @@ enum WebHtml {
     /// - strip `<meta http-equiv="refresh">` tags,
     /// - inject `<base href>` so relative subresources resolve against the
     ///   real origin,
-    /// - inject the Vellum content script with the normalized page URL.
+    /// - inject the unprivileged page-world bootstrap with the normalized
+    ///   page URL and offline flag (only this handler knows them at serve
+    ///   time). The content script itself runs as a WKUserScript in an
+    ///   isolated content world (see WebViewerController.makeWebView) so
+    ///   page scripts can never reach the message bridge.
     static func prepareHtml(_ html: String, pageUrl: String, offline: Bool) -> String {
         var stripped = replaceAll(cspMetaRegex, in: html)
         stripped = replaceAll(refreshMetaRegex, in: stripped)
@@ -616,7 +679,7 @@ enum WebHtml {
         let injection = "<base href=\"\(safeUrlAttr)\"><script>"
             + "window.__VELLUM_PAGE_URL__=\(jsonString(pageUrl));"
             + "window.__VELLUM_OFFLINE__=\(offline);\n"
-            + WebContentScript.source
+            + WebContentScript.pageWorldSource
             + "</script>"
 
         let ns = stripped as NSString
@@ -680,15 +743,79 @@ private struct WebProxyResponse {
 
 final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "vellum-web"
+    /// Second registered scheme for plain-http targets: the proxy authority
+    /// mirrors the real host, so the real scheme has to live in the custom
+    /// scheme name itself ("i" = insecure).
+    static let insecureScheme = "vellum-webi"
+    /// Reserved authorities — `.invalid` is an RFC 2606 TLD that can never
+    /// resolve, so these cannot collide with a real site's own hosts/paths.
+    static let assetHost = "assets.vellum.invalid"
+    static let snapshotHost = "snapshot.vellum.invalid"
 
-    /// Build the reader URL for a target page, mirroring the frontend's
-    /// `webProxyUrl` (encodeURIComponent on the target).
+    /// Build the reader URL for a target page. The mapping keeps the real
+    /// authority/path/query so in-page routers see the address they were
+    /// server-rendered for — `window.location.pathname` must match, or SPA
+    /// hydration tears the page down (see plans/web-proxy-truthful-urls.html).
     static func proxyUrl(for target: String) -> URL {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-_.!~*'()")
-        let encoded = target.addingPercentEncoding(withAllowedCharacters: allowed) ?? target
-        return URL(string: "vellum-web://localhost/?url=\(encoded)")
-            ?? URL(string: "vellum-web://localhost/")!
+        // `target` is always WebUrl.normalize output; swap the scheme by
+        // string surgery so the WHATWG-serialized authority/path/query stay
+        // byte-identical (URLComponents reassembly would re-encode).
+        let mapped: String
+        if target.hasPrefix("https://") {
+            mapped = "\(scheme)://\(target.dropFirst("https://".count))"
+        } else if target.hasPrefix("http://") {
+            mapped = "\(insecureScheme)://\(target.dropFirst("http://".count))"
+        } else {
+            mapped = "\(scheme)://\(target)"
+        }
+        guard let url = URL(string: mapped) else {
+            // Normalize's output should always be URL(string:)-parseable; reaching
+            // here means an encoding gap upstream — surface it in debug instead of
+            // silently rebinding the tab to an empty snapshot page.
+            assertionFailure("proxyUrl: unparseable mapped URL for target \(target)")
+            return URL(string: "\(scheme)://\(snapshotHost)/")!
+        }
+        return url
+    }
+
+    /// Reader URL that explicitly requests the offline snapshot for a page
+    /// key (navigation-failure fallback).
+    static func snapshotUrl(forKey key: String) -> URL {
+        URL(string: "\(scheme)://\(snapshotHost)/\(key)")!
+    }
+
+    /// Map a proxy URL back to the real page URL (inverse of `proxyUrl`).
+    /// Percent-encoding is taken verbatim from the request so the round trip
+    /// through WKWebView cannot change page identity. Returns nil for the
+    /// reserved authorities and foreign schemes.
+    static func realUrl(from url: URL) -> String? {
+        let realScheme: String
+        switch url.scheme?.lowercased() {
+        case scheme: realScheme = "https"
+        case insecureScheme: realScheme = "http"
+        default: return nil
+        }
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              var host = comps.encodedHost, !host.isEmpty,
+              host != assetHost, host != snapshotHost else { return nil }
+        if host.contains(":"), !host.hasPrefix("[") {
+            host = "[\(host)]" // IPv6 literal: encodedHost strips the brackets
+        }
+        var authority = ""
+        if let user = comps.percentEncodedUser {
+            authority += user
+            if let password = comps.percentEncodedPassword {
+                authority += ":\(password)"
+            }
+            authority += "@"
+        }
+        authority += host
+        if let port = comps.port { authority += ":\(port)" }
+        var path = comps.percentEncodedPath
+        if path.isEmpty { path = "/" }
+        var out = "\(realScheme)://\(authority)\(path)"
+        if let query = comps.percentEncodedQuery { out += "?\(query)" }
+        return out
     }
 
     private var activeTasks: Set<ObjectIdentifier> = []
@@ -696,12 +823,12 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let id = ObjectIdentifier(urlSchemeTask)
         activeTasks.insert(id)
-        let requestUrl = urlSchemeTask.request.url
+        let request = urlSchemeTask.request
         Task { @MainActor [weak self] in
-            let response = await Self.handleRequest(requestUrl)
+            let response = await Self.handleRequest(request)
             guard let self, self.activeTasks.contains(id) else { return }
             self.activeTasks.remove(id)
-            let url = requestUrl ?? URL(string: "vellum-web://localhost/")!
+            let url = request.url ?? URL(string: "\(Self.scheme)://\(Self.snapshotHost)/")!
             guard let http = HTTPURLResponse(
                 url: url,
                 statusCode: response.status,
@@ -720,22 +847,34 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     // MARK: Routing
 
-    private static func handleRequest(_ url: URL?) async -> WebProxyResponse {
-        guard let url else {
-            return .html(404, "<h1>Missing url parameter</h1>")
+    private static func handleRequest(_ request: URLRequest) async -> WebProxyResponse {
+        guard let url = request.url, let host = url.host?.lowercased() else {
+            return .html(404, "<h1>Invalid request</h1>")
         }
 
-        let path = url.path
-        if path.hasPrefix("/asset/") {
-            return serveArchiveAsset(rest: String(path.dropFirst("/asset/".count)))
+        // Reserved authorities first: archive assets and the explicit
+        // offline-snapshot fallback.
+        if host == assetHost {
+            return serveArchiveAsset(rest: String(url.path.dropFirst()))
+        }
+        if host == snapshotHost {
+            return serveSnapshotFallback(key: String(url.path.dropFirst()))
         }
 
-        // ?url=<encoded>, parsed form-urlencoded like the Rust side.
-        let rawQuery = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .percentEncodedQuery ?? ""
-        let rawUrl = WebUrl.parseFormPairs(rawQuery).first(where: { $0.0 == "url" })?.1
-        guard let rawUrl else {
-            return .html(404, "<h1>Missing url parameter</h1>")
+        // Everything else is the page authority: map the truthful proxy URL
+        // back to the real page URL.
+        guard let rawUrl = realUrl(from: url) else {
+            return .html(404, "<h1>Invalid request</h1>")
+        }
+
+        // Subresource-shaped requests at the page authority must not turn
+        // into page fetches: WebKit fires `Link: rel=preload` headers from
+        // cross-origin responses at this handler (resolved against the
+        // document origin), which would otherwise let any site's response
+        // headers make Vellum issue arbitrary network requests.
+        if let mainDocumentURL = request.mainDocumentURL, mainDocumentURL != url {
+            return WebProxyResponse(
+                status: 204, headers: ["Cache-Control": "no-store"], body: Data())
         }
 
         let pageUrl: String
@@ -750,15 +889,6 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                     pageUrl: rawUrl, offline: false))
         }
 
-        // Base for absolute asset URLs inside served snapshots.
-        let assetBase: String
-        if let scheme = url.scheme, let host = url.host {
-            let port = url.port.map { ":\($0)" } ?? ""
-            assetBase = "\(scheme)://\(host)\(port)"
-        } else {
-            assetBase = "vellum-web://localhost"
-        }
-
         // Sidecar state drives snapshot refresh and the loading policy.
         let key = WebLibrary.pageKey(pageUrl)
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
@@ -768,8 +898,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
         // Pinned-snapshot policy (from an imported archive): don't hit the
         // network at all when the installed snapshot is available.
-        if snapshotOnly, let response = serveInstalledSnapshot(
-            key: key, pageUrl: pageUrl, assetBase: assetBase) {
+        if snapshotOnly, let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
         }
 
@@ -808,8 +937,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         } catch {
             // Offline / link-rot fallback: prefer the self-contained
             // .vellumweb snapshot, then the plain saved snapshot.
-            if let response = serveInstalledSnapshot(
-                key: key, pageUrl: pageUrl, assetBase: assetBase) {
+            if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
                 return response
             }
             if let html = try? String(contentsOf: snapshotFile, encoding: .utf8) {
@@ -823,7 +951,8 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    /// `/asset/<key>/<name>` → `<appData>/web/archives/<key>/assets/<name>`.
+    /// `vellum-web://assets.vellum.invalid/<key>/<name>` →
+    /// `<appData>/web/archives/<key>/assets/<name>`.
     private static func serveArchiveAsset(rest: String) -> WebProxyResponse {
         let notFound = WebProxyResponse.html(404, "<h1>Asset not found</h1>")
         guard let slash = rest.firstIndex(of: "/") else { return notFound }
@@ -849,19 +978,43 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
             headers: [
                 "Content-Type": WebArchive.contentTypeForName(name),
                 "Cache-Control": "public, max-age=604800",
+                // Pages and assets live on different origins now; CORS-mode
+                // loads (SVG <use>, crossorigin attrs) need this to succeed.
+                "Access-Control-Allow-Origin": "*",
             ],
             body: bytes)
     }
 
     /// Serve the installed self-contained snapshot with asset placeholders
-    /// resolved to proxy asset URLs.
-    private static func serveInstalledSnapshot(
-        key: String, pageUrl: String, assetBase: String
-    ) -> WebProxyResponse? {
+    /// resolved to the reserved asset authority.
+    private static func serveInstalledSnapshot(key: String, pageUrl: String) -> WebProxyResponse? {
         let snapshot = WebLibrary.archiveDir(forKey: key).appendingPathComponent("snapshot.html")
         guard let html = try? String(contentsOf: snapshot, encoding: .utf8) else { return nil }
         let resolved = WebArchive.resolveAssetPlaceholders(
-            html, assetBase: "\(assetBase)/asset/\(key)")
+            html, assetBase: "\(scheme)://\(assetHost)/\(key)")
         return .html(200, WebHtml.prepareHtml(resolved, pageUrl: pageUrl, offline: true))
+    }
+
+    /// Explicit snapshot request (navigation-failure fallback): installed
+    /// archive snapshot first, then the plain saved snapshot, else Vellum's
+    /// own error page — the webview must never end up on WebKit's native one.
+    private static func serveSnapshotFallback(key: String) -> WebProxyResponse {
+        guard !key.isEmpty, key.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            return .html(404, "<h1>Snapshot not found</h1>")
+        }
+        let record = WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))
+        let pageUrl = record?.url ?? ""
+        if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+            return response
+        }
+        if let html = try? String(
+            contentsOf: WebLibrary.snapshotPath(forKey: key), encoding: .utf8) {
+            return .html(200, WebHtml.prepareHtml(html, pageUrl: pageUrl, offline: true))
+        }
+        return .html(404, WebHtml.prepareHtml(
+            WebHtml.errorPage(
+                url: pageUrl,
+                message: "This page failed to load and no offline snapshot is saved."),
+            pageUrl: pageUrl, offline: true))
     }
 }

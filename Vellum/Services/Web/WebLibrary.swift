@@ -147,12 +147,33 @@ enum WebLibrary {
         }
     }
 
+    // Per-record serialization. The sidecar CRUD actors are per-session, so two
+    // sessions (or an open touching `openedAt` while another writes annotations)
+    // for the same page key would otherwise run overlapping read-modify-write
+    // cycles and clobber each other. Routing every mutation through `withRecord`
+    // under a per-path lock makes the shared file the single serialization point.
+    nonisolated(unsafe) private static var recordLocks: [String: NSLock] = [:]
+    private static let recordLocksGuard = NSLock()
+
+    private static func recordLock(for path: URL) -> NSLock {
+        recordLocksGuard.lock()
+        defer { recordLocksGuard.unlock() }
+        if let existing = recordLocks[path.path] { return existing }
+        let lock = NSLock()
+        recordLocks[path.path] = lock
+        return lock
+    }
+
     /// Read-modify-write on the sidecar (a corrupt/missing file is silently
-    /// replaced by a fresh record, matching the Rust behavior).
+    /// replaced by a fresh record, matching the Rust behavior). Serialized per
+    /// record path so concurrent sessions for the same page never interleave.
     @discardableResult
     static func withRecord<T>(
         url: String, recordPath: URL, _ mutate: (inout WebPageRecord) -> T
     ) throws -> T {
+        let lock = recordLock(for: recordPath)
+        lock.lock()
+        defer { lock.unlock() }
         var record = loadRecord(at: recordPath) ?? WebPageRecord(url: url)
         let out = mutate(&record)
         try saveRecord(record, at: recordPath)
@@ -178,13 +199,13 @@ enum WebLibrary {
     /// Mark a page saved without disturbing an existing `saved_at`. Used by
     /// the automatic on-open archiver so opened pages land in the library.
     static func markSavedIfAbsent(recordPath: URL, url: String) throws {
-        var record = loadRecord(at: recordPath) ?? WebPageRecord(url: url)
-        record.url = url
-        record.saved = true
-        if record.savedAt == nil {
-            record.savedAt = rfc3339Now()
+        try withRecord(url: url, recordPath: recordPath) { record in
+            record.url = url
+            record.saved = true
+            if record.savedAt == nil {
+                record.savedAt = rfc3339Now()
+            }
         }
-        try saveRecord(record, at: recordPath)
     }
 
     static func hasLocalSnapshot(forKey key: String) -> Bool {

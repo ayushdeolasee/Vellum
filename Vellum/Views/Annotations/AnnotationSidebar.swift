@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AnnotationSidebar: View {
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(\.palette) private var palette
 
@@ -25,7 +26,7 @@ struct AnnotationSidebar: View {
                                 annotation: annotation,
                                 selected: annotationStore.selectedAnnotationId == annotation.id,
                                 editing: editingId == annotation.id,
-                                fontSize: appStore.sidebarFontSize,
+                                fontSize: workspace.sidebarFontSize,
                                 editText: $editText,
                                 editFieldFocused: $editFieldFocused,
                                 onSelect: { navigate(to: annotation) },
@@ -309,8 +310,9 @@ private struct AnnotationRow: View {
                         .onExitCommand(perform: onCancelEdit)
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
-                    Text(content)
-                        .font(.system(size: fontSize))
+                    // Markdown + LaTeX like the AI chat; lineLimit propagates to
+                    // each rendered block so long notes stay row-sized.
+                    MarkdownMessage(content: content, textColor: palette.foreground, baseSize: fontSize)
                         .foregroundStyle(palette.foreground)
                         .lineLimit(3)
                         .padding(.top, 4)

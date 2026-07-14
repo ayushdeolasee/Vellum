@@ -7,11 +7,21 @@ import CoreGraphics
 // delete annotations, metadata, bytes). A session is just a canonicalized
 // path; like the Rust code, every operation loads the file fresh from disk,
 // mutates, and rewrites it atomically.
+//
+// All disk I/O + PDFKit parse/serialize/rewrite runs on a dedicated background
+// `PdfDocumentIO` actor (never the main thread) and is serialized per document.
+// The Tauri backend got this for free from a background command thread + a
+// per-file lock; the earlier port pinned everything to @MainActor, so every
+// annotation move/edit/read blocked the UI for the full read+parse+serialize+
+// write cost (~15s on a large PDF) and stacked multiple full-file copies in
+// memory. The @MainActor `PdfDocumentSession` is now a thin facade that hops to
+// the actor, releasing the main thread for the duration of the work.
 
 @MainActor
 final class PdfSessionBackend {
     /// open_file: validate the extension, canonicalize, require a file, parse,
-    /// and read (title, page_count, last_page).
+    /// and read (title, page_count, last_page). The parse runs off the main
+    /// thread on the session's IO actor.
     func open(path: String, sessionId: String) async throws -> PdfDocumentSession {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         guard ext == "pdf" else {
@@ -25,17 +35,9 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
         }
 
-        let document = try PdfDocumentLoader.loadRaw(path: canonical)
-        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: canonical)
-
-        return PdfDocumentSession(
-            path: canonical,
-            info: DocumentInfo(
-                kind: .pdf,
-                pdfPath: canonical,
-                title: title,
-                pageCount: pageCount,
-                lastPage: lastPage))
+        let io = PdfDocumentIO(path: canonical)
+        let info = try await io.open()
+        return PdfDocumentSession(io: io, path: canonical, info: info)
     }
 }
 
@@ -99,14 +101,20 @@ enum PdfDocumentLoader {
     }
 }
 
-// MARK: - Session
+// MARK: - Session facade
 
+/// Thin @MainActor facade satisfying the @MainActor `DocumentSession` protocol.
+/// Holds only the Sendable `DocumentInfo`; every operation delegates to the
+/// background `PdfDocumentIO` actor, so the `await` performs a real actor hop
+/// that releases the main thread while the file work runs.
 @MainActor
 final class PdfDocumentSession: DocumentSession {
     let path: String
     let info: DocumentInfo
+    private let io: PdfDocumentIO
 
-    init(path: String, info: DocumentInfo) {
+    init(io: PdfDocumentIO, path: String, info: DocumentInfo) {
+        self.io = io
         self.path = path
         self.info = info
     }
@@ -118,8 +126,58 @@ final class PdfDocumentSession: DocumentSession {
     /// close_session runs the same no-op sync; the manager drops the session.
     func close() async throws {}
 
+    func readPdfBytes() async throws -> Data { try await io.readPdfBytes() }
+
+    func annotations(pageNumber: Int?) async throws -> [Annotation] {
+        try await io.annotations(pageNumber: pageNumber)
+    }
+
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        try await io.createAnnotation(input)
+    }
+
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+        try await io.updateAnnotation(input)
+    }
+
+    func deleteAnnotation(id: String) async throws -> Bool {
+        try await io.deleteAnnotation(id: id)
+    }
+
+    func setMetadata(key: String, value: String) async throws {
+        try await io.setMetadata(key: key, value: value)
+    }
+}
+
+// MARK: - Background file engine
+
+/// Owns all PDF disk I/O and PDFKit/CGPDF parse-serialize-rewrite work for one
+/// open document. Being an `actor`, its calls run off the main thread on the
+/// cooperative pool AND are serialized per instance, so overlapping mutations
+/// to the same file can't interleave or clobber each other. PDFDocument /
+/// CGPDFDocument values stay local to each call and never cross the actor
+/// boundary, so no Sendable guarantees are required of them.
+actor PdfDocumentIO {
+    let path: String
+
+    init(path: String) {
+        self.path = path
+    }
+
+    /// Parse a freshly opened document and read (title, page_count, last_page).
+    func open() throws -> DocumentInfo {
+        let document = try PdfDocumentLoader.loadRaw(path: path)
+        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: path)
+        return DocumentInfo(
+            kind: .pdf,
+            pdfPath: path,
+            title: title,
+            pageCount: pageCount,
+            lastPage: lastPage)
+    }
+
     /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
-    func readPdfBytes() async throws -> Data {
+    func readPdfBytes() throws -> Data {
         do {
             return try Data(contentsOf: URL(fileURLWithPath: path))
         } catch {
@@ -131,7 +189,7 @@ final class PdfDocumentSession: DocumentSession {
 
     /// get_annotations: every supported page annotation plus outline bookmarks,
     /// sorted by page_number then created_at (string compare, stable).
-    func annotations(pageNumber: Int?) async throws -> [Annotation] {
+    func annotations(pageNumber: Int?) throws -> [Annotation] {
         let document = try PdfDocumentLoader.loadRaw(path: path)
         var annotations: [Annotation] = []
 
@@ -171,14 +229,14 @@ final class PdfDocumentSession: DocumentSession {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
 
-        let id = UUID().uuidString.lowercased()
+        let id = input.id ?? UUID().uuidString.lowercased()
         let now = PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
                 normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return Annotation(
                 id: id,
                 type: .bookmark,
@@ -202,7 +260,7 @@ final class PdfDocumentSession: DocumentSession {
 
         var data = try serialize(document)
         PdfBytePatch.apply(patches, to: &data)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try await writeAndRefreshCache(data)
 
         return Annotation(
             id: id,
@@ -249,7 +307,7 @@ final class PdfDocumentSession: DocumentSession {
         }
 
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try await writeAndRefreshCache(data)
         return true
     }
 
@@ -263,7 +321,7 @@ final class PdfDocumentSession: DocumentSession {
             guard let patched = try PdfBookmarks.deleteBookmarkIncrement(normalizedData: normalized, id: id) else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return true
         }
 
@@ -288,13 +346,13 @@ final class PdfDocumentSession: DocumentSession {
             else {
                 return false
             }
-            try saveThroughPdfKit(patched)
+            try await saveThroughPdfKit(patched)
             return true
         }
 
         page.removeAnnotation(annotation)
         let data = try serialize(document)
-        try PdfAtomicWriter.save(data, toPath: path)
+        try await writeAndRefreshCache(data)
         return true
     }
 
@@ -305,7 +363,7 @@ final class PdfDocumentSession: DocumentSession {
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)
         let patched = try PdfMetadata.setMetadataIncrement(normalizedData: normalized, key: key, value: value)
-        try saveThroughPdfKit(patched)
+        try await saveThroughPdfKit(patched)
     }
 
     // MARK: Helpers
@@ -391,13 +449,26 @@ final class PdfDocumentSession: DocumentSession {
         return data
     }
 
+    /// Atomically write already-serialized PDF data and re-key the page-text
+    /// cache to the rewrite (text-neutral; see saveThroughPdfKit).
+    private func writeAndRefreshCache(_ data: Data) async throws {
+        try PdfAtomicWriter.save(data, toPath: path)
+        await PageTextCache.shared.refreshHash(path: path, data: data)
+    }
+
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
-    private func saveThroughPdfKit(_ patchedData: Data) throws {
+    private func saveThroughPdfKit(_ patchedData: Data) async throws {
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
         let data = try serialize(document)
         try PdfAtomicWriter.save(data, toPath: path)
+        // In-app rewrites are text-neutral, so the persistent page-text cache
+        // re-keys (refreshes its validation hash) instead of invalidating; the
+        // IO actor serializes writes per document and the quit path awaits this,
+        // so the refresh always completes before a reopen or termination
+        // (issue #37 PR B).
+        await PageTextCache.shared.refreshHash(path: path, data: data)
     }
 }

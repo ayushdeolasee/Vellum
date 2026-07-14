@@ -1,6 +1,6 @@
 import Foundation
 
-// The Vellum content script — a verbatim port of
+// The Vellum content script — a port of
 // src-tauri/assets/vellum-content-script.js with only the transport adapted
 // for WKWebView:
 //  - the top-frame guard is removed (the page is the webview's main frame,
@@ -12,12 +12,25 @@ import Foundation
 // Everything else — the whitespace table, 3600-char page chunking, quote
 // contexts, resolveHighlight scoring — is byte-for-byte the anchor
 // compatibility contract and must not drift.
+//
+// The code is split across two JS worlds:
+//  - `source` runs in an isolated WKContentWorld ("VellumBridge", see
+//    WebViewerController.makeWebView) as a WKUserScript, so page scripts can
+//    never reach the webkit message bridge or window.__vellumCmd. Isolated
+//    worlds share the DOM (overlays, selection, events all work) but not JS
+//    state, so the per-page constants arrive as data- attributes on
+//    <html> rather than window globals.
+//  - `pageWorldSource` is a small unprivileged bootstrap injected inline into
+//    the served HTML by WebHtml.prepareHtml. It publishes those attributes
+//    and hosts the two hooks that only work from the page's own world:
+//    wrapping history.pushState/replaceState and overriding window.open.
 
 enum WebContentScript {
     static let source = #"""
 /*
- * Vellum content script — injected into reader webpages. Runs inside the
- * page's own JS context and talks to the app via the webkit message bridge.
+ * Vellum content script — injected into reader webpages as a WKUserScript in
+ * the isolated "VellumBridge" content world (page scripts cannot reach the
+ * webkit message bridge). Shares the page's DOM but not its JS state.
  *
  * Responsibilities:
  *  - extract readable text and chunk it into "virtual pages"
@@ -33,9 +46,179 @@ enum WebContentScript {
   if (window.__vellumLoaded) return;
   window.__vellumLoaded = true;
 
-  var PAGE_URL = window.__VELLUM_PAGE_URL__ || location.href;
+  // Per-page constants published by the page-world bootstrap as DOM
+  // attributes (the DOM is the only state the two worlds share).
+  var PAGE_URL =
+    document.documentElement.getAttribute("data-vellum-page-url") || location.href;
   var PAGE_TARGET_CHARS = 3600;
   var MAX_PAGES = 200;
+
+  // ------------------------------------------------------------------
+  // Soft-navigation tracking (see plans/web-proxy-truthful-urls.html)
+  //
+  // The history.pushState/replaceState remap shim lives in the page-world
+  // bootstrap (pageWorldSource) — an isolated-world override can't touch
+  // the page's own history binding. It dispatches "__vellum-url-changed"
+  // on the shared document after each call; from here we keep PAGE_URL
+  // fresh so re-inits attribute extraction, archives, and annotations to
+  // the right record.
+  // ------------------------------------------------------------------
+  var REAL_PROTOCOL = "https:";
+  var REAL_HOST = "";
+  try {
+    var realParsed = new URL(PAGE_URL);
+    REAL_PROTOCOL = realParsed.protocol;
+    REAL_HOST = realParsed.host;
+  } catch (e) {
+    /* PAGE_URL not absolute; tracking stays inert */
+  }
+
+  var TRACKING_KEYS = ["fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "ref_src", "twclid"];
+
+  // The real-URL equivalent of the current location, with tracking params
+  // dropped like the app-side normalizer — PAGE_URL comparisons and init
+  // reports must not thrash on utm noise.
+  function currentRealUrl() {
+    var search = "";
+    if (location.search && location.search.length > 1) {
+      var kept = [];
+      var pairs = location.search.slice(1).split("&");
+      for (var i = 0; i < pairs.length; i++) {
+        var keyName = pairs[i].split("=")[0].replace(/\+/g, " ");
+        try {
+          keyName = decodeURIComponent(keyName);
+        } catch (e) {
+          /* keep raw */
+        }
+        if (/^utm_/.test(keyName)) continue;
+        if (TRACKING_KEYS.indexOf(keyName) !== -1) continue;
+        kept.push(pairs[i]);
+      }
+      if (kept.length) search = "?" + kept.join("&");
+    }
+    return REAL_PROTOCOL + "//" + location.host + location.pathname + search;
+  }
+
+  var urlReinitTimer = null;
+  function noteUrlChange() {
+    if (!REAL_HOST) return;
+    var real = currentRealUrl();
+    if (real === PAGE_URL) return;
+    PAGE_URL = real;
+    // Soft navigation: re-extract and re-init (debounced — the router is
+    // still swapping DOM in) so the shell rebinds to the new address.
+    if (urlReinitTimer) clearTimeout(urlReinitTimer);
+    urlReinitTimer = setTimeout(function () {
+      urlReinitTimer = null;
+      initialize(true);
+    }, 400);
+  }
+
+  document.addEventListener("__vellum-url-changed", noteUrlChange);
+  window.addEventListener("popstate", noteUrlChange);
+
+  // ------------------------------------------------------------------
+  // YouTube embed fallback facade
+  //
+  // YouTube's embed player refuses to play when the embedding document
+  // cannot send an http(s) Referer header. WebKit never sends one from
+  // a custom-scheme (vellum-web://) page, so every embed variant dies
+  // with "Error 153 — Video player configuration error" (verified
+  // empirically against bare, autoplay, and jsapi+origin embeds; the
+  // origin query param does not help). Unfixable client-side — replace
+  // the dead player with a clickable thumbnail that opens the video in
+  // the system browser via the app shell.
+  // ------------------------------------------------------------------
+  function youtubeVideoId(raw) {
+    if (!raw) return null;
+    try {
+      var u = new URL(String(raw), location.href);
+      if (!/(^|\.)youtube(-nocookie)?\.com$/.test(u.hostname)) return null;
+      var m = u.pathname.match(/^\/embed\/([\w-]{6,})/);
+      // `/embed/videoseries?list=...` is a playlist embed, not a video — its
+      // literal "videoseries" id yields a broken thumbnail and a dead
+      // watch?v=videoseries link. Leave the playlist iframe alone.
+      if (!m || m[1] === "videoseries") return null;
+      return m[1];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function replaceWithFacade(frame) {
+    var id = youtubeVideoId(frame.getAttribute("src"));
+    if (!id || !frame.parentNode) return;
+    var facade = document.createElement("div");
+    facade.setAttribute("data-vellum-youtube", id);
+    // Keyboard/AT-reachable: the facade is the only way to reach the video.
+    facade.setAttribute("role", "button");
+    facade.setAttribute("tabindex", "0");
+    facade.setAttribute("aria-label", "Watch on YouTube");
+    var w = +(frame.getAttribute("width") || 0);
+    var h = +(frame.getAttribute("height") || 0);
+    facade.style.cssText =
+      "position:relative;cursor:pointer;background:#000 center/cover no-repeat;" +
+      "background-image:url('https://i.ytimg.com/vi/" + id + "/hqdefault.jpg');" +
+      (w > 0 && h > 0
+        ? "width:" + w + "px;height:" + h + "px;"
+        : "width:100%;aspect-ratio:16/9;");
+    var badge = document.createElement("div");
+    badge.style.cssText =
+      "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+      "flex-direction:column;gap:8px;color:#fff;font:500 14px -apple-system,sans-serif;" +
+      "background:rgba(0,0,0,0.35);text-shadow:0 1px 3px rgba(0,0,0,0.8);";
+    badge.innerHTML =
+      '<svg width="68" height="48" viewBox="0 0 68 48"><path d="M66.52 7.74a8 8 0 0 0' +
+      "-5.6-5.66C55.98.86 34 .86 34 .86s-21.98 0-26.92 1.22a8 8 0 0 0-5.6 5.66C.26 " +
+      "12.72.26 24 .26 24s0 11.28 1.22 16.26a8 8 0 0 0 5.6 5.66C12.02 47.14 34 47.14 " +
+      '34 47.14s21.98 0 26.92-1.22a8 8 0 0 0 5.6-5.66C67.74 35.28 67.74 24 67.74 24s0' +
+      '-11.28-1.22-16.26z" fill="#f00"/><path d="M45 24 27 14v20z" fill="#fff"/></svg>' +
+      "<span>Watch on YouTube</span>";
+    facade.appendChild(badge);
+    facade.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      post("open-youtube", { id: id });
+    });
+    // Enter/Space activate it the same way a click does, for keyboard users.
+    facade.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        e.stopPropagation();
+        post("open-youtube", { id: id });
+      }
+    });
+    frame.parentNode.replaceChild(facade, frame);
+  }
+
+  if (REAL_HOST) {
+    // Catch player iframes however they arrive: SSR markup, innerHTML,
+    // or the IFrame API's createElement path.
+    new MutationObserver(function (mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        var added = mutations[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var node = added[j];
+          if (!node) continue;
+          if (node.tagName === "IFRAME") {
+            replaceWithFacade(node);
+          } else if (node.querySelectorAll) {
+            node.querySelectorAll("iframe[src]").forEach(replaceWithFacade);
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+    // This script is injected at document end, so DOMContentLoaded may
+    // already be behind us — scan immediately in that case.
+    var scanFrames = function () {
+      document.querySelectorAll("iframe[src]").forEach(replaceWithFacade);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", scanFrames);
+    } else {
+      scanFrames();
+    }
+  }
 
   // Raw text domain: concatenation of all accepted text nodes.
   var entries = []; // [{ node, start, end }] raw offsets per text node
@@ -58,6 +241,22 @@ enum WebContentScript {
   var resolvedBookmarks = []; // [{ id, start }] after re-anchoring
   var noteMode = false;
   var initialized = false;
+
+  // Highlight edge-resize state. The app shell nominates the selected highlight
+  // (the one whose edit popover is open); we draw draggable blue end bars on it,
+  // mirroring the PDF viewer. Dragging a bar re-anchors that edge to the caret
+  // under the pointer while the opposite edge stays pinned.
+  var selectedHighlightId = null;
+  // Resolved raw offsets of the selected highlight this render, so a drag can
+  // read its pinned edge without re-resolving.
+  var selectedHighlightRange = null; // { start, end }
+  // Live drag preview: while set, renderHighlights draws these offsets for the
+  // matching id instead of the stored ones (the store is only written on drop).
+  var resizePreview = null; // { id, start, end }
+  var resizeState = null; // { id, edge, start, end, anchorOffset } during a drag
+  // True from a handle mousedown until just after the drop, so the trailing
+  // mouseup doesn't clear the selection / close the edit popover.
+  var resizing = false;
 
   // Find bar state (⌘F): matches are raw-offset {start,end} pairs, rendered in
   // their own overlay layer so the app's find never touches annotation layers.
@@ -527,13 +726,24 @@ enum WebContentScript {
     while (root.firstChild) root.removeChild(root.firstChild);
     resolveBookmarks();
     highlightHitRects = [];
+    selectedHighlightRange = null;
+    resizeHandleEls = null;
+    // First and last rendered rect of the selected highlight (viewport coords),
+    // where the drag handles get anchored after the fill divs are drawn.
+    var selectedFirstRect = null;
+    var selectedLastRect = null;
 
     for (var i = 0; i < appliedHighlights.length; i++) {
       var h = appliedHighlights[i];
-      var resolved = resolveHighlight(h);
+      var resolved =
+        resizePreview && resizePreview.id === h.id
+          ? { start: resizePreview.start, end: resizePreview.end }
+          : resolveHighlight(h);
       if (!resolved) continue;
       var range = rangeFromRaw(resolved.start, resolved.end);
       if (!range) continue;
+      var isSelected = h.id === selectedHighlightId;
+      if (isSelected) selectedHighlightRange = { start: resolved.start, end: resolved.end };
       var rects = range.getClientRects();
       for (var r = 0; r < rects.length; r++) {
         var rect = rects[r];
@@ -545,22 +755,23 @@ enum WebContentScript {
           width: rect.width,
           height: rect.height,
         });
-        var div = document.createElement("div");
-        div.setAttribute("data-vellum-id", h.id);
-        div.style.cssText =
-          "position:absolute;pointer-events:none;border-radius:2px;" +
-          "mix-blend-mode:multiply;opacity:0.55;";
-        div.style.left = rect.left + window.scrollX + "px";
-        div.style.top = rect.top + window.scrollY + "px";
-        div.style.width = rect.width + "px";
-        div.style.height = rect.height + "px";
-        try {
-          div.style.backgroundColor = h.color || "#fef08a";
-        } catch (err) {
-          div.style.backgroundColor = "#fef08a";
+        if (isSelected) {
+          if (!selectedFirstRect) selectedFirstRect = rect;
+          selectedLastRect = rect;
         }
-        root.appendChild(div);
+        root.appendChild(makeFillDiv(h.id, h.color, rect));
       }
+    }
+
+    // Draggable blue end bars on the selected highlight (matches the PDF viewer).
+    // Kept as persistent nodes so a drag repositions them in place rather than
+    // rebuilding (see drawResizePreview).
+    if (selectedHighlightRange && selectedFirstRect && selectedLastRect) {
+      var startHandle = makeResizeHandle("start", selectedFirstRect);
+      var endHandle = makeResizeHandle("end", selectedLastRect);
+      root.appendChild(startHandle);
+      root.appendChild(endHandle);
+      resizeHandleEls = { start: startHandle, end: endHandle };
     }
 
     // Sticky-note markers: a small clickable badge at the note's anchor. The
@@ -626,6 +837,368 @@ enum WebContentScript {
       });
     });
     root.appendChild(marker);
+  }
+
+  // ------------------------------------------------------------------
+  // Highlight edge resize (drag the blue end bars)
+  // ------------------------------------------------------------------
+
+  var RESIZE_COLOR = "#2563eb"; // blue-600, matches the PDF viewer handles
+  var RESIZE_BAR_W = 3;
+  var RESIZE_KNOB = 11;
+  var RESIZE_PAD = 10; // extra hit slop around the knob
+  // The two live handle elements while a highlight is selected. Persisting them
+  // lets a drag reposition the handles in place (layoutResizeHandle) instead of
+  // recreating them every frame — recreating the grabbed handle mid-drag is
+  // what made WebKit lose its mousedown anchor and select the whole page.
+  var resizeHandleEls = null; // { start, end }
+
+  function makeFillDiv(id, color, rect) {
+    var div = document.createElement("div");
+    div.setAttribute("data-vellum-id", id);
+    div.style.cssText =
+      "position:absolute;pointer-events:none;border-radius:2px;" +
+      "mix-blend-mode:multiply;opacity:0.55;";
+    div.style.left = rect.left + window.scrollX + "px";
+    div.style.top = rect.top + window.scrollY + "px";
+    div.style.width = rect.width + "px";
+    div.style.height = rect.height + "px";
+    try {
+      div.style.backgroundColor = color || "#fef08a";
+    } catch (err) {
+      div.style.backgroundColor = "#fef08a";
+    }
+    return div;
+  }
+
+  // Position an existing handle (outer + its ._bar / ._knob children) onto
+  // `rect` — the highlight's first (start) or last (end) client rect in viewport
+  // coordinates. The handle is placed in document coordinates so it tracks the
+  // page as it scrolls. The handle's high z-index keeps it above the fill divs
+  // regardless of DOM order, so a drag never has to re-append it.
+  function layoutResizeHandle(outer, edge, rect) {
+    var outerW = RESIZE_KNOB + RESIZE_PAD;
+    var outerH = rect.height + RESIZE_KNOB + RESIZE_PAD;
+    var barCenterX = (edge === "start" ? rect.left : rect.right) + window.scrollX;
+    var docTop = rect.top + window.scrollY;
+    outer.style.left = barCenterX - outerW / 2 + "px";
+    outer.style.top = docTop - RESIZE_PAD / 2 - RESIZE_KNOB / 2 + "px";
+    outer.style.width = outerW + "px";
+    outer.style.height = outerH + "px";
+
+    var barTop = (outerH - rect.height) / 2;
+    var bar = outer._bar;
+    bar.style.left = (outerW - RESIZE_BAR_W) / 2 + "px";
+    bar.style.top = barTop + "px";
+    bar.style.width = RESIZE_BAR_W + "px";
+    bar.style.height = Math.max(rect.height, RESIZE_KNOB) + "px";
+
+    var knob = outer._knob;
+    knob.style.left = (outerW - RESIZE_KNOB) / 2 + "px";
+    // Knob at the outer end: top for the start bar, bottom for the end bar.
+    knob.style.top =
+      (edge === "start" ? barTop : barTop + rect.height) - RESIZE_KNOB / 2 + "px";
+    knob.style.width = RESIZE_KNOB + "px";
+    knob.style.height = RESIZE_KNOB + "px";
+  }
+
+  // A vertical blue bar with a round knob sitting on one edge of the selected
+  // highlight.
+  function makeResizeHandle(edge, rect) {
+    var outer = document.createElement("div");
+    outer.setAttribute("data-vellum-resize", edge);
+    outer.style.cssText =
+      "position:absolute;pointer-events:auto;cursor:grab;z-index:2147483647;";
+
+    var bar = document.createElement("div");
+    bar.style.cssText =
+      "position:absolute;border-radius:2px;background:" + RESIZE_COLOR + ";";
+    outer.appendChild(bar);
+    outer._bar = bar;
+
+    var knob = document.createElement("div");
+    knob.style.cssText =
+      "position:absolute;border-radius:50%;box-sizing:border-box;background:" +
+      RESIZE_COLOR + ";border:1.5px solid #fff;";
+    outer.appendChild(knob);
+    outer._knob = knob;
+
+    layoutResizeHandle(outer, edge, rect);
+
+    outer.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      beginResize(edge);
+    });
+    return outer;
+  }
+
+  // Per-frame update during a drag: redraw ONLY the selected highlight's fill
+  // from the preview offsets and reposition the two handles, leaving every
+  // other overlay element — and, crucially, the grabbed handle's DOM node —
+  // untouched. This is the whole reason the drag no longer triggers a native
+  // page selection.
+  function drawResizePreview() {
+    if (!resizeState || !resizePreview) return;
+    var root = ensureOverlayRoot();
+    var id = resizeState.id;
+
+    var stale = [];
+    for (var c = 0; c < root.children.length; c++) {
+      var child = root.children[c];
+      if (child.getAttribute && child.getAttribute("data-vellum-id") === id) {
+        stale.push(child);
+      }
+    }
+    for (var s = 0; s < stale.length; s++) root.removeChild(stale[s]);
+
+    var range = rangeFromRaw(resizePreview.start, resizePreview.end);
+    if (!range) return;
+    var color = null;
+    for (var i = 0; i < appliedHighlights.length; i++) {
+      if (appliedHighlights[i].id === id) {
+        color = appliedHighlights[i].color;
+        break;
+      }
+    }
+    var rects = range.getClientRects();
+    var firstRect = null;
+    var lastRect = null;
+    for (var r = 0; r < rects.length; r++) {
+      var rect = rects[r];
+      if (rect.width < 1 || rect.height < 1) continue;
+      if (!firstRect) firstRect = rect;
+      lastRect = rect;
+      root.appendChild(makeFillDiv(id, color, rect));
+    }
+    if (firstRect && lastRect) {
+      selectedHighlightRange = { start: resizePreview.start, end: resizePreview.end };
+      if (resizeHandleEls && resizeHandleEls.start && resizeHandleEls.end) {
+        layoutResizeHandle(resizeHandleEls.start, "start", firstRect);
+        layoutResizeHandle(resizeHandleEls.end, "end", lastRect);
+      }
+    }
+  }
+
+  // Preventing a native text selection during the drag uses THREE guards, the
+  // first of which is decisive and mechanism-independent:
+  //  1. A full-viewport DRAG SHIELD: a transparent fixed div covering the whole
+  //     page while the drag is live. WebKit cannot select text the cursor never
+  //     touches, so this defeats the selection no matter HOW it would otherwise
+  //     start — including the "anchor-loss" case where the grabbed handle's
+  //     mousedown (which we preventDefault) is torn out from under WebKit and it
+  //     begins a fresh selection that a cancellable `selectstart` never fires
+  //     for. The one catch: `caretRangeFromPoint` (how we map the drag point to
+  //     a text offset) also respects the shield, so onResizeMove flips the
+  //     shield to pointer-events:none for that single synchronous hit-test and
+  //     back — no real event can slip through in the gap.
+  //  2. `selectstart`/`dragstart` cancellation: aborts a normal user-selection
+  //     the instant it tries to form (and blocks native image/text drag-drop).
+  //  3. `user-select:none` + grabbing cursor page-wide: extra insurance and the
+  //     visual affordance.
+  function onResizeSelectStart(e) {
+    e.preventDefault();
+  }
+  var resizeLockStyle = null;
+  var resizeShield = null;
+  function setResizeLock(on) {
+    if (on) {
+      if (!resizeShield) {
+        resizeShield = document.createElement("div");
+        resizeShield.id = "__vellum-resize-shield";
+        resizeShield.setAttribute("aria-hidden", "true");
+        resizeShield.style.cssText =
+          "position:fixed;left:0;top:0;width:100vw;height:100vh;" +
+          "z-index:2147483647;background:transparent;cursor:grabbing;";
+        (document.body || document.documentElement).appendChild(resizeShield);
+      }
+      document.addEventListener("selectstart", onResizeSelectStart, true);
+      document.addEventListener("dragstart", onResizeSelectStart, true);
+      if (!resizeLockStyle) {
+        resizeLockStyle = document.createElement("style");
+        resizeLockStyle.id = "__vellum-resize-lock";
+        // The overlay rule matters as much as the user-select one: the grabbed
+        // handle (and any note marker) is pointer-events:auto and sits directly
+        // under the cursor, so caretRangeFromPoint would hit IT instead of the
+        // text below. That boundary lives in the overlay root at the END of
+        // documentElement, which rawOffsetOfBoundary maps to rawText.length —
+        // snapping the dragged edge to the end of the document (the "resize
+        // selects the whole page" bug). Move/up are captured on document, so
+        // the handles need no events while the drag is live.
+        resizeLockStyle.textContent =
+          "*{-webkit-user-select:none!important;user-select:none!important;" +
+          "cursor:grabbing!important;}" +
+          "#__vellum-highlights *{pointer-events:none!important;}";
+        (document.head || document.documentElement).appendChild(resizeLockStyle);
+      }
+      var sel = window.getSelection();
+      if (sel && !sel.isCollapsed) sel.removeAllRanges();
+    } else {
+      if (resizeShield) {
+        if (resizeShield.parentNode) resizeShield.parentNode.removeChild(resizeShield);
+        resizeShield = null;
+      }
+      document.removeEventListener("selectstart", onResizeSelectStart, true);
+      document.removeEventListener("dragstart", onResizeSelectStart, true);
+      if (resizeLockStyle) {
+        if (resizeLockStyle.parentNode) {
+          resizeLockStyle.parentNode.removeChild(resizeLockStyle);
+        }
+        resizeLockStyle = null;
+      }
+    }
+  }
+
+  // The knobs are small and the highlight fill divs are pointer-events:none, so
+  // a mousedown that misses the knob lands on the page text underneath and
+  // starts a normal drag-selection ("finicky... it selects the whole page").
+  // Fix: while a highlight is selected, ANY mousedown on it (or within a margin
+  // of its handles) begins a resize of the nearest edge instead — no text
+  // selection can start. Capture phase + stopPropagation so it also pre-empts
+  // the per-handle listener (no double beginResize) and the link/click paths.
+  function onSelectedHighlightMouseDown(e) {
+    if (selectedHighlightId === null || resizing || noteMode || e.button !== 0) return;
+    var rects = [];
+    for (var i = 0; i < highlightHitRects.length; i++) {
+      if (highlightHitRects[i].id === selectedHighlightId) rects.push(highlightHitRects[i]);
+    }
+    if (rects.length === 0) return;
+    var docX = e.clientX + window.scrollX;
+    var docY = e.clientY + window.scrollY;
+    var margin = RESIZE_KNOB + RESIZE_PAD; // cover the knob/hit-slop past the text edges
+    var inside = false;
+    for (var r = 0; r < rects.length; r++) {
+      var rc = rects[r];
+      if (
+        docX >= rc.left - margin && docX <= rc.left + rc.width + margin &&
+        docY >= rc.top - margin && docY <= rc.top + rc.height + margin
+      ) { inside = true; break; }
+    }
+    if (!inside) return;
+    // Nearest edge: distance to the start (left of first rect) vs the end
+    // (right of last rect).
+    var first = rects[0], last = rects[rects.length - 1];
+    var dStart = Math.hypot(docX - first.left, docY - (first.top + first.height / 2));
+    var dEnd = Math.hypot(docX - (last.left + last.width), docY - (last.top + last.height / 2));
+    e.preventDefault();
+    e.stopPropagation();
+    beginResize(dStart <= dEnd ? "start" : "end");
+  }
+
+  function beginResize(edge) {
+    if (!selectedHighlightRange || selectedHighlightId === null) return;
+    resizing = true;
+    resizeState = {
+      id: selectedHighlightId,
+      edge: edge,
+      start: selectedHighlightRange.start,
+      end: selectedHighlightRange.end,
+      anchorOffset: edge === "start" ? selectedHighlightRange.end : selectedHighlightRange.start,
+    };
+    setResizeLock(true);
+    document.addEventListener("mousemove", onResizeMove, true);
+    document.addEventListener("mouseup", onResizeUp, true);
+  }
+
+  function onResizeMove(e) {
+    if (!resizeState) return;
+    e.preventDefault();
+    // Belt-and-suspenders: drop any selection the browser managed to start
+    // before the guards took hold.
+    var liveSel = window.getSelection();
+    if (liveSel && !liveSel.isCollapsed) liveSel.removeAllRanges();
+    // The shield sits over the text, so drop it to pointer-events:none for the
+    // single synchronous caret hit-test, then restore it. Nothing can select in
+    // this gap because no event is dispatched during a synchronous call.
+    if (resizeShield) resizeShield.style.pointerEvents = "none";
+    var caret = rawOffsetAtPoint(e.clientX, e.clientY);
+    if (resizeShield) resizeShield.style.pointerEvents = "auto";
+    if (caret === null) return; // over a gap/chrome: hold the last frame
+    // Plausibility guard: hit-testing in empty regions (page margins, space
+    // past the last paragraph, footer/header gaps) snaps the caret to a
+    // document-boundary position whole screens away from the pointer — most
+    // dangerously rawText.length, which yanks the dragged edge to the end of
+    // the page in one frame. Require the caret's rendered line to be near the
+    // pointer's y; otherwise hold the last frame like a missed hit-test.
+    // Probe the nearest rendered (non-space) character — a caret on collapsed
+    // whitespace (line breaks, the document's trailing whitespace nodes) has
+    // no box of its own to measure.
+    var probeAt = Math.min(caret, rawText.length - 1);
+    while (probeAt > 0 && isSpaceCode(rawText.charCodeAt(probeAt))) probeAt--;
+    var caretProbe = rangeFromRaw(probeAt, probeAt + 1);
+    if (caretProbe) {
+      var caretRect = caretProbe.getBoundingClientRect();
+      if (isFinite(caretRect.top) && (caretRect.width > 0 || caretRect.height > 0)) {
+        var dy = 0;
+        if (e.clientY < caretRect.top) dy = caretRect.top - e.clientY;
+        else if (e.clientY > caretRect.bottom) dy = e.clientY - caretRect.bottom;
+        if (dy > 80) return;
+      }
+    }
+    var start = resizeState.start;
+    var end = resizeState.end;
+    if (resizeState.edge === "start") {
+      // Dragged edge never crosses (or touches) the pinned end.
+      start = Math.max(0, Math.min(caret, resizeState.anchorOffset - 1));
+      end = resizeState.anchorOffset;
+    } else {
+      start = resizeState.anchorOffset;
+      end = Math.min(rawText.length, Math.max(caret, resizeState.anchorOffset + 1));
+    }
+    if (start === resizeState.start && end === resizeState.end) return;
+    resizeState.start = start;
+    resizeState.end = end;
+    resizePreview = { id: resizeState.id, start: start, end: end };
+    drawResizePreview();
+  }
+
+  function onResizeUp() {
+    document.removeEventListener("mousemove", onResizeMove, true);
+    document.removeEventListener("mouseup", onResizeUp, true);
+    setResizeLock(false);
+    var state = resizeState;
+    resizeState = null;
+    resizePreview = null;
+    // Let the trailing mouseup->reportSelection and click handlers see that a
+    // resize just finished, then release the flag.
+    setTimeout(function () {
+      resizing = false;
+    }, 60);
+    if (!state) return;
+    var start = state.start;
+    var end = state.end;
+    var text = collapseWs(rawText.slice(start, end)).trim();
+    // Collapsed range OR whitespace-only quote: bail like a no-op drag. An
+    // empty selectedText would be dropped by the app shell's hasQuote filter
+    // on the next apply-annotations round-trip, silently deleting the
+    // highlight.
+    if (end <= start || text.length === 0) {
+      renderHighlights();
+      return;
+    }
+    var ctx = quoteContext(start, end);
+    // Update the local record so the highlight stays at the new size until the
+    // app shell's apply-annotations round-trip lands (avoids a flicker back).
+    for (var i = 0; i < appliedHighlights.length; i++) {
+      if (appliedHighlights[i].id === state.id) {
+        appliedHighlights[i].start = start;
+        appliedHighlights[i].end = end;
+        appliedHighlights[i].text = text;
+        appliedHighlights[i].prefix = ctx.prefix;
+        appliedHighlights[i].suffix = ctx.suffix;
+        break;
+      }
+    }
+    renderHighlights();
+    post("highlight-resized", {
+      id: state.id,
+      start: start,
+      end: end,
+      text: text,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      pageNumber: pageForRaw(start),
+    });
   }
 
   // ------------------------------------------------------------------
@@ -829,6 +1402,9 @@ enum WebContentScript {
   // ------------------------------------------------------------------
 
   function reportSelection() {
+    // A handle drag ends in a mouseup too; don't let it clear the selection or
+    // dismiss the highlight's edit popover.
+    if (resizing) return;
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       post("selection-cleared");
@@ -1072,15 +1648,15 @@ enum WebContentScript {
     true
   );
 
-  window.open = function (u) {
-    try {
-      var abs = new URL(u, PAGE_URL).toString();
-      if (/^https?:/i.test(abs)) post("navigate", { url: abs });
-    } catch (err) {
-      /* ignore */
-    }
-    return null;
-  };
+  // window.open is overridden by the page-world bootstrap (only the page's
+  // own world can replace the binding page scripts call); it publishes the
+  // target on the shared <html> element and pings this event. Routing the
+  // URL through the reader here grants the page nothing it can't already do
+  // with location.assign.
+  document.addEventListener("__vellum-open-url", function () {
+    var u = document.documentElement.getAttribute("data-vellum-open-url");
+    if (u && /^https?:/i.test(u)) post("navigate", { url: u });
+  });
 
   // ------------------------------------------------------------------
   // Commands from the app shell (invoked via evaluateJavaScript)
@@ -1103,10 +1679,35 @@ enum WebContentScript {
         reportScroll(true);
         break;
 
+      case "set-selected-highlight": {
+        var nextId = d.id != null ? String(d.id) : null;
+        if (nextId !== selectedHighlightId) {
+          selectedHighlightId = nextId;
+          if (nextId === null) {
+            resizePreview = null;
+            resizeState = null;
+            resizing = false;
+            setResizeLock(false);
+          }
+          renderHighlights();
+        }
+        break;
+      }
+
       case "set-mode": {
         noteMode = d.mode === "note";
         try {
-          document.documentElement.style.cursor = noteMode ? "crosshair" : "";
+          // Custom "+" cursor (matches the PDF note tool): a bold plus with a
+          // white halo so it reads on any background, hotspot at the crossing.
+          var noteCursorSvg =
+            "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'>" +
+            "<line x1='12' y1='5' x2='12' y2='19' stroke='white' stroke-width='5' stroke-linecap='round'/>" +
+            "<line x1='5' y1='12' x2='19' y2='12' stroke='white' stroke-width='5' stroke-linecap='round'/>" +
+            "<line x1='12' y1='5' x2='12' y2='19' stroke='black' stroke-width='2.5' stroke-linecap='round'/>" +
+            "<line x1='5' y1='12' x2='19' y2='12' stroke='black' stroke-width='2.5' stroke-linecap='round'/></svg>";
+          var noteCursor =
+            "url(\"data:image/svg+xml," + encodeURIComponent(noteCursorSvg) + "\") 12 12, crosshair";
+          document.documentElement.style.cursor = noteMode ? noteCursor : "";
         } catch (err) {
           /* ignore */
         }
@@ -1114,32 +1715,53 @@ enum WebContentScript {
       }
 
       case "scroll-to-annotation": {
-        var match = null;
+        var record = null;
         var annotationLists = [appliedHighlights, appliedNotes];
-        for (var li = 0; li < annotationLists.length && !match; li++) {
+        for (var li = 0; li < annotationLists.length && !record; li++) {
           var list = annotationLists[li];
           for (var i = 0; i < list.length; i++) {
             if (list[i].id === d.id) {
-              match = resolveHighlight(list[i]);
+              record = list[i];
               break;
             }
           }
         }
-        if (match) {
-          var range = rangeFromRaw(match.start, match.end);
-          if (range) {
-            var rect = range.getBoundingClientRect();
-            // Already fully on screen (e.g. selected by clicking it in the
-            // page): scrolling would just yank the viewport — and dismiss
-            // the popover the click opened.
-            if (rect.top < 0 || rect.bottom > window.innerHeight) {
-              window.scrollTo({
-                top: Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3),
-                behavior: "auto",
-              });
-            }
-          }
+        if (!record) break;
+        // Re-resolved per call: hydration/lazy-load keeps reflowing the page
+        // after the jump, so the target must be measured fresh each time.
+        // Returns the current scrollY when the annotation is already fully on
+        // screen (e.g. selected by clicking it in the page): scrolling then
+        // would just yank the viewport — and dismiss the popover the click
+        // opened.
+        var annotationTop = function () {
+          var resolved = resolveHighlight(record);
+          var range = resolved ? rangeFromRaw(resolved.start, resolved.end) : null;
+          if (!range) return null;
+          var rect = range.getBoundingClientRect();
+          if (rect.top >= 0 && rect.bottom <= window.innerHeight) return window.scrollY;
+          return Math.max(0, rect.top + window.scrollY - window.innerHeight * 0.3);
+        };
+        var annotationFirstTop = annotationTop();
+        if (annotationFirstTop === null) break;
+        if (annotationFirstTop !== window.scrollY) {
+          window.scrollTo({ top: annotationFirstTop, behavior: "auto" });
         }
+        // Late-loading content above the annotation (lazy images, embeds,
+        // SPA hydration) shifts layout after the jump, leaving the viewport
+        // above the highlight. Re-correct briefly — same pattern as
+        // scroll-to-position — but back off as soon as the user scrolls
+        // somewhere else themselves.
+        var annotationExpectedY = window.scrollY;
+        var settleAnnotation = function () {
+          if (Math.abs(window.scrollY - annotationExpectedY) > 150) return;
+          var top = annotationTop();
+          if (top !== null && Math.abs(top - window.scrollY) > 24) {
+            window.scrollTo({ top: top, behavior: "auto" });
+            annotationExpectedY = window.scrollY;
+          }
+        };
+        setTimeout(settleAnnotation, 400);
+        setTimeout(settleAnnotation, 1200);
         break;
       }
 
@@ -1287,7 +1909,7 @@ enum WebContentScript {
     post("init", {
       url: PAGE_URL,
       title: document.title || null,
-      offline: !!window.__VELLUM_OFFLINE__,
+      offline: document.documentElement.getAttribute("data-vellum-offline") === "true",
       // Capability handshake: this script understands capture-position /
       // scroll-to-position. Lets the app shell degrade to page bookmarks
       // when an older embedded script is running.
@@ -1319,6 +1941,8 @@ enum WebContentScript {
     initialize(true);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", relayout);
+    // Grab-anywhere-on-the-selected-highlight resize (see the function comment).
+    document.addEventListener("mousedown", onSelectedHighlightMouseDown, true);
 
     // Back/forward can restore this page from WebKit's page cache, where
     // user scripts don't re-run: without a fresh init the shell keeps the
@@ -1348,6 +1972,20 @@ enum WebContentScript {
         renderHighlights();
         reportScroll(true);
       }, 600);
+      // Our own transient drag chrome (the resize shield + user-select lock
+      // style) is added/removed on document.body/head during a drag; those
+      // mutations must not trigger a re-extract that rebuilds the handles
+      // mid-drag.
+      function isOwnResizeChrome(n) {
+        return !!n && (n.id === "__vellum-resize-shield" || n.id === "__vellum-resize-lock");
+      }
+      function onlyOwnChrome(list) {
+        if (!list || list.length === 0) return false;
+        for (var k = 0; k < list.length; k++) {
+          if (!isOwnResizeChrome(list[k])) return false;
+        }
+        return true;
+      }
       new MutationObserver(function (records) {
         for (var i = 0; i < records.length; i++) {
           var target = records[i].target;
@@ -1355,6 +1993,14 @@ enum WebContentScript {
             continue;
           }
           if (findRoot && (target === findRoot || findRoot.contains(target))) {
+            continue;
+          }
+          if (isOwnResizeChrome(target)) continue;
+          // Pure shield/lock add or remove: not a page change.
+          if (
+            records[i].type === "childList" &&
+            (onlyOwnChrome(records[i].addedNodes) || onlyOwnChrome(records[i].removedNodes))
+          ) {
             continue;
           }
           remap();
@@ -1380,6 +2026,95 @@ enum WebContentScript {
     // Fall back in case load stalls on a slow subresource.
     setTimeout(start, 4000);
   }
+})();
+"""#
+
+    /// Unprivileged page-world bootstrap, injected inline into the served
+    /// HTML by `WebHtml.prepareHtml` (which prefixes the
+    /// `window.__VELLUM_PAGE_URL__` / `window.__VELLUM_OFFLINE__` constants —
+    /// only the scheme handler knows the redirect-followed URL and the
+    /// offline flag at serve time). Runs in the page's own JS context — it
+    /// must, because it wraps the page's history binding and window.open —
+    /// but has no bridge access: it only publishes shared DOM attributes and
+    /// dispatches DOM events the isolated-world content script listens for,
+    /// none of which grant a page more than location.assign already does.
+    static let pageWorldSource = #"""
+(function () {
+  "use strict";
+  if (window.__vellumPageShimLoaded) return;
+  window.__vellumPageShimLoaded = true;
+
+  var PAGE_URL = window.__VELLUM_PAGE_URL__ || location.href;
+  var root = document.documentElement;
+  // Republish the per-page constants where the isolated world can see them.
+  root.setAttribute("data-vellum-page-url", PAGE_URL);
+  root.setAttribute("data-vellum-offline", window.__VELLUM_OFFLINE__ ? "true" : "false");
+
+  // ------------------------------------------------------------------
+  // History API shim (see plans/web-proxy-truthful-urls.html)
+  //
+  // The injected <base href> points at the real https origin so
+  // subresources resolve — but it also makes RELATIVE
+  // history.pushState/replaceState URLs resolve against it, which is
+  // cross-origin to this vellum-web document, so WebKit throws a
+  // SecurityError mid-hydration in SPA routers (Next.js does exactly
+  // this). Resolve url arguments against location.href instead, and map
+  // absolute real-origin URLs back onto the reader origin. The isolated
+  // world is pinged afterwards so it can refresh its PAGE_URL.
+  // ------------------------------------------------------------------
+  var REAL_HOST = "";
+  try {
+    REAL_HOST = new URL(PAGE_URL).host;
+  } catch (e) {
+    /* PAGE_URL not absolute; remap degrades to absolute resolution */
+  }
+
+  function remapHistoryUrl(url) {
+    if (url === undefined || url === null) return url;
+    try {
+      var abs = new URL(String(url), location.href);
+      if ((abs.protocol === "http:" || abs.protocol === "https:") && abs.host === REAL_HOST) {
+        return location.protocol + "//" + location.host + abs.pathname + abs.search + abs.hash;
+      }
+      return abs.href;
+    } catch (e) {
+      return url;
+    }
+  }
+
+  function noteUrlChange() {
+    try {
+      document.dispatchEvent(new Event("__vellum-url-changed"));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  var nativePushState = history.pushState.bind(history);
+  var nativeReplaceState = history.replaceState.bind(history);
+  history.pushState = function (state, title, url) {
+    nativePushState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+  history.replaceState = function (state, title, url) {
+    nativeReplaceState(state, title, remapHistoryUrl(url));
+    noteUrlChange();
+  };
+
+  // No popups in the reader: hand window.open targets to the isolated world
+  // (via the shared DOM) so they become normal reader navigations.
+  window.open = function (u) {
+    try {
+      var abs = new URL(u, PAGE_URL).toString();
+      if (/^https?:/i.test(abs)) {
+        root.setAttribute("data-vellum-open-url", abs);
+        document.dispatchEvent(new Event("__vellum-open-url"));
+      }
+    } catch (err) {
+      /* ignore */
+    }
+    return null;
+  };
 })();
 """#
 }

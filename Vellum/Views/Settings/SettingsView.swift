@@ -19,6 +19,9 @@ struct SettingsView: View {
 
             AiSettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+
+            StorageSettingsTab()
+                .tabItem { Label("Storage", systemImage: "internaldrive") }
         }
         .frame(width: 480)
     }
@@ -59,14 +62,14 @@ private struct GeneralSettingsTab: View {
 // MARK: - Reading
 
 private struct ReadingSettingsTab: View {
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
         Form {
             Section {
                 Slider(
                     value: fontSizeBinding,
-                    in: AppStore.minSidebarFontSize...AppStore.maxSidebarFontSize,
+                    in: WorkspaceStore.minSidebarFontSize...WorkspaceStore.maxSidebarFontSize,
                     step: 1
                 ) {
                     Text("Sidebar text size")
@@ -76,7 +79,7 @@ private struct ReadingSettingsTab: View {
                     Text("A").font(.system(size: 16))
                 }
                 LabeledContent("Current size") {
-                    Text("\(Int(appStore.sidebarFontSize)) pt")
+                    Text("\(Int(workspace.sidebarFontSize)) pt")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -94,8 +97,8 @@ private struct ReadingSettingsTab: View {
 
     private var fontSizeBinding: Binding<Double> {
         Binding(
-            get: { appStore.sidebarFontSize },
-            set: { appStore.sidebarFontSize = $0 }
+            get: { workspace.sidebarFontSize },
+            set: { workspace.sidebarFontSize = $0 }
         )
     }
 }
@@ -103,7 +106,7 @@ private struct ReadingSettingsTab: View {
 // MARK: - Annotations
 
 private struct AnnotationsSettingsTab: View {
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -129,9 +132,9 @@ private struct AnnotationsSettingsTab: View {
     }
 
     private func swatch(_ color: HighlightColor) -> some View {
-        let selected = appStore.defaultHighlightColor.caseInsensitiveCompare(color.value) == .orderedSame
+        let selected = workspace.defaultHighlightColor.caseInsensitiveCompare(color.value) == .orderedSame
         return Button {
-            appStore.defaultHighlightColor = color.value
+            workspace.defaultHighlightColor = color.value
         } label: {
             Circle()
                 .fill(Color(hex: color.value))
@@ -154,37 +157,46 @@ private struct AnnotationsSettingsTab: View {
 
 private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
+    @Environment(\.palette) private var palette
 
     var body: some View {
         Form {
             Section {
-                Picker("Provider", selection: providerBinding) {
-                    Text("Gemini").tag(AiProvider.gemini)
-                    Text("OpenAI API").tag(AiProvider.openai)
-                    Text("Codex CLI").tag(AiProvider.codex)
+                Picker("Provider", selection: aiStore.providerBinding) {
+                    ForEach(AiProviderOption.all) { option in
+                        Text(option.label).tag(option.provider)
+                    }
                 }
 
-                if aiStore.settings.provider != .codex {
-                    SecureField(
-                        aiStore.settings.provider == .openai ? "OpenAI API key" : "Gemini API key",
-                        text: apiKeyBinding,
-                        prompt: Text(aiStore.settings.provider == .openai ? "sk-…" : "AIza…")
-                    )
+                if aiStore.settings.provider == .chatgpt {
+                    LabeledContent("Account") { ChatGPTSignInControl() }
+                } else {
+                    LabeledContent(aiStore.keyFieldLabel) {
+                        RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
+                            .id(aiStore.settings.provider)
+                    }
                 }
 
-                Picker("Model", selection: modelBinding) {
-                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                LabeledContent("Model") {
+                    AiModelSelectorField()
+                }
+                capabilityWarnings
+                Picker("Thinking", selection: aiStore.reasoningBinding) {
+                    ForEach(AiThinkingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
                 }
             } header: {
                 Text("Assistant")
             }
 
             Section {
-                Picker("Voice mode", selection: voiceBinding) {
+                Picker("Voice mode", selection: aiStore.voiceBinding()) {
                     Text("Off").tag(VoiceMode.off)
                     Text("Push-to-talk").tag(VoiceMode.pushToTalk)
                 }
-                Toggle("Speak assistant responses (TTS)", isOn: ttsBinding)
+                Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
             } header: {
                 Text("Voice")
             }
@@ -193,63 +205,198 @@ private struct AiSettingsTab: View {
         .scrollDisabled(true)
     }
 
-    private var models: [String] {
-        AiModelCatalog.models(for: aiStore.settings.provider)
-    }
-
-    private var providerBinding: Binding<AiProvider> {
-        Binding(get: { aiStore.settings.provider }, set: { value in
-            var settings = aiStore.settings
-            settings.provider = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var apiKeyBinding: Binding<String> {
-        Binding(
-            get: { aiStore.settings.provider == .openai ? aiStore.settings.openaiApiKey : aiStore.settings.apiKey },
-            set: { value in
-                var settings = aiStore.settings
-                if settings.provider == .openai { settings.openaiApiKey = value } else { settings.apiKey = value }
-                aiStore.setSettings(settings)
+    @ViewBuilder
+    private var capabilityWarnings: some View {
+        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
+            if !option.supportsVision {
+                Label(AiCapabilityWarning.noVision, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
             }
+            if !option.supportsTools {
+                Label(AiCapabilityWarning.noTools, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.gold)
+            }
+        }
+    }
+}
+
+// MARK: - Storage
+
+/// Manages the on-disk extracted-text cache (`PageTextCache`): shows total size,
+/// a per-document breakdown sorted by size, and destructive controls to clear
+/// one document's cached text or all of it. Unlike its sibling tabs this one
+/// scrolls — the document list can grow unbounded — so it is height-bounded and
+/// deliberately does NOT set `.scrollDisabled(true)`.
+private struct StorageSettingsTab: View {
+    @Environment(\.palette) private var palette
+
+    @State private var entries: [PageTextCacheEntry] = []
+    @State private var isLoading = true
+    @State private var pendingDelete: PageTextCacheEntry?
+    @State private var confirmingEraseAll = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Total cache size") {
+                    Text(totalBytes.formatted(.byteCount(style: .file)))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Button("Erase all…", role: .destructive) {
+                    confirmingEraseAll = true
+                }
+                .disabled(entries.isEmpty)
+                .accessibilityIdentifier("storage.eraseAll")
+            } header: {
+                Text("Extracted-text cache")
+            } footer: {
+                Text("Vellum caches each PDF's extracted text so the AI assistant and search start instantly. It's rebuilt automatically the next time you open a document.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if entries.isEmpty {
+                    Text("No cached documents")
+                        .foregroundStyle(.secondary)
+                        .id("storage.empty")
+                } else {
+                    ForEach(entries) { entry in
+                        StorageCacheRow(entry: entry) { pendingDelete = entry }
+                    }
+                }
+            } header: {
+                Text("Cached documents")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(height: 460)
+        .task { await reload() }
+        .confirmationDialog(
+            pendingDelete.map { "Delete cached text for \"\($0.displayTitle)\"?" } ?? "",
+            isPresented: deleteDialogBinding,
+            presenting: pendingDelete
+        ) { entry in
+            Button("Delete Cached Text", role: .destructive) {
+                delete(entry)
+            }
+            .accessibilityIdentifier("storage.confirmDelete")
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes only the extracted-text cache Vellum uses to speed up AI and search. Your notes, highlights, and AI conversations are not affected. The text is rebuilt automatically the next time you open this document.")
+        }
+        .confirmationDialog(
+            "Erase all cached text?",
+            isPresented: $confirmingEraseAll
+        ) {
+            Button("Erase All Cached Text", role: .destructive) {
+                eraseAll()
+            }
+            .accessibilityIdentifier("storage.confirmEraseAll")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This clears the extracted-text cache for every document. Your notes, highlights, and AI conversations are not affected — only cached text is removed, and it's rebuilt automatically the next time you open each document.")
+        }
+    }
+
+    private var totalBytes: Int64 {
+        entries.reduce(0) { $0 + $1.byteSize }
+    }
+
+    /// Drive the per-row dialog off `pendingDelete`: dismiss clears the pending
+    /// entry so a re-tap re-presents it.
+    private var deleteDialogBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
         )
     }
 
-    private var modelBinding: Binding<String> {
-        Binding(
-            get: {
-                switch aiStore.settings.provider {
-                case .gemini: aiStore.settings.model
-                case .openai: aiStore.settings.openaiModel
-                case .codex: aiStore.settings.codexModel
-                }
-            },
-            set: { value in
-                var settings = aiStore.settings
-                switch settings.provider {
-                case .gemini: settings.model = value
-                case .openai: settings.openaiModel = value
-                case .codex: settings.codexModel = value
-                }
-                aiStore.setSettings(settings)
+    private func reload() async {
+        isLoading = true
+        entries = await PageTextCache.shared.listEntries()
+        isLoading = false
+    }
+
+    // Optimistic local removal for immediate feedback, then a reload once the
+    // actor finishes — reconciling with disk in case a still-open document's
+    // persister recreated its entry (allowed; it re-persists harmlessly).
+    private func delete(_ entry: PageTextCacheEntry) {
+        entries.removeAll { $0.pathKey == entry.pathKey }
+        Task {
+            await PageTextCache.shared.delete(pathKey: entry.pathKey)
+            entries = await PageTextCache.shared.listEntries()
+        }
+    }
+
+    private func eraseAll() {
+        entries = []
+        Task {
+            await PageTextCache.shared.deleteAll()
+            entries = await PageTextCache.shared.listEntries()
+        }
+    }
+}
+
+/// One cached document: title, when it was last opened, completeness (or a
+/// "source missing" hint that never triggers deletion), cache size, and a
+/// destructive per-row delete.
+private struct StorageCacheRow: View {
+    @Environment(\.palette) private var palette
+
+    let entry: PageTextCacheEntry
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayTitle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                statusLine
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-        )
+
+            Spacer()
+
+            Text(entry.byteSize.formatted(.byteCount(style: .file)))
+                .font(.callout)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("storageRow.size.\(entry.pathKey)")
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete cached text")
+            .accessibilityLabel("Delete cached text for \(entry.displayTitle)")
+            .accessibilityIdentifier("storageRow.delete.\(entry.pathKey)")
+        }
+        // .contain (not .combine): merging would swallow the delete button
+        // into one opaque element, unreachable for VoiceOver and UI tests.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("storageRow.\(entry.pathKey)")
     }
 
-    private var voiceBinding: Binding<VoiceMode> {
-        Binding(get: { aiStore.settings.voiceMode }, set: { value in
-            var settings = aiStore.settings
-            settings.voiceMode = value
-            aiStore.setSettings(settings)
-        })
-    }
-
-    private var ttsBinding: Binding<Bool> {
-        Binding(get: { aiStore.settings.ttsEnabled }, set: { value in
-            var settings = aiStore.settings
-            settings.ttsEnabled = value
-            aiStore.setSettings(settings)
-        })
+    @ViewBuilder
+    private var statusLine: some View {
+        let opened = entry.lastOpened.formatted(.relative(presentation: .named))
+        if entry.sourceExists {
+            Text("\(opened) · \(entry.isComplete ? "Complete" : "Partial")")
+        } else {
+            HStack(spacing: 4) {
+                Text("\(opened) · ")
+                Label("Original file not found", systemImage: "questionmark.circle")
+                    .foregroundStyle(palette.gold)
+            }
+        }
     }
 }

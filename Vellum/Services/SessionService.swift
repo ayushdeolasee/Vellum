@@ -5,11 +5,6 @@ import Foundation
 // caller-supplied UUID string (the tab id). Semantics must match the Rust
 // implementation exactly — see macos/specs/SPECS-*.md.
 
-struct CodexAiImageInput: Sendable {
-    var base64Data: String
-    var mediaType: String
-}
-
 enum SessionServiceError: Error, LocalizedError {
     case sessionNotFound(String)
     case invalidDocument(String)
@@ -51,9 +46,6 @@ protocol SessionService: AnyObject {
 
     // Reading metadata (last_page, page_count, …) stored on the document
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws
-
-    // AI via local codex CLI
-    func runCodexAi(prompt: String, model: String, image: CodexAiImageInput?) async throws -> String
 }
 
 extension Notification.Name {
@@ -62,4 +54,8 @@ extension Notification.Name {
     static let vellumAnnotationsUpdated = Notification.Name("vellum.annotations-updated")
     /// Asks the toolbar to open its "add webpage" URL prompt. (vellum:add-webpage)
     static let vellumAddWebpage = Notification.Name("vellum.add-webpage")
+    /// Broadcast after AI settings change so every pane's AiStore reloads the
+    /// shared, disk-persisted settings (multiple AiStore instances exist once
+    /// panes can be split). (vellum:ai-settings-changed)
+    static let vellumAiSettingsChanged = Notification.Name("vellum.ai-settings-changed")
 }

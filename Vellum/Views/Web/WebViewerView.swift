@@ -188,6 +188,7 @@ struct WebViewerView: View {
         .onChange(of: controller.initCount) {
             controller.pushAnnotations(annotationStore.annotations)
             controller.pushMode(appStore.mode)
+            controller.pushSelectedHighlight()
             controller.scrollToSelected(
                 annotations: annotationStore.annotations,
                 selectedId: annotationStore.selectedAnnotationId)
@@ -198,7 +199,10 @@ struct WebViewerView: View {
         .onChange(of: appStore.mode) {
             controller.pushMode(appStore.mode)
         }
-        .onChange(of: annotationStore.selectedAnnotationId) {
+        // Keyed to the request counter, not selectedAnnotationId: clicking the
+        // sidebar row of the already-selected annotation re-selects the same id
+        // (no id change, no onChange) but must still scroll back to it.
+        .onChange(of: annotationStore.selectionRequestCount) {
             controller.scrollToSelected(
                 annotations: annotationStore.annotations,
                 selectedId: annotationStore.selectedAnnotationId)
@@ -252,7 +256,15 @@ final class WebViewerController: NSObject {
     private(set) var noteComposer: WebNoteComposerState?
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
-    private(set) var highlightEditor: WebHighlightEditorState?
+    private(set) var highlightEditor: WebHighlightEditorState? {
+        didSet {
+            // The selected highlight (the one whose edit popover is open) grows
+            // draggable resize handles in the page; keep the content script in
+            // sync whenever the selection changes.
+            guard highlightEditor?.id != oldValue?.id else { return }
+            pushSelectedHighlight()
+        }
+    }
 
     /// Window-space frame of the context menu (for click-outside detection).
     @ObservationIgnored var contextMenuGlobalFrame: CGRect = .zero
@@ -277,6 +289,11 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var outgoingNavUrl: String?
     // URL whose reading position has already been restored this mount.
     @ObservationIgnored private var restoredUrl: String?
+    // One-shot guards: the URL already reloaded to chase a server redirect
+    // (a redirect loop must not ping-pong the webview), and the URL already
+    // reloaded after a web-content-process crash (second crash → snapshot).
+    @ObservationIgnored private var redirectReloadedUrl: String?
+    @ObservationIgnored private var processReloadedUrl: String?
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
@@ -284,13 +301,37 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
 
+    /// Isolated content world for the bridge: the content script and the
+    /// "vellum" message handler live here, out of reach of page scripts (a
+    /// hostile page could otherwise post open-youtube/navigate messages or
+    /// call __vellumCmd directly). Isolated worlds share the DOM, so all the
+    /// script's overlays, selection handling, and the YouTube facade work
+    /// unchanged.
+    private static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")
+
     private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        let schemeHandler = VellumWebSchemeHandler()
         configuration.setURLSchemeHandler(
-            VellumWebSchemeHandler(), forURLScheme: VellumWebSchemeHandler.scheme)
+            schemeHandler, forURLScheme: VellumWebSchemeHandler.scheme)
+        configuration.setURLSchemeHandler(
+            schemeHandler, forURLScheme: VellumWebSchemeHandler.insecureScheme)
         configuration.userContentController.add(
-            WeakScriptMessageHandler(self), name: "vellum")
+            WeakScriptMessageHandler(self), contentWorld: Self.bridgeWorld, name: "vellum")
+        // The content script is world-scoped, not inlined into the page HTML
+        // (WebHtml.prepareHtml injects only the unprivileged page-world
+        // bootstrap). Registered once: it runs on every main-frame load this
+        // webview performs — live pages, snapshot fallbacks, and error pages
+        // alike. .atDocumentEnd so the bootstrap's data- attributes are set;
+        // the script's own start() waits for the load event regardless.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: WebContentScript.source,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true,
+            in: Self.bridgeWorld))
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
         return webView
     }
@@ -361,7 +402,7 @@ final class WebViewerController: NSObject {
             app.printHandler = nil
         }
         webView.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vellum")
+            .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
         webView.stopLoading()
     }
 
@@ -373,7 +414,10 @@ final class WebViewerController: NSObject {
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.__vellumCmd && window.__vellumCmd(\(json));") { _, _ in }
+        // Evaluated in the bridge world — __vellumCmd only exists there.
+        webView.evaluateJavaScript(
+            "window.__vellumCmd && window.__vellumCmd(\(json));",
+            in: nil, in: Self.bridgeWorld)
     }
 
     func applyZoom(_ zoom: Double) {
@@ -517,6 +561,14 @@ final class WebViewerController: NSObject {
     func pushMode(_ mode: InteractionMode) {
         guard initCount > 0 else { return }
         post("set-mode", ["mode": mode.rawValue])
+    }
+
+    /// Tell the content script which highlight is selected so it draws (or
+    /// removes) the drag handles. Re-sent after each (re-)init because the
+    /// injected script starts with no selection.
+    func pushSelectedHighlight() {
+        guard initCount > 0 else { return }
+        post("set-selected-highlight", ["id": orNull(highlightEditor?.id)])
     }
 
     func scrollToSelected(annotations: [Annotation], selectedId: String?) {
@@ -776,23 +828,43 @@ final class WebViewerController: NSObject {
                 highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
             }
 
-        case "navigate":
-            guard let url = data["url"] as? String, let tabId = app.activeTabId else { break }
-            // A pending auto-archive for the outgoing page must not fire
-            // against the rebound session.
-            cancelPendingArchive()
-            clearSelection()
-            closeNotePopovers()
-            let outgoing = app.document?.pdfPath
-            Task { [weak self] in
-                guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                      let self else { return }
-                self.pendingNavUrl = rebound.pdfPath
-                self.outgoingNavUrl = outgoing
-                self.initCount = 0
-                self.webView.load(
-                    URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+        case "highlight-resized":
+            guard let id = data["id"] as? String,
+                  let start = intValue(data["start"]),
+                  let end = intValue(data["end"]),
+                  let text = data["text"] as? String,
+                  let annotationStore else { break }
+            let positionData = PositionData(
+                rects: [],
+                pageWidth: 1,
+                pageHeight: 1,
+                selectedText: text,
+                startOffset: start,
+                endOffset: end,
+                prefix: data["prefix"] as? String,
+                suffix: data["suffix"] as? String,
+                viewportOffset: nil)
+            Task {
+                await annotationStore.updateAnnotation(UpdateAnnotationInput(
+                    id: id, color: nil, content: nil, positionData: positionData,
+                    // A resize can drag the anchor across a virtual page break;
+                    // keep the sidebar grouping/navigation on the new page.
+                    pageNumber: intValue(data["pageNumber"])))
             }
+
+        case "navigate":
+            guard let url = data["url"] as? String else { break }
+            navigateTo(url)
+
+        case "open-youtube":
+            // The YouTube facade (WebContentScript) hands embeds off to the system
+            // browser — embeds need an http(s) Referer the proxy origin can't send.
+            // Only a validated video id crosses the bridge, never a full URL, so a
+            // hostile page script can at worst open a youtube.com/watch page.
+            guard let id = data["id"] as? String,
+                  id.range(of: "^[A-Za-z0-9_-]{6,20}$", options: .regularExpression) != nil,
+                  let url = URL(string: "https://www.youtube.com/watch?v=\(id)") else { break }
+            NSWorkspace.shared.open(url)
 
         case "viewport-scrolled":
             // Popovers are positioned from event-time rects; scrolling the
@@ -865,6 +937,35 @@ final class WebViewerController: NSObject {
         }
     }
 
+    /// Rebind the tab to a new page and reload the reader — used by the
+    /// content script's link interception, the navigation delegate's escape
+    /// hatch for router-driven top-level loads, and window.open routing.
+    func navigateTo(_ url: String) {
+        guard let app, let tabId = app.activeTabId else { return }
+        // A pending auto-archive for the outgoing page must not fire
+        // against the rebound session.
+        cancelPendingArchive()
+        // Reset the one-shot redirect/crash reload guards for this fresh
+        // navigation: they only need to prevent a reload *loop* within a single
+        // navigation attempt. Left uncleared, revisiting a URL that was
+        // reload-fixed once earlier this mount would skip its corrective reload
+        // (redirect) or its crash-recovery reload (process crash) and recur.
+        redirectReloadedUrl = nil
+        processReloadedUrl = nil
+        clearSelection()
+        closeNotePopovers()
+        let outgoing = app.document?.pdfPath
+        Task { [weak self] in
+            guard let rebound = await app.webNavigated(tabId: tabId, url: url),
+                  let self else { return }
+            self.pendingNavUrl = rebound.pdfPath
+            self.outgoingNavUrl = outgoing
+            self.initCount = 0
+            self.webView.load(
+                URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+        }
+    }
+
     private func handleInit(_ data: [String: Any], app: AppStore) {
         guard let tabId = app.activeTabId, let currentDoc = app.document else { return }
 
@@ -885,17 +986,41 @@ final class WebViewerController: NSObject {
         isOffline = data["offline"] as? Bool ?? false
         supportsPositions = data["positionAnchors"] as? Bool ?? false
 
-        if let reportedUrl, reportedUrl != currentDoc.pdfPath {
-            // The page navigated (back/forward or a redirect changed the
-            // effective URL): rebind the session, then ask the page to report
-            // again so the fresh context lands after the App-level document
-            // reset. Any open note popovers belong to the outgoing document.
+        // Compare normalized identities: the content script's history shim
+        // reports un-normalized URLs after soft navigations (tracking params
+        // and all), and a raw != comparison would rebind forever.
+        let reportedNormalized = reportedUrl.map { (try? WebUrl.normalize($0)) ?? $0 }
+        if let reportedUrl, let reportedNormalized, reportedNormalized != currentDoc.pdfPath {
+            // The page navigated (back/forward, a server redirect changed the
+            // effective URL, or an SPA soft-navigated): rebind the session,
+            // then ask the page to report again so the fresh context lands
+            // after the App-level document reset. Any open note popovers
+            // belong to the outgoing document.
             cancelPendingArchive()
             closeNotePopovers()
             Task { [weak self] in
-                let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl)
-                if rebound != nil {
-                    self?.post("request-init")
+                guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
+                      let self else { return }
+                // Server redirect: the destination's HTML was served under
+                // the pre-redirect request URL, so window.location still
+                // shows the old path and strict client routers would hydrate
+                // against it — reload under the truthful address. One-shot
+                // per URL so a redirect loop can't ping-pong the webview.
+                // Soft navigations (pushState) already updated location and
+                // skip the reload; snapshot serving (nil realUrl) does too.
+                let serving = self.webView.url
+                    .flatMap(VellumWebSchemeHandler.realUrl(from:))
+                    .flatMap { try? WebUrl.normalize($0) }
+                if let serving, serving != rebound.pdfPath,
+                   self.redirectReloadedUrl != rebound.pdfPath {
+                    self.redirectReloadedUrl = rebound.pdfPath
+                    self.pendingNavUrl = rebound.pdfPath
+                    self.outgoingNavUrl = nil
+                    self.initCount = 0
+                    self.webView.load(
+                        URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
+                } else {
+                    self.post("request-init")
                 }
             }
             return
@@ -1019,6 +1144,127 @@ extension WebViewerController: WKScriptMessageHandler {
         didReceive message: WKScriptMessage
     ) {
         handleMessage(message.body)
+    }
+}
+
+extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
+        // The injected <base href> makes any link the content script misses —
+        // and router location.assign calls — resolve to the real https
+        // origin; without this the webview would leave the reader entirely.
+        // Main frame only: subframes (article embeds, video iframes) load
+        // their real content directly.
+        guard let url = navigationAction.request.url else { return .allow }
+        let scheme = url.scheme?.lowercased()
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame == true
+
+        // Non-http(s) main-frame navigations (mailto:/tel:/… link clicks):
+        // letting WebKit try to load these fails the provisional load, which
+        // handleLoadFailure turns into the offline-snapshot fallback for what
+        // was just an external-scheme click. Hand common external schemes to
+        // the system and cancel; cancel (never allow) any other unsupported
+        // scheme so the snapshot fallback isn't triggered. Subframes keep their
+        // real content, so only the main frame is intercepted here.
+        if scheme != "http" && scheme != "https" {
+            // The reader's own content is served over the vellum-web(i) proxy
+            // schemes — those loads must always proceed.
+            if scheme == VellumWebSchemeHandler.scheme
+                || scheme == VellumWebSchemeHandler.insecureScheme {
+                return .allow
+            }
+            guard isMainFrame else { return .allow }
+            if let scheme, ["mailto", "tel", "facetime"].contains(scheme) {
+                NSWorkspace.shared.open(url)
+            }
+            return .cancel
+        }
+        guard isMainFrame else { return .allow }
+        // A same-page anchor click resolves against the injected <base href> to
+        // the real https origin, so WebKit sees a cross-origin navigation instead
+        // of a scroll. When only the fragment differs from the current page,
+        // scroll in place via location.hash (a same-document navigation) rather
+        // than rebinding and reloading the whole reader. normalize strips
+        // fragments, so equal normalized URLs == same page.
+        if let fragment = url.fragment,
+           let currentProxy = webView.url,
+           let currentReal = VellumWebSchemeHandler.realUrl(from: currentProxy),
+           let incoming = try? WebUrl.normalize(url.absoluteString),
+           let current = try? WebUrl.normalize(currentReal),
+           incoming == current {
+            // JSON-encode the fragment so quotes/backslashes can't break out of
+            // the JS string.
+            if let data = try? JSONEncoder().encode("#" + fragment),
+               let literal = String(data: data, encoding: .utf8) {
+                webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+            }
+            return .cancel
+        }
+        navigateTo(url.absoluteString)
+        return .cancel
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        // window.open / target=_blank: no popup windows in the reader —
+        // route http(s) targets through the normal rebind flow instead of
+        // silently dropping them.
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            navigateTo(url.absoluteString)
+        }
+        return nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        handleLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let doc = app?.document, doc.kind == .web else { return }
+        if processReloadedUrl == doc.pdfPath {
+            loadSnapshotFallback()
+        } else {
+            processReloadedUrl = doc.pdfPath
+            initCount = 0
+            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        }
+    }
+
+    private func handleLoadFailure(_ error: Error) {
+        // Our own decidePolicyFor cancels and superseded loads arrive here
+        // too — only real failures fall through to the snapshot fallback.
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
+        // WebKitErrorFrameLoadInterruptedByPolicyChange
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
+        loadSnapshotFallback()
+    }
+
+    /// Serve the offline snapshot (or Vellum's own error page) instead of
+    /// ever leaving the user on WebKit's native error screen.
+    private func loadSnapshotFallback() {
+        guard let app, let doc = app.document, doc.kind == .web else { return }
+        // The fallback itself failing must not loop.
+        guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
+        initCount = 0
+        webView.load(URLRequest(
+            url: VellumWebSchemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }
 }
 
