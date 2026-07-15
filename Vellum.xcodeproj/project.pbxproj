@@ -60,6 +60,7 @@
 		771BABE71CDC9C9EA16510C8 /* VellumApp_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */; };
 		776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */; };
 		7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */; };
+		7F04998EEE729814B58BE9D9 /* RegionCaptureOverlay_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = E97DF51AB1BA63B8ED2200D0 /* RegionCaptureOverlay_iOS.swift */; };
 		806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5003641A54B311693588C6C /* PdfPersistenceTests.swift */; };
 		82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		86D51A60816B39EA73862181 /* PdfTextLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00E4B04332A759BD4D59A98 /* PdfTextLocator.swift */; };
@@ -245,6 +246,7 @@
 		E201F2530645C6348ECC59AA /* AiStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiStreaming.swift; sourceTree = "<group>"; };
 		E30CD609AEA2C0A662890153 /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
 		E3E5D7D6B867201216086389 /* katex */ = {isa = PBXFileReference; lastKnownFileType = folder; name = katex; path = Vellum/Resources/katex; sourceTree = SOURCE_ROOT; };
+		E97DF51AB1BA63B8ED2200D0 /* RegionCaptureOverlay_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionCaptureOverlay_iOS.swift; sourceTree = "<group>"; };
 		E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadStore.swift; sourceTree = "<group>"; };
 		EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSessionBackend.swift; sourceTree = "<group>"; };
 		EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibrary.swift; sourceTree = "<group>"; };
@@ -292,6 +294,7 @@
 				3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */,
 				255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */,
 				A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */,
+				E97DF51AB1BA63B8ED2200D0 /* RegionCaptureOverlay_iOS.swift */,
 				C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */,
 				721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */,
 				D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */,
@@ -759,6 +762,7 @@
 				C70838E7CAE4DCE99455D99F /* PdfViewerView_iOS.swift in Sources */,
 				A7FD6BAB651128F7F942817B /* Platform.swift in Sources */,
 				1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */,
+				7F04998EEE729814B58BE9D9 /* RegionCaptureOverlay_iOS.swift in Sources */,
 				AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */,
 				C4FA78D55C7E718218C43A3B /* ScratchpadPanel_iOS.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,

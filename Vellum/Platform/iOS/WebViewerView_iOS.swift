@@ -19,6 +19,7 @@ struct WebViewerView_iOS: View {
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     @State private var controller = WebViewerController_iOS()
@@ -29,6 +30,20 @@ struct WebViewerView_iOS: View {
                 ZStack(alignment: .topLeading) {
                     WebViewRepresentable_iOS(controller: controller)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    // Drag-to-crop region snapshot. The scrim intercepts the
+                    // drag before the web view sees it; WKWebView.takeSnapshot
+                    // renders page content only, so the marquee itself can never
+                    // land inside the crop. Routes per AppStore.regionCaptureTarget.
+                    if app.mode == .snapshotRegion {
+                        RegionCaptureOverlay_iOS { rect in
+                            captureRegion(rect)
+                            app.setMode(.view)
+                        } onCancel: {
+                            app.setMode(.view)
+                        }
+                        .zIndex(60)
+                    }
 
                     if controller.isOffline {
                         offlineBadge
@@ -163,6 +178,31 @@ struct WebViewerView_iOS: View {
             }
         } else {
             Color.clear
+        }
+    }
+
+    /// Hand the finished crop to whichever panel armed the capture (mirrors
+    /// PdfOverlayStack_iOS.captureRegion). The AI path stays silent on a miss —
+    /// a failed takeSnapshot mid-scroll is not worth a banner; the scratchpad
+    /// path warns, since its button is the one the user pressed to get here.
+    private func captureRegion(_ rect: CGRect) {
+        switch app.regionCaptureTarget {
+        case .ai:
+            Task {
+                // A web capture always stamps the virtual page it was taken on,
+                // so the snapshot's optional page is always populated here.
+                guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
+                      let page = snapshot.pageNumber else { return }
+                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+            }
+        case .scratchpad:
+            Task {
+                if let capture = await controller.captureRegion(viewerRect: rect) {
+                    scratchpadStore.addImage(capture, label: "Web region")
+                } else {
+                    scratchpadStore.warnRegionCaptureFailed()
+                }
+            }
         }
     }
 

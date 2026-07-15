@@ -461,6 +461,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         pageNumber: Int, clickX: Double, clickY: Double,
         pageWidth: Double, pageHeight: Double
     ) async {
+        // If the AI panel's "Add as note" armed note mode with a reply payload,
+        // this placement consumes it as the note's initial content (nil for a
+        // plain, hand-placed note).
+        let pendingContent = app?.consumePendingNoteContent()
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth, pageHeight: pageHeight,
@@ -468,7 +472,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             prefix: nil, suffix: nil, viewportOffset: nil
         )
         let input = CreateAnnotationInput(
-            type: .note, pageNumber: pageNumber, color: nil, content: nil,
+            type: .note, pageNumber: pageNumber, color: nil, content: pendingContent,
             positionData: position)
         if let annotation = await annotationStore?.addNote(input) {
             annotationStore?.selectAnnotation(annotation.id)
@@ -479,6 +483,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     func addNoteFromContextMenu() {
         guard let menu = contextMenu else { return }
         contextMenu = nil
+        let pendingContent = app?.consumePendingNoteContent()
         Task {
             let position = PositionData(
                 rects: [AnnotationRect(x: menu.clickX, y: menu.clickY, width: 0, height: 0)],
@@ -487,7 +492,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                 prefix: nil, suffix: nil, viewportOffset: nil
             )
             let input = CreateAnnotationInput(
-                type: .note, pageNumber: menu.pageNumber, color: nil, content: nil,
+                type: .note, pageNumber: menu.pageNumber, color: nil, content: pendingContent,
                 positionData: position)
             if let annotation = await annotationStore?.addNote(input) {
                 annotationStore?.selectAnnotation(annotation.id)
@@ -636,6 +641,23 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             width: cropped.width,
             height: cropped.height,
             pageNumber: pageNumber
+        )
+    }
+
+    /// The AI's view of the same drag-to-crop: identical pixels to
+    /// `capturePageRegionData`, wrapped as the base64 snapshot an `AiReference`
+    /// carries. Both the AI panel and the scratchpad arm the one
+    /// `.snapshotRegion` mode; `AppStore.regionCaptureTarget` says which of
+    /// these two the overlay calls.
+    func capturePageRegion(viewerRect rect: CGRect) -> AiPageImageSnapshot? {
+        guard let capture = capturePageRegionData(viewerRect: rect),
+              let pageNumber = capture.pageNumber else { return nil }
+        return AiPageImageSnapshot(
+            pageNumber: pageNumber,
+            base64Data: capture.data.base64EncodedString(),
+            mediaType: capture.mediaType,
+            width: capture.width,
+            height: capture.height
         )
     }
 }

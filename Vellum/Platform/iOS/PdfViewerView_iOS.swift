@@ -198,6 +198,8 @@ struct PdfOverlayStack_iOS: View {
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     private struct PageOverlay: Equatable {
@@ -219,6 +221,22 @@ struct PdfOverlayStack_iOS: View {
                         controller.handleNoteTap(atTopLeft: location)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            // Drag-to-crop region snapshot. Sits above the page layers so its
+            // marquee owns the touch; the scrim swallows the drag before the
+            // PDFView sees it. The crop goes to whichever panel armed the mode
+            // (AppStore.regionCaptureTarget).
+            if app.mode == .snapshotRegion {
+                RegionCaptureOverlay_iOS { rect in
+                    captureRegion(rect)
+                    app.setMode(.view)
+                } onCancel: {
+                    // Plain tap or tiny wobble: back out without a warning — the
+                    // user changed their mind.
+                    app.setMode(.view)
+                }
+                .zIndex(60)
             }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
@@ -251,6 +269,30 @@ struct PdfOverlayStack_iOS: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
+    }
+
+    /// Hand the finished crop to whichever panel armed the capture. The AI path
+    /// stays silent on a miss (it just re-arms nothing); the scratchpad path
+    /// warns, since its button is the one the user pressed to get here.
+    private func captureRegion(_ rect: CGRect) {
+        switch app.regionCaptureTarget {
+        case .ai:
+            // A region crop always lands on a page (capturePageRegion bails
+            // otherwise), so the snapshot's optional page is always populated.
+            if let snapshot = controller.capturePageRegion(viewerRect: rect),
+               let page = snapshot.pageNumber {
+                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+            }
+        case .scratchpad:
+            if let capture = controller.capturePageRegionData(viewerRect: rect) {
+                let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
+                scratchpadStore.addImage(capture, label: label)
+            } else {
+                // Drag missed a page or was too small to crop — tell the user
+                // rather than silently reverting to view mode.
+                scratchpadStore.warnRegionCaptureFailed()
+            }
+        }
     }
 
     private var pageOverlays: [PageOverlay] {
