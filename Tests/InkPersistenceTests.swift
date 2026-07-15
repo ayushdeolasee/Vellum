@@ -118,22 +118,10 @@ final class InkPersistenceTests: XCTestCase {
                 pageWidth: 612, pageHeight: 792, selectedText: nil,
                 startOffset: nil, endOffset: nil, prefix: nil, suffix: nil, viewportOffset: nil)))
 
-        // Mirrors InkController's InkDiskWriter path: a fresh read-modify-write
-        // of the same file, through the SAME gate.
-        async let inkDone: Void = PdfFileGate.shared.perform {
-            let fileURL = URL(fileURLWithPath: inkPath)
-            guard let doc = PDFDocument(url: fileURL), let page = doc.page(at: 0) else { return }
-            let drawing = (try? PKDrawing(data: inkData)) ?? PKDrawing()
-            PdfInk.apply(drawing, to: page)
-            let tmp = fileURL.deletingLastPathComponent()
-                .appendingPathComponent(".vellum-ink-\(UUID().uuidString).pdf")
-            if doc.write(to: tmp) {
-                try? FileManager.default.removeItem(at: fileURL)
-                try? FileManager.default.moveItem(at: tmp, to: fileURL)
-            } else {
-                try? FileManager.default.removeItem(at: tmp)
-            }
-        }
+        // Exercise the production writer, including the iPadOS 26 main-actor
+        // PDFKit compatibility path and the shared non-reentrant file gate.
+        async let inkDone: Void = InkDiskWriter().write(
+            data: inkData, page: 1, path: inkPath)
 
         let created = try await annotation
         _ = await inkDone
@@ -148,6 +136,85 @@ final class InkPersistenceTests: XCTestCase {
         let finalDoc = try XCTUnwrap(PDFDocument(url: url))
         let finalPage = try XCTUnwrap(finalDoc.page(at: 0))
         XCTAssertTrue(PdfInk.hasInk(on: finalPage), "ink write was lost")
+    }
+
+    /// On iPadOS 26, a full PDFKit rewrite drops application-defined keys.
+    /// The production ink writer must restore the metadata of annotations that
+    /// already belong to Vellum while adding the native ink annotation.
+    @MainActor
+    func testInkWritePreservesVellumAnnotationMetadata() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-metadata-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("metadata.pdf")
+        let (document, _) = try blankPage()
+        try XCTUnwrap(document.dataRepresentation()).write(to: url)
+        let session = try await PdfSessionBackend().open(
+            path: url.path,
+            sessionId: UUID().uuidString)
+        let created = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 1,
+            color: nil,
+            content: "metadata note",
+            positionData: PositionData(
+                rects: [AnnotationRect(x: 300, y: 400, width: 0, height: 0)],
+                pageWidth: 612, pageHeight: 792, selectedText: nil,
+                startOffset: nil, endOffset: nil, prefix: nil, suffix: nil,
+                viewportOffset: nil)))
+
+        await InkDiskWriter().write(
+            data: sampleDrawing().dataRepresentation(),
+            page: 1,
+            path: url.path)
+
+        let reloaded = try await PdfSessionBackend().open(
+            path: url.path,
+            sessionId: UUID().uuidString)
+        let annotations = try await reloaded.annotations(pageNumber: nil)
+        let note = try XCTUnwrap(annotations.first { $0.id == created.id })
+        XCTAssertEqual(note.createdAt, created.createdAt)
+        XCTAssertEqual(note.updatedAt, created.updatedAt)
+
+        let raw = try PdfDocumentLoader.loadRaw(path: url.path)
+        let pageDictionary = try XCTUnwrap(raw.page(at: 1)?.dictionary)
+        let entries = try XCTUnwrap(CgPdf.array(pageDictionary, "Annots"))
+        let rawNote = try XCTUnwrap((0..<CgPdf.count(entries)).compactMap {
+            CgPdf.dictionaryAt(entries, $0)
+        }.first { CgPdf.string($0, "NM") == created.id })
+        XCTAssertEqual(CgPdf.string(rawNote, "T"), "Vellum")
+        XCTAssertEqual(CgPdf.string(rawNote, "VellumCreatedAt"), created.createdAt)
+        XCTAssertEqual(CgPdf.string(rawNote, "VellumUpdatedAt"), created.updatedAt)
+    }
+
+    /// Turning ink mode off starts an immediate retained flush; a scene
+    /// background callback that follows must be able to join that same task and
+    /// return only after the latest drawing is on disk.
+    @MainActor
+    func testImmediateInkFlushCanBeJoinedByBackgroundFlush() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-background-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("background.pdf")
+        let (document, _) = try blankPage()
+        try XCTUnwrap(document.dataRepresentation()).write(to: url)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: url.path)
+        let controller = InkController_iOS()
+        controller.app = app
+        controller.drawingChanged(sampleDrawing(), page: 1)
+
+        controller.flushPendingInk()
+        await controller.flushPendingInkAndWait()
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        let page = try XCTUnwrap(reloaded.page(at: 0))
+        XCTAssertTrue(PdfInk.hasInk(on: page))
     }
 }
 #endif

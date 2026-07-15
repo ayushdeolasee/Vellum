@@ -575,6 +575,13 @@ enum PdfArraySource {
         return out
     }
 
+    /// Indirect object numbers in an array, in source order. Direct values are
+    /// ignored; PDFKit writes page annotation arrays as indirect references.
+    static func references(inArray bytes: [UInt8]) -> [Int]? {
+        guard let spans = elementSpans(inArray: bytes) else { return nil }
+        return spans.compactMap { PdfDictSource.parseReference(Array(bytes[$0])) }
+    }
+
     /// End index (exclusive) of the element starting at `start`.
     private static func elementEnd(_ bytes: [UInt8], from start: Int, to end: Int) -> Int? {
         var i = start
@@ -666,8 +673,9 @@ enum PdfArraySource {
 
 // MARK: - Classic cross-reference file model
 
-/// Parser for the classic-xref PDFs produced by PDFKit's serializer. Used only
-/// on freshly normalized in-memory data, never on arbitrary user files.
+/// Parser for classic-xref PDFs produced by PDFKit or Vellum's incremental
+/// writer. Follows `/Prev` chains so later metadata/bookmark edits can build on
+/// earlier increments without a lossy normalization pass.
 struct ClassicPdfFile {
     let data: Data
     private let bytes: [UInt8]
@@ -700,6 +708,27 @@ struct ClassicPdfFile {
         }
         startXref = offset
 
+        let latest = try Self.xrefSection(in: bytes, at: offset)
+        var offsets = latest.offsets
+        var seenOffsets: Set<Int> = [offset]
+        var previous = latest.trailer.integer(forKey: "Prev")
+        while let previousOffset = previous, seenOffsets.insert(previousOffset).inserted {
+            let section = try Self.xrefSection(in: bytes, at: previousOffset)
+            // Newest section wins for objects replaced by an increment.
+            for (number, objectOffset) in section.offsets where offsets[number] == nil {
+                offsets[number] = objectOffset
+            }
+            previous = section.trailer.integer(forKey: "Prev")
+        }
+        objectOffsets = offsets
+        trailer = latest.trailer
+    }
+
+    /// Parse one classic xref section. Incremental Vellum writes chain these
+    /// through `/Prev`; callers merge newest-to-oldest so replaced objects win.
+    private static func xrefSection(
+        in bytes: [UInt8], at offset: Int
+    ) throws -> (offsets: [Int: Int], trailer: PdfDictSource) {
         var position = offset
         guard PdfBytes.firstRange(of: Array("xref".utf8), in: bytes, from: position, to: min(position + 8, bytes.count))?.lowerBound == position else {
             throw SessionServiceError.invalidDocument("Failed to rewrite PDF: unsupported cross-reference format")
@@ -734,17 +763,14 @@ struct ClassicPdfFile {
             }
             while position < bytes.count, PdfBytes.isWhitespace(bytes[position]) { position += 1 }
         }
-        objectOffsets = offsets
-
         guard let trailerRange = PdfBytes.firstRange(of: Array("trailer".utf8), in: bytes, from: position)
-            ?? PdfBytes.lastRange(of: Array("trailer".utf8), in: bytes)
         else {
             throw SessionServiceError.invalidDocument("Failed to rewrite PDF: missing trailer")
         }
-        guard let trailerDict = ClassicPdfFile.balancedDictionary(in: bytes, from: trailerRange.upperBound) else {
+        guard let trailerDict = balancedDictionary(in: bytes, from: trailerRange.upperBound) else {
             throw SessionServiceError.invalidDocument("Failed to rewrite PDF: invalid trailer")
         }
-        trailer = PdfDictSource(trailerDict)
+        return (offsets, PdfDictSource(trailerDict))
     }
 
     /// Dictionary source of an indirect object, or nil when the object is not
@@ -754,6 +780,25 @@ struct ClassicPdfFile {
         guard let objRange = PdfBytes.firstRange(of: Array("obj".utf8), in: bytes, from: offset, to: min(offset + 64, bytes.count)) else { return nil }
         guard let source = ClassicPdfFile.balancedDictionary(in: bytes, from: objRange.upperBound) else { return nil }
         return PdfDictSource(source)
+    }
+
+    /// Raw top-level value of a non-stream indirect object. This is used for
+    /// PDFKit's `/Annots` array object (`[ 12 0 R ... ]`), which is not a
+    /// dictionary and therefore cannot be returned by `objectSource`.
+    func rawObjectValue(_ number: Int) -> [UInt8]? {
+        guard let offset = objectOffsets[number], offset < bytes.count,
+              let objRange = PdfBytes.firstRange(
+                  of: Array("obj".utf8), in: bytes,
+                  from: offset, to: min(offset + 64, bytes.count)),
+              let endRange = PdfBytes.firstRange(
+                  of: Array("endobj".utf8), in: bytes,
+                  from: objRange.upperBound)
+        else { return nil }
+        var start = objRange.upperBound
+        while start < endRange.lowerBound, PdfBytes.isWhitespace(bytes[start]) { start += 1 }
+        var end = endRange.lowerBound
+        while end > start, PdfBytes.isWhitespace(bytes[end - 1]) { end -= 1 }
+        return Array(bytes[start..<end])
     }
 
     /// Extract a balanced "<< ... >>" starting at the first "<<" after `start`,
@@ -805,8 +850,9 @@ struct ClassicPdfFile {
 // MARK: - Incremental update builder
 
 /// Builds an incremental update (new/replaced objects + classic xref section +
-/// trailer) appended to freshly serialized data. Applied in memory only; the
-/// result is re-serialized through PDFKit before touching disk.
+/// trailer) appended to a classic PDF. On iPadOS 26 these increments are kept
+/// intact because PDFKit would discard their custom keys; newer runtimes may
+/// still normalize them when that is safe.
 struct PdfIncrement {
     private var objects: [Int: [UInt8]] = [:]
     private(set) var nextObjectNumber: Int

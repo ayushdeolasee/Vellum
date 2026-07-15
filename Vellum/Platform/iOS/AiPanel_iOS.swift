@@ -377,6 +377,14 @@ struct AiPanel_iOS: View {
                 .onSubmit(submit)
                 .padding(.horizontal, 4)
                 .frame(minHeight: 40)
+                // A native text input can consume the UIKit drop before the
+                // panel-level destination sees it. Register the same handler
+                // directly on the composer so "drop anywhere" is literal.
+                .onDrop(
+                    of: aiStore.activeModelSupportsImages ? [.image, .fileURL] : [],
+                    isTargeted: $dropTargeted,
+                    perform: handleImageDrop
+                )
 
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")

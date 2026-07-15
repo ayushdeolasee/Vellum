@@ -451,6 +451,63 @@ final class AiPipelineTests: XCTestCase {
         await AiPersistence.awaitPendingFlush()
     }
 
+    /// iOS may assign a new data-container UUID after reinstall/update. The
+    /// imported PDF remains identifiable by its unique library filename, so an
+    /// existing conversation must follow it to the new absolute path.
+    func testConversationSurvivesContainerPathChange() async {
+        let filename = "ai-container-migration-\(UUID().uuidString).pdf"
+        let oldDocument = DocumentInfo(
+            kind: .pdf,
+            pdfPath: "/old/container/Library/\(filename)",
+            title: "Migration",
+            pageCount: 1,
+            lastPage: 1)
+        let movedDocument = DocumentInfo(
+            kind: .pdf,
+            pdfPath: "/new/container/Library/\(filename)",
+            title: "Migration",
+            pageCount: 1,
+            lastPage: 1)
+        AiPersistence.saveConversation(
+            for: oldDocument,
+            messages: [AiPersistence.makeMessage(role: .user, content: "survives move")]
+        )
+
+        XCTAssertEqual(
+            AiPersistence.loadConversation(for: movedDocument).map(\.content),
+            ["survives move"])
+
+        AiPersistence.saveConversation(for: movedDocument, messages: [])
+        await AiPersistence.awaitPendingFlush()
+    }
+
+    /// Web URLs are exact identities even when their path happens to end in
+    /// `.pdf`; they must never claim a local PDF conversation by filename.
+    func testWebPdfUrlDoesNotMigrateLocalConversation() async {
+        let filename = "ai-web-collision-\(UUID().uuidString).pdf"
+        let localDocument = DocumentInfo(
+            kind: .pdf,
+            pdfPath: "/old/container/Library/\(filename)",
+            title: "Local PDF",
+            pageCount: 1,
+            lastPage: 1)
+        let webDocument = DocumentInfo(
+            kind: .web,
+            pdfPath: "https://example.com/downloads/\(filename)",
+            title: "Web PDF",
+            pageCount: nil,
+            lastPage: nil)
+        AiPersistence.saveConversation(
+            for: localDocument,
+            messages: [AiPersistence.makeMessage(role: .user, content: "local only")]
+        )
+
+        XCTAssertTrue(AiPersistence.loadConversation(for: webDocument).isEmpty)
+
+        AiPersistence.saveConversation(for: localDocument, messages: [])
+        await AiPersistence.awaitPendingFlush()
+    }
+
     // MARK: - §6 Arbitrary image attachments
 
     /// An oversized opaque image is downscaled to the request budget and

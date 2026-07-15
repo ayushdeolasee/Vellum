@@ -141,7 +141,27 @@ enum AiPersistence {
 
     @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
         guard let key = documentKey(document) else { return [] }
-        return entries().first(where: { $0.key == key })?.messages ?? []
+        var loaded = entries()
+        if let exact = loaded.first(where: { $0.key == key }) {
+            return exact.messages
+        }
+
+        // An app reinstall or OS update changes the sandbox container UUID,
+        // invalidating absolute paths persisted by an earlier installation.
+        // Imported PDFs have unique filenames in Vellum's library, so recover
+        // the conversation by filename and migrate the entry to the current
+        // canonical path. Web document keys are URLs and must stay exact.
+        let filename = (key as NSString).lastPathComponent
+        guard document?.kind == .pdf,
+              filename.lowercased().hasSuffix(".pdf"),
+              let legacyIndex = loaded.firstIndex(where: {
+                  ($0.key as NSString).lastPathComponent == filename
+              }) else { return [] }
+        let messages = loaded[legacyIndex].messages
+        loaded[legacyIndex].key = key
+        cachedEntries = loaded
+        scheduleFlush()
+        return messages
     }
 
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {

@@ -159,6 +159,7 @@
 		2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAtomicWriter.swift; sourceTree = "<group>"; };
 		30CC2363C63B98CDE69C7B5A /* WebStorageLocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorageLocationTests.swift; sourceTree = "<group>"; };
 		3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView_iOS.swift; sourceTree = "<group>"; };
+		338949714215E58B03C6B359 /* Vellum-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Vellum-iOS.entitlements"; sourceTree = "<group>"; };
 		35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPersistence.swift; sourceTree = "<group>"; };
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
 		438D3DD29145D25F74DF89C8 /* InkOverlayProvider_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkOverlayProvider_iOS.swift; sourceTree = "<group>"; };
@@ -449,6 +450,7 @@
 		9E8E2E8E13FD91020A96EDCA /* Vellum */ = {
 			isa = PBXGroup;
 			children = (
+				338949714215E58B03C6B359 /* Vellum-iOS.entitlements */,
 				76D226C5BF26487AF44B0712 /* App */,
 				0A893C9E10BE8275414AA01D /* Models */,
 				F8C622CDAB2620944EFB4900 /* Platform */,

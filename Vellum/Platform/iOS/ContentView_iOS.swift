@@ -9,11 +9,12 @@ import SwiftUI
 struct ContentView_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(ThemeStore.self) private var themeStore
+    @Environment(InkRegistry_iOS.self) private var inkRegistry
     @Environment(\.palette) private var palette
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var addWebpagePresented = false
-    @State private var inkRegistry = InkRegistry_iOS()
+    @State private var isImporting = false
 
     /// The pane the single inspector sidebar and shell-level pickers act on.
     private var focused: PaneModel { workspace.focusedPane }
@@ -34,6 +35,17 @@ struct ContentView_iOS: View {
         .environment(inkRegistry)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background.ignoresSafeArea())
+        .overlay {
+            if isImporting {
+                ZStack {
+                    Color.black.opacity(0.12).ignoresSafeArea()
+                    ProgressView("Importing PDF…")
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 18)
+                        .background(.regularMaterial, in: .rect(cornerRadius: Radius.md))
+                }
+            }
+        }
         .task { await workspace.restoreFromDisk() }
         // Warm the document-picker subsystem shortly after launch so the first
         // "Open a PDF" tap doesn't pay the multi-second service-discovery cost.
@@ -65,12 +77,20 @@ struct ContentView_iOS: View {
     }
 
     private func presentImporter() {
-        let workspace = self.workspace
+        // The picker belongs to the pane that presented it. Focus may move to
+        // the other pane while security-scoped files are being copied, so
+        // capture the destination before any asynchronous work begins.
+        let app = workspace.focusedPane.app
         DocumentPickerCoordinator_iOS.shared.present { urls in
-            let paths = DocumentImport.importPicked(urls)
-            guard !paths.isEmpty else { return }
-            let app = workspace.focusedPane.app
-            Task { await app.openFiles(paths: paths) }
+            Task { @MainActor in
+                isImporting = true
+                defer { isImporting = false }
+                let paths = await Task.detached(priority: .userInitiated) {
+                    DocumentImport.importPicked(urls)
+                }.value
+                guard !paths.isEmpty else { return }
+                await app.openFiles(paths: paths)
+            }
         }
     }
 

@@ -108,15 +108,24 @@ struct PaneView_iOS: View {
             // Active start tab: the library, inside the pane.
             WelcomeLibrary_iOS(onOpen: requestOpenFile, onAddWebpage: requestAddWebpage, compact: true)
         } else {
-            PdfToolbar_iOS(ink: ink, onOpenFile: requestOpenFile, onAddWebpage: requestAddWebpage)
+            // Keep the reader chrome as one layout unit. Returning these views
+            // as separate ViewBuilder children caused the outer max-height
+            // frame to expand the toolbar and viewer independently, giving the
+            // toolbar roughly half of the pane.
+            VStack(spacing: 0) {
+                PdfToolbar_iOS(
+                    ink: ink,
+                    onOpenFile: requestOpenFile,
+                    onAddWebpage: requestAddWebpage)
 
-            if app.findVisible {
-                FindBar()
+                if app.findVisible {
+                    FindBar()
+                }
+
+                documentViewer
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea(edges: .bottom)
             }
-
-            documentViewer
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(edges: .bottom)
         }
     }
 

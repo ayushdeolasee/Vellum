@@ -208,6 +208,10 @@ final class InkController_iOS {
     /// inking two pages inside one debounce window must not drop either write.
     @ObservationIgnored private var persistTasks: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var pendingWrites: [Int: (data: Data, path: String)] = [:]
+    /// Retains the active immediate flush. Backgrounding joins this exact task
+    /// instead of seeing emptied dictionaries and ending its assertion while a
+    /// previously launched PDF rewrite is still running.
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
 
     var activeColor: Color {
         get { tool == .highlighter ? highlighterColor : penColor }
@@ -342,12 +346,49 @@ final class InkController_iOS {
     /// Write all pending debounced ink immediately (no 700ms wait). Called when
     /// ink mode turns off so a fast app-kill can't drop the last strokes.
     func flushPendingInk() {
-        let pending = pendingWrites
-        for task in persistTasks.values { task.cancel() }
-        persistTasks.removeAll()
-        pendingWrites.removeAll()
-        for (page, write) in pending {
-            Task { await Self.writer.write(data: write.data, page: page, path: write.path) }
+        _ = ensureFlushTask()
+    }
+
+    /// Cancel the debounce and wait until every pending page rewrite is durable.
+    /// The scene-background task uses this before iPadOS is allowed to suspend
+    /// the app, so a stroke made immediately before pressing Home cannot vanish.
+    func flushPendingInkAndWait() async {
+        // A stroke can arrive while an earlier flush is suspended in PDFKit.
+        // Keep joining/draining until there is neither an active flush nor new
+        // pending state.
+        while let task = ensureFlushTask() {
+            await task.value
+        }
+    }
+
+    private func ensureFlushTask() -> Task<Void, Never>? {
+        if let flushTask { return flushTask }
+        guard !pendingWrites.isEmpty || !persistTasks.isEmpty else { return nil }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.drainPendingInk()
+            self.flushTask = nil
+        }
+        flushTask = task
+        return task
+    }
+
+    private func drainPendingInk() async {
+        while !pendingWrites.isEmpty || !persistTasks.isEmpty {
+            let pending = pendingWrites
+            let scheduled = Array(persistTasks.values)
+            for task in scheduled { task.cancel() }
+            persistTasks.removeAll()
+            pendingWrites.removeAll()
+
+            // Cancellation does not interrupt a writer that already passed its
+            // debounce. Join those tasks before the background assertion ends;
+            // writing the captured latest page state again is intentional and
+            // leaves the newest drawing authoritative.
+            for task in scheduled { await task.value }
+            for (page, write) in pending {
+                await Self.writer.write(data: write.data, page: page, path: write.path)
+            }
         }
     }
 
@@ -381,26 +422,26 @@ final class InkController_iOS {
 /// of the same file (both are full read-modify-writes; interleaving would lose
 /// one side's changes). The gate also runs the PDFKit mutation + write off the
 /// main thread.
-private struct InkDiskWriter {
+struct InkDiskWriter {
     func write(data: Data, page: Int, path: String) async {
-        await PdfFileGate.shared.perform { Self.writeSync(data: data, page: page, path: path) }
+        await PdfFileGate.shared.perform {
+            Self.writeSync(data: data, page: page, path: path)
+        }
     }
 
     private static func writeSync(data: Data, page: Int, path: String) {
         let url = URL(fileURLWithPath: path)
-        guard let document = PDFDocument(url: url),
+        guard let originalData = try? Data(contentsOf: url),
+              let document = PDFDocument(data: originalData),
               page >= 1, page <= document.pageCount,
               let pdfPage = document.page(at: page - 1) else { return }
         let drawing = (try? PKDrawing(data: data)) ?? PKDrawing()
         PdfInk.apply(drawing, to: pdfPage)
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".vellum-ink-\(UUID().uuidString).pdf")
-        if document.write(to: tmp) {
-            try? FileManager.default.removeItem(at: url)
-            try? FileManager.default.moveItem(at: tmp, to: url)
-        } else {
-            try? FileManager.default.removeItem(at: tmp)
-        }
+        guard let rewritten = document.dataRepresentation() else { return }
+        try? PdfDocumentSession.persistPdfKitRewrite(
+            rewritten,
+            preservingMetadataFrom: originalData,
+            path: path)
     }
 }
 #endif

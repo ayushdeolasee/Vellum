@@ -573,32 +573,40 @@ private struct TabChip_iOS: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
-                .font(.system(size: 12))
-                .foregroundStyle(isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
-            Text(title)
-                .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-                .lineLimit(1)
-                .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
-                .frame(maxWidth: 160)
+            Button(action: { appStore.activateTab(tab.id) }) {
+                HStack(spacing: 6) {
+                    Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
+                        .font(.system(size: 12))
+                        .foregroundStyle(
+                            isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                    Text(title)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        .lineLimit(1)
+                        .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
+                        .frame(maxWidth: 160)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isActive ? "Selected" : "")
+
             Button {
                 Task { await appStore.closeTab(tab.id) }
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close tab")
+            .accessibilityLabel("Close \(title)")
         }
         .padding(.leading, 12)
         .padding(.trailing, 4)
-        .frame(height: 36)
+        .frame(height: 44)
         .selectionSurface(selected: isActive, in: Capsule(), palette: palette)
-        .contentShape(Capsule())
-        .onTapGesture { appStore.activateTab(tab.id) }
         // Long-press lifts the chip into a drag; dropping on another pane's
         // strip joins that group, dropping on a pane edge splits it.
         .onDrag {

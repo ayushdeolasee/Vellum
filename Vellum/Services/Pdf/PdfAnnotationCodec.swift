@@ -267,34 +267,35 @@ enum PdfAnnotationWriter {
         let position = input.positionData ?? defaultPosition(input: input, geometry: geometry)
         let color = input.color ?? PdfColor.defaultHex(for: input.type)
 
-        let subtype: PDFAnnotationSubtype = input.type == .highlight ? .highlight : .text
-        let annotation = PDFAnnotation(bounds: .zero, forType: subtype, withProperties: nil)
-        setText(annotation, "NM", id)
-        setText(annotation, "M", PdfDates.pdfDateNow())
-        setValue(annotation, "F", 4 as NSNumber)
-        setText(annotation, "T", "Vellum")
-        setText(annotation, "VellumCreatedAt", now)
-        setText(annotation, "VellumUpdatedAt", now)
-        annotation.color = PdfColor.annotationColor(fromHex: color)
-
         var patches: [PdfBytePatch] = []
+        var properties: [AnyHashable: Any] = [
+            PDFAnnotationKey(rawValue: "NM"): id as NSString,
+            PDFAnnotationKey(rawValue: "M"): PdfDates.pdfDateNow() as NSString,
+            PDFAnnotationKey(rawValue: "F"): 4 as NSNumber,
+            PDFAnnotationKey(rawValue: "T"): "Vellum" as NSString,
+            PDFAnnotationKey(rawValue: "VellumCreatedAt"): now as NSString,
+            PDFAnnotationKey(rawValue: "VellumUpdatedAt"): now as NSString,
+        ]
         switch input.type {
         case .highlight:
             // /CA 0.4 — placeholder rewritten by PdfBytePatch.highlightOpacity.
-            setValue(annotation, "VellumOpacityPlaceholder", 4 as NSNumber)
+            properties[PDFAnnotationKey(rawValue: "VellumOpacityPlaceholder")] = 4 as NSNumber
             patches.append(.highlightOpacity)
         default:
             // /Name /Note — string placeholder rewritten into a name object.
-            setText(annotation, "Name", "Note")
+            properties[PDFAnnotationKey(rawValue: "Name")] = "Note" as NSString
             patches.append(.noteIconName)
         }
 
         if let content = input.content {
-            annotation.contents = content
+            properties[PDFAnnotationKey(rawValue: "Contents")] = content as NSString
         }
         if let selectedText = position.selectedText {
-            setText(annotation, "VellumSelectedText", selectedText)
+            properties[PDFAnnotationKey(rawValue: "VellumSelectedText")] = selectedText as NSString
         }
+        let subtype: PDFAnnotationSubtype = input.type == .highlight ? .highlight : .text
+        let annotation = PDFAnnotation(bounds: .zero, forType: subtype, withProperties: properties)
+        annotation.color = PdfColor.annotationColor(fromHex: color)
         try applyPosition(annotation, geometry: geometry, position: position, isHighlight: input.type == .highlight)
 
         return (annotation, position, color, input.content, patches)

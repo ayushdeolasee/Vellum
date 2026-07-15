@@ -662,6 +662,32 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertEqual(CgPdf.string(dictionary, "NM"), "pdf-direct-1-0")
     }
 
+    func testUnrelatedCreateDoesNotClaimForeignAnnotation() async throws {
+        let path = makeClassicPdf(name: "foreign-preserved", objects: [
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [5 0 R] >>",
+            4: "<< /Length 0 >>\nstream\n\nendstream",
+            5: "<< /Type /Annot /Subtype /Highlight /Rect [72 676 252 692] /QuadPoints [72 692 252 692 72 676 252 676] /C [1 1 0] /T (Vellum) /Contents (External comment) >>",
+        ])
+
+        let session = try await openSession(path)
+        _ = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 1,
+            color: nil,
+            content: "Vellum note",
+            positionData: position(AnnotationRect(x: 300, y: 400, width: 0, height: 0))))
+
+        let foreign = try XCTUnwrap(rawAnnotations(path, page: 1).first {
+            CgPdf.string($0, "Contents") == "External comment"
+        })
+        XCTAssertNil(CgPdf.string(foreign, "NM"))
+        XCTAssertEqual(CgPdf.string(foreign, "T"), "Vellum")
+        XCTAssertFalse(CgPdf.has(foreign, "VellumCreatedAt"))
+        XCTAssertFalse(CgPdf.has(foreign, "VellumUpdatedAt"))
+    }
+
     func testForeignAnnotationDerivedIdSkipsNonDictionarySlots() async throws {
         // /Annots with a null slot before the real annotation: the reader
         // derives the id from the RAW slot index (pdf-direct-1-1), while

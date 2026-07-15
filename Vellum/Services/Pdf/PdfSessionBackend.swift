@@ -118,10 +118,53 @@ enum PdfDocumentLoader {
 actor PdfFileGate {
     static let shared = PdfFileGate()
 
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
     /// Run one mutating file operation to completion before the next begins.
-    func perform<T: Sendable>(_ body: @Sendable () throws -> T) rethrows -> T {
-        try body()
+    ///
+    /// The closure remains async-capable for callers that need it. Actors are
+    /// reentrant across awaits, so the explicit lock/continuation queue is
+    /// load-bearing: without it an ink write could enter while another full-file
+    /// rewrite is suspended and the two writers would race.
+    func perform<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        await acquire()
+        defer { release() }
+        return try await body()
     }
+
+    private func acquire() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isLocked = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
+/// iPadOS 26 PDFKit preserves standard annotation geometry/content but silently
+/// omits custom annotation and Info keys from serialized output. iPadOS 27
+/// preserves them. The affected runtime gets a raw metadata patch after the
+/// otherwise off-main PDFKit rewrite.
+var pdfKitDropsCustomKeys: Bool {
+    #if os(iOS)
+    if #available(iOS 27, *) { return false }
+    return true
+    #else
+    return false
+    #endif
 }
 
 /// Reads run OFF the gate, detached from the MainActor. The atomic-rename write
@@ -173,28 +216,36 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
         let path = self.path
-        return try await PdfFileGate.shared.perform { try Self.performCreate(path: path, input: input) }
+        return try await PdfFileGate.shared.perform {
+            return try Self.performCreate(path: path, input: input)
+        }
     }
 
     /// update_annotation: only provided fields change; /M and /VellumUpdatedAt
     /// always refresh. Returns false when the id is unknown.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let path = self.path
-        return try await PdfFileGate.shared.perform { try Self.performUpdate(path: path, input: input) }
+        return try await PdfFileGate.shared.perform {
+            return try Self.performUpdate(path: path, input: input)
+        }
     }
 
     /// delete_annotation: outline bookmarks first, then page annotations;
     /// false when the id is unknown.
     func deleteAnnotation(id: String) async throws -> Bool {
         let path = self.path
-        return try await PdfFileGate.shared.perform { try Self.performDelete(path: path, id: id) }
+        return try await PdfFileGate.shared.perform {
+            return try Self.performDelete(path: path, id: id)
+        }
     }
 
     /// set_metadata: `page_count` is ignored; everything else lands in the
     /// Info dictionary and rewrites the file.
     func setMetadata(key: String, value: String) async throws {
         let path = self.path
-        try await PdfFileGate.shared.perform { try Self.performSetMetadata(path: path, key: key, value: value) }
+        try await PdfFileGate.shared.perform {
+            return try Self.performSetMetadata(path: path, key: key, value: value)
+        }
     }
 
     // MARK: Off-main implementations
@@ -243,6 +294,9 @@ final class PdfDocumentSession: DocumentSession {
     /// bookmarks to outline creation. Saves the file; returns the full record.
     nonisolated static func performCreate(path: String, input: CreateAnnotationInput) throws -> Annotation {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        let existingAnnotations = Self.annotationMetadataRecords(in: raw)
+        let existingBookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
+        let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
         guard input.pageNumber >= 1, input.pageNumber <= raw.numberOfPages else {
             throw SessionServiceError.invalidDocument("Page \(input.pageNumber) does not exist")
         }
@@ -251,6 +305,15 @@ final class PdfDocumentSession: DocumentSession {
         let now = input.createdAt ?? PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
+            if let originalData,
+               let patched = try? PdfBookmarks.createBookmarkIncrement(
+                   normalizedData: originalData, pageNumber: input.pageNumber, id: id, now: now) {
+                try Self.writeAndRefreshCache(patched, path: path)
+                return Annotation(
+                    id: id, type: .bookmark, pageNumber: input.pageNumber,
+                    color: nil, content: nil, positionData: nil,
+                    createdAt: now, updatedAt: now)
+            }
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
                 normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
@@ -276,11 +339,7 @@ final class PdfDocumentSession: DocumentSession {
             input: input, geometry: geometry, id: id, now: now)
         page.addAnnotation(annotation)
 
-        var data = try serialize(document)
-        PdfBytePatch.apply(patches, to: &data)
-        try Self.writeAndRefreshCache(data, path: path)
-
-        return Annotation(
+        let created = Annotation(
             id: id,
             type: input.type,
             pageNumber: input.pageNumber,
@@ -289,6 +348,23 @@ final class PdfDocumentSession: DocumentSession {
             positionData: position,
             createdAt: now,
             updatedAt: now)
+        var data = try serialize(document)
+        if pdfKitDropsCustomKeys {
+            data = try Self.rehydrateAnnotationMetadata(
+                normalizedData: data,
+                records: existingAnnotations + [AnnotationMetadataRecord(
+                    annotation: created, shouldRehydrate: true)])
+            data = try Self.rehydrateBookmarkMetadata(
+                normalizedData: data, bookmarks: existingBookmarks)
+            if let originalData {
+                data = try Self.restoreInfoDictionary(
+                    from: originalData, into: data)
+            }
+        } else {
+            PdfBytePatch.apply(patches, to: &data)
+        }
+        try Self.writeAndRefreshCache(data, path: path)
+        return created
     }
 
     /// update_annotation: matches /NM or derived ids (third-party annotations
@@ -297,6 +373,9 @@ final class PdfDocumentSession: DocumentSession {
     /// /VellumUpdatedAt always refresh.
     nonisolated static func performUpdate(path: String, input: UpdateAnnotationInput) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        var records = Self.annotationMetadataRecords(in: raw)
+        let bookmarks = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
+        let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
         guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
         }
@@ -324,7 +403,29 @@ final class PdfDocumentSession: DocumentSession {
             }
         }
 
-        let data = try serialize(document)
+        var data = try serialize(document)
+        if pdfKitDropsCustomKeys,
+           let index = records.firstIndex(where: { $0.annotation.id == input.id }) {
+            let current = records[index].annotation
+            records[index] = AnnotationMetadataRecord(
+                annotation: Annotation(
+                    id: current.id,
+                    type: current.type,
+                    pageNumber: current.pageNumber,
+                    color: input.color ?? current.color,
+                    content: input.content ?? current.content,
+                    positionData: input.positionData ?? current.positionData,
+                    createdAt: current.createdAt,
+                    updatedAt: PdfDates.rfc3339Now()),
+                shouldRehydrate: true)
+            data = try Self.rehydrateAnnotationMetadata(
+                normalizedData: data, records: records)
+            data = try Self.rehydrateBookmarkMetadata(
+                normalizedData: data, bookmarks: bookmarks)
+            if let originalData {
+                data = try Self.restoreInfoDictionary(from: originalData, into: data)
+            }
+        }
         try Self.writeAndRefreshCache(data, path: path)
         return true
     }
@@ -333,8 +434,15 @@ final class PdfDocumentSession: DocumentSession {
     /// false when the id is unknown.
     nonisolated static func performDelete(path: String, id: String) throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+        let originalData = pdfKitDropsCustomKeys ? try? Self.readBytes(path: path) : nil
 
         if PdfBookmarks.containsBookmark(document: raw, id: id) {
+            if let originalData,
+               let patched = try PdfBookmarks.deleteBookmarkIncrement(
+                   normalizedData: originalData, id: id) {
+                try Self.writeAndRefreshCache(patched, path: path)
+                return true
+            }
             let normalized = try serialize(document)
             guard let patched = try PdfBookmarks.deleteBookmarkIncrement(normalizedData: normalized, id: id) else {
                 return false
@@ -369,7 +477,20 @@ final class PdfDocumentSession: DocumentSession {
         }
 
         page.removeAnnotation(annotation)
-        let data = try serialize(document)
+        var data = try serialize(document)
+        if pdfKitDropsCustomKeys {
+            let remaining = Self.annotationMetadataRecords(in: raw).filter {
+                $0.annotation.id != id
+            }
+            data = try Self.rehydrateAnnotationMetadata(
+                normalizedData: data, records: remaining)
+            data = try Self.rehydrateBookmarkMetadata(
+                normalizedData: data,
+                bookmarks: PdfBookmarks.readBookmarks(document: raw, pageNumber: nil))
+            if let originalData {
+                data = try Self.restoreInfoDictionary(from: originalData, into: data)
+            }
+        }
         try Self.writeAndRefreshCache(data, path: path)
         return true
     }
@@ -378,6 +499,13 @@ final class PdfDocumentSession: DocumentSession {
     /// Info dictionary and rewrites the file.
     nonisolated static func performSetMetadata(path: String, key: String, value: String) throws {
         if key == "page_count" { return }
+        if pdfKitDropsCustomKeys,
+           let original = try? Self.readBytes(path: path),
+           let patched = try? PdfMetadata.setMetadataIncrement(
+               normalizedData: original, key: key, value: value) {
+            try Self.writeAndRefreshCache(patched, path: path)
+            return
+        }
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         let normalized = try serialize(document)
         let patched = try PdfMetadata.setMetadataIncrement(normalizedData: normalized, key: key, value: value)
@@ -482,10 +610,228 @@ final class PdfDocumentSession: DocumentSession {
     /// Reload increment-patched data through PDFKit and write the resulting
     /// clean full rewrite (single xref, no /Prev) atomically.
     nonisolated private static func saveThroughPdfKit(_ patchedData: Data, path: String) throws {
+        if pdfKitDropsCustomKeys {
+            // iPadOS 26's PDFKit serializer drops custom annotation and Info
+            // keys. The increment is already a complete, valid PDF; preserving
+            // it is both safer and the only way to retain Vellum metadata.
+            try Self.writeAndRefreshCache(patchedData, path: path)
+            return
+        }
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
         let data = try serialize(document)
         try Self.writeAndRefreshCache(data, path: path)
+    }
+
+    /// Persist a full PDFKit rewrite while retaining metadata that iPadOS 26's
+    /// serializer drops. Ink uses this path after changing native `/Ink`
+    /// annotations so it cannot erase Vellum annotation, bookmark, or Info
+    /// dictionary keys as a side effect.
+    nonisolated static func persistPdfKitRewrite(
+        _ normalizedData: Data,
+        preservingMetadataFrom originalData: Data,
+        path: String
+    ) throws {
+        var data = normalizedData
+        if pdfKitDropsCustomKeys {
+            guard let raw = PdfDocumentLoader.cgDocument(from: originalData) else {
+                throw SessionServiceError.invalidDocument(
+                    "Failed to read PDF metadata before rewrite")
+            }
+            data = try Self.rehydrateAnnotationMetadata(
+                normalizedData: data,
+                records: Self.annotationMetadataRecords(in: raw))
+            data = try Self.rehydrateBookmarkMetadata(
+                normalizedData: data,
+                bookmarks: PdfBookmarks.readBookmarks(document: raw, pageNumber: nil))
+            data = try Self.restoreInfoDictionary(from: originalData, into: data)
+        }
+        try Self.writeAndRefreshCache(data, path: path)
+    }
+
+    private struct AnnotationMetadataRecord {
+        var annotation: Annotation
+        var shouldRehydrate: Bool
+    }
+
+    /// Restore Vellum's custom keys after an iPadOS 26 PDFKit rewrite. All
+    /// supported records participate in positional matching, but only records
+    /// already owned by Vellum (or the annotation explicitly being created or
+    /// edited) are stamped. This preserves third-party annotation identity and
+    /// authorship during unrelated Vellum mutations.
+    nonisolated private static func rehydrateAnnotationMetadata(
+        normalizedData: Data,
+        records: [AnnotationMetadataRecord]
+    ) throws -> Data {
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let catalogNumber = file.rootNumber,
+              let catalog = file.objectSource(catalogNumber) else {
+            throw SessionServiceError.invalidDocument("Failed to restore annotation metadata")
+        }
+        var increment = PdfIncrement(file: file)
+        let maximumPage = records.map(\.annotation.pageNumber).max() ?? 0
+        if maximumPage > 0 {
+            for pageNumber in 1...maximumPage {
+                let pageRecords = records.filter {
+                    $0.annotation.pageNumber == pageNumber
+                        && ($0.annotation.type == .highlight || $0.annotation.type == .note)
+                }
+                guard !pageRecords.isEmpty else { continue }
+                guard let pageObjectNumber = PdfBookmarks.pageObjectNumber(
+                          in: file, catalog: catalog, pageNumber: pageNumber),
+                      let page = file.objectSource(pageObjectNumber),
+                      let annotsNumber = page.reference(forKey: "Annots"),
+                      let annots = file.rawObjectValue(annotsNumber),
+                      let references = PdfArraySource.references(inArray: annots)
+                else {
+                    throw SessionServiceError.invalidDocument(
+                        "Failed to restore annotation metadata on page \(pageNumber)")
+                }
+                var recordIndex = 0
+                for annotationNumber in references {
+                    guard recordIndex < pageRecords.count,
+                          var source = file.objectSource(annotationNumber),
+                          let subtype = source.name(forKey: "Subtype"),
+                          subtype == "Highlight" || subtype == "Text" || subtype == "FreeText"
+                    else { continue }
+                    let metadata = pageRecords[recordIndex]
+                    recordIndex += 1
+                    guard metadata.shouldRehydrate else { continue }
+                    let record = metadata.annotation
+                    source.setValue(forKey: "NM", raw: PdfTextString.encode(record.id))
+                    source.setValue(forKey: "M", raw: PdfTextString.encode(PdfDates.pdfDateNow()))
+                    source.setInteger(forKey: "F", to: 4)
+                    source.setValue(forKey: "T", raw: PdfTextString.encode("Vellum"))
+                    source.setValue(
+                        forKey: "VellumCreatedAt", raw: PdfTextString.encode(record.createdAt))
+                    source.setValue(
+                        forKey: "VellumUpdatedAt", raw: PdfTextString.encode(record.updatedAt))
+                    if let selectedText = record.positionData?.selectedText {
+                        source.setValue(
+                            forKey: "VellumSelectedText", raw: PdfTextString.encode(selectedText))
+                    } else {
+                        source.removeEntry(forKey: "VellumSelectedText")
+                    }
+                    if record.type == .highlight {
+                        source.setValue(forKey: "CA", raw: Array(".4".utf8))
+                    } else {
+                        source.setValue(forKey: "Name", raw: Array("/Note".utf8))
+                    }
+                    increment.setObject(annotationNumber, source: source.sourceBytes)
+                }
+                guard recordIndex == pageRecords.count else {
+                    throw SessionServiceError.invalidDocument(
+                        "Failed to match all annotations on page \(pageNumber)")
+                }
+            }
+        }
+        return increment.appended()
+    }
+
+    /// Supported page annotations in raw page order (bookmarks excluded), plus
+    /// whether each raw dictionary carries Vellum ownership metadata.
+    nonisolated private static func annotationMetadataRecords(
+        in document: CGPDFDocument
+    ) -> [AnnotationMetadataRecord] {
+        var result: [AnnotationMetadataRecord] = []
+        guard document.numberOfPages > 0 else { return result }
+        for pageNumber in 1...document.numberOfPages {
+            guard let dictionary = document.page(at: pageNumber)?.dictionary,
+                  let geometry = try? PageGeometry(pageDictionary: dictionary),
+                  let entries = CgPdf.array(dictionary, "Annots") else { continue }
+            for index in 0..<CgPdf.count(entries) {
+                guard let rawAnnotation = CgPdf.dictionaryAt(entries, index),
+                      let annotation = PdfAnnotationReader.annotation(
+                          from: rawAnnotation,
+                          pageNumber: pageNumber,
+                          index: index,
+                          geometry: geometry)
+                else { continue }
+                // `/T` is the standard PDF author/title field; an unrelated
+                // reviewer can legitimately be named "Vellum". Ownership must
+                // therefore be proven by an application-specific key.
+                let isVellumOwned = CgPdf.has(rawAnnotation, "VellumCreatedAt")
+                    || CgPdf.has(rawAnnotation, "VellumUpdatedAt")
+                    || CgPdf.has(rawAnnotation, "VellumSelectedText")
+                result.append(AnnotationMetadataRecord(
+                    annotation: annotation,
+                    shouldRehydrate: isVellumOwned))
+            }
+        }
+        return result
+    }
+
+    /// Restore Vellum outline keys that iPadOS 26 strips while preserving the
+    /// standard outline tree emitted by PDFKit. Vellum bookmarks have a stable
+    /// generated title and remain in outline traversal order across a rewrite.
+    nonisolated private static func rehydrateBookmarkMetadata(
+        normalizedData: Data,
+        bookmarks: [Annotation]
+    ) throws -> Data {
+        guard !bookmarks.isEmpty else { return normalizedData }
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let catalogNumber = file.rootNumber,
+              let catalog = file.objectSource(catalogNumber),
+              let rootNumber = catalog.reference(forKey: "Outlines"),
+              let root = file.objectSource(rootNumber)
+        else {
+            throw SessionServiceError.invalidDocument("Failed to restore PDF bookmarks")
+        }
+
+        var candidates: [Int] = []
+        var visited: Set<Int> = [rootNumber]
+        func walk(_ first: Int?) {
+            var current = first
+            while let number = current, visited.insert(number).inserted {
+                guard let item = file.objectSource(number) else { return }
+                if item.textString(forKey: "Title")?.hasPrefix("Bookmark - page ") == true {
+                    candidates.append(number)
+                }
+                walk(item.reference(forKey: "First"))
+                current = item.reference(forKey: "Next")
+            }
+        }
+        walk(root.reference(forKey: "First"))
+        guard candidates.count >= bookmarks.count else {
+            throw SessionServiceError.invalidDocument("Failed to match all PDF bookmarks")
+        }
+
+        var increment = PdfIncrement(file: file)
+        for (number, bookmark) in zip(candidates, bookmarks) {
+            guard var source = file.objectSource(number) else { continue }
+            source.setValue(forKey: "VellumType", raw: Array("/Bookmark".utf8))
+            source.setValue(forKey: "VellumNM", raw: PdfTextString.encode(bookmark.id))
+            source.setValue(
+                forKey: "VellumCreatedAt", raw: PdfTextString.encode(bookmark.createdAt))
+            source.setValue(
+                forKey: "VellumUpdatedAt", raw: PdfTextString.encode(bookmark.updatedAt))
+            increment.setObject(number, source: source.sourceBytes)
+        }
+        return increment.appended()
+    }
+
+    /// Carry the complete pre-rewrite Info dictionary (including arbitrary
+    /// `/Vellum*` keys) into PDFKit's normalized file. This avoids maintaining
+    /// a lossy allowlist of document metadata.
+    nonisolated private static func restoreInfoDictionary(
+        from originalData: Data,
+        into normalizedData: Data
+    ) throws -> Data {
+        let original = try ClassicPdfFile(data: originalData)
+        guard let originalInfoNumber = original.infoNumber,
+              let originalInfo = original.objectSource(originalInfoNumber)
+        else { return normalizedData }
+
+        let normalized = try ClassicPdfFile(data: normalizedData)
+        var increment = PdfIncrement(file: normalized)
+        let targetNumber: Int
+        if let existing = normalized.infoNumber {
+            targetNumber = existing
+        } else {
+            targetNumber = increment.allocateObjectNumber()
+        }
+        increment.setObject(targetNumber, source: originalInfo.sourceBytes)
+        return increment.appended(infoNumber: targetNumber)
     }
 }

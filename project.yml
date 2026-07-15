@@ -68,6 +68,10 @@ targets:
         TARGETED_DEVICE_FAMILY: "2"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info-iOS.plist
+        # iCloud entitlement (Vellum/Vellum-iOS.entitlements) is intentionally
+        # NOT wired in: the free/Personal signing team can't provision the
+        # iCloud capability, which breaks device builds. Re-add
+        # CODE_SIGN_ENTITLEMENTS once on a paid Apple Developer account.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: "NO"
         SUPPORTS_MACCATALYST: "NO"

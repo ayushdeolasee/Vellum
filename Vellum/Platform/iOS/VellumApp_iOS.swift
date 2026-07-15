@@ -12,6 +12,7 @@ import UIKit
 struct VellumApp_iOS: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
+    @State private var inkRegistry: InkRegistry_iOS
     @State private var showStorageChoice = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -21,6 +22,7 @@ struct VellumApp_iOS: App {
         let workspace = WorkspaceStore(sessions: sessions)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
+        _inkRegistry = State(initialValue: InkRegistry_iOS())
     }
 
     var body: some Scene {
@@ -35,6 +37,7 @@ struct VellumApp_iOS: App {
                 }
                 .environment(themeStore)
                 .environment(workspace)
+                .environment(inkRegistry)
                 .environment(workspace.openRouterCatalog)
                 .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
@@ -105,6 +108,9 @@ struct VellumApp_iOS: App {
 
         Task { @MainActor in
             defer { token.end() }
+            for controller in inkRegistry.controllers.values {
+                await controller.flushPendingInkAndWait()
+            }
             for pane in workspace.root.allLeaves() {
                 // Persist the pane's scratchpad note immediately (synchronous,
                 // main-actor) so a debounced edit isn't lost on suspend.

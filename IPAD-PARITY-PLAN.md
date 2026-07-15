@@ -200,13 +200,17 @@ vs `8f02bff` where useful. Each phase: build + tests green on
   on-sim QA sweep PASS 2026-07-15 — one inconclusive: new-selection popover can't be
   reached via synthesized touch (PDFKit gesture limitation), verify on real device
   along with ChatGPT OAuth sign-in and Pencil flows)
+- [x] Completion hardening — cross-runtime PDF metadata preservation, serialized
+  annotation/ink writes, background ink flush, single-scene workspace ownership,
+  pane-stable imports/captures, AI drop handling, conversation path migration, iCloud
+  entitlements, and accessible tab controls; 137/137 tests pass on iPadOS 26.5 and
+  iPadOS 27, with split-view/AI/Scratchpad persistence verified on-sim.
 
 ## Known follow-ups (out of parity scope)
-- AiPersistence conversations share the container-absolute-path keying fragility that
-  4603e37 fixed for tabs/scratchpad — same class of bug exists on main too.
 - UITests target + Benchmarks/ + main's plans/ docs not ported (no target on either
   branch / dev tooling / macOS planning docs).
-- iCloud storage option needs the ubiquity-container entitlement registered for the
-  team before it enables on device (falls back to local until then).
+- iCloud entitlements are wired into the target; the ubiquity container must still be
+  registered/provisioned for the Apple Developer team and validated on a signed device
+  (the app continues to fall back to local storage when unavailable).
 - iPad edge-swipe back in web tabs was disabled to match main (session-rebind safety);
   restore deliberately if wanted.

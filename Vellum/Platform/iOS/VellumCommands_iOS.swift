@@ -25,19 +25,25 @@ struct VellumCommands_iOS: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Tab") { appStore.newStartTab() }
                 .keyboardShortcut("t", modifiers: .command)
+        }
 
+        // Replace UIKit's document-import command so ⌘O has exactly one owner
+        // and routes through Vellum's pane-aware importer.
+        CommandGroup(replacing: .importExport) {
             Button("Open…") {
                 NotificationCenter.default.post(name: .vellumOpenFile, object: nil)
             }
-            .keyboardShortcut("o", modifiers: .command)
+            // UIKit owns the standard hardware ⌘O key command on iPad. Adding
+            // a SwiftUI duplicate produces undefined dispatch; keep this menu
+            // action while leaving the standard key equivalent to UIKit.
 
             Button("Add Webpage…") {
                 NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
             }
             .keyboardShortcut("l", modifiers: .command)
+        }
 
-            Divider()
-
+        CommandGroup(after: .newItem) {
             Button("Close Tab") {
                 guard !appStore.tabs.isEmpty else { return }
                 Task { await appStore.closeFile() }
@@ -54,24 +60,24 @@ struct VellumCommands_iOS: Commands {
         }
 
         // MARK: Find
+        // UIKit already owns the responder-chain ⌘A/⌘F/⌘G commands on iPad.
+        // These menu actions expose Vellum's document-aware find UI without
+        // registering duplicate key equivalents with undefined dispatch.
         CommandGroup(after: .textEditing) {
             Button("Find…") {
                 guard appStore.document != nil else { return }
                 appStore.showFind()
             }
-            .keyboardShortcut("f", modifiers: .command)
 
             Button("Find Next") {
                 guard appStore.findVisible else { return }
                 appStore.findNext()
             }
-            .keyboardShortcut("g", modifiers: .command)
 
             Button("Find Previous") {
                 guard appStore.findVisible else { return }
                 appStore.findPrev()
             }
-            .keyboardShortcut("g", modifiers: [.command, .shift])
         }
 
         CommandGroup(replacing: .saveItem) {

@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#else
+import AppKit
+#endif
 
 /// One selectable model, unified across providers. Built-in provider models
 /// carry no pricing/context metadata; OpenRouter models carry all of it.
@@ -84,22 +88,55 @@ struct ModelSelector: View {
     var body: some View {
         Button {
             onOpen?()
+#if os(iOS)
             // Dismiss the keyboard before presenting: an API-key field above this
             // control is typically first responder, and letting its keyboard tear
             // down in the same runloop turn as the popover present races the
             // presentation. Resign focus first, then present on the next turn.
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+#else
+            // AppKit's completion overlay has the same teardown race as the iOS
+            // keyboard when the API-key field is focused.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+#endif
             DispatchQueue.main.async { isPresented = true }
         } label: {
             triggerLabel
         }
         .buttonStyle(.plain)
+#if os(iOS)
+        // A model catalog is a browsing surface, not a small contextual menu.
+        // The desktop-sized popover was constrained by the iPad inspector and
+        // could extend below the screen. A large sheet gives search, every
+        // filter, and the scrollable model list a stable safe-area-aware home.
+        .sheet(isPresented: $isPresented) {
+            modelBrowser
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+        }
+#else
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            popover.frame(minWidth: 340, idealWidth: 400, minHeight: 440, idealHeight: 470)
-                .presentationCompactAdaptation(.popover)
+            selectorContent.frame(width: 400, height: 470)
+        }
+#endif
+    }
+
+#if os(iOS)
+    private var modelBrowser: some View {
+        NavigationStack {
+            selectorContent
+                .navigationTitle("Choose Model")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { isPresented = false }
+                    }
+                }
         }
     }
+#endif
 
     private var selectedOption: AiModelOption? {
         options.first { $0.id == selection }
@@ -123,6 +160,9 @@ struct ModelSelector: View {
         .font(.system(size: 12))
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
+#if os(iOS)
+        .frame(minHeight: 44)
+#endif
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .background(
@@ -133,9 +173,9 @@ struct ModelSelector: View {
         )
     }
 
-    // MARK: - Popover
+    // MARK: - Model browser
 
-    private var popover: some View {
+    private var selectorContent: some View {
         VStack(spacing: 0) {
             header
             Divider()
@@ -190,6 +230,9 @@ struct ModelSelector: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+#if os(iOS)
+            .frame(minHeight: 44)
+#endif
             .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
 
@@ -209,7 +252,11 @@ struct ModelSelector: View {
                     Image(systemName: ascending ? "arrow.up" : "arrow.down")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(palette.foreground)
+#if os(iOS)
+                        .frame(width: 44, height: 44)
+#else
                         .frame(width: 30, height: 28)
+#endif
                         .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
                 }
@@ -308,6 +355,9 @@ struct ModelSelector: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(freeOnly ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
             )
+#if os(iOS)
+            .frame(minHeight: 44)
+#endif
         }
         .buttonStyle(.plain)
         .fixedSize()
@@ -342,6 +392,9 @@ struct ModelSelector: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(active ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
         )
+#if os(iOS)
+        .frame(minHeight: 44)
+#endif
     }
 
     private var emptyState: some View {
@@ -400,7 +453,11 @@ struct ModelSelector: View {
                 Image(systemName: isPinned ? "star.fill" : "star")
                     .font(.system(size: 13))
                     .foregroundStyle(isPinned ? Color.yellow : palette.mutedForeground)
+#if os(iOS)
+                    .frame(width: 44, height: 44)
+#else
                     .frame(width: 30, height: 30)
+#endif
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -427,6 +484,9 @@ struct ModelSelector: View {
                     }
                 }
                 .contentShape(Rectangle())
+#if os(iOS)
+                .frame(minHeight: 44)
+#endif
             }
             .buttonStyle(.plain)
         }
