@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 /// Hardware-keyboard shortcuts for the iPad app, mirroring the macOS
 /// `VellumCommands` menu surface (see `App/VellumCommands.swift`). When a Magic
@@ -206,7 +207,11 @@ struct VellumCommands_iOS: Commands {
             .keyboardShortcut("d", modifiers: .command)
 
             Button("Toggle Note Mode") {
-                guard appStore.document != nil else { return }
+                // Bare `N` has no modifier, so it can collide with typing in the
+                // scratchpad editor's WebView. Suppress it while that editor
+                // holds keyboard focus (iOS analogue of macOS
+                // `ContentView.isTextInputFirstResponder`'s responder walk).
+                guard appStore.document != nil, !scratchpadEditorFocused else { return }
                 appStore.setMode(appStore.mode == .note ? .view : .note)
             }
             .keyboardShortcut("n", modifiers: [])
@@ -218,6 +223,20 @@ struct VellumCommands_iOS: Commands {
     private var isPdf: Bool {
         guard let doc = appStore.document else { return false }
         return doc.kind == .pdf
+    }
+
+    /// True when keyboard focus is inside the scratchpad editor's WKWebView.
+    /// Editing happens in a private WebKit content view (no `UITextField` to
+    /// detect directly), so we walk the first responder's view ancestry for the
+    /// marker `ScratchpadWebView`.
+    private var scratchpadEditorFocused: Bool {
+        guard let responder = UIResponder.vellumCurrentFirstResponder as? UIView else { return false }
+        var view: UIView? = responder
+        while let current = view {
+            if current is ScratchpadWebView { return true }
+            view = current.superview
+        }
+        return false
     }
 
     private func goToPage(_ delta: Int) {
@@ -234,6 +253,23 @@ struct VellumCommands_iOS: Commands {
     private func activateTab(index: Int) {
         guard appStore.tabs.indices.contains(index) else { return }
         appStore.activateTab(appStore.tabs[index].id)
+    }
+}
+
+/// Resolves the current first responder without a reference to it, by bouncing a
+/// captured selector through the responder chain — the standard UIKit idiom.
+extension UIResponder {
+    private weak static var _vellumFirstResponder: UIResponder?
+
+    static var vellumCurrentFirstResponder: UIResponder? {
+        _vellumFirstResponder = nil
+        UIApplication.shared.sendAction(
+            #selector(UIResponder._vellumCaptureFirstResponder(_:)), to: nil, from: nil, for: nil)
+        return _vellumFirstResponder
+    }
+
+    @objc private func _vellumCaptureFirstResponder(_ sender: Any?) {
+        UIResponder._vellumFirstResponder = self
     }
 }
 #endif  // os(iOS)

@@ -30,6 +30,7 @@ struct ContentView_iOS: View {
         .environment(focused.app)
         .environment(focused.annotations)
         .environment(focused.ai)
+        .environment(focused.scratchpad)
         .environment(inkRegistry)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background.ignoresSafeArea())

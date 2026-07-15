@@ -50,6 +50,14 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Info-iOS.plist"
+          # Bundled below as a folder reference so the CodeMirror/KaTeX editor
+          # keeps its directory layout (editor.html's relative `katex.min.css`
+          # and the css's `fonts/*.woff2` only resolve if `katex/` and its
+          # `fonts/` subfolder survive into the app bundle).
+          - "Resources/katex"
+      - path: Vellum/Resources/katex
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: SwiftMath
     settings:

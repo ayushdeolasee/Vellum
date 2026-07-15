@@ -19,6 +19,9 @@ final class PaneModel: Identifiable {
     let app: AppStore
     let annotations: AnnotationStore
     let ai: AiStore
+    /// Per-pane like the AI store: the scratchpad note is scoped to whichever
+    /// document this pane is showing, so two panes hold two independent notes.
+    let scratchpad: ScratchpadStore
 
     init(
         id: String = "pane-" + UUID().uuidString.lowercased(),
@@ -37,6 +40,7 @@ final class PaneModel: Identifiable {
         self.app = app
         self.annotations = annotations
         self.ai = ai
+        self.scratchpad = ScratchpadStore()
     }
 }
 

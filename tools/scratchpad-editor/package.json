@@ -1,0 +1,25 @@
+{
+  "name": "scratchpad-editor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CodeMirror 6 live-preview editor bundle for the Vellum scratchpad.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=iife --outfile=../../Vellum/Resources/katex/editor.bundle.js --minify --legal-comments=none"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.7.1",
+    "@codemirror/lang-markdown": "^6.3.1",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.35.3",
+    "@lezer/common": "^1.2.3",
+    "@lezer/highlight": "^1.2.1",
+    "@lezer/markdown": "^1.3.2",
+    "dompurify": "^3.4.11"
+  }
+}

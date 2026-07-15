@@ -595,6 +595,7 @@ struct SidebarContent_iOS: View {
                 options: [
                     (WorkspaceStore.SidebarTab.annotations, "Annotations"),
                     (WorkspaceStore.SidebarTab.ai, "AI"),
+                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
                 ],
                 selection: Binding(
                     get: { workspace.sidebarTab },
@@ -604,21 +605,45 @@ struct SidebarContent_iOS: View {
             )
             .padding(.vertical, 10)
             Divider()
-            Group {
-                if workspace.sidebarTab == .annotations {
+            // All three panels stay mounted; only visibility toggles as the tab
+            // changes. Keeping them alive (rather than switching, which destroys
+            // the inactive ones) preserves each panel's transient view state
+            // across tab flips — the scratchpad editor's caret/scroll/selection
+            // in its live-preview WebView (a reload on every visit would flash
+            // and lose the caret), and the AI panel's scroll/composer draft. The
+            // persisted text itself already survives via the stores; this keeps
+            // the *view* state the stores don't hold.
+            ZStack {
+                panel(.annotations) {
                     VStack(spacing: 0) {
                         if let ink {
                             InkPagesSection_iOS(ink: ink)
                         }
                         AnnotationSidebar()
                     }
-                } else {
-                    AiPanel_iOS()
                 }
+                panel(.ai) { AiPanel_iOS() }
+                panel(.scratchpad) { ScratchpadPanel() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(palette.surface)
+    }
+
+    /// Wraps a sidebar panel so only the active tab is visible, hit-testable,
+    /// and exposed to accessibility — the inactive panels stay mounted but
+    /// inert (mirrors macOS `WindowChrome.panel`).
+    @ViewBuilder
+    private func panel<Content: View>(
+        _ tab: WorkspaceStore.SidebarTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isActive = workspace.sidebarTab == tab
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
     }
 }
 

@@ -661,6 +661,21 @@ final class WebViewerController_iOS: NSObject {
         await snapshot(rect: rect.intersection(webView.bounds))
     }
 
+    /// Crop the web-view region under `viewerRect` for the scratchpad. Runs the
+    /// snapshot bytes through the shared `scratchpadCapture` normalizer
+    /// (downscale/encode) so a web crop is stored just like a dropped image.
+    /// The drag-to-crop touch overlay that supplies `viewerRect` lands in
+    /// Phase 6; this entry point is ready for it.
+    func captureRegion(viewerRect rect: CGRect) async -> ScratchpadImageCapture? {
+        let clamped = rect.intersection(webView.bounds)
+        guard clamped.width >= 4, clamped.height >= 4 else { return nil }
+        let config = WKSnapshotConfiguration()
+        config.rect = clamped
+        guard let image = try? await webView.takeSnapshot(configuration: config),
+              let png = image.pngData() else { return nil }
+        return scratchpadCapture(from: png)
+    }
+
     /// Snapshot of what the reader can currently see. There is no way to render
     /// an offscreen virtual page on its own — the archived document is one
     /// continuous DOM — so "current page" means the viewport.

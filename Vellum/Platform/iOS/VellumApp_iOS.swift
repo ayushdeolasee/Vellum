@@ -106,6 +106,9 @@ struct VellumApp_iOS: App {
         Task { @MainActor in
             defer { token.end() }
             for pane in workspace.root.allLeaves() {
+                // Persist the pane's scratchpad note immediately (synchronous,
+                // main-actor) so a debounced edit isn't lost on suspend.
+                pane.scratchpad.flush()
                 for tab in pane.app.tabs {
                     try? await workspace.sessions.setDocumentMetadata(
                         sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
@@ -115,7 +118,6 @@ struct VellumApp_iOS: App {
             // Drain the coalesced background flushes so a page-text cache write
             // (issue #37) or an in-flight conversation blob (do-not-reintroduce
             // #8) still lands if the app is suspended right after backgrounding.
-            // (Per-pane scratchpad flush joins here once Phase 5 lands.)
             await PageTextPersister.awaitInFlightFlushes()
             await AiPersistence.awaitPendingFlush()
         }

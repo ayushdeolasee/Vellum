@@ -569,5 +569,74 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             height: Int(pixelHeight)
         )
     }
+
+    // MARK: - Scratchpad region snapshot (drag-to-crop)
+
+    /// Crop a JPEG snapshot of the page under `viewerRect` (viewer top-left
+    /// coordinates, the SwiftUI overlay space, which sits directly over the
+    /// PDFView) for the scratchpad. Returns nil if the rect misses any page or
+    /// is too small. iOS twin of the macOS `PdfSelectionBridge.capturePageRegionData`:
+    /// render the whole page upright with `PDFPage.thumbnail`, composite onto
+    /// white, then crop. The drag-to-crop touch overlay that supplies
+    /// `viewerRect` lands in Phase 6; this entry point is ready for it.
+    func capturePageRegionData(viewerRect rect: CGRect) -> ScratchpadImageCapture? {
+        guard let pdfView, let document else { return nil }
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        guard let page = pdfView.page(for: center, nearest: true) else { return nil }
+        let pageNumber = document.index(for: page) + 1
+        guard let pageFrame = pageViewFrame(pageNumber: pageNumber) else { return nil }
+        let zoom = max(pdfView.scaleFactor, 0.0001)
+        let dims = PdfTextLocator.displayDimensions(of: page)
+        guard dims.width >= 1, dims.height >= 1 else { return nil }
+
+        // Region in zoom-1, top-left page points, clamped to the page.
+        var rx = Double((rect.minX - pageFrame.minX) / zoom)
+        var ry = Double((rect.minY - pageFrame.minY) / zoom)
+        rx = max(0, min(rx, Double(dims.width)))
+        ry = max(0, min(ry, Double(dims.height)))
+        let rw = max(1, min(Double(rect.width / zoom), Double(dims.width) - rx))
+        let rh = max(1, min(Double(rect.height / zoom), Double(dims.height) - ry))
+        guard rw >= 4, rh >= 4 else { return nil }
+
+        // Render the whole page, then crop. Scale so the region is legible
+        // (≤1280 on its long side) without blowing up tiny selections; cap the
+        // full-page long side so a tiny crop on a large page can't allocate a
+        // huge bitmap.
+        var scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
+        let maxFullSide = 4096.0
+        let fullLong = Double(max(dims.width, dims.height)) * scale
+        if fullLong > maxFullSide { scale *= maxFullSide / fullLong }
+        let fullW = Int((Double(dims.width) * scale).rounded())
+        let fullH = Int((Double(dims.height) * scale).rounded())
+        guard fullW > 0, fullH > 0 else { return nil }
+
+        let fullSize = CGSize(width: fullW, height: fullH)
+        let thumb = page.thumbnail(of: fullSize, for: pdfView.displayBox)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: fullSize, format: format)
+        let composited = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: fullSize))
+            thumb.draw(in: CGRect(origin: .zero, size: fullSize))
+        }
+
+        // The rendered cgImage is top-down, so the crop rect uses top-left origin.
+        guard let full = composited.cgImage else { return nil }
+        let cropRect = CGRect(
+            x: rx * scale, y: ry * scale, width: rw * scale, height: rh * scale
+        ).integral
+        guard let cropped = full.cropping(to: cropRect) else { return nil }
+        guard let jpeg = UIImage(cgImage: cropped).jpegData(compressionQuality: 0.72) else { return nil }
+        return ScratchpadImageCapture(
+            data: jpeg,
+            fileExtension: "jpg",
+            mediaType: "image/jpeg",
+            width: cropped.width,
+            height: cropped.height,
+            pageNumber: pageNumber
+        )
+    }
 }
 #endif

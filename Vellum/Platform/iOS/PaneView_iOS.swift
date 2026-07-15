@@ -81,6 +81,7 @@ struct PaneView_iOS: View {
         .environment(app)
         .environment(pane.annotations)
         .environment(pane.ai)
+        .environment(pane.scratchpad)
         // Window-global AI singletons the in-panel AI settings read from the
         // environment (OpenRouter catalog for the model selector, ChatGPT OAuth
         // for the sign-in control).
@@ -147,10 +148,12 @@ struct PaneView_iOS: View {
     private func loadDocumentState() async {
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
+        pane.scratchpad.clearDocumentContext()
         guard app.document?.pdfPath != nil else { return }
         await pane.annotations.loadAnnotations()
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
+        pane.scratchpad.loadForDocument(app.document)
     }
 
     private var documentIdentity: PaneDocumentIdentity_iOS {
