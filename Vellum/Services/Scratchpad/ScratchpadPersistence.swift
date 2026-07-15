@@ -22,7 +22,18 @@ enum ScratchpadPersistence {
     }
 
     static func load(for key: String) -> String {
-        readEntries().first(where: { $0.key == key })?.text ?? ""
+        let entries = readEntries()
+        if let exact = entries.first(where: { $0.key == key })?.text { return exact }
+        // Heal across container-UUID changes (reinstall / OS update): the note
+        // was saved under the document's old absolute path, which is rooted in a
+        // data-container UUID that has since changed, so the exact-key lookup
+        // misses even though the note is still there. Imported PDFs keep a unique
+        // filename in the library, so a same-filename entry is the same document.
+        // Only PDF paths carry a filename worth matching; web keys are URLs
+        // (stable across container moves) and never need this.
+        let name = (key as NSString).lastPathComponent
+        guard name.lowercased().hasSuffix(".pdf") else { return "" }
+        return entries.first { ($0.key as NSString).lastPathComponent == name }?.text ?? ""
     }
 
     static func save(for key: String, text: String) {

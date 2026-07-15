@@ -324,7 +324,20 @@ final class AppStore {
             if doc.kind == .web {
                 await openUrl(doc.pdfPath)
             } else {
-                await openFiles(paths: [doc.pdfPath])
+                // The persisted path is absolute and rooted in the app's data
+                // container, whose UUID changes across reinstalls/OS updates —
+                // so the stored path can stop resolving even though the imported
+                // copy is still present under the current library directory.
+                // Heal it to the file that exists now (web tabs reopen by URL,
+                // so only PDFs need this), otherwise the tab would silently drop
+                // on the next launch after an update while its sibling web tab
+                // survives — collapsing the split and orphaning the pad.
+                #if os(iOS)
+                let path = DocumentImport.resolveExistingPath(doc.pdfPath) ?? doc.pdfPath
+                #else
+                let path = doc.pdfPath
+                #endif
+                await openFiles(paths: [path])
             }
             // Apply the saved viewport only if a new tab actually opened.
             if tabs.count > before {

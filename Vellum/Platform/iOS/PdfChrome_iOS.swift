@@ -42,6 +42,11 @@ struct PdfToolbar_iOS: View {
     // page-step chevrons (the page field still jumps anywhere).
     private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 740 }
     private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 590 }
+    // Narrowest tier: when a split pane is squeezed by the open inspector, fold
+    // the find/note/ink/bookmark pod into the More menu so the trailing
+    // sidebar-toggle + More pod always fits inside the pane instead of being
+    // pushed under (and clipped by) the sidebar where it can't be tapped.
+    private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 500 }
     private var isBookmarked: Bool {
         findCurrentBookmark(
             annotations: annotationStore.annotations,
@@ -113,32 +118,34 @@ struct PdfToolbar_iOS: View {
 
             Spacer(minLength: 4)
 
-            GlassToolPod {
-                GlassToolButton(system: "magnifyingglass", label: "Find") {
-                    appStore.findVisible ? appStore.hideFind() : appStore.showFind()
-                }
-                GlassToolButton(
-                    system: "note.text", label: "Sticky note tool",
-                    active: appStore.mode == .note
-                ) {
-                    ink.isActive = false
-                    appStore.setMode(appStore.mode == .note ? .view : .note)
-                }
-                if !isWeb {
-                    GlassToolButton(
-                        system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
-                        active: ink.isActive
-                    ) {
-                        if !ink.isActive { appStore.setMode(.view) }
-                        ink.isActive.toggle()
+            if showActionsPod {
+                GlassToolPod {
+                    GlassToolButton(system: "magnifyingglass", label: "Find") {
+                        appStore.findVisible ? appStore.hideFind() : appStore.showFind()
                     }
-                }
-                GlassToolButton(
-                    system: isBookmarked ? "bookmark.fill" : "bookmark",
-                    label: isBookmarked ? "Remove bookmark" : "Bookmark",
-                    tint: isBookmarked ? palette.gold : nil
-                ) {
-                    Task { await annotationStore.toggleBookmark() }
+                    GlassToolButton(
+                        system: "note.text", label: "Sticky note tool",
+                        active: appStore.mode == .note
+                    ) {
+                        ink.isActive = false
+                        appStore.setMode(appStore.mode == .note ? .view : .note)
+                    }
+                    if !isWeb {
+                        GlassToolButton(
+                            system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
+                            active: ink.isActive
+                        ) {
+                            if !ink.isActive { appStore.setMode(.view) }
+                            ink.isActive.toggle()
+                        }
+                    }
+                    GlassToolButton(
+                        system: isBookmarked ? "bookmark.fill" : "bookmark",
+                        label: isBookmarked ? "Remove bookmark" : "Bookmark",
+                        tint: isBookmarked ? palette.gold : nil
+                    ) {
+                        Task { await annotationStore.toggleBookmark() }
+                    }
                 }
             }
 
@@ -213,6 +220,39 @@ struct PdfToolbar_iOS: View {
 
     private var moreMenu: some View {
         Menu {
+            // When the pane is too narrow to show the actions pod, its controls
+            // live here so Find / Note / Ink / Bookmark stay reachable.
+            if !showActionsPod {
+                Button {
+                    appStore.findVisible ? appStore.hideFind() : appStore.showFind()
+                } label: { Label("Find", systemImage: "magnifyingglass") }
+                Button {
+                    ink.isActive = false
+                    appStore.setMode(appStore.mode == .note ? .view : .note)
+                } label: {
+                    Label(
+                        appStore.mode == .note ? "Exit Sticky Note Tool" : "Sticky Note",
+                        systemImage: "note.text")
+                }
+                if !isWeb {
+                    Button {
+                        if !ink.isActive { appStore.setMode(.view) }
+                        ink.isActive.toggle()
+                    } label: {
+                        Label(
+                            ink.isActive ? "Exit Apple Pencil Ink" : "Apple Pencil Ink",
+                            systemImage: "pencil.tip.crop.circle")
+                    }
+                }
+                Button {
+                    Task { await annotationStore.toggleBookmark() }
+                } label: {
+                    Label(
+                        isBookmarked ? "Remove Bookmark" : "Bookmark",
+                        systemImage: isBookmarked ? "bookmark.fill" : "bookmark")
+                }
+                Divider()
+            }
             Button(action: onOpenFile) { Label("Open File…", systemImage: "folder") }
             Button(action: onAddWebpage) { Label("Add Webpage…", systemImage: "globe") }
             if !isWeb {
