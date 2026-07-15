@@ -196,4 +196,17 @@ vs `8f02bff` where useful. Each phase: build + tests green on
 - [x] Phase 4 — Storage UI/lifecycle (0a1444b; build green, 120/120 tests)
 - [x] Phase 5 — Scratchpad (435d60d; build green, 132/132 tests, editor verified on-sim)
 - [x] Phase 6 — Region capture + AI references (e8e80e6; build green, 132/132 tests, overlay QA-verified on-sim)
-- [ ] Phase 7 — Cleanup + QA
+- [x] Phase 7 — Cleanup + QA (def909a cleanup; 4603e37 QA fixes; 132/132 tests; full
+  on-sim QA sweep PASS 2026-07-15 — one inconclusive: new-selection popover can't be
+  reached via synthesized touch (PDFKit gesture limitation), verify on real device
+  along with ChatGPT OAuth sign-in and Pencil flows)
+
+## Known follow-ups (out of parity scope)
+- AiPersistence conversations share the container-absolute-path keying fragility that
+  4603e37 fixed for tabs/scratchpad — same class of bug exists on main too.
+- UITests target + Benchmarks/ + main's plans/ docs not ported (no target on either
+  branch / dev tooling / macOS planning docs).
+- iCloud storage option needs the ubiquity-container entitlement registered for the
+  team before it enables on device (falls back to local until then).
+- iPad edge-swipe back in web tabs was disabled to match main (session-rebind safety);
+  restore deliberately if wanted.
