@@ -455,29 +455,38 @@ struct StorageSettingsTab: View {
     }
 
     private func deleteCache(_ row: StorageInventory.DocumentRow) {
-        cacheEntries.removeAll { $0.pathKey == row.key }
+        // Include any path-hash sibling adopted into this docId row so the stale
+        // pre-stamp cache entry is deleted too, not just the docId-keyed one.
+        let keys = [row.key] + row.adoptedKeys
+        cacheEntries.removeAll { keys.contains($0.pathKey) }
         Task {
-            await PageTextCache.shared.delete(key: row.key)
+            for key in keys { await PageTextCache.shared.delete(key: key) }
             await reload()
         }
     }
 
     private func deleteArchive(_ row: StorageInventory.DocumentRow) {
-        webEntries.removeAll { $0.key == row.key }
+        let keys = [row.key] + row.adoptedKeys
+        webEntries.removeAll { keys.contains($0.key) }
         Task {
-            await Task.detached { WebLibrary.removeLocalSnapshots(forKey: row.key) }.value
+            for key in keys {
+                await Task.detached { WebLibrary.removeLocalSnapshots(forKey: key) }.value
+            }
             await reload()
         }
     }
 
     private func deleteEverything(_ row: StorageInventory.DocumentRow) {
+        let keys = [row.key] + row.adoptedKeys
         docEntries.removeAll { $0.key == row.key }
-        cacheEntries.removeAll { $0.pathKey == row.key }
-        webEntries.removeAll { $0.key == row.key }
+        cacheEntries.removeAll { keys.contains($0.pathKey) }
+        webEntries.removeAll { keys.contains($0.key) }
         Task {
             await Task.detached { DocumentDataStore.deleteAll(forKey: row.key) }.value
-            await PageTextCache.shared.delete(key: row.key)
-            await Task.detached { WebLibrary.removeLocalSnapshots(forKey: row.key) }.value
+            for key in keys {
+                await PageTextCache.shared.delete(key: key)
+                await Task.detached { WebLibrary.removeLocalSnapshots(forKey: key) }.value
+            }
             await reload()
         }
     }

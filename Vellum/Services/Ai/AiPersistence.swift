@@ -166,7 +166,15 @@ enum AiPersistence {
 
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let document, let key = storageKey(for: document) else { return }
-        cache[key] = limit(messages)
+        let limited = limit(messages)
+        cache[key] = limited
+        // A non-empty conversation is real class-B data; ensure meta.json exists
+        // so recents can re-resolve the document by its docId later. The actual
+        // conversations.json write is deferred to the coalesced flush; meta is a
+        // single tiny stamp. An empty list is the delete signal — no stamp (§6).
+        if !limited.isEmpty {
+            try? DocumentDataStore.touch(document: document, force: true)
+        }
         dirtyKeys.insert(key)
         scheduleFlush()
     }

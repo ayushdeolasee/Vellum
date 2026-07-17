@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import PDFKit
 
 // Info-dictionary metadata — port of set_metadata / document_info /
 // ensure_info_dictionary / metadata_key_suffix / object_u32 from
@@ -99,6 +100,31 @@ enum PdfMetadata {
 
         increment.setObject(infoNumber, source: info.sourceBytes)
         return increment.appended(infoNumber: infoNumber)
+    }
+
+    /// Stamp `/VellumDocId` into a brand-new file at `path`, in place. Used by
+    /// `.vellum` import: the written PDF carried no stamp, so — left alone — its
+    /// reopen would resolve `sha256(path)` and then get a FRESH UUID, orphaning
+    /// the sidecar just installed under the manifest's id. Stamping the manifest
+    /// id now makes the reopen key match.
+    ///
+    /// Mirrors `PdfDocumentIO`'s lazy stamp exactly (loadForMutation → PDFKit
+    /// serialize → single doc_id Info increment → atomic-write of the
+    /// increment-patched bytes). It deliberately does NOT reload through
+    /// PDFDocument before writing: production never round-trips a custom Info key
+    /// through `dataRepresentation()`, and CGPDF reads the increment-appended
+    /// /VellumDocId back correctly, so this is the proven-readable form. No
+    /// page-text cache refresh — a just-written file has no cache entry. Throws on
+    /// any parse/serialize/write failure so the caller can fall back to its prior
+    /// behavior.
+    static func stampDocumentId(atPath path: String, id: String) throws {
+        let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
+        guard let normalized = document.dataRepresentation() else {
+            throw SessionServiceError.io("Failed to stamp document id: PDFKit produced no data")
+        }
+        let stamped = try setMetadataIncrement(
+            normalizedData: normalized, entries: [(key: "doc_id", value: id)])
+        try PdfAtomicWriter.save(stamped, toPath: path)
     }
 
     /// u32::from_str error surface, mirrored: empty / non-digit / overflow.

@@ -70,8 +70,18 @@ enum DocumentDataStore {
     /// Upsert the document's meta.json, refreshing `last_opened`. Called from the
     /// per-pane document load path. A previously stored title is kept when the
     /// incoming document has none.
-    static func touch(document: DocumentInfo) throws {
+    ///
+    /// By default this writes ONLY when the folder already holds data files or a
+    /// meta.json already exists — a merely-opened document must not grow a
+    /// synced folder holding nothing but a stamp (§8). The data-creating paths
+    /// (a saved note, a saved conversation) pass `force: true` to guarantee the
+    /// stamp so recents can re-resolve the document by its docId later.
+    static func touch(document: DocumentInfo, force: Bool = false) throws {
         let key = DocumentIdentity.storageKey(for: document)
+        if !force, !hasDataFiles(forKey: key),
+           !FileManager.default.fileExists(atPath: metaPath(forKey: key).path) {
+            return
+        }
         let existing = loadMeta(forKey: key)
         let meta = Meta(
             version: 1,
@@ -268,15 +278,22 @@ enum DocumentDataStore {
     // MARK: - Storage-pane deletes (delete-means-delete, §8)
 
     /// Delete the note and all its attachments, then prune a now-empty folder.
+    /// Uses `WebICloud.removeItem` so an iCloud-EVICTED note (only its
+    /// `.scratchpad.md.icloud` placeholder on disk) is truly deleted — a plain
+    /// `removeItem` on the materialized path would leave the placeholder, which
+    /// re-materializes the "deleted" note on the next sync (§8 delete-means-delete).
     static func deleteNotes(forKey key: String) {
-        try? FileManager.default.removeItem(at: scratchpadPath(forKey: key))
-        try? FileManager.default.removeItem(at: attachmentsDir(forKey: key))
+        WebICloud.removeItem(at: scratchpadPath(forKey: key))
+        WebICloud.removeItem(at: attachmentsDir(forKey: key))
         pruneEmptyDocumentDir(forKey: key)
     }
 
-    /// Delete conversations.json, then prune a now-empty folder.
+    /// Delete conversations.json, then prune a now-empty folder. Explicit
+    /// Storage-pane delete: unlike `removeConversations` (which spares an evicted
+    /// placeholder so an empty in-app save can't clobber undownloaded chat), this
+    /// removes the placeholder too via `WebICloud.removeItem` — delete means delete.
     static func deleteConversation(forKey key: String) {
-        removeConversations(forKey: key)
+        WebICloud.removeItem(at: conversationsPath(forKey: key))
         pruneEmptyDocumentDir(forKey: key)
     }
 
@@ -303,9 +320,12 @@ enum DocumentDataStore {
 
     // MARK: - Size helpers
 
+    /// Placeholder-aware size: `WebICloud.size` returns the materialized file's
+    /// bytes, or — when the file is iCloud-evicted — the true size recorded on
+    /// its `.icloud` placeholder. Without this an evicted note/chat reports 0, so
+    /// StorageInventory.joinRows drops the row and the user can't see or delete it.
     private static func fileSize(_ url: URL) -> Int64 {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        WebICloud.size(ofItemAt: url)
     }
 
     private static func directorySize(at url: URL) -> Int64 {
@@ -313,11 +333,26 @@ enum DocumentDataStore {
             at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else { return 0 }
         var total: Int64 = 0
         for case let file as URL in enumerator {
+            // An iCloud-evicted attachment surfaces as a `.<name>.icloud`
+            // placeholder; report the real bytes it records rather than the tiny
+            // placeholder file's own size.
+            if file.lastPathComponent.hasPrefix("."), file.pathExtension == "icloud" {
+                total += WebICloud.size(ofItemAt: logicalURL(forPlaceholder: file))
+                continue
+            }
             guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
                   values.isRegularFile == true else { continue }
             total += Int64(values.fileSize ?? 0)
         }
         return total
+    }
+
+    /// The logical file URL an iCloud placeholder (`.<name>.icloud`) stands in
+    /// for — strip the leading dot and the `.icloud` extension.
+    private static func logicalURL(forPlaceholder placeholder: URL) -> URL {
+        let name = placeholder.deletingPathExtension().lastPathComponent  // ".scratchpad.md"
+        let logical = name.hasPrefix(".") ? String(name.dropFirst()) : name
+        return placeholder.deletingLastPathComponent().appendingPathComponent(logical)
     }
 
     // MARK: - Rekey (fallback path-hash key -> stamped docId key)

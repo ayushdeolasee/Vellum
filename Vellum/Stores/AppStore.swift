@@ -597,6 +597,18 @@ final class AppStore {
                 "Failed to write the imported document: \(error.localizedDescription)")
         }
 
+        // An imported PDF that carries no /VellumDocId would, on reopen, resolve
+        // to sha256(path) and then be stamped a FRESH UUID — orphaning the
+        // sidecar we're about to install under manifest.docId. Stamp
+        // manifest.docId into the just-written file now so its reopen key matches
+        // (an import is user investment, and the file was just written so it is
+        // writable). Best-effort: a stamp failure falls back to the prior
+        // behavior — installing under manifest.docId — never failing the import.
+        // Web bundles are never stamped (their identity is the URL hash).
+        if kind == .pdf, PdfMetadata.documentId(atPath: destination.path) == nil {
+            try? PdfMetadata.stampDocumentId(atPath: destination.path, id: manifest.docId)
+        }
+
         // Resolve the install key. For a PDF, prefer the written file's own
         // /VellumDocId stamp when it differs from the manifest (the file is
         // authoritative). For web, the identity is the URL hash carried in the

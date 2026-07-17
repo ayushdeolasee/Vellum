@@ -61,7 +61,9 @@ final class RecentsResolveTests: XCTestCase {
         // meta.json (keyed by docId) records the current known path.
         let doc = DocumentInfo(
             kind: .pdf, pdfPath: movedPath, title: "Doc", pageCount: 1, lastPage: 1, docId: docId)
-        try DocumentDataStore.touch(document: doc)
+        // force: this stands in for a document that acquired data (a note/chat),
+        // which is when meta.json is stamped — a bare open no longer writes it.
+        try DocumentDataStore.touch(document: doc, force: true)
 
         // The recent still points at the OLD (now dead) path.
         let deadPath = scratch.appendingPathComponent("old-name.pdf").path
@@ -94,7 +96,7 @@ final class RecentsResolveTests: XCTestCase {
         let alsoGone = scratch.appendingPathComponent("also-gone.pdf").path
         let doc = DocumentInfo(
             kind: .pdf, pdfPath: alsoGone, title: "Doc", pageCount: 1, lastPage: 1, docId: docId)
-        try DocumentDataStore.touch(document: doc)
+        try DocumentDataStore.touch(document: doc, force: true)
         let deadPath = scratch.appendingPathComponent("dead.pdf").path
         let entry = recent(pdfPath: deadPath, docId: docId)
         XCTAssertEqual(RecentFilesService.resolvedPath(for: entry), deadPath)

@@ -24,6 +24,12 @@ enum StorageInventory {
         var cacheBytes: Int64
         var archiveBytes: Int64
 
+        /// Sibling storage keys folded into this row: a text-cache (or web) entry
+        /// still keyed under sha256(last_known_path) after the document acquired a
+        /// docId. The destructive actions delete these alongside `key` so the
+        /// stale path-hash entry doesn't survive a "Delete Everything".
+        var adoptedKeys: [String] = []
+
         var id: String { key }
 
         var totalBytes: Int64 { notesBytes + conversationBytes + cacheBytes + archiveBytes }
@@ -61,17 +67,40 @@ enum StorageInventory {
         var webByKey: [String: WebLibrary.SnapshotStorageEntry] = [:]
         for entry in webEntries { webByKey[entry.key] = entry }
 
+        // A PDF that acquired a docId keeps its notes/chat under the docId folder,
+        // but a text-cache (or web) entry written before the stamp may still sit
+        // under sha256(last_known_path). Fold that path-hash sibling into the
+        // docId row — otherwise one document shows as two rows and "Delete
+        // Everything" misses the stale entry. `adoptedByOwner` maps a docId key to
+        // the sibling keys merged into it; `adoptedKeys` are consumed (no own row).
+        var adoptedByOwner: [String: [String]] = [:]
+        var adoptedKeys = Set<String>()
+        for (key, doc) in docByKey {
+            guard isLikelyDocId(key), let path = doc.meta?.lastKnownPath, !path.isEmpty else { continue }
+            let sibling = PageTextCache.pathKey(path)
+            guard sibling != key, docByKey[sibling] == nil else { continue }
+            guard cacheByKey[sibling] != nil || webByKey[sibling] != nil else { continue }
+            adoptedByOwner[key, default: []].append(sibling)
+            adoptedKeys.insert(sibling)
+        }
+
         let keys = Set(docByKey.keys).union(cacheByKey.keys).union(webByKey.keys)
         var rows: [DocumentRow] = []
         for key in keys {
+            if adoptedKeys.contains(key) { continue }
             let doc = docByKey[key]
             let cache = cacheByKey[key]
             let web = webByKey[key]
+            let adopted = adoptedByOwner[key] ?? []
 
             let notesBytes = doc?.notesBytes ?? 0
             let conversationBytes = doc?.conversationBytes ?? 0
-            let cacheBytes = cache?.byteSize ?? 0
-            let archiveBytes = web?.byteSize ?? 0
+            var cacheBytes = cache?.byteSize ?? 0
+            var archiveBytes = web?.byteSize ?? 0
+            for sibling in adopted {
+                cacheBytes += cacheByKey[sibling]?.byteSize ?? 0
+                archiveBytes += webByKey[sibling]?.byteSize ?? 0
+            }
             guard notesBytes + conversationBytes + cacheBytes + archiveBytes > 0 else { continue }
 
             let kind = resolveKind(doc: doc, web: web)
@@ -86,7 +115,8 @@ enum StorageInventory {
                 notesBytes: notesBytes,
                 conversationBytes: conversationBytes,
                 cacheBytes: cacheBytes,
-                archiveBytes: archiveBytes))
+                archiveBytes: archiveBytes,
+                adoptedKeys: adopted))
         }
         return sorted(rows, by: sort)
     }

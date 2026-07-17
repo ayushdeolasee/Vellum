@@ -29,7 +29,21 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             // edit (each pane owns its own note), before tearing down sessions.
             workspace.saveNow()
             for leaf in leaves { leaf.scratchpad.flush() }
-            guard hasTabs else { return .terminateNow }
+            guard hasTabs else {
+                // No open tabs, but a conversation or page-text write saved just
+                // before ⌘Q (the 200ms coalesced AI flush, or a detached
+                // page-text flush from the last tab's close) may still be in
+                // flight. Drain those on the terminateLater path — there is no
+                // per-tab metadata/close loop to run — so the final
+                // conversations.json / cache write always lands. Both awaits are
+                // no-ops when nothing is pending.
+                Task { @MainActor in
+                    await PageTextPersister.awaitInFlightFlushes()
+                    await AiPersistence.awaitPendingFlush()
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+                return .terminateLater
+            }
             Task { @MainActor in
                 for leaf in leaves {
                     for tab in leaf.app.tabs {

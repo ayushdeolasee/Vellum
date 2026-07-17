@@ -144,12 +144,66 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertTrue(onDisk.contains("attachments/\(id).png"), "persisted: \(onDisk)")
         // Editor received the scheme form.
         XCTAssertEqual(store.text, note)
-        // Attachment moved out of the pool into the doc's folder.
-        XCTAssertFalse(exists(legacyPool.appendingPathComponent("\(id).png")))
+        // Attachment copied into the doc's folder.
         XCTAssertTrue(exists(
             DocumentDataStore.attachmentsDir(forKey: key).appendingPathComponent("\(id).png")))
         // Blob entry removed.
         XCTAssertTrue(try legacyBlobEntries().isEmpty)
+        // Blob now empty → the whole shared attachment pool is reclaimed.
+        XCTAssertFalse(exists(legacyPool.appendingPathComponent("\(id).png")))
+        XCTAssertFalse(exists(legacyPool), "empty legacy blob reclaims the pool dir")
+    }
+
+    func testLazyMigrationCopiesSharedAttachmentForSecondNote() throws {
+        // Two still-unmigrated notes reference the SAME attachment id in the pool.
+        let id = "cafef00d-5678"
+        try Data([1, 2, 3]).write(to: legacyPool.appendingPathComponent("\(id).png"))
+        let path1 = "/tmp/shared1-\(UUID().uuidString).pdf"
+        let path2 = "/tmp/shared2-\(UUID().uuidString).pdf"
+        try seedLegacyBlob([
+            BlobEntry(key: path1, text: "One ![i](vellum-scratchpad://\(id))"),
+            BlobEntry(key: path2, text: "Two ![i](vellum-scratchpad://\(id))"),
+        ])
+
+        // Migrate the first note.
+        let key1 = DocumentIdentity.sha256Hex(path1)
+        ScratchpadAttachmentStore.activeDirectory = DocumentDataStore.attachmentsDir(forKey: key1)
+        ScratchpadPersistence.migrateLegacyIfNeeded(document: pdfDocument(path: path1), key: key1)
+
+        // Attachment copied into doc1 AND still present in the shared pool for
+        // the second, unmigrated note; the pool is not reclaimed while the blob
+        // still holds an entry.
+        XCTAssertTrue(exists(
+            DocumentDataStore.attachmentsDir(forKey: key1).appendingPathComponent("\(id).png")))
+        XCTAssertTrue(exists(legacyPool.appendingPathComponent("\(id).png")),
+                      "shared attachment must survive for the unmigrated note")
+        XCTAssertEqual(try legacyBlobEntries().map(\.key), [path2])
+
+        // Migrate the second note — it must still find the shared attachment.
+        let key2 = DocumentIdentity.sha256Hex(path2)
+        ScratchpadAttachmentStore.activeDirectory = DocumentDataStore.attachmentsDir(forKey: key2)
+        ScratchpadPersistence.migrateLegacyIfNeeded(document: pdfDocument(path: path2), key: key2)
+
+        XCTAssertTrue(exists(
+            DocumentDataStore.attachmentsDir(forKey: key2).appendingPathComponent("\(id).png")),
+            "second note recovered the shared attachment (copy, not move)")
+        XCTAssertTrue(try legacyBlobEntries().isEmpty)
+        // Blob finally empty → pool reclaimed.
+        XCTAssertFalse(exists(legacyPool))
+    }
+
+    // Non-force touch must NOT create a meta-only folder for a merely-opened doc.
+    func testTouchDoesNotCreateMetaOnlyFolder() throws {
+        let key = "openonly"
+        try DocumentDataStore.touch(document: pdfDocument(path: "/tmp/open.pdf", docId: key))
+        XCTAssertFalse(exists(DocumentDataStore.metaPath(forKey: key)),
+                       "a bare open must not stamp a synced folder")
+        XCTAssertFalse(exists(DocumentDataStore.documentDir(forKey: key)))
+
+        // But once data exists, a bare touch refreshes meta.
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "note")
+        try DocumentDataStore.touch(document: pdfDocument(path: "/tmp/open.pdf", docId: key))
+        XCTAssertTrue(exists(DocumentDataStore.metaPath(forKey: key)))
     }
 
     func testLazyMigrationSkippedWhenScratchpadExists() throws {
@@ -232,7 +286,9 @@ final class DocumentDataStoreTests: XCTestCase {
 
     func testFolderKeptWhenMetaButPrunedWhenNoData() throws {
         let key = "metakey"
-        try DocumentDataStore.touch(document: pdfDocument(path: "/tmp/meta.pdf", docId: key))
+        // force: a bare (non-force) touch no longer creates a meta-only folder;
+        // this test needs the meta stamp present to prove prune removes it.
+        try DocumentDataStore.touch(document: pdfDocument(path: "/tmp/meta.pdf", docId: key), force: true)
         XCTAssertTrue(exists(DocumentDataStore.metaPath(forKey: key)))
         // meta.json alone is not data.
         XCTAssertFalse(DocumentDataStore.hasDataFiles(forKey: key))

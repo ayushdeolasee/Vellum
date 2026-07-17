@@ -116,6 +116,7 @@ enum ScratchpadPersistence {
             // An empty legacy note carries nothing worth a folder; just drop it.
             entries.remove(at: index)
             writeEntries(entries)
+            reclaimLegacyPoolIfBlobEmpty(entries)
             return
         }
         do {
@@ -126,6 +127,15 @@ enum ScratchpadPersistence {
         }
         entries.remove(at: index)
         writeEntries(entries)
+        reclaimLegacyPoolIfBlobEmpty(entries)
+    }
+
+    /// Once the legacy blob holds no more path-keyed notes, the shared attachment
+    /// pool can be reclaimed wholesale — migration COPIES attachments into each
+    /// document's folder, so nothing outside the (now empty) blob references it.
+    private static func reclaimLegacyPoolIfBlobEmpty(_ entries: [Entry]) {
+        guard entries.isEmpty else { return }
+        try? FileManager.default.removeItem(at: ScratchpadAttachmentStore.directory)
     }
 
     // MARK: - Orphaned legacy blobs (Storage pane "Not yet migrated")
@@ -255,9 +265,12 @@ enum ScratchpadAttachmentStore {
         }
     }
 
-    /// Move the given ids' files from the legacy global pool into `dir` (lazy
-    /// migration). A file already present at the destination is left in place
-    /// and the pool copy removed.
+    /// Copy the given ids' files from the legacy global pool into `dir` (lazy
+    /// migration). COPY, not move: the pool is shared, so a second still-unmigrated
+    /// note referencing the same id must still find it there. The whole pool is
+    /// reclaimed at once by `ScratchpadPersistence.migrateLegacyIfNeeded` when the
+    /// legacy blob goes empty (nothing can reference it anymore). A file already
+    /// present at the destination is left as-is.
     static func migrateAttachments(ids: Set<String>, toDir dir: URL) {
         guard !ids.isEmpty else { return }
         let fm = FileManager.default
@@ -268,10 +281,8 @@ enum ScratchpadAttachmentStore {
                 let src = directory.appendingPathComponent("\(clean).\(ext)")
                 guard fm.fileExists(atPath: src.path) else { continue }
                 let dest = dir.appendingPathComponent("\(clean).\(ext)")
-                if fm.fileExists(atPath: dest.path) {
-                    try? fm.removeItem(at: src)
-                } else {
-                    try? fm.moveItem(at: src, to: dest)
+                if !fm.fileExists(atPath: dest.path) {
+                    try? fm.copyItem(at: src, to: dest)
                 }
                 break
             }

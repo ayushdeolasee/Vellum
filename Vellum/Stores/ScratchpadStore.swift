@@ -167,7 +167,18 @@ final class ScratchpadStore {
         saveTask?.cancel()
         saveTask = nil
         guard let currentKey else { return }
-        try? ScratchpadPersistence.save(forKey: currentKey, schemeText: text)
+        persist(key: currentKey)
+    }
+
+    /// Save the note and, when it left real data behind, ensure meta.json exists
+    /// so the document re-resolves from recents even if its source file later
+    /// moves. An empty note prunes the folder — nothing to stamp — so the meta
+    /// write is gated on the note actually persisting (§6/§8).
+    private func persist(key: String) {
+        try? ScratchpadPersistence.save(forKey: key, schemeText: text)
+        if let currentDocument, DocumentDataStore.scratchpadExists(forKey: key) {
+            try? DocumentDataStore.touch(document: currentDocument, force: true)
+        }
     }
 
     private func setRestored(_ value: String) {
@@ -183,7 +194,7 @@ final class ScratchpadStore {
             guard let self, !Task.isCancelled else { return }
             await self.ensureIdentityForFirstWriteIfNeeded()
             guard !Task.isCancelled, let key = self.currentKey else { return }
-            try? ScratchpadPersistence.save(forKey: key, schemeText: self.text)
+            self.persist(key: key)
         }
     }
 

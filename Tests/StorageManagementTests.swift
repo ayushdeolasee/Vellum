@@ -49,6 +49,32 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertFalse(entry.sourceExists)
     }
 
+    func testEvictedNotePlaceholderIsCountedAndDeleted() throws {
+        let key = "evictedkey"
+        let dir = DocumentDataStore.documentDir(forKey: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // A fake iCloud placeholder standing in for an evicted scratchpad.md,
+        // recording the real byte size in its plist (as iCloud Drive does).
+        let placeholder = WebICloud.placeholderURL(for: DocumentDataStore.scratchpadPath(forKey: key))
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: ["NSURLFileSizeKey": 4096], format: .binary, options: 0)
+        try plist.write(to: placeholder)
+        try DocumentDataStore.touch(
+            document: DocumentInfo(kind: .pdf, pdfPath: "/tmp/evicted.pdf", title: "Evicted",
+                                   pageCount: 1, lastPage: 1, docId: key),
+            force: true)
+
+        // Listing reports the evicted note's real size, so the row stays visible
+        // (a 0-byte row would be dropped by StorageInventory.joinRows).
+        let entry = try XCTUnwrap(DocumentDataStore.listDocuments().first { $0.key == key })
+        XCTAssertEqual(entry.notesBytes, 4096)
+
+        // Delete removes the placeholder — not just a (non-existent) materialized
+        // file — so the "deleted" note can't re-materialize on the next sync.
+        DocumentDataStore.deleteNotes(forKey: key)
+        XCTAssertFalse(exists(placeholder), "evicted placeholder must be deleted")
+    }
+
     func testListDocumentsWebEntryNeverOrphan() throws {
         let key = "webkey"
         try DocumentDataStore.saveConversationsData(forKey: key, data: Data(count: 5))
@@ -86,6 +112,35 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertEqual(row.title, "My Doc")
         XCTAssertEqual(row.kind, .pdf)
         XCTAssertTrue(row.sourceExists)
+    }
+
+    func testJoinAdoptsPathHashCacheSiblingIntoDocIdRow() throws {
+        // A document that acquired a docId: its notes live under the docId folder,
+        // but its text-cache entry still sits under sha256(last_known_path). The
+        // join must fold that sibling into the one docId row (not emit two rows)
+        // and record its key for the delete actions.
+        let docId = "11111111-2222-3333-4444-555555555555"
+        let path = "/tmp/stamped.pdf"
+        let doc = DocumentDataStore.DocumentDataEntry(
+            key: docId,
+            meta: DocumentDataStore.Meta(
+                version: 1, kind: "pdf", title: "Stamped",
+                lastKnownPath: path, lastOpened: WebLibrary.rfc3339Now()),
+            notesBytes: 100, conversationBytes: 0, sourceExists: true)
+        let siblingKey = PageTextCache.pathKey(path)
+        let cache = PageTextCacheEntry(
+            pathKey: siblingKey, title: "Stamped", sourcePath: path, sourceExists: true,
+            lastOpened: .now, pageCount: 2, isComplete: true, byteSize: 70)
+
+        let rows = StorageInventory.joinRows(
+            documents: [doc], cacheEntries: [cache], webEntries: [])
+        XCTAssertEqual(rows.count, 1, "one document must show as one row")
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.key, docId)
+        XCTAssertEqual(row.notesBytes, 100)
+        XCTAssertEqual(row.cacheBytes, 70, "the path-hash cache sibling's bytes are adopted")
+        XCTAssertEqual(row.adoptedKeys, [siblingKey])
+        XCTAssertEqual(row.totalBytes, 170)
     }
 
     func testJoinWebOnlyRowIsWebKind() {

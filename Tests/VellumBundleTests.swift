@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import Vellum
 
 // Coverage for the `.vellum` bundle codec (VellumBundle) and its sidecar-install
@@ -104,6 +105,53 @@ final class VellumBundleTests: XCTestCase {
         let mergedData = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: installKey))
         let merged = try JSONDecoder().decode([AiMessage].self, from: mergedData)
         XCTAssertEqual(merged.map(\.id), ["local-1", "imp-1", "imp-2"])
+    }
+
+    // MARK: - Unstamped-PDF import stamps the manifest id
+
+    /// An imported PDF that carried no /VellumDocId must be stamped with the
+    /// manifest's id before it opens, so its reopen storage key matches the
+    /// sidecar just installed under that id (finding 1). Drives the stamp helper
+    /// + install directly, skipping the NSSavePanel.
+    func testUnstampedPdfImportStampsManifestDocId() throws {
+        let real = makeRealPdfData()
+        // A byte-hash-style manifest id (what the exporter records for an
+        // unstamped source): a bare 64-hex sha256, not a UUID.
+        let manifestDocId = DocumentIdentity.byteHash(real)
+
+        let content = VellumBundle.Content(
+            kind: .pdf, docId: manifestDocId, documentFile: "unstamped.pdf",
+            documentData: real, title: "Unstamped",
+            scratchpad: "imported note", attachments: [], conversations: nil)
+        let bundleURL = scratch.appendingPathComponent("unstamped.vellum")
+        try VellumBundle.write(content, to: bundleURL)
+        let imported = try VellumBundle.read(at: bundleURL)
+
+        // Mirror importVellumBundle's post-save steps (no panel): write the doc,
+        // stamp when it has no id, resolve the key, install the sidecar.
+        let destination = scratch.appendingPathComponent("unstamped-written.pdf")
+        try imported.documentData.write(to: destination)
+        XCTAssertNil(PdfMetadata.documentId(atPath: destination.path))
+
+        if PdfMetadata.documentId(atPath: destination.path) == nil {
+            try PdfMetadata.stampDocumentId(atPath: destination.path, id: imported.manifest.docId)
+        }
+
+        // The written file now carries /VellumDocId == manifest.docId, so the
+        // reopen key (DocumentIdentity.storageKey) will match the sidecar.
+        let stamped = try XCTUnwrap(PdfMetadata.documentId(atPath: destination.path))
+        XCTAssertEqual(stamped, manifestDocId)
+
+        let key: String = PdfMetadata.documentId(atPath: destination.path) ?? imported.manifest.docId
+        XCTAssertEqual(key, manifestDocId)
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        // The imported note is reachable under the same key the reopen resolves.
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: manifestDocId))
+        let reopenKey = DocumentIdentity.storageKey(
+            for: DocumentInfo(kind: .pdf, pdfPath: destination.path, title: nil,
+                              pageCount: nil, lastPage: nil, docId: stamped))
+        XCTAssertEqual(reopenKey, manifestDocId)
     }
 
     // MARK: - Hash tamper
@@ -258,6 +306,19 @@ final class VellumBundleTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// A real, PDFKit-parseable single-page PDF with no /VellumDocId — needed
+    /// because stampDocumentId round-trips through PDFDocument.
+    private func makeRealPdfData() -> Data {
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        context.endPDFPage()
+        context.closePDF()
+        return data as Data
+    }
 
     private func validPdfManifest(documentBytes: Data) -> VellumBundle.Manifest {
         VellumBundle.Manifest(
