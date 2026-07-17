@@ -5,11 +5,28 @@ struct AiPanel: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+
+    /// The sidebar keeps every panel mounted (ContentView's ZStack), so this
+    /// one exists — with live AppKit text views (the composer + transcript
+    /// bubbles) — even while another tab is in front. Those views are their own
+    /// AppKit drag destinations, and AppKit's drag routing ignores SwiftUI's
+    /// `opacity(0)`/`allowsHitTesting(false)`; so their drop registration is
+    /// gated on actually being the visible tab, otherwise a hidden panel's text
+    /// views would swallow drags aimed at the panel on top of it.
+    ///
+    /// The panel's *own* whole-area drop target no longer lives here: the three
+    /// stacked panels share ONE AppKit drag catcher on the sidebar container
+    /// (`SidebarDropCatcher` in `SidebarPanelStack`), which dispatches to
+    /// `aiStore.handleDrop` when this is the visible tab. That catcher sits
+    /// frontmost, so these text views' own drop overrides are unreachable while
+    /// it is present — kept only as belt-and-braces. See `SidebarDropRoutingTests`.
+    private var isVisibleTab: Bool { workspace.sidebarTab == .ai }
 
     @State private var input = ""
     @State private var settingsOpen = false
-    /// True while an image drag hovers the panel (drives the dashed outline).
+    /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
 
@@ -20,9 +37,26 @@ struct AiPanel: View {
                 AiSettingsPanel()
             }
             messages
+                // Floating toast for declined attachment drops — overlaid on the
+                // messages area so it sits above the composer WITHOUT moving it,
+                // and never shoves the transcript the way an inline banner would.
+                .overlay(alignment: .bottom) {
+                    if let notice = aiStore.attachmentNotice {
+                        attachmentNoticeBanner(notice)
+                            .padding(12)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: aiStore.attachmentNotice)
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The whole-area drag destination lives on the sidebar container
+        // (`SidebarDropCatcher` in `SidebarPanelStack`), which routes drops here
+        // via `aiStore.handleDrop`. This local outline only lights for drags
+        // handled by the panel's own AppKit text views (composer / transcript) —
+        // reachable only if the container catcher is ever absent; the container
+        // draws the sidebar-wide outline for the normal path.
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: Radius.md)
@@ -31,26 +65,13 @@ struct AiPanel: View {
                     .allowsHitTesting(false)
             }
         }
-        // Both types are needed: a drag out of Finder advertises its item as a
-        // file URL and NOT as an image, so `.image` alone never matches it and the
-        // panel would never even highlight. Preview and browsers hand over the
-        // bytes, which `.image` does match.
-        //
-        // Registering no types at all when the model can't see images is the gate
-        // itself: the panel never highlights and the drag springs back to its
-        // source, instead of accepting an attachment we'd silently strip at send.
-        .onDrop(
-            of: aiStore.activeModelSupportsImages ? [.fileURL, .image] : [],
-            isTargeted: $dropTargeted,
-            perform: handleImageDrop
-        )
         .fileImporter(
             isPresented: $imagePickerOpen,
             allowedContentTypes: [.image],
             allowsMultipleSelection: true
         ) { result in
             guard case let .success(urls) = result else { return }
-            attachImages(at: urls)
+            aiStore.attachFiles(at: urls)
         }
     }
 
@@ -174,8 +195,8 @@ struct AiPanel: View {
                     },
                     // The bubble's NSTextView covers most of the transcript, and
                     // AppKit hands a drop over it to that view rather than to the
-                    // panel's `.onDrop` — so it forwards image drops here too.
-                    onImageDrop: imageDropHandler,
+                    // panel's `.onDrop` — so it forwards attachment drops here too.
+                    onAttachmentDrop: attachmentDropHandler,
                     onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
@@ -253,6 +274,39 @@ struct AiPanel: View {
         }
     }
 
+    /// The declined-attachment toast. Modeled on `ScratchpadPanel`'s
+    /// `dropWarningBanner` so the two sidebar panels feel consistent: a warning
+    /// icon, the wrapping message, and an × to dismiss, on a `.regularMaterial`
+    /// card with a destructive-tinted stroke.
+    private func attachmentNoticeBanner(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(palette.destructive)
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.foreground)
+                // Multi-line notices must wrap, not clip. Safe here (this is not
+                // inside an `.inspector`-collapsing toolbar) because the leading
+                // `.frame(maxWidth:.infinity)` constrains the width first.
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            IconButton(help: "Dismiss", action: aiStore.dismissAttachmentNotice) {
+                Image(systemName: "xmark").font(.system(size: 11))
+            }
+            .accessibilityIdentifier("aiPanel.attachmentNotice.dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.md))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.md)
+                .strokeBorder(palette.destructive.opacity(0.35))
+        }
+        .accessibilityIdentifier("aiPanel.attachmentNotice")
+    }
+
     private func errorBanner(_ error: String, icon: String? = nil) -> some View {
         Group {
             if let icon {
@@ -300,9 +354,9 @@ struct AiPanel: View {
                 onSubmit: submit,
                 // The composer's NSTextView is a registered drag destination and
                 // AppKit hands it any drop over its bounds before SwiftUI's
-                // `.onDrop` sees it — so it forwards image drops here instead of
+                // `.onDrop` sees it — so it forwards attachment drops here instead of
                 // pasting a file path. nil means "don't intercept" (no vision).
-                onImageDrop: imageDropHandler,
+                onAttachmentDrop: attachmentDropHandler,
                 onDropTargeted: { dropTargeted = $0 }
             )
             Button(action: submit) {
@@ -342,6 +396,7 @@ struct AiPanel: View {
             }
             // An arbitrary image has nothing to do with the document, so it's
             // offered with or without one — but only to a model that can read it.
+            // (Deliberately images-only; dropping is the way to attach other files.)
             if aiStore.activeModelSupportsImages {
                 Button {
                     imagePickerOpen = true
@@ -374,107 +429,22 @@ struct AiPanel: View {
         }
     }
 
-    // MARK: - Arbitrary image attachments
+    // MARK: - Arbitrary file attachments
 
-    /// Read and normalize each picked file off the main actor (a 48MP photo
-    /// spends real time in decode + resize), then attach it as a chip.
-    private func attachImages(at urls: [URL]) {
-        // App sandbox is off (project.yml), so the picked URL needs no
-        // security-scoped bookmark — plain file reads are enough.
-        let sessionId = appStore.activeTabId
-        for url in urls {
-            let name = url.lastPathComponent
-            Task {
-                let snapshot = await Task.detached(priority: .userInitiated) {
-                    guard let data = try? Data(contentsOf: url) else { return AiPageImageSnapshot?.none }
-                    return aiImageSnapshot(from: data)
-                }.value
-                guard let snapshot else { return }
-                attachIfCurrent(
-                    AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
-            }
-        }
-    }
-
-    /// A pane's AiStore is shared by all of its tabs, and a tab switch wipes the
-    /// composer — so a decode that finishes after the switch would otherwise drop
-    /// document A's image into document B's next message. Same session capture
-    /// `submit` uses.
-    private func attachIfCurrent(_ reference: AiReference, session: String?) {
-        guard appStore.activeTabId == session else { return }
-        aiStore.addReference(reference)
-    }
-
-    /// Handler the panel's AppKit text views forward their drops to. nil when the
-    /// model can't read images, which leaves their own drag handling untouched and
-    /// matches the SwiftUI `.onDrop` gate above (the drag just springs back).
-    private var imageDropHandler: ((ImageDropPayload) -> Void)? {
-        guard aiStore.activeModelSupportsImages else { return nil }
+    /// Handler the panel's AppKit text views forward their drops to. Set while
+    /// this is the visible tab (nil unregisters the views — see `isVisibleTab`);
+    /// forwards to the store's shared attach logic. A stranded image (attached,
+    /// then the model switched to one without vision) is flagged by
+    /// `strandedImagesNotice` rather than blocked at the drop.
+    private var attachmentDropHandler: ((AttachmentDropPayload) -> Void)? {
+        guard isVisibleTab else { return nil }
+        let store = aiStore
         return { drop in
             switch drop {
-            case let .file(url): attachImages(at: [url])
-            case let .data(data, name): attachImage(data: data, name: name)
+            case let .files(urls): store.attachFiles(at: urls)
+            case let .imageData(data, name): store.attachImage(data: data, name: name)
             }
         }
-    }
-
-    /// Normalize already-loaded image bytes off the main actor and attach them.
-    private func attachImage(data: Data, name: String) {
-        let store = aiStore
-        let app = appStore
-        let sessionId = appStore.activeTabId
-        Task {
-            let snapshot = await Task.detached(priority: .userInitiated) {
-                aiImageSnapshot(from: data)
-            }.value
-            guard let snapshot, app.activeTabId == sessionId else { return }
-            store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
-        }
-    }
-
-    /// Take image drops on the panel — a file from Finder, or raw bytes dragged
-    /// out of Preview / a browser (`loadDataRepresentation` on `UTType.image`
-    /// covers both, and every conforming subtype, in one request).
-    private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
-        let store = aiStore
-        let app = appStore
-        let sessionId = appStore.activeTabId
-        var handled = false
-
-        for provider in providers {
-            // Finder: the item is a file URL. Resolve it, then let attachImages do
-            // the read/decode/resize off the main actor. Non-image files dropped
-            // alongside are ignored rather than attached as garbage.
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                handled = true
-                provider.loadItem(
-                    forTypeIdentifier: UTType.fileURL.identifier
-                ) { item, _ in
-                    guard let url = fileURL(fromDropItem: item),
-                          let type = UTType(filenameExtension: url.pathExtension),
-                          type.conforms(to: .image) else { return }
-                    Task { @MainActor in attachImages(at: [url]) }
-                }
-                continue
-            }
-            // Preview, a browser: the bytes are already on the pasteboard. The
-            // completion runs off the main actor, so the decode/resize lands there
-            // too; only the attach hops back.
-            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                handled = true
-                let name = provider.suggestedName ?? "Dropped image"
-                provider.loadDataRepresentation(
-                    forTypeIdentifier: UTType.image.identifier
-                ) { data, _ in
-                    guard let data, let snapshot = aiImageSnapshot(from: data) else { return }
-                    Task { @MainActor in
-                        guard app.activeTabId == sessionId else { return }
-                        store.addReference(AiReference(kind: .image(image: snapshot, name: name)))
-                    }
-                }
-            }
-        }
-        return handled
     }
 
     /// Attaching is gated on vision support, but the model can be switched
@@ -578,9 +548,9 @@ private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
-    /// An image dropped onto the field itself; nil disables interception, so
+    /// A file or image dropped onto the field itself; nil disables interception, so
     /// AppKit's own drag handling (text, file paths) is left alone.
-    let onImageDrop: ((ImageDropPayload) -> Void)?
+    let onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     /// Drives the panel's drop outline while such a drag is over the field.
     let onDropTargeted: (Bool) -> Void
 
@@ -595,7 +565,7 @@ private struct ComposerTextView: View {
             text: $text,
             placeholder: placeholder,
             onSubmit: onSubmit,
-            onImageDrop: onImageDrop,
+            onAttachmentDrop: onAttachmentDrop,
             onDropTargeted: onDropTargeted,
             contentHeight: $contentHeight
         )
@@ -607,7 +577,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let onSubmit: () -> Void
-    let onImageDrop: ((ImageDropPayload) -> Void)?
+    let onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     let onDropTargeted: (Bool) -> Void
     @Binding var contentHeight: CGFloat
 
@@ -617,12 +587,12 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         let scroll = ComposerDropScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = false
-        scroll.onImageDrop = onImageDrop
+        scroll.onAttachmentDrop = onAttachmentDrop
         scroll.onDropTargeted = onDropTargeted
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
         textView.submit = onSubmit
-        textView.onImageDrop = onImageDrop
+        textView.onAttachmentDrop = onAttachmentDrop
         textView.onDropTargeted = onDropTargeted
         textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
@@ -647,12 +617,12 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? SubmitTextView else { return }
         if let dropScroll = scroll as? ComposerDropScrollView {
-            dropScroll.onImageDrop = onImageDrop
+            dropScroll.onAttachmentDrop = onAttachmentDrop
             dropScroll.onDropTargeted = onDropTargeted
         }
         context.coordinator.parent = self
         textView.submit = onSubmit
-        textView.onImageDrop = onImageDrop
+        textView.onAttachmentDrop = onAttachmentDrop
         textView.onDropTargeted = onDropTargeted
         textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
@@ -688,22 +658,25 @@ private struct ComposerTextViewRep: NSViewRepresentable {
 /// on where the pointer lands (padding, clip view, or text), AppKit may select this
 /// view instead of its document `NSTextView` as the drag destination, so both
 /// surfaces forward the same image payload.
-private final class ComposerDropScrollView: NSScrollView {
-    var onImageDrop: ((ImageDropPayload) -> Void)? {
+///
+/// Internal (not `private`) so `AttachmentDropTests` can drive the real dragging
+/// overrides with a fake `NSDraggingInfo` instead of testing a copy of them.
+final class ComposerDropScrollView: NSScrollView {
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)? {
         didSet { updateDropRegistration() }
     }
     var onDropTargeted: ((Bool) -> Void)?
 
     private func updateDropRegistration() {
-        if onImageDrop == nil {
+        if onAttachmentDrop == nil {
             unregisterDraggedTypes()
         } else {
-            registerForDraggedTypes(ImageDrop.draggedTypes)
+            registerForDraggedTypes(AttachmentDrop.draggedTypes)
         }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard onImageDrop != nil, ImageDrop.carriesImage(sender) else {
+        guard onAttachmentDrop != nil, AttachmentDrop.carriesAttachment(sender) else {
             return super.draggingEntered(sender)
         }
         onDropTargeted?(true)
@@ -711,7 +684,7 @@ private final class ComposerDropScrollView: NSScrollView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard onImageDrop != nil, ImageDrop.carriesImage(sender) else {
+        guard onAttachmentDrop != nil, AttachmentDrop.carriesAttachment(sender) else {
             return super.draggingUpdated(sender)
         }
         return .copy
@@ -729,46 +702,49 @@ private final class ComposerDropScrollView: NSScrollView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onDropTargeted?(false)
-        guard let onImageDrop, let payload = ImageDrop.payload(sender) else {
+        guard let onAttachmentDrop, let payload = AttachmentDrop.payload(sender) else {
             return super.performDragOperation(sender)
         }
-        onImageDrop(payload)
+        onAttachmentDrop(payload)
         return true
     }
 }
 
-private final class SubmitTextView: NSTextView {
+/// Internal (not `private`) so `AttachmentDropTests` can drive the real dragging
+/// overrides with a fake `NSDraggingInfo` instead of testing a copy of them.
+final class SubmitTextView: NSTextView {
     var submit: (() -> Void)?
     var placeholder = ""
-    /// Set when the active model can read images: an editable NSTextView is a
-    /// registered drag destination, so AppKit routes a drop over the composer to
-    /// it rather than to the panel's SwiftUI `.onDrop`. Take image drops here and
-    /// forward the bytes; everything else still falls through to `super`, which
-    /// keeps ordinary text drags working.
-    var onImageDrop: ((ImageDropPayload) -> Void)?
+    /// An editable NSTextView is a registered drag destination, so AppKit routes
+    /// a drop over the composer to it rather than to the panel's SwiftUI
+    /// `.onDrop`. Take attachment drops here and forward the payload; everything
+    /// else still falls through to `super`, which keeps ordinary text drags
+    /// working.
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     /// Drives the panel's drop outline; the field is its own drag destination, so
     /// SwiftUI's `isTargeted` never fires for a drag that ends up here.
     var onDropTargeted: ((Bool) -> Void)?
 
-    /// NSTextView is itself a drag destination. Register the image types here so
-    /// Finder drops that land directly on the composer are delivered to this
-    /// view instead of disappearing before the panel's SwiftUI `.onDrop` runs.
+    /// NSTextView is itself a drag destination. Register the attachment types
+    /// here so Finder drops that land directly on the composer are delivered to
+    /// this view instead of disappearing before the panel's SwiftUI `.onDrop`
+    /// runs.
     override func updateDragTypeRegistration() {
-        if onImageDrop == nil {
+        if onAttachmentDrop == nil {
             unregisterDraggedTypes()
         } else {
-            registerForDraggedTypes(ImageDrop.draggedTypes)
+            registerForDraggedTypes(AttachmentDrop.draggedTypes)
         }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard isImageDrag(sender) else { return super.draggingEntered(sender) }
+        guard isAttachmentDrag(sender) else { return super.draggingEntered(sender) }
         onDropTargeted?(true)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        isImageDrag(sender) ? .copy : super.draggingUpdated(sender)
+        isAttachmentDrag(sender) ? .copy : super.draggingUpdated(sender)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -783,15 +759,15 @@ private final class SubmitTextView: NSTextView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onDropTargeted?(false)
-        guard isImageDrag(sender), let drop = ImageDrop.payload(sender) else {
+        guard isAttachmentDrag(sender), let drop = AttachmentDrop.payload(sender) else {
             return super.performDragOperation(sender)
         }
-        onImageDrop?(drop)
+        onAttachmentDrop?(drop)
         return true
     }
 
-    private func isImageDrag(_ sender: NSDraggingInfo) -> Bool {
-        onImageDrop != nil && ImageDrop.carriesImage(sender)
+    private func isAttachmentDrag(_ sender: NSDraggingInfo) -> Bool {
+        onAttachmentDrop != nil && AttachmentDrop.carriesAttachment(sender)
     }
 
     /// Height of the laid-out text plus vertical insets — one line when empty,

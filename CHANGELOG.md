@@ -13,6 +13,22 @@ review commit that had never been merged.
 
 ### Added
 
+- **Dropping onto the AI panel actually works now.** All three sidebar panels
+  stay mounted in a ZStack with the scratchpad frontmost, and the scratchpad's
+  hidden WKWebView accepted every drag unconditionally — AppKit routes a drag
+  to the topmost registered view under the cursor regardless of SwiftUI
+  opacity/hit-testing, so drops aimed at the AI panel were silently swallowed
+  by the invisible scratchpad (and could land images in its note). Drop
+  registration for the scratchpad editor and the AI panel's text views is now
+  gated on being the visible sidebar tab.
+- **Drop images into the AI chat.** The AI panel accepts image drops anywhere
+  on the panel (Finder files, or raw bitmap bytes from Preview or a browser),
+  attaching them as vision snapshots. Attachments are images-only — the same
+  policy as the "+" menu's "Attach image…" picker — so a dropped non-image is
+  declined with a notice that names it (a mixed drop still lands its images and
+  warns once about the rest); the drop is never silently swallowed. Image
+  attachments depend on the model supporting vision (the existing notice under
+  the chips explains when they won't be sent).
 - **Choose where your web library lives.** A one-time choice at launch (and
   in Settings ▸ Storage): iCloud Drive — everything (offline copies,
   highlights, notes, reading positions) lives in `iCloud Drive ▸ Vellum` and

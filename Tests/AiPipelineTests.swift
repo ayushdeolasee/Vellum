@@ -490,6 +490,45 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertFalse(block.contains("[attached image: diagram.png] image attached (12x9), p."))
     }
 
+    // (Removed `testReferenceLineForAttachedFileCarriesContents`: the AI chat is
+    // images-only now, so no `.file(text:name:)` reference is ever produced and
+    // the prompt no longer has a file-text branch to exercise.)
+
+    /// Only images can be attached: an image with an image extension comes back
+    /// as a snapshot; a text file is declined by name (never carried as text).
+    func testFileAttachmentClassification() throws {
+        let textURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.md")
+        try Data("# Notes\nhello".utf8).write(to: textURL)
+        defer { try? FileManager.default.removeItem(at: textURL) }
+        guard case let .rejected(name)? = aiFileAttachment(from: textURL) else {
+            return XCTFail("expected a rejected non-image file")
+        }
+        XCTAssertEqual(name, "ai-file-attachment-test.md")
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.png")
+        try Self.bitmap(width: 20, height: 10, alpha: false).write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+        guard case let .image(snapshot, _)? = aiFileAttachment(from: imageURL) else {
+            return XCTFail("expected an image attachment")
+        }
+        XCTAssertEqual(snapshot.width, 20)
+    }
+
+    /// A binary (non-image) file is declined by name — never attached as a
+    /// placeholder, so the drop is explained without smuggling in file bytes.
+    func testBinaryFileIsRejectedByName() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.bin")
+        try Data([0xFF, 0xFE, 0x00, 0x81, 0x92, 0xA3]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard case let .rejected(name)? = aiFileAttachment(from: url) else {
+            return XCTFail("expected a rejected non-image file")
+        }
+        XCTAssertEqual(name, "ai-file-attachment-test.bin")
+    }
+
     /// The gate the attach affordances read: text-only models say no, built-in
     /// multimodal catalogs say yes, and an OpenRouter id we don't know about
     /// stays permissive (the catalog may still be loading).

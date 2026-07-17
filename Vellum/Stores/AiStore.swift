@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 // AI assistant state — port of src/stores/ai-store.ts (see macos/specs/SPECS-ai.md).
 
@@ -192,6 +193,17 @@ final class AiStore {
     /// text has started arriving.
     private(set) var streamingMessageId: String?
     private(set) var error: String?
+    /// Transient notice the AI panel shows as a floating toast when an
+    /// attachment drop/pick is declined (a non-image file, or a folder/
+    /// unreadable path). Unlike `error`, this NEVER renders inline in the
+    /// transcript — it floats over the messages area above the composer and
+    /// auto-dismisses. Set by `showAttachmentNotice`, cleared after 15 seconds
+    /// or by the toast's × button; nil when nothing is showing. Mirrors
+    /// `ScratchpadStore.dropWarning`.
+    private(set) var attachmentNotice: String?
+    /// The auto-clear timer for `attachmentNotice`; cancelled/reset each time a
+    /// new notice is shown so the latest message stays up for its full window.
+    @ObservationIgnored private var attachmentNoticeTask: Task<Void, Never>?
     /// The in-flight request task (image capture + sendMessage), held so an
     /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
     /// interruptible.
@@ -288,6 +300,27 @@ final class AiStore {
         self.error = error
     }
 
+    /// Show `message` as the attachment toast for 15 seconds; re-showing resets
+    /// the timer (the prior auto-clear task is cancelled) so the latest message
+    /// stays visible for its full window. Mirrors `ScratchpadStore.showWarning`.
+    func showAttachmentNotice(_ message: String) {
+        attachmentNotice = message
+        attachmentNoticeTask?.cancel()
+        attachmentNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            self?.attachmentNotice = nil
+        }
+    }
+
+    /// Dismiss the attachment toast immediately (the × button), cancelling the
+    /// auto-clear timer so a stale task can't clear a later notice.
+    func dismissAttachmentNotice() {
+        attachmentNoticeTask?.cancel()
+        attachmentNoticeTask = nil
+        attachmentNotice = nil
+    }
+
     // MARK: - Composer references
 
     /// Ceiling on image-carrying references in one message. Providers cap both a
@@ -318,6 +351,106 @@ final class AiStore {
 
     func clearComposerReferences() {
         composerReferences = []
+    }
+
+    // MARK: - Attachment drops
+
+    /// Take a drop routed here from the sidebar's single AppKit drag catcher (see
+    /// `SidebarDropCatcher` / `SidebarPanelStack`) when the AI tab is visible. A
+    /// Finder file payload is classified off the main actor and its images are
+    /// attached as reference chips (non-image files are declined with a notice);
+    /// raw image bytes (Preview / a browser) are normalized and attached as an
+    /// image reference.
+    ///
+    /// Lives on the store, not the view, because the sidebar routes every drop
+    /// through one destination that dispatches to whichever store owns the visible
+    /// tab — the panels no longer own a drop target of their own. See
+    /// `SidebarDropRoutingTests` for why stacked panels can't each register one.
+    func handleDrop(_ payload: AttachmentDropPayload) -> Bool {
+        switch payload {
+        case let .files(urls):
+            attachFiles(at: urls)
+        case let .imageData(data, name):
+            attachImage(data: data, name: name)
+        }
+        return true
+    }
+
+    /// Read and classify each dropped/picked file off the main actor (a 48MP
+    /// photo spends real time in decode + resize), then attach every image as a
+    /// chip. Only images can be attached — the images-only policy shared by
+    /// drag-and-drop and the picker's ("+" → Attach image…) entry point. Any
+    /// non-image files in the drop are declined with a single notice that names
+    /// them, so a mixed drop still lands its images and the rest is explained
+    /// rather than silently dropped; folders and unreadable paths get the
+    /// distinct "folder or unreadable" notice.
+    func attachFiles(at urls: [URL]) {
+        // App sandbox is off (project.yml), so the URL needs no security-scoped
+        // bookmark — plain file reads are enough.
+        let sessionId = app?.activeTabId
+        Task { [weak self] in
+            let results = await Task.detached(priority: .userInitiated) {
+                urls.map { (name: $0.lastPathComponent, attachment: aiFileAttachment(from: $0)) }
+            }.value
+            guard let self, self.app?.activeTabId == sessionId else { return }
+
+            var rejected: [String] = []    // readable, but not an attachable image
+            var unreadable: [String] = []  // folders / missing / unreadable paths
+            for result in results {
+                switch result.attachment {
+                case let .image(snapshot, name):
+                    self.attachIfCurrent(
+                        AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
+                case let .rejected(name):
+                    rejected.append(name)
+                case nil:
+                    unreadable.append(result.name)
+                }
+            }
+
+            // Warn once for the whole gesture, as a transient toast (NOT an
+            // inline transcript error). The images-only notice takes precedence
+            // (it's the policy the user is bumping into); a pure folder/
+            // unreadable drop still gets its own message.
+            if !rejected.isEmpty {
+                let verb = rejected.count == 1 ? "wasn't" : "weren't"
+                self.showAttachmentNotice(
+                    "Only image files can be attached. \(Self.nameList(rejected)) \(verb) added.")
+            } else if !unreadable.isEmpty {
+                let tail = unreadable.count == 1
+                    ? "It's a folder or unreadable."
+                    : "They're folders or unreadable."
+                self.showAttachmentNotice("Couldn't attach \(Self.nameList(unreadable)). \(tail)")
+            }
+        }
+    }
+
+    /// Format a short name list for a drop notice: `photo.png`, or
+    /// `photo.png and 2 more` when several files share the same outcome.
+    static func nameList(_ names: [String]) -> String {
+        guard let first = names.first else { return "" }
+        return names.count == 1 ? first : "\(first) and \(names.count - 1) more"
+    }
+
+    /// Normalize already-loaded image bytes off the main actor and attach them.
+    func attachImage(data: Data, name: String) {
+        let sessionId = app?.activeTabId
+        Task { [weak self] in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                aiImageSnapshot(from: data)
+            }.value
+            guard let self, let snapshot, self.app?.activeTabId == sessionId else { return }
+            self.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+        }
+    }
+
+    /// A pane's AiStore is shared by all of its tabs, and a tab switch wipes the
+    /// composer — so a decode that finishes after the switch would otherwise drop
+    /// document A's image into document B's next message. Same session capture
+    /// `submit` uses.
+    private func attachIfCurrent(_ reference: AiReference, session: String?) {
+        guard app?.activeTabId == session else { return }
+        addReference(reference)
     }
 
     /// Restore the persisted conversation for a document (or reset when nil).

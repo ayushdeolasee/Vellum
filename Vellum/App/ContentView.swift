@@ -237,18 +237,55 @@ private struct WindowChrome: View {
         )
     }
 
-    /// All three panels stay mounted in a ZStack; only visibility toggles as
-    /// the tab changes. Keeping them alive (rather than switching, which
-    /// destroys the inactive ones) preserves each panel's transient state
-    /// across tab flips — the AI panel's scroll position and half-typed
-    /// composer draft, and the scratchpad editor's caret/scroll/selection in
-    /// its live-preview WebView. The persisted text itself already survives via
-    /// the stores; this keeps the *view* state that the stores don't hold.
-    ///
-    /// Trade-off mirrored from the AI panel: because the inactive panels no
-    /// longer unmount on a tab switch, their `onDisappear` fires only when the
-    /// document (and thus the inspector) closes — not when flipping tabs.
     private var sidebar: some View {
+        SidebarPanelStack()
+            .onHover { sidebarHovering = $0 }
+    }
+}
+
+/// The three sidebar panels, stacked. All three stay mounted in a ZStack; only
+/// visibility toggles as the tab changes. Keeping them alive (rather than
+/// switching, which destroys the inactive ones) preserves each panel's transient
+/// state across tab flips — the AI panel's scroll position and half-typed
+/// composer draft, and the scratchpad editor's caret/scroll/selection in its
+/// live-preview WebView. The persisted text itself already survives via the
+/// stores; this keeps the *view* state that the stores don't hold.
+///
+/// Trade-off mirrored from the AI panel: because the inactive panels no longer
+/// unmount on a tab switch, their `onDisappear` fires only when the document
+/// (and thus the inspector) closes — not when flipping tabs.
+///
+/// DRAG-AND-DROP: the whole sidebar has ONE drag destination — a plain AppKit
+/// `SidebarDropView` overlaid via `SidebarDropCatcher`. It is NOT a SwiftUI
+/// `.onDrop`: `.onDrop` proved unreliable inside the inspector's glass-effect
+/// hosting view here — its hidden `_PlatformDraggingDestinationView` (registered
+/// for the catch-all types regardless of the `of:` array) outranks the panels'
+/// deeper AppKit views yet then refuses real file drags, so drops died with no
+/// highlight (minimal repros of the same pattern work — cause never pinned; see
+/// `SidebarDropCatcher`). Because that hidden catch-all view would steal and then
+/// kill every sidebar drag, there must be NO `.onDrop` anywhere in the sidebar
+/// subtree (AI / Scratchpad / Annotations panels). The panels' own AppKit drop
+/// code (composer text views, the scratchpad WebView) stays as belt-and-braces
+/// but is unreachable by design while the frontmost catcher is present.
+///
+/// Internal (not `private`) so `SidebarDropRoutingTests` can drive the real
+/// stacked hierarchy headlessly.
+struct SidebarPanelStack: View {
+    @Environment(WorkspaceStore.self) private var workspace
+    // The catcher's closures read the SAME store instances the visible panel
+    // does — both come from the focused pane's environment injection
+    // (ContentView), so a drop always lands in the store the user is looking at.
+    @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
+    @Environment(\.palette) private var palette
+
+    /// Drives the single sidebar drop outline, armed by the AppKit catcher's
+    /// `onTargeted` callback. The AI panel additionally lights its own outline for
+    /// drags that reach its AppKit composer/transcript views directly (only when
+    /// the catcher overlay is absent).
+    @State private var dropTargeted = false
+
+    var body: some View {
         ZStack {
             panel(.annotations) { AnnotationSidebar() }
             panel(.ai) { AiPanel() }
@@ -256,7 +293,48 @@ private struct WindowChrome: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .onHover { sidebarHovering = $0 }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .strokeBorder(palette.primary, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
+        // ONE drag destination for the whole sidebar — a drag-only AppKit overlay
+        // (see `SidebarDropCatcher` for why not `.onDrop`). Its closures read the
+        // visible tab LIVE at event time: annotations refuses (no attachment
+        // target); AI and scratchpad accept an attachment-carrying drag and route
+        // the payload to their store. A non-image dropped on the scratchpad still
+        // reaches its handler and is explained.
+        .overlay {
+            SidebarDropCatcher(
+                resolveOperation: resolveDropOperation,
+                onTargeted: { dropTargeted = $0 },
+                onDrop: routeDrop)
+        }
+    }
+
+    /// The drag operation to report for the current tab, evaluated live when
+    /// AppKit calls `draggingEntered`/`draggingUpdated`.
+    private func resolveDropOperation(_ sender: NSDraggingInfo) -> NSDragOperation {
+        switch workspace.sidebarTab {
+        case .annotations:
+            return []
+        case .ai, .scratchpad:
+            return AttachmentDrop.carriesAttachment(sender) ? .copy : []
+        }
+    }
+
+    /// The one place a sidebar drop is handled: route the payload to whichever
+    /// store owns the visible tab. Annotations has no drop support, so it refuses
+    /// (belt-and-braces — `resolveDropOperation` already refused it above).
+    private func routeDrop(_ payload: AttachmentDropPayload) -> Bool {
+        switch workspace.sidebarTab {
+        case .ai: return aiStore.handleDrop(payload)
+        case .scratchpad: return scratchpadStore.handleDrop(payload)
+        case .annotations: return false
+        }
     }
 
     /// Wraps a sidebar panel so only the active tab is visible, hit-testable,

@@ -15,10 +15,10 @@ struct SelectableMessageText: NSViewRepresentable {
     var secondary: Color
     /// Called with the selected substring when the user taps the Quote button.
     var onQuote: (String) -> Void
-    /// An image dropped onto the bubble itself, which AppKit hands here instead of
+    /// A file or image dropped onto the bubble itself, which AppKit hands here instead of
     /// to the panel's SwiftUI `.onDrop`; nil when the model can't read images, which
     /// leaves the bubble a plain non-destination.
-    var onImageDrop: ((ImageDropPayload) -> Void)?
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     /// Drives the panel's drop outline while such a drag is over the bubble.
     var onDropTargeted: (Bool) -> Void = { _ in }
 
@@ -36,7 +36,7 @@ struct SelectableMessageText: NSViewRepresentable {
 
     func updateNSView(_ view: MessageContainerView, context: Context) {
         context.coordinator.onQuote = onQuote
-        view.textView.onImageDrop = onImageDrop
+        view.textView.onAttachmentDrop = onAttachmentDrop
         view.textView.onDropTargeted = onDropTargeted
         let resolvedColor = NSColor(color)
         let resolvedSecondary = NSColor(secondary)
@@ -197,7 +197,7 @@ final class MessageContainerView: NSView {
 /// here and forward them to the panel (and drive its outline while hovering);
 /// everything else is left alone, so selection and the Quote button are untouched.
 final class TranscriptTextView: NSTextView {
-    var onImageDrop: ((ImageDropPayload) -> Void)? {
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)? {
         didSet { updateDragTypeRegistration() }
     }
     var onDropTargeted: ((Bool) -> Void)?
@@ -206,21 +206,21 @@ final class TranscriptTextView: NSTextView {
     /// and whenever editable/selectable/rich-text changes) and drops a read-only
     /// view's types on the floor — so assert ours here rather than once at setup.
     override func updateDragTypeRegistration() {
-        if onImageDrop == nil {
+        if onAttachmentDrop == nil {
             unregisterDraggedTypes()
         } else {
-            registerForDraggedTypes(ImageDrop.draggedTypes)
+            registerForDraggedTypes(AttachmentDrop.draggedTypes)
         }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard onImageDrop != nil, ImageDrop.carriesImage(sender) else { return [] }
+        guard onAttachmentDrop != nil, AttachmentDrop.carriesAttachment(sender) else { return [] }
         onDropTargeted?(true)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onImageDrop != nil && ImageDrop.carriesImage(sender) ? .copy : []
+        onAttachmentDrop != nil && AttachmentDrop.carriesAttachment(sender) ? .copy : []
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -233,8 +233,8 @@ final class TranscriptTextView: NSTextView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onDropTargeted?(false)
-        guard let onImageDrop, let payload = ImageDrop.payload(sender) else { return false }
-        onImageDrop(payload)
+        guard let onAttachmentDrop, let payload = AttachmentDrop.payload(sender) else { return false }
+        onAttachmentDrop(payload)
         return true
     }
 }
