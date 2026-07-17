@@ -508,4 +508,44 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertEqual(store.text, "second note")
         store.flush()
     }
+
+    // MARK: - Import over an open document (discard-then-reload)
+
+    /// After a `.vellum` import rewrites scratchpad.md on disk under an OPEN
+    /// document's key, the pane's ScratchpadStore must reload from disk WITHOUT
+    /// first flushing its stale in-memory text — a plain `loadForDocument`
+    /// flushes the pre-import note over the just-imported file before reading it
+    /// back. `discardAndReload` cancels the pending debounced save and restores
+    /// from disk, so both the pane and disk end up with the imported note and no
+    /// "stale" write ever lands (the import mirror of the delete-resurrection
+    /// trap).
+    func testDiscardAndReloadKeepsImportedNoteOverStaleText() async throws {
+        let doc = pdfDocument(path: "/tmp/imp-\(UUID().uuidString).pdf",
+                              docId: UUID().uuidString.lowercased())
+        let key = DocumentIdentity.storageKey(for: doc)
+
+        // The pane holds an unsaved edit with a debounced save ARMED (didSet
+        // schedules a 400 ms write). This is the pre-import in-memory state.
+        let store = ScratchpadStore()
+        store.loadForDocument(doc)
+        store.text = "stale"   // schedules a save targeting `key`
+
+        // The import merges a fresh note onto disk under the same key.
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "imported")
+
+        // Discard-then-reload: cancel the armed save (so it can't rewrite the
+        // file), then load the imported note back in.
+        store.discardAndReload(for: doc)
+        XCTAssertEqual(store.text, "imported",
+                       "the pane must show the imported note, not its stale text")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "imported",
+                       "the reload must not have rewritten the imported file")
+
+        // Wait well past the 400 ms debounce: the cancelled "stale" save must
+        // never fire and clobber the import.
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "imported",
+                       "no armed pre-import save may land after the discard")
+        XCTAssertEqual(store.text, "imported")
+    }
 }

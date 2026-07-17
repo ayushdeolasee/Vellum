@@ -78,13 +78,16 @@ struct PaneView: View {
             // A `.vellum` import merged notes/chat into documents/<key>/ on disk.
             // If THIS pane shows that document, its live scratchpad/AiStore hold
             // pre-import state whose next flush would overwrite the merge — drop
-            // the AI memory cache (authoritative) and reload both stores.
+            // the AI memory cache (authoritative) and reload both stores WITHOUT
+            // flushing first. A plain `loadForDocument` flushes the stale note
+            // over the just-imported scratchpad.md before reading it back (the
+            // mirror of the delete path below), so use discard-then-reload.
             guard let key = note.userInfo?["key"] as? String,
                   let document = app.document,
                   DocumentIdentity.storageKey(for: document) == key else { return }
             AiPersistence.invalidateCachedConversation(forKey: key)
             pane.ai.loadConversationForDocument(document)
-            pane.scratchpad.loadForDocument(document)
+            pane.scratchpad.discardAndReload(for: document)
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentDataDeleted)) { note in
             // The Storage pane deleted this document's notes/chat on disk. If THIS

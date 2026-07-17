@@ -77,6 +77,28 @@ final class ScratchpadStore {
     /// text so switching tabs never drops an unsaved edit.
     func loadForDocument(_ document: DocumentInfo?) {
         flush()
+        restore(document: document)
+    }
+
+    /// Reload this document's note from disk WITHOUT first flushing the stale
+    /// in-memory text — used when a `.vellum` import rewrote scratchpad.md on
+    /// disk under this document's key. The normal `loadForDocument` FLUSHES the
+    /// current text first, which would rewrite the just-imported file with the
+    /// pre-import note before reading it back (the mirror of the DELETE path's
+    /// `discardNotesForExternalDelete` trap). This cancels any pending debounced
+    /// save so a write armed before the import can never fire afterward, then
+    /// restores from disk under the restore guard (so the reload itself never
+    /// schedules a write).
+    func discardAndReload(for document: DocumentInfo?) {
+        cancelPendingSave()
+        restore(document: document)
+    }
+
+    /// Shared body of `loadForDocument` / `discardAndReload`: retarget the store
+    /// to `document` and load its note from disk. Assumes the caller has already
+    /// dealt with the previous document's in-memory text (either flushing it or
+    /// deliberately discarding it) — this method itself never persists.
+    private func restore(document: DocumentInfo?) {
         currentDocument = document
         currentSessionId = app?.activeTabId
         let key = document.map { DocumentIdentity.storageKey(for: $0) }
@@ -196,9 +218,17 @@ final class ScratchpadStore {
     /// key is the one this store is showing.
     func discardNotesForExternalDelete(matchingKey key: String) {
         guard currentKey == key else { return }
+        cancelPendingSave()
+        setRestored("")
+    }
+
+    /// Cancel any armed debounced save WITHOUT persisting. The shared discard
+    /// primitive behind `discardNotesForExternalDelete` and `discardAndReload`:
+    /// a save scheduled (armed 400 ms) before an external delete/import must
+    /// never fire afterward and rewrite the file another actor just replaced.
+    private func cancelPendingSave() {
         saveTask?.cancel()
         saveTask = nil
-        setRestored("")
     }
 
     /// Persist the current text immediately. Safe to call repeatedly; a no-op
@@ -210,8 +240,7 @@ final class ScratchpadStore {
     /// stamp, so a not-yet-stamped PDF flushes to its path-hash fallback key —
     /// no data is dropped; the next open rekeys it to the stamped folder.
     func flush() {
-        saveTask?.cancel()
-        saveTask = nil
+        cancelPendingSave()
         // A note stuck in iCloud is read-only for this session: never write over
         // the real-but-evicted copy (the save would be refused anyway, and the
         // in-memory text is the empty placeholder state, not the user's note).
