@@ -542,7 +542,7 @@ private struct StorageSettingsTab: View {
     private func delete(_ entry: PageTextCacheEntry) {
         entries.removeAll { $0.pathKey == entry.pathKey }
         Task {
-            await PageTextCache.shared.delete(pathKey: entry.pathKey)
+            await PageTextCache.shared.delete(key: entry.pathKey)
             entries = await PageTextCache.shared.listEntries()
         }
     }

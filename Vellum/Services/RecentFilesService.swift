@@ -22,7 +22,8 @@ enum RecentFilesService {
             kind: document.kind,
             title: document.title,
             pageCount: document.pageCount,
-            openedAt: ISO8601DateFormatter.recentTimestamp.string(from: Date())
+            openedAt: ISO8601DateFormatter.recentTimestamp.string(from: Date()),
+            docId: document.docId
         )
         let next = ([entry] + getRecent().filter { $0.pdfPath != document.pdfPath })
             .prefix(maxRecent)
@@ -33,6 +34,21 @@ enum RecentFilesService {
         let next = getRecent().filter { $0.pdfPath != path }
         write(next)
         return next
+    }
+
+    /// The best on-disk path for a recent PDF: the recorded path if it still
+    /// exists, else — for a docId-carrying entry — meta.json's last_known_path
+    /// (kept fresh by DocumentDataStore.touch) when that resolves, else the
+    /// recorded path unchanged. Lets a moved PDF reopen by identity (design §7).
+    /// Web entries and dead entries with no docId return their recorded path.
+    static func resolvedPath(for entry: RecentDocument) -> String {
+        guard entry.kind == .pdf,
+              !FileManager.default.fileExists(atPath: entry.pdfPath),
+              let docId = entry.docId, !docId.isEmpty,
+              let meta = DocumentDataStore.loadMeta(forKey: docId),
+              FileManager.default.fileExists(atPath: meta.lastKnownPath)
+        else { return entry.pdfPath }
+        return meta.lastKnownPath
     }
 
     /// Compact display label: filename for PDFs.

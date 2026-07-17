@@ -76,8 +76,12 @@ struct VellumApp: App {
                     // debounce. Evict off-main at low priority.
                     let openDocuments = workspace.root.allLeaves()
                         .flatMap { $0.app.tabs }.compactMap(\.document)
-                    let openPaths = Set(
-                        openDocuments.filter { $0.kind == .pdf }.map(\.pdfPath))
+                    // The text cache excludes open documents by STORAGE KEY now
+                    // (docId when stamped, else path hash) — the same key their
+                    // lookup/persister used.
+                    let openKeys = Set(
+                        openDocuments.filter { $0.kind == .pdf }
+                            .map { DocumentIdentity.storageKey(for: $0) })
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
                     let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
@@ -88,7 +92,7 @@ struct VellumApp: App {
                         // so it can't run concurrently with a location change
                         // the user makes in the first-launch sheet below.
                         await WebStorageRelocator.sweepAtLaunch()
-                        await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
+                        await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openKeys)
                         WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice

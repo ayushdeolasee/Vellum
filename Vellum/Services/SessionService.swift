@@ -46,6 +46,10 @@ protocol SessionService: AnyObject {
 
     // Reading metadata (last_page, page_count, …) stored on the document
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws
+
+    /// Resolve the document's stable identity, lazily stamping /VellumDocId into
+    /// a PDF that has none. Web documents return their sha256 URL-hash key.
+    func ensureDocumentId(sessionId: String) async throws -> String
 }
 
 extension Notification.Name {

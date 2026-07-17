@@ -13,9 +13,11 @@ import CoreGraphics
 // (existing raw Info entries are preserved by PDFKit's serializer).
 
 enum PdfMetadata {
-    /// document_info: (title, page_count, last_page). Title falls back to the
-    /// file stem; last_page accepts an integer or a numeric text string.
-    static func documentInfo(document: CGPDFDocument, path: String) -> (title: String?, pageCount: Int, lastPage: Int?) {
+    /// document_info: (title, page_count, last_page, doc_id). Title falls back
+    /// to the file stem; last_page accepts an integer or a numeric text string;
+    /// doc_id is the /VellumDocId text string (nil until the file is stamped).
+    static func documentInfo(document: CGPDFDocument, path: String)
+        -> (title: String?, pageCount: Int, lastPage: Int?, docId: String?) {
         let info = document.info
         let title = info.flatMap { CgPdf.string($0, "Title") }
             ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
@@ -23,7 +25,12 @@ enum PdfMetadata {
             guard let object = CgPdf.object(dictionary, "VellumLastPage") else { return nil }
             return objectU32(object)
         }
-        return (title, document.numberOfPages, lastPage)
+        return (title, document.numberOfPages, lastPage, documentId(document))
+    }
+
+    /// The /VellumDocId text string, or nil when the file has not been stamped.
+    static func documentId(_ document: CGPDFDocument) -> String? {
+        document.info.flatMap { CgPdf.string($0, "VellumDocId") }
     }
 
     /// object_u32: Integer (non-negative) or numeric text string.
@@ -41,6 +48,14 @@ enum PdfMetadata {
     /// by the caller; `title` sets /Title; `last_page` sets /VellumLastPage as
     /// an integer; anything else sets /Vellum{PascalCase} as a text string.
     static func setMetadataIncrement(normalizedData: Data, key: String, value: String) throws -> Data {
+        try setMetadataIncrement(normalizedData: normalizedData, entries: [(key: key, value: value)])
+    }
+
+    /// Fold several metadata entries into a SINGLE incremental Info update — one
+    /// new/replaced Info object, one xref section, one write. Used to piggyback
+    /// a lazy doc_id stamp onto a metadata write that was happening anyway, so
+    /// the file is still rewritten only once per user action.
+    static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)]) throws -> Data {
         let file = try ClassicPdfFile(data: normalizedData)
 
         var increment = PdfIncrement(file: file)
@@ -61,14 +76,16 @@ enum PdfMetadata {
             }
         }
 
-        switch key {
-        case "title":
-            info.setValue(forKey: "Title", raw: PdfTextString.encode(value))
-        case "last_page":
-            let page = try parseLastPage(value)
-            info.setValue(forKey: "VellumLastPage", raw: Array("\(page)".utf8))
-        default:
-            info.setValue(forKey: "Vellum\(metadataKeySuffix(key))", raw: PdfTextString.encode(value))
+        for (key, value) in entries {
+            switch key {
+            case "title":
+                info.setValue(forKey: "Title", raw: PdfTextString.encode(value))
+            case "last_page":
+                let page = try parseLastPage(value)
+                info.setValue(forKey: "VellumLastPage", raw: Array("\(page)".utf8))
+            default:
+                info.setValue(forKey: "Vellum\(metadataKeySuffix(key))", raw: PdfTextString.encode(value))
+            }
         }
 
         increment.setObject(infoNumber, source: info.sourceBytes)

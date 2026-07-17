@@ -208,6 +208,27 @@ final class AppStore {
         }
     }
 
+    /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
+    /// resolved id up into the in-memory DocumentInfo so class-B stores can key
+    /// off it this session. The stamp itself already happened during the write —
+    /// for a just-stamped session the backend returns the id without touching
+    /// disk. No-op once the active document already carries an id (web docs are
+    /// always stamped at open, so this never fires for them). PaneDocumentIdentity
+    /// stays path-based, so setting docId does not re-run loadDocumentState.
+    func syncDocumentId(sessionId: String) async {
+        guard let tab = tabs.first(where: { $0.id == sessionId }),
+              tab.document?.kind == .pdf, tab.document?.docId == nil else { return }
+        guard let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else { return }
+        updateTab(sessionId) { tab in
+            if tab.document != nil, tab.document?.docId == nil {
+                tab.document?.docId = id
+            }
+        }
+        if activeTabId == sessionId, document?.docId == nil {
+            document?.docId = id
+        }
+    }
+
     // MARK: - Closing / switching tabs
 
     func closeFile() async {

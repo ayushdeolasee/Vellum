@@ -448,6 +448,21 @@ final class AiStore {
             return
         }
 
+        // First AI message on a not-yet-stamped PDF: lazily stamp /VellumDocId
+        // through the session so this document's conversation lands in a stable,
+        // rename-proof `documents/<docId>/` folder rather than the path-hash
+        // fallback (mirrors ScratchpadStore's first-write stamp; design §3).
+        // Done before the first persist so every save this turn targets the
+        // stamped key — no mid-turn rekey. Best-effort: a read-only PDF that
+        // can't be stamped keeps its nil docId and persists under the path key,
+        // which the next open's rekey carries over. syncDocumentId already
+        // no-ops once an id exists, so later messages skip the round-trip.
+        if documentAtStart.kind == .pdf, documentAtStart.docId?.isEmpty ?? true {
+            await app.syncDocumentId(sessionId: sessionIdAtStart)
+            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else { return }
+        }
+        let documentForPersist = app.document ?? documentAtStart
+
         let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
         messages.append(userMessage)
         // Empty assistant placeholder the stream fills in-place. Kept out of the
@@ -460,7 +475,7 @@ final class AiStore {
         activity = .thinking
         error = nil
         let messagesWithUser = Array(messages.dropLast())
-        AiPersistence.saveConversation(for: documentAtStart, messages: messagesWithUser)
+        AiPersistence.saveConversation(for: documentForPersist, messages: messagesWithUser)
 
         // Image inputs: the auto page snapshot first, then any snapshot the user
         // explicitly attached as a reference.
@@ -620,7 +635,7 @@ final class AiStore {
             let completed = messagesWithUser + [
                 AiPersistence.makeMessage(role: .assistant, content: finalContent, id: assistantId)
             ]
-            AiPersistence.saveConversation(for: documentAtStart, messages: completed)
+            AiPersistence.saveConversation(for: documentForPersist, messages: completed)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed
                 activity = .idle
@@ -642,7 +657,7 @@ final class AiStore {
             let failed = messagesWithUser + [
                 AiPersistence.makeMessage(role: .assistant, content: content, id: assistantId)
             ]
-            AiPersistence.saveConversation(for: documentAtStart, messages: failed)
+            AiPersistence.saveConversation(for: documentForPersist, messages: failed)
             if app.activeTabId == sessionIdAtStart {
                 messages = failed
                 activity = .idle

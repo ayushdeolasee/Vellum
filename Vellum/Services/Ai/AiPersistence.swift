@@ -1,11 +1,19 @@
 import Foundation
 
+// Per-document AI settings + conversations. Settings stay in the global
+// UserDefaults blob (device-scoped, class D). Conversations moved to
+// `documents/<storageKey>/conversations.json` (class-B user data — see
+// plans/storage-design.html §4): one small file per document, keyed by
+// `DocumentIdentity.storageKey`, fronted by the #48 in-memory write-behind
+// cache with a coalesced 200 ms flush drained on quit. The legacy path-keyed
+// UserDefaults blob (`conversationsKey`) is now a read-only migration source —
+// a document's entry is folded into its folder on first load and removed.
 enum AiPersistence {
     static let settingsKey = "research-reader-ai-settings-v1"
+    /// Legacy path-keyed conversation blob — migration read source only.
     static let conversationsKey = "research-reader-ai-conversations-v1"
     static let maxMessagesPerDocument = 120
     static let maxMessageCharacters = 12_000
-    static let maxDocuments = 25
 
     private struct ConversationEntry: Sendable {
         var key: String
@@ -129,41 +137,37 @@ enum AiPersistence {
         UserDefaults.standard.set(raw, forKey: settingsKey)
     }
 
-    /// Decoded conversation entries, parsed from the UserDefaults blob once and
-    /// kept authoritative in memory afterwards. Confined to the main actor —
-    /// every caller (AiStore, PaneView) already is.
-    @MainActor private static var cachedEntries: [ConversationEntry]?
+    /// Per-document message caches, loaded lazily on first access and
+    /// authoritative in memory afterwards (the #48 write-behind contract).
+    /// Keyed by `DocumentIdentity.storageKey` — one small `conversations.json`
+    /// per document under `documents/<key>/`, never a cross-document blob.
+    /// Confined to the main actor — every caller (AiStore, PaneView) already is.
+    @MainActor private static var cache: [String: [AiMessage]] = [:]
 
-    @MainActor private static func entries() -> [ConversationEntry] {
-        if let cachedEntries { return cachedEntries }
-        let loaded = readConversations()
-        cachedEntries = loaded
+    @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
+        guard let document, let key = storageKey(for: document) else { return [] }
+        // A PDF that acquired its /VellumDocId in a previous session may still
+        // have its data in the old path-hash folder — carry the whole folder
+        // over (rekey moves conversations.json + scratchpad + attachments alike).
+        if let docId = document.docId, !docId.isEmpty {
+            let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+            if pathKey != key { DocumentDataStore.rekey(from: pathKey, to: key) }
+        }
+        if let cached = cache[key] { return cached }
+        // First load this session: fold in any legacy blob entry, then read the
+        // folder file (which the migration just wrote, if there was one).
+        if !DocumentDataStore.conversationsExist(forKey: key) {
+            migrateLegacyIfNeeded(document: document, key: key)
+        }
+        let loaded = readConversationsFile(forKey: key)
+        cache[key] = loaded
         return loaded
     }
 
-    @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
-        guard let key = documentKey(document) else { return [] }
-        return entries().first(where: { $0.key == key })?.messages ?? []
-    }
-
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
-        guard let key = documentKey(document) else { return }
-        var updated = entries()
-        let bounded = limit(messages)
-        if let index = updated.firstIndex(where: { $0.key == key }) {
-            if bounded.isEmpty {
-                updated.remove(at: index)
-            } else {
-                // Replacing a JS object property does not change insertion order.
-                updated[index].messages = bounded
-            }
-        } else if !bounded.isEmpty {
-            updated.append(ConversationEntry(key: key, messages: bounded))
-        }
-        if updated.count > maxDocuments {
-            updated.removeFirst(updated.count - maxDocuments)
-        }
-        cachedEntries = updated
+        guard let document, let key = storageKey(for: document) else { return }
+        cache[key] = limit(messages)
+        dirtyKeys.insert(key)
         scheduleFlush()
     }
 
@@ -174,9 +178,13 @@ enum AiPersistence {
     /// until the FINAL snapshot is on disk, so `awaitPendingFlush()` (called from
     /// applicationShouldTerminate) never returns while a write is still in flight.
     @MainActor private static var flushRevision = 0
+    /// storageKeys whose in-memory conversation changed since the last write.
+    /// The coalesced flush persists ONLY these — one small file each, not the
+    /// old cross-document blob (§7: "flushing one document writes one small file").
+    @MainActor private static var dirtyKeys: Set<String> = []
 
     /// Encode + write off the main actor, coalescing bursts (a turn saves up to
-    /// three times). ConversationEntry is Codable value data, safe to move.
+    /// three times). ConversationEntry is Sendable value data, safe to move.
     @MainActor private static func scheduleFlush() {
         flushRevision &+= 1
         guard pendingFlush == nil else { return }   // the running flush will pick up this revision
@@ -190,9 +198,10 @@ enum AiPersistence {
             // serialized — a later snapshot can never overtake an earlier one.
             while true {
                 let revision = flushRevision
-                let snapshot = entries()
+                let snapshot = dirtyKeys.map { ConversationEntry(key: $0, messages: cache[$0] ?? []) }
+                dirtyKeys.removeAll()
                 await Task.detached(priority: .utility) {
-                    writeConversations(snapshot)
+                    for entry in snapshot { flushConversation(entry) }
                 }.value
                 // No await between this check and clearing pendingFlush, so on the
                 // main actor a concurrent save can't slip in unnoticed here.
@@ -202,6 +211,30 @@ enum AiPersistence {
                 }
             }
         }
+    }
+
+    /// Persist (or, when empty, delete) one document's conversations.json. Runs
+    /// off the main actor inside the coalesced flush. An empty message list is
+    /// the delete signal: the file is removed and a now-empty folder pruned, so
+    /// clearConversation's hard-delete contract keeps working (§8).
+    private static func flushConversation(_ entry: ConversationEntry) {
+        if entry.messages.isEmpty {
+            DocumentDataStore.removeConversations(forKey: entry.key)
+            DocumentDataStore.pruneEmptyDocumentDir(forKey: entry.key)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(entry.messages) else { return }
+        try? DocumentDataStore.saveConversationsData(forKey: entry.key, data: data)
+    }
+
+    /// Read and decode a document's conversations.json (the plain JSON array
+    /// form), applying the per-message caps defensively. Empty when absent or
+    /// unreadable.
+    private static func readConversationsFile(forKey key: String) -> [AiMessage] {
+        guard let data = DocumentDataStore.loadConversationsData(forKey: key),
+              let messages = try? JSONDecoder().decode([AiMessage].self, from: data)
+        else { return [] }
+        return limit(messages)
     }
 
     /// Await any scheduled write — called from applicationShouldTerminate.
@@ -220,10 +253,40 @@ enum AiPersistence {
         )
     }
 
-    private static func documentKey(_ document: DocumentInfo?) -> String? {
-        guard let key = document?.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines),
-              !key.isEmpty else { return nil }
-        return key
+    /// The per-document storage key: its docId, else the path-hash fallback.
+    /// nil when a doc carries neither a stamped id nor a usable path, so a
+    /// degenerate document never persists (matches the old empty-path guard).
+    /// Uses `DocumentIdentity.storageKey` verbatim so the path-hash form is
+    /// byte-identical to the pathKey computed for the folder rekey above.
+    private static func storageKey(for document: DocumentInfo) -> String? {
+        if document.docId?.isEmpty ?? true,
+           document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
+        return DocumentIdentity.storageKey(for: document)
+    }
+
+    // MARK: - Legacy migration (UserDefaults blob -> conversations.json)
+
+    /// Fold this document's entry out of the legacy path-keyed blob into its
+    /// folder: write conversations.json, then rewrite the blob without the entry
+    /// (§7 lazy migration). The blob read path stays intact for every other
+    /// document's still-unmigrated entry. Called only when the folder file is
+    /// absent. On a write failure the blob entry is left in place so the next
+    /// open retries.
+    @MainActor private static func migrateLegacyIfNeeded(document: DocumentInfo, key: String) {
+        let legacyKey = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !legacyKey.isEmpty else { return }
+        var entries = readConversations()
+        guard let index = entries.firstIndex(where: { $0.key == legacyKey }) else { return }
+        do {
+            let data = try JSONEncoder().encode(entries[index].messages)
+            try DocumentDataStore.saveConversationsData(forKey: key, data: data)
+        } catch {
+            return
+        }
+        entries.remove(at: index)
+        writeConversations(entries)
     }
 
     private static func limit(_ messages: [AiMessage]) -> [AiMessage] {
@@ -259,7 +322,9 @@ enum AiPersistence {
             let bounded = limit(values.compactMap(sanitizeMessage))
             if !bounded.isEmpty { entries.append(ConversationEntry(key: key, messages: bounded)) }
         }
-        return Array(entries.suffix(maxDocuments))
+        // No cap: return every entry so lazy migration can find any document,
+        // even if a legacy blob somehow held more than the old LRU limit.
+        return entries
     }
 
     private static func sanitizeMessage(_ raw: Any) -> AiMessage? {

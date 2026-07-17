@@ -24,6 +24,7 @@ final class ScratchpadImportTests: XCTestCase {
 
     override func tearDown() async throws {
         ScratchpadAttachmentStore.directoryOverride = nil
+        ScratchpadAttachmentStore.activeDirectory = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
 
@@ -72,7 +73,7 @@ final class ScratchpadImportTests: XCTestCase {
         let keep = try XCTUnwrap(ScratchpadAttachmentStore.save(data: Data([1]), fileExtension: "jpg"))
         let orphan = try XCTUnwrap(ScratchpadAttachmentStore.save(data: Data([2]), fileExtension: "png"))
 
-        ScratchpadAttachmentStore.collectGarbage(referencedIds: [keep])
+        ScratchpadAttachmentStore.collectGarbage(in: tempDir, referencedIds: [keep])
 
         XCTAssertNotNil(ScratchpadAttachmentStore.fileURL(for: keep), "referenced attachment must survive")
         XCTAssertNil(ScratchpadAttachmentStore.fileURL(for: orphan), "unreferenced attachment must be pruned")

@@ -334,6 +334,11 @@ struct WelcomeScreen: View {
             if item.kind == .web {
                 Task { await appStore.openUrl(item.key) }
             } else {
+                // A moved PDF re-resolved to a new path: drop the stale entry so
+                // the re-record (on successful open) doesn't leave a duplicate.
+                if item.key != item.recordedKey {
+                    recentDocuments = RecentFilesService.remove(path: item.recordedKey)
+                }
                 Task { await appStore.openFile(path: item.key) }
             }
         case .saved:
@@ -401,7 +406,12 @@ private struct LibraryItem: Identifiable, Hashable {
     let id: String
     let section: Section
     let kind: DocumentKind
+    /// The path/URL to actually open — the recorded one, or a re-resolved path
+    /// when a moved PDF was found via its docId's meta.json.
     let key: String
+    /// The path exactly as stored in the recent entry, so `open` can dedupe the
+    /// stale entry when it re-resolved to a new location.
+    let recordedKey: String
     let icon: String
     let title: String
     let subtitle: String
@@ -422,16 +432,22 @@ private struct LibraryItem: Identifiable, Hashable {
         }
         pieces.append(Self.formatOpenedDate(entry.openedAt))
 
-        let onDisk = entry.kind == .pdf && FileManager.default.fileExists(atPath: entry.pdfPath)
+        // Re-resolve a moved PDF by its stable id (design §7): when the recorded
+        // path is gone but the document carries a /VellumDocId, meta.json's
+        // last_known_path (kept fresh by DocumentDataStore.touch) may point at
+        // where the file moved to.
+        let resolvedPath = RecentFilesService.resolvedPath(for: entry)
+        let onDisk = entry.kind == .pdf && FileManager.default.fileExists(atPath: resolvedPath)
 
         id = "recent:\(entry.pdfPath)"
         section = .recent
         kind = entry.kind
-        key = entry.pdfPath
+        key = resolvedPath
+        recordedKey = entry.pdfPath
         icon = entry.kind == .web ? "globe" : "doc.text"
         title = displayTitle
         subtitle = pieces.joined(separator: " · ")
-        tooltip = entry.pdfPath
+        tooltip = resolvedPath
         canRevealInFinder = onDisk
     }
 
@@ -444,6 +460,7 @@ private struct LibraryItem: Identifiable, Hashable {
         section = .saved
         kind = .web
         key = page.url
+        recordedKey = page.url
         icon = "globe"
         title = displayTitle
         subtitle = displayName + (page.hasSnapshot ? " · available offline" : "")

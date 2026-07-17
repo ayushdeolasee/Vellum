@@ -147,6 +147,10 @@ final class PdfDocumentSession: DocumentSession {
     func setMetadata(key: String, value: String) async throws {
         try await io.setMetadata(key: key, value: value)
     }
+
+    func ensureDocumentId() async throws -> String {
+        try await io.ensureDocumentId()
+    }
 }
 
 // MARK: - Background file engine
@@ -160,20 +164,73 @@ final class PdfDocumentSession: DocumentSession {
 actor PdfDocumentIO {
     let path: String
 
+    /// The document's resolved /VellumDocId: read at open, set the first time a
+    /// mutation lazily stamps one. nil means "no stamp seen yet this session"
+    /// (the file has never carried a doc id, or one hasn't been read/stamped).
+    private var docId: String?
+
+    /// The page-text cache's storage key for this session, resolved ONCE at open
+    /// (docId-at-open ?? pathKey) and used for every refreshHash even after a
+    /// mid-session docId stamp — session-stable by design, matching the key the
+    /// lookup/persister were created with. Defaults to the path hash; open()
+    /// promotes it to the docId when the file already carried one.
+    private var cacheKey: String
+
     init(path: String) {
         self.path = path
+        cacheKey = PageTextCache.pathKey(path)
     }
 
-    /// Parse a freshly opened document and read (title, page_count, last_page).
+    /// Parse a freshly opened document and read (title, page_count, last_page,
+    /// doc_id). Never stamps — opening a file the user hasn't invested in must
+    /// not modify it.
     func open() throws -> DocumentInfo {
         let document = try PdfDocumentLoader.loadRaw(path: path)
-        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: path)
+        let (title, pageCount, lastPage, docId) = PdfMetadata.documentInfo(document: document, path: path)
+        self.docId = docId
+        // Session-stable cache key: the docId if the file already carries one,
+        // else the path hash. A docId stamped LATER this session does not change
+        // it — the persister/lookup keyed the whole session by this value.
+        if let docId, !docId.isEmpty { cacheKey = docId }
         return DocumentInfo(
             kind: .pdf,
             pdfPath: path,
             title: title,
             pageCount: pageCount,
-            lastPage: lastPage)
+            lastPage: lastPage,
+            docId: docId)
+    }
+
+    /// Return the document's stable id, stamping /VellumDocId lazily if the file
+    /// has none yet. Semantics (never surfaces stamping failure to the caller):
+    /// - already resolved this session → return it;
+    /// - present on disk → read and return it (no write);
+    /// - absent → stamp via the normal metadata write path and return the UUID;
+    /// - stamp write fails (read-only dir, locked file) → bare-hex sha256 of the
+    ///   full file bytes, persisting nothing (stable precisely because the file
+    ///   can't be rewritten);
+    /// - file unreadable → sha256 of the canonical path (today's path identity).
+    func ensureDocumentId() async throws -> String {
+        if let docId { return docId }
+        if let raw = try? PdfDocumentLoader.loadRaw(path: path),
+           let existing = PdfMetadata.documentId(raw) {
+            docId = existing
+            return existing
+        }
+        do {
+            // A full rewrite whose only change is the piggybacked doc_id stamp
+            // (writeAndRefreshCache runs stampDocIdIfNeeded before writing).
+            let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
+            let data = try serialize(document)
+            try await writeAndRefreshCache(data)
+            if let docId { return docId }
+            throw SessionServiceError.io("Failed to stamp document id")
+        } catch {
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                return DocumentIdentity.byteHash(data)
+            }
+            return DocumentIdentity.sha256Hex(path)
+        }
     }
 
     /// read_pdf_bytes: the CURRENT file contents, re-read from disk each call.
@@ -449,26 +506,50 @@ actor PdfDocumentIO {
         return data
     }
 
+    /// Lazy /VellumDocId stamp, folded into a write that was happening anyway
+    /// (§3): if this session has never seen a doc id, generate a lowercase UUID
+    /// and append a single incremental Info update carrying doc_id (one extra
+    /// object, no second full rewrite), recording the id on the actor. `data`
+    /// must be classic-xref PDFKit serializer output — annotation byte patches
+    /// preserve that shape, so both write chokepoints qualify. A one-time CGPDF
+    /// re-check guards against re-stamping a file whose id open() somehow missed.
+    private func stampDocIdIfNeeded(_ data: Data) throws -> Data {
+        if docId != nil { return data }
+        if let raw = PdfDocumentLoader.cgDocument(from: data),
+           let existing = PdfMetadata.documentId(raw) {
+            docId = existing
+            return data
+        }
+        let uuid = UUID().uuidString.lowercased()
+        let stamped = try PdfMetadata.setMetadataIncrement(
+            normalizedData: data, entries: [(key: "doc_id", value: uuid)])
+        docId = uuid
+        return stamped
+    }
+
     /// Atomically write already-serialized PDF data and re-key the page-text
-    /// cache to the rewrite (text-neutral; see saveThroughPdfKit).
+    /// cache to the rewrite (text-neutral; see saveThroughPdfKit). Stamps a
+    /// doc_id first if the file lacks one, so first-annotation writes carry it.
     private func writeAndRefreshCache(_ data: Data) async throws {
+        let data = try stampDocIdIfNeeded(data)
         try PdfAtomicWriter.save(data, toPath: path)
-        await PageTextCache.shared.refreshHash(path: path, data: data)
+        await PageTextCache.shared.refreshHash(key: cacheKey, data: data)
     }
 
     /// Reload increment-patched data through PDFKit and write the resulting
-    /// clean full rewrite (single xref, no /Prev) atomically.
+    /// clean full rewrite (single xref, no /Prev) atomically. Stamps a doc_id
+    /// (§3) onto the clean re-serialized bytes if the file lacks one.
     private func saveThroughPdfKit(_ patchedData: Data) async throws {
         guard let document = PDFDocument(data: patchedData) else {
             throw SessionServiceError.io("Failed to write annotated PDF: PDFKit rejected updated document")
         }
-        let data = try serialize(document)
+        let data = try stampDocIdIfNeeded(try serialize(document))
         try PdfAtomicWriter.save(data, toPath: path)
         // In-app rewrites are text-neutral, so the persistent page-text cache
         // re-keys (refreshes its validation hash) instead of invalidating; the
         // IO actor serializes writes per document and the quit path awaits this,
         // so the refresh always completes before a reopen or termination
         // (issue #37 PR B).
-        await PageTextCache.shared.refreshHash(path: path, data: data)
+        await PageTextCache.shared.refreshHash(key: cacheKey, data: data)
     }
 }
