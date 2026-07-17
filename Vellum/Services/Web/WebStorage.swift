@@ -135,14 +135,33 @@ struct WebStorageLayout: Equatable, Sendable {
     var recordsDir: URL
     /// Where managed `.vellumweb` archives live.
     var archivesDir: URL
+    /// Where `documents/<key>/` folders (scratchpad, conversations, meta,
+    /// attachments — class-B user data) live. Mirrors the records rule: in
+    /// iCloud mode it sits next to the records under the synced root, so notes
+    /// and AI conversations sync too; in custom mode it stays LOCAL (custom
+    /// mode's meaning is "my folder holds the visible web pages" — records and
+    /// documents stay in Application Support); in local mode it is the default
+    /// Application-Support location.
+    var documentsDir: URL
     /// Pretty modes name archives after the page title (via the index);
     /// the local mode keeps the legacy `<key>.vellumweb` hashed names.
     var pretty: Bool
     /// `.vellum/index.json` next to the archives (pretty modes only).
     var indexPath: URL?
 
+    /// The documents/ home for a local (Application Support) layout. Derived
+    /// from `storeDir` (a sibling of `web/` under appData) so the
+    /// `storeDirOverride` test seam covers it too, and so it stays byte-for-byte
+    /// the pre-existing `appDataDir/documents` location in production.
+    static func localDocumentsDir(storeDir: URL) -> URL {
+        storeDir.deletingLastPathComponent().appendingPathComponent("documents", isDirectory: true)
+    }
+
     static func local(storeDir: URL) -> WebStorageLayout {
-        WebStorageLayout(recordsDir: storeDir, archivesDir: storeDir, pretty: false, indexPath: nil)
+        WebStorageLayout(
+            recordsDir: storeDir, archivesDir: storeDir,
+            documentsDir: localDocumentsDir(storeDir: storeDir),
+            pretty: false, indexPath: nil)
     }
 
     static func pretty(root: URL, recordsInRoot: Bool, localStoreDir: URL) -> WebStorageLayout {
@@ -152,6 +171,11 @@ struct WebStorageLayout: Equatable, Sendable {
                 ? internalDir.appendingPathComponent("records", isDirectory: true)
                 : localStoreDir,
             archivesDir: root.appendingPathComponent("Web Pages", isDirectory: true),
+            // Documents follow records: synced under the root in iCloud mode
+            // (recordsInRoot), local in custom mode.
+            documentsDir: recordsInRoot
+                ? internalDir.appendingPathComponent("documents", isDirectory: true)
+                : localDocumentsDir(storeDir: localStoreDir),
             pretty: true,
             indexPath: internalDir.appendingPathComponent("index.json"))
     }
@@ -482,6 +506,26 @@ enum WebStorageMigrator {
             }
         }
 
+        // Documents (class-B user data) move AFTER records/archives, per-folder,
+        // only when the two layouts actually put them in different homes (custom
+        // mode keeps documents local, so local<->custom never moves them). The
+        // move/merge is file-level newest-wins via the shared DocumentDataStore
+        // primitive; idempotent and never throwing, so an interrupted run just
+        // resumes at the next sweep.
+        if source.documentsDir != dest.documentsDir {
+            let fm2 = FileManager.default
+            if let names = try? fm2.contentsOfDirectory(atPath: source.documentsDir.path) {
+                for name in names where name != ".DS_Store" {
+                    let src = source.documentsDir.appendingPathComponent(name, isDirectory: true)
+                    var isDir: ObjCBool = false
+                    guard fm2.fileExists(atPath: src.path, isDirectory: &isDir), isDir.boolValue
+                    else { continue }
+                    let dst = dest.documentsDir.appendingPathComponent(name, isDirectory: true)
+                    DocumentDataStore.moveOrMergeDirectory(from: src, into: dst)
+                }
+            }
+        }
+
         if clean, source.pretty {
             cleanUpEmptyPrettyDirs(of: source)
         }
@@ -521,8 +565,17 @@ enum WebStorageMigrator {
         // Never a removal candidate, even when it happens to be empty.
         var dirs = [layout.archivesDir]
         if layout.recordsDir != WebLibrary.storeDir { dirs.append(layout.recordsDir) }
+        // Only the pretty (iCloud) documents dir — which lives under `.vellum`
+        // and this migration created — is a removal candidate. A custom layout's
+        // documents dir IS the shared local store, never removed (same guard as
+        // the records dir above, expressed as "parent is the .vellum internal dir").
+        if let internalDir = layout.indexPath?.deletingLastPathComponent(),
+           layout.documentsDir.deletingLastPathComponent().standardizedFileURL
+            == internalDir.standardizedFileURL {
+            dirs.append(layout.documentsDir)
+        }
         if let internalDir = layout.indexPath?.deletingLastPathComponent() {
-            dirs.append(internalDir) // last: it contains the two above in iCloud mode
+            dirs.append(internalDir) // last: it contains the others above in iCloud mode
         }
         for dir in dirs {
             if (try? fm.contentsOfDirectory(atPath: dir.path)) == [".DS_Store"] {

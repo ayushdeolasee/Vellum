@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import Observation
 import PDFKit
+import UniformTypeIdentifiers
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -536,6 +538,18 @@ final class AppStore {
     // MARK: - Internals
 
     private func openOneFile(path: String) async throws {
+        // A `.vellum` bundle unpacks into a document (written where the user
+        // chooses) + its sidecar; then that document opens through the normal
+        // path. Everything else is opened directly.
+        if path.lowercased().hasSuffix(".vellum") {
+            guard let documentPath = try await importVellumBundle(bundlePath: path) else { return }
+            try await openDocumentFile(path: documentPath)
+            return
+        }
+        try await openDocumentFile(path: path)
+    }
+
+    private func openDocumentFile(path: String) async throws {
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
@@ -552,6 +566,71 @@ final class AppStore {
             // the annotation store to reload.
             NotificationCenter.default.post(name: .vellumAnnotationsUpdated, object: nil)
         }
+    }
+
+    /// Import a `.vellum` bundle: verify it, let the user choose where the
+    /// document file lands, write it, install the sidecar into
+    /// `documents/<docId>/` under the merge rules (design §5), stamp meta.json,
+    /// and return the written document's path for the caller to open. Returns
+    /// nil if the user cancels the save panel.
+    private func importVellumBundle(bundlePath: String) async throws -> String? {
+        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = manifest.documentFile
+        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
+            panel.allowedContentTypes = [archive]
+        } else if kind == .pdf {
+            panel.allowedContentTypes = [.pdf]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try imported.documentData.write(to: destination)
+        } catch {
+            throw SessionServiceError.io(
+                "Failed to write the imported document: \(error.localizedDescription)")
+        }
+
+        // Resolve the install key. For a PDF, prefer the written file's own
+        // /VellumDocId stamp when it differs from the manifest (the file is
+        // authoritative). For web, the identity is the URL hash carried in the
+        // manifest.
+        let key: String
+        if kind == .pdf,
+           let raw = try? PdfDocumentLoader.loadRaw(path: destination.path),
+           let stamped = PdfMetadata.documentId(raw) {
+            key = stamped
+        } else {
+            key = manifest.docId
+        }
+
+        try VellumBundle.installSidecar(imported, forKey: key) { title in
+            let alert = NSAlert()
+            alert.messageText = "Notes already exist for \(title)"
+            alert.informativeText =
+                "This document already has notes on this Mac. Keep the notes you have, "
+                + "or replace them with the imported notes? Your highlights and reading "
+                + "position are not affected either way."
+            alert.addButton(withTitle: "Keep My Notes")      // default
+            alert.addButton(withTitle: "Use Imported Notes")
+            return alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+        }
+
+        // Stamp meta.json with the new location (PDFs — web records are managed
+        // by the WebLibrary sidecar the normal open path writes).
+        if kind == .pdf {
+            let info = DocumentInfo(
+                kind: .pdf, pdfPath: destination.path, title: manifest.title,
+                pageCount: nil, lastPage: nil, docId: key)
+            try? DocumentDataStore.touch(document: info)
+        }
+        return destination.path
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {

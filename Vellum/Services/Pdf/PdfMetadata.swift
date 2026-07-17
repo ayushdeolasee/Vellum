@@ -33,6 +33,15 @@ enum PdfMetadata {
         document.info.flatMap { CgPdf.string($0, "VellumDocId") }
     }
 
+    /// Read a raw file's /VellumDocId without opening a session — used by the
+    /// Storage pane's Relink flow to confirm a re-located PDF is the same
+    /// document (its embedded id must still match the orphaned entry's key).
+    /// nil when the file is unreadable or was never stamped.
+    static func documentId(atPath path: String) -> String? {
+        guard let raw = try? PdfDocumentLoader.loadRaw(path: path) else { return nil }
+        return documentId(raw)
+    }
+
     /// object_u32: Integer (non-negative) or numeric text string.
     static func objectU32(_ object: CGPDFObjectRef) -> Int? {
         if let integer = CgPdf.objectInteger(object) {

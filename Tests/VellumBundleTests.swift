@@ -1,0 +1,286 @@
+import XCTest
+@testable import Vellum
+
+// Coverage for the `.vellum` bundle codec (VellumBundle) and its sidecar-install
+// merge rules: an export→import round-trip that lands notes/attachments/
+// conversations under documents/<docId>/ with relative refs intact and the
+// conversation merged, hash-tamper detection, zip-slip rejection, the
+// conversations-excluded-by-default path, and version-2 rejection. Drives
+// VellumBundle + DocumentDataStore directly, never the UI panels.
+
+@MainActor
+final class VellumBundleTests: XCTestCase {
+    private var base: URL!
+    private var root: URL!
+    private var scratch: URL!
+
+    override func setUp() async throws {
+        base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-bundle-\(UUID().uuidString)")
+        root = base.appendingPathComponent("documents")
+        scratch = base.appendingPathComponent("scratch")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        DocumentDataStore.rootDirectoryOverride = root
+    }
+
+    override func tearDown() async throws {
+        DocumentDataStore.rootDirectoryOverride = nil
+        if let base { try? FileManager.default.removeItem(at: base) }
+    }
+
+    private func exists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private func message(id: String, role: AiRole, content: String, createdAt: String) -> AiMessage {
+        AiMessage(id: id, role: role, content: content, createdAt: createdAt)
+    }
+
+    // MARK: - Round-trip
+
+    func testExportImportRoundTripInstallsSidecarUnderDocId() throws {
+        let attachmentId = "cafebabe-0001"
+        let attachmentBytes = Data([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+        let scratchpad = "Note ![x](attachments/\(attachmentId).png) end"
+        let exportedConversation = [
+            message(id: "imp-1", role: .user, content: "imported q", createdAt: "2026-02-01T00:00:00Z"),
+            message(id: "imp-2", role: .assistant, content: "imported a", createdAt: "2026-02-01T00:00:01Z"),
+        ]
+        let conversationsData = try JSONEncoder().encode(exportedConversation)
+        let documentData = Data("%PDF-1.7 fake pdf bytes".utf8)
+
+        let content = VellumBundle.Content(
+            kind: .pdf,
+            docId: "11111111-2222-3333-4444-555555555555",
+            documentFile: "paper.pdf",
+            documentData: documentData,
+            title: "The Paper",
+            scratchpad: scratchpad,
+            attachments: [(name: "\(attachmentId).png", data: attachmentBytes)],
+            conversations: conversationsData)
+
+        let bundleURL = scratch.appendingPathComponent("out.vellum")
+        try VellumBundle.write(content, to: bundleURL)
+        XCTAssertTrue(exists(bundleURL))
+
+        let imported = try VellumBundle.read(at: bundleURL)
+        XCTAssertEqual(imported.manifest.format, "vellum")
+        XCTAssertEqual(imported.manifest.version, 1)
+        XCTAssertEqual(imported.manifest.kind, "pdf")
+        XCTAssertEqual(imported.manifest.docId, content.docId)
+        XCTAssertEqual(imported.manifest.documentFile, "paper.pdf")
+        XCTAssertTrue(imported.manifest.includesConversations)
+        XCTAssertEqual(imported.documentData, documentData)
+        XCTAssertEqual(imported.scratchpad, scratchpad)
+        XCTAssertEqual(imported.attachments.count, 1)
+        XCTAssertEqual(imported.attachments.first?.name, "\(attachmentId).png")
+        XCTAssertEqual(imported.attachments.first?.data, attachmentBytes)
+
+        // Install under a DIFFERENT local key that already has a conversation,
+        // to exercise the merge-by-id union.
+        let installKey = "install-doc-key"
+        let localConversation = [
+            message(id: "local-1", role: .user, content: "local q", createdAt: "2026-01-01T00:00:00Z"),
+        ]
+        try DocumentDataStore.saveConversationsData(
+            forKey: installKey, data: JSONEncoder().encode(localConversation))
+
+        try VellumBundle.installSidecar(imported, forKey: installKey) { _ in .keepLocal }
+
+        // scratchpad.md landed with the relative ref intact.
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: installKey))
+        let onDisk = DocumentDataStore.loadScratchpad(forKey: installKey)
+        XCTAssertEqual(onDisk, scratchpad)
+        XCTAssertTrue(onDisk.contains("attachments/\(attachmentId).png"))
+
+        // Attachment copied into the doc's folder.
+        let attachmentFile = DocumentDataStore.attachmentsDir(forKey: installKey)
+            .appendingPathComponent("\(attachmentId).png")
+        XCTAssertTrue(exists(attachmentFile))
+        XCTAssertEqual(try Data(contentsOf: attachmentFile), attachmentBytes)
+
+        // Conversation merged: local + imported, id-unioned, sorted by created_at.
+        let mergedData = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: installKey))
+        let merged = try JSONDecoder().decode([AiMessage].self, from: mergedData)
+        XCTAssertEqual(merged.map(\.id), ["local-1", "imp-1", "imp-2"])
+    }
+
+    // MARK: - Hash tamper
+
+    func testHashTamperOnDocumentThrows() throws {
+        // Manifest claims a hash for one set of bytes; the packed document is
+        // different, so integrity verification must fail.
+        let realBytes = Data("real document".utf8)
+        let tamperedBytes = Data("tampered document".utf8)
+        let manifest = VellumBundle.Manifest(
+            format: "vellum", version: 1, kind: "pdf",
+            docId: "docid", documentFile: "d.pdf", title: nil,
+            exportedAt: WebLibrary.rfc3339Now(), generator: "test",
+            includesConversations: false,
+            hashes: .init(document: WebArchive.sha256Hex(realBytes), scratchpad: nil, conversations: nil),
+            attachments: [])
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: tamperedBytes, stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url))
+    }
+
+    func testHashTamperOnAttachmentThrows() throws {
+        let documentBytes = Data("doc".utf8)
+        let realAttachment = Data([1, 2, 3])
+        let tampered = Data([9, 9, 9])
+        let manifest = VellumBundle.Manifest(
+            format: "vellum", version: 1, kind: "pdf",
+            docId: "docid", documentFile: "d.pdf", title: nil,
+            exportedAt: WebLibrary.rfc3339Now(), generator: "test",
+            includesConversations: false,
+            hashes: .init(
+                document: WebArchive.sha256Hex(documentBytes), scratchpad: nil, conversations: nil),
+            attachments: [
+                .init(path: "attachments/a.png", bytes: realAttachment.count,
+                      sha256: WebArchive.sha256Hex(realAttachment)),
+            ])
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true),
+            MiniZip.Entry(name: "attachments/a.png", data: tampered, stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url))
+    }
+
+    // MARK: - Zip-slip
+
+    func testZipSlipRawEntryRejected() throws {
+        let documentBytes = Data("doc".utf8)
+        let manifest = validPdfManifest(documentBytes: documentBytes)
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true),
+            MiniZip.Entry(name: "../evil", data: Data("pwned".utf8), stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url)) { error in
+            XCTAssertTrue("\(error)".lowercased().contains("unsafe"))
+        }
+    }
+
+    func testZipSlipAttachmentPathRejected() throws {
+        let documentBytes = Data("doc".utf8)
+        let evil = Data("pwned".utf8)
+        var manifest = validPdfManifest(documentBytes: documentBytes)
+        manifest.attachments = [
+            .init(path: "attachments/../evil", bytes: evil.count, sha256: WebArchive.sha256Hex(evil)),
+        ]
+        // Only the document entry is physically present — the malicious path
+        // lives in the manifest, so the attachment-path guard must reject it.
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url))
+    }
+
+    // MARK: - Conversations excluded by default
+
+    func testConversationsExcludedByDefault() throws {
+        let content = VellumBundle.Content(
+            kind: .pdf, docId: "docid", documentFile: "d.pdf",
+            documentData: Data("doc".utf8), title: "T",
+            scratchpad: "a note", attachments: [], conversations: nil)
+        let url = scratch.appendingPathComponent("no-convo.vellum")
+        try VellumBundle.write(content, to: url)
+
+        let imported = try VellumBundle.read(at: url)
+        XCTAssertFalse(imported.manifest.includesConversations)
+        XCTAssertNil(imported.manifest.hashes.conversations)
+        XCTAssertNil(imported.conversations)
+
+        let key = "no-convo-key"
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
+    }
+
+    // MARK: - Version rejection
+
+    func testVersionTwoRejected() throws {
+        let documentBytes = Data("doc".utf8)
+        var manifest = validPdfManifest(documentBytes: documentBytes)
+        manifest.version = 2
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url)) { error in
+            XCTAssertTrue("\(error)".contains("please update Vellum"))
+        }
+    }
+
+    // MARK: - Scratchpad conflict resolution
+
+    func testScratchpadConflictKeepLocal() throws {
+        let key = "conflict-key"
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "my local note")
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: "the imported note",
+            attachments: [], conversations: nil)
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "my local note")
+    }
+
+    func testScratchpadConflictUseImported() throws {
+        let key = "conflict-key-2"
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "my local note")
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: "the imported note",
+            attachments: [], conversations: nil)
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .useImported }
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "the imported note")
+    }
+
+    func testAttachmentNeverOverwritesExistingId() throws {
+        let key = "attach-key"
+        let dir = DocumentDataStore.attachmentsDir(forKey: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let existing = Data("original".utf8)
+        try existing.write(to: dir.appendingPathComponent("id1.png"))
+
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [(name: "id1.png", data: Data("incoming".utf8))],
+            conversations: nil)
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        // The local id1 was NOT overwritten.
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("id1.png")), existing)
+    }
+
+    // MARK: - Helpers
+
+    private func validPdfManifest(documentBytes: Data) -> VellumBundle.Manifest {
+        VellumBundle.Manifest(
+            format: "vellum", version: 1, kind: "pdf",
+            docId: "docid", documentFile: "d.pdf", title: "T",
+            exportedAt: WebLibrary.rfc3339Now(), generator: "test",
+            includesConversations: false,
+            hashes: .init(
+                document: WebArchive.sha256Hex(documentBytes), scratchpad: nil, conversations: nil),
+            attachments: [])
+    }
+
+    /// Pack a raw bundle with a caller-supplied manifest + entries — used to
+    /// craft tampered / malicious bundles the writer would never produce.
+    private func packRawBundle(
+        manifest: VellumBundle.Manifest, extraEntries: [MiniZip.Entry]
+    ) throws -> URL {
+        let manifestData = try JSONEncoder().encode(manifest)
+        var entries = [MiniZip.Entry(name: "manifest.json", data: manifestData, stored: false)]
+        entries.append(contentsOf: extraEntries)
+        let zip = try MiniZip.write(entries: entries)
+        let url = scratch.appendingPathComponent("raw-\(UUID().uuidString).vellum")
+        try zip.write(to: url)
+        return url
+    }
+}

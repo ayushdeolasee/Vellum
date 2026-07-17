@@ -128,6 +128,23 @@ enum ScratchpadPersistence {
         writeEntries(entries)
     }
 
+    // MARK: - Orphaned legacy blobs (Storage pane "Not yet migrated")
+
+    /// Every path-keyed note still sitting in the legacy blob — surfaced in the
+    /// Storage pane's orphans section as pre-migration data the user can delete.
+    /// `bytes` is the note's UTF-8 size (the blob holds text only; attachments
+    /// stay in the global pool until the doc is opened and migrated).
+    static func listLegacyEntries() -> [(key: String, bytes: Int)] {
+        readEntries().map { (key: $0.key, bytes: $0.text.utf8.count) }
+    }
+
+    /// Drop one path-keyed note from the legacy blob (Storage-pane delete).
+    static func removeLegacyEntry(key: String) {
+        var entries = readEntries()
+        entries.removeAll { $0.key == key }
+        writeEntries(entries)
+    }
+
     private static func readEntries() -> [Entry] {
         guard let data = UserDefaults.standard.data(forKey: notesKey),
               let entries = try? JSONDecoder().decode([Entry].self, from: data)

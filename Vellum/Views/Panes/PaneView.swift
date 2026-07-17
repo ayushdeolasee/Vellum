@@ -95,8 +95,14 @@ struct PaneView: View {
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
         pane.scratchpad.clearDocumentContext()
-        guard app.document?.pdfPath != nil else { return }
+        guard let document = app.document else { return }
         await pane.annotations.loadAnnotations()
+        guard !Task.isCancelled else { return }
+        // In iCloud mode the document's notes/conversations may be evicted
+        // placeholders — download them off-main before the sync reads below so
+        // they load real bytes rather than degrading to empty.
+        await DocumentDataStore.materializeIfNeeded(
+            forKey: DocumentIdentity.storageKey(for: document))
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
         pane.scratchpad.loadForDocument(app.document)

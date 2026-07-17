@@ -559,6 +559,19 @@ enum WebLibrary {
         }
     }
 
+    /// Total bytes of every sidecar record file (annotations + reading state).
+    /// This is irreplaceable class-B user data — it feeds the Storage pane's
+    /// "Your data" tile, never the deletable "Web archives" total.
+    static func totalRecordBytes() -> Int64 {
+        let fm = FileManager.default
+        var total: Int64 = 0
+        for file in allRecordFiles() {
+            let attributes = try? fm.attributesOfItem(atPath: file.path)
+            total += (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        }
+        return total
+    }
+
     private static func snapshotArtifactsSize(forKey key: String) -> Int64 {
         let fm = FileManager.default
         var total: Int64 = 0

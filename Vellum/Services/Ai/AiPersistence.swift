@@ -289,6 +289,27 @@ enum AiPersistence {
         writeConversations(entries)
     }
 
+    // MARK: - Orphaned legacy blobs (Storage pane "Not yet migrated")
+
+    /// Every path-keyed conversation still sitting in the legacy blob — surfaced
+    /// in the Storage pane's orphans section as pre-migration data the user can
+    /// delete. `bytes` is the encoded message-array size.
+    static func listLegacyEntries() -> [(key: String, bytes: Int)] {
+        readConversations().map { entry in
+            let bytes = (try? JSONEncoder().encode(entry.messages))?.count ?? 0
+            return (key: entry.key, bytes: bytes)
+        }
+    }
+
+    /// Drop one path-keyed conversation from the legacy blob (Storage-pane
+    /// delete). Rewrites the blob without the entry, keeping the JS-order/LRU
+    /// serialization the migration reader expects.
+    static func removeLegacyEntry(key: String) {
+        var entries = readConversations()
+        entries.removeAll { $0.key == key }
+        writeConversations(entries)
+    }
+
     private static func limit(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(maxMessagesPerDocument).map { message in
             var message = message

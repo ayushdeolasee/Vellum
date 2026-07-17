@@ -6,6 +6,20 @@ import SwiftUI
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
 
+    /// Finder double-click / drag-onto-dock for registered types (.pdf,
+    /// .vellumweb, .vellum). Routes into the focused pane's store the same way
+    /// ContentView.openFilePanel does — `openFiles` dispatches each extension
+    /// (bundle import, archive import, or plain PDF open).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let paths = urls.map(\.path)
+        guard !paths.isEmpty else { return }
+        MainActor.assumeIsolated {
+            guard let workspace = Self.workspace else { return }
+            let app = workspace.focusedPane.app
+            Task { await app.openFiles(paths: paths) }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
@@ -84,16 +98,19 @@ struct VellumApp: App {
                             .map { DocumentIdentity.storageKey(for: $0) })
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
-                    let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
                     Task.detached(priority: .background) {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
                         // evictors walk the store. Routed through the relocator
                         // so it can't run concurrently with a location change
-                        // the user makes in the first-launch sheet below.
+                        // the user makes in the first-launch sheet below. The
+                        // sweep runs regardless of the retention policy.
                         await WebStorageRelocator.sweepAtLaunch()
-                        await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openKeys)
-                        WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+                        // TTL eviction of derived data, using the user's chosen
+                        // retention window (Settings ▸ Storage ▸ Housekeeping;
+                        // "Never" skips it). Excludes currently-open documents.
+                        await StorageHousekeeping.runCleanup(
+                            openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                 }
