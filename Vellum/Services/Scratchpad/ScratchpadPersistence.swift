@@ -75,17 +75,20 @@ enum ScratchpadPersistence {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let ns = text as NSString
         var result = text
-        // Replace back-to-front so earlier match ranges stay valid.
+        // Replace back-to-front so earlier match ranges stay valid. Convert the
+        // regex's UTF-16 offsets with `Range(_:in:)`, NOT `String.index(offsetBy:)`
+        // — the latter counts Characters (grapheme clusters), so an emoji before
+        // a ref shifts every subsequent replacement and corrupts the rewrite.
+        // Processing back-to-front keeps `result`'s prefix identical to `text`'s
+        // up to each match, so the UTF-16 offset still maps to the right index.
         for match in regex.matches(
             in: text, range: NSRange(location: 0, length: ns.length)).reversed() {
-            guard match.numberOfRanges > 1 else { continue }
+            guard match.numberOfRanges > 1,
+                  let fullRange = Range(match.range(at: 0), in: result) else { continue }
             let id = ns.substring(with: match.range(at: 1))
             let ext = extensionFor(id)
             let replacement = ext.map { "attachments/\(id).\($0)" } ?? "attachments/\(id)"
-            let full = match.range(at: 0)
-            let start = result.index(result.startIndex, offsetBy: full.location)
-            let end = result.index(start, offsetBy: full.length)
-            result.replaceSubrange(start..<end, with: replacement)
+            result.replaceSubrange(fullRange, with: replacement)
         }
         return result
     }
@@ -104,11 +107,11 @@ enum ScratchpadPersistence {
         var entries = readEntries()
         guard let index = entries.firstIndex(where: { $0.key == legacyKey }) else { return }
         let legacyText = entries[index].text
-        // Move the note's attachments into its folder first, so the extension
-        // resolver below finds them at the new location.
         let referenced = ScratchpadAttachmentStore.referencedIds(in: legacyText)
         let destDir = DocumentDataStore.attachmentsDir(forKey: key)
-        ScratchpadAttachmentStore.migrateAttachments(ids: referenced, toDir: destDir)
+        // Resolve each ref's extension from the shared pool (fileURL falls back
+        // to it) so we can compute the relative form BEFORE anything is copied —
+        // the attachments still live in the pool at this point.
         let relative = schemeToRelative(legacyText) {
             ScratchpadAttachmentStore.fileURL(for: $0, preferredDir: destDir)?.pathExtension
         }
@@ -119,12 +122,17 @@ enum ScratchpadPersistence {
             reclaimLegacyPoolIfBlobEmpty(entries)
             return
         }
+        // Order matters: write scratchpad.md FIRST, then copy attachments, then
+        // drop the blob entry. If the note write fails we return having touched
+        // nothing in the doc's folder — so the load path sees an absent note (not
+        // a half-migrated one whose just-copied attachments per-doc GC would
+        // reap), and the blob entry stays for the next open to retry.
         do {
             try DocumentDataStore.saveScratchpad(forKey: key, text: relative)
         } catch {
-            // Leave the blob entry in place so the next open retries the move.
             return
         }
+        ScratchpadAttachmentStore.migrateAttachments(ids: referenced, toDir: destDir)
         entries.remove(at: index)
         writeEntries(entries)
         reclaimLegacyPoolIfBlobEmpty(entries)

@@ -74,6 +74,35 @@ struct PaneView: View {
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarImported)) { note in
+            // A `.vellum` import merged notes/chat into documents/<key>/ on disk.
+            // If THIS pane shows that document, its live scratchpad/AiStore hold
+            // pre-import state whose next flush would overwrite the merge — drop
+            // the AI memory cache (authoritative) and reload both stores.
+            guard let key = note.userInfo?["key"] as? String,
+                  let document = app.document,
+                  DocumentIdentity.storageKey(for: document) == key else { return }
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            pane.ai.loadConversationForDocument(document)
+            pane.scratchpad.loadForDocument(document)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentDataDeleted)) { note in
+            // The Storage pane deleted this document's notes/chat on disk. If THIS
+            // pane shows it, drop the matching in-memory state WITHOUT saving so a
+            // live writer's next flush can't resurrect the just-deleted file.
+            guard let keys = note.userInfo?["keys"] as? [String],
+                  let document = app.document else { return }
+            let key = DocumentIdentity.storageKey(for: document)
+            guard keys.contains(key) else { return }
+            if note.userInfo?["chat"] as? Bool == true {
+                // Cache already invalidated by the poster; reload re-reads the now
+                // empty disk without writing.
+                pane.ai.loadConversationForDocument(document)
+            }
+            if note.userInfo?["notes"] as? Bool == true {
+                pane.scratchpad.discardNotesForExternalDelete(matchingKey: key)
+            }
+        }
     }
 
     @ViewBuilder

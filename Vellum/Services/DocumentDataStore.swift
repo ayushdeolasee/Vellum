@@ -28,12 +28,55 @@ enum DocumentDataStore {
         return WebLibrary.activeLayout.documentsDir
     }
 
+    /// The folder for a storage key. CENTRAL SECURITY GUARD: a key is used
+    /// verbatim only when it is canonical (a lowercase UUID / bare-hex sha256 —
+    /// every id the app mints). An attacker-influenced value — a crafted PDF's
+    /// embedded /VellumDocId or a hostile `.vellum` manifest `doc_id` carrying
+    /// path separators or `..` traversal — is deterministically replaced by its
+    /// sha256, so it can never escape `documents/` (the app is unsandboxed). The
+    /// mapping is total and stable, so every op on one key still agrees on one
+    /// folder; the identity sources reject such values earlier so this only ever
+    /// fires as a defense-in-depth backstop.
     static func documentDir(forKey key: String) -> URL {
-        rootDirectory.appendingPathComponent(key, isDirectory: true)
+        let safe = DocumentIdentity.isCanonicalKey(key) ? key : DocumentIdentity.sha256Hex(key)
+        return rootDirectory.appendingPathComponent(safe, isDirectory: true)
     }
 
     static func attachmentsDir(forKey key: String) -> URL {
         documentDir(forKey: key).appendingPathComponent("attachments", isDirectory: true)
+    }
+
+    /// The LOCAL (Application-Support default) folder for a key, resolved
+    /// independently of the active layout. During a pending Local→iCloud
+    /// relocation the active `rootDirectory` flips to the iCloud home the instant
+    /// the mode changes, but the launch sweep may not have MOVED this document's
+    /// folder yet — so a read against the active dir finds nothing while the real
+    /// note still sits locally. The read paths fall back here so the note/chat
+    /// loads real bytes instead of degrading to empty (which the empty-state save
+    /// path could then turn into a delete). nil when the active layout already IS
+    /// the local dir (nothing to fall back to) or when a test override owns the
+    /// whole tree.
+    static func fallbackDocumentDir(forKey key: String) -> URL? {
+        guard rootDirectoryOverride == nil else { return nil }
+        let localDocs = WebStorageLayout.local(storeDir: WebLibrary.storeDir).documentsDir
+        guard localDocs.standardizedFileURL != rootDirectory.standardizedFileURL else { return nil }
+        let safe = DocumentIdentity.isCanonicalKey(key) ? key : DocumentIdentity.sha256Hex(key)
+        return localDocs.appendingPathComponent(safe, isDirectory: true)
+    }
+
+    /// The path a synced file should be READ from: the active-layout location
+    /// when it holds a real (materialized) copy, else the local fallback location
+    /// when that holds one, else the active path (so a genuinely-absent file still
+    /// reports its canonical location). Writes always target the active dir via
+    /// the `…Path(forKey:)` helpers — only reads consult the fallback.
+    private static func readPath(forKey key: String, relativeName: String) -> URL {
+        let active = documentDir(forKey: key).appendingPathComponent(relativeName)
+        if FileManager.default.fileExists(atPath: active.path) { return active }
+        if let fallbackDir = fallbackDocumentDir(forKey: key) {
+            let fallback = fallbackDir.appendingPathComponent(relativeName)
+            if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
+        }
+        return active
     }
 
     static func metaPath(forKey key: String) -> URL {
@@ -63,7 +106,8 @@ enum DocumentDataStore {
     }
 
     static func loadMeta(forKey key: String) -> Meta? {
-        guard let data = try? Data(contentsOf: metaPath(forKey: key)) else { return nil }
+        guard let data = try? Data(contentsOf: readPath(forKey: key, relativeName: "meta.json"))
+        else { return nil }
         return try? JSONDecoder().decode(Meta.self, from: data)
     }
 
@@ -96,12 +140,12 @@ enum DocumentDataStore {
     // MARK: - scratchpad.md
 
     static func scratchpadExists(forKey key: String) -> Bool {
-        FileManager.default.fileExists(atPath: scratchpadPath(forKey: key).path)
+        FileManager.default.fileExists(atPath: readPath(forKey: key, relativeName: "scratchpad.md").path)
     }
 
     /// The persisted (relative-ref) markdown for a document, or "" if none.
     static func loadScratchpad(forKey key: String) -> String {
-        (try? String(contentsOf: scratchpadPath(forKey: key), encoding: .utf8)) ?? ""
+        (try? String(contentsOf: readPath(forKey: key, relativeName: "scratchpad.md"), encoding: .utf8)) ?? ""
     }
 
     /// Atomically write scratchpad.md. Throws on write failure (user data) — and
@@ -117,9 +161,22 @@ enum DocumentDataStore {
     /// empty-note save must not delete real notes that just haven't downloaded
     /// (explicit Storage-pane deletes bypass this via their own removeItem).
     static func removeScratchpad(forKey key: String) {
-        let path = scratchpadPath(forKey: key)
-        guard !isEvictedPlaceholder(at: path) else { return }
-        try? FileManager.default.removeItem(at: path)
+        removeSyncedFile(forKey: key, relativeName: "scratchpad.md")
+    }
+
+    /// Remove a synced file from BOTH the active-layout dir and the local
+    /// fallback dir (delete-means-delete across both roots during a pending
+    /// relocation). Each removal spares an iCloud-evicted placeholder: an
+    /// empty-note save must not delete real data that just hasn't downloaded
+    /// (explicit Storage-pane deletes bypass this via `WebICloud.removeItem`).
+    private static func removeSyncedFile(forKey key: String, relativeName: String) {
+        var paths = [documentDir(forKey: key).appendingPathComponent(relativeName)]
+        if let fallbackDir = fallbackDocumentDir(forKey: key) {
+            paths.append(fallbackDir.appendingPathComponent(relativeName))
+        }
+        for path in paths where !isEvictedPlaceholder(at: path) {
+            try? FileManager.default.removeItem(at: path)
+        }
     }
 
     // MARK: - conversations.json
@@ -129,12 +186,12 @@ enum DocumentDataStore {
     }
 
     static func conversationsExist(forKey key: String) -> Bool {
-        FileManager.default.fileExists(atPath: conversationsPath(forKey: key).path)
+        FileManager.default.fileExists(atPath: readPath(forKey: key, relativeName: "conversations.json").path)
     }
 
     /// Raw conversations.json bytes for a document, or nil if none.
     static func loadConversationsData(forKey key: String) -> Data? {
-        try? Data(contentsOf: conversationsPath(forKey: key))
+        try? Data(contentsOf: readPath(forKey: key, relativeName: "conversations.json"))
     }
 
     /// Atomically write conversations.json. Throws on write failure (user data) —
@@ -149,9 +206,7 @@ enum DocumentDataStore {
     /// missing file is already the desired end state. Skips an iCloud-evicted
     /// copy so an empty save can't delete real chat that hasn't downloaded.
     static func removeConversations(forKey key: String) {
-        let path = conversationsPath(forKey: key)
-        guard !isEvictedPlaceholder(at: path) else { return }
-        try? FileManager.default.removeItem(at: path)
+        removeSyncedFile(forKey: key, relativeName: "conversations.json")
     }
 
     // MARK: - Folder lifecycle
@@ -223,6 +278,28 @@ enum DocumentDataStore {
                 continuation.resume()
             }
         }
+    }
+
+    /// True when a synced file is present ONLY as an unmaterialized iCloud
+    /// placeholder — its real bytes haven't downloaded and no local fallback copy
+    /// exists. The UI pauses editing/persistence for such a document: a save would
+    /// either clobber the evicted copy (refused by `guardEvicted`) or silently
+    /// vanish, so we must not present an editable empty state whose writes are
+    /// swallowed.
+    private static func syncedFileUnavailableEvicted(forKey key: String, relativeName: String) -> Bool {
+        // A readable copy anywhere (active or fallback) means it IS available.
+        if FileManager.default.fileExists(
+            atPath: readPath(forKey: key, relativeName: relativeName).path) { return false }
+        return isEvictedPlaceholder(
+            at: documentDir(forKey: key).appendingPathComponent(relativeName))
+    }
+
+    static func scratchpadUnavailableEvicted(forKey key: String) -> Bool {
+        syncedFileUnavailableEvicted(forKey: key, relativeName: "scratchpad.md")
+    }
+
+    static func conversationsUnavailableEvicted(forKey key: String) -> Bool {
+        syncedFileUnavailableEvicted(forKey: key, relativeName: "conversations.json")
     }
 
     // MARK: - Storage-pane inventory (design §8 per-document list)
@@ -372,28 +449,75 @@ enum DocumentDataStore {
     /// (path-hash → docId) and the storage-location relocation of `documents/`
     /// (WebStorageMigrator.relocate). Idempotent, best-effort, never throws — a
     /// missing `src` or a failed step just leaves the source for the next pass.
-    static func moveOrMergeDirectory(from src: URL, into dst: URL) {
+    ///
+    /// The source directory is removed ONLY when every file merged cleanly, so a
+    /// partial failure (e.g. a target write that could not land) leaves both
+    /// copies intact for an idempotent retry rather than destroying the only
+    /// remaining data.
+    ///
+    /// Returns true when the folder is fully relocated (or there was nothing to
+    /// move); false when it was SKIPPED because an iCloud-evicted file could not
+    /// be downloaded, or a merge step failed. The relocation caller keeps its
+    /// pending marker on a false so the launch sweep retries later.
+    @discardableResult
+    static func moveOrMergeDirectory(from src: URL, into dst: URL) -> Bool {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: src.path) else { return }
+        guard fm.fileExists(atPath: src.path) else { return true }
+        // Download any iCloud-evicted files FIRST so we move real bytes, never
+        // `.<name>.icloud` placeholder stubs (moving a stub would strand the real
+        // data in the cloud under the old location). A folder that can't fully
+        // materialize is left in place for a later sweep.
+        guard materializePlaceholders(in: src) else { return false }
         if !fm.fileExists(atPath: dst.path) {
             try? fm.createDirectory(
                 at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if (try? fm.moveItem(at: src, to: dst)) != nil { return }
+            if (try? fm.moveItem(at: src, to: dst)) != nil { return true }
         }
-        mergeDirectory(from: src, into: dst)
-        try? fm.removeItem(at: src)
+        let merged = mergeDirectory(from: src, into: dst)
+        if merged { try? fm.removeItem(at: src) }
+        return merged
     }
 
-    private static func mergeDirectory(from src: URL, into dst: URL) {
+    /// Download every iCloud-evicted file under `dir` (recursively) so a
+    /// subsequent move handles real bytes, not `.<name>.icloud` placeholders.
+    /// Returns false when any placeholder could not be materialized (offline or
+    /// not downloaded within the timeout) — the caller then leaves the folder for
+    /// a later sweep instead of moving stubs. Blocking `WebICloud.materialize`
+    /// runs inside the already-detached migrator task.
+    private static func materializePlaceholders(in dir: URL) -> Bool {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return true }
+        var allMaterialized = true
+        for case let file as URL in enumerator {
+            guard file.lastPathComponent.hasPrefix("."), file.pathExtension == "icloud" else { continue }
+            let logical = logicalURL(forPlaceholder: file)
+            WebICloud.requestDownload(at: logical)
+            if !WebICloud.materialize(at: logical, timeout: 10) { allMaterialized = false }
+        }
+        return allMaterialized
+    }
+
+    /// Merge every regular file under `src` into `dst`, returning true only when
+    /// ALL of them landed (or were cleanly superseded) so the caller may drop the
+    /// source. A collision resolves newest-modification-wins via an atomic swap
+    /// (`replaceItemAt`) that can never destroy the destination if the move
+    /// fails — no target is deleted before its replacement is durably in place.
+    /// meta.json is special-cased: the destination (the stamped docId folder) is
+    /// canonical, so its meta always wins and a stale source meta is simply
+    /// dropped — this is what lets a leftover meta-only path-hash folder collapse
+    /// on rekey instead of surviving as a bogus orphan.
+    private static func mergeDirectory(from src: URL, into dst: URL) -> Bool {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: src,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey])
-        else { return }
+        else { return false }
         // Resolve symlinks on both sides so the prefix strip is exact — the
         // enumerator may report `/private/var/...` while `src` was built from a
         // `/var/...` temporary path (or vice versa).
         let srcBase = src.resolvingSymlinksInPath().path
+        var allMerged = true
         for case let file as URL in enumerator {
             guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
@@ -401,19 +525,41 @@ enum DocumentDataStore {
             guard filePath.hasPrefix(srcBase) else { continue }
             let relative = String(filePath.dropFirst(srcBase.count).drop(while: { $0 == "/" }))
             let target = dst.appendingPathComponent(relative)
-            try? fm.createDirectory(
-                at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: target.path) {
-                let srcDate = modDate(file)
-                let dstDate = modDate(target)
-                if srcDate > dstDate {
-                    try? fm.removeItem(at: target)
-                    try? fm.moveItem(at: file, to: target)
+            do {
+                try fm.createDirectory(
+                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            } catch {
+                allMerged = false
+                continue
+            }
+            // An iCloud-evicted destination (only its `.<name>.icloud`
+            // placeholder on disk) counts as EXISTING — treating it as absent
+            // would move the source file in beside the placeholder, leaving two
+            // rival copies of the same logical file. Materialize it so the
+            // mod-date compare and atomic swap operate on real bytes.
+            if WebICloud.itemExists(at: target) {
+                // meta.json: destination wins, source dropped (collapses stray
+                // meta-only path-hash folders; §8 self-heal).
+                if relative == "meta.json" { continue }
+                if !WebICloud.materialize(at: target, timeout: 10) {
+                    // Can't download the destination to compare/replace safely —
+                    // leave both copies for a later retry rather than guess.
+                    allMerged = false
+                    continue
                 }
-            } else {
-                try? fm.moveItem(at: file, to: target)
+                if modDate(file) > modDate(target) {
+                    // Atomic swap: never removes the destination before the newer
+                    // source is durably in its place.
+                    if (try? fm.replaceItemAt(target, withItemAt: file)) == nil {
+                        allMerged = false
+                    }
+                }
+                // Destination newer-or-equal: keep it, drop the source copy.
+            } else if (try? fm.moveItem(at: file, to: target)) == nil {
+                allMerged = false
             }
         }
+        return allMerged
     }
 
     private static func modDate(_ url: URL) -> Date {

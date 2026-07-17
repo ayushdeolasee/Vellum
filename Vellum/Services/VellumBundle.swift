@@ -30,6 +30,22 @@ enum VellumBundle {
     static let maxTotalAttachmentBytes = 256 * 1024 * 1024
     static let maxAttachments = 1000
 
+    // Pre-parse memory guards (design §5 / STAGE F2 #6). MiniZip loads the whole
+    // file into memory and copies it to a `[UInt8]` before any per-entry cap
+    // applies, so a crafted archive is bounded THREE ways before a single entry
+    // payload is touched: the on-disk file size, the central-directory entry
+    // count, and the SUM of every entry's declared uncompressed size.
+    /// Largest `.vellum` file we will even open (a 2 GiB document + its sidecar).
+    static let maxArchiveBytes = 2_684_354_560          // 2.5 GiB
+    /// Ceiling on central-directory entry count (a real bundle has a handful).
+    static let maxEntries = 4096
+    /// Ceiling on the sum of declared uncompressed sizes — the per-kind caps'
+    /// combined budget, so no legitimate bundle is ever refused.
+    static var maxTotalUncompressedBytes: Int {
+        maxManifestBytes + maxDocumentBytes + maxScratchpadBytes
+            + maxConversationsBytes + maxTotalAttachmentBytes
+    }
+
     static var marketingVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "0.1.0"
@@ -235,7 +251,24 @@ enum VellumBundle {
     /// a version above what this build understands is rejected with the same
     /// "please update Vellum" phrasing .vellumweb uses.
     static func read(at path: URL) throws -> Imported {
+        // Pre-parse guard #1 (file size): refuse before MiniZip reads the whole
+        // file into memory + copies it to `[UInt8]`. A stat, not a read.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.size] as? Int,
+           size > maxArchiveBytes {
+            throw SessionServiceError.invalidDocument("Bundle is too large to open")
+        }
+
         let zip = try MiniZip(contentsOf: path)
+
+        // Pre-parse guard #2/#3 (central-directory shape): a crafted directory
+        // can list millions of entries or declare petabytes of payload. Bound
+        // both from the parsed metadata BEFORE any entry's bytes are touched.
+        if zip.entryCount > maxEntries {
+            throw SessionServiceError.invalidDocument("Bundle contains too many entries")
+        }
+        if zip.totalDeclaredUncompressedSize > maxTotalUncompressedBytes {
+            throw SessionServiceError.invalidDocument("Bundle declares more data than Vellum will open")
+        }
 
         // Reject any physical entry whose name could escape the extraction root,
         // regardless of whether the manifest references it.
@@ -257,6 +290,13 @@ enum VellumBundle {
         if manifest.version > formatVersion {
             throw SessionServiceError.invalidDocument(
                 "This bundle uses format version \(manifest.version) — please update Vellum")
+        }
+        // The manifest doc_id becomes the sidecar's storage key (and is stamped
+        // into an imported PDF). A hostile bundle could carry a traversal string
+        // here; reject anything non-canonical so it can never steer a path (the
+        // documentDir guard is the backstop, this is the explicit gate).
+        guard DocumentIdentity.isCanonicalKey(manifest.docId) else {
+            throw SessionServiceError.invalidDocument("Bundle has an invalid document id")
         }
 
         // Document.
@@ -336,11 +376,16 @@ enum VellumBundle {
     ///     then the existing per-document caps applied.
     /// The document file itself is written by the caller (it chooses where it
     /// lands); this only touches the sidecar folder.
+    /// Returns the bare names of any attachments that could NOT be written (a
+    /// read-only folder, a disk error). An empty array is a clean install; a
+    /// non-empty one lets the caller warn the user which images are missing
+    /// rather than reporting a silent success with broken refs (STAGE F2 #5).
+    @discardableResult
     static func installSidecar(
         _ imported: Imported,
         forKey key: String,
         resolveScratchpadConflict resolveConflict: (_ title: String) -> ScratchpadDecision
-    ) throws {
+    ) throws -> [String] {
         if let incoming = imported.scratchpad, !incoming.isEmpty {
             if !DocumentDataStore.scratchpadExists(forKey: key) {
                 try DocumentDataStore.saveScratchpad(forKey: key, text: incoming)
@@ -353,6 +398,7 @@ enum VellumBundle {
             // Identical local note: nothing to do.
         }
 
+        var failedAttachments: [String] = []
         if !imported.attachments.isEmpty {
             let dir = DocumentDataStore.attachmentsDir(forKey: key)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -364,13 +410,18 @@ enum VellumBundle {
             for (name, data) in imported.attachments {
                 let stem = (name as NSString).deletingPathExtension.lowercased()
                 if existingStems.contains(stem) { continue }
-                try? data.write(to: dir.appendingPathComponent(name))
+                do {
+                    try data.write(to: dir.appendingPathComponent(name))
+                } catch {
+                    failedAttachments.append(name)
+                }
             }
         }
 
         if let incoming = imported.conversations {
             try mergeConversations(incoming, forKey: key)
         }
+        return failedAttachments
     }
 
     /// Union the imported conversation with any local one by message id, sort by

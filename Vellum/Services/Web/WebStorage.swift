@@ -330,6 +330,14 @@ enum WebICloud {
             || fm.fileExists(atPath: placeholderURL(for: url).path)
     }
 
+    /// Test seam: when set, `materialize` delegates to this for an evicted item
+    /// instead of driving the real iCloud download machinery (unavailable in unit
+    /// tests, and its poll would block for the whole timeout). Return true to
+    /// simulate a successful download — the closure should itself create the real
+    /// file if the test needs to read it — or false to simulate offline. Nil in
+    /// production.
+    nonisolated(unsafe) static var materializeOverride: ((URL) -> Bool)?
+
     /// Ensure the real bytes are local, triggering a download for an evicted
     /// item and polling until it lands or the timeout passes. Blocking — call
     /// off the main thread only. Returns false when the file neither exists
@@ -337,6 +345,7 @@ enum WebICloud {
     static func materialize(at url: URL, timeout: TimeInterval = 10) -> Bool {
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) { return true }
+        if let materializeOverride { return materializeOverride(url) }
         guard fm.fileExists(atPath: placeholderURL(for: url).path) else { return false }
         try? fm.startDownloadingUbiquitousItem(at: url)
         let deadline = Date().addingTimeInterval(timeout)
@@ -521,7 +530,10 @@ enum WebStorageMigrator {
                     guard fm2.fileExists(atPath: src.path, isDirectory: &isDir), isDir.boolValue
                     else { continue }
                     let dst = dest.documentsDir.appendingPathComponent(name, isDirectory: true)
-                    DocumentDataStore.moveOrMergeDirectory(from: src, into: dst)
+                    // A folder whose iCloud files can't materialize is SKIPPED
+                    // (returns false), so `clean` stays false and the pending
+                    // marker is kept for the next sweep — never moved as stubs.
+                    if !DocumentDataStore.moveOrMergeDirectory(from: src, into: dst) { clean = false }
                 }
             }
         }

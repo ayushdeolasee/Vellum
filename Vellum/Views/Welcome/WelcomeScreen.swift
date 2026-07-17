@@ -377,6 +377,9 @@ struct WelcomeScreen: View {
         if let archive = UTType(filenameExtension: "vellumweb") {
             types.append(archive)
         }
+        if let bundle = UTType(filenameExtension: "vellum") {
+            types.append(bundle)
+        }
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK else { return }
         let paths = panel.urls.map(\.path)

@@ -160,6 +160,13 @@ enum AiPersistence {
             migrateLegacyIfNeeded(document: document, key: key)
         }
         let loaded = readConversationsFile(forKey: key)
+        // A conversation stuck in iCloud (an unmaterialized placeholder that
+        // couldn't download) reads as empty — but that empty is NOT authoritative.
+        // Leaving the cache unset means a later load, once the bytes land, re-reads
+        // disk instead of serving (and eventually flushing) a phantom empty chat.
+        if loaded.isEmpty, DocumentDataStore.conversationsUnavailableEvicted(forKey: key) {
+            return []
+        }
         cache[key] = loaded
         return loaded
     }
@@ -189,7 +196,14 @@ enum AiPersistence {
     /// storageKeys whose in-memory conversation changed since the last write.
     /// The coalesced flush persists ONLY these — one small file each, not the
     /// old cross-document blob (§7: "flushing one document writes one small file").
+    /// A key whose write FAILED is re-inserted here so it is retried, never
+    /// silently dropped.
     @MainActor private static var dirtyKeys: Set<String> = []
+
+    /// How many times one flush task re-attempts keys whose write keeps failing
+    /// before parking them (still dirty) for a later scheduleFlush / the quit
+    /// drain — so a persistent disk-full condition can't hot-spin the loop.
+    private static let maxFlushFailureRetries = 2
 
     /// Encode + write off the main actor, coalescing bursts (a turn saves up to
     /// three times). ConversationEntry is Sendable value data, safe to move.
@@ -200,6 +214,7 @@ enum AiPersistence {
             // Let same-turn saves coalesce, but stay well under a second so the
             // "user message persisted before the request" crash contract holds.
             try? await Task.sleep(for: .milliseconds(200))
+            var failureRetries = 0
             // Write, then re-check the revision: a save that landed during the
             // detached write bumped it, so loop and persist the newer snapshot.
             // Only one detached write is awaited at a time, so writes are
@@ -208,14 +223,30 @@ enum AiPersistence {
                 let revision = flushRevision
                 let snapshot = dirtyKeys.map { ConversationEntry(key: $0, messages: cache[$0] ?? []) }
                 dirtyKeys.removeAll()
-                await Task.detached(priority: .utility) {
-                    for entry in snapshot { flushConversation(entry) }
+                let failed = await Task.detached(priority: .utility) { () -> [String] in
+                    snapshot.filter { !flushConversation($0) }.map(\.key)
                 }.value
-                // No await between this check and clearing pendingFlush, so on the
-                // main actor a concurrent save can't slip in unnoticed here.
-                if flushRevision == revision {
+                // Re-mark any key whose write failed so its data is retried, never
+                // dropped — a disk-full flush must NOT report success (data loss).
+                for key in failed { dirtyKeys.insert(key) }
+
+                // Done only when the queue is fully drained AND no save slipped in.
+                if flushRevision == revision, dirtyKeys.isEmpty {
                     pendingFlush = nil
                     return
+                }
+                if !failed.isEmpty {
+                    failureRetries += 1
+                    if failureRetries > maxFlushFailureRetries {
+                        // Give up THIS task but leave the keys dirty: the next
+                        // scheduleFlush (a later save) or awaitPendingFlush (quit)
+                        // retries them. Parking avoids a tight retry spin.
+                        NSLog("[Vellum] AI conversation flush failed for \(failed.count) document(s) after \(failureRetries) attempts; keeping them dirty for a later flush")
+                        pendingFlush = nil
+                        return
+                    }
+                    // Back off before retrying a failed write (disk full / transient).
+                    try? await Task.sleep(for: .milliseconds(150))
                 }
             }
         }
@@ -224,15 +255,22 @@ enum AiPersistence {
     /// Persist (or, when empty, delete) one document's conversations.json. Runs
     /// off the main actor inside the coalesced flush. An empty message list is
     /// the delete signal: the file is removed and a now-empty folder pruned, so
-    /// clearConversation's hard-delete contract keeps working (§8).
-    private static func flushConversation(_ entry: ConversationEntry) {
+    /// clearConversation's hard-delete contract keeps working (§8). Returns false
+    /// when a non-empty conversation could not be written (encode or disk error),
+    /// so the caller keeps the key dirty for a retry instead of losing the data.
+    private static func flushConversation(_ entry: ConversationEntry) -> Bool {
         if entry.messages.isEmpty {
             DocumentDataStore.removeConversations(forKey: entry.key)
             DocumentDataStore.pruneEmptyDocumentDir(forKey: entry.key)
-            return
+            return true
         }
-        guard let data = try? JSONEncoder().encode(entry.messages) else { return }
-        try? DocumentDataStore.saveConversationsData(forKey: entry.key, data: data)
+        guard let data = try? JSONEncoder().encode(entry.messages) else { return false }
+        do {
+            try DocumentDataStore.saveConversationsData(forKey: entry.key, data: data)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Read and decode a document's conversations.json (the plain JSON array
@@ -250,6 +288,28 @@ enum AiPersistence {
         while let flush = pendingFlush {
             await flush.value
         }
+        // A prior flush may have exhausted its retry budget and parked keys still
+        // dirty. Give them ONE more chance at quit; if it still fails the data
+        // cannot be written now — log loudly rather than exit silently on loss.
+        guard !dirtyKeys.isEmpty else { return }
+        scheduleFlush()
+        while let flush = pendingFlush {
+            await flush.value
+        }
+        if !dirtyKeys.isEmpty {
+            NSLog("[Vellum] \(dirtyKeys.count) AI conversation(s) could not be flushed before quit; unsaved changes remain in memory only")
+        }
+    }
+
+    /// Drop the in-memory conversation for `key` and clear any pending-write
+    /// flag it holds. Used after a `.vellum` import merges a fresh conversation
+    /// into `documents/<key>/conversations.json` on disk: the memory cache is
+    /// authoritative (#48 write-behind), so without this a still-open tab's stale
+    /// cached messages — and their queued flush — would overwrite the just-merged
+    /// file. The next `loadConversation` for this key re-reads from disk.
+    @MainActor static func invalidateCachedConversation(forKey key: String) {
+        cache.removeValue(forKey: key)
+        dirtyKeys.remove(key)
     }
 
     static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {

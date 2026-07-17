@@ -119,6 +119,76 @@ final class AiConversationStoreTests: XCTestCase {
         XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty)
     }
 
+    // MARK: - Failed flush must not lose data
+
+    /// A flush whose disk write fails must NOT mark the conversation clean: the
+    /// key stays dirty (data retained in the cache), and a later flush against a
+    /// writable location persists it. Regression for "disk-full flush silently
+    /// succeeds and the data is lost at quit."
+    func testFailedFlushKeepsDataDirtyThenRetriesWhenWritable() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+
+        // Point the store at a READ-ONLY documents root so the flush write fails.
+        let roRoot = root.deletingLastPathComponent().appendingPathComponent("ro-docs")
+        try FileManager.default.createDirectory(at: roRoot, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: roRoot.path)
+        DocumentDataStore.rootDirectoryOverride = roRoot
+
+        AiPersistence.saveConversation(
+            for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "keepme")])
+        await AiPersistence.awaitPendingFlush()
+
+        // The write failed: no file on disk, but the data is NOT lost — the cache
+        // still surfaces it (a later flush will retry).
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key),
+                       "read-only root: nothing should have landed")
+        XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["keepme"],
+                       "failed flush must retain the conversation, not drop it")
+
+        // Make the store writable again and trigger another flush; the data lands.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: roRoot.path)
+        DocumentDataStore.rootDirectoryOverride = root
+        AiPersistence.saveConversation(
+            for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "keepme")])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: key))
+        XCTAssertEqual(try fileMessages(forKey: key).map(\.content), ["keepme"],
+                       "retry against a writable root persists the retained data")
+    }
+
+    // MARK: - Cache invalidation on import merge
+
+    /// After a `.vellum` import merges a fresh conversation into the folder file,
+    /// `invalidateCachedConversation` drops the in-memory entry AND clears its
+    /// pending-write flag, so a stale live save can't be flushed back over the
+    /// merge and the next load re-reads disk (STAGE F2 #4).
+    func testInvalidateCachedConversationDropsMemoryAndDirtyState() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+
+        // A live save: cached in memory and marked dirty (flush pending).
+        AiPersistence.saveConversation(
+            for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "stale live")])
+
+        // The import writes a DIFFERENT merged conversation to the folder file.
+        let merged = try JSONEncoder().encode(
+            [AiPersistence.makeMessage(role: .user, content: "merged from import")])
+        try DocumentDataStore.saveConversationsData(forKey: key, data: merged)
+
+        // Invalidate: memory + dirty flag gone, so the pending flush has nothing
+        // to write for this key and the on-disk merge survives.
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        await AiPersistence.awaitPendingFlush()
+        XCTAssertEqual(try fileMessages(forKey: key).map(\.content), ["merged from import"],
+                       "the dropped dirty state must not clobber the imported merge")
+
+        // The next load re-reads the merged file rather than the dropped cache.
+        XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content),
+                       ["merged from import"])
+    }
+
     // MARK: - Caps
 
     func testCapsEnforceMessageCountAndCharacters() {
@@ -218,5 +288,30 @@ final class AiConversationStoreTests: XCTestCase {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return [] }
         return Set(object.keys)
+    }
+
+    // MARK: - F3 #3: an evicted conversation is not cached as authoritative
+
+    /// A conversation present only as an unmaterialized iCloud placeholder reads
+    /// as empty — but that empty must NOT be cached as authoritative, or a later
+    /// load (after the download lands) would keep serving a phantom empty chat.
+    func testEvictedConversationIsNotCachedAsAuthoritative() throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        let dir = DocumentDataStore.documentDir(forKey: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let placeholder = WebICloud.placeholderURL(for: DocumentDataStore.conversationsPath(forKey: key))
+        try Data("stub".utf8).write(to: placeholder)
+
+        // Degrades to empty, without caching that empty.
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty)
+
+        // The real bytes now materialize.
+        let msgs = [AiPersistence.makeMessage(role: .user, content: "recovered")]
+        try FileManager.default.removeItem(at: placeholder)
+        try JSONEncoder().encode(msgs).write(to: DocumentDataStore.conversationsPath(forKey: key))
+
+        // The next load re-reads disk (the empty wasn't cached) and finds the chat.
+        XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["recovered"])
     }
 }

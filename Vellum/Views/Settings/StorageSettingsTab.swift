@@ -440,16 +440,24 @@ struct StorageSettingsTab: View {
 
     private func deleteNotes(_ row: StorageInventory.DocumentRow) {
         mutateDoc(row.key) { $0.notesBytes = 0 }
+        let keys = [row.key] + row.adoptedKeys
         Task {
             await Task.detached { DocumentDataStore.deleteNotes(forKey: row.key) }.value
+            // A pane showing this document must drop its live note WITHOUT saving,
+            // or its quit-flush would rewrite the just-deleted markdown.
+            postDataDeleted(keys: keys, notes: true, chat: false)
             await reload()
         }
     }
 
     private func deleteChat(_ row: StorageInventory.DocumentRow) {
         mutateDoc(row.key) { $0.conversationBytes = 0 }
+        let keys = [row.key] + row.adoptedKeys
         Task {
             await Task.detached { DocumentDataStore.deleteConversation(forKey: row.key) }.value
+            // A pane showing this document must drop its cached chat, or the
+            // AiPersistence write-behind cache would recreate the history.
+            postDataDeleted(keys: keys, notes: false, chat: true)
             await reload()
         }
     }
@@ -483,12 +491,31 @@ struct StorageSettingsTab: View {
         webEntries.removeAll { keys.contains($0.key) }
         Task {
             await Task.detached { DocumentDataStore.deleteAll(forKey: row.key) }.value
+            // Both notes and chat are gone — a pane showing this document must
+            // drop its live scratchpad + AI state so neither writer resurrects it.
+            postDataDeleted(keys: keys, notes: true, chat: true)
             for key in keys {
                 await PageTextCache.shared.delete(key: key)
                 await Task.detached { WebLibrary.removeLocalSnapshots(forKey: key) }.value
             }
             await reload()
         }
+    }
+
+    /// Tell any open pane that the Storage pane deleted this document's data so
+    /// it drops the matching in-memory state WITHOUT saving (§8 delete-means-delete
+    /// even for a document open in another pane).
+    @MainActor
+    private func postDataDeleted(keys: [String], notes: Bool, chat: Bool) {
+        // The AI cache is process-wide (not per-pane), so invalidate it here up
+        // front — a pane not currently showing the doc still holds no live view,
+        // but a queued flush from any AiStore must not clobber the delete.
+        if chat {
+            for key in keys { AiPersistence.invalidateCachedConversation(forKey: key) }
+        }
+        NotificationCenter.default.post(
+            name: .vellumDocumentDataDeleted, object: nil,
+            userInfo: ["keys": keys, "notes": notes, "chat": chat])
     }
 
     private func deleteLegacy(_ legacy: LegacyRow) {

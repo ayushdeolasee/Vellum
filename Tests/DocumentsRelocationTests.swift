@@ -33,6 +33,7 @@ final class DocumentsRelocationTests: XCTestCase {
         WebStorageSettings.customRootOverride = nil
         WebStorageSettings.icloudDriveRootOverride = nil
         DocumentDataStore.rootDirectoryOverride = nil
+        WebICloud.materializeOverride = nil
         WebStorageMigrator.clearPendingRelocation()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
@@ -256,5 +257,115 @@ final class DocumentsRelocationTests: XCTestCase {
         try Data("real note".utf8).write(to: DocumentDataStore.scratchpadPath(forKey: key))
         XCTAssertNoThrow(try DocumentDataStore.saveScratchpad(forKey: key, text: "edited"))
         XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "edited")
+    }
+
+    // MARK: - F3 #1: fallback read during a pending relocation
+
+    /// Mode switched Local→iCloud (active layout is iCloud), but the launch sweep
+    /// hasn't MOVED this document's folder yet — it still sits in the local dir.
+    /// The read paths must fall back to the local copy so the note/chat/meta load
+    /// real bytes instead of degrading to empty (which the empty-state save path
+    /// could otherwise turn into a delete). A save adopts the note into the ACTIVE
+    /// (iCloud) dir.
+    func testFallbackReadDuringPendingRelocation() throws {
+        // rootDirectoryOverride stays nil so the fallback (local default dir) is
+        // active; the store follows the iCloud layout for the ACTIVE dir.
+        WebLibrary.layoutOverride = icloudLayout
+        let key = "0f0f0f0f-1111-2222-3333-444455556666"
+        let dir = try makeDocumentFolder(in: localDocuments, key: key, note: "local note bytes")
+        // Write a DECODABLE meta into the fallback location too (makeDocumentFolder
+        // writes a placeholder "{}", which the required Meta fields reject).
+        let meta = DocumentDataStore.Meta(
+            version: 1, kind: "pdf", title: "Local Doc",
+            lastKnownPath: "/tmp/local.pdf", lastOpened: WebLibrary.rfc3339Now())
+        try WebLibrary.jsonEncoderPretty.encode(meta).write(to: dir.appendingPathComponent("meta.json"))
+
+        XCTAssertEqual(DocumentDataStore.rootDirectory, icloudLayout.documentsDir)
+        // Active (iCloud) dir has nothing yet; fallback finds the local copy.
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "local note bytes")
+        XCTAssertNotNil(DocumentDataStore.loadConversationsData(forKey: key))
+        XCTAssertEqual(DocumentDataStore.loadMeta(forKey: key)?.title, "Local Doc")
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
+        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: key))
+
+        // A save adopts the note into the ACTIVE (iCloud) dir — writes never
+        // target the fallback.
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "edited in place")
+        XCTAssertEqual(
+            try String(
+                contentsOf: icloudLayout.documentsDir
+                    .appendingPathComponent("\(key)/scratchpad.md"), encoding: .utf8),
+            "edited in place")
+        // The active copy now wins the read.
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "edited in place")
+    }
+
+    // MARK: - F3 #2: placeholders materialized before a folder move
+
+    /// A document folder whose iCloud file can't be downloaded is SKIPPED, not
+    /// moved as an `.icloud` stub: `relocate` returns false and the source folder
+    /// is preserved, and the launch sweep keeps the pending marker for a retry.
+    func testUnmaterializablePlaceholderSkipsMoveAndKeepsPendingMarker() throws {
+        let key = "doc-evicted"
+        let srcDir = localDocuments.appendingPathComponent(key, isDirectory: true)
+        try FileManager.default.createDirectory(at: srcDir, withIntermediateDirectories: true)
+        // Only an evicted placeholder for scratchpad.md exists locally.
+        let placeholder = WebICloud.placeholderURL(for: srcDir.appendingPathComponent("scratchpad.md"))
+        try Data("stub".utf8).write(to: placeholder)
+        WebICloud.materializeOverride = { _ in false }  // offline: can't download
+
+        WebLibrary.layoutOverride = icloudLayout
+        XCTAssertFalse(
+            WebStorageMigrator.relocate(from: localLayout, to: icloudLayout),
+            "an unmaterializable folder makes relocate report not-clean")
+        XCTAssertTrue(exists(srcDir), "the source folder is preserved, not moved as a stub")
+        XCTAssertFalse(
+            exists(icloudLayout.documentsDir.appendingPathComponent(key)),
+            "no stub folder is written at the destination")
+
+        // Via the launch sweep the pending marker is kept for a later retry.
+        WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
+        WebStorageMigrator.sweepAtLaunch()
+        XCTAssertNotNil(
+            UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey),
+            "the skipped move keeps the pending marker")
+    }
+
+    /// An iCloud-evicted DESTINATION file counts as EXISTING for the newest-wins
+    /// merge — it must be materialized and compared, never treated as absent and
+    /// have the source file written in beside its placeholder.
+    func testEvictedDestinationCountsAsExistingForNewestWins() throws {
+        let key = "doc-dest-evicted"
+        // Source (local): an OLDER real note.
+        let srcDir = try makeDocumentFolder(in: localDocuments, key: key, note: "SRC old")
+        let old = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: old], ofItemAtPath: srcDir.appendingPathComponent("scratchpad.md").path)
+
+        // Destination (iCloud): only an evicted placeholder for scratchpad.md.
+        let dstDir = icloudLayout.documentsDir.appendingPathComponent(key, isDirectory: true)
+        try FileManager.default.createDirectory(at: dstDir, withIntermediateDirectories: true)
+        let dstNote = dstDir.appendingPathComponent("scratchpad.md")
+        try Data("DEST new".utf8).write(to: WebICloud.placeholderURL(for: dstNote))
+
+        // Simulate a successful download: create the real (NEWER) destination file.
+        WebICloud.materializeOverride = { url in
+            let ph = WebICloud.placeholderURL(for: url)
+            guard let bytes = try? Data(contentsOf: ph) else { return false }
+            try? bytes.write(to: url)
+            try? FileManager.default.removeItem(at: ph)
+            try? FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 2_000)], ofItemAtPath: url.path)
+            return true
+        }
+
+        WebLibrary.layoutOverride = icloudLayout
+        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+
+        // Newest (destination) wins; the source's older note did NOT overwrite it,
+        // and there is exactly one real note — no stub left beside a rival copy.
+        XCTAssertEqual(try String(contentsOf: dstNote, encoding: .utf8), "DEST new")
+        XCTAssertFalse(exists(WebICloud.placeholderURL(for: dstNote)), "placeholder was materialized away")
+        XCTAssertFalse(exists(srcDir), "merged source folder is removed")
     }
 }

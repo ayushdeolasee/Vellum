@@ -163,7 +163,7 @@ final class VellumBundleTests: XCTestCase {
         let tamperedBytes = Data("tampered document".utf8)
         let manifest = VellumBundle.Manifest(
             format: "vellum", version: 1, kind: "pdf",
-            docId: "docid", documentFile: "d.pdf", title: nil,
+            docId: Self.canonicalDocId, documentFile: "d.pdf", title: nil,
             exportedAt: WebLibrary.rfc3339Now(), generator: "test",
             includesConversations: false,
             hashes: .init(document: WebArchive.sha256Hex(realBytes), scratchpad: nil, conversations: nil),
@@ -180,7 +180,7 @@ final class VellumBundleTests: XCTestCase {
         let tampered = Data([9, 9, 9])
         let manifest = VellumBundle.Manifest(
             format: "vellum", version: 1, kind: "pdf",
-            docId: "docid", documentFile: "d.pdf", title: nil,
+            docId: Self.canonicalDocId, documentFile: "d.pdf", title: nil,
             exportedAt: WebLibrary.rfc3339Now(), generator: "test",
             includesConversations: false,
             hashes: .init(
@@ -229,7 +229,7 @@ final class VellumBundleTests: XCTestCase {
 
     func testConversationsExcludedByDefault() throws {
         let content = VellumBundle.Content(
-            kind: .pdf, docId: "docid", documentFile: "d.pdf",
+            kind: .pdf, docId: Self.canonicalDocId, documentFile: "d.pdf",
             documentData: Data("doc".utf8), title: "T",
             scratchpad: "a note", attachments: [], conversations: nil)
         let url = scratch.appendingPathComponent("no-convo.vellum")
@@ -305,6 +305,143 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("id1.png")), existing)
     }
 
+    // MARK: - doc_id path safety (STAGE F2 #1, all three layers)
+
+    /// VellumBundle layer: a hostile manifest doc_id carrying path traversal is
+    /// rejected at read rather than becoming a storage key.
+    func testTraversalManifestDocIdRejected() throws {
+        let documentBytes = Data("doc".utf8)
+        var manifest = validPdfManifest(documentBytes: documentBytes)
+        manifest.docId = "../../../../etc/passwd"
+        let url = try packRawBundle(manifest: manifest, extraEntries: [
+            MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true),
+        ])
+        XCTAssertThrowsError(try VellumBundle.read(at: url)) { error in
+            XCTAssertTrue("\(error)".lowercased().contains("invalid document id"))
+        }
+    }
+
+    /// DocumentDataStore layer: the central documentDir guard neutralizes a
+    /// non-canonical key to its sha256 folder, so it can never escape documents/.
+    func testDocumentDirNeutralizesTraversalKey() {
+        let evil = "../../../../etc/passwd"
+        let dir = DocumentDataStore.documentDir(forKey: evil)
+        XCTAssertEqual(
+            dir.deletingLastPathComponent().standardizedFileURL, root.standardizedFileURL,
+            "the folder must stay a direct child of the documents root")
+        XCTAssertEqual(dir.lastPathComponent, DocumentIdentity.sha256Hex(evil))
+        XCTAssertFalse(dir.path.contains(".."))
+        // A canonical key is used verbatim.
+        let canonical = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        XCTAssertEqual(
+            DocumentDataStore.documentDir(forKey: canonical).lastPathComponent, canonical)
+    }
+
+    /// PdfMetadata layer: a crafted PDF whose embedded /VellumDocId is a traversal
+    /// string reads back as nil (unstamped), never an attacker-chosen folder name.
+    func testEmbeddedTraversalDocIdReadsAsNil() throws {
+        let dest = scratch.appendingPathComponent("evil-id.pdf")
+        try makeRealPdfData().write(to: dest)
+        // Stamp a hostile id straight in, bypassing any write-side validation.
+        try PdfMetadata.stampDocumentId(atPath: dest.path, id: "../../evil")
+        XCTAssertNil(PdfMetadata.documentId(atPath: dest.path),
+                     "a non-canonical embedded id must read as unstamped")
+    }
+
+    // MARK: - Panel-free import core (STAGE F2 #2/#3)
+
+    /// The core writes the document, stamps + resolves the key, and installs the
+    /// sidecar — the whole import minus the NSSavePanel.
+    func testImportCoreWritesDocumentAndInstallsSidecar() throws {
+        let real = makeRealPdfData()
+        let docId = DocumentIdentity.byteHash(real)
+        let content = VellumBundle.Content(
+            kind: .pdf, docId: docId, documentFile: "paper.pdf",
+            documentData: real, title: "Paper",
+            scratchpad: "core note", attachments: [], conversations: nil)
+        let bundleURL = scratch.appendingPathComponent("core.vellum")
+        try VellumBundle.write(content, to: bundleURL)
+        let imported = try VellumBundle.read(at: bundleURL)
+
+        let dest = scratch.appendingPathComponent("core-written.pdf")
+        let result = try AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
+
+        XCTAssertEqual(result.path, dest.path)
+        XCTAssertTrue(result.failedAttachments.isEmpty)
+        XCTAssertTrue(exists(dest))
+        // The written PDF is stamped with the manifest id, so its reopen key matches.
+        let key = try XCTUnwrap(PdfMetadata.documentId(atPath: dest.path))
+        XCTAssertEqual(key, docId)
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "core note")
+    }
+
+    /// Importing over an existing file replaces it atomically (temp + rename, no
+    /// pre-delete) and leaves no temp sibling behind.
+    func testImportCoreAtomicallyReplacesExistingDestination() throws {
+        let dest = scratch.appendingPathComponent("existing.pdf")
+        let oldBytes = Data("OLD CONTENT that must be replaced".utf8)
+        try oldBytes.write(to: dest)
+
+        let real = makeRealPdfData()
+        let content = VellumBundle.Content(
+            kind: .pdf, docId: DocumentIdentity.byteHash(real), documentFile: "existing.pdf",
+            documentData: real, title: "New", scratchpad: nil, attachments: [], conversations: nil)
+        let bundleURL = scratch.appendingPathComponent("replace.vellum")
+        try VellumBundle.write(content, to: bundleURL)
+        let imported = try VellumBundle.read(at: bundleURL)
+
+        _ = try AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
+
+        XCTAssertNotNil(PdfMetadata.documentId(atPath: dest.path), "destination holds the imported PDF")
+        XCTAssertNotEqual(try Data(contentsOf: dest), oldBytes)
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: scratch.path)
+        XCTAssertFalse(siblings.contains { $0.hasPrefix(".existing.pdf.import-") },
+                       "the atomic temp sibling must be renamed away, not left behind")
+    }
+
+    // MARK: - Attachment-failure surfacing (STAGE F2 #5)
+
+    func testInstallSidecarSurfacesFailedAttachments() throws {
+        let key = "aaaaaaaa-0000-0000-0000-000000000001"
+        // Pre-create the attachments dir READ-ONLY so writes into it fail.
+        let dir = DocumentDataStore.attachmentsDir(forKey: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        }
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8), scratchpad: nil,
+            attachments: [(name: "img1.png", data: Data([1, 2, 3]))],
+            conversations: nil)
+        let failed = try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+        XCTAssertEqual(failed, ["img1.png"], "a failed attachment write must be reported, not swallowed")
+    }
+
+    // MARK: - Pre-parse caps (STAGE F2 #6)
+
+    /// A crafted archive listing more entries than the cap is refused before any
+    /// entry payload is touched.
+    func testEntryCountCapRejected() throws {
+        var entries: [MiniZip.Entry] = [
+            MiniZip.Entry(
+                name: "manifest.json",
+                data: try JSONEncoder().encode(validPdfManifest(documentBytes: Data("d".utf8))),
+                stored: false),
+            MiniZip.Entry(name: "document/d.pdf", data: Data("d".utf8), stored: true),
+        ]
+        for i in 0...VellumBundle.maxEntries {
+            entries.append(MiniZip.Entry(name: "filler/\(i).bin", data: Data([0]), stored: true))
+        }
+        let url = scratch.appendingPathComponent("too-many.vellum")
+        try MiniZip.write(entries: entries).write(to: url)
+        XCTAssertThrowsError(try VellumBundle.read(at: url)) { error in
+            XCTAssertTrue("\(error)".lowercased().contains("too many entries"))
+        }
+    }
+
     // MARK: - Helpers
 
     /// A real, PDFKit-parseable single-page PDF with no /VellumDocId — needed
@@ -320,10 +457,14 @@ final class VellumBundleTests: XCTestCase {
         return data as Data
     }
 
+    /// A canonical (lowercase-hex/UUID) doc_id — the only form `VellumBundle.read`
+    /// now accepts (a non-canonical value is rejected as a hostile path).
+    private static let canonicalDocId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
     private func validPdfManifest(documentBytes: Data) -> VellumBundle.Manifest {
         VellumBundle.Manifest(
             format: "vellum", version: 1, kind: "pdf",
-            docId: "docid", documentFile: "d.pdf", title: "T",
+            docId: Self.canonicalDocId, documentFile: "d.pdf", title: "T",
             exportedAt: WebLibrary.rfc3339Now(), generator: "test",
             includesConversations: false,
             hashes: .init(

@@ -28,7 +28,13 @@ final class DocumentDataStoreTests: XCTestCase {
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.activeDirectory = nil
         UserDefaults.standard.removeObject(forKey: ScratchpadPersistence.notesKey)
-        if let root { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        // Restore write perms in case a test left a folder read-only, so the
+        // scratch tree can be torn down cleanly.
+        if let root {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
+        }
     }
 
     private func pdfDocument(path: String, docId: String? = nil) -> DocumentInfo {
@@ -154,6 +160,43 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertFalse(exists(legacyPool), "empty legacy blob reclaims the pool dir")
     }
 
+    /// Migration writes scratchpad.md FIRST: if that write fails, nothing is
+    /// copied into the doc folder (so per-doc GC can't reap half-migrated
+    /// attachments) and the blob entry survives for the next open to retry —
+    /// then a retry against a writable folder completes cleanly.
+    func testMigrationWritesNoteBeforeCopyingAttachmentsAndRetries() throws {
+        let path = "/tmp/mig-order-\(UUID().uuidString).pdf"
+        let id = "feedface-9999"
+        try Data([5, 5, 5]).write(to: legacyPool.appendingPathComponent("\(id).png"))
+        try seedLegacyBlob([BlobEntry(key: path,
+                                      text: "Note ![i](vellum-scratchpad://\(id))")])
+        let key = DocumentIdentity.sha256Hex(path)
+        ScratchpadAttachmentStore.activeDirectory = DocumentDataStore.attachmentsDir(forKey: key)
+
+        // Make the documents root read-only so the scratchpad.md write fails.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+
+        ScratchpadPersistence.migrateLegacyIfNeeded(document: pdfDocument(path: path), key: key)
+
+        // Note write failed → NOTHING copied into the doc folder, blob retained,
+        // and the pool original is untouched (recoverable).
+        XCTAssertFalse(DocumentDataStore.scratchpadExists(forKey: key))
+        XCTAssertFalse(exists(DocumentDataStore.attachmentsDir(forKey: key)
+            .appendingPathComponent("\(id).png")),
+            "no attachment may be copied when the note write failed")
+        XCTAssertEqual(try legacyBlobEntries().map(\.key), [path], "blob entry kept for retry")
+        XCTAssertTrue(exists(legacyPool.appendingPathComponent("\(id).png")))
+
+        // Restore writability and retry — now it completes fully.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        ScratchpadPersistence.migrateLegacyIfNeeded(document: pdfDocument(path: path), key: key)
+
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
+        XCTAssertTrue(exists(DocumentDataStore.attachmentsDir(forKey: key)
+            .appendingPathComponent("\(id).png")), "retry copies the attachment")
+        XCTAssertTrue(try legacyBlobEntries().isEmpty, "retry drops the blob entry")
+    }
+
     func testLazyMigrationCopiesSharedAttachmentForSecondNote() throws {
         // Two still-unmigrated notes reference the SAME attachment id in the pool.
         let id = "cafef00d-5678"
@@ -264,6 +307,85 @@ final class DocumentDataStoreTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
+    /// A rekey whose file move fails part-way must leave the SOURCE intact rather
+    /// than delete it after destroying the destination — both copies survive for
+    /// an idempotent retry on the next load.
+    func testRekeyPartialFailurePreservesSource() throws {
+        let pathKey = "partial-src"
+        let docId = "partial-dst"
+        // Source holds a NEWER note; destination an older one — newest-wins would
+        // try to swap the source in.
+        try DocumentDataStore.saveScratchpad(forKey: pathKey, text: "new source")
+        try DocumentDataStore.saveScratchpad(forKey: docId, text: "old dest")
+        try setModDate(DocumentDataStore.scratchpadPath(forKey: docId), daysAgo: 3)
+
+        // Make the destination folder read-only so the replacement swap fails.
+        let dstDir = DocumentDataStore.documentDir(forKey: docId)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dstDir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dstDir.path) }
+
+        DocumentDataStore.rekey(from: pathKey, to: docId)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dstDir.path)
+        // Source survived (write failed → not removed); destination untouched.
+        XCTAssertTrue(exists(DocumentDataStore.documentDir(forKey: pathKey)),
+                      "a failed merge must not delete the source")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: pathKey), "new source")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), "old dest",
+                       "destination is preserved when its replacement could not land")
+    }
+
+    /// A leftover meta-ONLY folder under the path hash (a pre-round-1 on-open
+    /// touch) collapses on rekey: its stale meta is dropped, the destination's
+    /// meta wins, and the source folder is removed so it can't surface as a bogus
+    /// orphan in the Storage pane.
+    func testRekeyCollapsesMetaOnlySourceDestinationMetaWins() throws {
+        let pathKey = "metaonly-src"
+        let docId = "metaonly-dst"
+        // Destination is a real document folder (note + its own meta).
+        try DocumentDataStore.saveScratchpad(forKey: docId, text: "real note")
+        try DocumentDataStore.touch(
+            document: pdfDocument(path: "/tmp/dst.pdf", docId: docId), force: true)
+        let dstTitleBefore = DocumentDataStore.loadMeta(forKey: docId)?.title
+
+        // Source is a stale meta-ONLY folder (distinct title).
+        let srcDoc = DocumentInfo(kind: .pdf, pdfPath: "/tmp/src.pdf", title: "STALE",
+                                  pageCount: 1, lastPage: 1, docId: pathKey)
+        try DocumentDataStore.touch(document: srcDoc, force: true)
+        XCTAssertFalse(DocumentDataStore.hasDataFiles(forKey: pathKey), "source is meta-only")
+
+        DocumentDataStore.rekey(from: pathKey, to: docId)
+
+        XCTAssertFalse(exists(DocumentDataStore.documentDir(forKey: pathKey)),
+                       "meta-only source folder must collapse")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), "real note")
+        XCTAssertEqual(DocumentDataStore.loadMeta(forKey: docId)?.title, dstTitleBefore,
+                       "destination meta wins; the stale source meta is dropped")
+    }
+
+    // MARK: - Emoji-safe ref rewrite (UTF-16 vs Character offsets)
+
+    /// An emoji BEFORE a scheme ref must not shift the rewrite: NSRegularExpression
+    /// reports UTF-16 offsets, so the conversion must use Range(_:in:), not
+    /// String.index(offsetBy:) which counts grapheme clusters.
+    func testSchemeToRelativeHandlesEmojiBeforeRef() {
+        let id = "deadbeef-0002"
+        let text = "🎉😀 note ![p](vellum-scratchpad://\(id)) tail"
+        let out = ScratchpadPersistence.schemeToRelative(text, extensionFor: { _ in "png" })
+        XCTAssertEqual(out, "🎉😀 note ![p](attachments/\(id).png) tail")
+        // Round-trips back to the scheme form unchanged.
+        XCTAssertEqual(ScratchpadPersistence.relativeToScheme(out), text)
+    }
+
+    /// Two refs separated by an emoji both rewrite to the correct spans.
+    func testSchemeToRelativeHandlesEmojiBetweenRefs() {
+        let a = "aaaa-1111"
+        let b = "bbbb-2222"
+        let text = "![x](vellum-scratchpad://\(a)) 🚀 ![y](vellum-scratchpad://\(b))"
+        let out = ScratchpadPersistence.schemeToRelative(text, extensionFor: { _ in "jpg" })
+        XCTAssertEqual(out, "![x](attachments/\(a).jpg) 🚀 ![y](attachments/\(b).jpg)")
+    }
+
     // MARK: - Delete-means-delete
 
     func testClearingNoteRemovesFileAttachmentAndFolder() throws {
@@ -314,5 +436,76 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertFalse(exists(dirA.appendingPathComponent("aa.jpg")))
         XCTAssertTrue(exists(dirB.appendingPathComponent("bb.jpg")),
                       "another document's attachment must be untouched")
+    }
+
+    // MARK: - F3 #3: read-only session when the note is stuck in iCloud
+
+    /// When a document's note exists only as an unmaterialized iCloud placeholder,
+    /// the ScratchpadStore pauses persistence and shows a banner instead of
+    /// presenting an editable empty note whose saves would be silently refused —
+    /// no write reaches disk and the real-but-evicted copy is untouched.
+    func testStuckInICloudNotePausesPersistence() throws {
+        let doc = pdfDocument(path: "/tmp/stuck-\(UUID().uuidString).pdf")
+        let key = DocumentIdentity.storageKey(for: doc)
+        let dir = DocumentDataStore.documentDir(forKey: key)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Evicted: only the `.scratchpad.md.icloud` placeholder, no real bytes.
+        let placeholder = WebICloud.placeholderURL(for: DocumentDataStore.scratchpadPath(forKey: key))
+        try Data("stub".utf8).write(to: placeholder)
+
+        let store = ScratchpadStore()
+        store.loadForDocument(doc)
+        XCTAssertTrue(store.isPersistencePaused, "an evicted note pauses persistence")
+        XCTAssertNotNil(store.dropWarning, "a banner explains why editing is paused")
+
+        // Typing while paused must not schedule or perform any write.
+        store.text = "user typed something the sync would swallow"
+        store.flush()
+        XCTAssertFalse(
+            exists(DocumentDataStore.scratchpadPath(forKey: key)),
+            "no real note file is written while paused")
+        XCTAssertTrue(exists(placeholder), "the evicted placeholder is untouched")
+
+        // Loading a document whose note IS available clears the pause.
+        let ok = pdfDocument(path: "/tmp/ok-\(UUID().uuidString).pdf")
+        store.loadForDocument(ok)
+        XCTAssertFalse(store.isPersistencePaused)
+        XCTAssertNil(store.dropWarning)
+    }
+
+    // MARK: - F3 #4: Storage-pane delete of an open document's notes
+
+    /// After the Storage pane deletes a document's notes on disk, an open pane's
+    /// ScratchpadStore must drop its live text WITHOUT saving — otherwise its
+    /// quit-flush would rewrite the just-deleted markdown (resurrection).
+    func testDiscardNotesForExternalDeleteDoesNotResurrect() throws {
+        let doc = pdfDocument(path: "/tmp/del-\(UUID().uuidString).pdf")
+        let key = DocumentIdentity.storageKey(for: doc)
+
+        let store = ScratchpadStore()
+        store.loadForDocument(doc)
+        store.text = "important note"
+        store.flush()  // persist synchronously
+        XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
+
+        // Storage pane deletes it on disk.
+        DocumentDataStore.deleteNotes(forKey: key)
+        XCTAssertFalse(DocumentDataStore.scratchpadExists(forKey: key))
+
+        // The open pane discards its live note without saving; a later flush must
+        // NOT recreate the file.
+        store.discardNotesForExternalDelete(matchingKey: key)
+        XCTAssertEqual(store.text, "")
+        store.flush()
+        XCTAssertFalse(
+            DocumentDataStore.scratchpadExists(forKey: key),
+            "discard-without-save keeps the delete; quit-flush can't resurrect it")
+
+        // A non-matching key is a no-op (doesn't clear an unrelated document).
+        store.loadForDocument(doc)
+        store.text = "second note"
+        store.discardNotesForExternalDelete(matchingKey: "some-other-key")
+        XCTAssertEqual(store.text, "second note")
+        store.flush()
     }
 }

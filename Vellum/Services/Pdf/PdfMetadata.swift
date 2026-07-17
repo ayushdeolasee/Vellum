@@ -30,8 +30,14 @@ enum PdfMetadata {
     }
 
     /// The /VellumDocId text string, or nil when the file has not been stamped.
+    /// A crafted PDF could embed a traversal string (`../../…`) as /VellumDocId;
+    /// only a CANONICAL id (lowercase UUID / bare-hex sha256 — the sole forms a
+    /// genuine stamp takes) may become a storage key, so a non-conforming value
+    /// is treated as "unstamped" and the file falls back to its path-hash
+    /// identity instead of letting the attacker choose a folder name.
     static func documentId(_ document: CGPDFDocument) -> String? {
-        document.info.flatMap { CgPdf.string($0, "VellumDocId") }
+        guard let raw = document.info.flatMap({ CgPdf.string($0, "VellumDocId") }) else { return nil }
+        return DocumentIdentity.isCanonicalKey(raw) ? raw : nil
     }
 
     /// Read a raw file's /VellumDocId without opening a session — used by the

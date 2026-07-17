@@ -440,6 +440,7 @@ private struct OverflowMenu: View {
         panel.canChooseDirectories = false
         var types: [UTType] = [.pdf]
         if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
+        if let bundle = UTType(filenameExtension: "vellum") { types.append(bundle) }
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK else { return }
         Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }

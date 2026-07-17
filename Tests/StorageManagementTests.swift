@@ -33,7 +33,10 @@ final class StorageManagementTests: XCTestCase {
     // MARK: - listDocuments sizes
 
     func testListDocumentsReportsNoteAndChatBytes() throws {
-        let key = "sizekey"
+        // listDocuments() reports the on-disk FOLDER name as `.key`, so the key
+        // must be canonical (a non-canonical value would be stored under its
+        // sha256 folder and never match this literal). Real docIds are UUIDs.
+        let key = "11111111-1111-1111-1111-111111111111"
         try DocumentDataStore.saveScratchpad(forKey: key, text: "hello notes")  // 11 bytes
         try DocumentDataStore.saveConversationsData(forKey: key, data: Data(count: 40))
         try DocumentDataStore.touch(
@@ -50,7 +53,7 @@ final class StorageManagementTests: XCTestCase {
     }
 
     func testEvictedNotePlaceholderIsCountedAndDeleted() throws {
-        let key = "evictedkey"
+        let key = "22222222-2222-2222-2222-222222222222"
         let dir = DocumentDataStore.documentDir(forKey: key)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // A fake iCloud placeholder standing in for an evicted scratchpad.md,
@@ -76,7 +79,7 @@ final class StorageManagementTests: XCTestCase {
     }
 
     func testListDocumentsWebEntryNeverOrphan() throws {
-        let key = "webkey"
+        let key = "33333333-3333-3333-3333-333333333333"
         try DocumentDataStore.saveConversationsData(forKey: key, data: Data(count: 5))
         try DocumentDataStore.touch(
             document: DocumentInfo(kind: .web, pdfPath: "https://example.com/a",

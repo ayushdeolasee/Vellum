@@ -18,10 +18,12 @@ final class DocumentIdentityTests: XCTestCase {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("vellum-docid-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        PdfDocIdRegistry.reset()
     }
 
     override func tearDown() async throws {
         retainedDocuments.removeAll()
+        PdfDocIdRegistry.reset()
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -154,6 +156,62 @@ final class DocumentIdentityTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
         XCTAssertNil(PdfMetadata.documentId(rawDocument(session.path)), "fallback must not stamp the file")
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: session.path)), fileData, "file bytes unchanged")
+    }
+
+    /// Two independent PdfDocumentIO actors opening the SAME file (the split-pane
+    /// case) must converge on ONE /VellumDocId: the process-wide registry hands
+    /// both stampers the same pending UUID, so their first mutations agree even
+    /// when neither stamp has hit disk yet. The id then round-trips on reopen.
+    func testSplitPaneStampsConvergeOnOneDocId() async throws {
+        let path = makeTestPdf(name: "split-converge")
+        // Two sessions on the same canonical path (as two panes would hold).
+        let a = try await openSession(path)
+        let b = try await openSession(path)
+        XCTAssertNil(a.info.docId)
+        XCTAssertNil(b.info.docId)
+
+        // Both stamp on their first mutation. The IO actor serializes the writes,
+        // but the ids are drawn from the shared registry, so they must match.
+        _ = try await a.createAnnotation(highlight())
+        _ = try await b.createAnnotation(highlight(72, 300))
+
+        let idA = try await a.ensureDocumentId()
+        let idB = try await b.ensureDocumentId()
+        XCTAssertEqual(idA, idB, "split panes must not mint divergent doc ids")
+
+        let reopened = try await openSession(path)
+        XCTAssertEqual(reopened.info.docId, idA, "the single stamped id round-trips")
+        XCTAssertEqual(PdfMetadata.documentId(rawDocument(path)), idA)
+    }
+
+    /// A failed stamp WRITE must not leave the session claiming a UUID that never
+    /// reached the file. With the directory read-only the write throws; the actor
+    /// keeps docId nil, so ensureDocumentId degrades to the byte-hash fallback and
+    /// the file stays unstamped — no phantom id keying data unrecoverably.
+    func testFailedStampWriteDoesNotCachePhantomDocId() async throws {
+        let dir = tempDir.appendingPathComponent("ro-stamp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = makeTestPdf(at: dir.appendingPathComponent("locked.pdf"))
+        let session = try await openSession(path)
+        let before = try Data(contentsOf: URL(fileURLWithPath: path))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+
+        // A mutation whose stamp+write fails must throw and NOT cache a doc id.
+        do {
+            _ = try await session.createAnnotation(highlight())
+            XCTFail("createAnnotation should throw when the directory is read-only")
+        } catch {}
+
+        // ensureDocumentId now falls back to the full-byte hash (no phantom UUID).
+        let id = try await session.ensureDocumentId()
+        XCTAssertEqual(id, DocumentIdentity.byteHash(before), "unstamped file → byte hash, not a cached UUID")
+        XCTAssertNil(UUID(uuidString: id), "the fallback is a hash, not a UUID")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        XCTAssertNil(PdfMetadata.documentId(rawDocument(path)), "the file must carry no stamp after a failed write")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), before, "bytes unchanged after failed stamp")
     }
 
     /// storageKey uses docId when present, else the sha256(path) hex — identical

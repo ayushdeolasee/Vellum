@@ -50,8 +50,18 @@ final class ScratchpadStore {
 
     /// Transient message the panel shows when the user drops something that
     /// isn't a usable image. Set by `warnUnsupportedDrop`, auto-cleared after a
-    /// few seconds; nil when no warning is showing.
+    /// few seconds; nil when no warning is showing. Also used for the persistent
+    /// "editing paused" banner when the note is stuck in iCloud (see
+    /// `isPersistencePaused`).
     private(set) var dropWarning: String?
+
+    /// True when this document's note is present only as an unmaterialized iCloud
+    /// placeholder that couldn't be downloaded — editing is paused so a save
+    /// can't silently vanish (the write would be refused by `guardEvicted`) or
+    /// clobber the real-but-evicted copy. Cleared once a document whose note is
+    /// available loads. Persistence (`scheduleSave`/`flush`) short-circuits while
+    /// this is set.
+    private(set) var isPersistencePaused = false
 
     private var currentKey: String?
     private var currentDocument: DocumentInfo?
@@ -88,6 +98,21 @@ final class ScratchpadStore {
             ScratchpadAttachmentStore.activeDirectory = key.map {
                 DocumentDataStore.attachmentsDir(forKey: $0)
             }
+        }
+
+        // If the note is stuck in iCloud (an unmaterialized placeholder that
+        // PaneView's `materializeIfNeeded` couldn't download), pause persistence
+        // and show a banner instead of presenting an editable empty note whose
+        // saves would be silently refused. A note available anywhere (active dir
+        // or the local fallback) clears the pause.
+        let paused = key.map { DocumentDataStore.scratchpadUnavailableEvicted(forKey: $0) } ?? false
+        isPersistencePaused = paused
+        if paused {
+            dropWarningTask?.cancel()
+            dropWarning = "This note is in iCloud and hasn’t downloaded yet — editing is paused until it syncs."
+        } else {
+            dropWarningTask?.cancel()
+            dropWarning = nil
         }
 
         setRestored(key.map { ScratchpadPersistence.load(forKey: $0) } ?? "")
@@ -138,6 +163,13 @@ final class ScratchpadStore {
     /// can never delete another document's images. Runs off the main actor.
     private func pruneOrphanedAttachments() {
         guard let dir = ScratchpadAttachmentStore.activeDirectory else { return }
+        // Distinguish a genuinely EMPTY note from one that FAILED to load: a read
+        // error or an iCloud-evicted scratchpad.md both surface as "". GCing an
+        // empty `text` against a note that is really on disk (just unreadable
+        // right now) would reap its still-referenced attachments. Only GC when
+        // the note is truly empty — i.e. no scratchpad.md exists for this key.
+        if text.isEmpty, let key = currentKey,
+           DocumentDataStore.scratchpadExists(forKey: key) { return }
         let referenced = ScratchpadAttachmentStore.referencedIds(in: text)
         Task.detached(priority: .utility) {
             ScratchpadAttachmentStore.collectGarbage(in: dir, referencedIds: referenced)
@@ -151,7 +183,21 @@ final class ScratchpadStore {
         currentKey = nil
         currentDocument = nil
         currentSessionId = nil
+        isPersistencePaused = false
         ScratchpadAttachmentStore.activeDirectory = nil
+        setRestored("")
+    }
+
+    /// Discard the in-memory note WITHOUT persisting, when an external actor (the
+    /// Storage pane) deleted this document's notes on disk. A plain reload would
+    /// `flush()` the current text first and resurrect the just-deleted file, so
+    /// this cancels any pending save and resets the editor under the restore
+    /// guard (which suppresses the `didSet` autosave). No-op unless the deleted
+    /// key is the one this store is showing.
+    func discardNotesForExternalDelete(matchingKey key: String) {
+        guard currentKey == key else { return }
+        saveTask?.cancel()
+        saveTask = nil
         setRestored("")
     }
 
@@ -166,7 +212,10 @@ final class ScratchpadStore {
     func flush() {
         saveTask?.cancel()
         saveTask = nil
-        guard let currentKey else { return }
+        // A note stuck in iCloud is read-only for this session: never write over
+        // the real-but-evicted copy (the save would be refused anyway, and the
+        // in-memory text is the empty placeholder state, not the user's note).
+        guard !isPersistencePaused, let currentKey else { return }
         persist(key: currentKey)
     }
 
@@ -188,6 +237,9 @@ final class ScratchpadStore {
     }
 
     private func scheduleSave() {
+        // Editing is paused while the note is stuck in iCloud — drop the edit
+        // rather than schedule a write that would be refused or clobber real data.
+        guard !isPersistencePaused else { return }
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))

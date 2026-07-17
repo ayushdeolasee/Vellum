@@ -33,6 +33,24 @@ enum DocumentIdentity {
         sha256Hex(data)
     }
 
+    /// True when `key` is a canonical storage key — a lowercase UUID or a
+    /// bare-hex sha256, matching `^[a-f0-9-]{8,64}$`. Every id this app MINTS
+    /// (a UUID stamp, a byte/URL/path sha256) is canonical by construction; the
+    /// only non-canonical values are attacker-influenced strings that arrive from
+    /// a crafted PDF's embedded /VellumDocId or a hostile `.vellum` manifest
+    /// `doc_id`. Such a string must never be used verbatim as a filesystem path
+    /// component (the app is unsandboxed): `DocumentDataStore.documentDir`
+    /// neutralizes it, and the identity sources reject it outright.
+    static func isCanonicalKey(_ key: String) -> Bool {
+        let n = key.count
+        guard n >= 8, n <= 64 else { return false }
+        return key.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)   // 0-9
+                || (byte >= 0x61 && byte <= 0x66)  // a-f
+                || byte == 0x2d                // '-'
+        }
+    }
+
     /// Bare-hex sha256 of a string's UTF-8 bytes.
     static func sha256Hex(_ string: String) -> String {
         sha256Hex(Data(string.utf8))

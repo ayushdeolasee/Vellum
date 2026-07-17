@@ -62,4 +62,16 @@ extension Notification.Name {
     /// shared, disk-persisted settings (multiple AiStore instances exist once
     /// panes can be split). (vellum:ai-settings-changed)
     static let vellumAiSettingsChanged = Notification.Name("vellum.ai-settings-changed")
+    /// Broadcast after a `.vellum` import installs a sidecar under a storage key
+    /// (userInfo["key"]). Any pane showing a document with that key reloads its
+    /// scratchpad + conversation so the freshly-merged notes/chat replace stale
+    /// live state instead of being clobbered by its next flush. (vellum:sidecar-imported)
+    static let vellumDocumentSidecarImported = Notification.Name("vellum.sidecar-imported")
+    /// Broadcast after the Storage pane deletes a document's notes and/or chat on
+    /// disk (userInfo["keys"]: [String]; userInfo["notes"]/["chat"]: Bool). A pane
+    /// showing that document must clear the matching in-memory state WITHOUT
+    /// saving, so a live writer's next flush can't rewrite the just-deleted file
+    /// (Delete Notes → scratchpad quit-flush; Delete Chat → AI memory cache).
+    /// (vellum:document-data-deleted)
+    static let vellumDocumentDataDeleted = Notification.Name("vellum.document-data-deleted")
 }

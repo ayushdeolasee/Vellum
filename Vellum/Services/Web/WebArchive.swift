@@ -812,6 +812,16 @@ struct MiniZip {
 
     var entryNames: [String] { orderedNames }
 
+    /// Number of entries the central directory declares.
+    var entryCount: Int { orderedNames.count }
+
+    /// Sum of every entry's DECLARED uncompressed size. Attacker-controlled in a
+    /// shared archive, so a caller uses it only as a pre-parse budget gate — never
+    /// as ground truth (`readCapped` re-checks each entry while inflating).
+    var totalDeclaredUncompressedSize: Int {
+        entries.values.reduce(0) { $0 + $1.uncompressedSize }
+    }
+
     func contains(_ name: String) -> Bool { entries[name] != nil }
 
     init(contentsOf path: URL) throws {

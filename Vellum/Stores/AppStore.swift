@@ -569,14 +569,21 @@ final class AppStore {
     }
 
     /// Import a `.vellum` bundle: verify it, let the user choose where the
-    /// document file lands, write it, install the sidecar into
-    /// `documents/<docId>/` under the merge rules (design §5), stamp meta.json,
-    /// and return the written document's path for the caller to open. Returns
-    /// nil if the user cancels the save panel.
+    /// document file lands, then hand off to the panel-free core. Returns nil if
+    /// the user cancels the save panel. The read + write + install work lives in
+    /// `importVellumBundleCore` so it is unit-testable without the panels.
     private func importVellumBundle(bundlePath: String) async throws -> String? {
         let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
         let manifest = imported.manifest
         let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        // Bring the app forward before the modal. When the import is triggered by
+        // `open`/Finder/an Apple event during launch, the app may not yet be
+        // active, and an app-modal panel presented then never comes to front —
+        // the process wedges and the open event times out (-1712) with no panel
+        // shown. Activating first, then runModal on the main actor, matches the
+        // working export flows (exportVellumweb / exportWithNotes).
+        NSApplication.shared.activate(ignoringOtherApps: true)
 
         let panel = NSSavePanel()
         panel.nameFieldStringValue = manifest.documentFile
@@ -587,14 +594,74 @@ final class AppStore {
         }
         guard panel.runModal() == .OK, let destination = panel.url else { return nil }
 
+        let result = try Self.importVellumBundleCore(imported, to: destination) { title in
+            let alert = NSAlert()
+            alert.messageText = "Notes already exist for \(title)"
+            alert.informativeText =
+                "This document already has notes on this Mac. Keep the notes you have, "
+                + "or replace them with the imported notes? Your highlights and reading "
+                + "position are not affected either way."
+            alert.addButton(withTitle: "Keep My Notes")      // default
+            alert.addButton(withTitle: "Use Imported Notes")
+            return alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+        }
+
+        // Never a silent success with broken image refs (STAGE F2 #5): name the
+        // attachments that could not be installed.
+        if !result.failedAttachments.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Some images couldn't be imported"
+            alert.informativeText =
+                "These attachments couldn't be saved, so their references may appear "
+                + "broken in the imported notes:\n" + result.failedAttachments.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+        return result.path
+    }
+
+    /// The panel-free import core (STAGE F2 #2): everything an import does EXCEPT
+    /// choosing the destination. Writes the document bytes ATOMICALLY (temp
+    /// sibling + rename(2), never a pre-delete — a crash mid-replace must not lose
+    /// the file that was already there, #3), stamps an unstamped PDF with the
+    /// manifest id, resolves the install key, installs the sidecar under the
+    /// merge rules (§5), drops the AI memory cache + broadcasts a reload so an
+    /// already-open tab picks up the merge instead of clobbering it (#4), stamps
+    /// meta.json, and returns the written path plus any attachments that could
+    /// not be installed (#5). Static + panel-free so tests drive it directly.
+    @MainActor
+    @discardableResult
+    static func importVellumBundleCore(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) throws -> (path: String, failedAttachments: [String]) {
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        // Atomic write: stage the bytes in a temp sibling, fsync-free rename over
+        // the destination. Replacing an existing file never deletes it first, so
+        // a failed import leaves the prior file intact.
+        let parent = destination.deletingLastPathComponent()
         do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try imported.documentData.write(to: destination)
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         } catch {
             throw SessionServiceError.io(
+                "Failed to prepare the import destination: \(error.localizedDescription)")
+        }
+        let tmp = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).import-\(UUID().uuidString.lowercased())")
+        do {
+            try imported.documentData.write(to: tmp)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+            throw SessionServiceError.io(
                 "Failed to write the imported document: \(error.localizedDescription)")
+        }
+        guard rename(tmp.path, destination.path) == 0 else {
+            try? FileManager.default.removeItem(at: tmp)
+            throw SessionServiceError.io(
+                "Failed to write the imported document: could not replace the destination")
         }
 
         // An imported PDF that carries no /VellumDocId would, on reopen, resolve
@@ -622,17 +689,17 @@ final class AppStore {
             key = manifest.docId
         }
 
-        try VellumBundle.installSidecar(imported, forKey: key) { title in
-            let alert = NSAlert()
-            alert.messageText = "Notes already exist for \(title)"
-            alert.informativeText =
-                "This document already has notes on this Mac. Keep the notes you have, "
-                + "or replace them with the imported notes? Your highlights and reading "
-                + "position are not affected either way."
-            alert.addButton(withTitle: "Keep My Notes")      // default
-            alert.addButton(withTitle: "Use Imported Notes")
-            return alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
-        }
+        let failedAttachments = try VellumBundle.installSidecar(
+            imported, forKey: key, resolveScratchpadConflict: resolveConflict)
+
+        // The merge just rewrote conversations.json on disk. The AI memory cache
+        // is authoritative (#48 write-behind), so drop this key's entry now — the
+        // tab about to open (and any pane already showing this doc, via the
+        // broadcast) then re-reads the merge instead of flushing pre-import state
+        // back over it (#4).
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarImported, object: nil, userInfo: ["key": key])
 
         // Stamp meta.json with the new location (PDFs — web records are managed
         // by the WebLibrary sidecar the normal open path writes).
@@ -642,7 +709,7 @@ final class AppStore {
                 pageCount: nil, lastPage: nil, docId: key)
             try? DocumentDataStore.touch(document: info)
         }
-        return destination.path
+        return (destination.path, failedAttachments)
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
