@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import PDFKit
 
 // Info-dictionary metadata — port of set_metadata / document_info /
 // ensure_info_dictionary / metadata_key_suffix / object_u32 from
@@ -13,9 +14,11 @@ import CoreGraphics
 // (existing raw Info entries are preserved by PDFKit's serializer).
 
 enum PdfMetadata {
-    /// document_info: (title, page_count, last_page). Title falls back to the
-    /// file stem; last_page accepts an integer or a numeric text string.
-    static func documentInfo(document: CGPDFDocument, path: String) -> (title: String?, pageCount: Int, lastPage: Int?) {
+    /// document_info: (title, page_count, last_page, doc_id). Title falls back
+    /// to the file stem; last_page accepts an integer or a numeric text string;
+    /// doc_id is the /VellumDocId text string (nil until the file is stamped).
+    static func documentInfo(document: CGPDFDocument, path: String)
+        -> (title: String?, pageCount: Int, lastPage: Int?, docId: String?) {
         let info = document.info
         let title = info.flatMap { CgPdf.string($0, "Title") }
             ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
@@ -23,7 +26,27 @@ enum PdfMetadata {
             guard let object = CgPdf.object(dictionary, "VellumLastPage") else { return nil }
             return objectU32(object)
         }
-        return (title, document.numberOfPages, lastPage)
+        return (title, document.numberOfPages, lastPage, documentId(document))
+    }
+
+    /// The /VellumDocId text string, or nil when the file has not been stamped.
+    /// A crafted PDF could embed a traversal string (`../../…`) as /VellumDocId;
+    /// only a CANONICAL id (lowercase UUID / bare-hex sha256 — the sole forms a
+    /// genuine stamp takes) may become a storage key, so a non-conforming value
+    /// is treated as "unstamped" and the file falls back to its path-hash
+    /// identity instead of letting the attacker choose a folder name.
+    static func documentId(_ document: CGPDFDocument) -> String? {
+        guard let raw = document.info.flatMap({ CgPdf.string($0, "VellumDocId") }) else { return nil }
+        return DocumentIdentity.isCanonicalKey(raw) ? raw : nil
+    }
+
+    /// Read a raw file's /VellumDocId without opening a session — used by the
+    /// Storage pane's Relink flow to confirm a re-located PDF is the same
+    /// document (its embedded id must still match the orphaned entry's key).
+    /// nil when the file is unreadable or was never stamped.
+    static func documentId(atPath path: String) -> String? {
+        guard let raw = try? PdfDocumentLoader.loadRaw(path: path) else { return nil }
+        return documentId(raw)
     }
 
     /// object_u32: Integer (non-negative) or numeric text string.
@@ -41,6 +64,14 @@ enum PdfMetadata {
     /// by the caller; `title` sets /Title; `last_page` sets /VellumLastPage as
     /// an integer; anything else sets /Vellum{PascalCase} as a text string.
     static func setMetadataIncrement(normalizedData: Data, key: String, value: String) throws -> Data {
+        try setMetadataIncrement(normalizedData: normalizedData, entries: [(key: key, value: value)])
+    }
+
+    /// Fold several metadata entries into a SINGLE incremental Info update — one
+    /// new/replaced Info object, one xref section, one write. Used to piggyback
+    /// a lazy doc_id stamp onto a metadata write that was happening anyway, so
+    /// the file is still rewritten only once per user action.
+    static func setMetadataIncrement(normalizedData: Data, entries: [(key: String, value: String)]) throws -> Data {
         let file = try ClassicPdfFile(data: normalizedData)
 
         var increment = PdfIncrement(file: file)
@@ -61,18 +92,45 @@ enum PdfMetadata {
             }
         }
 
-        switch key {
-        case "title":
-            info.setValue(forKey: "Title", raw: PdfTextString.encode(value))
-        case "last_page":
-            let page = try parseLastPage(value)
-            info.setValue(forKey: "VellumLastPage", raw: Array("\(page)".utf8))
-        default:
-            info.setValue(forKey: "Vellum\(metadataKeySuffix(key))", raw: PdfTextString.encode(value))
+        for (key, value) in entries {
+            switch key {
+            case "title":
+                info.setValue(forKey: "Title", raw: PdfTextString.encode(value))
+            case "last_page":
+                let page = try parseLastPage(value)
+                info.setValue(forKey: "VellumLastPage", raw: Array("\(page)".utf8))
+            default:
+                info.setValue(forKey: "Vellum\(metadataKeySuffix(key))", raw: PdfTextString.encode(value))
+            }
         }
 
         increment.setObject(infoNumber, source: info.sourceBytes)
         return increment.appended(infoNumber: infoNumber)
+    }
+
+    /// Stamp `/VellumDocId` into a brand-new file at `path`, in place. Used by
+    /// `.vellum` import: the written PDF carried no stamp, so — left alone — its
+    /// reopen would resolve `sha256(path)` and then get a FRESH UUID, orphaning
+    /// the sidecar just installed under the manifest's id. Stamping the manifest
+    /// id now makes the reopen key match.
+    ///
+    /// Mirrors `PdfDocumentIO`'s lazy stamp exactly (loadForMutation → PDFKit
+    /// serialize → single doc_id Info increment → atomic-write of the
+    /// increment-patched bytes). It deliberately does NOT reload through
+    /// PDFDocument before writing: production never round-trips a custom Info key
+    /// through `dataRepresentation()`, and CGPDF reads the increment-appended
+    /// /VellumDocId back correctly, so this is the proven-readable form. No
+    /// page-text cache refresh — a just-written file has no cache entry. Throws on
+    /// any parse/serialize/write failure so the caller can fall back to its prior
+    /// behavior.
+    static func stampDocumentId(atPath path: String, id: String) throws {
+        let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
+        guard let normalized = document.dataRepresentation() else {
+            throw SessionServiceError.io("Failed to stamp document id: PDFKit produced no data")
+        }
+        let stamped = try setMetadataIncrement(
+            normalizedData: normalized, entries: [(key: "doc_id", value: id)])
+        try PdfAtomicWriter.save(stamped, toPath: path)
     }
 
     /// u32::from_str error surface, mirrored: empty / non-digit / overflow.

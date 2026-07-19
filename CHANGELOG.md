@@ -5,13 +5,46 @@ All notable changes to Vellum are documented here. The format follows
 
 ## [Unreleased]
 
-Adds a user-chosen storage location for the web library (iCloud Drive, a
-custom folder, or this Mac), and restores the AI-experience features that
-were lost in the scratchpad merge (which also committed literal conflict
-markers, leaving `main` uncompilable), landing the final `ai-experience`
-review commit that had never been merged.
+Completes the issue #29 storage architecture: every document now carries a
+durable identity, so notes, AI conversations, and caches survive renames,
+moves, and sharing; adds a user-chosen storage location for the web library
+(iCloud Drive, a custom folder, or this Mac); and restores the AI-experience
+features that were lost in the scratchpad merge (which also committed literal
+conflict markers, leaving `main` uncompilable), landing the final
+`ai-experience` review commit that had never been merged.
 
 ### Added
+
+- **Your notes now follow the document, not its path.** Vellum stamps a
+  durable identity (`/VellumDocId`) into a PDF the first time it writes to it
+  — never just for opening — so renaming, moving, or copying a file no
+  longer orphans its scratchpad notes or AI conversations. Web pages keep
+  their existing URL identity. Notes and conversations move out of monolithic
+  preference blobs into one folder per document (plain `scratchpad.md` with
+  portable relative image links, `conversations.json`), migrated lazily the
+  next time each document is opened; deleting notes or chat deletes the
+  files. Recent files that were moved on disk are re-found by identity.
+- **Share a document with its notes.** "Export with Notes…" (toolbar
+  overflow) writes a portable `.vellum` bundle — the document plus notes,
+  images, and (only if you tick the box) the AI conversation — verified by
+  checksums on import. Opening a bundle lets you choose where the document
+  lands, merges notes and conversations if you already have some, and
+  `.vellum`/`.vellumweb` files now open from Finder by double-click.
+- **Storage settings, rebuilt around "nothing invisible."** Settings ▸
+  Storage now shows summary tiles (your data / web archives / caches, each
+  stating what is irreplaceable vs re-creatable), one row per document with
+  an expandable notes / chat / cache / archive breakdown and per-item or
+  delete-everything actions, an Orphans section for data whose source file
+  moved (relink by picking the file — verified against the embedded
+  identity — or delete; never auto-deleted), and a Housekeeping section with
+  an adjustable retention period (1–12 months or never, default six) and
+  "Run Cleanup Now".
+- **Notes sync with iCloud.** When the storage location is iCloud Drive,
+  per-document notes and AI conversations relocate into the synced library
+  alongside reading state (a custom folder keeps them local, matching how
+  reading state already behaves there); moves are resumable and merge safely
+  if both Macs have data. The extracted-text cache moved to
+  `~/Library/Caches`, where clearing it is always safe.
 
 - **Dropping onto the AI panel actually works now.** All three sidebar panels
   stay mounted in a ZStack with the scratchpad frontmost, and the scratchpad's

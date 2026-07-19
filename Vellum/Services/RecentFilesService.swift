@@ -22,7 +22,8 @@ enum RecentFilesService {
             kind: document.kind,
             title: document.title,
             pageCount: document.pageCount,
-            openedAt: ISO8601DateFormatter.recentTimestamp.string(from: Date())
+            openedAt: ISO8601DateFormatter.recentTimestamp.string(from: Date()),
+            docId: document.docId
         )
         let next = ([entry] + getRecent().filter { $0.pdfPath != document.pdfPath })
             .prefix(maxRecent)
@@ -33,6 +34,34 @@ enum RecentFilesService {
         let next = getRecent().filter { $0.pdfPath != path }
         write(next)
         return next
+    }
+
+    /// The best on-disk path for a recent PDF, resolved by the stable document
+    /// identity, not just path existence: a path can be reused by a different
+    /// file after a move, so whenever meta.json's last_known_path (kept fresh
+    /// by DocumentDataStore.touch) offers a rival candidate, the embedded
+    /// /VellumDocId decides which file is really this document (design §7).
+    /// The identity read is bounded to rival/dead-path cases — the common
+    /// still-in-place recent never opens the PDF here.
+    /// Web entries and dead entries with no docId return their recorded path.
+    static func resolvedPath(for entry: RecentDocument) -> String {
+        guard entry.kind == .pdf,
+              let docId = entry.docId, !docId.isEmpty,
+              let meta = DocumentDataStore.loadMeta(forKey: docId)
+        else { return entry.pdfPath }
+        let fm = FileManager.default
+        let metaPath = meta.lastKnownPath
+        let recordedExists = fm.fileExists(atPath: entry.pdfPath)
+        let rivalExists = metaPath != entry.pdfPath && fm.fileExists(atPath: metaPath)
+        guard rivalExists else { return entry.pdfPath }
+        if recordedExists {
+            if PdfMetadata.documentId(atPath: entry.pdfPath) == docId { return entry.pdfPath }
+            if PdfMetadata.documentId(atPath: metaPath) == docId { return metaPath }
+            return entry.pdfPath
+        }
+        // Recorded path is dead: adopt the meta path only when its identity
+        // matches — a mismatched file there is some other document.
+        return PdfMetadata.documentId(atPath: metaPath) == docId ? metaPath : entry.pdfPath
     }
 
     /// Compact display label: filename for PDFs.

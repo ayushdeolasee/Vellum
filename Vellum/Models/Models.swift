@@ -104,6 +104,12 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     var title: String?
     var pageCount: Int?
     var lastPage: Int?
+    /// Stable cross-session document identity. PDFs: the /VellumDocId UUID
+    /// stamped into the Info dictionary, nil until a mutation (or
+    /// ensureDocumentId) lazily stamps it. Web docs: the sha256 URL hash, set at
+    /// open. Class-B/C stores resolve their storage key from this via
+    /// DocumentIdentity.
+    var docId: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case kind
@@ -111,6 +117,7 @@ struct DocumentInfo: Codable, Equatable, Sendable {
         case title
         case pageCount = "page_count"
         case lastPage = "last_page"
+        case docId = "doc_id"
     }
 }
 
@@ -206,6 +213,11 @@ struct RecentDocument: Codable, Equatable, Sendable {
     var title: String?
     var pageCount: Int?
     var openedAt: String
+    /// Stable document identity (DocumentInfo.docId): the /VellumDocId for
+    /// stamped PDFs, the sha256 URL hash for web docs, nil otherwise. Used to
+    /// re-resolve a moved PDF via its meta.json last_known_path when its
+    /// recorded path no longer exists.
+    var docId: String?
 
     enum CodingKeys: String, CodingKey {
         case pdfPath = "pdf_path"
@@ -213,14 +225,19 @@ struct RecentDocument: Codable, Equatable, Sendable {
         case title
         case pageCount = "page_count"
         case openedAt = "opened_at"
+        case docId = "doc_id"
     }
 
-    init(pdfPath: String, kind: DocumentKind, title: String?, pageCount: Int?, openedAt: String) {
+    init(
+        pdfPath: String, kind: DocumentKind, title: String?, pageCount: Int?,
+        openedAt: String, docId: String? = nil
+    ) {
         self.pdfPath = pdfPath
         self.kind = kind
         self.title = title
         self.pageCount = pageCount
         self.openedAt = openedAt
+        self.docId = docId
     }
 
     init(from decoder: Decoder) throws {
@@ -231,5 +248,6 @@ struct RecentDocument: Codable, Equatable, Sendable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
         openedAt = try container.decode(String.self, forKey: .openedAt)
+        docId = try container.decodeIfPresent(String.self, forKey: .docId)
     }
 }

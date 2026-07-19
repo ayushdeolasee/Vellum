@@ -136,7 +136,8 @@ final class WebDocumentSession: DocumentSession {
             pdfPath: url,
             title: record.title,
             pageCount: record.pageCount,
-            lastPage: record.lastPage)
+            lastPage: record.lastPage,
+            docId: key)
         io = WebDocumentIO(url: url, key: key)
     }
 
@@ -176,6 +177,11 @@ final class WebDocumentSession: DocumentSession {
     func setMetadata(key: String, value: String) async throws {
         try await io.setMetadata(key: key, value: value)
     }
+
+    /// The document identity for a webpage is its sha256 URL-hash key — already
+    /// stable across sessions and byte-compatible with the Tauri-era library,
+    /// so nothing is stamped or re-keyed.
+    func ensureDocumentId() async throws -> String { key }
 
     // MARK: - Saved-pages library
 

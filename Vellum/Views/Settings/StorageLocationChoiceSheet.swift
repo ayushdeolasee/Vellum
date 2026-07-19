@@ -110,7 +110,7 @@ struct StorageLocationChoiceSheet: View {
                 badge: icloudAvailable ? "Recommended" : nil,
                 systemImage: "icloud",
                 description: icloudAvailable
-                    ? "Everything — offline copies, highlights, notes, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your Macs."
+                    ? "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your Macs."
                     : "iCloud Drive isn't available on this Mac. Sign in to iCloud and enable iCloud Drive to use this option.",
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
@@ -123,7 +123,7 @@ struct StorageLocationChoiceSheet: View {
                 title: "Choose a Folder…",
                 badge: nil,
                 systemImage: "folder",
-                description: "Offline copies go in a folder you pick. Your highlights, notes, and reading positions stay on this Mac and won't sync.",
+                description: "Offline copies go in a folder you pick. Your highlights, notes, AI conversations, and reading positions stay on this Mac and won't sync.",
                 disabled: false,
                 identifier: "storageChoice.custom"
             ) {

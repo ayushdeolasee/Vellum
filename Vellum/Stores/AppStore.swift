@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import Observation
 import PDFKit
+import UniformTypeIdentifiers
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -205,6 +207,27 @@ final class AppStore {
         updateTab(tabId) { $0.document = doc }
         if activeTabId == tabId {
             document = doc
+        }
+    }
+
+    /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
+    /// resolved id up into the in-memory DocumentInfo so class-B stores can key
+    /// off it this session. The stamp itself already happened during the write —
+    /// for a just-stamped session the backend returns the id without touching
+    /// disk. No-op once the active document already carries an id (web docs are
+    /// always stamped at open, so this never fires for them). PaneDocumentIdentity
+    /// stays path-based, so setting docId does not re-run loadDocumentState.
+    func syncDocumentId(sessionId: String) async {
+        guard let tab = tabs.first(where: { $0.id == sessionId }),
+              tab.document?.kind == .pdf, tab.document?.docId == nil else { return }
+        guard let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else { return }
+        updateTab(sessionId) { tab in
+            if tab.document != nil, tab.document?.docId == nil {
+                tab.document?.docId = id
+            }
+        }
+        if activeTabId == sessionId, document?.docId == nil {
+            document?.docId = id
         }
     }
 
@@ -515,6 +538,18 @@ final class AppStore {
     // MARK: - Internals
 
     private func openOneFile(path: String) async throws {
+        // A `.vellum` bundle unpacks into a document (written where the user
+        // chooses) + its sidecar; then that document opens through the normal
+        // path. Everything else is opened directly.
+        if path.lowercased().hasSuffix(".vellum") {
+            guard let documentPath = try await importVellumBundle(bundlePath: path) else { return }
+            try await openDocumentFile(path: documentPath)
+            return
+        }
+        try await openDocumentFile(path: path)
+    }
+
+    private func openDocumentFile(path: String) async throws {
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
@@ -531,6 +566,150 @@ final class AppStore {
             // the annotation store to reload.
             NotificationCenter.default.post(name: .vellumAnnotationsUpdated, object: nil)
         }
+    }
+
+    /// Import a `.vellum` bundle: verify it, let the user choose where the
+    /// document file lands, then hand off to the panel-free core. Returns nil if
+    /// the user cancels the save panel. The read + write + install work lives in
+    /// `importVellumBundleCore` so it is unit-testable without the panels.
+    private func importVellumBundle(bundlePath: String) async throws -> String? {
+        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        // Bring the app forward before the modal. When the import is triggered by
+        // `open`/Finder/an Apple event during launch, the app may not yet be
+        // active, and an app-modal panel presented then never comes to front —
+        // the process wedges and the open event times out (-1712) with no panel
+        // shown. Activating first, then runModal on the main actor, matches the
+        // working export flows (exportVellumweb / exportWithNotes).
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = manifest.documentFile
+        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
+            panel.allowedContentTypes = [archive]
+        } else if kind == .pdf {
+            panel.allowedContentTypes = [.pdf]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+
+        let result = try Self.importVellumBundleCore(imported, to: destination) { title in
+            let alert = NSAlert()
+            alert.messageText = "Notes already exist for \(title)"
+            alert.informativeText =
+                "This document already has notes on this Mac. Keep the notes you have, "
+                + "or replace them with the imported notes? Your highlights and reading "
+                + "position are not affected either way."
+            alert.addButton(withTitle: "Keep My Notes")      // default
+            alert.addButton(withTitle: "Use Imported Notes")
+            return alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+        }
+
+        // Never a silent success with broken image refs (STAGE F2 #5): name the
+        // attachments that could not be installed.
+        if !result.failedAttachments.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Some images couldn't be imported"
+            alert.informativeText =
+                "These attachments couldn't be saved, so their references may appear "
+                + "broken in the imported notes:\n" + result.failedAttachments.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+        return result.path
+    }
+
+    /// The panel-free import core (STAGE F2 #2): everything an import does EXCEPT
+    /// choosing the destination. Writes the document bytes ATOMICALLY (temp
+    /// sibling + rename(2), never a pre-delete — a crash mid-replace must not lose
+    /// the file that was already there, #3), stamps an unstamped PDF with the
+    /// manifest id, resolves the install key, installs the sidecar under the
+    /// merge rules (§5), drops the AI memory cache + broadcasts a reload so an
+    /// already-open tab picks up the merge instead of clobbering it (#4), stamps
+    /// meta.json, and returns the written path plus any attachments that could
+    /// not be installed (#5). Static + panel-free so tests drive it directly.
+    @MainActor
+    @discardableResult
+    static func importVellumBundleCore(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) throws -> (path: String, failedAttachments: [String]) {
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        // Atomic write: stage the bytes in a temp sibling, fsync-free rename over
+        // the destination. Replacing an existing file never deletes it first, so
+        // a failed import leaves the prior file intact.
+        let parent = destination.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        } catch {
+            throw SessionServiceError.io(
+                "Failed to prepare the import destination: \(error.localizedDescription)")
+        }
+        let tmp = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).import-\(UUID().uuidString.lowercased())")
+        do {
+            try imported.documentData.write(to: tmp)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+            throw SessionServiceError.io(
+                "Failed to write the imported document: \(error.localizedDescription)")
+        }
+        guard rename(tmp.path, destination.path) == 0 else {
+            try? FileManager.default.removeItem(at: tmp)
+            throw SessionServiceError.io(
+                "Failed to write the imported document: could not replace the destination")
+        }
+
+        // An imported PDF that carries no /VellumDocId would, on reopen, resolve
+        // to sha256(path) and then be stamped a FRESH UUID — orphaning the
+        // sidecar we're about to install under manifest.docId. Stamp
+        // manifest.docId into the just-written file now so its reopen key matches
+        // (an import is user investment, and the file was just written so it is
+        // writable). Best-effort: a stamp failure falls back to the prior
+        // behavior — installing under manifest.docId — never failing the import.
+        // Web bundles are never stamped (their identity is the URL hash).
+        if kind == .pdf, PdfMetadata.documentId(atPath: destination.path) == nil {
+            try? PdfMetadata.stampDocumentId(atPath: destination.path, id: manifest.docId)
+        }
+
+        // Resolve the install key. For a PDF, prefer the written file's own
+        // /VellumDocId stamp when it differs from the manifest (the file is
+        // authoritative). For web, the identity is the URL hash carried in the
+        // manifest.
+        let key: String
+        if kind == .pdf,
+           let raw = try? PdfDocumentLoader.loadRaw(path: destination.path),
+           let stamped = PdfMetadata.documentId(raw) {
+            key = stamped
+        } else {
+            key = manifest.docId
+        }
+
+        let failedAttachments = try VellumBundle.installSidecar(
+            imported, forKey: key, resolveScratchpadConflict: resolveConflict)
+
+        // The merge just rewrote conversations.json on disk. The AI memory cache
+        // is authoritative (#48 write-behind), so drop this key's entry now — the
+        // tab about to open (and any pane already showing this doc, via the
+        // broadcast) then re-reads the merge instead of flushing pre-import state
+        // back over it (#4).
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarImported, object: nil, userInfo: ["key": key])
+
+        // Stamp meta.json with the new location (PDFs — web records are managed
+        // by the WebLibrary sidecar the normal open path writes).
+        if kind == .pdf {
+            let info = DocumentInfo(
+                kind: .pdf, pdfPath: destination.path, title: manifest.title,
+                pageCount: nil, lastPage: nil, docId: key)
+            try? DocumentDataStore.touch(document: info)
+        }
+        return (destination.path, failedAttachments)
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {

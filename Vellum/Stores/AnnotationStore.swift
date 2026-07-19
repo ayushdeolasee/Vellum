@@ -236,6 +236,12 @@ final class AnnotationStore {
             defer { pendingCreates[id] = nil }
             do {
                 _ = try await sessions.createAnnotation(sessionId: sessionId, input: persistInput)
+                // The create just lazily stamped /VellumDocId (first mutation on
+                // an unstamped PDF); surface the resolved id into the in-memory
+                // document so class-B stores can key off it this session.
+                if app.activeTabId == sessionId {
+                    await app.syncDocumentId(sessionId: sessionId)
+                }
             } catch {
                 NSLog("[annotation-store] Failed to create \(label): \(error)")
                 // Roll back the optimistic insert if the write failed and we're

@@ -37,10 +37,12 @@ final class PaneModel: Identifiable {
         ai.annotationStore = annotations
         ai.openRouterCatalog = openRouterCatalog
         ai.chatgptAuth = chatgptAuth
+        let scratchpad = ScratchpadStore()
+        scratchpad.app = app
         self.app = app
         self.annotations = annotations
         self.ai = ai
-        self.scratchpad = ScratchpadStore()
+        self.scratchpad = scratchpad
     }
 }
 

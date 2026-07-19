@@ -46,6 +46,10 @@ protocol SessionService: AnyObject {
 
     // Reading metadata (last_page, page_count, …) stored on the document
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws
+
+    /// Resolve the document's stable identity, lazily stamping /VellumDocId into
+    /// a PDF that has none. Web documents return their sha256 URL-hash key.
+    func ensureDocumentId(sessionId: String) async throws -> String
 }
 
 extension Notification.Name {
@@ -58,4 +62,16 @@ extension Notification.Name {
     /// shared, disk-persisted settings (multiple AiStore instances exist once
     /// panes can be split). (vellum:ai-settings-changed)
     static let vellumAiSettingsChanged = Notification.Name("vellum.ai-settings-changed")
+    /// Broadcast after a `.vellum` import installs a sidecar under a storage key
+    /// (userInfo["key"]). Any pane showing a document with that key reloads its
+    /// scratchpad + conversation so the freshly-merged notes/chat replace stale
+    /// live state instead of being clobbered by its next flush. (vellum:sidecar-imported)
+    static let vellumDocumentSidecarImported = Notification.Name("vellum.sidecar-imported")
+    /// Broadcast after the Storage pane deletes a document's notes and/or chat on
+    /// disk (userInfo["keys"]: [String]; userInfo["notes"]/["chat"]: Bool). A pane
+    /// showing that document must clear the matching in-memory state WITHOUT
+    /// saving, so a live writer's next flush can't rewrite the just-deleted file
+    /// (Delete Notes → scratchpad quit-flush; Delete Chat → AI memory cache).
+    /// (vellum:document-data-deleted)
+    static let vellumDocumentDataDeleted = Notification.Name("vellum.document-data-deleted")
 }

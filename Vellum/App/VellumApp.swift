@@ -6,6 +6,20 @@ import SwiftUI
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
 
+    /// Finder double-click / drag-onto-dock for registered types (.pdf,
+    /// .vellumweb, .vellum). Routes into the focused pane's store the same way
+    /// ContentView.openFilePanel does — `openFiles` dispatches each extension
+    /// (bundle import, archive import, or plain PDF open).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let paths = urls.map(\.path)
+        guard !paths.isEmpty else { return }
+        MainActor.assumeIsolated {
+            guard let workspace = Self.workspace else { return }
+            let app = workspace.focusedPane.app
+            Task { await app.openFiles(paths: paths) }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
@@ -15,7 +29,21 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             // edit (each pane owns its own note), before tearing down sessions.
             workspace.saveNow()
             for leaf in leaves { leaf.scratchpad.flush() }
-            guard hasTabs else { return .terminateNow }
+            guard hasTabs else {
+                // No open tabs, but a conversation or page-text write saved just
+                // before ⌘Q (the 200ms coalesced AI flush, or a detached
+                // page-text flush from the last tab's close) may still be in
+                // flight. Drain those on the terminateLater path — there is no
+                // per-tab metadata/close loop to run — so the final
+                // conversations.json / cache write always lands. Both awaits are
+                // no-ops when nothing is pending.
+                Task { @MainActor in
+                    await PageTextPersister.awaitInFlightFlushes()
+                    await AiPersistence.awaitPendingFlush()
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+                return .terminateLater
+            }
             Task { @MainActor in
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
@@ -76,20 +104,27 @@ struct VellumApp: App {
                     // debounce. Evict off-main at low priority.
                     let openDocuments = workspace.root.allLeaves()
                         .flatMap { $0.app.tabs }.compactMap(\.document)
-                    let openPaths = Set(
-                        openDocuments.filter { $0.kind == .pdf }.map(\.pdfPath))
+                    // The text cache excludes open documents by STORAGE KEY now
+                    // (docId when stamped, else path hash) — the same key their
+                    // lookup/persister used.
+                    let openKeys = Set(
+                        openDocuments.filter { $0.kind == .pdf }
+                            .map { DocumentIdentity.storageKey(for: $0) })
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
-                    let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
                     Task.detached(priority: .background) {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
                         // evictors walk the store. Routed through the relocator
                         // so it can't run concurrently with a location change
-                        // the user makes in the first-launch sheet below.
+                        // the user makes in the first-launch sheet below. The
+                        // sweep runs regardless of the retention policy.
                         await WebStorageRelocator.sweepAtLaunch()
-                        await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
-                        WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+                        // TTL eviction of derived data, using the user's chosen
+                        // retention window (Settings ▸ Storage ▸ Housekeeping;
+                        // "Never" skips it). Excludes currently-open documents.
+                        await StorageHousekeeping.runCleanup(
+                            openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                 }
