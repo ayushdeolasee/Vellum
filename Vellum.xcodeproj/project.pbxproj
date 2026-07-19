@@ -108,6 +108,7 @@
 		B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7280818785023514C87C04C9 /* SessionService.swift */; };
 		B370CC64C56C8E29DC8A4C42 /* WebStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF653B1B8741B61DBE9B55EE /* WebStorage.swift */; };
 		B6535E25C5FC85D2DBE39DC3 /* PdfDocIdRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C33B518BE736FCF7077F63A /* PdfDocIdRegistry.swift */; };
+		B861F8FD72248FD16E1562D4 /* AttachmentDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */; };
 		BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
 		BF75A2925C8FCE36AD43F41B /* KaTeX_Typewriter-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */; };
 		C4998709FBAE647C23BF3E5A /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */; };
@@ -173,6 +174,7 @@
 		2423823E0BE86C417B6ABBC6 /* AiPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPanel.swift; sourceTree = "<group>"; };
 		287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPersistence.swift; sourceTree = "<group>"; };
 		28BDBF0FA0F7F13C32A07F05 /* DocumentIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentity.swift; sourceTree = "<group>"; };
+		2AA8777A0129DDD533B0801E /* AiImageAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiImageAttachment.swift; sourceTree = "<group>"; };
 		2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionPopover.swift; sourceTree = "<group>"; };
 		2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadImportTests.swift; sourceTree = "<group>"; };
 		2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAtomicWriter.swift; sourceTree = "<group>"; };
@@ -200,6 +202,7 @@
 		54417DBF142FD33E6B2F6672 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5513F929B10D107AED515D1E /* PageTextCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCache.swift; sourceTree = "<group>"; };
 		5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsRelocationTests.swift; sourceTree = "<group>"; };
+		5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDrop.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
 		672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageLocationChoiceSheet.swift; sourceTree = "<group>"; };
 		6E72498058A69F542C2A4CCF /* ScratchpadPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPanel.swift; sourceTree = "<group>"; };
@@ -379,6 +382,7 @@
 			children = (
 				327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */,
 				4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */,
+				F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */,
 				E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */,
 				CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */,
 				5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */,
@@ -387,8 +391,10 @@
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
 				BB2C2905E4A08861E42C2EED /* RecentsResolveTests.swift */,
+				B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */,
 				2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */,
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
+				BF3E4F80AF4A2707D432AF73 /* SidebarDropRoutingTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
 				90C50948404B30999979C84A /* VellumBundleTests.swift */,
 				DB8C07E2E3B6096D5FBD0510 /* WebLibraryStorageTests.swift */,
@@ -880,6 +886,7 @@
 			files = (
 				5FF82C62FE4C7CC82FD160FD /* AiConversationStoreTests.swift in Sources */,
 				C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */,
+				0A8D06EC43340A3149052C29 /* AttachmentDropTests.swift in Sources */,
 				252A859CBF3B6F40740EC8BB /* DocumentDataStoreTests.swift in Sources */,
 				53B7BE4E93C5CF617CF049D6 /* DocumentIdentityTests.swift in Sources */,
 				831CF3958ED8C1AF87C6319A /* DocumentsRelocationTests.swift in Sources */,
@@ -888,8 +895,10 @@
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
 				806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */,
 				17CEDFD80E708ADD26650928 /* RecentsResolveTests.swift in Sources */,
+				C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */,
 				36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */,
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
+				5236947317CC86594F165BD2 /* SidebarDropRoutingTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */,
 				4F0CAF425277CA915B0EEFDB /* WebLibraryStorageTests.swift in Sources */,
