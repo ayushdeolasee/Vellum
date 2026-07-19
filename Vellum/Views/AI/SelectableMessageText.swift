@@ -15,6 +15,12 @@ struct SelectableMessageText: NSViewRepresentable {
     var secondary: Color
     /// Called with the selected substring when the user taps the Quote button.
     var onQuote: (String) -> Void
+    /// A file or image dropped onto the bubble itself, which AppKit hands here instead of
+    /// to the panel's SwiftUI `.onDrop`; nil when the model can't read images, which
+    /// leaves the bubble a plain non-destination.
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
+    /// Drives the panel's drop outline while such a drag is over the bubble.
+    var onDropTargeted: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(onQuote: onQuote) }
 
@@ -30,6 +36,8 @@ struct SelectableMessageText: NSViewRepresentable {
 
     func updateNSView(_ view: MessageContainerView, context: Context) {
         context.coordinator.onQuote = onQuote
+        view.textView.onAttachmentDrop = onAttachmentDrop
+        view.textView.onDropTargeted = onDropTargeted
         let resolvedColor = NSColor(color)
         let resolvedSecondary = NSColor(secondary)
         // Compare inputs, not rendered output: attributedString(for:) is a pure
@@ -84,14 +92,14 @@ struct SelectableMessageText: NSViewRepresentable {
 /// button. Flipped so button/selection math shares the text view's top-left
 /// origin.
 final class MessageContainerView: NSView {
-    let textView: NSTextView
+    let textView: TranscriptTextView
     private let quoteButton = QuoteButton()
     var onQuoteTapped: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
-        textView = NSTextView()
+        textView = TranscriptTextView()
         super.init(frame: frameRect)
         configureTextView()
         quoteButton.isHidden = true
@@ -180,6 +188,54 @@ final class MessageContainerView: NSView {
         let x = min(max(0, rect.maxX - size.width), bounds.width - size.width)
         let y = max(0, rect.minY - size.height - 2)
         quoteButton.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+}
+
+/// The transcript's read-only text. It fills its bubble, so a drag over a reply
+/// lands on AppKit content and the panel's SwiftUI `.onDrop` never fires — the
+/// same routing that the composer field already works around. Take image drops
+/// here and forward them to the panel (and drive its outline while hovering);
+/// everything else is left alone, so selection and the Quote button are untouched.
+final class TranscriptTextView: NSTextView {
+    var onAttachmentDrop: ((AttachmentDropPayload) -> Void)? {
+        didSet { updateDragTypeRegistration() }
+    }
+    var onDropTargeted: ((Bool) -> Void)?
+
+    /// AppKit funnels every re-registration through this (it runs on window entry
+    /// and whenever editable/selectable/rich-text changes) and drops a read-only
+    /// view's types on the floor — so assert ours here rather than once at setup.
+    override func updateDragTypeRegistration() {
+        if onAttachmentDrop == nil {
+            unregisterDraggedTypes()
+        } else {
+            registerForDraggedTypes(AttachmentDrop.draggedTypes)
+        }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onAttachmentDrop != nil, AttachmentDrop.carriesAttachment(sender) else { return [] }
+        onDropTargeted?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onAttachmentDrop != nil && AttachmentDrop.carriesAttachment(sender) ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDropTargeted?(false)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDropTargeted?(false)
+        guard let onAttachmentDrop, let payload = AttachmentDrop.payload(sender) else { return false }
+        onAttachmentDrop(payload)
+        return true
     }
 }
 

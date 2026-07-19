@@ -60,6 +60,22 @@ enum AiModelCatalog {
         opencodeVisionModels.contains(model)
     }
 
+    /// Whether `model` on `provider` accepts image inputs. Single source of truth
+    /// for the send path (which withholds images from text-only models) and for
+    /// the composer's image-attach affordances, so we never offer an attachment
+    /// the model can't read. Unknown OpenRouter ids (catalog still loading, or a
+    /// stale pick) stay permissive — the rule the send path has always used, so a
+    /// capability the model really has is never silently stripped.
+    @MainActor
+    static func supportsVision(provider: AiProvider, model: String, catalog: OpenRouterCatalog?) -> Bool {
+        switch provider {
+        case .openrouter: catalog?.model(for: model)?.supportsVision ?? true
+        case .opencode, .opencodeGo: opencodeSupportsVision(model)
+        // Every model in these built-in catalogs is multimodal.
+        case .gemini, .openai, .chatgpt: true
+        }
+    }
+
     static func models(for provider: AiProvider) -> [String] {
         switch provider {
         case .gemini: gemini
@@ -106,8 +122,6 @@ enum AiModelCatalog {
 }
 
 struct AiSettingsPanel: View {
-    var onStopRecognition: () -> Void = {}
-
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
@@ -145,18 +159,6 @@ struct AiSettingsPanel: View {
                 }
                 .labelsHidden()
             }
-
-            field("Voice mode") {
-                Picker("", selection: aiStore.voiceBinding(onStop: onStopRecognition)) {
-                    Text("Off").tag(VoiceMode.off)
-                    Text("Push-to-talk").tag(VoiceMode.pushToTalk)
-                }
-                .labelsHidden()
-            }
-
-            Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
-                .toggleStyle(.checkbox)
-                .foregroundStyle(palette.mutedForeground)
         }
         .font(.system(size: 12))
         .padding(12)
@@ -345,6 +347,21 @@ extension AiStore {
         )
     }
 
+    /// The model id the next request will use — named in the composer's warning
+    /// when attached images can't be sent.
+    var activeModelName: String { modelBinding.wrappedValue }
+
+    /// Vision support for the currently selected provider + model. Gates the
+    /// composer's "Attach image…" item and its drop target: an image the model
+    /// can't read would be silently stripped at send time, so don't offer it.
+    var activeModelSupportsImages: Bool {
+        AiModelCatalog.supportsVision(
+            provider: settings.provider,
+            model: modelBinding.wrappedValue,
+            catalog: openRouterCatalog
+        )
+    }
+
     var pinnedBinding: Binding<[String]> {
         Binding(
             get: { self.settings.pinnedModels },
@@ -354,26 +371,6 @@ extension AiStore {
                 self.setSettings(settings)
             }
         )
-    }
-
-    /// Voice-mode binding. `onStop` fires when the mode leaves push-to-talk so
-    /// the in-panel host can tear down an active recognition session; the
-    /// Settings host passes the default no-op.
-    func voiceBinding(onStop: @escaping () -> Void = {}) -> Binding<VoiceMode> {
-        Binding(get: { self.settings.voiceMode }, set: { value in
-            if value != .pushToTalk { onStop() }
-            var settings = self.settings
-            settings.voiceMode = value
-            self.setSettings(settings)
-        })
-    }
-
-    var ttsBinding: Binding<Bool> {
-        Binding(get: { self.settings.ttsEnabled }, set: { value in
-            var settings = self.settings
-            settings.ttsEnabled = value
-            self.setSettings(settings)
-        })
     }
 
     var reasoningBinding: Binding<AiThinkingMode> {

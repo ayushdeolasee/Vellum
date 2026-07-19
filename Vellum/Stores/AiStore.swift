@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 // AI assistant state — port of src/stores/ai-store.ts (see macos/specs/SPECS-ai.md).
 
@@ -19,11 +20,6 @@ enum AiProvider: String, Codable, Sendable {
     /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
     /// separate from Zen. See `OpenCodeClient.Gateway`.
     case opencodeGo
-}
-
-enum VoiceMode: String, Codable, Sendable {
-    case off
-    case pushToTalk = "push-to-talk"
 }
 
 /// User-selected reasoning/thinking effort, applied to whichever provider is
@@ -84,12 +80,21 @@ enum AiActivity: Equatable, Sendable {
 /// or a quote pulled from a previous AI reply. Rendered as chips in the
 /// composer and folded into the prompt / image inputs at send time.
 struct AiReference: Identifiable, Equatable, Sendable {
+    /// `page` is meaningful for web documents too: the injected content script
+    /// paginates an archived page into virtual pages (it reports pageCount and
+    /// per-page text, and the AI's scroll/read tools address those numbers), so
+    /// a web selection or snapshot carries a real page locator. Don't "fix" this
+    /// by making the page optional.
     enum Kind: Equatable, Sendable {
         case selection(text: String, page: Int)
         case highlight(text: String, page: Int)
         case region(image: AiPageImageSnapshot, page: Int)
         case pageSnapshot(image: AiPageImageSnapshot, page: Int)
         case quote(text: String, messageId: String)
+        /// An arbitrary image the user dropped on the panel or picked from
+        /// Finder. It has no document position at all — unlike the cases above,
+        /// which all point back into the open document.
+        case image(image: AiPageImageSnapshot, name: String)
     }
     let id: String
     var kind: Kind
@@ -102,7 +107,7 @@ struct AiReference: Identifiable, Equatable, Sendable {
     /// The image payload, if this reference carries one.
     var image: AiPageImageSnapshot? {
         switch kind {
-        case let .region(image, _), let .pageSnapshot(image, _): return image
+        case let .region(image, _), let .pageSnapshot(image, _), let .image(image, _): return image
         default: return nil
         }
     }
@@ -131,13 +136,14 @@ struct AiSettings: Codable, Equatable, Sendable {
     var opencodeGoApiKey: String = ""
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
-    var voiceMode: VoiceMode = .off
-    var ttsEnabled: Bool = false
     var reasoningEffort: AiThinkingMode = .auto
 }
 
 struct AiPageImageSnapshot: Sendable {
-    var pageNumber: Int
+    /// Source page for a page/region capture; nil for an arbitrary attached
+    /// image (a Finder drop or file pick), which has no document position.
+    /// Mirrors `ScratchpadImageCapture.pageNumber`.
+    var pageNumber: Int?
     /// Raw base64, no data: prefix.
     var base64Data: String
     /// "image/jpeg"
@@ -180,13 +186,24 @@ final class AiStore {
     /// Current request phase; drives the panel's activity indicator.
     private(set) var activity: AiActivity = .idle
     /// True while a request is in flight — kept as a computed alias so existing
-    /// call sites (submit guard, TTS, scroll triggers) are unaffected.
+    /// call sites (submit guard, scroll triggers) are unaffected.
     var isThinking: Bool { activity != .idle }
     /// Id of the assistant message currently receiving streamed deltas (nil when
     /// no stream is active). The panel uses it to suppress the activity pill once
     /// text has started arriving.
     private(set) var streamingMessageId: String?
     private(set) var error: String?
+    /// Transient notice the AI panel shows as a floating toast when an
+    /// attachment drop/pick is declined (a non-image file, or a folder/
+    /// unreadable path). Unlike `error`, this NEVER renders inline in the
+    /// transcript — it floats over the messages area above the composer and
+    /// auto-dismisses. Set by `showAttachmentNotice`, cleared after 15 seconds
+    /// or by the toast's × button; nil when nothing is showing. Mirrors
+    /// `ScratchpadStore.dropWarning`.
+    private(set) var attachmentNotice: String?
+    /// The auto-clear timer for `attachmentNotice`; cancelled/reset each time a
+    /// new notice is shown so the latest message stays up for its full window.
+    @ObservationIgnored private var attachmentNoticeTask: Task<Void, Never>?
     /// The in-flight request task (image capture + sendMessage), held so an
     /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
     /// interruptible.
@@ -283,10 +300,46 @@ final class AiStore {
         self.error = error
     }
 
+    /// Show `message` as the attachment toast for 15 seconds; re-showing resets
+    /// the timer (the prior auto-clear task is cancelled) so the latest message
+    /// stays visible for its full window. Mirrors `ScratchpadStore.showWarning`.
+    func showAttachmentNotice(_ message: String) {
+        attachmentNotice = message
+        attachmentNoticeTask?.cancel()
+        attachmentNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            self?.attachmentNotice = nil
+        }
+    }
+
+    /// Dismiss the attachment toast immediately (the × button), cancelling the
+    /// auto-clear timer so a stale task can't clear a later notice.
+    func dismissAttachmentNotice() {
+        attachmentNoticeTask?.cancel()
+        attachmentNoticeTask = nil
+        attachmentNotice = nil
+    }
+
     // MARK: - Composer references
+
+    /// Ceiling on image-carrying references in one message. Providers cap both a
+    /// single image (Anthropic ~5 MB) and the whole inline request (Gemini
+    /// ~20 MB), and a multi-file drop can otherwise queue a dozen photos in one
+    /// gesture — blowing the request budget, and the bill.
+    static let maxImageReferences = 8
+
+    /// Whether another image can still be attached to the next message.
+    var canAttachMoreImages: Bool {
+        composerReferences.filter { $0.image != nil }.count < Self.maxImageReferences
+    }
 
     /// Attach a reference and reveal the AI panel so the user sees it land.
     func addReference(_ reference: AiReference) {
+        if reference.image != nil, !canAttachMoreImages {
+            error = "You can attach at most \(Self.maxImageReferences) images to one message."
+            return
+        }
         composerReferences.append(reference)
         app?.workspace?.sidebarTab = .ai
         app?.workspace?.sidebarOpen = true
@@ -298,6 +351,106 @@ final class AiStore {
 
     func clearComposerReferences() {
         composerReferences = []
+    }
+
+    // MARK: - Attachment drops
+
+    /// Take a drop routed here from the sidebar's single AppKit drag catcher (see
+    /// `SidebarDropCatcher` / `SidebarPanelStack`) when the AI tab is visible. A
+    /// Finder file payload is classified off the main actor and its images are
+    /// attached as reference chips (non-image files are declined with a notice);
+    /// raw image bytes (Preview / a browser) are normalized and attached as an
+    /// image reference.
+    ///
+    /// Lives on the store, not the view, because the sidebar routes every drop
+    /// through one destination that dispatches to whichever store owns the visible
+    /// tab — the panels no longer own a drop target of their own. See
+    /// `SidebarDropRoutingTests` for why stacked panels can't each register one.
+    func handleDrop(_ payload: AttachmentDropPayload) -> Bool {
+        switch payload {
+        case let .files(urls):
+            attachFiles(at: urls)
+        case let .imageData(data, name):
+            attachImage(data: data, name: name)
+        }
+        return true
+    }
+
+    /// Read and classify each dropped/picked file off the main actor (a 48MP
+    /// photo spends real time in decode + resize), then attach every image as a
+    /// chip. Only images can be attached — the images-only policy shared by
+    /// drag-and-drop and the picker's ("+" → Attach image…) entry point. Any
+    /// non-image files in the drop are declined with a single notice that names
+    /// them, so a mixed drop still lands its images and the rest is explained
+    /// rather than silently dropped; folders and unreadable paths get the
+    /// distinct "folder or unreadable" notice.
+    func attachFiles(at urls: [URL]) {
+        // App sandbox is off (project.yml), so the URL needs no security-scoped
+        // bookmark — plain file reads are enough.
+        let sessionId = app?.activeTabId
+        Task { [weak self] in
+            let results = await Task.detached(priority: .userInitiated) {
+                urls.map { (name: $0.lastPathComponent, attachment: aiFileAttachment(from: $0)) }
+            }.value
+            guard let self, self.app?.activeTabId == sessionId else { return }
+
+            var rejected: [String] = []    // readable, but not an attachable image
+            var unreadable: [String] = []  // folders / missing / unreadable paths
+            for result in results {
+                switch result.attachment {
+                case let .image(snapshot, name):
+                    self.attachIfCurrent(
+                        AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
+                case let .rejected(name):
+                    rejected.append(name)
+                case nil:
+                    unreadable.append(result.name)
+                }
+            }
+
+            // Warn once for the whole gesture, as a transient toast (NOT an
+            // inline transcript error). The images-only notice takes precedence
+            // (it's the policy the user is bumping into); a pure folder/
+            // unreadable drop still gets its own message.
+            if !rejected.isEmpty {
+                let verb = rejected.count == 1 ? "wasn't" : "weren't"
+                self.showAttachmentNotice(
+                    "Only image files can be attached. \(Self.nameList(rejected)) \(verb) added.")
+            } else if !unreadable.isEmpty {
+                let tail = unreadable.count == 1
+                    ? "It's a folder or unreadable."
+                    : "They're folders or unreadable."
+                self.showAttachmentNotice("Couldn't attach \(Self.nameList(unreadable)). \(tail)")
+            }
+        }
+    }
+
+    /// Format a short name list for a drop notice: `photo.png`, or
+    /// `photo.png and 2 more` when several files share the same outcome.
+    static func nameList(_ names: [String]) -> String {
+        guard let first = names.first else { return "" }
+        return names.count == 1 ? first : "\(first) and \(names.count - 1) more"
+    }
+
+    /// Normalize already-loaded image bytes off the main actor and attach them.
+    func attachImage(data: Data, name: String) {
+        let sessionId = app?.activeTabId
+        Task { [weak self] in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                aiImageSnapshot(from: data)
+            }.value
+            guard let self, let snapshot, self.app?.activeTabId == sessionId else { return }
+            self.addReference(AiReference(kind: .image(image: snapshot, name: name)))
+        }
+    }
+
+    /// A pane's AiStore is shared by all of its tabs, and a tab switch wipes the
+    /// composer — so a decode that finishes after the switch would otherwise drop
+    /// document A's image into document B's next message. Same session capture
+    /// `submit` uses.
+    private func attachIfCurrent(_ reference: AiReference, session: String?) {
+        guard app?.activeTabId == session else { return }
+        addReference(reference)
     }
 
     /// Restore the persisted conversation for a document (or reset when nil).
@@ -566,9 +719,9 @@ final class AiStore {
                 }
                 // Unknown ids (stale cache) default to permissive so we never
                 // silently strip a capability the model actually has.
-                let capabilities = openRouterCatalog?.model(for: model)
-                let supportsVision = capabilities?.supportsVision ?? true
-                let supportsTools = capabilities?.supportsTools ?? true
+                let supportsVision = AiModelCatalog.supportsVision(
+                    provider: .openrouter, model: model, catalog: openRouterCatalog)
+                let supportsTools = openRouterCatalog?.model(for: model)?.supportsTools ?? true
                 result = try await OpenRouterClient().generate(
                     apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
@@ -609,7 +762,8 @@ final class AiStore {
                     // Only text-only open models drop the images (page snapshot +
                     // user-attached references); the gateway rejects image parts
                     // for models that can't read them.
-                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
+                    images: AiModelCatalog.supportsVision(
+                        provider: .opencode, model: model, catalog: openRouterCatalog) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -625,7 +779,8 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    images: AiModelCatalog.opencodeSupportsVision(model) ? images : [],
+                    images: AiModelCatalog.supportsVision(
+                        provider: .opencodeGo, model: model, catalog: openRouterCatalog) ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,

@@ -72,23 +72,15 @@ struct WebViewerView: View {
                 WebViewRepresentable(controller: controller)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Drag-to-crop region snapshot → scratchpad. The scrim
-                // intercepts the drag before the web view sees it. Only the
-                // scratchpad crops web pages; the AI's region capture is a
-                // PDF-page snapshot and has no web equivalent.
-                if appStore.mode == .snapshotRegion,
-                   appStore.regionCaptureTarget == .scratchpad {
+                // Drag-to-crop region snapshot. The scrim intercepts the drag
+                // before the web view sees it. The crop goes to whichever panel
+                // armed the mode (AppStore.regionCaptureTarget), same as the PDF
+                // viewer — WKWebView.takeSnapshot renders page content only, so
+                // the marquee itself can never end up inside the crop.
+                if appStore.mode == .snapshotRegion {
                     RegionCaptureOverlay { rect in
                         appStore.setMode(.view)
-                        Task {
-                            if let capture = await controller.captureRegion(viewerRect: rect) {
-                                scratchpadStore.addImage(capture, label: "Web region")
-                            } else {
-                                // Crop missed the page or was too small — warn
-                                // instead of silently doing nothing.
-                                scratchpadStore.warnRegionCaptureFailed()
-                            }
-                        }
+                        captureRegion(rect)
                     } onCancel: {
                         // Plain click or tiny wobble: back out of capture mode
                         // without a warning — the user changed their mind.
@@ -104,13 +96,20 @@ struct WebViewerView: View {
                         .padding(.top, 12)
                 }
 
-                if controller.selection != nil, let position = controller.popoverPosition {
+                // The pinned note draft keeps the popover mounted while its note
+                // field has focus — by then the DOM selection is already gone
+                // (see selectionNoteDraft).
+                if controller.selection != nil || controller.selectionNoteDraft != nil,
+                   let position = controller.popoverPosition {
                     WebSelectionPopover(
                         position: position,
                         onHighlight: { color in controller.addHighlight(color: color) },
                         onNote: { content in controller.addSelectionNote(content: content) },
+                        onBeginNote: { controller.beginSelectionNote() },
+                        onAskAi: { controller.askAiAboutSelection() },
                         onClose: { controller.clearSelection() }
                     )
+                    .id(controller.selectionIdentity)
                     .zIndex(50)
                 }
 
@@ -219,6 +218,34 @@ struct WebViewerView: View {
         }
     }
 
+    /// Hand the finished crop to whichever panel armed the capture (mirrors
+    /// PdfOverlayStack.captureRegion). The AI path stays silent on a miss — a
+    /// failed takeSnapshot mid-scroll is not worth a banner; the scratchpad path
+    /// warns, since its button is the one the user pressed to get here.
+    private func captureRegion(_ rect: CGRect) {
+        switch appStore.regionCaptureTarget {
+        case .ai:
+            Task {
+                // A web capture always stamps the virtual page it was taken on,
+                // so the snapshot's optional page is always populated here.
+                guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
+                      let page = snapshot.pageNumber
+                else { return }
+                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+            }
+        case .scratchpad:
+            Task {
+                if let capture = await controller.captureRegion(viewerRect: rect) {
+                    scratchpadStore.addImage(capture, label: "Web region")
+                } else {
+                    // Crop missed the page or was too small — warn instead of
+                    // silently doing nothing.
+                    scratchpadStore.warnRegionCaptureFailed()
+                }
+            }
+        }
+    }
+
     private var offlineBadge: some View {
         HStack(spacing: 6) {
             Image(systemName: "wifi.slash")
@@ -256,6 +283,13 @@ final class WebViewerController: NSObject {
     private(set) var isOffline = false
     private(set) var selection: WebSelection?
     private(set) var popoverPosition: CGPoint?
+    /// The selection pinned while the selection popover's note field is open.
+    /// Focusing that field moves first responder off the WKWebView, and WebKit
+    /// drops the DOM selection whenever it resigns first responder — so by the
+    /// time the note is submitted, `selection` is gone. Without the pin the
+    /// resulting "selection-cleared" would also unmount the popover (and the
+    /// half-typed note) mid-compose.
+    private(set) var selectionNoteDraft: WebSelection?
     private(set) var noteComposer: WebNoteComposerState?
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
@@ -365,6 +399,14 @@ final class WebViewerController: NSObject {
         aiStore.locateWebTextHandler = { [weak self] page, text in
             await self?.locateWebText(page: page, text: text)
         }
+        // The requested page is ignored: a web "page" is a scroll range inside
+        // one continuous document, not an independently renderable surface, so
+        // the only thing we can snapshot is the visible viewport. Callers ask
+        // for the current page anyway, and the snapshot stamps the page it
+        // actually captured.
+        aiStore.capturePageImageHandler = { [weak self] _ in
+            await self?.capturePageImage()
+        }
         app.findQueryHandler = { [weak self] query in
             self?.post("find", ["query": query])
         }
@@ -399,6 +441,7 @@ final class WebViewerController: NSObject {
             app.scrollToWebPositionHandler = nil
             annotationStore?.captureWebPositionHandler = nil
             aiStore?.locateWebTextHandler = nil
+            aiStore?.capturePageImageHandler = nil
             app.findQueryHandler = nil
             app.findStepHandler = nil
             app.findClearHandler = nil
@@ -444,11 +487,38 @@ final class WebViewerController: NSObject {
     func clearSelection() {
         selection = nil
         popoverPosition = nil
+        selectionNoteDraft = nil
         post("clear-selection")
     }
 
+    /// The selection popover's note field is opening. Pinning happens here, in
+    /// the button action, because the field takes first responder as soon as it
+    /// appears — and that is what destroys the DOM selection. Collapsing the
+    /// field again does not unpin: the selection is gone by then, so the draft
+    /// is all that keeps the popover (and its swatches) usable until a real
+    /// dismissal — a click in the page, a scroll, or clearSelection().
+    func beginSelectionNote() {
+        selectionNoteDraft = selection
+    }
+
+    /// The selection a popover action must act on: the live one when the page
+    /// still has it, otherwise the copy pinned when the note field opened.
+    private var anchoringSelection: WebSelection? { selection ?? selectionNoteDraft }
+
+    /// Identity of the passage the popover is bound to. The view keys its `.id`
+    /// on it, so a different passage tears the popover down instead of reusing it
+    /// — otherwise its @State (a half-typed note, the expanded field) would carry
+    /// over onto the new selection. Blur, which only drops `selection` and leaves
+    /// the pinned draft, leaves this unchanged.
+    var selectionIdentity: String? { anchoringSelection.map(Self.identityKey) }
+
+    private static func identityKey(_ selection: WebSelection) -> String {
+        let position = selection.positionData
+        return "\(selection.pageNumber)|\(position.startOffset ?? -1)|\(position.endOffset ?? -1)|\(selection.text)"
+    }
+
     func addHighlight(color: String) {
-        guard let selection, let annotationStore else { return }
+        guard let selection = anchoringSelection, let annotationStore else { return }
         let input = CreateAnnotationInput(
             type: .highlight,
             pageNumber: selection.pageNumber,
@@ -459,7 +529,7 @@ final class WebViewerController: NSObject {
     }
 
     func addSelectionNote(content: String) {
-        guard let selection, let annotationStore else { return }
+        guard let selection = anchoringSelection, let annotationStore else { return }
         let input = CreateAnnotationInput(
             type: .note,
             pageNumber: selection.pageNumber,
@@ -467,6 +537,17 @@ final class WebViewerController: NSObject {
             content: content,
             positionData: selection.positionData)
         Task { await annotationStore.addNote(input) }
+    }
+
+    /// Attach the selected text to the AI composer. The page number is the
+    /// content script's virtual page — the same locator the AI's scroll/read
+    /// tools take on web documents — so the chip and the prompt line stay true.
+    func askAiAboutSelection() {
+        guard let selection = anchoringSelection, let aiStore else { return }
+        let text = selection.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        aiStore.addReference(AiReference(
+            kind: .selection(text: text, page: selection.pageNumber)))
     }
 
     func createAnchoredNote(anchor: WebNoteAnchor, content: String) {
@@ -648,6 +729,73 @@ final class WebViewerController: NSObject {
         return scratchpadCapture(from: png)
     }
 
+    /// Same crop, but encoded for a vision request instead of the scratchpad.
+    /// Deliberately does NOT reuse `scratchpadCapture`: that normalizer keeps
+    /// PNG verbatim up to 2000px, which turns a Retina viewport into megabytes
+    /// of base64 on every send.
+    func captureRegionImage(viewerRect rect: CGRect) async -> AiPageImageSnapshot? {
+        await snapshot(rect: rect.intersection(webView.bounds))
+    }
+
+    /// Snapshot of what the reader can currently see. There is no way to render
+    /// an offscreen virtual page on its own — the archived document is one
+    /// continuous DOM — so "current page" means the viewport.
+    func capturePageImage() async -> AiPageImageSnapshot? {
+        await snapshot(rect: webView.bounds)
+    }
+
+    private func snapshot(rect: CGRect) async -> AiPageImageSnapshot? {
+        guard rect.width >= 4, rect.height >= 4 else { return nil }
+        let config = WKSnapshotConfiguration()
+        config.rect = rect
+        guard let image = try? await webView.takeSnapshot(configuration: config) else { return nil }
+        // Stamp the page that was actually on screen when the bytes were taken,
+        // never the one a caller asked for.
+        return aiSnapshot(from: image, page: max(1, app?.currentPage ?? 1))
+    }
+
+    /// Encode to the same budget the PDF vision path uses (max side 1280, JPEG
+    /// quality 0.72) so web and PDF references cost the model the same.
+    private func aiSnapshot(from image: NSImage, page: Int) -> AiPageImageSnapshot? {
+        guard let tiff = image.tiffRepresentation,
+              let source = NSBitmapImageRep(data: tiff) else { return nil }
+        var pixelWidth = Double(source.pixelsWide)
+        var pixelHeight = Double(source.pixelsHigh)
+        guard pixelWidth >= 2, pixelHeight >= 2 else { return nil }
+        let maxDimension = max(pixelWidth, pixelHeight)
+        if maxDimension > 1280 {
+            let scale = 1280 / maxDimension
+            pixelWidth = max(1, (pixelWidth * scale).rounded())
+            pixelHeight = max(1, (pixelHeight * scale).rounded())
+        }
+        let width = Int(pixelWidth)
+        let height = Int(pixelHeight)
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        let target = NSRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+        NSColor.white.setFill()
+        target.fill()
+        image.draw(in: target, from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.72])
+        else { return nil }
+        return AiPageImageSnapshot(
+            pageNumber: page,
+            base64Data: jpeg.base64EncodedString(),
+            mediaType: "image/jpeg",
+            width: width,
+            height: height
+        )
+    }
+
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {
         guard supportsPositions else { return false }
         post("scroll-to-position", [
@@ -687,6 +835,14 @@ final class WebViewerController: NSObject {
                 }
             }
         }
+    }
+
+    /// Whether the page (rather than a native popover field) holds first
+    /// responder — the discriminator between a real selection clear and the one
+    /// WebKit performs when the web view is blurred.
+    private var webViewHasFocus: Bool {
+        guard let responder = webView.window?.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: webView)
     }
 
     // MARK: Coordinate mapping
@@ -779,8 +935,17 @@ final class WebViewerController: NSObject {
             handleSelection(data, app: app)
 
         case "selection-cleared":
-            selection = nil
-            popoverPosition = nil
+            // While the popover's note field holds first responder the web view
+            // has none, so WebKit has already thrown the DOM selection away:
+            // this message is the blur artifact, not a user dismissal, and must
+            // not unmount the composer. Once the page is focused again (a click
+            // in it takes first responder before mouseup reports the collapse)
+            // a clear means what it says, so the pin releases itself.
+            if selectionNoteDraft == nil || webViewHasFocus {
+                selection = nil
+                popoverPosition = nil
+                selectionNoteDraft = nil
+            }
             // A plain click inside the page doubles as "click outside" for
             // the note popovers. The grace period keeps the event fired by
             // the opening click itself from instantly dismissing them.
@@ -871,10 +1036,12 @@ final class WebViewerController: NSObject {
 
         case "viewport-scrolled":
             // Popovers are positioned from event-time rects; scrolling the
-            // page underneath invalidates them.
-            if selection != nil {
+            // page underneath invalidates them — including a pinned note draft,
+            // whose popover would otherwise hang at a stale anchor.
+            if selection != nil || selectionNoteDraft != nil {
                 selection = nil
                 popoverPosition = nil
+                selectionNoteDraft = nil
                 post("clear-selection")
             }
             hideContextMenu()
@@ -1096,7 +1263,7 @@ final class WebViewerController: NSObject {
         popoverPosition = CGPoint(
             x: (last.x + last.width / 2) * scale,
             y: last.y * scale - 10)
-        selection = WebSelection(
+        let next = WebSelection(
             text: text,
             pageNumber: intValue(data["pageNumber"]) ?? 1,
             positionData: PositionData(
@@ -1109,6 +1276,14 @@ final class WebViewerController: NSObject {
                 prefix: data["prefix"] as? String,
                 suffix: data["suffix"] as? String,
                 viewportOffset: nil))
+        // Selecting a different passage retires the pinned draft: a drag-select
+        // never collapses the old selection, so no "selection-cleared" arrives to
+        // release the pin, and a note typed for the old passage would anchor onto
+        // this one. Re-reporting the same passage keeps the pin (and the note).
+        if let draft = selectionNoteDraft, Self.identityKey(draft) != Self.identityKey(next) {
+            selectionNoteDraft = nil
+        }
+        selection = next
     }
 
     private func parseNoteAnchor(_ data: [String: Any]) -> WebNoteAnchor? {

@@ -15,3 +15,22 @@ How to apply:
 - Codex models (sonnet-5, opus-4.8, fable-5) run via the Agent/Workflow model parameter.
 Using gpt-5.5 inside workflows and subagents (the model parameter only takes Codex models, so use a wrapper):
 - Spawn a thin Codex wrapper agent with 'model: 'sonnet', effort: 'low' whose prompt instructs it to write a self-contained codex prompt, run 'codex exec' via Bash, and return
+
+## Verifying attachment drag-and-drop (AI panel)
+
+Do NOT try to verify file drops by synthesizing drags — use the harness in
+`Tests/AttachmentDropTests.swift`. It drives the real dragging overrides with a
+fake `NSDraggingInfo` backed by real pasteboards written the way Finder /
+Preview / a browser write them, plus the `aiFileAttachment` classification.
+Run it after any change to the drop path:
+
+    xcodebuild test -project Vellum.xcodeproj -scheme Vellum \
+      -destination 'platform=macOS' -only-testing:VellumTests/AttachmentDropTests
+
+Rules: new drop behavior gets a test here first; new pasteboard fixtures must
+mirror what the real source app writes (log `draggingPasteboard.types` from one
+manual drag — never shape a fixture to make a test pass). The only thing the
+harness cannot cover is AppKit routing a live drag to the view under the
+cursor — that final check is one real Finder drag, done manually or via the
+codex-computer-use skill. New source files require `xcodegen generate` (never
+edit project.pbxproj by hand).

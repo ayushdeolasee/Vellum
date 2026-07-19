@@ -26,8 +26,6 @@ struct ScratchpadPanel: View {
         appStore.mode == .snapshotRegion && appStore.regionCaptureTarget == .scratchpad
     }
 
-    @State private var dropTargeted = false
-
     var body: some View {
         @Bindable var store = scratchpadStore
         return VStack(spacing: 0) {
@@ -36,19 +34,18 @@ struct ScratchpadPanel: View {
                 text: $store.text,
                 store: scratchpadStore,
                 fontSize: workspace.sidebarFontSize,
-                palette: palette
+                palette: palette,
+                dropsEnabled: workspace.sidebarTab == .scratchpad
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay {
-            if dropTargeted {
-                RoundedRectangle(cornerRadius: Radius.md)
-                    .strokeBorder(palette.primary, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-                    .padding(4)
-                    .allowsHitTesting(false)
-            }
-        }
+        // The drop outline and the whole-area drag destination live on the sidebar
+        // container (`SidebarDropCatcher` in `SidebarPanelStack`), which routes
+        // drops here via `scratchpadStore.handleDrop`; the editor WebView's own
+        // drop overrides remain as belt-and-braces but are unreachable while the
+        // frontmost catcher is present. Only the transient "unsupported drop"
+        // banner is panel-local.
         .overlay(alignment: .bottom) {
             if let warning = scratchpadStore.dropWarning {
                 dropWarningBanner(warning)
@@ -57,10 +54,6 @@ struct ScratchpadPanel: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: scratchpadStore.dropWarning)
-        // Accept any drag so a non-image drop reaches `handleDrop` and can be
-        // explained, rather than silently rejected. (The WebView covers the
-        // editor body; this catches drops on the header/margins.)
-        .onDrop(of: [.item], isTargeted: $dropTargeted, perform: handleDrop)
     }
 
     private func dropWarningBanner(_ text: String) -> some View {
@@ -131,28 +124,6 @@ struct ScratchpadPanel: View {
         scratchpadStore.text = ""
     }
 
-    /// Load each dropped image, normalize it (see `scratchpadCapture(from:)`),
-    /// and append it to the note. Returns true when at least one provider is an
-    /// image we can take.
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let imageProviders = providers.filter {
-            $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
-        }
-        guard !imageProviders.isEmpty else {
-            // A non-image was dropped on the header/margin — explain why nothing
-            // happened (the WebView warns for drops on the editor body itself).
-            scratchpadStore.warnUnsupportedDrop()
-            return true
-        }
-        let store = scratchpadStore
-        for provider in imageProviders {
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                guard let data, let capture = scratchpadCapture(from: data) else { return }
-                Task { @MainActor in store.addImage(capture, label: "Image") }
-            }
-        }
-        return true
-    }
 }
 
 /// Normalize dropped image bytes into a `ScratchpadImageCapture`: keep small
@@ -267,14 +238,81 @@ final class ScratchpadWebView: WKWebView {
     /// can tell the user only image files are accepted.
     var onUnsupportedDrop: (() -> Void)?
 
+    /// False while another sidebar tab is in front. The panels stay mounted in
+    /// a ZStack with the scratchpad frontmost, and SwiftUI's `opacity(0)` /
+    /// `allowsHitTesting(false)` on the hidden panel do NOT remove this
+    /// WKWebView from AppKit's drag-destination search — WebKit registers its
+    /// own dragged types, so the invisible editor still outranks the visible
+    /// AI panel beneath it and silently swallows every drop aimed there.
+    /// Unregistering while hidden lets the drag fall through to the panel the
+    /// user can actually see.
+    ///
+    /// Defaults to `false` so the view starts drag-transparent: `WKWebView.init`
+    /// and the first navigation both register WebKit's own dragged types, and
+    /// that happens before SwiftUI's first `updateNSView` sets the real value.
+    /// Starting `false` means the `registerForDraggedTypes` override below
+    /// refuses those early registrations at the source, so there is never a
+    /// window — however brief — where the freshly-created hidden editor is a
+    /// live drop target. `ScratchpadLiveEditor.updateNSView` flips this to
+    /// `true` only when the scratchpad is the visible tab.
+    var acceptsDrops = false {
+        didSet {
+            guard acceptsDrops != oldValue else { return }
+            if acceptsDrops {
+                registerForDraggedTypes(Self.scratchpadDraggedTypes)
+            } else {
+                unregisterDraggedTypes()
+            }
+        }
+    }
+
+    /// The single choke point for becoming an AppKit drag destination: every
+    /// `registerForDraggedTypes(_:)` — ours in `acceptsDrops.didSet` AND the
+    /// ones WebKit fires on its own — funnels through here.
+    ///
+    /// WebKit re-registers its own dragged types out of our sight: after the
+    /// content process connects, after each navigation, and when the view
+    /// enters a real (key, on-screen) window — none of which a headless probe
+    /// reproduces, which is why the offscreen test saw an empty registration
+    /// and the live app did not. A one-shot `unregisterDraggedTypes()` when the
+    /// tab hides can't hold: WebKit simply re-registers afterward, the invisible
+    /// editor (frontmost in ContentView's ZStack, above the AI panel) becomes a
+    /// drag destination again, and AppKit — which routes a drop to the topmost
+    /// *registered* view by geometry, ignoring SwiftUI's `opacity(0)` /
+    /// `allowsHitTesting(false)` — hands it every drop meant for the AI panel
+    /// underneath, where `draggingEntered` returns `[]` and the drop dies.
+    ///
+    /// Refusing the registration at the source is the durable fix: while hidden
+    /// this view can never re-arm itself as a destination, so drops fall through
+    /// to the visible AI panel. When visible, registration is allowed and the
+    /// editor's own image-drop path (all destination methods overridden, no
+    /// `super`) works as before.
+    override func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {
+        guard acceptsDrops else { return }
+        super.registerForDraggedTypes(newTypes)
+    }
+
+    /// What the editor's own drop handling consumes (all destination methods
+    /// are overridden with no `super` fall-through, so WebKit's internal drag
+    /// types don't matter): image files from Finder, raw bytes from Preview or
+    /// a browser.
+    static let scratchpadDraggedTypes: [NSPasteboard.PasteboardType] = [.fileURL, .png, .tiff, .URL]
+
     // Accept every drag so the drop is delivered to `performDragOperation`,
     // where we decide whether it's a usable image. (Returning `[]` for
-    // non-images would suppress the drop event and we couldn't warn.)
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    // non-images would suppress the drop event and we couldn't warn.) The
+    // `acceptsDrops` guard is belt-and-braces for the hidden-panel case, in
+    // case WebKit re-registers its own types behind our back.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptsDrops ? .copy : []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptsDrops ? .copy : []
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { acceptsDrops }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard acceptsDrops else { return false }
         // Read the pasteboard on the main thread (it's tied to the drag event),
         // but push the heavy decode/resize/encode off it so a large drop can't
         // stall the UI — mirroring the SwiftUI item-provider path — then report
@@ -326,6 +364,9 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
     let store: ScratchpadStore
     let fontSize: Double
     let palette: ThemePalette
+    /// Whether the scratchpad is the visible sidebar tab — see
+    /// `ScratchpadWebView.acceptsDrops`.
+    let dropsEnabled: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -346,9 +387,7 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         context.coordinator.webView = webView
 
         // Route snapshot/drop insertions from the store into the editor.
-        store.insertMarkdownHandler = { [weak coordinator = context.coordinator] markdown in
-            coordinator?.enqueueInsert(markdown)
-        }
+        installInsertHandler(on: store, coordinator: context.coordinator)
         // Images dropped onto the editor body are consumed by the WebView (it
         // is the drag destination over its own area, ahead of SwiftUI's onDrop).
         webView.onImageDrop = { [weak store] capture in
@@ -366,13 +405,43 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        // Re-assert this coordinator as the store's insert owner. Covers two
+        // cases: (1) the focused-pane store swaps underneath a stable editor
+        // (split-screen focus change is an update, not a remake, so makeNSView
+        // never re-runs for the new store), and (2) the live editor reclaiming
+        // ownership after any transient remake churn — so the store's handler
+        // always points at the editor the user is actually looking at.
+        installInsertHandler(on: store, coordinator: context.coordinator)
+        (webView as? ScratchpadWebView)?.acceptsDrops = dropsEnabled
         context.coordinator.apply(text: text, fontSize: fontSize, palette: palette)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        coordinator.parent.store.insertMarkdownHandler = nil
+        // Only relinquish the store's handler if THIS coordinator still owns it.
+        // SwiftUI builds a replacement editor (whose makeNSView installs a fresh
+        // handler) before dismantling the old one; clearing unconditionally here
+        // would wipe that fresh handler, and a dropped image would save to disk
+        // yet never appear in the note (with no warning). The identity guard keeps
+        // the live editor's handler intact.
+        let store = coordinator.parent.store
+        if store.insertMarkdownOwner === coordinator {
+            store.insertMarkdownHandler = nil
+            store.insertMarkdownOwner = nil
+        }
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "scratchpad")
+    }
+
+    /// Point `store.insertMarkdownHandler` at `coordinator` and record it as the
+    /// owner. Called from both `makeNSView` and `updateNSView` so the store's
+    /// handler tracks the current editor even when SwiftUI reuses the view across
+    /// a store swap; `dismantleNSView` uses the recorded owner to avoid wiping a
+    /// newer editor's handler.
+    private func installInsertHandler(on store: ScratchpadStore, coordinator: Coordinator) {
+        store.insertMarkdownHandler = { [weak coordinator] markdown in
+            coordinator?.enqueueInsert(markdown)
+        }
+        store.insertMarkdownOwner = coordinator
     }
 
     private static var templateURL: URL? {

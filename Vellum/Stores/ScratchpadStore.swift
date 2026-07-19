@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 /// An image captured for the scratchpad — a PDF region snapshot or an
 /// externally dropped file. Raw bytes (not base64) so the attachment store can
@@ -47,6 +48,15 @@ final class ScratchpadStore {
     /// The resulting doc change flows back through the normal `change` message,
     /// so `text` and persistence update themselves — no manual mutation here.
     @ObservationIgnored var insertMarkdownHandler: ((String) -> Void)?
+
+    /// The editor coordinator that currently owns `insertMarkdownHandler`. When
+    /// SwiftUI recreates the editor it builds the replacement (which installs a
+    /// FRESH handler) before dismantling the old one; the old `dismantleNSView`
+    /// must only clear the handler if it is still the owner, or it would wipe the
+    /// live handler and a dropped image would save but never reach the note. Weak
+    /// so a dead coordinator releases; the handler itself already captures the
+    /// coordinator weakly, so a stale route is a harmless no-op.
+    @ObservationIgnored weak var insertMarkdownOwner: AnyObject?
 
     /// Transient message the panel shows when the user drops something that
     /// isn't a usable image. Set by `warnUnsupportedDrop`, auto-cleared after a
@@ -146,14 +156,66 @@ final class ScratchpadStore {
     /// `![label](vellum-scratchpad://id)` reference to the note text.
     func addImage(_ capture: ScratchpadImageCapture, label: String) {
         guard let id = ScratchpadAttachmentStore.save(
-            data: capture.data, fileExtension: capture.fileExtension) else { return }
+            data: capture.data, fileExtension: capture.fileExtension) else {
+            // Save failed after we accepted the drop — never let it vanish silently.
+            showWarning("Couldn't save that image to the scratchpad. Please try again.")
+            return
+        }
         // Keep the alt text single-line and free of the `]` that would close it.
         let safeLabel = label
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "]", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let markdown = "![\(safeLabel)](\(ScratchpadAttachmentStore.scheme)://\(id))"
-        insertMarkdownHandler?(markdown)
+        guard let insertMarkdownHandler else {
+            // The editor's insert handler is missing — the image was saved but has
+            // nowhere to land. This must never happen (the live editor installs it
+            // and keeps it across remounts); surface it instead of losing the drop.
+            assertionFailure("scratchpad insertMarkdownHandler is nil at addImage")
+            showWarning("Couldn't add that image to the note. Please try again.")
+            return
+        }
+        insertMarkdownHandler(markdown)
+    }
+
+    /// Take a drop routed here from the sidebar's single AppKit drag catcher (see
+    /// `SidebarDropCatcher` / `SidebarPanelStack`) when the scratchpad tab is
+    /// visible — the header/margins of the panel; drops on the editor body are
+    /// consumed by `ScratchpadWebView` directly. An image (raw bytes from Preview /
+    /// a browser, or a Finder image file) is decoded off the main actor and
+    /// appended; anything else — including a dropped non-image file — is explained
+    /// via `warnUnsupportedDrop`. Returns true — the drop is always "handled", even
+    /// when only to warn.
+    func handleDrop(_ payload: AttachmentDropPayload) -> Bool {
+        switch payload {
+        case let .files(urls):
+            guard let url = urls.first else {
+                warnUnsupportedDrop()
+                return true
+            }
+            // Read + decode off the main actor: a large image (or one on iCloud
+            // Drive) must not stall the drop while it materializes.
+            Task { [weak self] in
+                let capture = await Task.detached(priority: .userInitiated) {
+                    () -> ScratchpadImageCapture? in
+                    guard let data = try? Data(contentsOf: url) else { return nil }
+                    return scratchpadCapture(from: data)
+                }.value
+                guard let self else { return }
+                if let capture { self.addImage(capture, label: "Image") }
+                else { self.warnUnsupportedDrop() }
+            }
+        case let .imageData(data, _):
+            Task { [weak self] in
+                let capture = await Task.detached(priority: .userInitiated) {
+                    scratchpadCapture(from: data)
+                }.value
+                guard let self else { return }
+                if let capture { self.addImage(capture, label: "Image") }
+                else { self.warnUnsupportedDrop() }
+            }
+        }
+        return true
     }
 
     /// Show the "only image files are accepted" notice for a few seconds.

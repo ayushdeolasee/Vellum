@@ -70,8 +70,6 @@ enum AiPersistence {
         if let model = value["opencodeModel"] as? String { settings.opencodeModel = model }
         if let model = value["opencodeGoModel"] as? String { settings.opencodeGoModel = model }
         if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
-        settings.voiceMode = value["voiceMode"] as? String == "push-to-talk" ? .pushToTalk : .off
-        if let enabled = value["ttsEnabled"] as? Bool { settings.ttsEnabled = enabled }
         if let effort = value["reasoningEffort"] as? String { settings.reasoningEffort = AiThinkingMode(rawValue: effort) ?? .auto }
 
         // Keys now live in the Keychain. Migrate any legacy plaintext keys still

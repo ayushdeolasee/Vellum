@@ -4,7 +4,7 @@ import SwiftUI
 /// App settings window (⌘, / Vellum ▸ Settings…). A durable macOS preferences
 /// scene: a toolbar-style TabView whose tabs hold real, already-wired settings —
 /// General (appearance), Reading (sidebar text size), Annotations (default
-/// highlight color), and AI (provider / key / model / voice). New settings slot
+/// highlight color), and AI (provider / key / model). New settings slot
 /// into the matching tab instead of accreting in ad-hoc popovers.
 struct SettingsView: View {
     var body: some View {
@@ -190,16 +190,6 @@ private struct AiSettingsTab: View {
                 }
             } header: {
                 Text("Assistant")
-            }
-
-            Section {
-                Picker("Voice mode", selection: aiStore.voiceBinding()) {
-                    Text("Off").tag(VoiceMode.off)
-                    Text("Push-to-talk").tag(VoiceMode.pushToTalk)
-                }
-                Toggle("Speak assistant responses (TTS)", isOn: aiStore.ttsBinding)
-            } header: {
-                Text("Voice")
             }
         }
         .formStyle(.grouped)

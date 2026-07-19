@@ -46,6 +46,22 @@ conflict markers, leaving `main` uncompilable), landing the final
   if both Macs have data. The extracted-text cache moved to
   `~/Library/Caches`, where clearing it is always safe.
 
+- **Dropping onto the AI panel actually works now.** All three sidebar panels
+  stay mounted in a ZStack with the scratchpad frontmost, and the scratchpad's
+  hidden WKWebView accepted every drag unconditionally — AppKit routes a drag
+  to the topmost registered view under the cursor regardless of SwiftUI
+  opacity/hit-testing, so drops aimed at the AI panel were silently swallowed
+  by the invisible scratchpad (and could land images in its note). Drop
+  registration for the scratchpad editor and the AI panel's text views is now
+  gated on being the visible sidebar tab.
+- **Drop images into the AI chat.** The AI panel accepts image drops anywhere
+  on the panel (Finder files, or raw bitmap bytes from Preview or a browser),
+  attaching them as vision snapshots. Attachments are images-only — the same
+  policy as the "+" menu's "Attach image…" picker — so a dropped non-image is
+  declined with a notice that names it (a mixed drop still lands its images and
+  warns once about the rest); the drop is never silently swallowed. Image
+  attachments depend on the model supporting vision (the existing notice under
+  the chips explains when they won't be sent).
 - **Choose where your web library lives.** A one-time choice at launch (and
   in Settings ▸ Storage): iCloud Drive — everything (offline copies,
   highlights, notes, reading positions) lives in `iCloud Drive ▸ Vellum` and
@@ -72,6 +88,20 @@ conflict markers, leaving `main` uncompilable), landing the final
 - **Reference reading-material text in the AI chat.** Selecting text in a PDF
   shows an "Ask AI about this" (sparkles) button in the selection popover; the
   selected text attaches as a quoted reference chip in the AI composer.
+- **The AI features above now work on web pages too.** Selecting text in an
+  archived page offers the same "Ask AI about this" button, and the composer's
+  "+" menu ("Attach current page", "Snapshot region…") is no longer PDF-only —
+  the region marquee crops the web view directly, and page snapshots capture the
+  viewport. Web pages are already split into virtual pages by the reader, so
+  references carry a real page number the model can navigate to.
+- **Attach any image to the AI chat.** Drag an image onto the AI panel from
+  Finder (or drop raw image bytes from Preview or a browser) — anywhere on the
+  panel, including over a message bubble or the text field — or pick one via
+  "Attach image…" in the "+" menu. A dashed outline tracks the drag across the
+  whole panel. Both entry points appear only when the selected model supports
+  image input; if you attach an image and then switch to a text-only model, the
+  composer warns you that the attachment won't be sent rather than silently
+  dropping it.
 - **`getAnnotations` AI tool** — the model can list your notes and highlights
   across the whole document (or one page), so cross-page annotation questions
   work again now that the context block only carries the current page.
@@ -83,6 +113,13 @@ conflict markers, leaving `main` uncompilable), landing the final
 - **Add-note-from-selection works again**: repaired the scratchpad merge so
   the selection popover (highlight swatches, note input, Ask AI) is wired up
   in the shipped ContentView; `main` now compiles.
+- **Adding a note to selected text on a web page no longer vanishes.** Focusing
+  the note field made the web view resign first responder, and WebKit discards
+  the page's text selection when that happens — which tore the popover (and the
+  half-typed note) out of the view. The selection is now snapshotted when the
+  note field opens, so the composer survives the focus change; a genuine click
+  or a new selection still dismisses it, and a fresh selection resets the field
+  instead of anchoring the old note to the new passage.
 - AI replies no longer clip silently: output caps raised (2048 → 8192 base)
   on every provider, and token-limit cutoffs surface as a visible truncation
   note (or an error when nothing streamed).

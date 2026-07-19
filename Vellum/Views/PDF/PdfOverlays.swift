@@ -110,9 +110,11 @@ struct PdfOverlayStack: View {
     private func captureRegion(_ rect: CGRect) {
         switch app.regionCaptureTarget {
         case .ai:
-            if let snapshot = controller.capturePageRegion(viewerRect: rect) {
-                aiStore.addReference(AiReference(
-                    kind: .region(image: snapshot, page: snapshot.pageNumber)))
+            // A region crop always lands on a page (capturePageRegion bails
+            // otherwise), so the snapshot's optional page is always populated here.
+            if let snapshot = controller.capturePageRegion(viewerRect: rect),
+               let page = snapshot.pageNumber {
+                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
             }
         case .scratchpad:
             if let capture = controller.capturePageRegionData(viewerRect: rect) {

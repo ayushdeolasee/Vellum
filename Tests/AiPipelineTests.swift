@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Vellum
 
@@ -422,7 +423,128 @@ final class AiPipelineTests: XCTestCase {
             pageText: String(repeating: "a", count: AiStore.autoPageImageTextThreshold)))
     }
 
-    // Conversation persistence (write-behind cache, coalesced flush, folder
-    // files, legacy migration, caps) is covered in AiConversationStoreTests,
-    // which isolates the on-disk store behind DocumentDataStore.rootDirectoryOverride.
+    // MARK: - Conversation persistence write-behind
+
+    /// A save is visible to an immediate load (via the in-memory cache) even
+    /// before the coalesced disk flush has run.
+    func testSaveIsImmediatelyVisibleToLoad() {
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/ai-persistence-test-a.pdf", title: "A", pageCount: 1, lastPage: 1)
+        let message = AiPersistence.makeMessage(role: .user, content: "hello persistence")
+        AiPersistence.saveConversation(for: document, messages: [message])
+        let loaded = AiPersistence.loadConversation(for: document)
+        XCTAssertEqual(loaded.map(\.content), ["hello persistence"])
+        // Cleanup so repeated test runs don't accumulate:
+        AiPersistence.saveConversation(for: document, messages: [])
+    }
+
+    /// awaitPendingFlush drains the coalesced write.
+    func testAwaitPendingFlushCompletes() async {
+        let document = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/ai-persistence-test-b.pdf", title: "B", pageCount: 1, lastPage: 1)
+        AiPersistence.saveConversation(
+            for: document,
+            messages: [AiPersistence.makeMessage(role: .user, content: "flush me")]
+        )
+        await AiPersistence.awaitPendingFlush()
+        AiPersistence.saveConversation(for: document, messages: [])
+        await AiPersistence.awaitPendingFlush()
+    }
+
+    // MARK: - §6 Arbitrary image attachments
+
+    /// An oversized opaque image is downscaled to the request budget and
+    /// re-encoded as JPEG, with no page (it isn't part of the document).
+    func testAttachedImageIsDownscaledAndTranscoded() throws {
+        let data = Self.bitmap(width: 3000, height: 1000, alpha: false)
+        let snapshot = try XCTUnwrap(aiImageSnapshot(from: data, maxSide: 1568))
+        XCTAssertEqual(snapshot.width, 1568)
+        XCTAssertEqual(snapshot.height, 523)  // aspect preserved
+        XCTAssertEqual(snapshot.mediaType, "image/jpeg")
+        XCTAssertNil(snapshot.pageNumber)
+        XCTAssertFalse(snapshot.base64Data.isEmpty)
+    }
+
+    /// Transparency only survives in PNG, so an alpha image must not become JPEG.
+    func testAttachedImageWithAlphaStaysPng() throws {
+        let snapshot = try XCTUnwrap(aiImageSnapshot(from: Self.bitmap(width: 40, height: 40, alpha: true)))
+        XCTAssertEqual(snapshot.mediaType, "image/png")
+        XCTAssertEqual(snapshot.width, 40)  // under the cap: not upscaled
+    }
+
+    func testAttachedImageRejectsNonImageBytes() {
+        XCTAssertNil(aiImageSnapshot(from: Data("not an image".utf8)))
+    }
+
+    /// The prompt names an attached image by file name and claims no page.
+    func testReferenceLineForAttachedImageHasNoPage() {
+        let snapshot = AiPageImageSnapshot(
+            pageNumber: nil, base64Data: "aGVsbG8=", mediaType: "image/png", width: 12, height: 9)
+        let context = AiContextSnapshot(
+            title: "Doc", numPages: 3, currentPage: 1, visiblePages: [1], annotations: [],
+            currentPageImage: nil,
+            references: [AiReference(kind: .image(image: snapshot, name: "diagram.png"))]
+        )
+        let block = AiPrompts.buildContextBlock(pageTexts: [1: "text"], context: context)
+        XCTAssertTrue(block.contains("[attached image: diagram.png] image attached (12x9)"))
+        XCTAssertFalse(block.contains("[attached image: diagram.png] image attached (12x9), p."))
+    }
+
+    // (Removed `testReferenceLineForAttachedFileCarriesContents`: the AI chat is
+    // images-only now, so no `.file(text:name:)` reference is ever produced and
+    // the prompt no longer has a file-text branch to exercise.)
+
+    /// Only images can be attached: an image with an image extension comes back
+    /// as a snapshot; a text file is declined by name (never carried as text).
+    func testFileAttachmentClassification() throws {
+        let textURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.md")
+        try Data("# Notes\nhello".utf8).write(to: textURL)
+        defer { try? FileManager.default.removeItem(at: textURL) }
+        guard case let .rejected(name)? = aiFileAttachment(from: textURL) else {
+            return XCTFail("expected a rejected non-image file")
+        }
+        XCTAssertEqual(name, "ai-file-attachment-test.md")
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.png")
+        try Self.bitmap(width: 20, height: 10, alpha: false).write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+        guard case let .image(snapshot, _)? = aiFileAttachment(from: imageURL) else {
+            return XCTFail("expected an image attachment")
+        }
+        XCTAssertEqual(snapshot.width, 20)
+    }
+
+    /// A binary (non-image) file is declined by name — never attached as a
+    /// placeholder, so the drop is explained without smuggling in file bytes.
+    func testBinaryFileIsRejectedByName() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-file-attachment-test.bin")
+        try Data([0xFF, 0xFE, 0x00, 0x81, 0x92, 0xA3]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard case let .rejected(name)? = aiFileAttachment(from: url) else {
+            return XCTFail("expected a rejected non-image file")
+        }
+        XCTAssertEqual(name, "ai-file-attachment-test.bin")
+    }
+
+    /// The gate the attach affordances read: text-only models say no, built-in
+    /// multimodal catalogs say yes, and an OpenRouter id we don't know about
+    /// stays permissive (the catalog may still be loading).
+    func testSupportsVisionResolution() {
+        XCTAssertFalse(AiModelCatalog.supportsVision(provider: .opencode, model: "kimi-k2.6", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .opencode, model: "claude-sonnet-5", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .gemini, model: "anything", catalog: nil))
+        XCTAssertTrue(AiModelCatalog.supportsVision(provider: .openrouter, model: "vendor/unknown", catalog: nil))
+    }
+
+    /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file.
+    private static func bitmap(width: Int, height: Int, alpha: Bool) -> Data {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: alpha ? 4 : 3, hasAlpha: alpha,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        return rep.representation(using: .png, properties: [:])!
+    }
 }
