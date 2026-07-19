@@ -448,21 +448,6 @@ final class AiStore {
             return
         }
 
-        // First AI message on a not-yet-stamped PDF: lazily stamp /VellumDocId
-        // through the session so this document's conversation lands in a stable,
-        // rename-proof `documents/<docId>/` folder rather than the path-hash
-        // fallback (mirrors ScratchpadStore's first-write stamp; design §3).
-        // Done before the first persist so every save this turn targets the
-        // stamped key — no mid-turn rekey. Best-effort: a read-only PDF that
-        // can't be stamped keeps its nil docId and persists under the path key,
-        // which the next open's rekey carries over. syncDocumentId already
-        // no-ops once an id exists, so later messages skip the round-trip.
-        if documentAtStart.kind == .pdf, documentAtStart.docId?.isEmpty ?? true {
-            await app.syncDocumentId(sessionId: sessionIdAtStart)
-            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else { return }
-        }
-        let documentForPersist = app.document ?? documentAtStart
-
         let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
         messages.append(userMessage)
         // Empty assistant placeholder the stream fills in-place. Kept out of the
@@ -474,6 +459,30 @@ final class AiStore {
         streamingMessageId = assistantId
         activity = .thinking
         error = nil
+
+        // First AI message on a not-yet-stamped PDF: lazily stamp /VellumDocId
+        // through the session so this document's conversation lands in a stable,
+        // rename-proof `documents/<docId>/` folder rather than the path-hash
+        // fallback (mirrors ScratchpadStore's first-write stamp; design §3).
+        // Done AFTER the UI append (the stamp rewrites the whole PDF, which
+        // would visibly stall the composer on large files) but before the first
+        // persist so every save this turn targets the stamped key — no mid-turn
+        // rekey. Best-effort: a read-only PDF that can't be stamped keeps its
+        // nil docId and persists under the path key, which the next open's
+        // rekey carries over. syncDocumentId already no-ops once an id exists,
+        // so later messages skip the round-trip.
+        if documentAtStart.kind == .pdf, documentAtStart.docId?.isEmpty ?? true {
+            await app.syncDocumentId(sessionId: sessionIdAtStart)
+            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else {
+                // Abandon the turn: cancelled or the pane switched documents
+                // mid-stamp (its context reloads anyway). Mirror
+                // cancelActiveRequest's reset so no stream state dangles.
+                streamingMessageId = nil
+                activity = .idle
+                return
+            }
+        }
+        let documentForPersist = app.document ?? documentAtStart
         let messagesWithUser = Array(messages.dropLast())
         AiPersistence.saveConversation(for: documentForPersist, messages: messagesWithUser)
 

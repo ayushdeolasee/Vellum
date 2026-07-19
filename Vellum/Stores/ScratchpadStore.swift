@@ -291,6 +291,10 @@ final class ScratchpadStore {
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let app, let sessionId = currentSessionId else { return }
         await app.syncDocumentId(sessionId: sessionId)
+        // The await suspends on the main actor: a tab switch can cancel this
+        // save task and repoint currentKey/currentDocument before it resumes.
+        // Never mutate identity or rekey against a document we no longer show.
+        guard !Task.isCancelled, currentSessionId == sessionId else { return }
         let stamped = app.tabs.first(where: { $0.id == sessionId })?.document?.docId
         guard let stamped, !stamped.isEmpty, stamped != currentKey else { return }
         let oldKey = currentKey

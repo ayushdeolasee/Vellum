@@ -17,7 +17,7 @@ conflict markers, leaving `main` uncompilable), landing the final
 
 - **Your notes now follow the document, not its path.** Vellum stamps a
   durable identity (`/VellumDocId`) into a PDF the first time it writes to it
-  anyway — never just for opening — so renaming, moving, or copying a file no
+  — never just for opening — so renaming, moving, or copying a file no
   longer orphans its scratchpad notes or AI conversations. Web pages keep
   their existing URL identity. Notes and conversations move out of monolithic
   preference blobs into one folder per document (plain `scratchpad.md` with
