@@ -100,12 +100,15 @@ final class ScratchpadStore {
     /// Best-effort removal of attachment files no longer referenced by any
     /// note. Runs off the main actor on document load; cheap and idempotent.
     private func pruneOrphanedAttachments() {
-        // Compute the reference set inside the detached task, not here on the
-        // main actor: it reads every persisted note, and deferring it also lets
-        // any in-flight debounced save (e.g. from a just-added image) settle
-        // before we decide what to collect, avoiding a delete-then-referenced race.
+        // Snapshot the in-memory cache cheaply, then scan markdown and touch the
+        // filesystem off-main. Re-decoding every note here made each tab switch
+        // pay the full persistence cost.
+        let texts = ScratchpadPersistence.persistedTextsSnapshot()
         Task.detached(priority: .utility) {
-            let referenced = ScratchpadPersistence.allReferencedAttachmentIds()
+            var referenced = Set<String>()
+            for text in texts {
+                referenced.formUnion(ScratchpadAttachmentStore.referencedIds(in: text))
+            }
             ScratchpadAttachmentStore.collectGarbage(referencedIds: referenced)
         }
     }
@@ -118,8 +121,8 @@ final class ScratchpadStore {
         setRestored("")
     }
 
-    /// Persist the current text immediately. Safe to call repeatedly; a no-op
-    /// when there is no active document.
+    /// Commit the current text to the authoritative in-memory cache immediately;
+    /// the persistence layer coalesces the disk write off-main.
     func flush() {
         saveTask?.cancel()
         saveTask = nil

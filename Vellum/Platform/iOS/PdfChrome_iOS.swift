@@ -38,8 +38,9 @@ struct PdfToolbar_iOS: View {
     private var isWeb: Bool { appStore.document?.kind == .web }
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
     // the lowest-value pods yield instead of clipping at the edges: the zoom
-    // pod first (pinch still zooms; More menu keeps the commands), then the
-    // page-step chevrons (the page field still jumps anywhere).
+    // pod first (pinch still works for PDFs and web pages; More keeps the
+    // commands), then the page-step chevrons (the page field still jumps
+    // anywhere).
     private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 740 }
     private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 590 }
     // Narrowest tier: when a split pane is squeezed by the open inspector, fold
@@ -92,7 +93,7 @@ struct PdfToolbar_iOS: View {
                 }
             }
 
-            if !isWeb, showZoomPod {
+            if showZoomPod {
                 GlassToolPod {
                     GlassToolButton(system: "minus.magnifyingglass", label: "Zoom out") {
                         appStore.zoomOut()
@@ -274,7 +275,7 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exporting)
             }
-            if !isWeb, !showZoomPod {
+            if !showZoomPod {
                 Divider()
                 Button { appStore.zoomIn() } label: {
                     Label("Zoom In", systemImage: "plus.magnifyingglass")

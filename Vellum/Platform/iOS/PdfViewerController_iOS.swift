@@ -36,6 +36,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     @ObservationIgnored private var didInitialScroll = false
     @ObservationIgnored private var recomputeScheduled = false
     @ObservationIgnored private var extractionTask: Task<Void, Never>?
+    @ObservationIgnored private var persister: PageTextPersister?
 
     @ObservationIgnored private var findMatches: [PDFSelection] = []
     @ObservationIgnored private var findIndex = -1
@@ -57,15 +58,12 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
-        // Annotations render only from the SwiftUI overlays; strip the embedded
-        // ones from the in-memory display copy so they don't double-draw. The
-        // on-disk file is untouched (mutations go through the atomic writer).
-        stripEmbeddedAnnotations(from: document)
     }
 
     func reset() {
         extractionTask?.cancel()
         extractionTask = nil
+        flushAndDropPersister()
         document = nil
         selection = nil
         selectionPopoverPosition = nil
@@ -88,18 +86,6 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                 self.scrollToPage(min(pages, max(1, self.initialPage)))
                 self.recomputeVisiblePages()
                 self.bumpGeometry()
-            }
-        }
-    }
-
-    private func stripEmbeddedAnnotations(from document: PDFDocument) {
-        // Highlights/notes/bookmarks render from the SwiftUI overlays, so strip
-        // them from the display copy. Pencil ink renders natively via PDFKit, so
-        // KEEP Vellum ink annotations — they draw straight from the file.
-        for index in 0..<document.pageCount {
-            guard let page = document.page(at: index) else { continue }
-            for annotation in page.annotations where !PdfInk.isVellumInk(annotation) {
-                page.removeAnnotation(annotation)
             }
         }
     }
@@ -500,21 +486,78 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         }
     }
 
+    // MARK: - Persistent page-text cache
+
+    func installPersister(_ persister: PageTextPersister) {
+        self.persister = persister
+    }
+
+    /// Flush any pending page text to disk (backgrounding/quit path).
+    func flushPersister() async {
+        await persister?.flush()
+    }
+
+    /// Flush-and-drop that survives `reset()`: the flush runs on the captured
+    /// persister (which owns its own page data), so nil'ing the property here
+    /// can't lose pages. Idempotent — a clean persister flushes to a no-op.
+    /// Registered via `flushDetached` so the suspend path can await writes
+    /// whose controller is already gone.
+    func flushAndDropPersister() {
+        guard let persister else { return }
+        self.persister = nil
+        persister.flushDetached()
+    }
+
     // MARK: - AI page-text feed
 
-    func startTextExtraction() {
+    /// Walk every page's text into AiStore.pageTexts (and the persistent
+    /// cache). `PDFPage.string` is NOT a cheap accessor — each call runs a
+    /// CoreGraphics/TextRecognition layout-analysis pass that takes tens of
+    /// milliseconds per page — so the walk runs OFF the main actor over a
+    /// PRIVATE `PDFDocument` parsed from `data`. Walking the live (view-bound)
+    /// document on the main actor starved the run loop for minutes on textbook
+    /// PDFs, freezing every interaction after open/tab-switch; walking it off
+    /// the main actor isn't an option either because PDFKit objects aren't
+    /// thread-safe while PDFView renders from them. Pages already restored
+    /// from the persistent cache are skipped without touching `page.string`
+    /// (true resume of a partial walk); a fully cached document never even
+    /// pays the copy parse.
+    func startTextExtraction(data: Data) {
         extractionTask?.cancel()
         guard let document else { return }
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
-        extractionTask = Task { [weak self] in
-            for pageNumber in 1...pageCount {
+        // Generation guards: a stale walk must stop writing into the shared
+        // pageTexts once the pane shows another tab or another document.
+        let tabId = app?.activeTabId
+        let docIdentity = ObjectIdentifier(document)
+        let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
+        let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
+        guard !missingPages.isEmpty else { return }
+        extractionTask = Task.detached(priority: .utility) { [weak self] in
+            guard let copy = PDFDocument(data: data) else { return }
+            for pageNumber in missingPages {
+                // Keep the original walk's idle pacing so a background core
+                // isn't pinned for the whole document.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
-                guard let self, self.document === document,
-                      let page = document.page(at: pageNumber - 1) else { return }
-                self.ai?.setPageText(page: pageNumber, text: page.string ?? "")
+                guard pageNumber <= copy.pageCount,
+                      let page = copy.page(at: pageNumber - 1) else { continue }
+                let text = page.string ?? ""
+                let stillCurrent = await MainActor.run { [weak self] () -> Bool in
+                    guard let self, let ai = self.ai,
+                          self.document.map(ObjectIdentifier.init) == docIdentity,
+                          self.app?.activeTabId == tabId else { return false }
+                    if ai.pageTexts[pageNumber] == nil,
+                       let normalized = ai.setPageText(page: pageNumber, text: text) {
+                        self.persister?.noteExtracted(page: pageNumber, text: normalized)
+                    }
+                    return true
+                }
+                if !stillCurrent { return }
             }
+            // Whole document walked: flush with complete = true.
+            await MainActor.run { [weak self] in self?.persister }?.flush()
         }
     }
 

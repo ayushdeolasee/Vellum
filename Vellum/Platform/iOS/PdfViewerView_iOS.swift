@@ -57,7 +57,6 @@ struct PdfViewerView_iOS: View {
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
                     PdfKitView_iOS(controller: controller, document: document, ink: ink)
-                        .id(loadedTabId)
                         .frame(width: geo.size.width, height: geo.size.height)
                     PdfOverlayStack_iOS(controller: controller)
                 }
@@ -88,14 +87,16 @@ struct PdfViewerView_iOS: View {
         loadState = .loading
         aiStore.clearDocumentContext()
         do {
+            // The persistent text cache is keyed by the current PDF bytes, so
+            // read them even when this tab can reuse an already prepared PDF.
+            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+            guard !Task.isCancelled, app.activeTabId == tabId else { return }
             let document: PDFDocument
             if let cached = app.cachedPreparedPdf(tabId: tabId) {
                 // Fast path: this tab was opened recently — reuse the prepared
-                // document, skipping the disk read, parse, and strip entirely.
+                // document, skipping the parse and strip entirely.
                 document = cached
             } else {
-                let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-                guard !Task.isCancelled, app.activeTabId == tabId else { return }
                 // Parse the PDF and strip its embedded annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
@@ -118,6 +119,21 @@ struct PdfViewerView_iOS: View {
                 app.storePreparedPdf(parsed, tabId: tabId)
                 document = parsed
             }
+            // Restore persisted page text before adopting (PDF only; this view
+            // is guarded to document.kind == .pdf). Hashing + JSON decode run
+            // off the main actor inside the cache actor.
+            let cached: [Int: String]?
+            if let path = app.document?.pdfPath {
+                cached = await PageTextCache.shared.lookup(
+                    path: path, data: data, title: app.document?.title)
+            } else {
+                cached = nil
+            }
+            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            // Unconditional replace (empty on a miss): anything an outgoing
+            // tab's extraction wrote into pageTexts during the awaits above
+            // belongs to the OLD document and must not survive into this one.
+            aiStore.restorePageTexts(cached ?? [:])
             controller.adopt(
                 document: document,
                 app: app,
@@ -126,6 +142,13 @@ struct PdfViewerView_iOS: View {
                 initialPage: app.currentPage
             )
             app.setNumPages(document.pageCount)
+            if document.pageCount >= 1, let path = app.document?.pdfPath {
+                controller.installPersister(PageTextPersister(
+                    path: path,
+                    title: app.document?.title,
+                    pageCount: document.pageCount,
+                    seeded: cached ?? [:]))
+            }
             ink.pdfController = controller
             ink.app = app
             ink.isActive = false
@@ -133,7 +156,7 @@ struct PdfViewerView_iOS: View {
             registerHandlers()
             handlersTabId = tabId
             loadState = .loaded(document, tabId: tabId)
-            controller.startTextExtraction()
+            controller.startTextExtraction(data: data)
         } catch {
             guard !Task.isCancelled, app.activeTabId == tabId else { return }
             NSLog("[PdfViewer-iOS] readPdfBytes FAILED: %@", error.localizedDescription)
@@ -166,6 +189,9 @@ struct PdfViewerView_iOS: View {
         app.printHandler = { [weak controller] in
             MainActor.assumeIsolated { controller?.printDocument() }
         }
+        app.flushPageTextCacheHandler = { [weak controller] in
+            await controller?.flushPersister()
+        }
     }
 
     private func unregisterHandlers() {
@@ -177,6 +203,7 @@ struct PdfViewerView_iOS: View {
         app.findStepHandler = nil
         app.findClearHandler = nil
         app.printHandler = nil
+        app.flushPageTextCacheHandler = nil
     }
 
     private func teardown() {

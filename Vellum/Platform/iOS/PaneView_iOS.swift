@@ -133,10 +133,8 @@ struct PaneView_iOS: View {
     private var documentViewer: some View {
         if app.document?.kind == .web {
             WebViewerView_iOS()
-                .id(app.activeTabId)
         } else {
             PdfViewerView_iOS(ink: ink)
-                .id(app.activeTabId)
         }
     }
 

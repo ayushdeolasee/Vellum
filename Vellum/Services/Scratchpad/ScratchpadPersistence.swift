@@ -8,9 +8,21 @@ enum ScratchpadPersistence {
     static let maxDocuments = 200
     static let maxCharacters = 200_000
 
-    private struct Entry: Codable {
+    private struct Entry: Codable, Sendable {
         var key: String
         var text: String
+    }
+
+    /// Decode the potentially large UserDefaults blob once per launch. All
+    /// scratchpad store calls are main-actor confined; disk encoding/writes are
+    /// coalesced below and never block tab interaction.
+    @MainActor private static var cachedEntries: [Entry]?
+
+    @MainActor private static func entries() -> [Entry] {
+        if let cachedEntries { return cachedEntries }
+        let loaded = readEntries()
+        cachedEntries = loaded
+        return loaded
     }
 
     /// UserDefaults key for a document — its file path. Nil for the empty
@@ -21,9 +33,9 @@ enum ScratchpadPersistence {
         return key
     }
 
-    static func load(for key: String) -> String {
-        let entries = readEntries()
-        if let exact = entries.first(where: { $0.key == key })?.text { return exact }
+    @MainActor static func load(for key: String) -> String {
+        let loaded = entries()
+        if let exact = loaded.first(where: { $0.key == key })?.text { return exact }
         // Heal across container-UUID changes (reinstall / OS update): the note
         // was saved under the document's old absolute path, which is rooted in a
         // data-container UUID that has since changed, so the exact-key lookup
@@ -33,26 +45,27 @@ enum ScratchpadPersistence {
         // (stable across container moves) and never need this.
         let name = (key as NSString).lastPathComponent
         guard name.lowercased().hasSuffix(".pdf") else { return "" }
-        return entries.first { ($0.key as NSString).lastPathComponent == name }?.text ?? ""
+        return loaded.first { ($0.key as NSString).lastPathComponent == name }?.text ?? ""
     }
 
-    static func save(for key: String, text: String) {
-        var entries = readEntries()
+    @MainActor static func save(for key: String, text: String) {
+        var updated = entries()
         let bounded = String(text.prefix(maxCharacters))
         // Drop any existing entry for this key; a non-empty write re-appends it
         // to the end so recency is tracked by position (most-recently-written
         // last) and eviction below is true LRU rather than insertion-order.
-        if let index = entries.firstIndex(where: { $0.key == key }) {
-            entries.remove(at: index)
+        if let index = updated.firstIndex(where: { $0.key == key }) {
+            updated.remove(at: index)
         }
         if !bounded.isEmpty {
-            entries.append(Entry(key: key, text: bounded))
+            updated.append(Entry(key: key, text: bounded))
         }
         // Evict least-recently-written documents first once the cap is exceeded.
-        if entries.count > maxDocuments {
-            entries.removeFirst(entries.count - maxDocuments)
+        if updated.count > maxDocuments {
+            updated.removeFirst(updated.count - maxDocuments)
         }
-        writeEntries(entries)
+        cachedEntries = updated
+        scheduleFlush()
     }
 
     private static func readEntries() -> [Entry] {
@@ -67,17 +80,44 @@ enum ScratchpadPersistence {
         UserDefaults.standard.set(data, forKey: notesKey)
     }
 
+    @MainActor private static var pendingFlush: Task<Void, Never>?
+    @MainActor private static var flushRevision = 0
+
+    /// Coalesce rapid edits/tab switches and perform JSON encoding + defaults
+    /// I/O off the main actor. A revision loop ensures a newer snapshot cannot
+    /// be lost while an older one is being written.
+    @MainActor private static func scheduleFlush() {
+        flushRevision &+= 1
+        guard pendingFlush == nil else { return }
+        pendingFlush = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            while true {
+                let revision = flushRevision
+                let snapshot = entries()
+                await Task.detached(priority: .utility) {
+                    writeEntries(snapshot)
+                }.value
+                if flushRevision == revision {
+                    pendingFlush = nil
+                    return
+                }
+            }
+        }
+    }
+
+    @MainActor static func awaitPendingFlush() async {
+        while let flush = pendingFlush {
+            await flush.value
+        }
+    }
+
     // MARK: - Attachment garbage collection
 
     /// Every attachment id referenced by any persisted note. Used to prune
     /// orphaned image files (an image whose `![](vellum-scratchpad://id)`
     /// reference the user has since deleted from the note text).
-    static func allReferencedAttachmentIds() -> Set<String> {
-        var ids = Set<String>()
-        for entry in readEntries() {
-            ids.formUnion(ScratchpadAttachmentStore.referencedIds(in: entry.text))
-        }
-        return ids
+    @MainActor static func persistedTextsSnapshot() -> [String] {
+        entries().map(\.text)
     }
 }
 

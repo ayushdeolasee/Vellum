@@ -22,6 +22,8 @@ struct WebViewerView_iOS: View {
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
+    // The controller owns the WKWebView. Keep it alive while the pane changes
+    // tabs so switching does not synchronously tear down and rebuild WebKit.
     @State private var controller = WebViewerController_iOS()
 
     var body: some View {
@@ -58,18 +60,21 @@ struct WebViewerView_iOS: View {
                     // responder; see selectionNoteDraft).
                     if controller.selection != nil || controller.selectionNoteDraft != nil,
                        let position = controller.popoverPosition {
-                        WebSelectionPopover(
-                            position: position,
-                            onHighlight: { color in controller.addHighlight(color: color) },
-                            onNote: { content in controller.addSelectionNote(content: content) },
-                            onBeginNote: { controller.beginSelectionNote() },
-                            onAskAi: { controller.askAiAboutSelection() },
-                            onClose: { controller.clearSelection() }
-                        )
-                        // Rekey on the bound passage so a new selection tears the
-                        // popover down (dropping a half-typed note) instead of
-                        // inheriting the previous one's field text.
-                        .id(controller.selectionIdentity)
+                        AnchoredPopover(
+                            x: position.x, y: position.y,
+                            placement: .above, containerSize: proxy.size
+                        ) {
+                            WebSelectionPopover(
+                                onHighlight: { color in controller.addHighlight(color: color) },
+                                onNote: { content in controller.addSelectionNote(content: content) },
+                                onBeginNote: { controller.beginSelectionNote() },
+                                onAskAi: { controller.askAiAboutSelection() },
+                                onClose: { controller.clearSelection() }
+                            )
+                            // Rekey on the bound passage so a new selection tears
+                            // the popover down instead of inheriting draft state.
+                            .id(controller.selectionIdentity)
+                        }
                         .zIndex(50)
                     }
 
@@ -139,6 +144,9 @@ struct WebViewerView_iOS: View {
             .onAppear {
                 controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
             }
+            .onChange(of: documentIdentity) {
+                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+            }
             .onDisappear {
                 controller.detach()
             }
@@ -156,14 +164,9 @@ struct WebViewerView_iOS: View {
             .onChange(of: app.mode) {
                 controller.pushMode(app.mode)
             }
-            // Observe the request counter too: re-tapping the already-selected
-            // sidebar highlight leaves `selectedAnnotationId` unchanged, so the
-            // counter is what forces the scroll-into-view to re-run.
-            .onChange(of: annotationStore.selectedAnnotationId) {
-                controller.scrollToSelected(
-                    annotations: annotationStore.annotations,
-                    selectedId: annotationStore.selectedAnnotationId)
-            }
+            // Only explicit navigation requests scroll. In-page note/highlight
+            // taps update selection state without moving a viewport that already
+            // contains the annotation.
             .onChange(of: annotationStore.selectionRequestCount) {
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
@@ -179,6 +182,10 @@ struct WebViewerView_iOS: View {
         } else {
             Color.clear
         }
+    }
+
+    private var documentIdentity: WebDocumentIdentity_iOS {
+        WebDocumentIdentity_iOS(tabId: app.activeTabId, url: app.document?.pdfPath)
     }
 
     /// Hand the finished crop to whichever panel armed the capture (mirrors
@@ -222,6 +229,11 @@ struct WebViewerView_iOS: View {
         .glassEffect(.regular, in: .capsule)
         .zIndex(40)
     }
+}
+
+private struct WebDocumentIdentity_iOS: Hashable {
+    var tabId: String?
+    var url: String?
 }
 
 /// Hosts the controller's WKWebView. UIKit counterpart of the macOS
@@ -269,6 +281,7 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
     @ObservationIgnored private weak var aiStore: AiStore?
     @ObservationIgnored private var mountTabId: String?
+    @ObservationIgnored private var loadedDocumentUrl: String?
     @ObservationIgnored private var attached = false
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
@@ -337,17 +350,22 @@ final class WebViewerController_iOS: NSObject {
     // MARK: Lifecycle
 
     func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
-        guard !attached else { return }
         attached = true
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
-        mountTabId = app.activeTabId
         applyZoom(app.zoom)
 
         // Global hooks used by the toolbar, sidebar, and AI tool execution
         // (window.__scrollToPage / __scrollToWebPosition / __captureWebPosition
         // / __locateWebText in the original).
+        // Claim the zoom slot too: only PDF viewers registered it originally,
+        // so after a PDF tab in this pane went away the slot kept a handler
+        // whose weak controller was gone — every zoom press (buttons, ⌘+/−)
+        // then vanished into it without even updating app.zoom / the % label.
+        app.zoomToHandler = { [weak app] target in
+            app?.setZoom(target)
+        }
         app.scrollToPageHandler = { [weak self] page in
             self?.post("scroll-to-page", ["page": page])
         }
@@ -381,9 +399,24 @@ final class WebViewerController_iOS: NSObject {
             self?.printPage()
         }
 
-        if let doc = app.document, doc.kind == .web {
-            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        guard let doc = app.document, doc.kind == .web,
+              let tabId = app.activeTabId else { return }
+
+        // Re-evaluation of the SwiftUI body is common during tab-strip edits.
+        // Only load when the viewer is actually being rebound to another tab or
+        // URL; reloading an unchanged page loses its live scroll/selection state.
+        guard mountTabId != tabId || loadedDocumentUrl != doc.pdfPath else {
+            pushAnnotations(annotationStore.annotations)
+            pushMode(app.mode)
+            pushSelectedHighlight()
+            return
         }
+
+        cancelPendingArchive()
+        clearTransientStateForRebind()
+        mountTabId = tabId
+        loadedDocumentUrl = doc.pdfPath
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
     }
 
     func detach() {
@@ -397,6 +430,7 @@ final class WebViewerController_iOS: NSObject {
         // Only clear the shared handler slots when no replacement viewer has
         // taken over (handlers hold self weakly, so a stale slot is inert).
         if let app, app.activeTabId == mountTabId || app.document == nil {
+            app.zoomToHandler = nil
             app.scrollToPageHandler = nil
             app.scrollToWebPositionHandler = nil
             annotationStore?.captureWebPositionHandler = nil
@@ -407,9 +441,28 @@ final class WebViewerController_iOS: NSObject {
             app.findClearHandler = nil
             app.printHandler = nil
         }
-        webView.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
-        webView.stopLoading()
+        // The message handler and WKWebView are installed once in makeWebView.
+        // Keep both alive for this pane so a temporary switch to the library or
+        // PDF reader can reuse WebKit instead of paying its startup cost again.
+    }
+
+    private func clearTransientStateForRebind() {
+        initCount = 0
+        isOffline = false
+        supportsPositions = false
+        selection = nil
+        popoverPosition = nil
+        selectionNoteDraft = nil
+        contextMenu = nil
+        noteComposer = nil
+        highlightEditor = nil
+        noteViewer = nil
+        archivedUrl = nil
+        pendingNavUrl = nil
+        outgoingNavUrl = nil
+        restoredUrl = nil
+        redirectReloadedUrl = nil
+        processReloadedUrl = nil
     }
 
     // MARK: Outbound commands
@@ -427,7 +480,18 @@ final class WebViewerController_iOS: NSObject {
     }
 
     func applyZoom(_ zoom: Double) {
-        webView.pageZoom = CGFloat(zoom)
+        // Safari's AA Page Zoom code path: WebKit's viewScale feeds
+        // ViewportConfiguration's layoutSizeScaleFactor, which shrinks the
+        // CSS layout viewport by the factor and renders it scaled back up —
+        // text, images, and responsive breakpoints all respond exactly like
+        // Safari, reflowed with no horizontal scroll. Reached via KVC (the
+        // "viewScale" key resolves to WebKit's _setViewScale:), the same way
+        // Firefox for iOS ships its page zoom. The alternatives fail:
+        // WKWebView.pageZoom is inverted by the iOS shrink-to-fit pass, and
+        // CSS zoom scales boxes but leaves font rendering unscaled on iOS
+        // WebKit (text stays put while images grow).
+        guard webView.responds(to: NSSelectorFromString("_setViewScale:")) else { return }
+        webView.setValue(CGFloat(zoom), forKey: "viewScale")
     }
 
     func goHistory(delta: Int) {
@@ -551,7 +615,7 @@ final class WebViewerController_iOS: NSObject {
                 viewportOffset: nil))
         Task {
             if let annotation = await annotationStore.addNote(input) {
-                annotationStore.selectAnnotation(annotation.id)
+                annotationStore.selectAnnotation(annotation.id, scrollIntoView: false)
             }
         }
     }
@@ -811,11 +875,18 @@ final class WebViewerController_iOS: NSObject {
 
     // MARK: Coordinate mapping
 
-    /// Map page-viewport coordinates to viewer coordinates (the page is
-    /// scaled by pageZoom, so CSS px arrive unscaled).
-    private func frameToParent(x: Double, y: Double) -> CGPoint {
-        let scale = app?.zoom ?? 1
-        return CGPoint(x: x * scale, y: y * scale)
+    /// Map layout-viewport CSS px (already visual-offset corrected by the
+    /// content script) into view points. The visual scale carries both the
+    /// Safari-style page zoom (viewScale) and any live pinch.
+    private func frameToParent(x: Double, y: Double, visualScale: Double) -> CGPoint {
+        CGPoint(x: x * visualScale, y: y * visualScale)
+    }
+
+    /// The visualViewport scale a script payload was measured under; 1 when
+    /// absent (old snapshots' cached scripts) or degenerate.
+    private func payloadVisualScale(_ data: [String: Any]) -> Double {
+        guard let scale = doubleValue(data["visualScale"]), scale > 0 else { return 1 }
+        return scale
     }
 
     // MARK: Inbound messages
@@ -868,7 +939,8 @@ final class WebViewerController_iOS: NSObject {
         case "note-placed":
             guard let anchor = parseNoteAnchor(data) else { break }
             let point = frameToParent(
-                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
+                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
+                visualScale: payloadVisualScale(data))
             hideContextMenu()
             noteViewer = nil
             noteComposer = WebNoteComposerState(point: point, anchor: anchor, openedAt: Date())
@@ -877,7 +949,8 @@ final class WebViewerController_iOS: NSObject {
 
         case "context-menu":
             let point = frameToParent(
-                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
+                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
+                visualScale: payloadVisualScale(data))
             noteComposer = nil
             noteViewer = nil
             let found = data["found"] as? Bool ?? false
@@ -888,10 +961,11 @@ final class WebViewerController_iOS: NSObject {
 
         case "annotation-click":
             guard let id = data["id"] as? String, let annotationStore else { break }
-            annotationStore.selectAnnotation(id)
+            annotationStore.selectAnnotation(id, scrollIntoView: false)
             let annotation = annotationStore.annotations.first { $0.id == id }
             let point = frameToParent(
-                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
+                x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
+                visualScale: payloadVisualScale(data))
             if annotation?.type == .note {
                 noteComposer = nil
                 highlightEditor = nil
@@ -1040,6 +1114,7 @@ final class WebViewerController_iOS: NSObject {
                   let self else { return }
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
+            self.loadedDocumentUrl = rebound.pdfPath
             self.initCount = 0
             self.webView.load(
                 URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
@@ -1081,6 +1156,7 @@ final class WebViewerController_iOS: NSObject {
             Task { [weak self] in
                 guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
                       let self else { return }
+                self.loadedDocumentUrl = rebound.pdfPath
                 // Server redirect: the destination's HTML was served under
                 // the pre-redirect request URL, so window.location still
                 // shows the old path and strict client routers would hydrate
@@ -1107,6 +1183,11 @@ final class WebViewerController_iOS: NSObject {
         }
 
         initCount += 1
+
+        // Re-assert the view scale for the fresh document (MobileSafari does
+        // the same on every navigation commit), so a tab restored or rebound
+        // mid-zoom can't render at 1.0.
+        applyZoom(app.zoom)
 
         if let pageCount = intValue(data["pageCount"]), pageCount > 0 {
             app.setNumPages(pageCount)
@@ -1169,10 +1250,14 @@ final class WebViewerController_iOS: NSObject {
         // double-tap selecting a word inside a highlight).
         highlightEditor = nil
 
-        let scale = app.zoom
+        // Selection rects arrive in layout CSS px with the visual-viewport
+        // pan already removed; the visual scale (Safari-style page zoom via
+        // viewScale × any live pinch) maps them into view points. Below-1
+        // values are real (zoomed-out pages), so no clamping to 1.
+        let visualScale = payloadVisualScale(data)
         popoverPosition = CGPoint(
-            x: (last.x + last.width / 2) * scale,
-            y: last.y * scale - 10)
+            x: (last.x + last.width / 2) * visualScale,
+            y: last.y * visualScale - 10)
         selection = WebSelection(
             text: text,
             pageNumber: intValue(data["pageNumber"]) ?? 1,

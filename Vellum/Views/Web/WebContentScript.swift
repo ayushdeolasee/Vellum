@@ -830,10 +830,12 @@ enum WebContentScript {
       // Viewport coords of the marker so the app shell can anchor the note
       // viewer popover next to it.
       var box = marker.getBoundingClientRect();
+      var vp = visualPointPayload(box.left + box.width / 2, box.top);
       post("annotation-click", {
         id: note.id,
-        x: box.left + box.width / 2,
-        y: box.top,
+        x: vp.x,
+        y: vp.y,
+        visualScale: vp.visualScale,
       });
     });
     root.appendChild(marker);
@@ -1449,10 +1451,17 @@ enum WebContentScript {
     if (start === null || end === null || end <= start) return;
 
     var mapped = [];
+    // During native pinch zoom, getClientRects() is relative to the layout
+    // viewport while SwiftUI overlays the visual viewport. Remove its pan offset
+    // here and send its scale so the native bridge can map CSS px to view points.
+    var visual = window.visualViewport;
+    var visualLeft = visual ? visual.offsetLeft : 0;
+    var visualTop = visual ? visual.offsetTop : 0;
+    var visualScale = visual && isFinite(visual.scale) ? visual.scale : 1;
     for (var i = 0; i < rects.length && i < 60; i++) {
       mapped.push({
-        x: rects[i].left,
-        y: rects[i].top,
+        x: rects[i].left - visualLeft,
+        y: rects[i].top - visualTop,
         width: rects[i].width,
         height: rects[i].height,
       });
@@ -1469,6 +1478,7 @@ enum WebContentScript {
       end: end,
       pageNumber: pageForRaw(start),
       rects: mapped,
+      visualScale: visualScale,
       prefix: ctx.prefix,
       suffix: ctx.suffix,
     });
@@ -1562,6 +1572,21 @@ enum WebContentScript {
     };
   }
 
+  // Visual-viewport correction for point payloads sent to the app shell:
+  // strip the pan offset and report the scale so the native side can map
+  // layout CSS px into view points. The scale carries BOTH the Safari-style
+  // page zoom (viewScale shrinks the layout viewport and renders it scaled
+  // back up) and any live pinch; on macOS (pageZoom) it is always 1.
+  function visualPointPayload(x, y) {
+    var visual = window.visualViewport;
+    var scale = visual && isFinite(visual.scale) && visual.scale > 0 ? visual.scale : 1;
+    return {
+      x: x - (visual ? visual.offsetLeft : 0),
+      y: y - (visual ? visual.offsetTop : 0),
+      visualScale: scale,
+    };
+  }
+
   document.addEventListener(
     "click",
     function (e) {
@@ -1571,8 +1596,10 @@ enum WebContentScript {
 
       var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
       if (!anchor) return; // stay in note mode
-      anchor.x = e.clientX;
-      anchor.y = e.clientY;
+      var vp = visualPointPayload(e.clientX, e.clientY);
+      anchor.x = vp.x;
+      anchor.y = vp.y;
+      anchor.visualScale = vp.visualScale;
       post("note-placed", anchor);
     },
     true
@@ -1616,10 +1643,14 @@ enum WebContentScript {
       e.stopImmediatePropagation();
       // Viewport coords of the clicked rect so the app shell can anchor the
       // popover above it (the highlight's first rect may be off screen).
+      var vp = visualPointPayload(
+        hit.left - window.scrollX + hit.width / 2,
+        hit.top - window.scrollY);
       post("annotation-click", {
         id: hit.id,
-        x: hit.left - window.scrollX + hit.width / 2,
-        y: hit.top - window.scrollY,
+        x: vp.x,
+        y: vp.y,
+        visualScale: vp.visualScale,
       });
     },
     true
@@ -1632,11 +1663,13 @@ enum WebContentScript {
     function (e) {
       var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
       e.preventDefault();
-      var payload = { x: e.clientX, y: e.clientY, found: !!anchor };
+      var vp = visualPointPayload(e.clientX, e.clientY);
+      var payload = { x: vp.x, y: vp.y, visualScale: vp.visualScale, found: !!anchor };
       if (anchor) {
         for (var k in anchor) payload[k] = anchor[k];
-        payload.x = e.clientX;
-        payload.y = e.clientY;
+        payload.x = vp.x;
+        payload.y = vp.y;
+        payload.visualScale = vp.visualScale;
       }
       post("context-menu", payload);
     },

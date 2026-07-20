@@ -195,9 +195,12 @@ final class AnnotationStore {
         }
     }
 
-    func selectAnnotation(_ id: String?) {
+    /// Select an annotation in shared UI state. Sidebar-driven selection asks
+    /// the viewer to navigate to the annotation; selection originating inside
+    /// the viewer is already on screen and must not move the viewport again.
+    func selectAnnotation(_ id: String?, scrollIntoView: Bool = true) {
         selectedAnnotationId = id
-        if id != nil { selectionRequestCount &+= 1 }
+        if id != nil, scrollIntoView { selectionRequestCount &+= 1 }
     }
 
     func clearAnnotations() {

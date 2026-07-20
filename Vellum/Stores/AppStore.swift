@@ -220,32 +220,38 @@ final class AppStore {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
         evictPreparedPdf(tabId: tabId)
-        // Start tabs carry no backend session — skip the metadata/close round
-        // trips that would otherwise fire against a nonexistent session id.
-        if closingTab.document != nil {
-            try? await sessions.setDocumentMetadata(
-                sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
-            try? await sessions.closeFile(sessionId: closingTab.id)
-        }
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
         if activeTabId != tabId {
             tabs = remaining
-            workspace?.scheduleSave()
-            return
-        }
-        tabs = remaining
-        if remaining.isEmpty {
-            applyEmptyActiveState()
-            // Closing a pane's last tab collapses the pane when the window is
-            // split; a lone pane stays open on the Welcome screen.
-            workspace?.paneDidEmpty(self)
         } else {
-            let next = remaining[min(closingIndex, remaining.count - 1)]
-            applyActiveState(from: next)
+            tabs = remaining
+            if remaining.isEmpty {
+                applyEmptyActiveState()
+                // Closing a pane's last tab collapses the pane when the window is
+                // split; a lone pane stays open on the Welcome screen.
+                workspace?.paneDidEmpty(self)
+            } else {
+                let next = remaining[min(closingIndex, remaining.count - 1)]
+                applyActiveState(from: next)
+            }
         }
         workspace?.scheduleSave()
+
+        // Backend teardown can involve metadata/file I/O. The tab has already
+        // disappeared from the UI, so finish that work asynchronously instead
+        // of making the close gesture look frozen. Start tabs have no session.
+        if closingTab.document != nil {
+            let sessions = sessions
+            Task {
+                try? await sessions.setDocumentMetadata(
+                    sessionId: closingTab.id,
+                    key: "last_page",
+                    value: String(closingTab.currentPage))
+                try? await sessions.closeFile(sessionId: closingTab.id)
+            }
+        }
     }
 
     func activateTab(_ tabId: String) {

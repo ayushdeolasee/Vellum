@@ -112,19 +112,23 @@ struct VellumApp_iOS: App {
                 await controller.flushPendingInkAndWait()
             }
             for pane in workspace.root.allLeaves() {
-                // Persist the pane's scratchpad note immediately (synchronous,
-                // main-actor) so a debounced edit isn't lost on suspend.
+                // Commit the pane's latest debounced edit to the scratchpad cache.
                 pane.scratchpad.flush()
                 for tab in pane.app.tabs {
                     try? await workspace.sessions.setDocumentMetadata(
                         sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
                     try? await workspace.sessions.saveFile(sessionId: tab.id)
                 }
+                // Persist the active document's in-flight page text AFTER the
+                // last_page writes (each refreshed the cache's validation
+                // hash), so a reopen still hits (issue #37 PR B).
+                await pane.app.flushPageTextCacheHandler?()
             }
             // Drain the coalesced background flushes so a page-text cache write
             // (issue #37) or an in-flight conversation blob (do-not-reintroduce
             // #8) still lands if the app is suspended right after backgrounding.
             await PageTextPersister.awaitInFlightFlushes()
+            await ScratchpadPersistence.awaitPendingFlush()
             await AiPersistence.awaitPendingFlush()
         }
     }

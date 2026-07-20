@@ -62,6 +62,11 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         uiView.backgroundColor = UIColor(palette.well)
+        if uiView.document !== document {
+            uiView.document = document
+            controller.pdfView = uiView
+            controller.documentAttached()
+        }
         // Store → view zoom sync only when it drifts (button zoom); the live
         // pinch drives scaleFactor directly and PDFViewScaleChanged mirrors it.
         if abs(Double(uiView.scaleFactor) - app.zoom) > 0.0001 {

@@ -402,7 +402,6 @@ private struct DeleteNoteButton: View {
 /// The highlight/note popover shown above a text selection. Hangs above and
 /// centered on the anchor point (translate(-50%, -100%)).
 struct WebSelectionPopover: View {
-    var position: CGPoint
     var onHighlight: (String) -> Void
     var onNote: (String) -> Void
     /// Fired as the note field opens, so the controller can pin the selection
@@ -414,7 +413,6 @@ struct WebSelectionPopover: View {
     @Environment(\.palette) private var palette
     @State private var showNoteInput = false
     @State private var noteText = ""
-    @State private var size: CGSize = .zero
     @FocusState private var noteFieldFocused: Bool
 
     var body: some View {
@@ -477,14 +475,6 @@ struct WebSelectionPopover: View {
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
-        .onGeometryChange(for: CGSize.self) { proxy in
-            proxy.size
-        } action: { newSize in
-            size = newSize
-        }
-        // translate(-50%, -100%): hangs above and centered on the anchor.
-        .offset(x: position.x - size.width / 2, y: position.y - size.height)
-        .opacity(size == .zero ? 0 : 1)
     }
 
     private func submitNote() {
