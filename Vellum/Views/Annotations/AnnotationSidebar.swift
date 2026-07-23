@@ -45,6 +45,12 @@ struct AnnotationSidebar: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: editFieldFocused) { wasFocused, isFocused in
+            guard wasFocused, !isFocused, let editingId,
+                  annotationStore.annotations.first(where: { $0.id == editingId })?.type == .bookmark
+            else { return }
+            saveEdit(editingId)
+        }
     }
 
     private var header: some View {
@@ -87,18 +93,21 @@ struct AnnotationSidebar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(palette.foreground)
 
-                HStack(spacing: 3) {
-                    Text("Select text to highlight, or press")
-                    Text("N")
-                        .font(.system(size: 10, design: .monospaced))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(.separator)
-                        }
-                    Text("to drop a note.")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Select text to highlight,")
+                    HStack(spacing: 3) {
+                        Text("or press")
+                        Text("N")
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(.separator)
+                            }
+                        Text("to drop a note.")
+                    }
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(palette.mutedForeground)
@@ -294,7 +303,10 @@ private struct AnnotationRow: View {
                 }
 
                 if editing {
-                    TextField("", text: $editText)
+                    TextField(
+                        "", text: $editText,
+                        prompt: annotation.type == .bookmark ? Text("Add a title…") : nil
+                    )
                         .textFieldStyle(.plain)
                         .font(.system(size: fontSize))
                         .padding(.horizontal, 8)
@@ -323,6 +335,24 @@ private struct AnnotationRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Bookmarks have no content to double-click until a title exists,
+            // so they get an explicit edit affordance next to the trash.
+            if annotation.type == .bookmark, !editing {
+                let hasTitle = annotation.content?.isEmpty == false
+                Button(action: onStartEdit) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 14))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(palette.mutedForeground)
+                .opacity(hovering || selected ? 1 : 0)
+                .help(hasTitle ? "Edit bookmark title" : "Add bookmark title")
+                .accessibilityLabel(hasTitle ? "Edit bookmark title" : "Add bookmark title")
+                .accessibilityIdentifier("annotationRow.editTitle")
+            }
 
             Button(action: onDelete) {
                 Image(systemName: "trash")
