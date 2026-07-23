@@ -332,6 +332,65 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertFalse(unknown)
     }
 
+    func testBookmarkTitleCreateUpdateClear() async throws {
+        let path = makeTestPdf(name: "bookmark-title")
+        let session = try await openSession(path)
+
+        // Untitled bookmark: default /Title, no /VellumContent.
+        let bookmark = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 2, color: nil, content: nil, positionData: nil))
+        XCTAssertNil(bookmark.content)
+
+        // Titling through update_annotation stores /VellumContent and mirrors
+        // it into /Title (non-ASCII exercises the UTF-16BE hex encoding).
+        let title = "Key derivation — proof"
+        let titled = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: bookmark.id, color: nil, content: title, positionData: nil))
+        XCTAssertTrue(titled)
+        var items = rawOutlineItems(path)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(CgPdf.string(items[0], "Title"), title)
+        XCTAssertEqual(CgPdf.string(items[0], "VellumContent"), title)
+        XCTAssertEqual(CgPdf.string(items[0], "VellumNM"), bookmark.id)
+
+        var reopened = try await openSession(path)
+        var annotations = try await reopened.annotations(pageNumber: nil)
+        var read = try XCTUnwrap(annotations.first { $0.id == bookmark.id })
+        XCTAssertEqual(read.content, title)
+        XCTAssertEqual(read.createdAt, bookmark.createdAt, "created_at must not change on update")
+        XCTAssertGreaterThanOrEqual(read.updatedAt, read.createdAt)
+
+        // Clearing the title restores the default /Title and drops /VellumContent.
+        let cleared = try await reopened.updateAnnotation(UpdateAnnotationInput(
+            id: bookmark.id, color: nil, content: "", positionData: nil))
+        XCTAssertTrue(cleared)
+        items = rawOutlineItems(path)
+        XCTAssertEqual(CgPdf.string(items[0], "Title"), "Bookmark - page 2")
+        XCTAssertFalse(CgPdf.has(items[0], "VellumContent"))
+
+        reopened = try await openSession(path)
+        annotations = try await reopened.annotations(pageNumber: nil)
+        read = try XCTUnwrap(annotations.first { $0.id == bookmark.id })
+        XCTAssertNil(read.content)
+
+        // Creating with a title stores it directly.
+        let titledCreate = try await reopened.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 1, color: nil, content: "Intro", positionData: nil))
+        XCTAssertEqual(titledCreate.content, "Intro")
+        items = rawOutlineItems(path)
+        let created = try XCTUnwrap(items.first { CgPdf.string($0, "VellumNM") == titledCreate.id })
+        XCTAssertEqual(CgPdf.string(created, "Title"), "Intro")
+        XCTAssertEqual(CgPdf.string(created, "VellumContent"), "Intro")
+        annotations = try await reopened.annotations(pageNumber: nil)
+        read = try XCTUnwrap(annotations.first { $0.id == titledCreate.id })
+        XCTAssertEqual(read.content, "Intro")
+
+        // Unknown id still reports not-found.
+        let missing = try await reopened.updateAnnotation(UpdateAnnotationInput(
+            id: "missing-id", color: nil, content: "x", positionData: nil))
+        XCTAssertFalse(missing)
+    }
+
     func testMetadataLastPageTitleAndCustomKeys() async throws {
         let path = makeTestPdf(name: "metadata")
         let session = try await openSession(path)

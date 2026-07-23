@@ -290,16 +290,18 @@ actor PdfDocumentIO {
         let now = PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
+            let title = input.content?.isEmpty == false ? input.content : nil
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
-                normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
+                normalizedData: normalized, pageNumber: input.pageNumber, id: id,
+                content: title, now: now)
             try await saveThroughPdfKit(patched)
             return Annotation(
                 id: id,
                 type: .bookmark,
                 pageNumber: input.pageNumber,
                 color: nil,
-                content: nil,
+                content: title,
                 positionData: nil,
                 createdAt: now,
                 updatedAt: now)
@@ -330,12 +332,34 @@ actor PdfDocumentIO {
             updatedAt: now)
     }
 
-    /// update_annotation: matches /NM or derived ids (third-party annotations
-    /// included; un-NM'd ones get stamped with their derived id). Never
-    /// matches outline bookmarks. Only provided fields change; /M and
-    /// /VellumUpdatedAt always refresh.
+    /// update_annotation: outline bookmarks first (only their title/content is
+    /// mutable), then page annotations matched by /NM or derived ids
+    /// (third-party annotations included; un-NM'd ones get stamped with their
+    /// derived id). Only provided fields change; /M and /VellumUpdatedAt
+    /// always refresh.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
+
+        if PdfBookmarks.containsBookmark(document: raw, id: input.id) {
+            // Color and position don't apply to outline items; an update
+            // carrying neither field is a no-op on an existing record.
+            guard let content = input.content else { return true }
+            let pageNumber = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
+                .first { $0.id == input.id }?.pageNumber ?? 1
+            let normalized = try serialize(document)
+            guard let patched = try PdfBookmarks.updateBookmarkIncrement(
+                normalizedData: normalized,
+                id: input.id,
+                content: content,
+                defaultTitle: PdfBookmarks.defaultTitle(pageNumber: pageNumber),
+                now: PdfDates.rfc3339Now())
+            else {
+                return false
+            }
+            try await saveThroughPdfKit(patched)
+            return true
+        }
+
         guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
             return false
         }

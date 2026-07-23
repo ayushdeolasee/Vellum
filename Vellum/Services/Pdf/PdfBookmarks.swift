@@ -48,12 +48,15 @@ enum PdfBookmarks {
                    pageNumber == nil || pageNumber == page
                 {
                     let now = PdfDates.rfc3339Now()
+                    // The user title lives in /VellumContent; /Title mirrors it
+                    // for external viewers and holds the default when untitled.
+                    let content = CgPdf.string(current, "VellumContent")
                     bookmarks.append(Annotation(
                         id: id,
                         type: .bookmark,
                         pageNumber: page,
                         color: nil,
-                        content: nil,
+                        content: content?.isEmpty == false ? content : nil,
                         positionData: nil,
                         createdAt: CgPdf.string(current, "VellumCreatedAt") ?? now,
                         updatedAt: CgPdf.string(current, "VellumUpdatedAt") ?? now))
@@ -105,15 +108,23 @@ enum PdfBookmarks {
         return found
     }
 
+    /// /Title for a bookmark with no user title.
+    static func defaultTitle(pageNumber: Int) -> String {
+        "Bookmark - page \(pageNumber)"
+    }
+
     // MARK: - Creation (incremental update)
 
     /// create_bookmark: new outline item appended at the end of the root's
     /// sibling list, root /First//Last//Count updated. `normalizedData` must be
     /// PDFKit-serializer output; returns that data with the update appended.
+    /// A non-empty `content` is the user title: stored in /VellumContent and
+    /// mirrored into /Title.
     static func createBookmarkIncrement(
         normalizedData: Data,
         pageNumber: Int,
         id: String,
+        content: String? = nil,
         now: String
     ) throws -> Data {
         let file = try ClassicPdfFile(data: normalizedData)
@@ -147,14 +158,19 @@ enum PdfBookmarks {
         let lastNumber = root.reference(forKey: "Last")
         let bookmarkNumber = increment.allocateObjectNumber()
 
+        let title = content?.isEmpty == false ? content! : defaultTitle(pageNumber: pageNumber)
         var bookmark: [UInt8] = Array("<< /Title ".utf8)
-        bookmark.append(contentsOf: PdfTextString.encode("Bookmark - page \(pageNumber)"))
+        bookmark.append(contentsOf: PdfTextString.encode(title))
         bookmark.append(contentsOf: Array(" /Parent \(outlinesNumber) 0 R /Dest [\(pageObjectNumber) 0 R /Fit] /VellumType /Bookmark /VellumNM ".utf8))
         bookmark.append(contentsOf: PdfTextString.encode(id))
         bookmark.append(contentsOf: Array(" /VellumCreatedAt ".utf8))
         bookmark.append(contentsOf: PdfTextString.encode(now))
         bookmark.append(contentsOf: Array(" /VellumUpdatedAt ".utf8))
         bookmark.append(contentsOf: PdfTextString.encode(now))
+        if let content, !content.isEmpty {
+            bookmark.append(contentsOf: Array(" /VellumContent ".utf8))
+            bookmark.append(contentsOf: PdfTextString.encode(content))
+        }
         if let lastNumber {
             bookmark.append(contentsOf: Array(" /Prev \(lastNumber) 0 R".utf8))
         }
@@ -174,6 +190,44 @@ enum PdfBookmarks {
         adjustOutlineCount(&root, delta: 1)
         increment.setObject(outlinesNumber, source: root.sourceBytes)
 
+        return increment.appended()
+    }
+
+    // MARK: - Update (incremental update)
+
+    /// Retitle a bookmark: set /VellumContent and mirror it into /Title, or —
+    /// when `content` is empty — clear the title back to `defaultTitle`.
+    /// /VellumUpdatedAt always refreshes. Returns nil when no Vellum bookmark
+    /// carries the id.
+    static func updateBookmarkIncrement(
+        normalizedData: Data,
+        id: String,
+        content: String,
+        defaultTitle: String,
+        now: String
+    ) throws -> Data? {
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
+              let outlinesNumber = catalog.reference(forKey: "Outlines"),
+              let root = file.objectSource(outlinesNumber)
+        else { return nil }
+
+        guard let bookmarkNumber = findBookmarkObject(
+            in: file, rootNumber: outlinesNumber, root: root, id: id),
+            var bookmark = file.objectSource(bookmarkNumber)
+        else { return nil }
+
+        if content.isEmpty {
+            bookmark.removeEntry(forKey: "VellumContent")
+            bookmark.setTextString(forKey: "Title", to: defaultTitle)
+        } else {
+            bookmark.setTextString(forKey: "VellumContent", to: content)
+            bookmark.setTextString(forKey: "Title", to: content)
+        }
+        bookmark.setTextString(forKey: "VellumUpdatedAt", to: now)
+
+        var increment = PdfIncrement(file: file)
+        increment.setObject(bookmarkNumber, source: bookmark.sourceBytes)
         return increment.appended()
     }
 
