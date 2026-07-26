@@ -86,6 +86,53 @@ final class InkPersistenceTests: XCTestCase {
         XCTAssertFalse(PdfInk.hasInk(on: page), "clearing removes Vellum ink")
     }
 
+    /// A stroke fully erased with the bitmap eraser keeps a mask that excludes
+    /// its whole path. Re-create that shape directly and pin down the trap this
+    /// guards against: `renderBounds` still reports the mask's bounds (never
+    /// empty), so only `maskedPathRanges` can tell the stroke no longer renders.
+    private func fullyErasedStroke() -> PKStroke {
+        let base = sampleDrawing().strokes[0]
+        // A mask nowhere near the path: nothing of the stroke is kept.
+        let mask = UIBezierPath(rect: CGRect(x: 5000, y: 5000, width: 1, height: 1))
+        return PKStroke(ink: base.ink, path: base.path, transform: base.transform, mask: mask)
+    }
+
+    @MainActor
+    func testFullyErasedStrokeIsNotVisibleInk() throws {
+        let erased = fullyErasedStroke()
+        XCTAssertFalse(
+            erased.renderBounds.isEmpty,
+            "precondition: renderBounds cannot detect a fully erased stroke — "
+                + "if this ever fails, PencilKit changed and this suite should be revisited")
+        XCTAssertFalse(PdfInk.strokeHasVisibleInk(erased))
+
+        // A page whose only strokes are fully erased must not read as inked,
+        // and must not write native ink back to the PDF (which would resurrect
+        // the erased stroke on reload and keep the sidebar chip alive).
+        let (_, page) = try blankPage()
+        PdfInk.apply(PKDrawing(strokes: [erased]), to: page)
+        XCTAssertFalse(PdfInk.hasInk(on: page), "fully erased page reads as un-inked")
+        XCTAssertTrue(page.annotations.filter { PdfInk.isVellumInk($0) }.isEmpty)
+    }
+
+    @MainActor
+    func testPartiallyErasedStrokeStillCountsAsInk() throws {
+        let base = sampleDrawing().strokes[0]
+        // Keep roughly the left half of the stroke (its x span is 100...280).
+        let mask = UIBezierPath(rect: CGRect(x: 0, y: 0, width: 190, height: 792))
+        let half = PKStroke(ink: base.ink, path: base.path, transform: base.transform, mask: mask)
+        XCTAssertTrue(PdfInk.strokeHasVisibleInk(half))
+
+        let (_, page) = try blankPage()
+        PdfInk.apply(PKDrawing(strokes: [half]), to: page)
+        XCTAssertTrue(PdfInk.hasInk(on: page), "partially erased stroke is still ink")
+    }
+
+    @MainActor
+    func testUnmaskedStrokeIsVisibleInk() {
+        XCTAssertTrue(PdfInk.strokeHasVisibleInk(sampleDrawing().strokes[0]))
+    }
+
     /// The latent lost-update race: an Apple Pencil ink write and an annotation
     /// write to the SAME file are both full read-modify-writes. Routed through
     /// the shared `PdfFileGate` they serialize, so whichever runs second sees

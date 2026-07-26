@@ -253,13 +253,13 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
 
     /// Whether a cached canvas exists for the page and, if so, whether it has
     /// any *visible* ink. `nil` means no cached canvas (caller should consult
-    /// `PdfInk`). Uses each stroke's mask-aware `renderBounds`: the bitmap eraser
-    /// clips a stroke via its mask but leaves the (now-invisible) stroke object in
-    /// `drawing.strokes`, so a raw `strokes.isEmpty` check would report a fully
-    /// erased page as still inked.
+    /// `PdfInk`). The bitmap eraser clips a stroke via its mask but leaves the
+    /// (now-invisible) stroke object in `drawing.strokes`, so a raw
+    /// `strokes.isEmpty` check would report a fully erased page as still inked —
+    /// hence the per-stroke visibility test (see `PdfInk.strokeHasVisibleInk`).
     func cachedStrokes(forPage n: Int) -> Bool? {
         canvas(forPage: n).map { canvas in
-            canvas.drawing.strokes.contains { !$0.renderBounds.isEmpty }
+            canvas.drawing.strokes.contains { PdfInk.strokeHasVisibleInk($0) }
         }
     }
 

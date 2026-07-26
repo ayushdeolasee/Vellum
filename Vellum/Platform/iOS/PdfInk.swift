@@ -27,11 +27,10 @@ enum PdfInk {
         var storedData = false
         for stroke in drawing.strokes {
             // The bitmap eraser masks a stroke rather than deleting it, so fully
-            // erased strokes linger in `drawing.strokes` with an empty
-            // `renderBounds`. Skip them: don't write them back as native ink (which
-            // would make the page read as annotated again and resurrect erased ink
-            // in other viewers / on reload).
-            guard !stroke.renderBounds.isEmpty else { continue }
+            // erased strokes linger in `drawing.strokes`. Skip them: don't write
+            // them back as native ink (which would make the page read as annotated
+            // again and resurrect erased ink in other viewers / on reload).
+            guard strokeHasVisibleInk(stroke) else { continue }
             guard let annotation = inkAnnotation(for: stroke, crop: crop) else { continue }
             if !storedData {
                 // Stash the whole drawing once per page for lossless re-edit.
@@ -117,6 +116,16 @@ enum PdfInk {
 
     static func hasInk(on page: PDFPage) -> Bool {
         page.annotations.contains { isVellumInk($0) }
+    }
+
+    /// Whether any part of the stroke still renders. `maskedPathRanges` is the
+    /// only reliable signal: a fully bitmap-erased stroke keeps a mask that
+    /// excludes the whole path, but its `renderBounds` still reports the mask's
+    /// bounds (never empty) — so a `renderBounds.isEmpty` check reads a fully
+    /// erased stroke as visible. An unmasked (or empty-mask) stroke reports the
+    /// full path range here, matching how PencilKit actually renders it.
+    static func strokeHasVisibleInk(_ stroke: PKStroke) -> Bool {
+        !stroke.maskedPathRanges.isEmpty
     }
 }
 #endif
