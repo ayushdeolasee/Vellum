@@ -139,6 +139,14 @@ final class WebLibraryStorageTests: XCTestCase {
         let record = try XCTUnwrap(WebLibrary.loadRecord(forKey: key))
         let stored = try XCTUnwrap(record.annotations.first { $0.id == second.id })
         XCTAssertEqual(stored.isPinned, true)
+
+        // The decoded model round-trips through the same coding keys, so pin
+        // the literal snake_case name other clients read.
+        let data = try Data(contentsOf: WebLibrary.recordPath(forKey: key))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rawAnnotations = try XCTUnwrap(json["annotations"] as? [[String: Any]])
+        let raw = try XCTUnwrap(rawAnnotations.first { ($0["id"] as? String) == second.id })
+        XCTAssertEqual(raw["is_pinned"] as? Bool, true)
     }
 
     // MARK: - TTL eviction

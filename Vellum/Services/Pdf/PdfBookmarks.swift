@@ -181,6 +181,17 @@ enum PdfBookmarks {
 
     // MARK: - Update (incremental update)
 
+    /// Walk catalog → /Outlines → outline tree for the Vellum bookmark
+    /// carrying this id, returning its object number. nil when the document
+    /// has no outline or no item matches.
+    private static func findBookmarkNumber(in file: ClassicPdfFile, id: String) -> Int? {
+        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
+              let outlinesNumber = catalog.reference(forKey: "Outlines"),
+              let root = file.objectSource(outlinesNumber)
+        else { return nil }
+        return findBookmarkObject(in: file, rootNumber: outlinesNumber, root: root, id: id)
+    }
+
     /// Patch pin state on an outline bookmark. Returns nil when no Vellum
     /// bookmark carries the id. PDFKit cannot write custom keys on outline
     /// items, so this rewrites the outline object in place.
@@ -191,13 +202,7 @@ enum PdfBookmarks {
         now: String
     ) throws -> Data? {
         let file = try ClassicPdfFile(data: normalizedData)
-        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
-              let outlinesNumber = catalog.reference(forKey: "Outlines"),
-              let root = file.objectSource(outlinesNumber)
-        else { return nil }
-
-        guard let bookmarkNumber = findBookmarkObject(
-            in: file, rootNumber: outlinesNumber, root: root, id: id),
+        guard let bookmarkNumber = findBookmarkNumber(in: file, id: id),
               var bookmark = file.objectSource(bookmarkNumber)
         else { return nil }
 
@@ -216,14 +221,7 @@ enum PdfBookmarks {
     /// Vellum bookmark carries the id.
     static func deleteBookmarkIncrement(normalizedData: Data, id: String) throws -> Data? {
         let file = try ClassicPdfFile(data: normalizedData)
-        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
-              let outlinesNumber = catalog.reference(forKey: "Outlines"),
-              let root = file.objectSource(outlinesNumber)
-        else { return nil }
-
-        guard let bookmarkNumber = findBookmarkObject(
-            in: file, rootNumber: outlinesNumber, root: root, id: id)
-        else { return nil }
+        guard let bookmarkNumber = findBookmarkNumber(in: file, id: id) else { return nil }
 
         guard let bookmark = file.objectSource(bookmarkNumber) else {
             throw SessionServiceError.invalidDocument("Failed to read PDF bookmark: missing object")

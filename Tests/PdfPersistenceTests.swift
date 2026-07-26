@@ -491,6 +491,19 @@ final class PdfPersistenceTests: XCTestCase {
         annotations = try await openSession(path).annotations(pageNumber: nil)
         XCTAssertEqual(annotations.map(\.id), [page2.id, page1.id])
         XCTAssertTrue(try XCTUnwrap(annotations.first { $0.id == page2.id }).pinned)
+
+        // Unpin runs the same incremental outline rewrite in reverse.
+        let unpinned = try await openSession(path).updateAnnotation(UpdateAnnotationInput(
+            id: page2.id, color: nil, content: nil, positionData: nil, isPinned: false))
+        XCTAssertTrue(unpinned)
+
+        let clearedItems = rawOutlineItems(path)
+        let cleared = try XCTUnwrap(clearedItems.first { CgPdf.string($0, "VellumNM") == page2.id })
+        XCTAssertEqual(CgPdf.integer(cleared, "VellumPinned"), 0)
+
+        annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [page1.id, page2.id], "unpin restores page order")
+        XCTAssertFalse(try XCTUnwrap(annotations.first { $0.id == page2.id }).pinned)
     }
 
     func testDeleteHighlight() async throws {
