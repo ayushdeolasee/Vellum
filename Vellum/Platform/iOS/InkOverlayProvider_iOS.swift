@@ -301,6 +301,17 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         // The canvas draws in `K`× page space; persist page (zoom-1) space so the
         // on-disk `/Ink` geometry is resolution-independent.
         let pageDrawing = Self.scaleDrawing(canvasView.drawing, by: 1 / max(canvas.superSample, 1))
+        #if DEBUG
+        if let last = canvasView.drawing.strokes.last {
+            let pts = Array(last.path)
+            let meanSize = pts.map { ($0.size.width + $0.size.height) / 2 }.reduce(0, +) / CGFloat(max(pts.count, 1))
+            let sx = sqrt(last.transform.a * last.transform.a + last.transform.c * last.transform.c)
+            NSLog("[ink-width] K=%.2f pdfScale=%.2f canvasBounds=%.0f toolW=%@ meanPtSize=%.3f strokeSX=%.3f pageW=%.3f",
+                  canvas.superSample, pdfScale, canvas.bounds.width,
+                  String(describing: (canvas.tool as? PKInkingTool)?.width ?? -1),
+                  meanSize, sx, meanSize * sx / max(canvas.superSample, 1))
+        }
+        #endif
         ink?.drawingChanged(pageDrawing, page: canvas.pageNumber)
     }
 
