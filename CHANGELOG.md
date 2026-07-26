@@ -15,6 +15,11 @@ conflict markers, leaving `main` uncompilable), landing the final
 
 ### Added
 
+- **Pin any annotation to the top of the list.** Highlights, notes, and
+  bookmarks can be pinned from the annotations sidebar (pin button on hover,
+  or the row context menu). Pinned items float above the rest, stay pinned
+  across reopen, and work for both PDFs (embedded `/VellumPinned`) and web
+  pages (`is_pinned` in the JSON sidecar).
 - **Your notes now follow the document, not its path.** Vellum stamps a
   durable identity (`/VellumDocId`) into a PDF the first time it writes to it
   — never just for opening — so renaming, moving, or copying a file no

@@ -110,6 +110,37 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertEqual(WebLibrary.loadRecord(at: recordPath)?.savedAt, originalSavedAt)
     }
 
+    /// Pinning a web annotation writes `is_pinned` into the JSON sidecar and
+    /// floats it to the front of getAnnotations order.
+    func testPinAnnotationPersistsAndSortsFirst() async throws {
+        let url = "https://example.com/pin-me"
+        let key = WebLibrary.pageKey(url)
+        try WebLibrary.saveRecord(WebPageRecord(url: url), at: WebLibrary.recordPath(forKey: key))
+        let io = WebDocumentIO(url: url, key: key)
+
+        let first = try await io.createAnnotation(
+            CreateAnnotationInput(type: .highlight, pageNumber: 1, content: "a"),
+            storedHighlightColor: "#fde68a")
+        let second = try await io.createAnnotation(
+            CreateAnnotationInput(type: .note, pageNumber: 2, content: "b"),
+            storedHighlightColor: "#fde68a")
+
+        var list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [first.id, second.id])
+
+        let updated = try await io.updateAnnotation(UpdateAnnotationInput(
+            id: second.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(updated)
+
+        list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [second.id, first.id])
+        XCTAssertTrue(try XCTUnwrap(list.first).pinned)
+
+        let record = try XCTUnwrap(WebLibrary.loadRecord(forKey: key))
+        let stored = try XCTUnwrap(record.annotations.first { $0.id == second.id })
+        XCTAssertEqual(stored.isPinned, true)
+    }
+
     // MARK: - TTL eviction
 
     func testEvictionRemovesOnlyStaleUnsavedArtifacts() throws {

@@ -423,6 +423,76 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertFalse(missing)
     }
 
+    /// Pinning a highlight (or note) stamps /VellumPinned, survives reopen,
+    /// floats the annotation to the front of the list, and can be cleared.
+    func testPinHighlightPersistsAndSortsFirst() async throws {
+        let path = makeTestPdf(name: "pin-highlight")
+        let session = try await openSession(path)
+        let early = try await session.createAnnotation(CreateAnnotationInput(
+            type: .highlight,
+            pageNumber: 1,
+            color: "#fef08a",
+            content: nil,
+            positionData: position(AnnotationRect(x: 72, y: 100, width: 100, height: 16))))
+        let late = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 2,
+            color: nil,
+            content: "later note",
+            positionData: position(AnnotationRect(x: 40, y: 40, width: 0, height: 0))))
+
+        var annotations = try await session.annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [early.id, late.id], "unpinned order is page then create")
+
+        let pinned = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: late.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(pinned)
+
+        // Raw key on the note annotation.
+        let dictionary = try XCTUnwrap(rawAnnotation(path, page: 2, nm: late.id))
+        XCTAssertEqual(CgPdf.integer(dictionary, "VellumPinned"), 1)
+
+        // Fresh session: pin survives and sorts first.
+        annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [late.id, early.id])
+        let read = try XCTUnwrap(annotations.first { $0.id == late.id })
+        XCTAssertTrue(read.pinned)
+
+        // Unpin restores page/create order.
+        let unpinned = try await openSession(path).updateAnnotation(UpdateAnnotationInput(
+            id: late.id, color: nil, content: nil, positionData: nil, isPinned: false))
+        XCTAssertTrue(unpinned)
+        annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [early.id, late.id])
+        XCTAssertFalse(try XCTUnwrap(annotations.first { $0.id == late.id }).pinned)
+    }
+
+    /// Outline bookmarks also accept pin updates (via the incremental path
+    /// PDFKit cannot take for custom outline keys).
+    func testPinBookmarkPersistsAndSortsFirst() async throws {
+        let path = makeTestPdf(name: "pin-bookmark")
+        let session = try await openSession(path)
+        let page2 = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 2, color: nil, content: nil, positionData: nil))
+        let page1 = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 1, color: nil, content: nil, positionData: nil))
+
+        var annotations = try await session.annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [page1.id, page2.id])
+
+        let pinned = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: page2.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(pinned)
+
+        let items = rawOutlineItems(path)
+        let item = try XCTUnwrap(items.first { CgPdf.string($0, "VellumNM") == page2.id })
+        XCTAssertEqual(CgPdf.integer(item, "VellumPinned"), 1)
+
+        annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [page2.id, page1.id])
+        XCTAssertTrue(try XCTUnwrap(annotations.first { $0.id == page2.id }).pinned)
+    }
+
     func testDeleteHighlight() async throws {
         let path = makeTestPdf(name: "delete")
         let session = try await openSession(path)

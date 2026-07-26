@@ -48,6 +48,7 @@ enum PdfBookmarks {
                    pageNumber == nil || pageNumber == page
                 {
                     let now = PdfDates.rfc3339Now()
+                    let isPinned = CgPdf.integer(current, "VellumPinned") == 1 ? true : nil
                     bookmarks.append(Annotation(
                         id: id,
                         type: .bookmark,
@@ -56,7 +57,8 @@ enum PdfBookmarks {
                         content: nil,
                         positionData: nil,
                         createdAt: CgPdf.string(current, "VellumCreatedAt") ?? now,
-                        updatedAt: CgPdf.string(current, "VellumUpdatedAt") ?? now))
+                        updatedAt: CgPdf.string(current, "VellumUpdatedAt") ?? now,
+                        isPinned: isPinned))
                 }
                 walk(CgPdf.dictionary(current, "First"))
                 item = CgPdf.dictionary(current, "Next")
@@ -174,6 +176,36 @@ enum PdfBookmarks {
         adjustOutlineCount(&root, delta: 1)
         increment.setObject(outlinesNumber, source: root.sourceBytes)
 
+        return increment.appended()
+    }
+
+    // MARK: - Update (incremental update)
+
+    /// Patch pin state on an outline bookmark. Returns nil when no Vellum
+    /// bookmark carries the id. PDFKit cannot write custom keys on outline
+    /// items, so this rewrites the outline object in place.
+    static func updateBookmarkIncrement(
+        normalizedData: Data,
+        id: String,
+        isPinned: Bool,
+        now: String
+    ) throws -> Data? {
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
+              let outlinesNumber = catalog.reference(forKey: "Outlines"),
+              let root = file.objectSource(outlinesNumber)
+        else { return nil }
+
+        guard let bookmarkNumber = findBookmarkObject(
+            in: file, rootNumber: outlinesNumber, root: root, id: id),
+              var bookmark = file.objectSource(bookmarkNumber)
+        else { return nil }
+
+        bookmark.setInteger(forKey: "VellumPinned", to: isPinned ? 1 : 0)
+        bookmark.setValue(forKey: "VellumUpdatedAt", raw: PdfTextString.encode(now))
+
+        var increment = PdfIncrement(file: file)
+        increment.setObject(bookmarkNumber, source: bookmark.sourceBytes)
         return increment.appended()
     }
 
