@@ -401,8 +401,10 @@ final class InkController_iOS {
         debounceTask = nil
         if let drainTask { return drainTask }
         guard !pendingDrawings.isEmpty else { return nil }
-        let task = Task { [weak self] in
-            guard let self else { return }
+        // Strong `self` for the same reason as the debounce task: the batch this
+        // is about to write lives on this object, and the task body doesn't
+        // start until the next main-actor turn. The retain ends with the drain.
+        let task = Task {
             await self.drainPendingInk()
             self.drainTask = nil
         }
@@ -438,11 +440,16 @@ final class InkController_iOS {
             return
         }
         debounceTask?.cancel()
-        debounceTask = Task { [weak self] in
+        // Strong `self` on purpose. The pending drawings live on this object, so
+        // a weak capture would silently drop them if the controller went away
+        // during the debounce window — closing a tab mid-stroke would lose ink.
+        // The retain is bounded: the task ends after `persistDebounce` (or is
+        // cancelled by the next stroke), and releasing it breaks the cycle.
+        debounceTask = Task {
             try? await Task.sleep(for: Self.persistDebounce)
             guard !Task.isCancelled else { return }
-            self?.debounceTask = nil
-            self?.flushPendingInk()
+            self.debounceTask = nil
+            self.flushPendingInk()
         }
     }
 

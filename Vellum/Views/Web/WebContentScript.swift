@@ -2103,7 +2103,10 @@ enum WebContentScript {
       // page that had gone quiet — the SPA route change this observer exists for
       // — keeps the responsive floor.
       var REMAP_MIN_MS = 600;
-      var REMAP_MAX_MS = 10000;
+      // Ceiling on the backoff. This is also the worst case for how long a
+      // highlight can sit stale on a page that both re-renders AND churns
+      // continuously, so it stays modest rather than maximally thrifty.
+      var REMAP_MAX_MS = 5000;
       var remapDelay = REMAP_MIN_MS;
       var remapTimer = null;
       var lastRemapAt = 0;
