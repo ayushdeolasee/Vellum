@@ -43,7 +43,7 @@ enum MathRenderer {
     /// Render a LaTeX string (no delimiters) to an image. Returns nil when the
     /// source fails to parse, so callers can fall back to styled plain text.
     static func render(latex: String, fontSize: CGFloat, color: NSColor, display: Bool) -> Rendered? {
-        let trimmed = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = normalizeCommands(latex.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !trimmed.isEmpty else { return nil }
 
         // Resolve dynamic (catalog/appearance) colors to concrete sRGB so the
@@ -88,6 +88,21 @@ enum MathRenderer {
         let rendered = Rendered(image: image, descent: descent)
         cache.setObject(CachedRender(rendered), forKey: key)
         return rendered
+    }
+
+    /// SwiftMath does not implement the common modern `\dots` spelling. One
+    /// unknown command rejects the complete equation, so normalize it to the
+    /// equivalent `\ldots` that SwiftMath supports.
+    nonisolated private static let dotsRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\\dots(?![a-zA-Z])"#)
+
+    nonisolated private static func normalizeCommands(_ latex: String) -> String {
+        guard latex.contains("\\dots"), let regex = dotsRegex else { return latex }
+        return regex.stringByReplacingMatches(
+            in: latex,
+            range: NSRange(location: 0, length: (latex as NSString).length),
+            withTemplate: #"\\ldots"#
+        )
     }
 
     /// Compiled once: `segments(in:)` runs on every streamed delta, so building

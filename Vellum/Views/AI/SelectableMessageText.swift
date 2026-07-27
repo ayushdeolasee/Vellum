@@ -99,7 +99,7 @@ final class MessageContainerView: NSView {
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
-        textView = TranscriptTextView()
+        textView = TranscriptTextView(textKit1ContainerIn: frameRect.size)
         super.init(frame: frameRect)
         configureTextView()
         quoteButton.isHidden = true
@@ -129,12 +129,14 @@ final class MessageContainerView: NSView {
     private(set) var appliedContent: String?
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
+    private var renderedWidth: CGFloat?
 
     func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
         self.attributed = attributed
         self.appliedContent = content
         self.appliedColor = color
         self.appliedSecondary = secondary
+        renderedWidth = nil
         textView.textStorage?.setAttributedString(attributed)
         needsLayout = true
     }
@@ -144,7 +146,38 @@ final class MessageContainerView: NSView {
     /// layout pass, and driving `ensureLayout` on the on-screen view there
     /// tripped "-ensureLayoutForTextContainer while already performing layout".
     func height(forWidth width: CGFloat) -> CGFloat {
-        Self.measureHeight(attributed, width: max(1, width))
+        let width = max(1, width)
+        return Self.measureHeight(Self.fittedAttachments(in: attributed, width: width), width: width)
+    }
+
+    /// Image-backed equations and rules are authored at the default bubble
+    /// width. Scale copies for the actual proposed width so a narrow inspector
+    /// cannot clip them, while retaining the originals for a later expansion.
+    static func fittedAttachments(
+        in attributed: NSAttributedString,
+        width: CGFloat
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: attributed)
+        let available = max(1, width)
+        result.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: result.length)
+        ) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment,
+                  attachment.bounds.width > available else { return }
+            let fitted = NSTextAttachment()
+            fitted.image = attachment.image
+            var bounds = attachment.bounds
+            let scale = available / bounds.width
+            bounds.size = CGSize(
+                width: available,
+                height: max(1, bounds.height * scale)
+            )
+            bounds.origin.y *= scale
+            fitted.bounds = bounds
+            result.addAttribute(.attachment, value: fitted, range: range)
+        }
+        return result
     }
 
     static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
@@ -162,6 +195,12 @@ final class MessageContainerView: NSView {
 
     override func layout() {
         super.layout()
+        if renderedWidth == nil || abs((renderedWidth ?? 0) - bounds.width) > 0.5 {
+            textView.textStorage?.setAttributedString(
+                Self.fittedAttachments(in: attributed, width: bounds.width)
+            )
+            renderedWidth = bounds.width
+        }
         textView.frame = bounds
         updateQuoteButton()
     }
@@ -201,6 +240,20 @@ final class TranscriptTextView: NSTextView {
         didSet { updateDragTypeRegistration() }
     }
     var onDropTargeted: ((Bool) -> Void)?
+
+    /// The sizing path uses TextKit 1. Keeping the live view on the same layout
+    /// engine avoids paragraph-spacing disagreements that otherwise leave a
+    /// large blank region below long Markdown replies.
+    convenience init(textKit1ContainerIn size: NSSize) {
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(
+            size: NSSize(width: max(0, size.width), height: .greatestFiniteMagnitude)
+        )
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(container)
+        self.init(frame: NSRect(origin: .zero, size: size), textContainer: container)
+    }
 
     /// AppKit funnels every re-registration through this (it runs on window entry
     /// and whenever editable/selectable/rich-text changes) and drops a read-only
@@ -339,7 +392,31 @@ enum AiAttributedRenderer {
 
         case let .math(latex):
             return displayMath(latex, color: color)
+
+        case .rule:
+            return rule(color: secondary)
+
+        case .list(let items):
+            return nestedList(items, color: color)
         }
+    }
+
+    private static func rule(color: NSColor) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = NSImage(size: CGSize(width: 240, height: 1), flipped: false) { rect in
+            color.withAlphaComponent(0.5).setFill()
+            rect.fill()
+            return true
+        }
+        attachment.bounds = CGRect(x: 0, y: 0, width: 240, height: 1)
+        let paragraph = paragraphStyle(lineSpacing: 0, spacingAfter: 12)
+        paragraph.paragraphSpacingBefore = 4
+        let result = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        result.addAttributes(
+            [.paragraphStyle: paragraph, .foregroundColor: color],
+            range: NSRange(location: 0, length: result.length)
+        )
+        return result
     }
 
     /// Display equation as a centered typeset image on its own paragraph;
@@ -412,6 +489,29 @@ enum AiAttributedRenderer {
         return result
     }
 
+    private static func nestedList(
+        _ items: [MarkdownListItem],
+        color: NSColor
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for (index, item) in items.enumerated() {
+            let indent = CGFloat(4 + item.depth * 16)
+            let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 4)
+            paragraph.firstLineHeadIndent = indent
+            paragraph.headIndent = indent + 16
+            let prefix = "\(item.marker.label)  "
+            let line = NSMutableAttributedString(string: prefix, attributes: [
+                .font: base, .foregroundColor: color, .paragraphStyle: paragraph,
+            ])
+            line.append(inline(item.text, font: base, color: color, paragraph: paragraph))
+            result.append(line)
+            if index < items.count - 1 {
+                result.append(NSAttributedString(string: "\n"))
+            }
+        }
+        return result
+    }
+
     /// Inline handling: math spans become baseline-aligned typeset attachments,
     /// the prose between them goes through Foundation's markdown parser for
     /// emphasis/strong/code/strikethrough/links, mapped onto concrete AppKit
@@ -423,10 +523,10 @@ enum AiAttributedRenderer {
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        for segment in MathRenderer.segments(in: source) {
-            switch segment {
-            case .text(let text):
-                result.append(inlineProse(text, font: font, color: color, paragraph: paragraph))
+        for piece in InlineMarkdown.pieces(in: source) {
+            switch piece {
+            case .prose(let attributed):
+                result.append(inlineProse(attributed, font: font, color: color, paragraph: paragraph))
             case .math(let latex):
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
                     let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
@@ -448,20 +548,11 @@ enum AiAttributedRenderer {
     }
 
     private static func inlineProse(
-        _ source: String,
+        _ attributed: AttributedString,
         font: NSFont,
         color: NSColor,
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
-        guard let attributed = try? AttributedString(
-            markdown: source,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) else {
-            return NSAttributedString(string: source, attributes: [
-                .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
-            ])
-        }
-
         let result = NSMutableAttributedString()
         for run in attributed.runs {
             let substring = String(attributed[run.range].characters)

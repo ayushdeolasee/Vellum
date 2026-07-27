@@ -84,6 +84,30 @@ struct MarkdownMessage: View {
             .padding(.bottom, 8)
         case .math(let latex):
             mathBlockView(latex)
+        case .rule:
+            Rectangle()
+                .fill(palette.border)
+                .frame(height: 1)
+                .padding(.vertical, 4)
+                .padding(.bottom, 8)
+                .accessibilityHidden(true)
+        case .list(let items):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(item.marker.label)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        inlineText(item.text).lineSpacing(3)
+                    }
+                    .padding(.leading, CGFloat(item.depth) * 16)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(item.accessibilityLabel)
+                }
+            }
+            .font(.system(size: baseSize))
+            .padding(.leading, 12)
+            .padding(.bottom, 8)
         }
     }
 
@@ -119,13 +143,9 @@ struct MarkdownMessage: View {
         // everything else goes through native AttributedString markdown
         // (emphasis, strong, inline code, strikethrough, links).
         var result = Text(verbatim: "")
-        for segment in MathRenderer.segments(in: source) {
-            switch segment {
-            case .text(let text):
-                let attributed = (try? AttributedString(
-                    markdown: text,
-                    options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                )) ?? AttributedString(text)
+        for piece in InlineMarkdown.pieces(in: source) {
+            switch piece {
+            case .prose(let attributed):
                 result = result + Text(attributed)
             case .math(let latex):
                 if let rendered = MathRenderer.render(
@@ -162,6 +182,49 @@ enum MarkdownBlock: Equatable {
     case table(String)
     /// Display math: the LaTeX between `$$...$$` or `\[...\]` delimiters.
     case math(String)
+    case rule
+    case list([MarkdownListItem])
+}
+
+struct MarkdownListItem: Equatable {
+    enum Marker: Equatable {
+        case unordered
+        case ordered(Int)
+
+        var label: String {
+            switch self {
+            case .unordered: return "•"
+            case .ordered(let number): return "\(number)."
+            }
+        }
+
+        var kind: Kind {
+            switch self {
+            case .unordered: return .unordered
+            case .ordered: return .ordered
+            }
+        }
+
+        enum Kind: Hashable {
+            case unordered
+            case ordered
+        }
+    }
+
+    let depth: Int
+    let marker: Marker
+    let text: String
+
+    var accessibilityLabel: String {
+        let kind = switch marker {
+        case .unordered: "List item"
+        case .ordered(let number): "Item \(number)"
+        }
+        let readableText = MarkdownParser.plainPreview(text)
+        return depth == 0
+            ? "\(kind), \(readableText)"
+            : "\(kind), level \(depth + 1), \(readableText)"
+    }
 }
 
 enum MarkdownParser {
@@ -189,7 +252,8 @@ enum MarkdownParser {
             }.joined()
         }.joined(separator: "\n")
         for pattern in [
-            #"(?m)^#{1,3}\s+"#,       // headings
+            #"(?m)^#{1,6}\s+"#,       // headings
+            #"(?m)^[ \t]*(?:-[ \t]*){3,}$|^[ \t]*(?:\*[ \t]*){3,}$|^[ \t]*(?:_[ \t]*){3,}$"#,
             #"(?m)^>\s?"#,            // quotes
             #"(?m)^[-*+]\s+"#,        // bullets
             #"(?m)^\d+\.\s+"#,        // ordered lists
@@ -242,9 +306,11 @@ enum MarkdownParser {
                 // guaranteed MathRenderer cache miss per token — show it as code until
                 // the closing delimiter arrives (same treatment as an unterminated
                 // code fence above).
-                blocks.append(closed ? .math(math) : .code(math))
+                let body = math.trimmingCharacters(in: .whitespacesAndNewlines)
+                blocks.append(closed ? .math(body) : .code(body))
                 continue
             }
+            if isRule(line) { blocks.append(.rule); index += 1; continue }
             if let heading = heading(line) { blocks.append(heading); index += 1; continue }
             if line.hasPrefix(">") {
                 var quoted: [String] = []
@@ -254,19 +320,28 @@ enum MarkdownParser {
                 blocks.append(.quote(quoted.joined(separator: "\n")))
                 continue
             }
-            if isUnordered(line) {
-                var items: [String] = []
-                while index < lines.count, isUnordered(lines[index]) {
-                    items.append(String(lines[index].dropFirst(2))); index += 1
+            if listItem(line) != nil {
+                var items: [MarkdownListItem] = []
+                while index < lines.count, let item = listItem(lines[index]) {
+                    items.append(item)
+                    index += 1
                 }
-                blocks.append(.unordered(items)); continue
-            }
-            if orderedText(line) != nil {
-                var items: [String] = []
-                while index < lines.count, let item = orderedText(lines[index]) {
-                    items.append(item); index += 1
+                let isNestedOrMixed = items.contains { $0.depth > 0 }
+                    || Set(items.map(\.marker.kind)).count > 1
+                let preservesCustomNumbering = items.enumerated().contains { index, item in
+                    if case .ordered(let number) = item.marker {
+                        return number != index + 1
+                    }
+                    return false
                 }
-                blocks.append(.ordered(items)); continue
+                if isNestedOrMixed || preservesCustomNumbering {
+                    blocks.append(.list(items))
+                } else if items.first?.marker.kind == .unordered {
+                    blocks.append(.unordered(items.map(\.text)))
+                } else {
+                    blocks.append(.ordered(items.map(\.text)))
+                }
+                continue
             }
             if line.contains("|"), index + 1 < lines.count, isTableSeparator(lines[index + 1]) {
                 var rows = [line]
@@ -289,15 +364,50 @@ enum MarkdownParser {
     }
 
     private static func heading(_ line: String) -> MarkdownBlock? {
-        for level in 1...3 {
+        for level in stride(from: 6, through: 1, by: -1) {
             let prefix = String(repeating: "#", count: level) + " "
-            if line.hasPrefix(prefix) { return .heading(level, String(line.dropFirst(prefix.count))) }
+            if line.hasPrefix(prefix) {
+                let text = String(line.dropFirst(prefix.count))
+                // During streaming, keep a marker-only prefix visible until
+                // the heading text arrives instead of rendering a zero-height
+                // block that makes the last token appear to vanish.
+                guard !text.isEmpty else { return nil }
+                return .heading(level, text)
+            }
         }
         return nil
     }
 
     private static func isUnordered(_ line: String) -> Bool {
         line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ")
+    }
+
+    private static func isRule(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let marker = trimmed.first, "-*_".contains(marker) else { return false }
+        let markers = trimmed.filter { !$0.isWhitespace }
+        return markers.count >= 3 && markers.allSatisfy { $0 == marker }
+    }
+
+    private static func listItem(_ line: String) -> MarkdownListItem? {
+        guard let match = line.wholeMatch(
+            of: /^([ \t]*)([-+*]|\d+[.)])[ \t]+(.+)$/
+        ) else { return nil }
+        let indentation = match.1.reduce(into: 0) { count, character in
+            count += character == "\t" ? 4 : 1
+        }
+        let markerText = String(match.2)
+        let marker: MarkdownListItem.Marker
+        if let number = Int(markerText.dropLast()) {
+            marker = .ordered(number)
+        } else {
+            marker = .unordered
+        }
+        return MarkdownListItem(
+            depth: max(0, indentation / 2),
+            marker: marker,
+            text: String(match.3)
+        )
     }
 
     private static func orderedText(_ line: String) -> String? {
@@ -311,7 +421,7 @@ enum MarkdownParser {
 
     private static func startsBlock(_ line: String) -> Bool {
         line.hasPrefix("```") || line.hasPrefix("$$") || line.hasPrefix("\\[") || line.hasPrefix(">")
-            || heading(line) != nil || isUnordered(line) || orderedText(line) != nil
+            || heading(line) != nil || listItem(line) != nil || isRule(line)
     }
 
     private static func formatTable(_ rows: [String]) -> String {
