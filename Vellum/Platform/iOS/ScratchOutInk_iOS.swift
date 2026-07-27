@@ -144,8 +144,17 @@ enum ScratchOutInk {
     /// denominator scores ≈0.5 — just under `minimumCoverage` — leaving the
     /// remnant behind even though the user covered all of it.
     ///
-    /// `stroke.transform` must be applied: PencilKit stores a path plus a
-    /// transform, and undo/redo can leave a non-identity one behind.
+    /// `stroke.transform` must be applied: PencilKit stores a stroke as a path
+    /// plus a transform, and only the composition is in the drawing's coordinate
+    /// space — which is the space `renderBounds` and the scribble's own samples
+    /// are in, so skipping it would silently compare two different spaces.
+    ///
+    /// One caveat: `interpolatedPoints(by: .distance(_:))` strides in the path's
+    /// *pre*-transform space, so if a transform ever carried a scale the samples
+    /// would not be evenly spaced in page space and `coveredFraction`'s
+    /// "sample count stands in for arc length" premise would skew. Nothing in
+    /// this app scales a drawing (`PKDrawing.transformed(using:)` is never
+    /// called), so in practice the transform is a translation at most.
     static func centerline(of stroke: PKStroke) -> [CGPoint] {
         guard !stroke.path.isEmpty else { return [] }
         var points: [CGPoint] = []

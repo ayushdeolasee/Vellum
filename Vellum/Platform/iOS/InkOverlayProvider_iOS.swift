@@ -245,6 +245,20 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     /// replaced document are unreachable and would otherwise leak.
     func resetCache() {
         rescaleTask?.cancel()
+        // Drop any scratch-out undo actions still pointing at this provider
+        // before the canvases go. The undo manager comes from the responder
+        // chain, so it outlives the document swap: a stale action firing later
+        // would restore the *old* document's drawing and — via
+        // `drawingChanged(_:page:)` — write it over the new document's page.
+        // `withTarget:` scopes the removal to our own actions; PencilKit's are
+        // registered against its own targets and are left alone.
+        // Iterating every canvas rather than just one: the undo manager is
+        // resolved through each canvas's responder chain, so in a split view two
+        // pages can legitimately answer with different managers. The call is
+        // idempotent, so hitting the same manager twice is free.
+        for container in containers.values {
+            container.canvas.undoManager?.removeAllActions(withTarget: self)
+        }
         containers.removeAll()
         displayedKeys.removeAll()
     }
