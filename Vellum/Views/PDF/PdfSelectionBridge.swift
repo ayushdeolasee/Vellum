@@ -730,6 +730,11 @@ final class PdfViewerController {
         self.persister = persister
     }
 
+    /// Page text the current document has resolved so far (cache seed + walk),
+    /// or nil when no persister is installed. Read by the viewer's teardown to
+    /// top up the tab's residency entry (issue #52).
+    var persistedPageTexts: [Int: String]? { persister?.extractedPages }
+
     /// Flush any pending page text to disk (outgoing doc on tab switch, quit).
     func flushPersister() async {
         await persister?.flush()

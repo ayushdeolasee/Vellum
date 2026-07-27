@@ -58,13 +58,22 @@ struct WebHighlightEditorState {
 // MARK: - View
 
 struct WebViewerView: View {
+    /// The tab's controller, owned by `TabResidencyManager` rather than by this
+    /// view (issue #52). `PaneView` looks it up per tab id, so switching away and
+    /// back hands the SAME controller — and therefore the same already-loaded
+    /// `WKWebView` — to the new mount instead of building one from scratch and
+    /// re-fetching the page. It is only really destroyed when the tab closes or
+    /// the residency policy reclaims it.
+    let controller: WebViewerController
+
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
-    @State private var controller = WebViewerController()
+    /// This mount's attach token — see `WebViewerController.mountGeneration`.
+    @State private var mountToken = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -182,10 +191,14 @@ struct WebViewerView: View {
         .background(palette.well)
         .clipped()
         .onAppear {
-            controller.attach(app: appStore, annotationStore: annotationStore, aiStore: aiStore)
+            mountToken = controller.attach(
+                app: appStore, annotationStore: annotationStore, aiStore: aiStore)
         }
         .onDisappear {
-            controller.detach()
+            // Hand the token back: the controller outlives this view, so it has
+            // to be able to tell this teardown from a stale one belonging to a
+            // mount it has already replaced.
+            controller.detach(token: mountToken)
         }
         .onChange(of: controller.initCount) {
             controller.pushAnnotations(annotationStore.annotations)
@@ -265,7 +278,14 @@ private struct WebViewRepresentable: NSViewRepresentable {
     let controller: WebViewerController
 
     func makeNSView(context: Context) -> WKWebView {
-        controller.webView
+        // The web view outlives this representable (see WebViewerView.controller),
+        // so it may still be sitting in the previous mount's host hierarchy when
+        // SwiftUI builds the replacement — SwiftUI mounts the incoming view
+        // before unmounting the outgoing one. Detach it first so the new host
+        // adopts a parentless view, exactly as it would a freshly created one.
+        let webView = controller.webView
+        webView.removeFromSuperview()
+        return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
@@ -275,7 +295,14 @@ private struct WebViewRepresentable: NSViewRepresentable {
 
 @MainActor
 @Observable
-final class WebViewerController: NSObject {
+final class WebViewerController: NSObject, TabResidentResource {
+    /// Rough resident footprint, used only to rank eviction candidates and
+    /// enforce the residency byte budget. A loaded `WKWebView` carries its own
+    /// web content process, so it is never cheap; there is no way to ask WebKit
+    /// what a given page actually costs, so this is a flat, deliberately
+    /// pessimistic estimate for "a real webpage with its process attached".
+    var residencyCostBytes: Int { 96 * 1024 * 1024 }
+
     // Counts inits from the document currently bound to this tab; 0 = nothing
     // loaded yet. A counter (not a boolean) so highlight application re-fires
     // after in-tab navigation replaces the document.
@@ -311,6 +338,12 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private weak var aiStore: AiStore?
     @ObservationIgnored private var mountTabId: String?
     @ObservationIgnored private var attached = false
+    /// Bumped on every `attach`. Because the controller now outlives its view
+    /// (issue #52), the same object can be attached by a new mount before the
+    /// previous mount's `onDisappear` runs — and that late `detach()` would rip
+    /// the handler slots out from under the live mount. The view hands its token
+    /// back on the way out so a stale teardown is recognised and ignored.
+    @ObservationIgnored private var mountGeneration = 0
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
     @ObservationIgnored private var supportsPositions = false
@@ -334,6 +367,16 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
+    /// The document the web view is *confirmed* to be showing, as reported by
+    /// the content script's init handshake — not merely what we last asked it to
+    /// load. `attach` uses it to tell a warm resume (page already there, just
+    /// re-parent) from a cold mount (navigate). Derived from the page itself so
+    /// redirects, soft navigations, and snapshot fallbacks can't desync it; nil
+    /// whenever a load is in flight.
+    @ObservationIgnored private var loadedUrl: String?
+    /// See `pushAnnotations`: swallows the single empty annotation push that a
+    /// warm resume's store reload produces.
+    @ObservationIgnored private var skipEmptyAnnotationPush = false
 
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
@@ -375,9 +418,22 @@ final class WebViewerController: NSObject {
 
     // MARK: Lifecycle
 
-    func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
-        guard !attached else { return }
+    /// Bind the controller to a mount. Returns the mount token to hand back to
+    /// `detach(token:)`.
+    @discardableResult
+    func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) -> Int {
+        mountGeneration += 1
+        let token = mountGeneration
+        // Already live (a re-mount raced the previous mount's teardown): the
+        // registrations below are idempotent for the same tab, so just hand out
+        // the new token — its predecessor's detach will now be ignored.
+        guard !attached else { return token }
         attached = true
+        bind(app: app, annotationStore: annotationStore, aiStore: aiStore)
+        return token
+    }
+
+    private func bind(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
@@ -420,15 +476,53 @@ final class WebViewerController: NSObject {
             self?.printPage()
         }
 
-        if let doc = app.document, doc.kind == .web {
-            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        guard let doc = app.document, doc.kind == .web else { return }
+
+        if loadedUrl == doc.pdfPath {
+            // Warm resume (issue #52). This controller kept its WKWebView across
+            // the tab switch — the rendered DOM, the scroll offset, the running
+            // web content process and the injected content script are all still
+            // there — so re-parenting the view is the entire job. Reloading here
+            // would throw away precisely what we were holding it for, and for a
+            // live page it would re-fetch over the network.
+            //
+            // No new init handshake fires, so the view's
+            // `onChange(of: controller.initCount)` push never runs; replay the
+            // parts of it that are cheap and non-destructive. Annotations are
+            // deliberately NOT pushed here — they are already rendered in the
+            // page, and `PaneView` is concurrently reloading the store (clear →
+            // fetch), so its `onChange(of:annotations)` will push the real set.
+            pushMode(app.mode)
+            pushSelectedHighlight()
+            skipEmptyAnnotationPush = true
+            return
         }
+
+        loadedUrl = nil
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
     }
 
-    func detach() {
+    /// Leave the tab: the view is unmounting, but the page stays loaded and the
+    /// web view stays alive under the residency policy. Only things bound to
+    /// *being on screen* are undone here — the shared handler slots, the
+    /// click-outside monitor, and any async request whose caller has gone away.
+    ///
+    /// Note what is deliberately NOT undone any more: the script message handler
+    /// stays registered and `stopLoading()` is not called, because tearing those
+    /// down is exactly what made a return visit expensive. A pending auto-archive
+    /// is also left to complete rather than cancelled — it is a real write, it is
+    /// already scoped to its own session id and URL, and dropping it silently
+    /// lost the archive whenever the user switched tabs within 1.5s of a page
+    /// finishing. Hard teardown lives in `releaseResidency()`.
+    func detach(token: Int) {
+        // Stale teardown from a mount this controller has already replaced.
+        guard token == mountGeneration else { return }
+        detach()
+    }
+
+    private func detach() {
         guard attached else { return }
         attached = false
-        cancelPendingArchive()
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
         for resolve in pendingCaptures.values { resolve(nil) }
@@ -447,9 +541,41 @@ final class WebViewerController: NSObject {
             app.findClearHandler = nil
             app.printHandler = nil
         }
+        // Popovers are anchored to a view that is going away; a resident
+        // controller would otherwise re-show them floating over the next mount.
+        clearSelection()
+        closeNotePopovers()
+        hideContextMenu()
+    }
+
+    /// Hard teardown, driven by `TabResidencyManager`: the tab was closed, sat
+    /// idle past the retention window, or the system asked for memory back. This
+    /// is the point at which the page really is thrown away.
+    func releaseResidency() {
+        // Defensive: eviction only ever targets tabs that are not on screen, so
+        // `detach()` has normally already run. Belt and braces if it hasn't.
+        detach()
+        // A debounced auto-archive is a real write to the user's library. Never
+        // drop one — keep this controller (and the session it archives through)
+        // alive until the task lands. The debounce is 1.5s, so by the time the
+        // two-hour timeout fires there is nothing pending; this only matters for
+        // an eviction triggered by memory pressure moments after a page loaded.
+        if let archiveTask {
+            self.archiveTask = nil
+            Task { await archiveTask.value; withExtendedLifetime(self) {} }
+        }
+        loadedUrl = nil
+        initCount = 0
+        restoredUrl = nil
+        archivedUrl = nil
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
         webView.stopLoading()
+        // Navigate to a blank page so WebKit can retire the web content process
+        // and its memory now, rather than whenever this object happens to be
+        // deallocated (the caller drops its reference immediately after, but the
+        // web view can be briefly retained by an in-flight AppKit teardown).
+        webView.loadHTMLString("", baseURL: nil)
     }
 
     // MARK: Outbound commands
@@ -603,6 +729,17 @@ final class WebViewerController: NSObject {
 
     func pushAnnotations(_ annotations: [Annotation]) {
         guard initCount > 0 else { return }
+        if skipEmptyAnnotationPush {
+            // Warm resume: the page already carries the right highlights, but
+            // `PaneView.loadDocumentState` reloads the store by clearing it and
+            // re-fetching, so the first push we see is a transient empty array.
+            // Applying it would visibly strip every highlight off the page and
+            // re-add it a beat later. Swallow exactly that one push — the
+            // reload's real result arrives on the next change, and a document
+            // that genuinely has no annotations has none in the page either.
+            skipEmptyAnnotationPush = false
+            if annotations.isEmpty { return }
+        }
 
         func anchor(_ annotation: Annotation) -> [String: Any] {
             [
@@ -1110,8 +1247,23 @@ final class WebViewerController: NSObject {
     /// Rebind the tab to a new page and reload the reader — used by the
     /// content script's link interception, the navigation delegate's escape
     /// hatch for router-driven top-level loads, and window.open routing.
+    /// The document THIS controller is bound to.
+    ///
+    /// Since the controller now outlives its mount (issue #52), a background
+    /// tab's web view is still live and its WebKit delegates still fire — so
+    /// anything acting on "the document" must resolve the controller's OWN tab
+    /// rather than `AppStore.document`, which is whatever is on screen right
+    /// now. Reading the wrong one would let a background page hijack the
+    /// foreground tab: a meta-refresh rebinding someone else's session, or a
+    /// crashed background web process reloading the visible tab's URL.
+    private var mountedDocument: DocumentInfo? {
+        guard let app, let mountTabId else { return nil }
+        return app.tabs.first { $0.id == mountTabId }?.document
+    }
+
     func navigateTo(_ url: String) {
-        guard let app, let tabId = app.activeTabId else { return }
+        // `mountTabId`, not `app.activeTabId` — see `mountedDocument`.
+        guard let app, let tabId = mountTabId else { return }
         // A pending auto-archive for the outgoing page must not fire
         // against the rebound session.
         cancelPendingArchive()
@@ -1124,13 +1276,14 @@ final class WebViewerController: NSObject {
         processReloadedUrl = nil
         clearSelection()
         closeNotePopovers()
-        let outgoing = app.document?.pdfPath
+        let outgoing = mountedDocument?.pdfPath
         Task { [weak self] in
             guard let rebound = await app.webNavigated(tabId: tabId, url: url),
                   let self else { return }
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.initCount = 0
+            self.loadedUrl = nil
             self.webView.load(
                 URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
         }
@@ -1187,6 +1340,7 @@ final class WebViewerController: NSObject {
                     self.pendingNavUrl = rebound.pdfPath
                     self.outgoingNavUrl = nil
                     self.initCount = 0
+                    self.loadedUrl = nil
                     self.webView.load(
                         URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
                 } else {
@@ -1197,6 +1351,11 @@ final class WebViewerController: NSObject {
         }
 
         initCount += 1
+        // The page itself has now confirmed which document it is showing, which
+        // is what `attach` checks to decide "warm resume" vs "navigate". Taking
+        // it from the handshake rather than from the last `load()` call keeps it
+        // truthful through redirects, soft navigations and snapshot fallbacks.
+        loadedUrl = currentDoc.pdfPath
 
         if let pageCount = intValue(data["pageCount"]), pageCount > 0 {
             app.setNumPages(pageCount)
@@ -1414,12 +1573,15 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard let doc = app?.document, doc.kind == .web else { return }
+        // Resolve this controller's own tab, never the one on screen — a
+        // resident background web view can lose its content process too.
+        guard let doc = mountedDocument, doc.kind == .web else { return }
         if processReloadedUrl == doc.pdfPath {
             loadSnapshotFallback()
         } else {
             processReloadedUrl = doc.pdfPath
             initCount = 0
+            loadedUrl = nil
             webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
         }
     }
@@ -1437,10 +1599,11 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
     /// Serve the offline snapshot (or Vellum's own error page) instead of
     /// ever leaving the user on WebKit's native error screen.
     private func loadSnapshotFallback() {
-        guard let app, let doc = app.document, doc.kind == .web else { return }
+        guard let doc = mountedDocument, doc.kind == .web else { return }
         // The fallback itself failing must not loop.
         guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
         initCount = 0
+        loadedUrl = nil
         webView.load(URLRequest(
             url: VellumWebSchemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }

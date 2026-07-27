@@ -226,7 +226,11 @@ final class WorkspaceStore {
     /// Collapse a pane; its sibling reclaims the space. Closing the last pane
     /// resets the window to a single empty pane.
     func closePane(_ paneId: String) {
-        guard root.leaf(id: paneId) != nil else { return }
+        guard let closing = root.leaf(id: paneId) else { return }
+        // The pane is going away, so its "this tab is on screen" pin in the
+        // residency policy must go with it — otherwise whatever it last showed
+        // stays exempt from eviction for the life of the process.
+        closing.app.releaseResidencyOwnership()
         if root.isLeaf {
             let pane = makePane(startTab: false)
             root = .leaf(pane)
@@ -265,6 +269,9 @@ final class WorkspaceStore {
             for tab in leaf.app.tabs {
                 keep.app.attachTab(tab)
             }
+            // Same reasoning as closePane: the absorbed pane is discarded, so
+            // drop its residency pin (its tabs are now pinned, or not, by `keep`).
+            leaf.app.releaseResidencyOwnership()
         }
         if let keepActiveTabId {
             keep.app.activateTab(keepActiveTabId)

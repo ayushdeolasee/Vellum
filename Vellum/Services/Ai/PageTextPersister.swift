@@ -47,6 +47,12 @@ final class PageTextPersister {
         self.cache = cache
     }
 
+    /// Everything this persister knows about the document: the cache seed plus
+    /// every page the extraction walk has produced so far. The viewer hands this
+    /// to the tab-residency entry on teardown so a warm re-open resumes with the
+    /// full page set instead of re-walking (issue #52).
+    var extractedPages: [Int: String] { pages }
+
     /// Record a newly extracted page (text already whitespace-normalized by
     /// AiStore.setPageText). No-op when unchanged; fires a debounced flush every
     /// `flushThreshold` new pages.

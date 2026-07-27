@@ -16,35 +16,84 @@ final class AppStore {
 
     let sessions: SessionService
 
-    // MARK: - Prepared-PDF cache
+    /// The app-wide open-tab retention policy (issue #52). Everything expensive a
+    /// tab owns — its prepared `PDFDocument`, its live `WKWebView` — is parked
+    /// here instead of being dropped on the way out of the tab, and is only
+    /// reclaimed after `TabResidencyManager.retentionWindow` of inactivity, when
+    /// a ceiling is hit, or when the system reports memory pressure. See
+    /// Services/TabResidency.swift for the policy itself.
+    @ObservationIgnored let residency: TabResidencyManager
+
+    /// This pane's identity in the residency manager's per-pane "active tab"
+    /// table. One `AppStore` backs exactly one pane, so its object identity is
+    /// the natural key.
+    @ObservationIgnored private lazy var residencyOwner = ObjectIdentifier(self)
+
+    // MARK: - Prepared-PDF residency
     //
     // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
     // without a cache every switch re-reads + re-parses + re-strips the whole PDF
-    // (now off-main, but still a visible delay for large docs). Cache the display-
-    // ready PDFDocument per tab so switching back is instant. A stripped display
-    // doc stays valid across annotation edits (annotations render from overlays,
-    // page content is unchanged), so no invalidation is needed beyond close/LRU.
-    private static let maxPreparedCache = 3
-    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
+    // (off-main, but still a visible delay for large docs) and re-hashes the bytes
+    // to consult the page-text cache. Keeping the display-ready PDFDocument (and
+    // the page text that came with it) resident makes switching back instant. A
+    // stripped display doc stays valid across annotation edits — annotations
+    // render from store overlays and the page content is unchanged — so nothing
+    // invalidates it except closing the tab or the residency policy reclaiming it.
 
-    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
-        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
-        // Touch: move to most-recently-used.
-        let entry = preparedPdfCache.remove(at: index)
-        preparedPdfCache.append(entry)
-        return entry.doc
+    func cachedPreparedPdf(tabId: String) -> PreparedPdfResidency? {
+        residency.resource(tabId: tabId, slot: .preparedPdf) as? PreparedPdfResidency
     }
 
-    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-        preparedPdfCache.append((tabId, doc))
-        if preparedPdfCache.count > Self.maxPreparedCache {
-            preparedPdfCache.removeFirst()
+    func storePreparedPdf(
+        _ doc: PDFDocument, pageTexts: [Int: String], byteCount: Int, tabId: String
+    ) {
+        residency.store(
+            PreparedPdfResidency(document: doc, pageTexts: pageTexts, byteCount: byteCount),
+            tabId: tabId, slot: .preparedPdf)
+    }
+
+    /// Fold newly extracted page text back into the resident entry so the next
+    /// visit to this tab skips the extraction walk as well as the parse. Called
+    /// from the viewer's teardown with the *persister's* authoritative dict —
+    /// never with `AiStore.pageTexts`, which by then may already belong to the
+    /// incoming tab.
+    func updatePreparedPdfPageTexts(_ pageTexts: [Int: String], tabId: String) {
+        guard !pageTexts.isEmpty, let entry = cachedPreparedPdf(tabId: tabId) else { return }
+        entry.pageTexts.merge(pageTexts) { _, new in new }
+    }
+
+    // MARK: - Web-view residency
+    //
+    // The web path was the worse of the two: a fresh `WKWebView` per mount meant
+    // every switch back re-navigated through the vellum-web:// proxy, which
+    // re-FETCHES the page over the network unless the tab is a snapshot-only
+    // archive. Keeping the controller (and therefore the web view, its process,
+    // its scroll offset, and its running page) resident turns that into a
+    // re-parent of an already-loaded view.
+
+    /// The web viewer for `tabId`, created on first use. Handing the *same*
+    /// controller back on a later mount is what makes the tab resume rather than
+    /// reload; `WebViewerController.attach` detects the warm case and skips the
+    /// navigation.
+    func residentWebController(tabId: String) -> WebViewerController {
+        if let existing = residency.resource(tabId: tabId, slot: .webView) as? WebViewerController {
+            return existing
         }
+        let controller = WebViewerController()
+        residency.store(controller, tabId: tabId, slot: .webView)
+        return controller
     }
 
-    func evictPreparedPdf(tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
+    /// The tab is gone for good — hand its memory back now rather than letting
+    /// the retention window run.
+    func evictResidentResources(tabId: String) {
+        residency.release(tabId: tabId)
+    }
+
+    /// This pane is being discarded (split collapsed / panes merged). Drop its
+    /// pin so the tab it last showed is no longer exempt from eviction.
+    func releaseResidencyOwnership() {
+        residency.forgetOwner(residencyOwner)
     }
 
     // Tab state
@@ -115,8 +164,9 @@ final class AppStore {
     /// has (issue #37 PR B).
     var flushPageTextCacheHandler: (() async -> Void)?
 
-    init(sessions: SessionService) {
+    init(sessions: SessionService, residency: TabResidencyManager = .shared) {
         self.sessions = sessions
+        self.residency = residency
     }
 
     // MARK: - Opening documents
@@ -242,7 +292,9 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        evictPreparedPdf(tabId: tabId)
+        // Closing is not "inactive" — the tab is gone, so its resident PDF /
+        // web view is released immediately instead of waiting out the window.
+        evictResidentResources(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
@@ -758,6 +810,10 @@ final class AppStore {
         // registers its own handlers on mount.
         resetFindState()
         pendingNoteContent = nil
+        // Pin the incoming tab (never evictable while on screen) and restart the
+        // outgoing tab's idle countdown from now — it was in use until this
+        // instant, so its two hours start here.
+        residency.markActive(tabId: tab.id, owner: residencyOwner)
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -772,6 +828,8 @@ final class AppStore {
     private func applyEmptyActiveState() {
         resetFindState()
         pendingNoteContent = nil
+        // No tab on screen here, so this pane pins nothing.
+        residency.markActive(tabId: nil, owner: residencyOwner)
         activeTabId = nil
         document = nil
         currentPage = 1
@@ -793,5 +851,36 @@ final class AppStore {
         var tab = tabs[index]
         mutate(&tab)
         tabs[index] = tab
+    }
+}
+
+/// A PDF tab's resident state: the parsed, annotation-stripped display document
+/// plus whatever page text has been resolved for it (seeded from the on-disk
+/// `PageTextCache`, topped up by the extraction walk). Held as a class so the
+/// viewer can top up `pageTexts` in place without disturbing the residency
+/// entry's idle stamp.
+@MainActor
+final class PreparedPdfResidency: TabResidentResource {
+    let document: PDFDocument
+    var pageTexts: [Int: String]
+    /// Size of the PDF bytes this document was parsed from. PDFKit's own
+    /// footprint is larger (and unknowable), but the file size tracks it closely
+    /// enough to rank eviction candidates and enforce the byte budget.
+    private let byteCount: Int
+
+    init(document: PDFDocument, pageTexts: [Int: String], byteCount: Int) {
+        self.document = document
+        self.pageTexts = pageTexts
+        self.byteCount = byteCount
+    }
+
+    var residencyCostBytes: Int { byteCount }
+
+    func releaseResidency() {
+        // Nothing to flush. The display document is a throwaway copy — every
+        // annotation edit is written through the session backend to the file on
+        // disk, and the page text mirrored here has already been persisted by
+        // `PageTextPersister` (the viewer's teardown flushes it before handing
+        // the dict over). Dropping the last reference is the whole eviction.
     }
 }

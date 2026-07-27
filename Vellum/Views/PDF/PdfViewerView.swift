@@ -94,16 +94,29 @@ struct PdfViewerView: View {
         // clears it alongside the local state reset).
         aiStore.clearDocumentContext()
         do {
-            // The persistent text cache is keyed by the current PDF bytes, so
-            // read them even when this tab can reuse an already prepared PDF.
-            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            // Storage key resolved from the just-opened DocumentInfo: its docId
+            // when the file carries one, else the path hash. The IO actor keyed
+            // itself the same way at open, so lookup, persister, and every
+            // in-app refreshHash agree for the whole session.
+            let storageKey = app.document.map { DocumentIdentity.storageKey(for: $0) }
+            let path = app.document?.pdfPath
             let document: PDFDocument
-            if let cached = app.cachedPreparedPdf(tabId: tabId) {
-                // Fast path: this tab was opened recently — reuse the prepared
-                // document, skipping the disk read, parse, and strip entirely.
-                document = cached
+            let pageTexts: [Int: String]
+
+            if let resident = app.cachedPreparedPdf(tabId: tabId) {
+                // Warm path (issue #52): the tab never left residency, so skip
+                // the disk read, the parse, the annotation strip AND the
+                // page-text cache lookup — the latter hashes the entire file,
+                // which is the other half of the cost on a large PDF. The
+                // resident page text is at least as good as a fresh lookup: it
+                // was seeded from the on-disk cache and topped up by this tab's
+                // own extraction walk (see teardown), and page text does not
+                // change when an annotation is added.
+                document = resident.document
+                pageTexts = resident.pageTexts
             } else {
+                let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+                guard !Task.isCancelled, app.activeTabId == tabId else { return }
                 // Parse the PDF and strip its embedded annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
@@ -123,29 +136,26 @@ struct PdfViewerView: View {
                     loadState = .parseFailed
                     return
                 }
-                app.storePreparedPdf(parsed, tabId: tabId)
+                // Restore persisted page text before adopting (PDF only; this
+                // view is guarded to document.kind == .pdf). Hashing + JSON
+                // decode run off the main actor inside the cache actor.
+                let cached: [Int: String]?
+                if let path, let storageKey {
+                    cached = await PageTextCache.shared.lookup(
+                        key: storageKey, path: path, data: data, title: app.document?.title)
+                } else {
+                    cached = nil
+                }
+                guard !Task.isCancelled, app.activeTabId == tabId else { return }
                 document = parsed
+                pageTexts = cached ?? [:]
+                app.storePreparedPdf(
+                    parsed, pageTexts: pageTexts, byteCount: data.count, tabId: tabId)
             }
-            // Restore persisted page text before adopting (PDF only; this view
-            // is guarded to document.kind == .pdf). Hashing + JSON decode run
-            // off the main actor inside the cache actor.
-            // Storage key resolved from the just-opened DocumentInfo: its docId
-            // when the file carries one, else the path hash. The IO actor keyed
-            // itself the same way at open, so lookup, persister, and every
-            // in-app refreshHash agree for the whole session.
-            let storageKey = app.document.map { DocumentIdentity.storageKey(for: $0) }
-            let cached: [Int: String]?
-            if let path = app.document?.pdfPath, let storageKey {
-                cached = await PageTextCache.shared.lookup(
-                    key: storageKey, path: path, data: data, title: app.document?.title)
-            } else {
-                cached = nil
-            }
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
             // Unconditional replace (empty on a miss): anything an outgoing
             // tab's extraction wrote into pageTexts during the awaits above
             // belongs to the OLD document and must not survive into this one.
-            aiStore.restorePageTexts(cached ?? [:])
+            aiStore.restorePageTexts(pageTexts)
             controller.adopt(
                 document: document,
                 app: app,
@@ -154,13 +164,13 @@ struct PdfViewerView: View {
                 initialPage: app.currentPage
             )
             app.setNumPages(document.pageCount)
-            if document.pageCount >= 1, let path = app.document?.pdfPath, let storageKey {
+            if document.pageCount >= 1, let path, let storageKey {
                 controller.installPersister(PageTextPersister(
                     key: storageKey,
                     path: path,
                     title: app.document?.title,
                     pageCount: document.pageCount,
-                    seeded: cached ?? [:]))
+                    seeded: pageTexts))
             }
             registerHandlers()
             handlersTabId = tabId
@@ -232,6 +242,16 @@ struct PdfViewerView: View {
         // handlers never leak.
         if app.activeTabId == handlersTabId || app.document == nil {
             unregisterHandlers()
+            // Fold what this tab's extraction walk produced back into its
+            // resident entry BEFORE the persister is dropped, so the next visit
+            // resumes with a full page-text set instead of re-walking the
+            // document. Taken from the persister (which owns the authoritative
+            // dict) and never from AiStore.pageTexts, which by now may already
+            // belong to the incoming tab. This is a warm-cache top-up, not a
+            // substitute for persistence — flushAndDropPersister still writes.
+            if let tabId = handlersTabId, let extracted = controller.persistedPageTexts {
+                app.updatePreparedPdfPageTexts(extracted, tabId: tabId)
+            }
             controller.flushAndDropPersister()
             aiStore.clearDocumentContext()
         }

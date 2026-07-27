@@ -112,9 +112,15 @@ struct PaneView: View {
     private var content: some View {
         if app.document == nil {
             WelcomeScreen()
-        } else if app.document?.kind == .web {
-            WebViewerView()
-                .id(app.activeTabId)
+        } else if app.document?.kind == .web, let tabId = app.activeTabId {
+            // The web controller (and its WKWebView) is owned by the tab
+            // residency policy, not by the view — looking it up by tab id here
+            // is what lets a return visit re-parent the already-loaded page
+            // instead of building a new web view and re-fetching (issue #52).
+            // The lookup is idempotent: the same tab id always yields the same
+            // controller until the tab closes or residency reclaims it.
+            WebViewerView(controller: app.residentWebController(tabId: tabId))
+                .id(tabId)
         } else {
             PdfViewerView()
                 .id(app.activeTabId)
