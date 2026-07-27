@@ -230,6 +230,38 @@ final class ScratchOutRecognizerTests: XCTestCase {
         XCTAssertEqual(hits, [0], "only the substantially covered stroke is erased")
     }
 
+    /// A tapped dot degenerates every assumption in the overlap path: its
+    /// bounding box has zero width and height, and it is a one-sample polyline
+    /// so there is no segment to measure a distance against. Both the
+    /// `reach.intersects(...)` prefilter and `coveredFraction`'s
+    /// `path.count >= 2` guard sit right next to that case, and either could
+    /// start dropping dots under a plausible refactor — a zero-size rect is
+    /// `isEmpty`, and `CGRectIntersectsRect` is documented in terms of empty
+    /// rects. It currently works; this pins it.
+    func testScribblingOverATappedDotErasesIt() {
+        let scratch = scratchOut()  // sweeps x 0…100 around y 0…18
+        let dot = ScratchOutRecognizer.OverlapCandidate(
+            points: [CGPoint(x: 50, y: 9)],
+            hitRadius: 8)
+
+        let hits = ScratchOutRecognizer.overlappedCandidates(scratch: scratch, candidates: [dot])
+        XCTAssertEqual(hits, [0], "a dot under the scribble must be erased like any other ink")
+    }
+
+    /// The other zero-size box: a rule drawn dead flat has zero height, so it is
+    /// `isEmpty` too even though it is a perfectly ordinary multi-sample stroke.
+    /// Real Pencil input is never exactly axis-aligned, but imported or
+    /// programmatically drawn ink can be.
+    func testScribblingOverAPerfectlyFlatStrokeErasesIt() {
+        let scratch = scratchOut()
+        let flat = ScratchOutRecognizer.OverlapCandidate(
+            points: polyline([CGPoint(x: 20, y: 9), CGPoint(x: 80, y: 9)], spacing: 2),
+            hitRadius: 8)
+
+        let hits = ScratchOutRecognizer.overlappedCandidates(scratch: scratch, candidates: [flat])
+        XCTAssertEqual(hits, [0], "a flat stroke fully under the scribble must be erased")
+    }
+
     func testCoveredFractionIsProportionalToOverlap() {
         let scratch = scratchOut()  // covers x 0…100
         let half = polyline([CGPoint(x: 0, y: 9), CGPoint(x: 200, y: 9)], spacing: 2)
