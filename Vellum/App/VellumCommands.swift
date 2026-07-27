@@ -34,6 +34,12 @@ extension FocusedValues {
 /// (bare N for note mode, Escape, and the pointer-contextual sidebar font size).
 struct VellumCommands: Commands {
     @FocusedValue(\.vellumFocus) private var focus
+    /// The update command is app-global rather than focused-document scoped.
+    private let appWorkspace: WorkspaceStore
+
+    init(workspace: WorkspaceStore) {
+        appWorkspace = workspace
+    }
 
     // MARK: Availability (drives menu validation)
 
@@ -51,6 +57,20 @@ struct VellumCommands: Commands {
     private var findVisible: Bool { appStore?.findVisible ?? false }
 
     var body: some Commands {
+        // MARK: App-wide
+        // This remains available with a document open, unlike the Home toolbar
+        // control, and shares its durable state with that control.
+        CommandGroup(after: .appInfo) {
+            if appWorkspace.updateChecker.state == .available,
+               let version = appWorkspace.updateChecker.availableVersion {
+                Button("Install Update \(version)", action: appWorkspace.updateChecker.install)
+            }
+            Button("Check for Updates…") {
+                Task { await appWorkspace.updateChecker.check() }
+            }
+            .disabled(appWorkspace.updateChecker.state == .checking)
+        }
+
         // MARK: File
         CommandGroup(replacing: .newItem) {
             Button("New Tab") { appStore?.newStartTab() }

@@ -13,6 +13,10 @@ import Observation
 final class WorkspaceStore {
     let sessions: SessionService
 
+    /// Window-global update state. Home and the app menu share this one owner,
+    /// so changing tabs never cancels a check or loses an available release.
+    let updateChecker: UpdateChecker
+
     /// The layout tree. Reassigned wholesale on every structural change.
     private(set) var root: PaneNode
     /// Id of the focused leaf — drives the toolbar, inspector, and menu commands.
@@ -131,6 +135,7 @@ final class WorkspaceStore {
         settingsAi.openRouterCatalog = catalog
         settingsAi.chatgptAuth = auth
         self.sessions = sessions
+        self.updateChecker = UpdateChecker()
         self.openRouterCatalog = catalog
         self.chatgptAuth = auth
         self.settingsAi = settingsAi

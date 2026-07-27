@@ -197,7 +197,7 @@ private struct WindowChrome: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
         .overlay(alignment: .top) {
-            if focused.app.document != nil, let error = focused.app.error {
+            if let error = focused.app.error {
                 DocumentErrorNotice(message: error) {
                     focused.app.error = nil
                 }
@@ -252,9 +252,9 @@ private struct WindowChrome: View {
     }
 }
 
-/// Errors from document-scoped actions used to be visible only after returning
-/// to Home. Keep them in the current reading surface, with an explicit dismiss
-/// action so a stale failure never obscures the document.
+/// Document-action failures stay visible in whichever surface remains after
+/// the action. In particular, a terminal Save As rollback can close the last
+/// tab and leave this pane on Home.
 private struct DocumentErrorNotice: View {
     let message: String
     let dismiss: () -> Void

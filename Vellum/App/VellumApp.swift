@@ -128,6 +128,12 @@ struct VellumApp: App {
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                 }
+                .task {
+                    // The checker belongs to the workspace, not the Home
+                    // toolbar, so this continues to represent the same check
+                    // while documents are opened or Home is revisited.
+                    await workspace.updateChecker.check(silent: true)
+                }
                 .sheet(isPresented: $showStorageChoice) {
                     StorageLocationChoiceSheet()
                         .environment(\.palette, themeStore.palette)
@@ -145,7 +151,7 @@ struct VellumApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
-            VellumCommands()
+            VellumCommands(workspace: workspace)
         }
 
         // Adds "Settings…" (⌘,) to the app menu automatically.

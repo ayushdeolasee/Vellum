@@ -437,10 +437,9 @@ private struct OverflowMenu: View {
     /// Remove = un-keep and delete the offline copy; the record — highlights,
     /// notes, reading position — always survives.
     private func toggleSavedPage() {
-        guard let sessionId = appStore.activeTabId else { return }
+        guard let identity = appStore.activeWebDocumentActionIdentity() else { return }
         let next = !pageSaved
         pageSaved = next
-        let expectedUrl = appStore.document?.pdfPath ?? ""
         let pages = aiStore.pageTexts
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
@@ -449,25 +448,35 @@ private struct OverflowMenu: View {
         let generation = saveToggleGeneration
         saveToggleTask = Task {
             await prior?.value
+            guard appStore.isCurrentWebDocument(identity) else { return }
             do {
                 if next {
                     let archived = try await appStore.sessions.archiveWebpageDefault(
-                        sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+                        sessionId: identity.sessionId, pages: pages, expectedUrl: identity.url)
+                    // A navigation can reuse the session id while this awaits.
+                    // Never let an old action mark the new URL as saved.
+                    guard appStore.isCurrentWebDocument(identity) else { return }
                     guard archived else {
                         throw SessionServiceError.io("The webpage changed before its offline copy could be created.")
                     }
-                    try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: true)
+                    try await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: true)
+                    guard appStore.isCurrentWebDocument(identity) else { return }
                 } else {
-                    try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: false)
+                    try await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: false)
+                    guard appStore.isCurrentWebDocument(identity) else { return }
                 }
             } catch {
                 // If archiving fails, undo any membership change so Saved and
                 // offline availability cannot diverge. Only the newest toggle
                 // owns visible state or its error message.
+                guard appStore.isCurrentWebDocument(identity) else { return }
                 if next {
-                    try? await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: false)
+                    try? await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: false)
+                    // The rollback itself can suspend; do not update a page
+                    // that rebounded to a different URL while it ran.
+                    guard appStore.isCurrentWebDocument(identity) else { return }
                 }
-                if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
+                if appStore.isCurrentWebDocument(identity), generation == saveToggleGeneration {
                     pageSaved = !next
                     appStore.error = "Keep Offline failed: \(error.localizedDescription)"
                 }
@@ -639,7 +648,9 @@ private struct OverflowMenu: View {
 /// Home has no current document, so it must not show the empty document-overflow
 /// control. Updates remain reachable here as the one genuinely global action.
 private struct HomeUpdateMenu: View {
-    @State private var updateChecker = UpdateChecker()
+    @Environment(WorkspaceStore.self) private var workspace
+
+    private var updateChecker: UpdateChecker { workspace.updateChecker }
 
     var body: some View {
         Menu {
@@ -663,9 +674,6 @@ private struct HomeUpdateMenu: View {
         .help(updateChecker.tooltip)
         .accessibilityLabel("Updates")
         .accessibilityIdentifier("toolbar.homeUpdates")
-        .task {
-            await updateChecker.check(silent: true)
-        }
     }
 }
 

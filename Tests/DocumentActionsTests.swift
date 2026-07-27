@@ -131,6 +131,67 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(workspace.focusedPane.app.document?.pdfPath, destination.path)
     }
 
+    func testSaveAsRollbackFailureClosesLastTabAndRetainsHomeError() async throws {
+        let source = tempDirectory.appendingPathComponent("Original.pdf")
+        let destination = tempDirectory.appendingPathComponent("Copy.pdf")
+        makePDF(at: source, pages: 1)
+
+        let sessions = StubSessionService()
+        let sourceInfo = DocumentInfo(
+            kind: .pdf, pdfPath: source.path, title: nil, pageCount: 1, lastPage: nil)
+        var sourceOpenCount = 0
+        sessions.openFileHandler = { path, _ in
+            if path == source.path {
+                sourceOpenCount += 1
+                if sourceOpenCount == 1 { return sourceInfo }
+                throw SessionServiceError.io("injected rollback failure")
+            }
+            XCTAssertEqual(path, destination.path)
+            throw SessionServiceError.io("injected destination reopen failure")
+        }
+        sessions.pdfBytes = try Data(contentsOf: source)
+        sessions.documentId = "test-save-as-id"
+
+        let app = AppStore(sessions: sessions)
+        await app.openFile(path: source.path)
+        let tabId = try XCTUnwrap(app.activeTabId)
+
+        do {
+            _ = try await app.savePdfAs(tabId: tabId, destination: destination)
+            XCTFail("the injected destination and rollback failures must escape")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("tab was closed"))
+        }
+
+        XCTAssertTrue(app.tabs.isEmpty)
+        XCTAssertNil(app.document)
+        XCTAssertTrue(app.error?.contains("tab was closed") == true)
+    }
+
+    /// A Keep Offline task must reject an in-tab navigation even though the
+    /// session id is deliberately retained. The toolbar re-checks this exact
+    /// identity after every await before succeeding or rolling back.
+    func testWebActionIdentityRejectsSameSessionAfterNavigation() async throws {
+        let firstURL = "https://example.com/first"
+        let secondURL = "https://example.com/second"
+        let sessions = StubSessionService()
+        sessions.openWebDocumentHandler = { url, _ in
+            DocumentInfo(
+                kind: .web, pdfPath: url, title: nil, pageCount: 1,
+                lastPage: nil, docId: "web-\(url)")
+        }
+
+        let app = AppStore(sessions: sessions)
+        await app.openUrl(firstURL)
+        let identity = try XCTUnwrap(app.activeWebDocumentActionIdentity())
+
+        _ = await app.webNavigated(tabId: identity.sessionId, url: secondURL)
+
+        XCTAssertEqual(app.activeTabId, identity.sessionId)
+        XCTAssertEqual(app.document?.pdfPath, secondURL)
+        XCTAssertFalse(app.isCurrentWebDocument(identity))
+    }
+
     private func makePDF(at url: URL, pages: Int) {
         var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
         let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil)!
@@ -147,4 +208,61 @@ final class DocumentActionsTests: XCTestCase {
         }
         context.closePDF()
     }
+}
+
+/// Session-service seam for document-action failure paths. The production
+/// manager is deliberately concrete; this lets the tests inject a reopen or
+/// rollback failure without weakening its runtime behavior.
+@MainActor
+private final class StubSessionService: SessionService {
+    var openFileHandler: ((String, String) throws -> DocumentInfo)?
+    var openWebDocumentHandler: ((String, String) throws -> DocumentInfo)?
+    var pdfBytes = Data()
+    var documentId = "stub-document-id"
+
+    func openFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        guard let openFileHandler else {
+            throw SessionServiceError.io("unexpected openFile for \(path)")
+        }
+        return try openFileHandler(path, sessionId)
+    }
+
+    func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo {
+        guard let openWebDocumentHandler else {
+            throw SessionServiceError.io("unexpected openWebDocument for \(url)")
+        }
+        return try openWebDocumentHandler(url, sessionId)
+    }
+
+    func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        throw SessionServiceError.io("unexpected openVellumwebFile for \(path)")
+    }
+
+    func saveFile(sessionId: String) async throws {}
+    func closeFile(sessionId: String) async throws {}
+    func readPdfBytes(sessionId: String) async throws -> Data { pdfBytes }
+
+    func setWebpageSaved(sessionId: String, saved: Bool) async throws {}
+    func getWebpageSaved(sessionId: String) async throws -> Bool { false }
+    func listSavedWebpages() async throws -> [WebLibraryEntry] { [] }
+    func removeSavedWebpage(url: String) async throws {}
+    func exportVellumweb(
+        sessionId: String, destPath: String, pages: [WebPageText]
+    ) async throws -> VellumwebExportSummary {
+        throw SessionServiceError.io("unexpected exportVellumweb")
+    }
+    func archiveWebpageDefault(
+        sessionId: String, pages: [WebPageText], expectedUrl: String
+    ) async throws -> Bool {
+        throw SessionServiceError.io("unexpected archiveWebpageDefault")
+    }
+
+    func getAnnotations(sessionId: String, pageNumber: Int?) async throws -> [Annotation] { [] }
+    func createAnnotation(sessionId: String, input: CreateAnnotationInput) async throws -> Annotation {
+        throw SessionServiceError.io("unexpected createAnnotation")
+    }
+    func updateAnnotation(sessionId: String, input: UpdateAnnotationInput) async throws -> Bool { false }
+    func deleteAnnotation(sessionId: String, id: String) async throws -> Bool { false }
+    func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {}
+    func ensureDocumentId(sessionId: String) async throws -> String { documentId }
 }

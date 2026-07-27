@@ -93,6 +93,14 @@ final class AppStore {
     /// workspace owns the pane which owns this store.
     weak var workspace: WorkspaceStore?
 
+    /// The full identity for an asynchronous webpage action. A tab id by
+    /// itself is not enough: in-page navigation deliberately reuses it while
+    /// rebinding the tab to a different URL.
+    struct WebDocumentActionIdentity: Equatable, Sendable {
+        let sessionId: String
+        let url: String
+    }
+
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
     var zoomToHandler: ((Double) -> Void)?
@@ -194,6 +202,26 @@ final class AppStore {
             self.error = error.localizedDescription
             return nil
         }
+    }
+
+    /// Captures the active webpage before an asynchronous action begins.
+    /// Callers must validate this identity again after every suspension before
+    /// changing visible state or performing a compensating mutation.
+    func activeWebDocumentActionIdentity() -> WebDocumentActionIdentity? {
+        guard let sessionId = activeTabId,
+              let document,
+              document.kind == .web else { return nil }
+        return WebDocumentActionIdentity(sessionId: sessionId, url: document.pdfPath)
+    }
+
+    /// True only while the active tab still represents the exact webpage that
+    /// began the action. This rejects a same-tab URL rebind after an `await`.
+    func isCurrentWebDocument(_ identity: WebDocumentActionIdentity) -> Bool {
+        guard activeTabId == identity.sessionId,
+              let tab = tabs.first(where: { $0.id == identity.sessionId }),
+              let document = tab.document,
+              document.kind == .web else { return false }
+        return document.pdfPath == identity.url
     }
 
     /// Update a tab's document title (reported by the webpage content script).
@@ -320,9 +348,14 @@ final class AppStore {
                 // than showing a document whose actions will all fail; the
                 // untouched original remains available to reopen from Recents.
                 await closeTab(tabId)
-                throw SessionServiceError.io(
+                let terminalError = SessionServiceError.io(
                     "Save As wrote the copy but could not reopen it (\(reopenError.localizedDescription)) or restore the original (\(rollbackError.localizedDescription)). The tab was closed; reopen the original file to continue."
                 )
+                // `closeTab` may leave this pane on Home. Keep the terminal
+                // action error on the store so WindowChrome can present it
+                // there as well as above an open document.
+                error = terminalError.localizedDescription
+                throw terminalError
             }
             throw reopenError
         }
