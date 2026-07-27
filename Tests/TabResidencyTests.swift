@@ -300,6 +300,82 @@ struct TabResidencyTests {
         #expect(manager.residentBytes == 200)
     }
 
+    @Test func evictionReportsEachTabOnceEvenWhenItHeldTwoSlots() {
+        let clock = ManualResidencyClock()
+        let manager = makeManager(clock: clock)
+        manager.store(FakeResident(), tabId: "a", slot: .preparedPdf)
+        manager.store(FakeResident(), tabId: "a", slot: .webView)
+
+        clock.advance(by: .seconds(3 * 60 * 60))
+
+        // The window pass walks slots, but the contract is "the tabs that lost
+        // a resource" — one entry per tab, matching the ceiling pass.
+        #expect(manager.sweep() == ["a"])
+    }
+
+    // MARK: - Ceilings applied at store time
+
+    @Test func enforcingCeilingsTrimsWithoutWaitingForASweep() {
+        let clock = ManualResidencyClock()
+        let manager = makeManager(clock: clock, tabLimit: 1)
+        let a = FakeResident()
+        let b = FakeResident()
+        manager.store(a, tabId: "a", slot: .preparedPdf)
+        clock.advance(by: .seconds(60))
+        manager.store(b, tabId: "b", slot: .preparedPdf)
+
+        #expect(manager.enforceCeilings() == ["a"])
+        #expect(a.releaseCount == 1)
+        #expect(manager.residentTabIds == ["b"])
+    }
+
+    @Test func enforcingCeilingsDoesNotApplyTheRetentionWindow() {
+        let clock = ManualResidencyClock()
+        // Room to spare, so only the two-hour window could evict anything —
+        // and the ceiling pass must not be the thing that applies it.
+        let manager = makeManager(clock: clock, tabLimit: 8)
+        let resource = FakeResident()
+        manager.store(resource, tabId: "a", slot: .preparedPdf)
+
+        clock.advance(by: .seconds(5 * 60 * 60))
+
+        #expect(manager.enforceCeilings().isEmpty)
+        #expect(resource.releaseCount == 0)
+        // The sweeper still owns the window.
+        #expect(manager.sweep() == ["a"])
+    }
+
+    @Test func storingOverTheCeilingTrimsOnTheNextTurnNotTheNextSweep() async {
+        let clock = ManualResidencyClock()
+        // Real machinery: the point of this test is that a burst of opens is
+        // bounded long before the sweeper's first 60-second tick.
+        let manager = TabResidencyManager(
+            clock: clock,
+            retention: TabResidencyManager.retentionWindow,
+            tabLimit: 1,
+            byteBudget: Int.max,
+            automaticMaintenance: true)
+        let a = FakeResident()
+        let b = FakeResident()
+        manager.store(a, tabId: "a", slot: .preparedPdf)
+        clock.advance(by: .seconds(60))
+        manager.store(b, tabId: "b", slot: .preparedPdf)
+        // Deliberately deferred, not inline: `store` is reachable from a SwiftUI
+        // body, where releasing an `@Observable` resource would be a
+        // modify-during-update hazard.
+        #expect(manager.residentTabCount == 2)
+
+        var spins = 0
+        while manager.residentTabCount > 1, spins < 100 {
+            await Task.yield()
+            spins += 1
+        }
+
+        #expect(manager.residentTabIds == ["b"])
+        #expect(a.releaseCount == 1)
+        manager.releaseAll()
+    }
+
     // MARK: - Memory pressure
 
     @Test func memoryPressureWarningShrinksToTheTightCeiling() {

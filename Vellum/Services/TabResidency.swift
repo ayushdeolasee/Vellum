@@ -177,6 +177,10 @@ final class TabResidencyManager {
 
     private var sweepTask: Task<Void, Never>?
     private var pressureSource: (any DispatchSourceMemoryPressure)?
+    /// Coalesces the deferred ceiling check `store` schedules — see
+    /// `scheduleCeilingEnforcement`. One hop per runloop turn, however many
+    /// resources are stored in it.
+    private var ceilingCheckScheduled = false
 
     init(
         clock: ResidencyClock = ContinuousResidencyClock(),
@@ -197,9 +201,13 @@ final class TabResidencyManager {
         // `deinit` is nonisolated, so only the two handles that are safe to
         // touch from anywhere get cleaned up here. Cancelling the Task stops the
         // sweep loop; cancelling the DispatchSource stops its handler firing.
-        // The residents themselves are released by ARC as `entries` tears down —
-        // by then the process is going away anyway, and `Vellum App`'s quit path
-        // has already called `releaseAll()`.
+        // The residents themselves are released by ARC as `entries` tears down.
+        // That is enough: `releaseResidency()` has nothing to flush that is not
+        // already persisted (annotations round-trip on every edit, page text is
+        // flushed by `PageTextPersister`, `last_page` is written on tab switch
+        // and again by the quit path), so there is no unsaved work riding on
+        // this teardown. The shared manager never deinits anyway — in practice
+        // this only runs for the per-test managers.
         sweepTask?.cancel()
         pressureSource?.cancel()
     }
@@ -227,6 +235,7 @@ final class TabResidencyManager {
             entries[other]?.lastActive = now
         }
         startSweeperIfNeeded()
+        scheduleCeilingEnforcement()
     }
 
     /// The resident resource for a tab, if we still have it. Reading does *not*
@@ -304,6 +313,37 @@ final class TabResidencyManager {
         evict(tabLimit: tabLimit, byteBudget: byteBudget, expireIdle: true)
     }
 
+    /// Apply only the ceilings — the count limit and the byte budget — without
+    /// the retention window. This is what `store` triggers, because the sweeper
+    /// is the *wrong* place to bound a burst: it first ticks a full
+    /// `sweepInterval` (60s) after the first resource is stored, so until this
+    /// existed, everything a user could open in a minute stayed resident no
+    /// matter how far past the ceilings it went. The window itself is left to
+    /// the sweeper — nothing can newly cross a two-hour threshold as a result of
+    /// a store.
+    @discardableResult
+    func enforceCeilings() -> [String] {
+        evict(tabLimit: tabLimit, byteBudget: byteBudget, expireIdle: false)
+    }
+
+    /// Run `enforceCeilings` on the next main-actor turn rather than inline.
+    ///
+    /// `store` is reachable from a SwiftUI `body` — `PaneView` resolves a tab's
+    /// web controller there — and eviction mutates `@Observable` state on the
+    /// resources it releases (`WebViewerController.initCount`), which is exactly
+    /// the "modifying state during view update" hazard. A hop sidesteps that and
+    /// is still three orders of magnitude sooner than the next sweep, which is
+    /// the whole point.
+    private func scheduleCeilingEnforcement() {
+        guard automaticMaintenance, !ceilingCheckScheduled else { return }
+        ceilingCheckScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.ceilingCheckScheduled = false
+            self.enforceCeilings()
+        }
+    }
+
     /// Respond to the system running short on memory. This is the escape hatch
     /// that makes "keep every open tab resident" survivable: the 2-hour window
     /// is a *ceiling* on how long we hold things, never a promise to hold them
@@ -338,7 +378,11 @@ final class TabResidencyManager {
             for (key, entry) in entries.map({ ($0.key, $0.value) })
             where !pinned.contains(key.tabId) && now - entry.lastActive >= retention {
                 entries.removeValue(forKey: key)?.resource.releaseResidency()
-                evicted.append(key.tabId)
+                // Per *tab*, not per slot: this loop walks slots, so a tab
+                // holding both a PDF and a web view would otherwise be reported
+                // twice by a routine whose contract is "the tabs that lost a
+                // resource" (pass 2 below already appends once per tab).
+                if !evicted.contains(key.tabId) { evicted.append(key.tabId) }
             }
         }
 

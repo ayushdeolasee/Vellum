@@ -424,16 +424,37 @@ final class WebViewerController: NSObject, TabResidentResource {
     func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) -> Int {
         mountGeneration += 1
         let token = mountGeneration
-        // Already live (a re-mount raced the previous mount's teardown): the
-        // registrations below are idempotent for the same tab, so just hand out
-        // the new token — its predecessor's detach will now be ignored.
-        guard !attached else { return token }
+        // A re-mount can race the outgoing mount's teardown, because SwiftUI
+        // mounts the incoming view before unmounting the outgoing one. It is
+        // tempting to treat that as "already live, nothing to do" — but the
+        // incoming mount can belong to a DIFFERENT pane. A tab keeps its id (and
+        // therefore its resident controller) when it is dragged between panes
+        // (`WorkspaceStore.moveTab` / `splitWithTab`) or absorbed by View ▸ Merge
+        // Panes, and each pane has its own `AppStore`, `AnnotationStore` and
+        // `AiStore`. Skipping the rebind left the controller wired to the pane
+        // the tab had just left — for the rest of the process, since the stale
+        // mount's `detach` is then ignored by the token check below. The tab
+        // still rendered, but find/print/scroll-to-page and the AI locate and
+        // capture hooks were registered on the wrong store, `mountedDocument`
+        // resolved against a store whose `tabs` no longer contained the tab
+        // (killing web-process crash recovery), and `handleMessage`'s
+        // `activeTabId == mountTabId` guard compared against the wrong pane, so
+        // every inbound script message — scroll position, selection, context
+        // menu, note placement — was silently dropped.
+        //
+        // Rebinding is idempotent (all the slots below are plain assignments),
+        // so doing it unconditionally is both the simple and the correct answer.
+        let isRemount = attached
         attached = true
-        bind(app: app, annotationStore: annotationStore, aiStore: aiStore)
+        bind(
+            app: app, annotationStore: annotationStore, aiStore: aiStore,
+            isRemount: isRemount)
         return token
     }
 
-    private func bind(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
+    private func bind(
+        app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore, isRemount: Bool
+    ) {
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
@@ -498,6 +519,12 @@ final class WebViewerController: NSObject, TabResidentResource {
             return
         }
 
+        // Cold: nothing confirmed in the view, so navigate. Except on a remount,
+        // where `loadedUrl` is nil only because this tab's own load is still in
+        // flight (it is set by the page's init handshake) — the previous mount
+        // already started it, and kicking off a second one would re-fetch
+        // exactly what we are waiting for and reset the page's progress.
+        guard !isRemount else { return }
         loadedUrl = nil
         webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
     }
@@ -568,6 +595,24 @@ final class WebViewerController: NSObject, TabResidentResource {
         initCount = 0
         restoredUrl = nil
         archivedUrl = nil
+        // Unhook the WebKit delegates BEFORE the teardown navigation below, for
+        // two independent reasons.
+        //
+        // 1. `decidePolicyFor` cancels every non-http(s) main-frame navigation
+        //    that is not one of our own proxy schemes — which includes the
+        //    about:blank the blank-out produces. With the delegate still
+        //    installed the blank load is simply refused and the page (and its
+        //    web content process) stays put, so the eviction frees nothing.
+        //
+        // 2. The delegates are a resurrection path. A timed or pressure eviction
+        //    targets a tab that is still OPEN, so `mountedDocument` still
+        //    resolves — and a late `webViewWebContentProcessDidTerminate` would
+        //    re-load the tab's real URL over the network into a view nobody can
+        //    see. That callback is not hypothetical here: jetsamming background
+        //    web content processes is precisely what the system does under the
+        //    memory pressure that triggered the eviction in the first place.
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
         webView.stopLoading()
@@ -1047,7 +1092,24 @@ final class WebViewerController: NSObject, TabResidentResource {
               let app else { return }
         // Drop messages queued from before a tab switch: this viewer belongs
         // to one tab, and acting on another tab's state would corrupt it.
-        guard app.activeTabId == mountTabId else { return }
+        guard app.activeTabId == mountTabId else {
+            // …but a resident background tab is a live page that can navigate
+            // itself while we are not looking (a meta refresh, an SPA timer, a
+            // redirect that lands after the user switched away). We still must
+            // not act on the message — that would write the FOREGROUND tab's
+            // state — yet an `init` reporting a different URL tells us the view
+            // no longer shows what `loadedUrl` claims. Left standing, `attach`
+            // would take the warm-resume shortcut on the way back and adopt the
+            // new page under the old document's session, title, address pill and
+            // annotations. Invalidating instead costs one reload in a rare case
+            // and keeps the tab truthful. Normalized to match `handleInit`, so a
+            // plain re-extraction init for the same page keeps its warmth.
+            if type == "init", let reported = data["url"] as? String,
+               ((try? WebUrl.normalize(reported)) ?? reported) != loadedUrl {
+                loadedUrl = nil
+            }
+            return
+        }
 
         switch type {
         case "init":
