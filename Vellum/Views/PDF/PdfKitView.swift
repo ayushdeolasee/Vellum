@@ -70,6 +70,7 @@ extension NSCursor {
 struct PdfKitView: NSViewRepresentable {
     let controller: PdfViewerController
     let document: PDFDocument
+    let isActive: Bool
 
     @Environment(AppStore.self) private var app
     @Environment(\.palette) private var palette
@@ -100,6 +101,7 @@ struct PdfKitView: NSViewRepresentable {
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         nsView.backgroundColor = NSColor(palette.well)
+        guard isActive else { return }
         // Store → view zoom sync, ONLY on the fallback path where no anchored
         // zoom handler is registered. While a PDF viewer is live the handler is
         // always set and zoom flows view → store: the pinch gesture / zoomTo

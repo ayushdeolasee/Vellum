@@ -58,6 +58,10 @@ struct WebHighlightEditorState {
 // MARK: - View
 
 struct WebViewerView: View {
+    let tabId: String
+    let document: DocumentInfo
+    let isActive: Bool
+
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
@@ -65,10 +69,13 @@ struct WebViewerView: View {
     @Environment(\.palette) private var palette
 
     @State private var controller = WebViewerController()
+    @State private var hasActivated = false
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .topLeading) {
+        Group {
+            if hasActivated || isActive {
+                GeometryReader { proxy in
+                    ZStack(alignment: .topLeading) {
                 WebViewRepresentable(controller: controller)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -177,17 +184,29 @@ struct WebViewerView: View {
                     }
                     .zIndex(50)
                 }
+                    }
+                }
+            } else {
+                Color.clear
             }
         }
         .background(palette.well)
         .clipped()
         .onAppear {
-            controller.attach(app: appStore, annotationStore: annotationStore, aiStore: aiStore)
+            guard isActive else { return }
+            hasActivated = true
+            controller.attach(
+                app: appStore,
+                annotationStore: annotationStore,
+                aiStore: aiStore,
+                tabId: tabId,
+                document: document)
         }
         .onDisappear {
             controller.detach()
         }
         .onChange(of: controller.initCount) {
+            guard isActive else { return }
             controller.pushAnnotations(annotationStore.annotations)
             controller.pushMode(appStore.mode)
             controller.pushSelectedHighlight()
@@ -196,23 +215,42 @@ struct WebViewerView: View {
                 selectedId: annotationStore.selectedAnnotationId)
         }
         .onChange(of: annotationStore.annotations) {
+            guard isActive else { return }
             controller.pushAnnotations(annotationStore.annotations)
         }
         .onChange(of: appStore.mode) {
+            guard isActive else { return }
             controller.pushMode(appStore.mode)
         }
         // Keyed to the request counter, not selectedAnnotationId: clicking the
         // sidebar row of the already-selected annotation re-selects the same id
         // (no id change, no onChange) but must still scroll back to it.
         .onChange(of: annotationStore.selectionRequestCount) {
+            guard isActive else { return }
             controller.scrollToSelected(
                 annotations: annotationStore.annotations,
                 selectedId: annotationStore.selectedAnnotationId)
         }
         .onChange(of: appStore.zoom) { _, zoom in
+            guard isActive else { return }
             controller.applyZoom(zoom)
         }
+        .onChange(of: isActive) { _, active in
+            guard active else { return }
+            hasActivated = true
+            controller.attach(
+                app: appStore,
+                annotationStore: annotationStore,
+                aiStore: aiStore,
+                tabId: tabId,
+                document: document)
+            controller.pushAnnotations(annotationStore.annotations)
+            controller.pushMode(appStore.mode)
+            controller.pushSelectedHighlight()
+            controller.applyZoom(appStore.zoom)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
+            guard isActive else { return }
             let delta = note.userInfo?["delta"] as? Int ?? 0
             controller.goHistory(delta: delta)
         }
@@ -375,15 +413,36 @@ final class WebViewerController: NSObject {
 
     // MARK: Lifecycle
 
-    func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
-        guard !attached else { return }
+    func attach(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        aiStore: AiStore,
+        tabId: String,
+        document: DocumentInfo
+    ) {
+        if attached {
+            activateSharedHandlers()
+            return
+        }
         attached = true
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
-        mountTabId = app.activeTabId
+        mountTabId = tabId
         applyZoom(app.zoom)
 
+        activateSharedHandlers()
+
+        guard document.kind == .web else { return }
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
+    }
+
+    /// Command hooks are window-shared, so the active preserved WKWebView
+    /// reclaims them whenever its tab is selected. The underlying web view and
+    /// back-forward list stay untouched.
+    private func activateSharedHandlers() {
+        guard attached, let app, let annotationStore, let aiStore,
+              app.activeTabId == mountTabId else { return }
         // Global hooks used by the toolbar, sidebar, and AI tool execution
         // (window.__scrollToPage / __scrollToWebPosition / __captureWebPosition
         // / __locateWebText in the original).
@@ -420,9 +479,6 @@ final class WebViewerController: NSObject {
             self?.printPage()
         }
 
-        if let doc = app.document, doc.kind == .web {
-            webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
-        }
     }
 
     func detach() {

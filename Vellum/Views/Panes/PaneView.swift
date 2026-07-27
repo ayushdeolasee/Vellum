@@ -110,14 +110,18 @@ struct PaneView: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.document == nil {
-            WelcomeScreen()
-        } else if app.document?.kind == .web {
-            WebViewerView()
-                .id(app.activeTabId)
-        } else {
-            PdfViewerView()
-                .id(app.activeTabId)
+        ZStack {
+            ForEach(app.tabs) { tab in
+                LiveTabHost(
+                    tabId: tab.id,
+                    document: tab.document,
+                    isActive: tab.id == app.activeTabId
+                )
+                .opacity(tab.id == app.activeTabId ? 1 : 0)
+                .allowsHitTesting(tab.id == app.activeTabId)
+                .accessibilityHidden(tab.id != app.activeTabId)
+                .zIndex(tab.id == app.activeTabId ? 1 : 0)
+            }
         }
     }
 
@@ -162,6 +166,52 @@ struct PaneView: View {
     private var autosaveIdentity: PaneAutosaveIdentity? {
         guard let tabId = app.activeTabId, app.document != nil else { return nil }
         return PaneAutosaveIdentity(tabId: tabId, path: app.document?.pdfPath)
+    }
+}
+
+/// Stable identity for one tab's expensive native viewer. Inactive hosts stay
+/// mounted (and therefore keep PDFKit/WKWebView/Home transient state) while
+/// becoming visually and interactively inert. The document value may change
+/// in-place when a start tab adopts an opened file; keying by tab id preserves
+/// the tab identity across that transition.
+private struct LiveTabHost: View {
+    let tabId: String
+    let document: DocumentInfo?
+    let isActive: Bool
+    @State private var isEvicted = false
+
+    var body: some View {
+        Group {
+            if isEvicted && !isActive {
+                Color.clear
+            } else if let document {
+                if document.kind == .web {
+                    WebViewerView(tabId: tabId, document: document, isActive: isActive)
+                } else {
+                    PdfViewerView(tabId: tabId, documentInfo: document, isActive: isActive)
+                }
+            } else {
+                WelcomeScreen()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: isActive) {
+            if isActive {
+                isEvicted = false
+                return
+            }
+            // Live native views are intentionally expensive. Preserve them for
+            // the two-hour working-set window from Issue #52, then let SwiftUI
+            // release PDFKit/WKWebView state. Selecting an evicted tab mounts it
+            // again and the viewer's normal loading state explains restoration.
+            do {
+                try await Task.sleep(for: .seconds(2 * 60 * 60))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, !isActive else { return }
+            isEvicted = true
+        }
     }
 }
 

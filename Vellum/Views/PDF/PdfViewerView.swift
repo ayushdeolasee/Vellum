@@ -15,6 +15,10 @@ private struct PreparedPdf: @unchecked Sendable {
 }
 
 struct PdfViewerView: View {
+    let tabId: String
+    let documentInfo: DocumentInfo
+    let isActive: Bool
+
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
@@ -37,13 +41,22 @@ struct PdfViewerView: View {
     }
 
     var body: some View {
-        if let document = app.document, document.kind == .pdf, let tabId = app.activeTabId {
-            content(tabId: tabId)
-                .task(id: tabId) { await load(tabId: tabId) }
-                .onDisappear { teardown() }
-        } else {
-            Color.clear
-        }
+        content(tabId: tabId)
+            // First activation prepares the document. Subsequent activations
+            // reuse the same PDFView/controller and only reclaim shared command
+            // handlers, preserving native scroll, selection, and find state.
+            .task(id: isActive) {
+                guard isActive else {
+                    deactivate()
+                    return
+                }
+                if case .idle = loadState {
+                    await load(tabId: tabId)
+                } else {
+                    activate()
+                }
+            }
+            .onDisappear { teardown() }
     }
 
     @ViewBuilder
@@ -62,7 +75,10 @@ struct PdfViewerView: View {
             // and break scrolling to the page edges.
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    PdfKitView(controller: controller, document: document)
+                    PdfKitView(
+                        controller: controller,
+                        document: document,
+                        isActive: isActive)
                         .id(loadedTabId)
                         .frame(width: geo.size.width, height: geo.size.height)
                     PdfOverlayStack(controller: controller)
@@ -82,6 +98,14 @@ struct PdfViewerView: View {
     }
 
     private func load(tabId: String) async {
+        defer {
+            // `.task(id: isActive)` is intentionally cancelled on a rapid
+            // switch. Leave the host retryable rather than stranded forever in
+            // its loading placeholder.
+            if Task.isCancelled, case .loading = loadState {
+                loadState = .idle
+            }
+        }
         // The OUTGOING document's pending page text is flushed by ITS OWN
         // view's teardown/reset (flushAndDropPersister — this view's fresh
         // controller has no persister to flush); the quit path additionally
@@ -92,12 +116,12 @@ struct PdfViewerView: View {
         loadState = .loading
         // Document/tab changed: reset the AI document context (PdfViewer.tsx
         // clears it alongside the local state reset).
-        aiStore.clearDocumentContext()
+        if isActive { aiStore.clearDocumentContext() }
         do {
             // The persistent text cache is keyed by the current PDF bytes, so
             // read them even when this tab can reuse an already prepared PDF.
             let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             let document: PDFDocument
             if let cached = app.cachedPreparedPdf(tabId: tabId) {
                 // Fast path: this tab was opened recently — reuse the prepared
@@ -118,7 +142,7 @@ struct PdfViewerView: View {
                     }
                     return PreparedPdf(document: document)
                 }.value
-                guard !Task.isCancelled, app.activeTabId == tabId else { return }
+                guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
                 guard let parsed = prepared.document else {
                     loadState = .parseFailed
                     return
@@ -133,41 +157,42 @@ struct PdfViewerView: View {
             // when the file carries one, else the path hash. The IO actor keyed
             // itself the same way at open, so lookup, persister, and every
             // in-app refreshHash agree for the whole session.
-            let storageKey = app.document.map { DocumentIdentity.storageKey(for: $0) }
+            let storageKey = DocumentIdentity.storageKey(for: documentInfo)
             let cached: [Int: String]?
-            if let path = app.document?.pdfPath, let storageKey {
+            let path = documentInfo.pdfPath
+            if !path.isEmpty {
                 cached = await PageTextCache.shared.lookup(
-                    key: storageKey, path: path, data: data, title: app.document?.title)
+                    key: storageKey, path: path, data: data, title: documentInfo.title)
             } else {
                 cached = nil
             }
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             // Unconditional replace (empty on a miss): anything an outgoing
             // tab's extraction wrote into pageTexts during the awaits above
             // belongs to the OLD document and must not survive into this one.
-            aiStore.restorePageTexts(cached ?? [:])
+            if isActive { aiStore.restorePageTexts(cached ?? [:]) }
+            let initialPage = app.tab(id: tabId)?.currentPage ?? 1
             controller.adopt(
                 document: document,
                 app: app,
                 annotationStore: annotationStore,
                 ai: aiStore,
-                initialPage: app.currentPage
+                initialPage: initialPage,
+                tabId: tabId
             )
-            app.setNumPages(document.pageCount)
-            if document.pageCount >= 1, let path = app.document?.pdfPath, let storageKey {
+            if isActive { app.setNumPages(document.pageCount) }
+            if document.pageCount >= 1 {
                 controller.installPersister(PageTextPersister(
                     key: storageKey,
                     path: path,
-                    title: app.document?.title,
+                    title: documentInfo.title,
                     pageCount: document.pageCount,
                     seeded: cached ?? [:]))
             }
-            registerHandlers()
-            handlersTabId = tabId
             loadState = .loaded(document, tabId: tabId)
-            controller.startTextExtraction()
+            if isActive { activate() }
         } catch {
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             NSLog("[PdfViewer] readPdfBytes FAILED: %@", error.localizedDescription)
             loadState = .readFailed(error.localizedDescription)
         }
@@ -208,6 +233,27 @@ struct PdfViewerView: View {
         app.flushPageTextCacheHandler = { [weak controller] in
             await controller?.flushPersister()
         }
+    }
+
+    private func activate() {
+        guard app.activeTabId == tabId else { return }
+        registerHandlers()
+        handlersTabId = tabId
+        controller.startTextExtraction()
+        if case .loaded(let pdf, _) = loadState {
+            app.setNumPages(pdf.pageCount)
+        }
+    }
+
+    private func deactivate() {
+        guard handlersTabId == tabId else { return }
+        // If another document host is taking over, it owns these shared slots
+        // now (or is about to). Clearing blindly here can race after its
+        // registration. Home has no replacement viewer, so clear in that case.
+        if app.document == nil {
+            unregisterHandlers()
+        }
+        handlersTabId = nil
     }
 
     private func unregisterHandlers() {

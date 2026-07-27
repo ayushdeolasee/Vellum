@@ -96,6 +96,36 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(ws.focusedPaneId, dest.id)
     }
 
+    func testFindStateFollowsItsDocumentTab() {
+        let app = makeWorkspace().focusedPane.app
+        let pdf = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+            pageCount: 10, lastPage: 1)
+        let web = DocumentInfo(
+            kind: .web, pdfPath: "https://example.com", title: "Example",
+            pageCount: 1, lastPage: 1)
+        app.attachTab(PdfTab(
+            id: "pdf", document: pdf, currentPage: 1, numPages: 10,
+            zoom: 1, visiblePages: [], webVisibleRange: nil,
+            webVisibleBookmarks: [], mode: .view))
+        app.showFind()
+        app.performFind("retained query")
+        app.setFindResults(count: 4, current: 2)
+
+        app.attachTab(PdfTab(
+            id: "web", document: web, currentPage: 1, numPages: 1,
+            zoom: 1, visiblePages: [], webVisibleRange: nil,
+            webVisibleBookmarks: [], mode: .view))
+        XCTAssertFalse(app.findVisible)
+        XCTAssertEqual(app.findQuery, "")
+
+        app.activateTab("pdf")
+        XCTAssertTrue(app.findVisible)
+        XCTAssertEqual(app.findQuery, "retained query")
+        XCTAssertEqual(app.findMatchCount, 4)
+        XCTAssertEqual(app.findCurrentMatch, 2)
+    }
+
     func testSetSizesUpdatesRatios() {
         let ws = makeWorkspace()
         ws.splitFocused(.horizontal)

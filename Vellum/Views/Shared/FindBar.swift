@@ -60,6 +60,7 @@ struct FindBar: View {
             Rectangle().fill(palette.border).frame(height: 1)
         }
         .onAppear {
+            query = app.findQuery
             fieldFocused = true
             if !query.isEmpty { app.performFind(query) }
         }
