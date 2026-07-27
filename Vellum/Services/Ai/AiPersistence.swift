@@ -14,6 +14,13 @@ enum AiPersistence {
     static let conversationsKey = "research-reader-ai-conversations-v1"
     static let maxMessagesPerDocument = 120
     static let maxMessageCharacters = 12_000
+    /// Per-reference excerpt cap, the counterpart to `maxMessageCharacters` for
+    /// `AiMessage.references`. A single selection can be a whole page and one
+    /// message may carry several, so without this a turn could write far more to
+    /// `conversations.json` than the body cap allows. Generous enough that a
+    /// realistic selection or quote is stored verbatim; the prompt applies its
+    /// own, tighter bound separately (`AiPrompts.maxReferenceCharacters`).
+    static let maxReferenceCharacters = 4_000
 
     private struct ConversationEntry: Sendable {
         var key: String
@@ -310,12 +317,18 @@ enum AiPersistence {
         dirtyKeys.remove(key)
     }
 
-    static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {
+    static func makeMessage(
+        role: AiRole,
+        content: String,
+        id: String? = nil,
+        references: [AiReference] = []
+    ) -> AiMessage {
         AiMessage(
             id: id ?? UUID().uuidString.lowercased(),
             role: role,
             content: content,
-            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date())
+            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date()),
+            references: references
         )
     }
 
@@ -383,6 +396,14 @@ enum AiPersistence {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
             }
+            // Defensive on both save and load: a reference list that arrived
+            // oversized (or was hand-edited on disk) is clipped rather than
+            // carried around in memory and rewritten on every flush.
+            if !message.references.isEmpty {
+                message.references = message.references.map {
+                    $0.truncatingText(to: maxReferenceCharacters).strippingImageData
+                }
+            }
             return message
         }
     }
@@ -414,6 +435,10 @@ enum AiPersistence {
         return entries
     }
 
+    /// Legacy-blob reader. Deliberately does NOT look for `references`: the blob
+    /// is a read-only migration source frozen before that field existed, so an
+    /// entry can never carry one. Migrated messages come out with `references`
+    /// empty, which is correct — those turns really had no attachments recorded.
     private static func sanitizeMessage(_ raw: Any) -> AiMessage? {
         guard let value = raw as? [String: Any],
               let roleString = value["role"] as? String,

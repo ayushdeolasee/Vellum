@@ -60,6 +60,62 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// Per-response token/cost telemetry; absent on messages persisted
     /// before telemetry existed and on user messages.
     var usage: AiUsage? = nil
+    /// What the user had attached to the composer when they sent this message
+    /// (selection, highlight, snapshot, quote, image). Persisted so the
+    /// transcript can keep showing *what* a past prompt referenced after the
+    /// composer chips are cleared — the reference text is deliberately NOT part
+    /// of `content`; it only ever reaches the model through the prompt's
+    /// "User-referenced context" block (`AiPrompts.buildContextBlock`). Empty on
+    /// assistant messages and on every conversation written before this field
+    /// existed.
+    ///
+    /// Image-carrying references are stored with their base64 pixels dropped —
+    /// see `AiReference.strippingImageData`.
+    var references: [AiReference] = []
+
+    /// Explicit so `encode(to:)` synthesis and the hand-written `init(from:)`
+    /// below agree on the on-disk key names.
+    private enum CodingKeys: String, CodingKey {
+        case id, role, content, createdAt, usage, references
+    }
+}
+
+extension AiMessage {
+    /// Hand-rolled decoding so old transcripts keep loading.
+    ///
+    /// Two compatibility problems the synthesized initializer can't solve:
+    /// `references` is absent from every conversation persisted before this
+    /// field existed (handled by `decodeIfPresent` + the `[]` default), and a
+    /// reference whose `kind` tag this build doesn't recognise would otherwise
+    /// throw. `AiPersistence` decodes the whole file as `[AiMessage]`, which is
+    /// all-or-nothing — one unreadable reference would silently discard the
+    /// user's entire conversation. Unreadable entries are dropped instead.
+    ///
+    /// Declared in an extension so the memberwise initializer survives (several
+    /// call sites build `AiMessage` field-by-field).
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        role = try container.decode(AiRole.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        usage = try container.decodeIfPresent(AiUsage.self, forKey: .usage)
+        // `try?` on the array too: a `references` value that isn't even an array
+        // (hand-edited file, future format) degrades to "no references" rather
+        // than failing the message.
+        let lossy = try? container.decodeIfPresent([LossyAiReference].self, forKey: .references)
+        references = lossy?.compactMap(\.value) ?? []
+    }
+}
+
+/// Array element wrapper that turns a failed `AiReference` decode into `nil`
+/// instead of failing the enclosing array. See `AiMessage.init(from:)`.
+private struct LossyAiReference: Decodable {
+    let value: AiReference?
+
+    init(from decoder: any Decoder) throws {
+        value = try? AiReference(from: decoder)
+    }
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -79,7 +135,10 @@ enum AiActivity: Equatable, Sendable {
 /// selected PDF text, an existing highlight, a snapshot (region or full page),
 /// or a quote pulled from a previous AI reply. Rendered as chips in the
 /// composer and folded into the prompt / image inputs at send time.
-struct AiReference: Identifiable, Equatable, Sendable {
+/// Persisted alongside the user message it was attached to (`AiMessage
+/// .references`), so `Codable` here is a storage format with real users' data
+/// behind it — see `Kind`'s hand-written coding below.
+struct AiReference: Identifiable, Equatable, Sendable, Codable {
     /// `page` is meaningful for web documents too: the injected content script
     /// paginates an archived page into virtual pages (it reports pageCount and
     /// per-page text, and the AI's scroll/read tools address those numbers), so
@@ -111,6 +170,150 @@ struct AiReference: Identifiable, Equatable, Sendable {
         default: return nil
         }
     }
+
+    /// The user-visible excerpt this reference carries, or nil for the
+    /// image-only kinds (which have a descriptor but no text).
+    var text: String? {
+        switch kind {
+        case let .selection(text, _), let .highlight(text, _), let .quote(text, _): return text
+        case .region, .pageSnapshot, .image: return nil
+        }
+    }
+
+    /// The 1-indexed document page this reference points at, or nil when it has
+    /// no document position (an assistant quote, an image from outside the doc).
+    var page: Int? {
+        switch kind {
+        case let .selection(_, page), let .highlight(_, page),
+             let .region(_, page), let .pageSnapshot(_, page):
+            return page
+        case .quote, .image:
+            return nil
+        }
+    }
+
+    /// A copy safe to keep inside a persisted message: the base64 pixels are
+    /// dropped, leaving the descriptor (page, dimensions, media type, name).
+    ///
+    /// One page snapshot is ~200 KB of base64 and a message may carry
+    /// `AiStore.maxImageReferences` of them, while `conversations.json` is
+    /// re-encoded and rewritten in full on every turn — keeping the pixels would
+    /// turn a few-KB transcript into megabytes of rewrite churn for data nothing
+    /// reads back. The transcript's sent-reference chips are icon+label only
+    /// (deliberately: see `SentReferenceChips`), so nothing visible is lost. The
+    /// model still gets the full-resolution image — `sendMessage` builds its
+    /// image inputs from the live `AiContextSnapshot.references`, never from the
+    /// persisted message.
+    var strippingImageData: AiReference {
+        guard image != nil else { return self }
+        var copy = self
+        switch kind {
+        case let .region(image, page):
+            copy.kind = .region(image: image.strippingPixels, page: page)
+        case let .pageSnapshot(image, page):
+            copy.kind = .pageSnapshot(image: image.strippingPixels, page: page)
+        case let .image(image, name):
+            copy.kind = .image(image: image.strippingPixels, name: name)
+        case .selection, .highlight, .quote:
+            break  // unreachable: `image` is nil for these, guarded above
+        }
+        return copy
+    }
+
+    /// A copy whose excerpt is truncated to `limit` characters. Image-only kinds
+    /// come back unchanged. Used by `AiPersistence.limit` to bound what one
+    /// message can write to disk, mirroring the cap on `AiMessage.content`.
+    func truncatingText(to limit: Int) -> AiReference {
+        guard let text, text.count > limit else { return self }
+        let end = text.index(text.startIndex, offsetBy: limit)
+        let clipped = String(text[..<end]) + "…"
+        var copy = self
+        switch kind {
+        case let .selection(_, page): copy.kind = .selection(text: clipped, page: page)
+        case let .highlight(_, page): copy.kind = .highlight(text: clipped, page: page)
+        case let .quote(_, messageId): copy.kind = .quote(text: clipped, messageId: messageId)
+        case .region, .pageSnapshot, .image:
+            break  // unreachable: `text` is nil for these, guarded above
+        }
+        return copy
+    }
+}
+
+extension AiReference.Kind: Codable {
+    /// The persisted discriminator. Hand-written rather than leaning on Swift's
+    /// synthesized enum encoding because these strings land in users'
+    /// `conversations.json` permanently: synthesis derives the key from the Swift
+    /// case name, so a later rename or a reordered payload would silently make
+    /// every previously saved reference undecodable. Adding a case here is safe
+    /// (old builds drop what they can't read — see `AiMessage.init(from:)`);
+    /// changing a string is not.
+    private enum Tag: String, Codable {
+        case selection, highlight, region, pageSnapshot, quote, image
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tag, text, page, image, messageId, name
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Tag.self, forKey: .tag) {
+        case .selection:
+            self = .selection(
+                text: try container.decode(String.self, forKey: .text),
+                page: try container.decode(Int.self, forKey: .page))
+        case .highlight:
+            self = .highlight(
+                text: try container.decode(String.self, forKey: .text),
+                page: try container.decode(Int.self, forKey: .page))
+        case .region:
+            self = .region(
+                image: try container.decode(AiPageImageSnapshot.self, forKey: .image),
+                page: try container.decode(Int.self, forKey: .page))
+        case .pageSnapshot:
+            self = .pageSnapshot(
+                image: try container.decode(AiPageImageSnapshot.self, forKey: .image),
+                page: try container.decode(Int.self, forKey: .page))
+        case .quote:
+            self = .quote(
+                text: try container.decode(String.self, forKey: .text),
+                messageId: try container.decode(String.self, forKey: .messageId))
+        case .image:
+            self = .image(
+                image: try container.decode(AiPageImageSnapshot.self, forKey: .image),
+                name: try container.decode(String.self, forKey: .name))
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .selection(text, page):
+            try container.encode(Tag.selection, forKey: .tag)
+            try container.encode(text, forKey: .text)
+            try container.encode(page, forKey: .page)
+        case let .highlight(text, page):
+            try container.encode(Tag.highlight, forKey: .tag)
+            try container.encode(text, forKey: .text)
+            try container.encode(page, forKey: .page)
+        case let .region(image, page):
+            try container.encode(Tag.region, forKey: .tag)
+            try container.encode(image, forKey: .image)
+            try container.encode(page, forKey: .page)
+        case let .pageSnapshot(image, page):
+            try container.encode(Tag.pageSnapshot, forKey: .tag)
+            try container.encode(image, forKey: .image)
+            try container.encode(page, forKey: .page)
+        case let .quote(text, messageId):
+            try container.encode(Tag.quote, forKey: .tag)
+            try container.encode(text, forKey: .text)
+            try container.encode(messageId, forKey: .messageId)
+        case let .image(image, name):
+            try container.encode(Tag.image, forKey: .tag)
+            try container.encode(image, forKey: .image)
+            try container.encode(name, forKey: .name)
+        }
+    }
 }
 
 extension AiPageImageSnapshot: Equatable {
@@ -118,6 +321,14 @@ extension AiPageImageSnapshot: Equatable {
         lhs.pageNumber == rhs.pageNumber
             && lhs.base64Data == rhs.base64Data
             && lhs.mediaType == rhs.mediaType
+    }
+
+    /// The same descriptor with the base64 pixels removed. See
+    /// `AiReference.strippingImageData` for why persisting them is a bad trade.
+    var strippingPixels: AiPageImageSnapshot {
+        var copy = self
+        copy.base64Data = ""
+        return copy
     }
 }
 
@@ -139,7 +350,7 @@ struct AiSettings: Codable, Equatable, Sendable {
     var reasoningEffort: AiThinkingMode = .auto
 }
 
-struct AiPageImageSnapshot: Sendable {
+struct AiPageImageSnapshot: Codable, Sendable {
     /// Source page for a page/region capture; nil for an arbitrary attached
     /// image (a Finder drop or file pick), which has no document position.
     /// Mirrors `ScratchpadImageCapture.pageNumber`.
@@ -601,7 +812,16 @@ final class AiStore {
             return
         }
 
-        let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
+        // The transcript keeps its own copy of what was attached — the composer
+        // chips are cleared on submit, so without this the sent message would
+        // give no sign it carried any context at all (issue #58). Pixels are
+        // stripped for storage; the model still receives the full-resolution
+        // images below, built from `context.references`.
+        let userMessage = AiPersistence.makeMessage(
+            role: .user,
+            content: trimmed,
+            references: context.references.map(\.strippingImageData)
+        )
         messages.append(userMessage)
         // Empty assistant placeholder the stream fills in-place. Kept out of the
         // persisted list until it has content so a mid-stream crash leaves no

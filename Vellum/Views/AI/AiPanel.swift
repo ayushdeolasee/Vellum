@@ -173,6 +173,17 @@ struct AiPanel: View {
             .foregroundStyle(palette.mutedForeground)
             .padding(.horizontal, 4)
 
+            // What this prompt was sent with. Sits above the bubble rather than
+            // inside it because the referenced text is not part of the message
+            // body — it travelled in the prompt's context block — so folding it
+            // into the bubble would misrepresent what the user actually typed.
+            if !message.references.isEmpty {
+                SentReferenceChips(
+                    references: message.references,
+                    onGoToPage: { appStore.goToPage($0) }
+                )
+            }
+
             messageBubble(message)
 
             if message.role == .assistant, !message.content.isEmpty {
