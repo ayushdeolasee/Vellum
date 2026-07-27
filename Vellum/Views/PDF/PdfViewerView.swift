@@ -188,7 +188,7 @@ struct PdfViewerView: View {
             await controller?.locateText(pageNumber: page, query: query)
         }
         aiStore.capturePageImageHandler = { [weak controller] page in
-            await controller?.capturePageImage(pageNumber: page)
+            controller?.capturePageImage(pageNumber: page)
         }
         aiStore.ensureExtractedHandler = { [weak controller] pages in
             await controller?.ensureExtracted(pages: pages) ?? 0

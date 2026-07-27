@@ -37,6 +37,8 @@ targets:
       - target: Vellum
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.tests
         GENERATE_INFOPLIST_FILE: "YES"
         BUNDLE_LOADER: $(TEST_HOST)
@@ -50,6 +52,8 @@ targets:
       - package: SwiftMath
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

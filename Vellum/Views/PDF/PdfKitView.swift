@@ -308,7 +308,7 @@ struct PdfKitView: NSViewRepresentable {
 
             if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .cursorUpdate], handler: { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, let cursor = self.modeCursor,
+                    guard let self, self.modeCursor != nil,
                           self.pointerOverViewer(event) else { return }
                     // The PDFView (and the SwiftUI overlay above it) re-set their
                     // own cursor while handling this event, so asserting here

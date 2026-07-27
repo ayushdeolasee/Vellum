@@ -85,18 +85,11 @@ final class OpenAIClient {
                         calls.append(item)
                     }
                 case "response.incomplete":
-                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    if reason == "max_output_tokens" { hitTokenLimit = true }
+                    hitTokenLimit = try Self.isOutputLimitIncompleteEvent(object)
                 case "response.failed", "error":
                     let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                         ?? (object["message"] as? String)
                     throw AiClientError.message(message ?? "OpenAI streaming failed.")
-                case "response.incomplete":
-                    // Terminal event when the response was cut off (e.g. by
-                    // max_output_tokens). Surface why instead of finalizing
-                    // silently as if it completed normally.
-                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    throw AiClientError.message(Self.incompleteMessage(reason: reason ?? "unknown"))
                 default:
                     break
                 }
@@ -173,6 +166,19 @@ final class OpenAIClient {
             return "The response hit the output token limit before finishing. Try a higher thinking mode or a more specific request."
         }
         return "The response ended early (reason: \(reason))."
+    }
+
+    /// Classifies the Responses API's terminal `response.incomplete` event.
+    ///
+    /// A token-limit event may still contain useful streamed text, so callers
+    /// return that partial reply with a truncation marker. Every other reason
+    /// is a provider failure and must not be finalized as a successful reply.
+    static func isOutputLimitIncompleteEvent(_ event: [String: Any]) throws -> Bool {
+        let reason = ((event["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
+        guard reason == "max_output_tokens" else {
+            throw AiClientError.message(incompleteMessage(reason: reason ?? "unknown"))
+        }
+        return true
     }
 
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {

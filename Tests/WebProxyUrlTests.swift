@@ -5,6 +5,7 @@ import XCTest
 /// (plans/web-proxy-truthful-urls.html): a normalized page URL must survive
 /// normalized → proxyUrl → WKWebView → realUrl → normalize unchanged, or the
 /// reader rebinds documents to the wrong identity.
+@MainActor
 final class WebProxyUrlTests: XCTestCase {
     private func assertRoundTrip(_ raw: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let normalized = try WebUrl.normalize(raw)

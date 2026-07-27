@@ -268,6 +268,43 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(OpenAIClient.incompleteMessage(reason: "content_filter").contains("content_filter"))
     }
 
+    func testOpenAIOutputLimitTerminalEventPreservesPartialReply() throws {
+        let event: [String: Any] = [
+            "type": "response.incomplete",
+            "response": ["incomplete_details": ["reason": "max_output_tokens"]],
+        ]
+
+        XCTAssertTrue(try OpenAIClient.isOutputLimitIncompleteEvent(event))
+    }
+
+    func testOpenAINonTokenIncompleteTerminalEventThrowsProviderFailure() {
+        let event: [String: Any] = [
+            "type": "response.incomplete",
+            "response": ["incomplete_details": ["reason": "content_filter"]],
+        ]
+
+        XCTAssertThrowsError(try OpenAIClient.isOutputLimitIncompleteEvent(event)) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The response ended early (reason: content_filter)."
+            )
+        }
+    }
+
+    func testOpenAIIncompleteTerminalEventWithoutReasonDoesNotSucceed() {
+        let event: [String: Any] = [
+            "type": "response.incomplete",
+            "response": ["incomplete_details": [:]],
+        ]
+
+        XCTAssertThrowsError(try OpenAIClient.isOutputLimitIncompleteEvent(event)) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The response ended early (reason: unknown)."
+            )
+        }
+    }
+
     // MARK: - §3 OpenRouter request body
 
     /// The body carries the per-tab sticky-session key, and the message list

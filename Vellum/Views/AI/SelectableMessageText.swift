@@ -64,6 +64,7 @@ struct SelectableMessageText: NSViewRepresentable {
         return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onQuote: (String) -> Void
         weak var container: MessageContainerView?

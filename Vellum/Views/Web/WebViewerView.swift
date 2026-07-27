@@ -1302,14 +1302,14 @@ final class WebViewerController: NSObject {
     }
 
     private func intValue(_ value: Any?) -> Int? {
-        if let number = value as? NSNumber, !(number is NSNull) {
+        if !(value is NSNull), let number = value as? NSNumber {
             return number.intValue
         }
         return nil
     }
 
     private func doubleValue(_ value: Any?) -> Double? {
-        if let number = value as? NSNumber, !(number is NSNull) {
+        if !(value is NSNull), let number = value as? NSNumber {
             return number.doubleValue
         }
         return nil
@@ -1376,7 +1376,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
             // the JS string.
             if let data = try? JSONEncoder().encode("#" + fragment),
                let literal = String(data: data, encoding: .utf8) {
-                webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+                _ = try? await webView.evaluateJavaScript("location.hash = \(literal)")
             }
             return .cancel
         }

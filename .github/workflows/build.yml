@@ -1,0 +1,36 @@
+name: Build and test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Verify generated project
+        run: |
+          xcodegen generate
+          git diff --exit-code -- Vellum.xcodeproj/project.pbxproj
+
+      - name: Build and test
+        run: |
+          xcodebuild test \
+            -project Vellum.xcodeproj \
+            -scheme Vellum \
+            -destination 'platform=macOS'
