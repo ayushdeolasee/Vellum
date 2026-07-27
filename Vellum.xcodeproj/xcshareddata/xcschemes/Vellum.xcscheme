@@ -24,7 +24,7 @@
       </BuildActionEntries>
    </BuildAction>
    <TestAction
-      buildConfiguration = "Debug"
+      buildConfiguration = "UITesting"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
@@ -47,6 +47,17 @@
                BlueprintIdentifier = "65E775B7223FE8550067535A"
                BuildableName = "VellumTests.xctest"
                BlueprintName = "VellumTests"
+               ReferencedContainer = "container:Vellum.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "F0B1727997018498FA5D9430"
+               BuildableName = "VellumUITests.xctest"
+               BlueprintName = "VellumUITests"
                ReferencedContainer = "container:Vellum.xcodeproj">
             </BuildableReference>
          </TestableReference>

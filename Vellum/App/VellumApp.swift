@@ -75,8 +75,11 @@ struct VellumApp: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
+    @State private var didOpenUITestDocument = false
+    private let uiTestDocumentPath: String?
 
     init() {
+        uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
         let workspace = WorkspaceStore(sessions: sessions)
@@ -127,6 +130,10 @@ struct VellumApp: App {
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                    if !didOpenUITestDocument, let uiTestDocumentPath {
+                        didOpenUITestDocument = true
+                        await workspace.focusedPane.app.openFile(path: uiTestDocumentPath)
+                    }
                 }
                 .sheet(isPresented: $showStorageChoice) {
                     StorageLocationChoiceSheet()
