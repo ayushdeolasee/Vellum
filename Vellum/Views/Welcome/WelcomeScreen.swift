@@ -11,6 +11,7 @@ struct WelcomeScreen: View {
     @State private var urlInput = ""
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
+    @State private var pendingRemoval: LibraryItem?
 
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
@@ -180,6 +181,25 @@ struct WelcomeScreen: View {
             return .handled
         }
         .accessibilityIdentifier("welcome.library")
+        .confirmationDialog(
+            pendingRemoval.map(removalTitle) ?? "Remove Library Item?",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            presenting: pendingRemoval
+        ) { item in
+            Button(removalButtonTitle(for: item), role: .destructive) {
+                remove(item.id)
+                pendingRemoval = nil
+            }
+            .accessibilityIdentifier("welcome.confirmRemoval")
+            Button("Cancel", role: .cancel) {
+                pendingRemoval = nil
+            }
+        } message: { item in
+            Text(removalMessage(for: item))
+        }
     }
 
     @ViewBuilder
@@ -190,8 +210,8 @@ struct WelcomeScreen: View {
                 Button("Show in Finder") { revealInFinder(item) }
             }
             Divider()
-            Button(item.section == .saved ? "Remove from Saved" : "Remove from Recent", role: .destructive) {
-                remove(id)
+            Button(item.section == .saved ? "Remove from Saved…" : "Remove from Recent…", role: .destructive) {
+                requestRemoval(item)
             }
         }
     }
@@ -359,8 +379,32 @@ struct WelcomeScreen: View {
     }
 
     private func removeSelected() {
-        guard let selection else { return }
-        remove(selection)
+        guard let selection, let item = item(for: selection) else { return }
+        requestRemoval(item)
+    }
+
+    private func requestRemoval(_ item: LibraryItem) {
+        pendingRemoval = item
+    }
+
+    private func removalTitle(for item: LibraryItem) -> String {
+        switch item.section {
+        case .recent: "Remove “\(item.title)” from Recent?"
+        case .saved: "Remove “\(item.title)” from Saved?"
+        }
+    }
+
+    private func removalButtonTitle(for item: LibraryItem) -> String {
+        item.section == .saved ? "Remove Saved Page" : "Remove Recent Item"
+    }
+
+    private func removalMessage(for item: LibraryItem) -> String {
+        switch item.section {
+        case .recent:
+            "This removes the item from the Recent list. The original document is not deleted."
+        case .saved:
+            "This removes the page from Saved and deletes its offline copy. Highlights, notes, and reading position are kept."
+        }
     }
 
     private func revealInFinder(_ item: LibraryItem) {

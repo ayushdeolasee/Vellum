@@ -62,6 +62,12 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var usage: AiUsage? = nil
 }
 
+/// The user-visible content removed by Clear Conversation. Keeping this as a
+/// value makes the destructive action reliably reversible through Undo.
+struct AiConversationSnapshot: Equatable, Sendable {
+    var messages: [AiMessage]
+}
+
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
 /// indicator. `.streaming` means reply text is actively arriving.
 enum AiActivity: Equatable, Sendable {
@@ -476,14 +482,35 @@ final class AiStore {
     }
 
     /// Save an empty list (deleting the document's stored entry) and clear state.
+    /// Returns the removed conversation so the caller can register a reliable
+    /// Undo. Composer attachments are deliberately left alone: they belong to
+    /// the next message, not to the transcript being cleared.
+    ///
     /// Also cancels any in-flight request so a completing response can't
     /// re-append the messages we just cleared.
-    func clearConversation() {
+    @discardableResult
+    func clearConversation() -> AiConversationSnapshot? {
+        guard !messages.isEmpty else { return nil }
+        let removed = AiConversationSnapshot(messages: messages)
         cancelActiveRequest()
         AiPersistence.saveConversation(for: app?.document, messages: [])
         messages = []
-        composerReferences = []
         error = nil
+        return removed
+    }
+
+    /// Replace the transcript and return the displaced value. Undo uses the
+    /// returned snapshot to register its inverse, which also gives native Redo.
+    @discardableResult
+    func replaceConversation(
+        with snapshot: AiConversationSnapshot
+    ) -> AiConversationSnapshot {
+        let displaced = AiConversationSnapshot(messages: messages)
+        cancelActiveRequest()
+        messages = snapshot.messages
+        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        error = nil
+        return displaced
     }
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).

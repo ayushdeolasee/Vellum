@@ -7,6 +7,7 @@ struct AiPanel: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.undoManager) private var undoManager
 
     /// The sidebar keeps every panel mounted (ContentView's ZStack), so this
     /// one exists — with live AppKit text views (the composer + transcript
@@ -97,7 +98,11 @@ struct AiPanel: View {
                 }
                 .accessibilityIdentifier("aiPanel.settings")
                 .accessibilityAddTraits(settingsOpen ? .isSelected : [])
-                IconButton(help: "Clear conversation", action: aiStore.clearConversation) {
+                IconButton(
+                    help: "Clear AI conversation",
+                    disabled: aiStore.messages.isEmpty || undoManager == nil,
+                    action: clearConversation
+                ) {
                     Image(systemName: "trash").font(.system(size: 15))
                 }
                 .accessibilityIdentifier("aiPanel.clearConversation")
@@ -107,6 +112,28 @@ struct AiPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func clearConversation() {
+        guard undoManager != nil else { return }
+        guard let removed = aiStore.clearConversation() else { return }
+        registerConversationReplacement(removed)
+    }
+
+    /// Register a replacement rather than a one-shot callback. During Undo,
+    /// registering the displaced value automatically becomes Redo; repeating
+    /// this recursively preserves the full native Undo/Redo cycle.
+    private func registerConversationReplacement(_ replacement: AiConversationSnapshot) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: aiStore) { store in
+            let displaced = store.replaceConversation(with: replacement)
+            registerConversationUndo(
+                displaced,
+                store: store,
+                undoManager: undoManager
+            )
+        }
+        undoManager.setActionName("Clear AI Conversation")
     }
 
     private var messages: some View {
@@ -518,6 +545,19 @@ struct AiPanel: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
     }
+}
+
+@MainActor
+private func registerConversationUndo(
+    _ replacement: AiConversationSnapshot,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        let displaced = target.replaceConversation(with: replacement)
+        registerConversationUndo(displaced, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
 }
 
 /// Three dots that fade in sequence — the "…" of a thinking indicator.

@@ -83,6 +83,26 @@ final class ScratchpadStore {
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
 
+    /// Clear the current note and return its prior text for native Undo. An
+    /// empty note is a no-op, so the UI can keep the action disabled and avoid
+    /// adding meaningless entries to the undo stack.
+    @discardableResult
+    func clearText() -> String? {
+        guard !text.isEmpty else { return nil }
+        let removed = text
+        text = ""
+        return removed
+    }
+
+    /// Replace the note and return the displaced text. Used by Undo/Redo so
+    /// every restoration still follows the normal autosave path.
+    @discardableResult
+    func replaceText(with replacement: String) -> String {
+        let displaced = text
+        text = replacement
+        return displaced
+    }
+
     /// Restore the note for `document`, first flushing the previous document's
     /// text so switching tabs never drops an unsaved edit.
     func loadForDocument(_ document: DocumentInfo?) {

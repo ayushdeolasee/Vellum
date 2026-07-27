@@ -18,6 +18,7 @@ struct ScratchpadPanel: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.undoManager) private var undoManager
 
     /// True only while a capture *this* panel armed is in flight — the AI panel
     /// arms the same `.snapshotRegion` mode, and its crop must not light up the
@@ -101,7 +102,11 @@ struct ScratchpadPanel: View {
                 .accessibilityIdentifier("scratchpad.snapshotRegion")
                 .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
             }
-            IconButton(help: "Clear scratchpad", action: clear) {
+            IconButton(
+                help: "Clear scratchpad note",
+                disabled: scratchpadStore.text.isEmpty || undoManager == nil,
+                action: clear
+            ) {
                 Image(systemName: "trash").font(.system(size: 15))
             }
             .accessibilityIdentifier("scratchpad.clear")
@@ -121,9 +126,37 @@ struct ScratchpadPanel: View {
     }
 
     private func clear() {
-        scratchpadStore.text = ""
+        guard undoManager != nil else { return }
+        guard let removed = scratchpadStore.clearText() else { return }
+        registerScratchpadReplacement(removed)
     }
 
+    private func registerScratchpadReplacement(_ replacement: String) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: scratchpadStore) { store in
+            let displaced = store.replaceText(with: replacement)
+            registerScratchpadUndo(
+                displaced,
+                store: store,
+                undoManager: undoManager
+            )
+        }
+        undoManager.setActionName("Clear Scratchpad")
+    }
+
+}
+
+@MainActor
+private func registerScratchpadUndo(
+    _ replacement: String,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        let displaced = target.replaceText(with: replacement)
+        registerScratchpadUndo(displaced, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
 }
 
 /// Normalize dropped image bytes into a `ScratchpadImageCapture`: keep small
