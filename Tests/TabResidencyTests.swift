@@ -46,8 +46,14 @@ private func makeManager(
         automaticMaintenance: false)
 }
 
-private let pane = ObjectIdentifier(TabResidencyTests.self)
-private let otherPane = ObjectIdentifier(FakeResident.self)
+// Stand-ins for the two panes of a split window. The manager keys its
+// "which tab is on screen" table by the pane's `AppStore` identity, so a test
+// only needs two distinct object identities.
+private final class PaneIdentity: Sendable {}
+private let paneA = PaneIdentity()
+private let paneB = PaneIdentity()
+private let pane = ObjectIdentifier(paneA)
+private let otherPane = ObjectIdentifier(paneB)
 
 @MainActor
 struct TabResidencyTests {

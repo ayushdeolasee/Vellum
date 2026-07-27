@@ -214,16 +214,25 @@ final class TabResidencyManager {
         if let existing = entries[key], existing.resource !== resource {
             existing.resource.releaseResidency()
         }
-        let stamp = lastActiveByTab[tabId] ?? clock.now
-        lastActiveByTab[tabId] = stamp
-        entries[key] = Entry(resource: resource, lastActive: stamp)
+        // Storing is itself evidence of use — a resource is only ever built for
+        // the tab the user just opened or switched to — so it stamps the idle
+        // clock. In practice `markActive` has already stamped it a moment
+        // earlier from `applyActiveState`; doing it here too means a caller that
+        // forgets to can never hand us something that is stale on arrival.
+        let now = clock.now
+        lastActiveByTab[tabId] = now
+        entries[key] = Entry(resource: resource, lastActive: now)
+        // Keep a tab's two slots agreeing about how idle the tab is.
+        for other in Array(entries.keys) where other.tabId == tabId && other != key {
+            entries[other]?.lastActive = now
+        }
         startSweeperIfNeeded()
     }
 
     /// The resident resource for a tab, if we still have it. Reading does *not*
-    /// count as use — only `markActive` moves a tab's idle clock, because that
-    /// is the signal the issue is actually about ("inactive tab"), and a
-    /// background probe must not be able to keep a tab alive forever.
+    /// count as use — only `markActive` (and `store`) move a tab's idle clock,
+    /// because that is the signal the issue is actually about ("inactive tab"),
+    /// and a background probe must not be able to keep a tab alive forever.
     func resource(tabId: String, slot: Slot) -> (any TabResidentResource)? {
         entries[Key(tabId: tabId, slot: slot)]?.resource
     }
