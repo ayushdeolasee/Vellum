@@ -56,8 +56,12 @@ struct SelectableMessageText: NSViewRepresentable {
             || view.appliedSecondary != resolvedSecondary
         // Display math is rasterized into the attributed string against the
         // bubble's width, so a sidebar resize has to re-render even when the
-        // text and colors are untouched.
-        let widthChanged = view.appliedMathWidth != mathWidth
+        // text and colors are untouched — but ONLY equations depend on that
+        // width. Gating on "the last render actually produced math" keeps the
+        // early return intact for the overwhelming majority of replies, which
+        // is what stops a resize drag from re-parsing every bubble in the
+        // transcript on every frame of the drag.
+        let widthChanged = view.renderedContainsMath && view.appliedMathWidth != mathWidth
         guard contentChanged || colorsChanged || widthChanged else { return }
         let attributed = AiAttributedRenderer.attributedString(
             for: content,
@@ -155,6 +159,12 @@ final class MessageContainerView: NSView {
     /// Width the typeset-math attachments were sized against, so a sidebar
     /// resize can be told apart from an unrelated update pass.
     private(set) var appliedMathWidth: CGFloat?
+    /// Whether the last render actually produced typeset math (equations are
+    /// the only attachments this renderer emits). A reply without any renders
+    /// identically at every width, so the SwiftUI layer can skip it entirely
+    /// while the sidebar is being dragged instead of re-parsing its markdown
+    /// once per frame.
+    private(set) var renderedContainsMath = false
 
     func setAttributed(
         _ attributed: NSAttributedString,
@@ -168,6 +178,8 @@ final class MessageContainerView: NSView {
         self.appliedColor = color
         self.appliedSecondary = secondary
         self.appliedMathWidth = mathWidth
+        self.renderedContainsMath = attributed.containsAttachments(
+            in: NSRange(location: 0, length: attributed.length))
         textView.textStorage?.setAttributedString(attributed)
         needsLayout = true
     }

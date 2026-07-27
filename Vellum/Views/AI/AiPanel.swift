@@ -145,18 +145,28 @@ struct AiPanel: View {
     /// scroll-view width to get the usable column.
     private let transcriptPadding: CGFloat = 12
 
-    /// Widest a bubble of `role` may be. Assistant replies are long-form
-    /// (prose, code, typeset math) so they take the whole column; user messages
-    /// stop a little short of it, which is what keeps the trailing-aligned
-    /// "You" bubbles readable as a distinct column at any sidebar width.
+    /// Widest a bubble of `role` may be, for the transcript width measured above.
+    private func bubbleMaxWidth(for role: AiRole) -> CGFloat {
+        Self.bubbleMaxWidth(for: role, contentWidth: transcriptWidth - transcriptPadding * 2)
+    }
+
+    /// Widest a bubble of `role` may be inside a content column of
+    /// `contentWidth` points. Assistant replies are long-form (prose, code,
+    /// typeset math) so they take the whole column; user messages stop a little
+    /// short of it, which is what keeps the trailing-aligned "You" bubbles
+    /// readable as a distinct column at any sidebar width.
     ///
     /// Before the first geometry pass — and if the measurement ever comes back
     /// degenerate — this falls back to the pre-resize 272pt so a bubble is
-    /// never laid out at zero width.
-    private func bubbleMaxWidth(for role: AiRole) -> CGFloat {
-        let column = transcriptWidth > 0
-            ? max(transcriptWidth - transcriptPadding * 2, 160)
-            : 272
+    /// never laid out at zero width. `isFinite` is checked alongside `> 0`
+    /// because this width is also the cap handed to the math rasterizers: an
+    /// infinite column wouldn't just look odd, it would switch off equation
+    /// downscaling altogether and let a wide display equation overflow.
+    ///
+    /// Static (and not private) so those degenerate inputs are testable without
+    /// mounting the panel and the four stores it reads from the environment.
+    static func bubbleMaxWidth(for role: AiRole, contentWidth: CGFloat) -> CGFloat {
+        let column = contentWidth.isFinite && contentWidth > 0 ? max(contentWidth, 160) : 272
         guard role == .user else { return column }
         return max(column * 0.82, min(column, 200))
     }
