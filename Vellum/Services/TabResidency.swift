@@ -121,10 +121,9 @@ protocol TabResidentResource: AnyObject {
     var residencyCostBytes: Int { get }
 
     /// Move the resource between the hot (rendered) and warm (resident but not
-    /// rendered) tiers. Called whenever the hot set changes, which includes
-    /// every sweep, so implementations must ignore a no-op transition rather
-    /// than signalling a change — `LiveTabRuntime` is `@Observable` and would
-    /// otherwise invalidate every pane once a minute forever.
+    /// rendered) tiers. Called for every resident tab on every retier — which
+    /// includes every sweeper tick — so implementations should treat a repeat of
+    /// the current tier as a no-op and keep it cheap.
     func applyResidencyTier(_ tier: TabResidencyTier)
 
     /// Release the native state. Called on the main actor and must be

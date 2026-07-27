@@ -90,9 +90,12 @@ final class LiveTabRuntime {
     /// display cycle. Coming back re-parents that same native view instead of
     /// rebuilding it, which is the point of having a middle tier at all.
     ///
-    /// The equality guard matters: this is called for every resident tab on
-    /// every sweeper tick, and `isRendered` is `@Observable`, so writing it
-    /// unconditionally would invalidate every pane once a minute forever.
+    /// The equality guard is a cheap early-out, not a correctness requirement:
+    /// this runs for every resident tab on every sweeper tick, and skipping the
+    /// registrar call entirely is free. Measured, so nobody has to wonder:
+    /// Observation does *not* notify on a write of an equal value, so removing
+    /// the guard would not actually invalidate anything — which also means no
+    /// test can distinguish the two, and there deliberately isn't one.
     func applyResidencyTier(_ tier: TabResidencyTier) {
         let rendered = tier == .hot
         guard isRendered != rendered else { return }
