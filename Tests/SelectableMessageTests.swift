@@ -357,6 +357,34 @@ final class MarkdownMessageWidthTests: XCTestCase {
         XCTAssertLessThan(short.width, 100, "the cap must not stretch short content")
     }
 
+    /// The other half of the cap, which the test above cannot reach because it
+    /// only ever offers MORE room than the cap: when the proposal is NARROWER
+    /// than `maxWidth`, the proposal has to win.
+    ///
+    /// This is reachable in the panel, not theoretical. `bubbleMaxWidth` floors
+    /// its column at 160pt, so while the inspector is collapsing — or any other
+    /// moment SwiftUI proposes less than the last measured transcript width —
+    /// the derived cap is larger than the room actually on offer. If the cap
+    /// passed its own `maxWidth` down regardless, the bubble would be laid out
+    /// wider than the sidebar and clip against the trailing edge.
+    ///
+    /// Verified to bite: with `cap(for:)` mutated to `return maxWidth`, this
+    /// fails (measures ~300 against a 200pt offer) and every other layout test
+    /// still passes.
+    func testBubbleWidthCapNeverExceedsANarrowerProposal() {
+        let narrow = measure(offered: 200) {
+            BubbleWidthCap(maxWidth: 300) {
+                MarkdownMessage(
+                    content: String(repeating: "wrap me please ", count: 20),
+                    textColor: .primary, fillsAvailableWidth: false)
+            }
+        }
+        XCTAssertLessThanOrEqual(
+            narrow.width, 201,
+            "a cap wider than the offered room must not widen the bubble past it")
+        XCTAssertGreaterThan(narrow.width, 100, "long content should still reach the offer")
+    }
+
     /// Size SwiftUI actually settles on for `content` when it is offered
     /// `width` points. Hosted in an off-screen window that is never ordered on
     /// screen, so nothing is launched, shown or focused.
