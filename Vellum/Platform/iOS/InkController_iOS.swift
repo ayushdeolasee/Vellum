@@ -222,6 +222,11 @@ final class InkController_iOS {
     /// debounce had too. This makes the crash window strictly bounded.
     @ObservationIgnored private static let maxDirtyAge = Duration.seconds(15)
 
+    /// How many times `flushPendingInkAndWait` re-drains before giving up. A
+    /// failed write returns its pages to `pendingDrawings`, so this is what
+    /// stops a file that cannot be written at all from spinning the flush.
+    @ObservationIgnored private static let maxDrainAttempts = 3
+
     /// Pages whose canvas has changed but whose ink is not yet on disk, grouped
     /// by the file they belong to (switching tabs mid-debounce can leave two
     /// documents dirty at once).
@@ -386,10 +391,12 @@ final class InkController_iOS {
     /// The scene-background task uses this before iPadOS is allowed to suspend
     /// the app, so a stroke made immediately before pressing Home cannot vanish.
     func flushPendingInkAndWait() async {
-        // A stroke can arrive while an earlier flush is suspended in PDFKit.
-        // Keep joining/draining until there is neither an active drain nor new
-        // pending state.
-        while let task = ensureDrainTask() {
+        // A stroke can arrive while an earlier flush is suspended in PDFKit, so
+        // join/drain repeatedly. Bounded, not `while`: a drain that fails puts
+        // its batch back, and an unwritable file would otherwise spin here
+        // forever while the scene-suspend assertion is running.
+        for _ in 0..<Self.maxDrainAttempts {
+            guard let task = ensureDrainTask() else { return }
             await task.value
         }
     }
@@ -419,10 +426,30 @@ final class InkController_iOS {
             let batch = pendingDrawings
             pendingDrawings.removeAll()
             oldestDirtyAt = nil
-            for (path, pages) in batch {
-                await Self.writer.write(drawings: pages, path: path)
+            var failed = false
+            for (path, pages) in batch where await !Self.writer.write(drawings: pages, path: path) {
+                // The file was unreadable, or PDFKit refused to serialize it.
+                // The batch has already been taken out of `pendingDrawings`, so
+                // without this the user's strokes would be gone for good on a
+                // failure as transient as an iCloud eviction mid-write.
+                requeue(pages, path: path)
+                failed = true
             }
+            // Leave a failing file to the next stroke or flush rather than
+            // retrying in a tight loop against the disk.
+            if failed { return }
         }
+    }
+
+    /// Put a failed batch back, without burying a newer drawing that landed
+    /// while the write was in flight — newest-wins still holds.
+    private func requeue(_ pages: [Int: PKDrawing], path: String) {
+        var current = pendingDrawings[path] ?? [:]
+        for (page, drawing) in pages where current[page] == nil {
+            current[page] = drawing
+        }
+        pendingDrawings[path] = current
+        if oldestDirtyAt == nil { oldestDirtyAt = ContinuousClock.now }
     }
 
     private func persist(drawing: PKDrawing, page: Int) {
@@ -474,17 +501,22 @@ struct InkDiskWriter {
     /// it a second time to rehydrate them. Writing pages one at a time paid all
     /// of that per page, so inking across a spread cost two full rewrites of a
     /// document that might be tens of MB.
-    func write(drawings: [Int: PKDrawing], path: String) async {
-        guard !drawings.isEmpty else { return }
-        await PdfFileGate.shared.perform {
+    /// - Returns: whether the pages are durable. `false` means the caller must
+    ///   keep them pending — every failure mode here (unreadable file, PDFKit
+    ///   declining to serialize, a throwing rewrite) used to be swallowed, which
+    ///   with batching would discard a whole window of strokes at once.
+    @discardableResult
+    func write(drawings: [Int: PKDrawing], path: String) async -> Bool {
+        guard !drawings.isEmpty else { return true }
+        return await PdfFileGate.shared.perform {
             Self.writeSync(drawings: drawings, path: path)
         }
     }
 
-    private static func writeSync(drawings: [Int: PKDrawing], path: String) {
+    private static func writeSync(drawings: [Int: PKDrawing], path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         guard let originalData = try? Data(contentsOf: url),
-              let document = PDFDocument(data: originalData) else { return }
+              let document = PDFDocument(data: originalData) else { return false }
         var didApply = false
         for (page, drawing) in drawings {
             guard page >= 1, page <= document.pageCount,
@@ -492,12 +524,19 @@ struct InkDiskWriter {
             PdfInk.apply(drawing, to: pdfPage)
             didApply = true
         }
-        // Nothing landed (every page out of range): don't pay the rewrite.
-        guard didApply, let rewritten = document.dataRepresentation() else { return }
-        try? PdfDocumentSession.persistPdfKitRewrite(
-            rewritten,
-            preservingMetadataFrom: originalData,
-            path: path)
+        // Every page was out of range: nothing to write, and nothing to retry
+        // either — retrying would fail identically.
+        guard didApply else { return true }
+        guard let rewritten = document.dataRepresentation() else { return false }
+        do {
+            try PdfDocumentSession.persistPdfKitRewrite(
+                rewritten,
+                preservingMetadataFrom: originalData,
+                path: path)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 #endif

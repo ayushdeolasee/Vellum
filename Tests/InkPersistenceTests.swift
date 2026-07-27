@@ -181,11 +181,12 @@ final class InkPersistenceTests: XCTestCase {
 
         // Exercise the production writer, including the iPadOS 26 main-actor
         // PDFKit compatibility path and the shared non-reentrant file gate.
-        async let inkDone: Void = InkDiskWriter().write(
+        async let inkDone: Bool = InkDiskWriter().write(
             drawings: [1: inkDrawing], path: inkPath)
 
         let created = try await annotation
-        _ = await inkDone
+        let inkWrote = await inkDone
+        XCTAssertTrue(inkWrote, "ink write reported success")
 
         // Reload from disk: BOTH writes must have survived.
         let reloaded = try await PdfSessionBackend().open(path: url.path, sessionId: UUID().uuidString)
@@ -363,15 +364,127 @@ final class InkPersistenceTests: XCTestCase {
         await app.openFile(path: url.path)
         let controller = InkController_iOS()
         controller.app = app
-        // Ink, then erase it all again inside the same debounce window.
+
+        // Get real ink on disk FIRST — otherwise the erase assertion below is
+        // vacuous: a blank page reads as un-inked whether the write happened or
+        // not, so the test would pass even if persistence were broken entirely.
+        controller.drawingChanged(sampleDrawing(), page: 1)
+        await controller.flushPendingInkAndWait()
+        let afterInk = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertTrue(
+            PdfInk.hasInk(on: try XCTUnwrap(afterInk.page(at: 0))),
+            "precondition: the first drawing must actually reach disk")
+
+        // Now ink and erase inside one window: the empty drawing is newest.
         controller.drawingChanged(sampleDrawing(), page: 1)
         controller.drawingChanged(PKDrawing(), page: 1)
-
         await controller.flushPendingInkAndWait()
 
         let reloaded = try XCTUnwrap(PDFDocument(url: url))
         let page = try XCTUnwrap(reloaded.page(at: 0))
         XCTAssertFalse(PdfInk.hasInk(on: page), "the empty drawing was the newest state")
+    }
+
+    /// Two documents dirty at once (a tab switch mid-debounce) must not merge:
+    /// `pendingDrawings` is keyed by path precisely so page 1 of document A
+    /// cannot be written into page 1 of document B.
+    @MainActor
+    func testPendingInkForTwoDocumentsStaysWithItsOwnFile() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-twodoc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let first = dir.appendingPathComponent("first.pdf")
+        let second = dir.appendingPathComponent("second.pdf")
+        try writeBlankDocument(pageCount: 1, to: first)
+        try writeBlankDocument(pageCount: 1, to: second)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        let controller = InkController_iOS()
+        controller.app = app
+
+        // Dirty page 1 of the first document, then switch documents before it
+        // drains and dirty page 1 of the second.
+        await app.openFile(path: first.path)
+        controller.drawingChanged(sampleDrawing(), page: 1)
+        await app.openFile(path: second.path)
+        controller.drawingChanged(sampleDrawing(), page: 1)
+
+        await controller.flushPendingInkAndWait()
+
+        for url in [first, second] {
+            let reloaded = try XCTUnwrap(PDFDocument(url: url), "reload \(url.lastPathComponent)")
+            XCTAssertTrue(
+                PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 0))),
+                "\(url.lastPathComponent) kept its own ink")
+        }
+    }
+
+    /// A write that fails must NOT discard the batch. Batching means one
+    /// transient failure would otherwise take a whole debounce window's strokes
+    /// with it, so the pages go back to pending and a later flush retries them.
+    @MainActor
+    func testFailedWriteKeepsInkPendingForRetry() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("retry.pdf")
+        try writeBlankDocument(pageCount: 1, to: url)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: url.path)
+        let controller = InkController_iOS()
+        controller.app = app
+        controller.drawingChanged(sampleDrawing(), page: 1)
+
+        // Make the write fail the way an iCloud eviction would: the path is
+        // suddenly unreadable. The strokes must survive in memory.
+        try FileManager.default.removeItem(at: url)
+        await controller.flushPendingInkAndWait()
+
+        // Restore the file; the retained batch must now reach disk.
+        try writeBlankDocument(pageCount: 1, to: url)
+        await controller.flushPendingInkAndWait()
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertTrue(
+            PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 0))),
+            "ink survived a failed write and landed on the retry")
+    }
+
+    /// The debounce must fire on its own — nothing in the app calls
+    /// `flushPendingInk` on a timer, so if the scheduled write never ran, ink
+    /// would only ever reach disk via an explicit flush.
+    @MainActor
+    func testDebouncedWriteLandsWithoutAnExplicitFlush() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-debounce-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("debounce.pdf")
+        try writeBlankDocument(pageCount: 1, to: url)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: url.path)
+        let controller = InkController_iOS()
+        controller.app = app
+        controller.drawingChanged(sampleDrawing(), page: 1)
+
+        // Poll rather than sleeping the full debounce once: keeps the test
+        // honest about the deadline without making it flaky on a loaded machine.
+        let deadline = Date().addingTimeInterval(20)
+        var landed = false
+        while Date() < deadline, !landed {
+            try? await Task.sleep(for: .milliseconds(250))
+            if let doc = PDFDocument(url: url), let page = doc.page(at: 0) {
+                landed = PdfInk.hasInk(on: page)
+            }
+        }
+        XCTAssertTrue(landed, "the debounced write reached disk on its own")
     }
 }
 #endif

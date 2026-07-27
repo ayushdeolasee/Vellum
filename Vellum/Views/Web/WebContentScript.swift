@@ -1400,32 +1400,37 @@ enum WebContentScript {
   }
 
   var scrollTicking = false;
-  var scrollGestureActive = false;
   var scrollIdleTimer = null;
+  var lastDismissPostAt = 0;
   var lastScrollReportAt = 0;
   var scrollTrailingTimer = null;
   // Viewport reporting drives the page-number readout and the bookmark star,
   // and each call forces layout once per resolved bookmark. Neither consumer
   // needs anything close to the 120Hz a ProMotion scroll delivers.
   var SCROLL_REPORT_MS = 66;
-  // How long the page must stop moving before the next scroll counts as a new
-  // gesture for "viewport-scrolled" purposes.
-  var SCROLL_GESTURE_IDLE_MS = 150;
+  // The app shell dismisses viewport-anchored transient UI on "viewport-scrolled".
+  // It is ALMOST idempotent — a note composer younger than 0.4s is deliberately
+  // kept — so this cannot be a pure leading-edge post: during one long fling the
+  // composer would age past its grace period with no further event to dismiss
+  // it, and would sit pinned while the content scrolled out from under it.
+  // Re-posting a few times a second preserves that behavior at ~1/50th the
+  // wakeups of the per-frame post this replaces.
+  var SCROLL_DISMISS_MS = 400;
 
   function onScroll() {
-    // The app shell handles "viewport-scrolled" by dismissing viewport-anchored
-    // transient UI (selection popover, context menu, note viewer). That only
-    // needs to happen when a scroll STARTS — the handler is idempotent, so
-    // firing it every frame woke the app process 120×/s to redo nothing.
-    if (!scrollGestureActive) {
-      scrollGestureActive = true;
+    var dismissNow = Date.now();
+    if (dismissNow - lastDismissPostAt >= SCROLL_DISMISS_MS) {
+      lastDismissPostAt = dismissNow;
       post("viewport-scrolled");
     }
+    // Re-arm on the resting position too, so a gesture that ends inside the
+    // window still leaves the shell with a final dismissal.
     if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
     scrollIdleTimer = setTimeout(function () {
       scrollIdleTimer = null;
-      scrollGestureActive = false;
-    }, SCROLL_GESTURE_IDLE_MS);
+      lastDismissPostAt = Date.now();
+      post("viewport-scrolled");
+    }, SCROLL_DISMISS_MS);
 
     if (scrollTicking) return;
     scrollTicking = true;
@@ -2107,6 +2112,13 @@ enum WebContentScript {
       // highlight can sit stale on a page that both re-renders AND churns
       // continuously, so it stays modest rather than maximally thrifty.
       var REMAP_MAX_MS = 5000;
+      // Quiet period after which the next mutation is treated as a fresh burst
+      // rather than continued churn. A FIXED constant, deliberately: scaling it
+      // off the current delay meant a page already backed off to REMAP_MAX_MS
+      // needed 2x that much silence to recover, so an SPA route change on a
+      // chatty page — exactly what this observer exists for — would remap at
+      // the 5s ceiling instead of the floor.
+      var REMAP_RESET_MS = 1500;
       var remapDelay = REMAP_MIN_MS;
       var remapTimer = null;
       var lastRemapAt = 0;
@@ -2115,8 +2127,11 @@ enum WebContentScript {
       function runRemap() {
         remapTimer = null;
         lastRemapAt = Date.now();
-        // A hidden page (background tab, off-screen split pane) is displaying
-        // none of this. Skip the work and catch up when it's looked at again.
+        // Nothing here is on screen while the page is hidden, so skip it and
+        // catch up on visibilitychange. NB: an inactive tab's web view is torn
+        // down rather than hidden, so in practice this fires for app
+        // backgrounding — where WebKit already throttles us — and is a
+        // belt-and-braces guard rather than a measured win.
         if (document.visibilityState === "hidden") {
           remapWhenVisible = true;
           return;
@@ -2131,7 +2146,7 @@ enum WebContentScript {
         if (remapTimer) return; // already queued — it will see this mutation too
         var quietFor = Date.now() - lastRemapAt;
         remapDelay =
-          quietFor > remapDelay * 2
+          quietFor > REMAP_RESET_MS
             ? REMAP_MIN_MS
             : Math.min(remapDelay * 2, REMAP_MAX_MS);
         remapTimer = setTimeout(runRemap, remapDelay);
