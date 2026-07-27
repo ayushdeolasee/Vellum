@@ -3,65 +3,148 @@ import Testing
 @testable import Vellum
 
 @MainActor
+@Suite(.serialized)
 struct InspectorPresentationTests {
     @Test("PDF to New Tab to PDF preserves inspector state")
     func pdfNewTabPdf() async throws {
-        let workspace = WorkspaceStore(sessions: InspectorSessionService())
-        let app = workspace.focusedPane.app
+        try await preservingRecentFiles {
+            let workspace = WorkspaceStore(sessions: InspectorSessionService())
+            let app = workspace.focusedPane.app
 
-        await app.openFile(path: "/tmp/inspector-test.pdf")
-        let pdfTabId = try #require(app.activeTabId)
-        workspace.sidebarOpen = true
-        workspace.sidebarTab = .scratchpad
-        workspace.rememberSidebarWidth(512)
+            await app.openFile(path: "/tmp/inspector-test.pdf")
+            let pdfTabId = try #require(app.activeTabId)
+            workspace.sidebarOpen = true
+            workspace.sidebarTab = .scratchpad
+            workspace.rememberSidebarWidth(512)
 
-        #expect(workspace.inspectorPresented)
-        #expect(workspace.sidebarWidth == 512)
+            #expect(workspace.inspectorPresented)
+            #expect(workspace.sidebarWidth == 512)
 
-        app.newStartTab()
-        #expect(workspace.inspectorPresented == false)
+            app.newStartTab()
+            #expect(workspace.inspectorPresented == false)
 
-        // SwiftUI's conditional inspector writes false as the document goes
-        // away. It must not turn the temporary suppression into user intent.
-        workspace.setInspectorPresented(false)
-        workspace.rememberSidebarWidth(0)
-        #expect(workspace.sidebarOpen)
-        #expect(workspace.sidebarTab == .scratchpad)
-        #expect(workspace.sidebarWidth == 512)
+            // SwiftUI's conditional inspector writes false as the document goes
+            // away. It must not turn the temporary suppression into user intent.
+            workspace.setInspectorPresented(false)
+            workspace.rememberSidebarWidth(0)
+            #expect(workspace.sidebarOpen)
+            #expect(workspace.sidebarTab == .scratchpad)
+            #expect(workspace.sidebarWidth == 512)
 
-        app.activateTab(pdfTabId)
-        #expect(workspace.inspectorPresented)
-        #expect(workspace.sidebarTab == .scratchpad)
-        #expect(workspace.sidebarWidth == 512)
+            app.activateTab(pdfTabId)
+            #expect(workspace.inspectorPresented)
+            #expect(workspace.sidebarTab == .scratchpad)
+            #expect(workspace.sidebarWidth == 512)
+        }
     }
 
     @Test("PDF to Web to PDF preserves open and selected inspector state")
     func pdfWebPdf() async throws {
-        let workspace = WorkspaceStore(sessions: InspectorSessionService())
-        let app = workspace.focusedPane.app
+        try await preservingRecentFiles {
+            let workspace = WorkspaceStore(sessions: InspectorSessionService())
+            let app = workspace.focusedPane.app
 
-        await app.openFile(path: "/tmp/inspector-test.pdf")
-        let pdfTabId = try #require(app.activeTabId)
-        workspace.sidebarOpen = true
-        workspace.sidebarTab = .ai
+            await app.openFile(path: "/tmp/inspector-test.pdf")
+            let pdfTabId = try #require(app.activeTabId)
+            workspace.sidebarOpen = true
+            workspace.sidebarTab = .ai
 
-        await app.openUrl("https://example.com")
-        let webTabId = try #require(app.activeTabId)
-        #expect(webTabId != pdfTabId)
-        #expect(workspace.inspectorPresented)
-        #expect(workspace.sidebarTab == .ai)
+            await app.openUrl("https://example.com")
+            let webTabId = try #require(app.activeTabId)
+            #expect(webTabId != pdfTabId)
+            #expect(workspace.inspectorPresented)
+            #expect(workspace.sidebarTab == .ai)
 
-        app.activateTab(pdfTabId)
-        #expect(workspace.inspectorPresented)
-        #expect(workspace.sidebarTab == .ai)
+            app.activateTab(pdfTabId)
+            #expect(workspace.inspectorPresented)
+            #expect(workspace.sidebarTab == .ai)
 
-        // An explicit close on a document remains authoritative across tabs.
-        workspace.setInspectorPresented(false)
-        app.activateTab(webTabId)
-        app.activateTab(pdfTabId)
-        #expect(workspace.inspectorPresented == false)
-        #expect(workspace.sidebarOpen == false)
-        #expect(workspace.sidebarTab == .ai)
+            // An explicit close on a document remains authoritative across tabs.
+            workspace.setInspectorPresented(false)
+            app.activateTab(webTabId)
+            app.activateTab(pdfTabId)
+            #expect(workspace.inspectorPresented == false)
+            #expect(workspace.sidebarOpen == false)
+            #expect(workspace.sidebarTab == .ai)
+        }
+    }
+
+    @Test(
+        "Opening an already-tabbed document from Home preserves a closed inspector",
+        arguments: [DocumentKind.pdf, .web]
+    )
+    func reopeningExistingDocumentPreservesClosedInspector(
+        kind: DocumentKind
+    ) async throws {
+        try await preservingRecentFiles {
+            let workspace = WorkspaceStore(sessions: InspectorSessionService())
+            let app = workspace.focusedPane.app
+            let location: String
+
+            switch kind {
+            case .pdf:
+                location = "/tmp/inspector-test.pdf"
+                await app.openFile(path: location)
+            case .web:
+                location = "https://example.com"
+                await app.openUrl(location)
+            }
+
+            let originalTabId = try #require(app.activeTabId)
+            workspace.sidebarTab = .scratchpad
+            workspace.setInspectorPresented(false)
+            app.newStartTab()
+
+            switch kind {
+            case .pdf:
+                await app.openFile(path: location)
+            case .web:
+                await app.openUrl(location)
+            }
+
+            #expect(app.activeTabId == originalTabId)
+            #expect(app.tabs.count == 1)
+            #expect(workspace.sidebarOpen == false)
+            #expect(workspace.inspectorPresented == false)
+            #expect(workspace.sidebarTab == .scratchpad)
+        }
+    }
+
+    @Test("Splitting and returning preserves a closed inspector")
+    func splitAndReturnPreservesClosedInspector() async {
+        await preservingRecentFiles {
+            let workspace = WorkspaceStore(sessions: InspectorSessionService())
+            let originalPane = workspace.focusedPane
+            await originalPane.app.openFile(path: "/tmp/inspector-test.pdf")
+            workspace.sidebarTab = .ai
+            workspace.setInspectorPresented(false)
+
+            workspace.splitFocused(.horizontal)
+            #expect(workspace.focusedPane.id != originalPane.id)
+            #expect(workspace.focusedPane.app.document == nil)
+            #expect(workspace.sidebarOpen == false)
+            #expect(workspace.inspectorPresented == false)
+
+            workspace.focus(originalPane.id)
+            #expect(workspace.sidebarOpen == false)
+            #expect(workspace.inspectorPresented == false)
+            #expect(workspace.sidebarTab == .ai)
+        }
+    }
+
+    private func preservingRecentFiles<T>(
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: RecentFilesService.storageKey)
+        defer {
+            if let original {
+                defaults.set(original, forKey: RecentFilesService.storageKey)
+            } else {
+                defaults.removeObject(forKey: RecentFilesService.storageKey)
+            }
+        }
+        return try await operation()
     }
 }
 

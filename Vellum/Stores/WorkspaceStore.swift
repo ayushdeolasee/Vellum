@@ -209,7 +209,6 @@ final class WorkspaceStore {
             sizes: [50, 50])
         root = replacingLeaf(root, id: target.id, with: split)
         focusedPaneId = newPane.id
-        sidebarOpen = true
         scheduleSave()
     }
 
