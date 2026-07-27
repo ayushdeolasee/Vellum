@@ -123,11 +123,16 @@ extension WalkthroughPage {
                 WalkthroughPoint(
                     symbol: "camera.viewfinder",
                     text: "Snapshot a region of the page into your notes, or drop in an image from Finder."),
+                // The "sharing the AI conversation is a separate checkbox, off
+                // by default" sentence was cut here. It is still true and still
+                // documented in the Help centre's export topic, where someone
+                // about to share a file will look for it — but on a first read
+                // it is a caveat about a dialog the reader has not opened.
                 WalkthroughPoint(
                     symbol: "arrow.up.doc",
                     text:
-                        "\"Export with Notes…\" packs the document, your notes and attachments into one "
-                        + ".vellum file. Sharing the AI conversation is a separate checkbox, off by default."),
+                        "\"Export with Notes…\" packs the document, your notes and attachments "
+                        + "into one .vellum file."),
             ]
         ),
 
@@ -225,22 +230,32 @@ extension WalkthroughPage {
                 // written straight to conversations.json, so the older messages
                 // are genuinely gone — claiming otherwise would be the one lie
                 // on the page the whole feature was filed for.
+                // AI conversations are deliberately absent from this list.
+                // AiPersistence.saveConversation runs every save through
+                // `limit`, which keeps only the last `maxMessagesPerDocument`
+                // messages and writes that trimmed list to conversations.json —
+                // so listing them as "kept indefinitely" would be false. The
+                // earlier draft said "trimmed to the last 120 messages", which
+                // was true but is exactly the kind of internal number a first
+                // read does not need. Omitting them is honest; claiming they
+                // are permanent would not be.
                 WalkthroughPoint(
                     symbol: "checkmark.seal",
                     text:
-                        "Kept indefinitely: highlights, notes, bookmarks, reading positions, and saved "
-                        + "pages. AI conversations stay too, trimmed to the last 120 messages."),
+                        "Kept indefinitely: your highlights, notes, bookmarks, reading positions, "
+                        + "and the pages you save."),
                 WalkthroughPoint(
                     symbol: "clock.arrow.circlepath",
                     text:
                         "Tidied up: offline copies of web pages and extracted text. By default Vellum "
                         + "clears these for pages you haven't opened in six months and only for pages "
                         + "you never saved or annotated."),
+                // The exact option list (1, 3, 6, 12, Never) lives in the Help
+                // centre's retention topic. Here it is enough to know the
+                // setting exists and can be switched off.
                 WalkthroughPoint(
                     symbol: "slider.horizontal.3",
-                    text:
-                        "Settings ▸ Storage sets that window to 1, 3, 6 or 12 months, or Never, and can "
-                        + "run a cleanup on demand."),
+                    text: "Settings ▸ Storage changes that window, or turns the cleanup off."),
                 WalkthroughPoint(
                     symbol: "icloud",
                     text:

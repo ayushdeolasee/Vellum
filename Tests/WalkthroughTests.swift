@@ -134,31 +134,48 @@ final class WalkthroughContentTests: XCTestCase {
         let mentionsWindow = storage?.points.contains { $0.text.contains("six months") } ?? false
         XCTAssertTrue(mentionsWindow, "storage page no longer states the default retention window")
 
-        // The copy also names the selectable windows; keep them in step with
-        // the picker the Storage tab actually offers.
-        XCTAssertEqual(StorageHousekeeping.monthOptions, [1, 3, 6, 12])
-        let mentionsOptions = storage?.points.contains { $0.text.contains("1, 3, 6 or 12 months") } ?? false
-        XCTAssertTrue(mentionsOptions, "storage page no longer lists the selectable retention windows")
+        // The full option list used to be spelled out here too. It was cut on
+        // review as more detail than a first read needs, and now lives in the
+        // Help centre's retention topic — where HelpTopicContentTests pins it
+        // to StorageHousekeeping.monthOptions instead. This page only has to
+        // stay honest that the window is adjustable.
+        let mentionsSetting = storage?.points.contains {
+            $0.text.contains("Settings ▸ Storage")
+        } ?? false
+        XCTAssertTrue(mentionsSetting, "storage page no longer points at the setting")
     }
 
-    func testStoragePageStatesTheConversationCap() {
+    func testStoragePageNeverClaimsConversationsArePermanent() {
         // AI conversations are the one thing on this page that the app DOES
         // shorten by itself: every saveConversation runs through
         // AiPersistence.limit, which keeps only the last
-        // maxMessagesPerDocument messages and persists the truncated list. The
-        // copy names that number, so pin it — if the cap moves, the sentence
-        // has to move with it.
+        // maxMessagesPerDocument messages and persists the truncated list.
+        //
+        // An earlier draft stated the cap outright ("trimmed to the last 120
+        // messages"). That was true, but it is an internal number, and the
+        // review asked for the copy to stop reciting implementation limits — so
+        // conversations are simply not listed among the things Vellum keeps.
+        // What must never come back is the ORIGINAL claim, which put them in
+        // the "only you delete these" list and was flatly false. That is the
+        // regression this test exists to catch; the assertion is on the lie,
+        // not on the phrasing that replaced it.
         XCTAssertEqual(AiPersistence.maxMessagesPerDocument, 120)
-        let storage = pages.first { $0.id == "storage" }
-        let statesCap = storage?.points.contains { $0.text.contains("120 messages") } ?? false
-        XCTAssertTrue(statesCap, "storage page no longer states the AI conversation cap")
 
-        // Guard the inverse too: conversations must not be listed among the
-        // things only the user deletes, which is what the page claimed before
-        // the cap was noticed.
-        let overclaims = storage?.points.contains {
-            $0.text.contains("AI conversations") && $0.text.contains("Only you delete")
-        } ?? false
-        XCTAssertFalse(overclaims, "storage page claims AI conversations are never trimmed")
+        let storage = pages.first { $0.id == "storage" }
+        XCTAssertNotNil(storage)
+
+        let keptForever = storage?.points.first { $0.text.contains("Kept indefinitely") }
+        XCTAssertNotNil(keptForever, "storage page no longer says what it keeps")
+        XCTAssertFalse(
+            keptForever?.text.lowercased().contains("conversation") ?? true,
+            """
+            The storage page lists AI conversations among the things kept \
+            indefinitely, but AiPersistence.limit trims every save to the last \
+            \(AiPersistence.maxMessagesPerDocument) messages and writes the trimmed list to \
+            disk. Either drop them from that list or state the cap.
+            """)
+        XCTAssertFalse(
+            keptForever?.text.contains("Only you delete") ?? true,
+            "storage page claims AI conversations are never trimmed")
     }
 }

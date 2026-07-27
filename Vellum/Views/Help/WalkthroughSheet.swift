@@ -24,6 +24,26 @@ struct WalkthroughSheet: View {
 
     private let pages = WalkthroughPage.all
 
+    // MARK: - Metrics
+    //
+    // The sheet's fixed geometry, named once here so `WalkthroughLayoutTests`
+    // can assert against the real numbers rather than re-typing them. The two
+    // chrome bars get explicit heights so the space left for a page is exactly
+    // derivable — before, the title bar sized itself to whatever was in it, so
+    // adding the close button silently took two points away from every page
+    // and the layout test failed pointing at the copy instead of at the cause.
+
+    /// Fixed sheet width. A reading-width column; wider makes the bullets
+    /// scan badly, narrower makes every one of them wrap.
+    static let sheetWidth: CGFloat = 620
+    /// Backstop on the sheet's height. Past this the page area scrolls rather
+    /// than growing — see `pageContent`.
+    static let maxSheetHeight: CGFloat = 620
+    static let titleBarHeight: CGFloat = 44
+    static let footerHeight: CGFloat = 50
+    /// Title bar + footer + the two 1pt dividers between them and the page.
+    static var chromeHeight: CGFloat { titleBarHeight + footerHeight + 2 }
+
     private var page: WalkthroughPage { pages[index] }
     private var isFirst: Bool { index == 0 }
     private var isLast: Bool { index == pages.count - 1 }
@@ -46,8 +66,8 @@ struct WalkthroughSheet: View {
         // maxHeight is a backstop, not the layout: at very large system font
         // sizes the tallest page can exceed what a sheet should occupy, and
         // past this point pageContent scrolls instead of growing further.
-        .frame(width: 620)
-        .frame(maxHeight: 620)
+        .frame(width: Self.sheetWidth)
+        .frame(maxHeight: Self.maxSheetHeight)
         // No explicit background. This used to paint `palette.surface`, which
         // in the light palette is a flat #ffffff slab — the only sheet in the
         // app that opted out of the system sheet material, and it read as a
@@ -132,10 +152,11 @@ struct WalkthroughSheet: View {
             .accessibilityIdentifier("walkthrough.close")
         }
         .padding(.horizontal, 20)
-        // 8pt, not 12: the 28pt icon button is now the tallest thing in the
-        // row, and this keeps the bar at the same 44pt the layout test's
-        // chrome constant is measured against.
-        .padding(.vertical, 8)
+        // Pinned rather than padded. The 28pt close button is now the tallest
+        // thing in this row, so intrinsic sizing would make the bar's height
+        // depend on a control's metrics — and any future change to it would
+        // silently shrink every page's usable space.
+        .frame(height: Self.titleBarHeight)
     }
 
     private var pageContent: some View {
@@ -183,6 +204,104 @@ struct WalkthroughSheet: View {
     }
 
     private func pageBody(_ page: WalkthroughPage) -> some View {
+        WalkthroughPageBody(page: page)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            if !isLast {
+                TextButton(variant: .ghost, size: .sm) { dismiss() } label: {
+                    Text("Skip")
+                }
+                .accessibilityIdentifier("walkthrough.skip")
+            }
+
+            Spacer(minLength: 12)
+
+            pageIndicator
+
+            Spacer(minLength: 12)
+
+            TextButton(variant: .secondary, size: .sm, disabled: isFirst) {
+                go(to: index - 1)
+            } label: {
+                Text("Back")
+            }
+            .accessibilityIdentifier("walkthrough.back")
+
+            TextButton(variant: .primary, size: .sm) {
+                if isLast { dismiss() } else { go(to: index + 1) }
+            } label: {
+                Text(isLast ? "Done" : "Next")
+            }
+            // Return advances, and finishes on the last page — the whole
+            // walkthrough is reachable without touching the mouse.
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("walkthrough.next")
+        }
+        .padding(.horizontal, 20)
+        // Pinned for the same reason as the title bar: the page area's height
+        // is the sheet's height minus this, so it must not float.
+        .frame(height: Self.footerHeight)
+    }
+
+    /// Dots double as direct navigation — someone reopening this from the Help
+    /// menu usually wants one specific page, not five presses of Next.
+    private var pageIndicator: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(pages.enumerated()), id: \.element.id) { offset, item in
+                let isCurrent = offset == index
+                Button { go(to: offset) } label: {
+                    Capsule()
+                        // Inactive dots are palette.borderStrong, not
+                        // `.quaternary`. SwiftUI's quaternary fill resolves
+                        // from the color scheme, not from our palette, and on
+                        // the light parchment chrome it came out so faint the
+                        // dots were invisible — reported on review with a
+                        // screenshot showing only the active pill. borderStrong
+                        // is the same hairline value the rest of the app uses
+                        // for "present but quiet", and it is defined for both
+                        // schemes (#d6cdbb / #45413a), so it reads in each.
+                        .fill(isCurrent ? palette.primary : palette.borderStrong)
+                        .frame(width: isCurrent ? 18 : 6, height: 6)
+                        .contentShape(Capsule().inset(by: -6))
+                }
+                .buttonStyle(.plain)
+                .help(item.title)
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier("walkthrough.dot.\(item.id)")
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: index)
+    }
+
+    // MARK: - Navigation
+
+    private func go(to target: Int) {
+        guard pages.indices.contains(target), target != index else { return }
+        movingForward = target > index
+        withAnimation(.easeOut(duration: 0.22)) {
+            index = target
+        }
+    }
+}
+
+/// One page's content, extracted from the sheet as a view of its own.
+///
+/// Not just tidiness: `WalkthroughLayoutTests` hosts this directly off-screen
+/// to measure how tall a page really is. It used to re-derive that number from
+/// a dozen padding/spacing/font constants copied into the test file, which
+/// meant the test drifted the moment anyone touched the layout — and a
+/// mirrored constant that is quietly two points wrong produces a test that
+/// fails for a reason nobody can find. Measuring the real view removes the
+/// mirror entirely.
+struct WalkthroughPageBody: View {
+    let page: WalkthroughPage
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 14) {
                 // Same glass tile as the welcome screen's hero, one size down —
@@ -249,83 +368,6 @@ struct WalkthroughSheet: View {
             }
 
             Spacer(minLength: 0)
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 12) {
-            if !isLast {
-                TextButton(variant: .ghost, size: .sm) { dismiss() } label: {
-                    Text("Skip")
-                }
-                .accessibilityIdentifier("walkthrough.skip")
-            }
-
-            Spacer(minLength: 12)
-
-            pageIndicator
-
-            Spacer(minLength: 12)
-
-            TextButton(variant: .secondary, size: .sm, disabled: isFirst) {
-                go(to: index - 1)
-            } label: {
-                Text("Back")
-            }
-            .accessibilityIdentifier("walkthrough.back")
-
-            TextButton(variant: .primary, size: .sm) {
-                if isLast { dismiss() } else { go(to: index + 1) }
-            } label: {
-                Text(isLast ? "Done" : "Next")
-            }
-            // Return advances, and finishes on the last page — the whole
-            // walkthrough is reachable without touching the mouse.
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("walkthrough.next")
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-    }
-
-    /// Dots double as direct navigation — someone reopening this from the Help
-    /// menu usually wants one specific page, not five presses of Next.
-    private var pageIndicator: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(pages.enumerated()), id: \.element.id) { offset, item in
-                let isCurrent = offset == index
-                Button { go(to: offset) } label: {
-                    Capsule()
-                        // Inactive dots are palette.borderStrong, not
-                        // `.quaternary`. SwiftUI's quaternary fill resolves
-                        // from the color scheme, not from our palette, and on
-                        // the light parchment chrome it came out so faint the
-                        // dots were invisible — reported on review with a
-                        // screenshot showing only the active pill. borderStrong
-                        // is the same hairline value the rest of the app uses
-                        // for "present but quiet", and it is defined for both
-                        // schemes (#d6cdbb / #45413a), so it reads in each.
-                        .fill(isCurrent ? palette.primary : palette.borderStrong)
-                        .frame(width: isCurrent ? 18 : 6, height: 6)
-                        .contentShape(Capsule().inset(by: -6))
-                }
-                .buttonStyle(.plain)
-                .help(item.title)
-                .accessibilityLabel(item.title)
-                .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
-                .accessibilityIdentifier("walkthrough.dot.\(item.id)")
-            }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: index)
-    }
-
-    // MARK: - Navigation
-
-    private func go(to target: Int) {
-        guard pages.indices.contains(target), target != index else { return }
-        movingForward = target > index
-        withAnimation(.easeOut(duration: 0.22)) {
-            index = target
         }
     }
 }

@@ -26,8 +26,14 @@ final class HelpTopicSearchTests: XCTestCase {
         // One assertion per field the predicate is supposed to cover, because
         // dropping any one of them from `searchableText` still leaves the
         // other three working and the feature half-broken.
-        XCTAssertEqual(HelpTopic.search("Scratchpad").first?.id, "scratchpad")
-        XCTAssertTrue(HelpTopic.search("⌘⌥S").map(\.id).contains("inspector"))
+        // Title match. Asserted as membership, not as `.first`: "Scratchpad"
+        // also legitimately appears in the inspector topic's summary, and the
+        // catalogue is ordered for reading rather than by relevance.
+        XCTAssertTrue(HelpTopic.search("Scratchpad").map(\.id).contains("scratchpad"))
+        // Summary match — "wraps around" is in switch-tabs' prose only.
+        XCTAssertEqual(HelpTopic.search("wraps around").map(\.id), ["switch-tabs"])
+        // Shortcut match.
+        XCTAssertEqual(HelpTopic.search("⌘⌥S").map(\.id), ["inspector"])
 
         // "llm" appears in no title and no summary — only in ai-setup's
         // keywords, so this fails if keywords stop being searched.
@@ -136,8 +142,11 @@ final class HelpTopicContentTests: XCTestCase {
         // tool is added or removed the copy has to be revisited, because
         // "it can jump to a page, add a note, and highlight text" is an
         // exhaustive claim about what the assistant is able to change.
-        XCTAssertEqual(AiToolEngine.maxWrites, 5)
-
+        //
+        // Deliberately does NOT assert the five-writes-per-reply cap. That was
+        // cut from the walkthrough on review as an internal limit, and moving
+        // it into the Help centre instead would defeat the point of removing
+        // it.
         let actions = HelpTopic.all.first { $0.id == "ai-actions" }
         XCTAssertNotNil(actions)
         for verb in ["jump to a page", "add a note", "highlight text"] {
