@@ -347,6 +347,43 @@ enum DocumentDataStore {
         return out
     }
 
+    // MARK: - Home-screen search inventory
+
+    /// One `documents/<key>/` folder as the home screen's search index sees it:
+    /// just the meta stamp plus whether any user data hangs off it.
+    struct DocumentMetaEntry: Sendable, Equatable {
+        var key: String
+        var meta: Meta
+        /// A note and/or an AI conversation exists for this document. Two
+        /// `fileExists` probes — deliberately NOT the byte totals, see below.
+        var hasUserData: Bool
+    }
+
+    /// Lightweight inventory for `LibraryDocumentsSearchProvider`.
+    ///
+    /// Distinct from `listDocuments()` because the cost profile is different:
+    /// the Storage pane needs exact byte totals and pays for a full recursive
+    /// walk of every attachments/ folder once per visit, whereas the home
+    /// screen rebuilds its corpus every time the welcome screen appears and
+    /// only needs names and dates. Folders with no meta.json are skipped —
+    /// without a stamp there is no title, kind, or path to search on.
+    static func listDocumentMetas() -> [DocumentMetaEntry] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: rootDirectory.path) else { return [] }
+        var out: [DocumentMetaEntry] = []
+        for name in names {
+            let dir = rootDirectory.appendingPathComponent(name, isDirectory: true)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue,
+                  let meta = loadMeta(forKey: name) else { continue }
+            out.append(DocumentMetaEntry(
+                key: name,
+                meta: meta,
+                hasUserData: scratchpadExists(forKey: name) || conversationsExist(forKey: name)))
+        }
+        return out
+    }
+
     /// scratchpad.md + everything under attachments/ (the note's full footprint).
     static func notesBytes(forKey key: String) -> Int64 {
         fileSize(scratchpadPath(forKey: key)) + directorySize(at: attachmentsDir(forKey: key))
