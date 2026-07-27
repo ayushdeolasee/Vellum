@@ -180,7 +180,12 @@ struct AiPanel: View {
             if !message.references.isEmpty {
                 SentReferenceChips(
                     references: message.references,
-                    onGoToPage: { appStore.goToPage($0) }
+                    onGoToPage: { appStore.goToPage($0) },
+                    // Pixels for an image reference don't live on the message —
+                    // they're stripped before it is persisted — so the store
+                    // resolves them from this session's cache. nil means "not
+                    // previewable", which the popover states outright.
+                    previewData: { aiStore.referencePreviewData(for: $0) }
                 )
             }
 
@@ -362,6 +367,8 @@ struct AiPanel: View {
             ComposerTextView(
                 text: $input,
                 placeholder: "Ask about this document…",
+                focusRequest: aiStore.composerFocusRequest,
+                onFocusRequestConsumed: aiStore.consumeComposerFocusRequest,
                 onSubmit: submit,
                 // The composer's NSTextView is a registered drag destination and
                 // AppKit hands it any drop over its bounds before SwiftUI's
@@ -434,9 +441,18 @@ struct AiPanel: View {
 
     private func attachCurrentPage() {
         let page = appStore.currentPage
+        // Rendering a page to JPEG is slow enough that switching tabs in the
+        // meantime is ordinary behaviour, not a race. Pin the destination now
+        // and let `addCapturedReference` discard the bytes if the pane has moved
+        // on — otherwise page 4 of the PDF you just left shows up attached to a
+        // question about a completely different document.
+        guard let target = aiStore.currentReferenceTarget(),
+              let capturePage = aiStore.capturePageImageHandler
+        else { return }
         Task {
-            guard let image = await aiStore.capturePageImageHandler?(page) else { return }
-            aiStore.addReference(AiReference(kind: .pageSnapshot(image: image, page: page)))
+            guard let image = await capturePage(page) else { return }
+            aiStore.addCapturedReference(
+                AiReference(kind: .pageSnapshot(image: image, page: page)), target: target)
         }
     }
 
@@ -558,6 +574,12 @@ private struct AnimatedDots: View {
 private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
+    /// Pending one-shot request for this field to take first responder; nil when
+    /// there is none. See `AiStore.composerFocusRequest`.
+    let focusRequest: String?
+    /// Reported back once the field has actually become first responder, so the
+    /// store can spend the token.
+    let onFocusRequestConsumed: (String) -> Void
     let onSubmit: () -> Void
     /// A file or image dropped onto the field itself; nil disables interception, so
     /// AppKit's own drag handling (text, file paths) is left alone.
@@ -575,6 +597,8 @@ private struct ComposerTextView: View {
         ComposerTextViewRep(
             text: $text,
             placeholder: placeholder,
+            focusRequest: focusRequest,
+            onFocusRequestConsumed: onFocusRequestConsumed,
             onSubmit: onSubmit,
             onAttachmentDrop: onAttachmentDrop,
             onDropTargeted: onDropTargeted,
@@ -587,6 +611,8 @@ private struct ComposerTextView: View {
 private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
+    let focusRequest: String?
+    let onFocusRequestConsumed: (String) -> Void
     let onSubmit: () -> Void
     let onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     let onDropTargeted: (Bool) -> Void
@@ -607,6 +633,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         textView.onDropTargeted = onDropTargeted
         textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
+        textView.setAccessibilityIdentifier("aiPanel.composer")
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
         textView.alignment = .left
@@ -640,11 +667,32 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
         context.coordinator.publishHeight(for: textView)
+
+        // Take first responder for a pending attach. Deferred to the next tick:
+        // `updateNSView` runs inside SwiftUI's update, and the view may not be
+        // in a window yet on the pass that first reveals the panel. The
+        // coordinator's own record of the last fulfilled token stops this
+        // repeating on every subsequent update; the store is only told once the
+        // responder change actually succeeded, so a failed attempt (no window)
+        // leaves the request pending for the next pass.
+        if let focusRequest, focusRequest != context.coordinator.fulfilledFocusRequest {
+            context.coordinator.fulfilledFocusRequest = focusRequest
+            let onFocusRequestConsumed = onFocusRequestConsumed
+            Task { @MainActor [weak textView] in
+                guard let textView, let window = textView.window else { return }
+                guard window.makeFirstResponder(textView) else { return }
+                onFocusRequestConsumed(focusRequest)
+            }
+        }
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextViewRep
+        /// Last focus token this coordinator acted on. Paired with the store's
+        /// one-shot token: this stops a repeat within one mount, the store stops
+        /// a replay across mounts.
+        var fulfilledFocusRequest: String?
         init(parent: ComposerTextViewRep) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {

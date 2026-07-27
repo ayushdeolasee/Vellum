@@ -227,6 +227,95 @@ final class AiReferencePersistenceTests: XCTestCase {
         XCTAssertEqual(restored.last?.image?.width, 640)
     }
 
+    func testSaveCapsHowManyReferencesOneMessageCanCarry() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        // Twice the cap, as a hand-edited file or a bad import could produce.
+        let many = (0..<(AiPersistence.maxReferencesPerMessage * 2)).map {
+            AiReference(kind: .selection(text: "excerpt \($0)", page: 1))
+        }
+        let user = AiPersistence.makeMessage(role: .user, content: "lots", references: many)
+
+        AiPersistence.saveConversation(for: doc, messages: [user])
+        await AiPersistence.awaitPendingFlush()
+
+        let restored = try XCTUnwrap(try fileMessages(forKey: key).first).references
+        XCTAssertEqual(restored.count, AiPersistence.maxReferencesPerMessage)
+        // The head is kept, matching the order the composer would have built.
+        XCTAssertEqual(restored.first?.text, "excerpt 0")
+    }
+
+    // MARK: - Session image previews
+
+    /// The pixels stripped for storage stay previewable for the rest of the
+    /// session: the store remembers them, keyed by reference id, so tapping a
+    /// snapshot or screenshot chip in the transcript shows the image even though
+    /// the message on disk carries none.
+    func testSentImagePixelsStayPreviewableAfterStripping() throws {
+        let store = AiStore()
+        let live = AiReference(kind: .pageSnapshot(image: snapshot(page: 6), page: 6))
+        // "QUJD" is base64 for "ABC" — three bytes we can assert on exactly.
+        XCTAssertNil(store.referencePreviewData(for: live.strippingImageData),
+                     "nothing cached yet, so the stripped copy has no pixels")
+
+        store.rememberReferenceImages([live])
+
+        // What the transcript actually holds is the stripped copy.
+        let persisted = live.strippingImageData
+        XCTAssertEqual(persisted.image?.base64Data, "", "fixture sanity: pixels really are gone")
+        XCTAssertEqual(store.referencePreviewData(for: persisted), Data("ABC".utf8))
+    }
+
+    /// A reference restored from an earlier run has no pixels anywhere, so the
+    /// popover has to be told there is nothing to preview rather than showing an
+    /// empty frame. This is the documented limitation of not persisting pixels.
+    func testReferenceFromAnEarlierSessionHasNoPreview() throws {
+        // A cold store, exactly as after a relaunch: nothing was sent through it.
+        let store = AiStore()
+        let restored = AiReference(kind: .pageSnapshot(image: snapshot(page: 6), page: 6))
+            .strippingImageData
+
+        XCTAssertNil(store.referencePreviewData(for: restored))
+    }
+
+    /// Text-only references never have a preview, cache or no cache.
+    func testTextReferenceHasNoPreview() {
+        let store = AiStore()
+        let selection = AiReference(kind: .selection(text: "verbatim", page: 1))
+        store.rememberReferenceImages([selection])
+        XCTAssertNil(store.referencePreviewData(for: selection))
+    }
+
+    /// The cache is bounded: a long session of image-heavy turns evicts the
+    /// oldest entries rather than growing without limit.
+    func testPreviewCacheEvictsTheOldestPastItsCap() {
+        let store = AiStore()
+        let references = (0..<(AiStore.maxCachedReferenceImages + 3)).map { _ in
+            AiReference(kind: .pageSnapshot(image: snapshot(page: 1), page: 1))
+        }
+        for reference in references { store.rememberReferenceImages([reference]) }
+
+        // The three oldest are gone…
+        for reference in references.prefix(3) {
+            XCTAssertNil(store.referencePreviewData(for: reference.strippingImageData))
+        }
+        // …and everything within the cap is still there.
+        for reference in references.suffix(AiStore.maxCachedReferenceImages) {
+            XCTAssertNotNil(store.referencePreviewData(for: reference.strippingImageData))
+        }
+    }
+
+    /// Re-remembering a reference already in the cache must not enqueue it
+    /// twice, or the order list would evict live entries early.
+    func testRememberingTheSameReferenceTwiceDoesNotDoubleCount() {
+        let store = AiStore()
+        let first = AiReference(kind: .pageSnapshot(image: snapshot(page: 1), page: 1))
+        for _ in 0..<(AiStore.maxCachedReferenceImages + 5) {
+            store.rememberReferenceImages([first])
+        }
+        XCTAssertNotNil(store.referencePreviewData(for: first.strippingImageData))
+    }
+
     // MARK: - Chip vocabulary shared by the composer and the transcript
 
     func testChipLabelCollapsesWhitespaceAndNamesThePage() {

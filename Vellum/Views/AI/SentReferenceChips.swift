@@ -65,21 +65,29 @@ extension AiReference {
 /// Read-only chips for the references a user message was sent with.
 ///
 /// Differs from the composer's `ReferenceChipRow` in three ways, each forced by
-/// where it sits: no × (the message is already on the wire), no thumbnails (the
-/// persisted references carry no pixels — see `AiReference.strippingImageData`),
-/// and it wraps instead of scrolling horizontally, because a horizontal
-/// ScrollView nested in the transcript would swallow trackpad scrolls meant for
-/// the transcript itself.
+/// where it sits: no × (the message is already on the wire), no inline
+/// thumbnails (the persisted references carry no pixels — see
+/// `AiReference.strippingImageData` — and the full-size preview is one click
+/// away anyway), and it wraps instead of scrolling horizontally, because a
+/// horizontal ScrollView nested in the transcript would swallow trackpad
+/// scrolls meant for the transcript itself.
 struct SentReferenceChips: View {
     let references: [AiReference]
     /// Scroll the reader to a page a reference points at. Called only for
     /// references with a `page`.
     let onGoToPage: (Int) -> Void
+    /// Pixels to preview for an image-carrying reference, or nil when there are
+    /// none to show. Resolved by the store, not by the reference itself: the
+    /// persisted copy has had its base64 stripped, so the bytes come from the
+    /// session cache (`AiStore.referencePreviewData(for:)`) and are unavailable
+    /// for a message restored from an earlier run.
+    let previewData: (AiReference) -> Data?
 
     var body: some View {
         ChipFlowLayout(spacing: 4, lineSpacing: 4, alignment: .trailing) {
             ForEach(references) { reference in
-                SentReferenceChip(reference: reference, onGoToPage: onGoToPage)
+                SentReferenceChip(
+                    reference: reference, onGoToPage: onGoToPage, previewData: previewData)
             }
         }
         // Matches the bubble's own cap so the chips read as one column with it.
@@ -91,6 +99,7 @@ struct SentReferenceChips: View {
 private struct SentReferenceChip: View {
     let reference: AiReference
     let onGoToPage: (Int) -> Void
+    let previewData: (AiReference) -> Data?
 
     @Environment(\.palette) private var palette
     @State private var hovering = false
@@ -125,11 +134,17 @@ private struct SentReferenceChip: View {
         .onHover { hovering = $0 }
         .help(reference.chipKindName)
         .accessibilityLabel("\(reference.chipKindName): \(reference.chipLabel)")
-        .accessibilityHint("Show the referenced text")
+        .accessibilityHint(
+            reference.image == nil ? "Show the referenced text" : "Show a preview of the image")
         .accessibilityIdentifier("aiMessage.reference")
         .popover(isPresented: $detailShown, arrowEdge: .bottom) {
             SentReferenceDetail(
                 reference: reference,
+                // Resolved here, at presentation, rather than up front for every
+                // chip in the transcript: base64-decoding a ~200 KB page
+                // snapshot per chip on every transcript render would be wasted
+                // work for popovers that are mostly never opened.
+                preview: previewData(reference).flatMap(NSImage.init(data:)),
                 onGoToPage: { page in
                     // Dismiss first: leaving a popover open over a page the
                     // reader just scrolled away from is disorienting.
@@ -141,11 +156,27 @@ private struct SentReferenceChip: View {
     }
 }
 
-/// Popover body: what the reference actually was. Text-bearing kinds show the
-/// verbatim excerpt (selectable, so it can be copied back out); the image kinds
-/// have no text to show, so they show their descriptor instead.
+/// Popover body: what the reference actually was.
+///
+/// Text-bearing kinds show the verbatim excerpt (selectable, so it can be copied
+/// back out). Image kinds — a page snapshot, a region screenshot, an attached
+/// image — show the image itself when its pixels are still available, and say
+/// plainly when they aren't.
+///
+/// WHY AN IMAGE CAN BE UNAVAILABLE. References are persisted with their base64
+/// pixels dropped (`AiReference.strippingImageData`): a page snapshot is ~200 KB
+/// and `conversations.json` is re-encoded and rewritten in full on every turn,
+/// so keeping them would turn a few-KB transcript into megabytes of churn.
+/// `AiStore` therefore holds the pixels in a session-scoped cache, which covers
+/// every message sent in the current run of the app. A message reloaded from a
+/// previous session has no pixels anywhere, so it gets the descriptor plus an
+/// explicit note — never a blank frame the user is left to interpret. Making old
+/// previews work would mean writing the images to their own files beside the
+/// transcript, which is a storage change and deliberately not part of this PR.
 private struct SentReferenceDetail: View {
     let reference: AiReference
+    /// Decoded pixels, or nil when this reference is no longer previewable.
+    let preview: NSImage?
     let onGoToPage: (Int) -> Void
 
     @Environment(\.palette) private var palette
@@ -166,20 +197,11 @@ private struct SentReferenceDetail: View {
                 }
             }
 
-            ScrollView {
-                Text(body(for: reference))
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.foreground)
-                    .lineSpacing(2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // Long excerpts must wrap, not clip; the fixed frame width
-                    // below constrains them first.
-                    .fixedSize(horizontal: false, vertical: true)
+            if reference.image != nil {
+                imageBody
+            } else {
+                excerptBody
             }
-            // A whole-page selection would otherwise grow the popover past the
-            // screen; cap the height and let it scroll.
-            .frame(maxHeight: 220)
 
             if let page = reference.page {
                 // Deliberately not `.buttonStyle(.link)`: that paints the system
@@ -199,14 +221,67 @@ private struct SentReferenceDetail: View {
         .frame(width: 300)
     }
 
-    /// The excerpt, or a descriptor for the image-only kinds. Persisted
-    /// references drop their pixels, so an image reference can only describe
-    /// itself here — there is nothing left to render.
-    private func body(for reference: AiReference) -> String {
-        if let text = reference.text {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The verbatim excerpt for a selection / highlight / quote.
+    private var excerptBody: some View {
+        ScrollView {
+            Text(reference.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+                .font(.system(size: 12))
+                .foregroundStyle(palette.foreground)
+                .lineSpacing(2)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Long excerpts must wrap, not clip; the fixed frame width on
+                // the popover constrains them first.
+                .fixedSize(horizontal: false, vertical: true)
         }
-        guard let image = reference.image else { return "(no preview available)" }
+        // A whole-page selection would otherwise grow the popover past the
+        // screen; cap the height and let it scroll.
+        .frame(maxHeight: 220)
+    }
+
+    /// The image itself when we still have it, otherwise the descriptor and a
+    /// plain statement of why there is nothing to show.
+    @ViewBuilder
+    private var imageBody: some View {
+        if let preview {
+            Image(nsImage: preview)
+                .resizable()
+                // A page snapshot is taller than it is wide and a region crop can
+                // be any shape, so fit inside the box rather than filling it —
+                // filling would silently crop the very thing being previewed.
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 220)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay {
+                    // A white page snapshot on a light popover has no edge
+                    // otherwise, and reads as part of the chrome.
+                    RoundedRectangle(cornerRadius: Radius.sm)
+                        .strokeBorder(palette.border)
+                }
+                .accessibilityLabel("Preview of \(reference.chipKindName.lowercased())")
+                .accessibilityIdentifier("aiMessage.reference.preview")
+            Text(imageDescriptor)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.mutedForeground)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(imageDescriptor)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.foreground)
+                Text("Preview unavailable — images aren't kept once the app restarts.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("aiMessage.reference.previewUnavailable")
+        }
+    }
+
+    /// Name (for a dropped/picked image) and pixel dimensions — the part of an
+    /// image reference that is always persisted.
+    private var imageDescriptor: String {
+        guard let image = reference.image else { return "" }
         var parts = ["\(image.width)×\(image.height)"]
         if case let .image(_, name) = reference.kind { parts.insert(name, at: 0) }
         return parts.joined(separator: " · ")
@@ -228,13 +303,17 @@ private struct SentReferenceDetail: View {
                 AiReference(kind: .image(
                     image: snapshot, name: "absorption-spectrum.png")),
             ],
-            onGoToPage: { _ in }
+            onGoToPage: { _ in },
+            // Stands in for a reference reloaded from a previous session: no
+            // pixels, so its popover shows the "preview unavailable" branch.
+            previewData: { _ in nil }
         )
         // The single-chip case, which must hug the trailing edge like the bubble.
         SentReferenceChips(
             references: [AiReference(kind: .quote(
                 text: "Green light is largely reflected.", messageId: "a1"))],
-            onGoToPage: { _ in }
+            onGoToPage: { _ in },
+            previewData: { _ in nil }
         )
     }
     .frame(width: 300, alignment: .trailing)

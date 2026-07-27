@@ -383,6 +383,20 @@ struct AiContextSnapshot: Sendable {
     var references: [AiReference] = []
 }
 
+/// The exact destination a reference capture was started for, captured *before*
+/// the `await`. A pane reuses one `AiStore` across every tab it shows, so a page
+/// or region snapshot that finishes rendering after the user switched tabs would
+/// otherwise land its bytes in the composer of a document it has nothing to do
+/// with. Comparing tab id alone isn't enough: a tab can be re-pointed at another
+/// document in place (open-in-tab, a web navigation), so the document's kind,
+/// path and stamped id are part of the identity too.
+struct AiReferenceTarget: Equatable, Sendable {
+    var sessionId: String
+    var kind: DocumentKind
+    var path: String
+    var documentId: String?
+}
+
 /// Result of locating a phrase in a document (PDF text layer or web content
 /// script). The page can differ from the requested one for web documents.
 struct LocatedText: Sendable {
@@ -437,6 +451,48 @@ final class AiStore {
     /// Context the user has attached to the next message (selection, highlight,
     /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
     private(set) var composerReferences: [AiReference] = []
+
+    /// A pending, one-shot request for the AppKit composer to take first
+    /// responder, set by every "Add to AI Chat" style action.
+    ///
+    /// A one-shot *token* rather than a Bool or a monotonic counter, for two
+    /// reasons the simpler shapes get wrong. A Bool can't distinguish two
+    /// consecutive attach actions, so the second wouldn't refocus a composer the
+    /// user had clicked away from. A counter is never "spent": the AppKit
+    /// representable remembers the last value it fulfilled in its coordinator,
+    /// so when the inspector is closed and reopened, the rebuilt coordinator
+    /// starts at zero, sees a non-zero count, and steals focus for an attach the
+    /// user performed minutes ago. Consumption clears it here in the store — the
+    /// single place both the old and the new coordinator agree on — so a
+    /// fulfilled request can't replay, and each split pane's `AiStore` owns its
+    /// own token so two panes can't collide.
+    private(set) var composerFocusRequest: String?
+
+    /// Session-lifetime pixels for references already attached to a sent
+    /// message, keyed by `AiReference.id`.
+    ///
+    /// Persisted references deliberately carry no base64 pixels (see
+    /// `AiReference.strippingImageData`) — one page snapshot is ~200 KB and
+    /// `conversations.json` is rewritten in full on every turn. That trade is
+    /// still right for *disk*, but it also means a stripped reference has
+    /// nothing for the transcript's tap-to-preview to show. This cache keeps the
+    /// pixels for the current session only, so previewing a snapshot or
+    /// screenshot works for the messages the user just sent; a reference loaded
+    /// from a previous session has no entry here and the popover says so
+    /// explicitly rather than presenting an empty frame.
+    ///
+    /// `@ObservationIgnored` on purpose: populating it must not invalidate the
+    /// whole transcript, and every read happens inside a popover the user opened
+    /// long after the write.
+    @ObservationIgnored private var referenceImageCache: [String: AiPageImageSnapshot] = [:]
+    /// Insertion order for `referenceImageCache`, oldest first, so the cache can
+    /// be trimmed FIFO without an extra timestamp per entry.
+    @ObservationIgnored private var referenceImageCacheOrder: [String] = []
+    /// How many sent images stay previewable. At `maxImageReferences` (8) per
+    /// message this is the last two or three image-bearing turns, ~3 MB of
+    /// base64 — enough that previewing what you just sent always works, bounded
+    /// so a long session can't grow without limit.
+    static let maxCachedReferenceImages = 16
 
     /// Registered by the PDF viewer: locate a verbatim phrase on a page at
     /// zoom 1 in top-left-origin PDF points (lib/highlight-locator.ts).
@@ -553,8 +609,16 @@ final class AiStore {
         composerReferences.filter { $0.image != nil }.count < Self.maxImageReferences
     }
 
-    /// Attach a reference and reveal the AI panel so the user sees it land.
+    /// Attach a reference, reveal the AI panel so the user sees it land, and ask
+    /// the composer for the keyboard — attaching context is always the prelude
+    /// to typing a question about it, and without the focus request a keyboard
+    /// user is left in the document with the panel open beside them.
     func addReference(_ reference: AiReference) {
+        if composerReferences.count >= AiPersistence.maxReferencesPerMessage {
+            error = "You can attach at most "
+                + "\(AiPersistence.maxReferencesPerMessage) references to one message."
+            return
+        }
         if reference.image != nil, !canAttachMoreImages {
             error = "You can attach at most \(Self.maxImageReferences) images to one message."
             return
@@ -562,6 +626,40 @@ final class AiStore {
         composerReferences.append(reference)
         app?.workspace?.sidebarTab = .ai
         app?.workspace?.sidebarOpen = true
+        composerFocusRequest = UUID().uuidString.lowercased()
+    }
+
+    /// Mark a focus request as fulfilled. Ignores a token that is no longer the
+    /// pending one, so a late `updateNSView` from a torn-down composer can't
+    /// cancel a newer request the user has just made.
+    func consumeComposerFocusRequest(_ request: String) {
+        guard composerFocusRequest == request else { return }
+        composerFocusRequest = nil
+    }
+
+    /// The tab + document a capture started against, to be handed back to
+    /// `addCapturedReference` once the bytes are ready. See `AiReferenceTarget`.
+    func currentReferenceTarget() -> AiReferenceTarget? {
+        guard let app,
+              let sessionId = app.activeTabId,
+              let document = app.document
+        else { return nil }
+        return AiReferenceTarget(
+            sessionId: sessionId,
+            kind: document.kind,
+            path: document.pdfPath,
+            documentId: document.docId)
+    }
+
+    /// Attach bytes produced by an async page/region capture, but only if the
+    /// pane is still showing the exact tab and document that started it.
+    /// Rendering a page to JPEG takes long enough that a tab switch in between
+    /// is ordinary, not a race you have to try to hit.
+    @discardableResult
+    func addCapturedReference(_ reference: AiReference, target: AiReferenceTarget) -> Bool {
+        guard let current = currentReferenceTarget(), current == target else { return false }
+        addReference(reference)
+        return true
     }
 
     func removeReference(id: String) {
@@ -570,6 +668,43 @@ final class AiStore {
 
     func clearComposerReferences() {
         composerReferences = []
+    }
+
+    // MARK: - Sent-reference image previews
+
+    /// Retain the pixels of every image-bearing reference in `references` so the
+    /// transcript can preview them after they've been stripped for storage.
+    /// Called from `sendMessage` with the *live* references, before stripping.
+    func rememberReferenceImages(_ references: [AiReference]) {
+        for reference in references {
+            guard let image = reference.image, !image.base64Data.isEmpty else { continue }
+            if referenceImageCache.updateValue(image, forKey: reference.id) == nil {
+                referenceImageCacheOrder.append(reference.id)
+            }
+        }
+        // FIFO rather than LRU: previews are overwhelmingly opened on the most
+        // recent turns, so recency of *insertion* is a good enough proxy and
+        // costs no bookkeeping on the read path.
+        while referenceImageCacheOrder.count > Self.maxCachedReferenceImages {
+            referenceImageCache.removeValue(forKey: referenceImageCacheOrder.removeFirst())
+        }
+    }
+
+    /// Decoded pixels for a reference shown in the transcript, or nil when there
+    /// are none to show.
+    ///
+    /// Prefers whatever the reference itself carries (a live composer chip, or a
+    /// message still being assembled) and falls back to this session's cache for
+    /// one whose pixels were stripped on the way to disk. Returns nil for a
+    /// reference restored from a previous session — the caller must say so
+    /// rather than render an empty frame. Returns `Data`, not `NSImage`, so the
+    /// resolution logic is testable headlessly.
+    func referencePreviewData(for reference: AiReference) -> Data? {
+        let base64 = reference.image?.base64Data.isEmpty == false
+            ? reference.image?.base64Data
+            : referenceImageCache[reference.id]?.base64Data
+        guard let base64, !base64.isEmpty else { return nil }
+        return Data(base64Encoded: base64)
     }
 
     // MARK: - Attachment drops
@@ -825,6 +960,11 @@ final class AiStore {
         // give no sign it carried any context at all (issue #58). Pixels are
         // stripped for storage; the model still receives the full-resolution
         // images below, built from `context.references`.
+        //
+        // Hand the pixels to the session cache first: it is the only thing that
+        // survives the strip, and it's what makes tapping a snapshot or
+        // screenshot chip show the image for the rest of this session.
+        rememberReferenceImages(context.references)
         let userMessage = AiPersistence.makeMessage(
             role: .user,
             content: trimmed,

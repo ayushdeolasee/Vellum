@@ -463,14 +463,13 @@ enum VellumBundle {
             // from a `.vellum` file we did not write (readCapped allows up to
             // maxConversationsBytes = 32 MB). Without this, an imported bundle
             // whose references still carry their base64 pixels — or a
-            // whole-document excerpt — lands verbatim on disk and is re-encoded
-            // and rewritten in full on every subsequent turn, exactly the churn
-            // AiReference.strippingImageData exists to prevent.
-            if !message.references.isEmpty {
-                message.references = message.references.map {
-                    $0.truncatingText(to: AiPersistence.maxReferenceCharacters).strippingImageData
-                }
-            }
+            // whole-document excerpt, or ten thousand of them — lands verbatim
+            // on disk and is re-encoded and rewritten in full on every
+            // subsequent turn, exactly the churn AiReference.strippingImageData
+            // exists to prevent. Calls the same function AiPersistence.limit
+            // does rather than restating the rules, which is how this drifted
+            // out of sync the first time.
+            message.references = AiPersistence.capReferences(message.references)
             return message
         }
     }

@@ -21,6 +21,15 @@ enum AiPersistence {
     /// realistic selection or quote is stored verbatim; the prompt applies its
     /// own, tighter bound separately (`AiPrompts.maxReferenceCharacters`).
     static let maxReferenceCharacters = 4_000
+    /// Ceiling on references of any kind attached to one message, images
+    /// included. `AiStore.maxImageReferences` bounds the *request* payload; this
+    /// bounds the *transcript*. Every reference is persisted on the user message
+    /// and `conversations.json` is rewritten in full on every turn, so a hundred
+    /// selections attached in one gesture would be re-encoded forever after.
+    /// Enforced by the composer (`AiStore.addReference`) and again on the way to
+    /// disk, for lists that never came through the composer — an imported
+    /// `.vellum` bundle, or a hand-edited file.
+    static let maxReferencesPerMessage = 16
 
     private struct ConversationEntry: Sendable {
         var key: String
@@ -396,15 +405,26 @@ enum AiPersistence {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
             }
-            // Defensive on both save and load: a reference list that arrived
-            // oversized (or was hand-edited on disk) is clipped rather than
-            // carried around in memory and rewritten on every flush.
-            if !message.references.isEmpty {
-                message.references = message.references.map {
-                    $0.truncatingText(to: maxReferenceCharacters).strippingImageData
-                }
-            }
+            message.references = capReferences(message.references)
             return message
+        }
+    }
+
+    /// The per-message reference caps, shared verbatim with
+    /// `VellumBundle.capConversation` so the import path and the save path can't
+    /// drift (the previous "mirrors AiPersistence.limit" comment did drift once
+    /// already). Defensive on both save and load: a list that arrived oversized,
+    /// was hand-edited on disk, or came out of a `.vellum` file we didn't write
+    /// is clipped here rather than carried around in memory and rewritten in
+    /// full on every flush.
+    static func capReferences(_ references: [AiReference]) -> [AiReference] {
+        guard !references.isEmpty else { return references }
+        // Newest-last, so keep the *first* N: unlike messages, where the recent
+        // turns matter most, references are a single message's attachment list
+        // in the order the user built it, and truncating the tail is what the
+        // composer's own cap would have done.
+        return references.prefix(maxReferencesPerMessage).map {
+            $0.truncatingText(to: maxReferenceCharacters).strippingImageData
         }
     }
 
