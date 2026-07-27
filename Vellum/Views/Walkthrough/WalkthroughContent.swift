@@ -218,7 +218,7 @@ extension WalkthroughPage {
                     symbol: "clock.arrow.circlepath",
                     text:
                         "Tidied up: offline copies of web pages and extracted text. By default Vellum "
-                        + "clears these for pages you haven't opened in six months — and only for pages "
+                        + "clears these for pages you haven't opened in six months and only for pages "
                         + "you never saved or annotated."),
                 WalkthroughPoint(
                     symbol: "slider.horizontal.3",
