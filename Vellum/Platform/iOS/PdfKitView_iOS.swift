@@ -8,9 +8,31 @@ import UIKit
 // selection tracking feeding PdfViewerControlleriOS. Touch selection is native
 // (long-press handles); note placement + dismissal happen in the SwiftUI overlay.
 
-/// PDFView subclass — a hook for the Pencil ink canvas (Phase 4) and a spot to
-/// trim the selection edit menu so the custom Liquid Glass popover leads.
-final class VellumPDFView: PDFView {
+/// PDFView subclass — a hook for the Pencil ink canvas (Phase 4), a spot to
+/// trim the selection edit menu so the custom Liquid Glass popover leads, and
+/// the carrier for Vellum's hardware-keyboard commands over a PDF.
+final class VellumPDFView: PDFView, VellumShortcutResponder {
+    var onShortcut: VellumShortcutHandler?
+
+    /// Built once: `keyCommands` is queried on every key press while this view
+    /// is in the responder chain, and the array is constant for the lifetime of
+    /// the view (the catalog is static and the selector never changes).
+    private lazy var vellumCommands: [UIKeyCommand] =
+        vellumKeyCommands(action: #selector(vellumPerformShortcut(_:)))
+
+    /// Vellum's chords are listed first so they take precedence over anything
+    /// PDFKit contributes for the same combination (scroll-to-top on ⌘↑, its own
+    /// find plumbing on ⌘F), and `super`'s are preserved so nothing else PDFKit
+    /// offers is lost. See `VellumShortcutResponder` for why the duplication
+    /// with the SwiftUI menu is necessary at all.
+    override var keyCommands: [UIKeyCommand]? {
+        vellumCommands + (super.keyCommands ?? [])
+    }
+
+    @objc private func vellumPerformShortcut(_ sender: UIKeyCommand) {
+        vellumPerform(sender)
+    }
+
     override func buildMenu(with builder: UIMenuBuilder) {
         // Suppress the system callout entirely — it fights the Liquid Glass
         // selection popover for the same anchor (the popover carries copy /
@@ -31,6 +53,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
     let ink: InkController_iOS
 
     @Environment(AppStore.self) private var app
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
@@ -52,6 +75,12 @@ struct PdfKitView_iOS: UIViewRepresentable {
         // the virtualized per-page canvases), so barrel double-taps are delivered
         // reliably regardless of scroll position / which page canvas is live.
         view.addInteraction(UIPencilInteraction(delegate: ink.inkProvider))
+        // Hardware-keyboard commands for when PDFKit holds first responder. The
+        // WorkspaceStore is created once for the app's lifetime, so capturing it
+        // here (rather than re-assigning on every update) cannot go stale.
+        view.onShortcut = { [workspace] action in
+            VellumShortcutRouter.perform(action, workspace: workspace)
+        }
         view.document = document
         view.scaleFactor = CGFloat(min(AppStore.maxZoom, max(AppStore.minZoom, app.zoom)))
         controller.pdfView = view
