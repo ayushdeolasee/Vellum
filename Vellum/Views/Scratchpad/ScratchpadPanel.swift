@@ -127,19 +127,15 @@ struct ScratchpadPanel: View {
 
     private func clear() {
         guard undoManager != nil else { return }
-        guard let removed = scratchpadStore.clearText() else { return }
-        registerScratchpadReplacement(removed)
+        guard let transaction = scratchpadStore.clearText() else { return }
+        registerScratchpadUndo(transaction)
     }
 
-    private func registerScratchpadReplacement(_ replacement: String) {
+    private func registerScratchpadUndo(_ transaction: ScratchpadClearTransaction) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: scratchpadStore) { store in
-            let displaced = store.replaceText(with: replacement)
-            registerScratchpadUndo(
-                displaced,
-                store: store,
-                undoManager: undoManager
-            )
+            guard let restoration = store.undoClear(transaction) else { return }
+            registerScratchpadRedo(restoration, store: store, undoManager: undoManager)
         }
         undoManager.setActionName("Clear Scratchpad")
     }
@@ -148,13 +144,26 @@ struct ScratchpadPanel: View {
 
 @MainActor
 private func registerScratchpadUndo(
-    _ replacement: String,
+    _ transaction: ScratchpadClearTransaction,
     store: ScratchpadStore,
     undoManager: UndoManager
 ) {
     undoManager.registerUndo(withTarget: store) { target in
-        let displaced = target.replaceText(with: replacement)
-        registerScratchpadUndo(displaced, store: target, undoManager: undoManager)
+        guard let restoration = target.undoClear(transaction) else { return }
+        registerScratchpadRedo(restoration, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
+}
+
+@MainActor
+private func registerScratchpadRedo(
+    _ restoration: ScratchpadClearRestoration,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(restoration) else { return }
+        registerScratchpadUndo(restoration.transaction, store: target, undoManager: undoManager)
     }
     undoManager.setActionName("Clear Scratchpad")
 }

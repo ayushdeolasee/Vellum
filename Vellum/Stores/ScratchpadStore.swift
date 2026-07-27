@@ -17,6 +17,27 @@ struct ScratchpadImageCapture: Sendable {
     var pageNumber: Int?
 }
 
+struct ScratchpadAttachmentSnapshot: Equatable, Sendable {
+    var id: String
+    var fileExtension: String
+    var data: Data
+}
+
+struct ScratchpadClearTransaction: Equatable, Sendable {
+    var document: DocumentInfo
+    var key: String
+    var sessionId: String
+    var removedText: String
+    var attachments: [ScratchpadAttachmentSnapshot]
+}
+
+struct ScratchpadClearRestoration: Equatable, Sendable {
+    var transaction: ScratchpadClearTransaction
+    /// Exact prefix inserted by Undo. Redo removes only this prefix, preserving
+    /// work appended after the clear or after Undo.
+    var insertedPrefix: String
+}
+
 /// Markdown + LaTeX scratchpad notes for the active document. State mirrors the
 /// AI store's per-document lifecycle: `loadForDocument` on tab/document change,
 /// `clearDocumentContext` when leaving. Edits autosave on a short debounce, and
@@ -83,24 +104,91 @@ final class ScratchpadStore {
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
 
-    /// Clear the current note and return its prior text for native Undo. An
-    /// empty note is a no-op, so the UI can keep the action disabled and avoid
-    /// adding meaningless entries to the undo stack.
+    /// Capture the note and every referenced attachment before clearing. If any
+    /// referenced byte cannot be read, fail closed: leaving the note untouched
+    /// is safer than offering an Undo that restores broken image references.
     @discardableResult
-    func clearText() -> String? {
-        guard !text.isEmpty else { return nil }
-        let removed = text
+    func clearText() -> ScratchpadClearTransaction? {
+        guard !text.isEmpty,
+              let currentDocument,
+              let currentKey,
+              let currentSessionId else { return nil }
+        let attachmentDir = DocumentDataStore.attachmentsDir(forKey: currentKey)
+        let ids = ScratchpadAttachmentStore.referencedIds(in: text)
+        var attachments: [ScratchpadAttachmentSnapshot] = []
+        for id in ids {
+            guard let url = ScratchpadAttachmentStore.fileURL(for: id, preferredDir: attachmentDir),
+                  let data = try? Data(contentsOf: url) else {
+                showWarning("Couldn't safely clear this note because one of its images is unavailable.")
+                return nil
+            }
+            attachments.append(.init(
+                id: id, fileExtension: url.pathExtension.lowercased(), data: data))
+        }
+        let transaction = ScratchpadClearTransaction(
+            document: currentDocument, key: currentKey, sessionId: currentSessionId,
+            removedText: text, attachments: attachments)
         text = ""
-        return removed
+        return transaction
     }
 
-    /// Replace the note and return the displaced text. Used by Undo/Redo so
-    /// every restoration still follows the normal autosave path.
+    /// Restore the cleared note ahead of any work created afterward. Attachment
+    /// bytes are restored before the markdown is persisted.
     @discardableResult
-    func replaceText(with replacement: String) -> String {
-        let displaced = text
-        text = replacement
-        return displaced
+    func undoClear(_ transaction: ScratchpadClearTransaction) -> ScratchpadClearRestoration? {
+        let showing = isShowing(transaction)
+        if showing { cancelPendingSave() }
+        let current = showing
+            ? text
+            : ScratchpadPersistence.load(forKey: transaction.key)
+        let separator = current.isEmpty ? "" : "\n\n"
+        let prefix = transaction.removedText + separator
+        let restored = prefix + current
+        let directory = DocumentDataStore.attachmentsDir(forKey: transaction.key)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for attachment in transaction.attachments {
+                try attachment.data.write(
+                    to: directory.appendingPathComponent(
+                        "\(attachment.id).\(attachment.fileExtension)"),
+                    options: .atomic)
+            }
+            try ScratchpadPersistence.save(forKey: transaction.key, schemeText: restored)
+        } catch {
+            showWarning("Couldn't restore the cleared note. Its recovery data is still available in Undo.")
+            return nil
+        }
+        if showing { setRestored(restored) }
+        return ScratchpadClearRestoration(transaction: transaction, insertedPrefix: prefix)
+    }
+
+    /// Remove only the prefix reinserted by Undo. If the restored portion was
+    /// edited in place, fail closed rather than deleting ambiguous content.
+    @discardableResult
+    func redoClear(_ restoration: ScratchpadClearRestoration) -> Bool {
+        let transaction = restoration.transaction
+        let showing = isShowing(transaction)
+        if showing { cancelPendingSave() }
+        let current = showing
+            ? text
+            : ScratchpadPersistence.load(forKey: transaction.key)
+        guard current.hasPrefix(restoration.insertedPrefix) else {
+            showWarning("Couldn't redo Clear Scratchpad because the restored text was edited.")
+            return false
+        }
+        let remaining = String(current.dropFirst(restoration.insertedPrefix.count))
+        do {
+            try ScratchpadPersistence.save(forKey: transaction.key, schemeText: remaining)
+        } catch {
+            showWarning("Couldn't redo Clear Scratchpad.")
+            return false
+        }
+        if showing { setRestored(remaining) }
+        return true
+    }
+
+    private func isShowing(_ transaction: ScratchpadClearTransaction) -> Bool {
+        currentSessionId == transaction.sessionId && currentKey == transaction.key
     }
 
     /// Restore the note for `document`, first flushing the previous document's

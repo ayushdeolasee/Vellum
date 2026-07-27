@@ -12,6 +12,7 @@ struct WelcomeScreen: View {
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
     @State private var pendingRemoval: LibraryItem?
+    @State private var libraryError: String?
 
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
@@ -57,6 +58,7 @@ struct WelcomeScreen: View {
     private var libraryLayout: some View {
         VStack(spacing: 0) {
             libraryHeader
+            errorBanner
             Divider()
             libraryList
         }
@@ -118,10 +120,6 @@ struct WelcomeScreen: View {
                 sortMenu
             }
 
-            if appStore.error != nil {
-                errorBanner
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
         .padding(.horizontal, 24)
         .padding(.top, 24)
@@ -296,7 +294,7 @@ struct WelcomeScreen: View {
 
     @ViewBuilder
     private var errorBanner: some View {
-        if let error = appStore.error {
+        if let error = libraryError ?? appStore.error {
             Text(error)
                 .font(.system(size: 14))
                 .foregroundStyle(palette.destructive)
@@ -370,12 +368,21 @@ struct WelcomeScreen: View {
         guard let item = item(for: id) else { return }
         switch item.section {
         case .recent:
-            recentDocuments = RecentFilesService.remove(path: item.key)
+            recentDocuments = RecentFilesService.remove(path: item.removalKey)
+            if selection == id { selection = nil }
         case .saved:
-            savedPages.removeAll { $0.url == item.key }
-            Task { try? await appStore.sessions.removeSavedWebpage(url: item.key) }
+            libraryError = nil
+            Task { @MainActor in
+                do {
+                    try await SavedPageRemoval.remove(
+                        url: item.key, using: appStore.sessions)
+                    savedPages.removeAll { $0.url == item.key }
+                    if selection == id { selection = nil }
+                } catch {
+                    libraryError = "Couldn’t remove “\(item.title)” from Saved. \(error.localizedDescription)"
+                }
+            }
         }
-        if selection == id { selection = nil }
     }
 
     private func removeSelected() {
@@ -431,6 +438,19 @@ struct WelcomeScreen: View {
     }
 }
 
+@MainActor
+enum SavedPageRemoval {
+    /// Completes only after the backing archive was removed. Callers mutate
+    /// their current visible list afterward, avoiding optimistic deletion and
+    /// stale-list races between overlapping removals.
+    static func remove(
+        url: String,
+        using sessions: SessionService
+    ) async throws {
+        try await sessions.removeSavedWebpage(url: url)
+    }
+}
+
 // MARK: - Library sort
 
 private enum LibrarySort: String, CaseIterable {
@@ -447,7 +467,7 @@ private enum LibrarySort: String, CaseIterable {
 
 // MARK: - Unified library item
 
-private struct LibraryItem: Identifiable, Hashable {
+struct LibraryItem: Identifiable, Hashable {
     enum Section { case recent, saved }
 
     let id: String
@@ -464,6 +484,9 @@ private struct LibraryItem: Identifiable, Hashable {
     let subtitle: String
     let tooltip: String
     let canRevealInFinder: Bool
+    /// Removal always targets the persisted library key, never a moved PDF's
+    /// transient resolved path.
+    var removalKey: String { recordedKey }
 
     init(recent entry: RecentDocument) {
         let fileName = entry.kind == .web

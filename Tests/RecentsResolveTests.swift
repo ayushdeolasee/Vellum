@@ -85,6 +85,11 @@ final class RecentsResolveTests: XCTestCase {
         let entry = recent(pdfPath: deadPath, docId: docId)
 
         XCTAssertEqual(RecentFilesService.resolvedPath(for: entry), movedPath)
+        let item = LibraryItem(recent: entry)
+        XCTAssertEqual(item.key, movedPath)
+        XCTAssertEqual(
+            item.removalKey, deadPath,
+            "removal must delete the persisted recent key, not the resolved open path")
     }
 
     // Dead path, no docId → returns the recorded path unchanged (genuine dead

@@ -116,22 +116,15 @@ struct AiPanel: View {
 
     private func clearConversation() {
         guard undoManager != nil else { return }
-        guard let removed = aiStore.clearConversation() else { return }
-        registerConversationReplacement(removed)
+        guard let transaction = aiStore.clearConversation() else { return }
+        registerConversationUndo(transaction)
     }
 
-    /// Register a replacement rather than a one-shot callback. During Undo,
-    /// registering the displaced value automatically becomes Redo; repeating
-    /// this recursively preserves the full native Undo/Redo cycle.
-    private func registerConversationReplacement(_ replacement: AiConversationSnapshot) {
+    private func registerConversationUndo(_ transaction: AiConversationClearTransaction) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: aiStore) { store in
-            let displaced = store.replaceConversation(with: replacement)
-            registerConversationUndo(
-                displaced,
-                store: store,
-                undoManager: undoManager
-            )
+            guard store.undoClear(transaction) else { return }
+            registerConversationRedo(transaction, store: store, undoManager: undoManager)
         }
         undoManager.setActionName("Clear AI Conversation")
     }
@@ -548,14 +541,27 @@ struct AiPanel: View {
 }
 
 @MainActor
-private func registerConversationUndo(
-    _ replacement: AiConversationSnapshot,
+private func registerConversationRedo(
+    _ transaction: AiConversationClearTransaction,
     store: AiStore,
     undoManager: UndoManager
 ) {
     undoManager.registerUndo(withTarget: store) { target in
-        let displaced = target.replaceConversation(with: replacement)
-        registerConversationUndo(displaced, store: target, undoManager: undoManager)
+        guard target.redoClear(transaction) else { return }
+        registerConversationUndo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
+}
+
+@MainActor
+private func registerConversationUndo(
+    _ transaction: AiConversationClearTransaction,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.undoClear(transaction) else { return }
+        registerConversationRedo(transaction, store: target, undoManager: undoManager)
     }
     undoManager.setActionName("Clear AI Conversation")
 }

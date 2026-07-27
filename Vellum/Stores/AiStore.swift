@@ -62,10 +62,13 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var usage: AiUsage? = nil
 }
 
-/// The user-visible content removed by Clear Conversation. Keeping this as a
-/// value makes the destructive action reliably reversible through Undo.
-struct AiConversationSnapshot: Equatable, Sendable {
-    var messages: [AiMessage]
+/// A clear transaction is tied to the exact document and tab that owned it.
+/// Undo/Redo can therefore repair that document on disk without ever replacing
+/// the transcript of a different tab that happens to be visible later.
+struct AiConversationClearTransaction: Equatable, Sendable {
+    var document: DocumentInfo
+    var sessionId: String
+    var removedMessages: [AiMessage]
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -489,28 +492,57 @@ final class AiStore {
     /// Also cancels any in-flight request so a completing response can't
     /// re-append the messages we just cleared.
     @discardableResult
-    func clearConversation() -> AiConversationSnapshot? {
-        guard !messages.isEmpty else { return nil }
-        let removed = AiConversationSnapshot(messages: messages)
+    func clearConversation() -> AiConversationClearTransaction? {
+        guard !messages.isEmpty,
+              let document = app?.document,
+              let sessionId = app?.activeTabId else { return nil }
+        let transaction = AiConversationClearTransaction(
+            document: document, sessionId: sessionId, removedMessages: messages)
         cancelActiveRequest()
-        AiPersistence.saveConversation(for: app?.document, messages: [])
+        AiPersistence.saveConversation(for: document, messages: [])
         messages = []
         error = nil
-        return removed
+        return transaction
     }
 
-    /// Replace the transcript and return the displaced value. Undo uses the
-    /// returned snapshot to register its inverse, which also gives native Redo.
+    /// Restore only the messages removed by this transaction. Messages created
+    /// after the clear stay at the end of the conversation.
     @discardableResult
-    func replaceConversation(
-        with snapshot: AiConversationSnapshot
-    ) -> AiConversationSnapshot {
-        let displaced = AiConversationSnapshot(messages: messages)
-        cancelActiveRequest()
-        messages = snapshot.messages
-        AiPersistence.saveConversation(for: app?.document, messages: messages)
-        error = nil
-        return displaced
+    func undoClear(_ transaction: AiConversationClearTransaction) -> Bool {
+        let current = AiPersistence.loadConversation(for: transaction.document)
+        let currentIds = Set(current.map(\.id))
+        let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
+        AiPersistence.saveConversation(for: transaction.document, messages: restored)
+        if isShowing(transaction) {
+            cancelActiveRequest()
+            messages = restored
+            error = nil
+        }
+        return true
+    }
+
+    /// Remove only this transaction's original messages. Any messages added
+    /// after the clear (or after Undo) remain intact.
+    @discardableResult
+    func redoClear(_ transaction: AiConversationClearTransaction) -> Bool {
+        let removedIds = Set(transaction.removedMessages.map(\.id))
+        let remaining = AiPersistence.loadConversation(for: transaction.document)
+            .filter { !removedIds.contains($0.id) }
+        AiPersistence.saveConversation(for: transaction.document, messages: remaining)
+        if isShowing(transaction) {
+            cancelActiveRequest()
+            messages = remaining
+            error = nil
+        }
+        return true
+    }
+
+    private func isShowing(_ transaction: AiConversationClearTransaction) -> Bool {
+        guard app?.activeTabId == transaction.sessionId, let document = app?.document else {
+            return false
+        }
+        return DocumentIdentity.storageKey(for: document)
+            == DocumentIdentity.storageKey(for: transaction.document)
     }
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).
