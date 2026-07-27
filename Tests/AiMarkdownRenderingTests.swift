@@ -463,40 +463,54 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.plainPreview("- a\n  - b\n  2. c"), "a b c")
     }
 
-    // MARK: - Overlapping emphasis
+    // MARK: - Emphasis edge cases
 
-    /// CommonMark rejects same-marker nesting like `**a **b** c**` by design,
-    /// and Foundation then leaves every marker literal — the leaked-syntax
-    /// artifact issue #57 is about. Dropping the emphasis reads better than
-    /// showing the syntax.
-    func testOverlappingEmphasisIsRecoveredAsPlainProse() {
-        let visible = Self.visibleText(
-            InlineMarkdown.pieces(in: "**What **FOR UPDATE** does** and *an *overlap* here*"))
-        XCTAssertEqual(visible, "What FOR UPDATE does and an overlap here")
+    /// Same-marker nesting — `**a **b** c**` — is invalid CommonMark, and
+    /// models emit it constantly.
+    ///
+    /// PR #80 added a hand-rolled delimiter-flanking recovery pass here on the
+    /// premise that Foundation leaves every marker literal for these shapes.
+    /// It does not: Foundation resolves all of them itself, so that pass was
+    /// dropped during consolidation as machinery that never fired. These are
+    /// the exact inputs it was written for, pinned so the omission stays
+    /// justified — if Foundation ever regresses, this goes red and the case for
+    /// a recovery pass is real again.
+    func testOverlappingEmphasisDoesNotLeakMarkers() {
+        for source in [
+            "**What **FOR UPDATE** does**",
+            "*an *overlap* here*",
+            "**a **b** c**",
+            "__a __b__ c__",
+            "***triple*** emphasis",
+            "**What **FOR UPDATE SKIP LOCKED** does** and *an *overlap* here*",
+        ] {
+            let visible = Self.visibleText(InlineMarkdown.pieces(in: source))
+            XCTAssertFalse(visible.contains("*"), "\(source) leaked an asterisk: \(visible.debugDescription)")
+            XCTAssertFalse(visible.contains("_"), "\(source) leaked an underscore: \(visible.debugDescription)")
+        }
     }
 
-    /// The recovery must never strip emphasis that Foundation resolved
-    /// correctly. Here the leaked `**` comes from the *escaped* pair, so
-    /// removing the real `**b**` would de-bold `b` and leave the leak in place.
-    /// The re-parse check sees `**` still present and abandons the repair.
-    func testRecoveryIsAbandonedWhenItWouldNotRemoveTheLeak() {
-        let prose = Self.proseRuns(InlineMarkdown.pieces(in: #"\*\*a\*\* and **b**"#))
-        XCTAssertTrue(
-            prose.contains { $0.text.contains("b") && $0.isBold },
-            "legitimate bold was stripped by the recovery pass: \(prose)")
-        XCTAssertTrue(
-            prose.contains { $0.text.contains("**a**") },
-            "the escaped literal should survive: \(prose)")
-    }
-
-    /// Multiplication, code spans and blank lines are not emphasis and must be
-    /// left exactly as written.
-    func testRecoveryLeavesOperatorsAndCodeSpansAlone() {
-        let visible = Self.visibleText(InlineMarkdown.pieces(in: "2 * 3 and **bold**\n`a*b` stays code"))
-        XCTAssertEqual(visible, "2 * 3 and bold\na*b stays code")
-        XCTAssertTrue(
-            Self.proseRuns(InlineMarkdown.pieces(in: "2 * 3 and **bold**")).contains { $0.text == "bold" && $0.isBold },
-            "an unrelated operator must not disable emphasis on the same line")
+    /// The other half of that decision: the markers that *must* reach the
+    /// screen. Every one of these is a false positive for any "strip the
+    /// delimiters Foundation leaked" repair — an operator, an escaped literal,
+    /// a marker still arriving mid-stream, and a code span. Emphasis elsewhere
+    /// on the same line must still resolve.
+    func testLiteralMarkersSurviveAndEmphasisAroundThemStillResolves() {
+        let cases = [
+            ("2 * 3 and **bold**", "2 * 3 and bold"),
+            (#"\*\*a\*\* and **b**"#, "**a** and b"),
+            ("**unclosed emphasis", "**unclosed emphasis"),
+            ("`a*b` stays code", "a*b stays code"),
+            ("a **b** c ** d", "a b c ** d"),
+        ]
+        for (source, expected) in cases {
+            XCTAssertEqual(Self.visibleText(InlineMarkdown.pieces(in: source)), expected, source)
+        }
+        for source in ["2 * 3 and **bold**", #"\*\*a\*\* and **b**"#, "a **b** c ** d"] {
+            XCTAssertTrue(
+                Self.proseRuns(InlineMarkdown.pieces(in: source)).contains(where: \.isBold),
+                "a literal marker on the line disabled real emphasis: \(source)")
+        }
         XCTAssertFalse(
             Self.proseRuns(InlineMarkdown.pieces(in: "use snake_case_names here")).contains(where: \.isItalic),
             "intraword underscores are not emphasis")
