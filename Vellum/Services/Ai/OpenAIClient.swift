@@ -71,44 +71,27 @@ final class OpenAIClient {
             var calls: [[String: Any]] = []
             var hitTokenLimit = false
             for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload),
-                      let type = object["type"] as? String else { continue }
-                switch type {
-                case "response.output_text.delta":
-                    if let delta = object["delta"] as? String, !delta.isEmpty {
+                guard let object = Self.jsonObjectOrNil(payload) else { continue }
+                try Self.processStreamEvent(
+                    object,
+                    calls: &calls,
+                    hitTokenLimit: &hitTokenLimit,
+                    onTextDelta: { delta in
                         text += delta
                         onEvent(.textDelta(delta))
                     }
-                case "response.output_item.done":
-                    if let item = object["item"] as? [String: Any],
-                       item["type"] as? String == "function_call" {
-                        calls.append(item)
-                    }
-                case "response.incomplete":
-                    hitTokenLimit = try Self.isOutputLimitIncompleteEvent(object)
-                case "response.failed", "error":
-                    let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
-                        ?? (object["message"] as? String)
-                    throw AiClientError.message(message ?? "OpenAI streaming failed.")
-                default:
-                    break
-                }
+                )
             }
 
             // `response.incomplete` is terminal. The API can deliver completed
             // function-call items before this event, but its output budget has
             // been exhausted, so those queued calls must not start another turn.
-            if !Self.shouldExecuteQueuedToolCalls(hitTokenLimit: hitTokenLimit) {
-                return try Self.outputLimitResult(text: text, actionResults: actionResults)
-            }
-
-            if calls.isEmpty {
-                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
-            }
-
-            for call in calls {
+            let canContinueToolLoop = await Self.runQueuedToolCalls(
+                calls,
+                hitTokenLimit: hitTokenLimit
+            ) { call in
                 guard let name = call["name"] as? String,
-                      let callId = call["call_id"] as? String else { continue }
+                      let callId = call["call_id"] as? String else { return }
                 let argumentsText = call["arguments"] as? String ?? "{}"
                 let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
                 let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
@@ -127,6 +110,13 @@ final class OpenAIClient {
                 actionResults.append(result)
                 onEvent(.toolFinished(result: result))
                 input.append(["type": "function_call_output", "call_id": callId, "output": result])
+            }
+            guard canContinueToolLoop else {
+                return try Self.outputLimitResult(text: text, actionResults: actionResults)
+            }
+
+            if calls.isEmpty {
+                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
             onEvent(.status("Thinking"))
         }
@@ -185,6 +175,54 @@ final class OpenAIClient {
     /// calls were already queued by preceding stream events.
     static func shouldExecuteQueuedToolCalls(hitTokenLimit: Bool) -> Bool {
         !hitTokenLimit
+    }
+
+    /// Applies one Responses API stream event to the state of the current turn.
+    /// Kept separate from transport so fixtures and the live SSE loop share the
+    /// same terminal-event and function-call collection behavior.
+    static func processStreamEvent(
+        _ object: [String: Any],
+        calls: inout [[String: Any]],
+        hitTokenLimit: inout Bool,
+        onTextDelta: (String) -> Void
+    ) throws {
+        guard let type = object["type"] as? String else { return }
+        switch type {
+        case "response.output_text.delta":
+            if let delta = object["delta"] as? String, !delta.isEmpty {
+                onTextDelta(delta)
+            }
+        case "response.output_item.done":
+            if let item = object["item"] as? [String: Any],
+               item["type"] as? String == "function_call" {
+                calls.append(item)
+            }
+        case "response.incomplete":
+            hitTokenLimit = try isOutputLimitIncompleteEvent(object)
+        case "response.failed", "error":
+            let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
+                ?? (object["message"] as? String)
+            throw AiClientError.message(message ?? "OpenAI streaming failed.")
+        default:
+            break
+        }
+    }
+
+    /// Runs queued calls only when the stream completed normally. The injected
+    /// runner keeps this gate shared by the production tool loop and fixtures.
+    @discardableResult
+    static func runQueuedToolCalls(
+        _ calls: [[String: Any]],
+        hitTokenLimit: Bool,
+        runner: ([String: Any]) async -> Void
+    ) async -> Bool {
+        guard shouldExecuteQueuedToolCalls(hitTokenLimit: hitTokenLimit) else {
+            return false
+        }
+        for call in calls {
+            await runner(call)
+        }
+        return true
     }
 
     /// Converts a terminal output-limit event into the only successful partial

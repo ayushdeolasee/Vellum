@@ -280,7 +280,7 @@ final class AiPipelineTests: XCTestCase {
     /// A completed function-call item can precede `response.incomplete` in the
     /// same SSE stream. The terminal output-limit event must prevent the queued
     /// item from invoking a tool or starting a follow-up turn.
-    func testOpenAIOutputLimitAfterFunctionCallInvokesZeroTools() throws {
+    func testOpenAIOutputLimitAfterFunctionCallInvokesZeroTools() async throws {
         let fixture: [[String: Any]] = [
             [
                 "type": "response.output_item.done",
@@ -301,24 +301,22 @@ final class AiPipelineTests: XCTestCase {
         var toolInvocationCount = 0
 
         for event in fixture {
-            switch event["type"] as? String {
-            case "response.output_item.done":
-                if let item = event["item"] as? [String: Any],
-                   item["type"] as? String == "function_call" {
-                    queuedCalls.append(item)
-                }
-            case "response.incomplete":
-                hitTokenLimit = try OpenAIClient.isOutputLimitIncompleteEvent(event)
-            default:
-                break
-            }
+            try OpenAIClient.processStreamEvent(
+                event,
+                calls: &queuedCalls,
+                hitTokenLimit: &hitTokenLimit,
+                onTextDelta: { _ in }
+            )
         }
 
-        if OpenAIClient.shouldExecuteQueuedToolCalls(hitTokenLimit: hitTokenLimit) {
-            toolInvocationCount += queuedCalls.count
-        }
+        let continuedToolLoop = await OpenAIClient.runQueuedToolCalls(
+            queuedCalls,
+            hitTokenLimit: hitTokenLimit,
+            runner: { _ in toolInvocationCount += 1 }
+        )
 
         XCTAssertEqual(queuedCalls.count, 1, "fixture must queue a function call before becoming incomplete")
+        XCTAssertFalse(continuedToolLoop, "a terminal output limit must not start another tool turn")
         XCTAssertEqual(toolInvocationCount, 0)
     }
 
