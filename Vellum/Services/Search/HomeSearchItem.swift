@@ -129,7 +129,13 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     /// When this was last opened or saved — drives recency sort and the
     /// relevance recency boost. Nil when no source could supply one.
     let date: Date?
-    let badges: HomeSearchBadges
+    /// The only mutable field, and only for one reason: when two providers
+    /// describe the same document, `HomeSearchEngine.deduplicated` keeps the
+    /// higher-priority row and UNIONS the badges of the ones it discards. A
+    /// recently opened article that is also bookmarked and also carries notes
+    /// is one row that says all three things, rather than the recents row
+    /// silently losing what the other sources knew about it.
+    var badges: HomeSearchBadges
     let canRevealInFinder: Bool
     let haystack: HomeSearchHaystack
 

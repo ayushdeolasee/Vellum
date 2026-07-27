@@ -75,7 +75,11 @@ private struct HangingLiveProvider: HomeSearchProvider {
 }
 
 private func stubItem(
-    id: String, identity: String, section: HomeSearchSection = .readLater, title: String
+    id: String,
+    identity: String,
+    section: HomeSearchSection = .readLater,
+    title: String,
+    badges: HomeSearchBadges = []
 ) -> HomeSearchItem {
     HomeSearchItem(
         id: id,
@@ -88,9 +92,30 @@ private func stubItem(
         detail: "",
         tooltip: identity,
         date: nil,
-        badges: [],
+        badges: badges,
         canRevealInFinder: false,
         haystack: HomeSearchHaystack(title: title, name: identity, location: identity))
+}
+
+/// A snapshot provider that answers instantly the first time and then parks
+/// forever. The only way to get an engine into a known-good state and *then*
+/// cancel a reload out from under it, which is what the welcome screen's
+/// `.task` does every time a pane is torn down mid-load.
+private struct StallsAfterFirstLoadProvider: HomeSearchProvider {
+    let id = "flip"
+    let displayName = "Flip"
+    let mode = HomeSearchProviderMode.snapshot
+    let calls: CallCounter
+
+    func items(matching _: String) async throws -> [HomeSearchItem] {
+        calls.increment()
+        if calls.value > 1 {
+            // Throws `CancellationError` the moment the surrounding task is
+            // cancelled.
+            try await Task.sleep(for: .seconds(30))
+        }
+        return [stubItem(id: "flip:1", identity: "flip", title: "Flip")]
+    }
 }
 
 // MARK: - Recents provider
@@ -299,6 +324,90 @@ struct LibraryDocumentsSearchProviderTests {
     }
 }
 
+// MARK: - Dedupe identity
+
+/// The cross-provider merge key. Getting this wrong is invisible in the happy
+/// path and ugly at the edges: too loose and two different pages become one
+/// row, too strict and the same article shows up three times because three
+/// sources spell its URL three ways.
+@Suite("Home search dedupe identity")
+struct HomeSearchIdentityTests {
+    private func web(_ url: String) -> String {
+        HomeSearchItemBuilder.identity(url, kind: .web)
+    }
+
+    @Test("One article spelled three ways is one identity")
+    func normalizesWebSpellings() {
+        // The recents list keeps what the user typed; the web library keeps the
+        // normalized form; a shared link arrives with a tracking tail and an
+        // anchor. All the same page.
+        let canonical = web("https://example.com/post")
+        #expect(web("example.com/post") == canonical)
+        #expect(web("https://EXAMPLE.com/post") == canonical)
+        #expect(web("https://example.com/post?utm_source=newsletter") == canonical)
+        #expect(web("https://example.com/post#introduction") == canonical)
+    }
+
+    /// The tempting cheap version — `locator.lowercased()` — folds these two,
+    /// and most servers treat them as different pages. A merge is destructive
+    /// (one of the rows stops being reachable at all), so the tie goes to
+    /// keeping them apart.
+    @Test("Paths that differ only in case stay two documents")
+    func keepsCaseSensitivePathsApart() {
+        #expect(web("https://example.com/Foo") != web("https://example.com/foo"))
+    }
+
+    @Test("File paths are verbatim, because case-sensitive volumes exist")
+    func fileIdentityIsVerbatim() {
+        #expect(HomeSearchItemBuilder.identity("/A/Paper.pdf", kind: .pdf) == "/A/Paper.pdf")
+        #expect(
+            HomeSearchItemBuilder.identity("/A/Paper.pdf", kind: .pdf)
+                != HomeSearchItemBuilder.identity("/a/paper.pdf", kind: .pdf))
+    }
+
+    /// Normalization throws on input it cannot parse. Falling back to the raw
+    /// locator can at worst show one page twice; it can never merge two pages,
+    /// which is the failure that loses data from the user's view.
+    @Test("Unparseable input falls back instead of throwing")
+    func unparseableFallsBack() {
+        // Empty, and a scheme the web pipeline refuses — both throw out of
+        // `WebUrl.normalize` and must come back as themselves rather than
+        // taking the corpus build down with them. (A blank identity is then
+        // dropped by `HomeSearchEngine.deduplicated`, which is the right end
+        // for a row nothing can open.)
+        #expect(web("") == "")
+        #expect(web("file:///docs/paper.pdf") == "file:///docs/paper.pdf")
+    }
+
+    @Test("A recent and a saved copy of the same article are one row end to end")
+    func recentAndSavedCollapse() async throws {
+        let engine = HomeSearchEngine(providers: [
+            RecentDocumentsSearchProvider(
+                load: { [recent(path: "example.com/post", kind: .web, title: "The Post")] },
+                resolvePath: { $0.pdfPath },
+                fileExists: { _ in false }),
+            SavedWebpagesSearchProvider(load: {
+                [
+                    WebLibraryEntry(
+                        url: "https://example.com/post?utm_source=newsletter",
+                        title: "The Post", pageCount: nil,
+                        savedAt: "2026-01-02T03:04:05.000Z", hasSnapshot: true)
+                ]
+            }),
+        ])
+        await engine.reload()
+
+        let corpus = await engine.corpus
+        let row = try #require(corpus.first)
+        #expect(corpus.count == 1)
+        // The recents row survives (freshest date, priority order) and inherits
+        // what only the web library knew.
+        #expect(row.section == .recents)
+        #expect(row.badges.contains(.saved))
+        #expect(row.badges.contains(.offline))
+    }
+}
+
 // MARK: - Engine
 
 @Suite("Home search engine")
@@ -438,6 +547,118 @@ struct HomeSearchEngineTests {
         _ = await task.value
 
         #expect(await engine.failures.isEmpty)
+    }
+
+    /// The identity is the merge key, so a blank one is not merely a useless
+    /// row — it is a row that swallows every OTHER blank-identity document in
+    /// the library, and whose target can only fail to open. Every source can
+    /// produce one (a corrupt recents record, a `meta.json` with no
+    /// `last_known_path`, a web entry with no URL), which is why the guard
+    /// lives in the engine rather than in the one provider that was known to
+    /// need it.
+    @Test("Items with no locator are dropped, not collapsed into one dead row")
+    func dropsBlankIdentitiesFromEverySource() async {
+        let engine = HomeSearchEngine(providers: [
+            StubProvider(id: "recents", displayName: "Recents", mode: .snapshot) { _ in
+                [
+                    stubItem(id: "recents:1", identity: "", section: .recents, title: "Ghost one"),
+                    stubItem(id: "recents:2", identity: "/a.pdf", section: .recents, title: "Real"),
+                ]
+            },
+            StubProvider(id: "webpages", displayName: "Saved", mode: .snapshot) { _ in
+                [stubItem(id: "webpages:1", identity: "   ", section: .webpages, title: "Ghost two")]
+            },
+        ])
+        await engine.reload()
+
+        let corpus = await engine.corpus
+        #expect(corpus.map(\.id) == ["recents:2"])
+    }
+
+    /// Each source knows something the others do not: only the web library
+    /// knows a page is bookmarked or has an offline snapshot, only the
+    /// documents directory knows a file carries notes. Keeping the
+    /// highest-priority row but discarding what the others knew would make the
+    /// Recents row of a saved, annotated article claim it is neither.
+    @Test("A row absorbs the badges of the duplicates it replaces")
+    func mergesBadgesAcrossSources() async throws {
+        let shared = "https://x.test/article"
+        let engine = HomeSearchEngine(providers: [
+            StubProvider(id: "recents", displayName: "Recents", mode: .snapshot) { _ in
+                [stubItem(id: "recents:1", identity: shared, section: .recents, title: "Article")]
+            },
+            StubProvider(id: "webpages", displayName: "Saved", mode: .snapshot) { _ in
+                [
+                    stubItem(
+                        id: "webpages:1", identity: shared, section: .webpages, title: "Article",
+                        badges: [.saved, .offline])
+                ]
+            },
+            StubProvider(id: "library", displayName: "Library", mode: .snapshot) { _ in
+                [
+                    stubItem(
+                        id: "library:1", identity: shared, section: .documents, title: "Article",
+                        badges: [.notes])
+                ]
+            },
+        ])
+        await engine.reload()
+
+        let corpus = await engine.corpus
+        let row = try #require(corpus.first)
+        #expect(corpus.count == 1)
+        // Still the recents row — dedupe priority is unchanged.
+        #expect(row.id == "recents:1")
+        #expect(row.section == .recents)
+        // …but it now says everything the discarded rows knew.
+        #expect(row.badges.contains(.saved))
+        #expect(row.badges.contains(.offline))
+        #expect(row.badges.contains(.notes))
+    }
+
+    /// A cancelled task group hands back whatever its children finished before
+    /// the cancellation propagated. Committing that would install a corpus with
+    /// documents silently missing AND record every unfinished source as broken
+    /// — so an abandoned load must change nothing at all.
+    @Test("A reload cancelled mid-flight leaves the previous corpus intact")
+    func cancelledReloadChangesNothing() async throws {
+        let engine = HomeSearchEngine(providers: [
+            StallsAfterFirstLoadProvider(calls: CallCounter())
+        ])
+        await engine.reload()
+        #expect(await engine.corpus.count == 1)
+
+        let task = Task { await engine.reload() }
+        // Let the provider reach its suspension point, so cancellation is
+        // observed INSIDE the task group rather than before it starts.
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+        await task.value
+
+        #expect(await engine.corpus.map(\.id) == ["flip:1"])
+        #expect(await engine.failures.isEmpty)
+    }
+
+    /// `reload()` speaks only for the snapshot providers and `results()` only
+    /// for the live ones. When both used to assign the whole failure list, a
+    /// corpus rebuild landing after a live query would erase a genuine
+    /// read-later outage and the warning would vanish from under the results.
+    @Test("Rebuilding the corpus does not erase a live source's outage")
+    func snapshotReloadKeepsLiveFailure() async {
+        let engine = HomeSearchEngine(providers: [
+            StubProvider(id: "local", displayName: "Local", mode: .snapshot) { _ in
+                [stubItem(id: "local:1", identity: "a", title: "Alpha")]
+            },
+            StubProvider(id: "later", displayName: "Read Later", mode: .live) { _ in
+                throw StubError()
+            },
+        ])
+        await engine.reload()
+        _ = await engine.results(query: "alpha", now: Date())
+        #expect(await engine.failures.count == 1)
+
+        await engine.reload()
+        #expect(await engine.failures.first?.hasPrefix("Read Later: ") == true)
     }
 
     @Test("An engine that has loaded nothing still answers cleanly")

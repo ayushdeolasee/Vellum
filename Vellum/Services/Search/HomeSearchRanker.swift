@@ -8,17 +8,28 @@ import Foundation
 // pinned by unit tests (`HomeSearchRankerTests`) rather than by clicking around
 // the app, and a future read-later provider inherits the same ranking for free.
 
-/// The kind filter the browse toolbar offers.
-enum HomeSearchKindFilter: Int, Hashable, Sendable, CaseIterable {
+/// The facet filter the browse toolbar offers.
+///
+/// Three of these narrow by KIND and one narrows by STATE, which is a deliberate
+/// mix rather than an oversight: from the reader's side "PDFs", "Webpages" and
+/// "Saved" are all just answers to "which part of my library do I mean?", and
+/// splitting them across two control rows would cost more screen than the
+/// distinction is worth. `accepts` is the single place that knows the difference.
+enum HomeSearchFilter: Int, Hashable, Sendable, CaseIterable {
     case all
     case documents
     case webpages
+    /// Pages the user explicitly bookmarked. Distinct from `.webpages`, which
+    /// also covers pages merely visited or annotated — "Saved" is the shelf
+    /// things were deliberately put on, so it is worth reaching in one click.
+    case saved
 
     var label: String {
         switch self {
         case .all: "All"
         case .documents: "PDFs"
         case .webpages: "Webpages"
+        case .saved: "Saved"
         }
     }
 
@@ -27,6 +38,11 @@ enum HomeSearchKindFilter: Int, Hashable, Sendable, CaseIterable {
         case .all: true
         case .documents: item.kind == .pdf
         case .webpages: item.kind == .web
+        // Reads the BADGE, not the section: dedupe can surface a saved page
+        // under Recents, and `HomeSearchEngine.deduplicated` unions the badges
+        // of every source describing the same document precisely so that "is
+        // this saved?" stays answerable from whichever row survived.
+        case .saved: item.badges.contains(.saved)
         }
     }
 }
@@ -225,7 +241,7 @@ enum HomeSearchRanker {
     static func results(
         corpus: [HomeSearchItem],
         query: String,
-        filter: HomeSearchKindFilter = .all,
+        filter: HomeSearchFilter = .all,
         sort: HomeSearchSortOrder = .recent,
         now: Date = Date(),
         limit: Int = 200

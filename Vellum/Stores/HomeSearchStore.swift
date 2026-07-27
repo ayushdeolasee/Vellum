@@ -10,6 +10,27 @@ import Observation
 // that and SwiftUI: it debounces, it guards against out-of-order results, and
 // it owns selection. Nothing here blocks the main thread.
 
+/// A way of forgetting a result from the home screen. Named rather than
+/// inferred from the row's section, because one row can support both.
+enum HomeSearchRemoval: Hashable, Sendable {
+    /// Drop it from the recently-opened list. The document itself, its notes
+    /// and its saved copy are all untouched.
+    case recent
+    /// Un-save the webpage. Its annotations survive — this is the same
+    /// "Remove from Saved" the previous welcome screen offered.
+    case saved
+
+    /// Menu wording. Both are destructive-looking but neither deletes anything
+    /// the user cannot get back by opening the document again, so the labels
+    /// say what leaves rather than what is destroyed.
+    var label: String {
+        switch self {
+        case .recent: "Remove from Recent"
+        case .saved: "Remove from Saved"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class HomeSearchStore {
@@ -25,7 +46,7 @@ final class HomeSearchStore {
     // MARK: - User-controlled state
 
     var query = ""
-    var filter: HomeSearchKindFilter = .all
+    var filter: HomeSearchFilter = .all
     var sort: HomeSearchSortOrder = .recent
     /// The keyboard-selected row: a `HomeSearchItem.id`, or `linkRowId`.
     var selectedId: String?
@@ -88,7 +109,7 @@ final class HomeSearchStore {
     /// automatic cancellation, instead of three ad-hoc `onChange` tasks racing.
     struct RefreshKey: Equatable {
         var query: String
-        var filter: HomeSearchKindFilter
+        var filter: HomeSearchFilter
         var sort: HomeSearchSortOrder
     }
 
@@ -167,36 +188,65 @@ final class HomeSearchStore {
         return true
     }
 
+    /// Undo everything that is currently narrowing the list.
+    ///
+    /// The no-results state offers this as one button because the user cannot
+    /// generally tell which of the two constraints emptied their screen — a
+    /// query that matches nothing and a filter that excludes everything look
+    /// identical from the outside. Making them clear the query, notice nothing
+    /// changed, and then find the filter chip is a puzzle, not an interface.
+    func resetSearch() {
+        query = ""
+        filter = .all
+        selectedId = nil
+    }
+
     // MARK: - Mutating the library
 
     /// Forget a result. Recents drop out of the recents list; saved webpages
     /// are un-saved (their annotations survive, exactly as the old welcome
     /// screen's "Remove from Saved" did). Library documents are not removable
     /// here — deleting a document's notes belongs to Settings ▸ Storage.
-    func remove(_ item: HomeSearchItem) async {
-        switch item.section {
-        case .recents:
+    func remove(_ item: HomeSearchItem, from target: HomeSearchRemoval) async {
+        switch target {
+        case .recent:
             if case .file(_, let recordedPath) = item.target {
                 _ = RecentFilesService.remove(path: recordedPath)
             } else {
                 _ = RecentFilesService.remove(path: item.target.openKey)
             }
-        case .webpages:
+        case .saved:
             let url = item.target.openKey
             // Blocking disk work — same off-main hop `WebSessionBackend` uses.
             await Task.detached(priority: .userInitiated) {
                 try? WebLibrary.removeSaved(rawUrl: url)
             }.value
-        case .documents, .readLater:
-            return
         }
         if selectedId == item.id { selectedId = nil }
         await load()
     }
 
-    /// Can this result be removed from the home screen? Drives whether the
-    /// context menu offers it.
-    func canRemove(_ item: HomeSearchItem) -> Bool {
-        item.section == .recents || item.section == .webpages
+    /// Which "forget this" actions apply to a result, most relevant first.
+    ///
+    /// A row can legitimately offer BOTH. Dedupe merges a page that is in the
+    /// recents list and also bookmarked into a single Recents row carrying the
+    /// saved badge, and those are two genuinely different intentions: "stop
+    /// showing me this at the top" versus "take it off my shelf". Offering only
+    /// the one implied by the section would make un-saving a recently read
+    /// article impossible from this screen.
+    ///
+    /// The ORDER follows the active filter, which is the same idea PR #75 got
+    /// right: someone who has narrowed to Saved and reaches for a destructive
+    /// action means un-save, whatever else the row happens to be, so that lands
+    /// first. Everywhere else recency is the facet the home screen is about, so
+    /// "Remove from Recent" leads.
+    func removalOptions(for item: HomeSearchItem) -> [HomeSearchRemoval] {
+        var options: [HomeSearchRemoval] = []
+        if item.section == .recents { options.append(.recent) }
+        // Keyed off the badge, not the section: after dedupe a saved page can
+        // surface under Recents, and it is still un-savable there.
+        if item.badges.contains(.saved) { options.append(.saved) }
+        if filter == .saved { options.reverse() }
+        return options
     }
 }

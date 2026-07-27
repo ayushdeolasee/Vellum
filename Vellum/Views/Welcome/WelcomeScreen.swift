@@ -67,6 +67,20 @@ struct WelcomeScreen: View {
             // would fight over first responder.
             if isPaneFocused { searchFocused = true }
         }
+        // Re-index when the app comes back to the front. The corpus is a
+        // snapshot of three on-disk sources, and all three can change while
+        // Vellum is in the background — the other pane opens a document, the
+        // Storage pane deletes one, a file is moved or deleted in the Finder.
+        // Without this the home screen keeps confidently offering rows that no
+        // longer exist until the pane is rebuilt. The reload is off the main
+        // thread on `HomeSearchEngine` and leaves the current results on screen
+        // while it runs, so the cost of being wrong here is far higher than the
+        // cost of the walk.
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            Task { await store.load() }
+        }
         .background {
             // ⌘F focuses the search field here. The menu's Find… command and the
             // window's key monitor both bail out when there is no document open
@@ -206,7 +220,7 @@ struct WelcomeScreen: View {
 
     private var controlBar: some View {
         HStack(spacing: 8) {
-            ForEach(HomeSearchKindFilter.allCases, id: \.self) { option in
+            ForEach(HomeSearchFilter.allCases, id: \.self) { option in
                 HomeFilterChip(label: option.label, isSelected: store.filter == option) {
                     store.filter = option
                     // Clicking a chip moves first responder to the button; hand
@@ -277,7 +291,7 @@ struct WelcomeScreen: View {
                                     isSelected: store.selectedId == item.id,
                                     open: { open(item) },
                                     reveal: revealAction(for: item),
-                                    remove: removeAction(for: item)
+                                    removals: removalActions(for: item)
                                 )
                                 .id(item.id)
                             }
@@ -338,15 +352,20 @@ struct WelcomeScreen: View {
                     .foregroundStyle(palette.mutedForeground)
             }
 
-            if store.filter != .all {
+            // One button that undoes BOTH constraints, because from the outside
+            // a query that matches nothing and a filter that excludes
+            // everything produce the identical blank screen — asking the user
+            // to work out which one to lift is a puzzle. The label names
+            // whichever is the likelier culprit.
+            if store.isSearching || store.filter != .all {
                 TextButton(variant: .secondary, size: .sm) {
-                    store.filter = .all
+                    store.resetSearch()
                     focusSearchField()
                 } label: {
-                    Text("Search everything")
+                    Text(store.isSearching ? "Clear search" : "Search everything")
                 }
                 .padding(.top, 6)
-                .accessibilityIdentifier("welcome.clearFilter")
+                .accessibilityIdentifier("welcome.resetSearch")
             }
 
             // A source that failed to load has silently narrowed the search —
@@ -529,9 +548,16 @@ struct WelcomeScreen: View {
         return { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     }
 
-    private func removeAction(for item: HomeSearchItem) -> (() -> Void)? {
-        guard store.canRemove(item) else { return nil }
-        return { Task { await store.remove(item) } }
+    private func removalActions(
+        for item: HomeSearchItem
+    ) -> [(removal: HomeSearchRemoval, action: () -> Void)] {
+        store.removalOptions(for: item).map { removal in
+            // The closure is annotated rather than inferred: a bare
+            // `{ Task { … } }` reads as returning the Task, which makes the
+            // `Task.init` overload set ambiguous.
+            let action: () -> Void = { Task { await store.remove(item, from: removal) } }
+            return (removal, action)
+        }
     }
 
     private func openDocuments() {

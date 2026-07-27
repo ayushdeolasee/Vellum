@@ -21,10 +21,24 @@ actor HomeSearchEngine {
     /// "still loading" apart from "genuinely nothing here" and not flash an
     /// empty state on the way in.
     private(set) var hasLoaded = false
-    /// Sources that failed, as "<name>: <reason>" — surfaced in the no-results
-    /// state so a broken read-later connection is visible rather than silently
-    /// narrowing the user's search.
-    private(set) var failures: [String] = []
+    /// Sources that failed, keyed by provider id.
+    ///
+    /// Keyed rather than a flat array so the two writers cannot clobber each
+    /// other: `reload()` only ever speaks for the snapshot providers and
+    /// `results()` only ever speaks for the live ones, but both used to assign
+    /// the whole list, so a corpus reload landing while a live query was in
+    /// flight could erase a genuine read-later outage (or resurrect a cleared
+    /// one). Keying also retires the `hasPrefix("<name>: ")` string surgery
+    /// that clearing a recovered live source previously needed.
+    private var failuresByProvider: [String: String] = [:]
+
+    /// Failed sources as "<name>: <reason>" — surfaced in the no-results state
+    /// so a broken read-later connection is visible rather than silently
+    /// narrowing the user's search. Sorted by provider id so the banner order
+    /// is stable between passes.
+    var failures: [String] {
+        failuresByProvider.keys.sorted().compactMap { failuresByProvider[$0] }
+    }
 
     init(providers: [any HomeSearchProvider] = HomeSearchEngine.defaultProviders()) {
         self.providers = providers
@@ -49,7 +63,7 @@ actor HomeSearchEngine {
     func reload() async {
         let snapshotProviders = providers.enumerated().filter { $0.element.mode == .snapshot }
         var loaded: [Int: [HomeSearchItem]] = [:]
-        var problems: [Int: String] = [:]
+        var problems: [Int: (id: String, message: String)] = [:]
 
         await withTaskGroup(of: (Int, [HomeSearchItem], String?).self) { group in
             for (index, provider) in snapshotProviders {
@@ -63,12 +77,27 @@ actor HomeSearchEngine {
             }
             for await (index, items, problem) in group {
                 loaded[index] = items
-                if let problem { problems[index] = problem }
+                if let problem { problems[index] = (providers[index].id, problem) }
             }
         }
 
+        // A load abandoned mid-flight must change NOTHING. The same reasoning
+        // that keeps a cancelled live query out of `failures` applies here, and
+        // then some: a cancelled task group hands back whatever its children
+        // managed before the cancellation propagated, so committing it would
+        // both install a half-built corpus (documents silently missing from
+        // search) and record every unfinished source as broken. The screen's
+        // `.task` is torn down on every pane change, so this is routine, not
+        // exotic. Keeping the previous corpus is strictly better than a partial
+        // one — the caller that cancelled us is already starting a fresh load.
+        guard !Task.isCancelled else { return }
+
         corpus = Self.deduplicated(loaded.keys.sorted().flatMap { loaded[$0] ?? [] })
-        failures = problems.keys.sorted().compactMap { problems[$0] }
+        // Replace only what the snapshot providers have to say. A live
+        // provider's failure, recorded by `results()`, is none of this pass's
+        // business and must survive a corpus rebuild.
+        for (_, provider) in snapshotProviders { failuresByProvider[provider.id] = nil }
+        for (_, problem) in problems { failuresByProvider[problem.id] = problem.message }
         hasLoaded = true
     }
 
@@ -82,7 +111,7 @@ actor HomeSearchEngine {
     /// round trip just to render the browse list.
     func results(
         query: String,
-        filter: HomeSearchKindFilter = .all,
+        filter: HomeSearchFilter = .all,
         sort: HomeSearchSortOrder = .recent,
         now: Date = Date(),
         limit: Int = 200
@@ -97,7 +126,7 @@ actor HomeSearchEngine {
                     // Local wins: an article already saved on this Mac should
                     // open the offline copy, not re-fetch it.
                     searchable = Self.deduplicated(searchable + remote)
-                    failures.removeAll { $0.hasPrefix("\(provider.displayName): ") }
+                    failuresByProvider[provider.id] = nil
                 } catch {
                     // A pass abandoned by the debounce is NOT a broken source.
                     // `HomeSearchStore` drives ranking from `.task(id:)`, which
@@ -109,8 +138,8 @@ actor HomeSearchEngine {
                     // almost every word the user types. Ask the task, not the
                     // error, so both spellings are covered.
                     if Task.isCancelled { break }
-                    let message = "\(provider.displayName): \(error.localizedDescription)"
-                    if !failures.contains(message) { failures.append(message) }
+                    failuresByProvider[provider.id] =
+                        "\(provider.displayName): \(error.localizedDescription)"
                 }
             }
         }
@@ -119,12 +148,46 @@ actor HomeSearchEngine {
             corpus: searchable, query: trimmed, filter: filter, sort: sort, now: now, limit: limit)
     }
 
-    /// Collapse items describing the same document, keeping the first
-    /// occurrence — which, given `providers` is in priority order, is the
-    /// highest-priority source's version of it.
+    /// Collapse items describing the same document into one row.
+    ///
+    /// The surviving row is the FIRST occurrence — which, given `providers` is
+    /// in priority order, is the highest-priority source's version of it: the
+    /// recents entry, with its freshest date and its re-resolved path for a
+    /// moved file. But the discarded duplicates are not simply thrown away,
+    /// because each source knows something the others do not. The web library
+    /// is the only source that knows a page is bookmarked or has an offline
+    /// snapshot; the documents directory is the only source that knows a file
+    /// carries notes. So the survivor absorbs their badges, and a recently read
+    /// article that is also saved, also offline and also annotated is one row
+    /// that says all four things instead of a bare Recents row that says none.
+    ///
+    /// Items with a blank identity are DROPPED rather than merged. A blank
+    /// locator is reachable from every source — a corrupt recents record with
+    /// an empty `pdfPath`, a `meta.json` with no `last_known_path`
+    /// (`StorageInventory` guards the same case), a web entry with no URL — and
+    /// because the identity is the merge key, every one of them would otherwise
+    /// collapse into a single row, hiding the rest of the user's back
+    /// catalogue behind one entry whose target is `.file(path: "")` and can
+    /// therefore only fail to open. Guarding here rather than in each provider
+    /// is what makes that true for all of them at once, including any read-later
+    /// source added later.
     static func deduplicated(_ items: [HomeSearchItem]) -> [HomeSearchItem] {
-        var seen = Set<String>()
-        seen.reserveCapacity(items.count)
-        return items.filter { seen.insert($0.identity).inserted }
+        var order: [String] = []
+        var merged: [String: HomeSearchItem] = [:]
+        order.reserveCapacity(items.count)
+        merged.reserveCapacity(items.count)
+
+        for item in items {
+            guard !item.identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            if merged[item.identity] == nil {
+                merged[item.identity] = item
+                order.append(item.identity)
+            } else {
+                merged[item.identity]?.badges.formUnion(item.badges)
+            }
+        }
+        return order.compactMap { merged[$0] }
     }
 }

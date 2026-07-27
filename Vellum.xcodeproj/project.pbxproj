@@ -131,6 +131,7 @@
 		D5F586434585D55B08108B40 /* StorageSettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB83E31DAAFDC48C15F2F130 /* StorageSettingsTab.swift */; };
 		D657C92463B102EF093DC4CB /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */; };
 		D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */ = {isa = PBXBuildFile; fileRef = 3E954582457ABFF5574EC93C /* tool-descriptions.md */; };
+		D95609F2F3FB73070B563A14 /* HomeSearchStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */; };
 		DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 0F9E9D97558DCF004997C26D /* SwiftMath */; };
 		E0C67279AC30EA86F477747B /* KaTeX_AMS-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 920042E47739D0327A193A1C /* KaTeX_AMS-Regular.woff2 */; };
 		E4EC8CEAAD8788E622D56A58 /* AiFileAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */; };
@@ -252,6 +253,7 @@
 		95809D33AB6DF0D9BCF1BE88 /* VellumBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumBundle.swift; sourceTree = "<group>"; };
 		96768879872A93B8FD39C342 /* OpenRouterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterClient.swift; sourceTree = "<group>"; };
 		96B5040705B954B3A0A26A2E /* KaTeX_Fraktur-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Bold.woff2"; sourceTree = "<group>"; };
+		9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchStoreTests.swift; sourceTree = "<group>"; };
 		9A1D02EF244DA61F5397D68B /* PdfSelectionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSelectionBridge.swift; sourceTree = "<group>"; };
 		9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebProxyUrlTests.swift; sourceTree = "<group>"; };
 		9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthLoopbackServer.swift; sourceTree = "<group>"; };
@@ -405,6 +407,7 @@
 				5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */,
 				3F26F0ACC6F7B4DFEA39EB78 /* HomeSearchEngineTests.swift */,
 				BF3639A904AFB66CC400B4A4 /* HomeSearchRankerTests.swift */,
+				9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */,
 				6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */,
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
@@ -930,6 +933,7 @@
 				831CF3958ED8C1AF87C6319A /* DocumentsRelocationTests.swift in Sources */,
 				F5C06F91CFD5CF5D40BC0365 /* HomeSearchEngineTests.swift in Sources */,
 				1B5F21D31EC3CF8C1A2AB3C7 /* HomeSearchRankerTests.swift in Sources */,
+				D95609F2F3FB73070B563A14 /* HomeSearchStoreTests.swift in Sources */,
 				8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */,
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,

@@ -203,13 +203,12 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
             // DocumentInfo.pdfPath is the generic document URI, not a file path.
             let locator = meta.lastKnownPath
             // A meta.json can carry a blank last_known_path (StorageInventory
-            // guards the same case), and such an entry is worse than useless
-            // here: the locator is the dedupe identity, so EVERY blank-path
-            // document collapses into a single row via
-            // `HomeSearchEngine.deduplicated`, hiding all but one of them —
-            // and the survivor is an untitled row whose target is
-            // `.file(path: "")`, so clicking it can only fail. Nothing is
-            // searchable or openable without a locator, so drop it.
+            // guards the same case). Nothing is searchable or openable without
+            // a locator, so there is no item to build. `HomeSearchEngine`
+            // drops blank identities too — that is the guarantee that covers
+            // every source — but this is the one provider whose upstream data
+            // is known to contain them, so it is cheaper to never build the
+            // item than to build it and have the engine discard it.
             guard !locator.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
@@ -258,12 +257,26 @@ enum HomeSearchItemBuilder {
         return trimmed.isEmpty ? fallback : trimmed
     }
 
-    /// The cross-provider dedupe key. URLs are lowercased (hosts are
-    /// case-insensitive and the two web sources can disagree on casing); file
-    /// paths are left verbatim, because two paths differing only in case are
-    /// two different documents on a case-sensitive volume.
+    /// The cross-provider dedupe key.
+    ///
+    /// URLs go through `WebUrl.normalize` — the same canonicalization that
+    /// produces the web store's on-disk key — so that the three spellings of
+    /// one article the sources can disagree about all collapse to one row:
+    /// the recents list keeps whatever the user typed ("example.com/post"),
+    /// the web library keeps the normalized form, and a link arriving with a
+    /// `?utm_source=…` tail or a `#section` fragment is the same page again.
+    /// Lowercasing the whole URL (the obvious cheap alternative) is actively
+    /// wrong: it folds `/Foo` and `/foo`, which most servers treat as two
+    /// different pages, while still failing to reconcile the scheme and the
+    /// tracking parameters. Normalization throws on genuinely unparseable
+    /// input, in which case the raw locator is its own identity — worst case
+    /// two rows for one page, never two pages merged into one.
+    ///
+    /// File paths are left verbatim: two paths differing only in case are two
+    /// different documents on a case-sensitive volume.
     static func identity(_ locator: String, kind: DocumentKind) -> String {
-        kind == .web ? locator.lowercased() : locator
+        guard kind == .web else { return locator }
+        return (try? WebUrl.normalize(locator)) ?? locator.lowercased()
     }
 
     /// Host of a URL, for the "name" haystack field — typing "arxiv" should

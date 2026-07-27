@@ -20,7 +20,10 @@ struct HomeResultRow: View {
     let isSelected: Bool
     let open: () -> Void
     let reveal: (() -> Void)?
-    let remove: (() -> Void)?
+    /// Every "forget this" action that applies, in menu order. A row can offer
+    /// more than one — a saved article that is also a recent can be dropped
+    /// from either shelf independently.
+    let removals: [(removal: HomeSearchRemoval, action: () -> Void)]
 
     @Environment(\.palette) private var palette
     @State private var hovering = false
@@ -79,11 +82,11 @@ struct HomeResultRow: View {
             if let reveal {
                 Button("Show in Finder") { reveal() }
             }
-            if let remove {
+            if !removals.isEmpty {
                 Divider()
-                Button(
-                    item.section == .webpages ? "Remove from Saved" : "Remove from Recent",
-                    role: .destructive, action: remove)
+                ForEach(removals, id: \.removal) { entry in
+                    Button(entry.removal.label, role: .destructive, action: entry.action)
+                }
             }
         }
     }

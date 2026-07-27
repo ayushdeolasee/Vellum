@@ -49,7 +49,7 @@ private func daysAgo(_ days: Double) -> Date { now.addingTimeInterval(-days * 86
 private func rank(
     _ corpus: [HomeSearchItem],
     _ query: String,
-    filter: HomeSearchKindFilter = .all,
+    filter: HomeSearchFilter = .all,
     sort: HomeSearchSortOrder = .recent,
     limit: Int = 200
 ) -> [HomeSearchItem] {
@@ -335,6 +335,35 @@ struct HomeSearchSectionTests {
         #expect(rank(mixed, "", filter: .webpages).map(\.id) == ["w1"])
         #expect(rank(mixed, "", filter: .documents).map(\.id).sorted() == ["d1", "r1"])
         #expect(rank(mixed, "", filter: .all).count == 3)
+    }
+
+    /// "Saved" narrows by STATE, not kind, and it has to read the badge rather
+    /// than the section: `HomeSearchEngine.deduplicated` merges a bookmarked
+    /// page that is also a recent into a RECENTS row carrying the saved badge,
+    /// and that row must still be reachable under this filter — otherwise
+    /// reading an article makes it disappear from your saved shelf.
+    @Test("The Saved filter follows the badge, wherever the row ended up")
+    func savedFilter() {
+        let corpus = [
+            item(
+                id: "r1", section: .recents, kind: .web, title: "Read And Saved",
+                name: "a.test", location: "https://a.test/x", date: daysAgo(1),
+                badges: [.saved, .offline]),
+            item(
+                id: "w1", section: .webpages, kind: .web, title: "Only Saved",
+                name: "b.test", location: "https://b.test/y", date: daysAgo(2),
+                badges: [.saved]),
+            item(
+                id: "w2", section: .webpages, kind: .web, title: "Merely Annotated",
+                name: "c.test", location: "https://c.test/z", date: daysAgo(3),
+                badges: [.notes]),
+            item(id: "d1", section: .documents, title: "A PDF", date: daysAgo(4)),
+        ]
+        #expect(rank(corpus, "", filter: .saved).map(\.id).sorted() == ["r1", "w1"])
+        // …and it composes with a query rather than replacing it.
+        #expect(rank(corpus, "saved", filter: .saved).map(\.id) == ["r1", "w1"])
+        // A webpage nobody bookmarked is not "saved" just because it is a page.
+        #expect(!rank(corpus, "", filter: .saved).contains { $0.id == "w2" })
     }
 
     @Test("Browse sorting honours the sort order, with undated items last")
