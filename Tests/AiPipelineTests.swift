@@ -256,11 +256,84 @@ final class AiPipelineTests: XCTestCase {
     // MARK: - §5 OpenAI output budget
 
     func testOpenAIOutputBudgetScalesWithEffort() {
-        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "minimal"), 4096)
-        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "low"), 8192)
-        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "medium"), 16384)
-        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "high"), 32768)
-        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "unknown"), 4096)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "none", reasoning: true), 4096)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "minimal", reasoning: true), 4096)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "low", reasoning: true), 8192)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "medium", reasoning: true), 16384)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "high", reasoning: true), 32768)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "xhigh", reasoning: true), 65536)
+    }
+
+    /// A non-reasoning model spends no tokens thinking, so its cap is purely
+    /// about answer length and stays flat whatever the thinking mode says.
+    func testOpenAIOutputBudgetIsFlatForNonReasoningModels() {
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: nil, reasoning: false), 4096)
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: "high", reasoning: false), 4096)
+    }
+
+    /// Auto omits the effort, so the server picks — and current models default
+    /// well above "minimal". Budgeting Auto at the old 4096 would swap the #94
+    /// error for a truncated answer, so it has to assume mid-range work.
+    func testOpenAIAutoGetsAMidRangeBudgetNotTheMinimalOne() {
+        XCTAssertEqual(OpenAIClient.maxOutputTokens(forEffort: nil, reasoning: true), 16384)
+    }
+
+    // MARK: - §5 OpenAI reasoning effort (#94)
+
+    /// The bug: `.auto` was rewritten to "minimal" before being sent, so "Auto"
+    /// never meant "let the server decide". gpt-5.5 rejects "minimal" outright,
+    /// which made the model unusable at the default Thinking setting.
+    func testAutoOmitsTheEffortFieldEntirely() {
+        for model in ["gpt-5.5", "gpt-5", "gpt-5.1", "gpt-5-pro", "gpt-4o"] {
+            XCTAssertNil(
+                OpenAIClient.supportedReasoningEffort(model: model, requested: nil),
+                "Auto must send no effort for \(model)")
+        }
+    }
+
+    /// The values are quoted from the API's own rejection message.
+    func testGpt55RejectsMinimalAndOffersNoneAndXhigh() {
+        let supported = OpenAIClient.supportedEfforts(model: "gpt-5.5")
+        XCTAssertEqual(supported, ["none", "low", "medium", "high", "xhigh"])
+        XCTAssertFalse(supported.contains("minimal"))
+    }
+
+    /// Instant asks for as little thinking as possible. gpt-5.5 has no
+    /// "minimal", so it resolves *down* to "none" rather than up to "low".
+    func testInstantResolvesDownwardOnGpt55() {
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.5", requested: "minimal"), "none")
+    }
+
+    /// The regression guard that matters most: an OpenAI model nobody has taught
+    /// this code about must send nothing rather than fall through to a guessed
+    /// value. The old `return requested` fall-through is exactly how gpt-5.5
+    /// broke, and the next model would have broken the same way.
+    func testUnknownGpt5VariantOmitsRatherThanGuessing() {
+        XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-5.9-turbo", requested: "minimal"))
+        XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-6", requested: "high"))
+    }
+
+    func testKnownFamiliesKeepTheirEffortVocabularies() {
+        // Classic gpt-5 still takes "minimal".
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5-mini", requested: "minimal"), "minimal")
+        // gpt-5.1 has no "minimal"; nearest rung is "low".
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.1", requested: "minimal"), "low")
+        // The -pro variants accept only "high", whatever was asked for.
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5-pro", requested: "low"), "high")
+        // Non-reasoning models never get the field.
+        XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-4o", requested: "high"))
+    }
+
+    /// Explicit choices a model does support must survive untouched.
+    func testExplicitSupportedEffortsArePreserved() {
+        for effort in ["low", "medium", "high", "xhigh"] {
+            XCTAssertEqual(
+                OpenAIClient.supportedReasoningEffort(model: "gpt-5.5", requested: effort), effort)
+        }
     }
 
     func testOpenAIIncompleteMessageNamesTheLimit() {
