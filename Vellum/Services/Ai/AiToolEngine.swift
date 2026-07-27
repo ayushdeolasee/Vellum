@@ -39,11 +39,9 @@ final class AiToolEngine {
     private var writeCount = 0
     private var readCount = 0
 
-    /// One-line summaries of what ran, for the "Actions:" list under the reply.
-    /// Write tools keep their full result line; read tools get a compact
-    /// summary so a multi-KB search/page-text payload (which only the model
-    /// needs) never lands in the visible chat bubble.
-    private(set) var displayActions: [String] = []
+    /// Structured, compact summaries of what ran. Raw tool results remain
+    /// model-only; the transcript receives only short excerpts and page locators.
+    private(set) var displayActions: [AiToolSummary] = []
 
     init(store: AiStore, app: AppStore, annotations: AnnotationStore) {
         self.store = store
@@ -69,28 +67,15 @@ final class AiToolEngine {
             let result = try await execute(action)
             if isRead {
                 readCount += 1
-                if let summary = readSummary(action) { displayActions.append(summary) }
             } else {
                 writeCount += 1
-                displayActions.append(result)
+            }
+            if let summary = AiToolSummary.make(action: action, result: result) {
+                displayActions.append(summary)
             }
             return result
         } catch {
             return "Action failed: \(String(describing: error))"
-        }
-    }
-
-    /// Compact user-facing line for a read tool (the full result goes only to
-    /// the model).
-    private func readSummary(_ action: AiToolAction) -> String? {
-        switch action.tool {
-        case "searchDocument":
-            let query = (action.args.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return query.isEmpty ? nil : "Searched the document for “\(query)”."
-        case "getPageText":
-            return "Read page \(clampPage(action.args.pageNumber))."
-        default:
-            return nil
         }
     }
 

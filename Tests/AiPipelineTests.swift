@@ -13,21 +13,22 @@ final class AiPipelineTests: XCTestCase {
     // MARK: - §1 Retrieval persistence
 
     /// Raw tool output carries a unique marker; the persisted assistant content
-    /// is composed from compact receipts, so the marker must never survive into
-    /// the message — or, transitively, into the next request's prompt.
+    /// is kept separate from compact summaries, so the marker must never survive
+    /// into the message — or, transitively, into the next request's prompt.
     func testRawRetrievalOutputCannotReachTheNextPrompt() {
         let marker = "UNIQUE-RETRIEVAL-MARKER-93b1f2"
         // What the tool loop saw (transient, provider-side only):
         let rawToolOutput = "Page 20:\nlorem ipsum \(marker) dolor sit amet"
         XCTAssertTrue(rawToolOutput.contains(marker), "fixture sanity")
 
-        // What the store persists: reply + compact receipts.
+        // What the store persists as the answer (structured summaries live on
+        // the message separately).
         let persisted = AiStore.composeAssistantContent(
             reply: "Page 20 discusses the marker experiment.",
-            receipts: ["Read page 20.", "Searched the document for \"marker\"."]
+            receipts: [AiToolSummary(title: "Read page 20", destinationPage: 20)]
         )
         XCTAssertFalse(persisted.contains(marker))
-        XCTAssertTrue(persisted.contains("Read page 20."))
+        XCTAssertEqual(persisted, "Page 20 discusses the marker experiment.")
 
         // And the next turn's conversation block (built from persisted
         // messages) cannot resend it.

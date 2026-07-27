@@ -176,6 +176,10 @@ struct AiPanel: View {
             messageBubble(message)
 
             if message.role == .assistant, !message.content.isEmpty {
+                let summaries = message.displayToolSummaries
+                if summaries.isEmpty == false {
+                    toolSummaries(summaries)
+                }
                 messageActions(message)
             }
         }
@@ -187,7 +191,7 @@ struct AiPanel: View {
         Group {
             if message.role == .assistant {
                 SelectableMessageText(
-                    content: message.content,
+                    content: message.displayContent,
                     color: palette.foreground,
                     secondary: palette.mutedForeground,
                     onQuote: { text in
@@ -200,14 +204,17 @@ struct AiPanel: View {
                     onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
-                MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
+                MarkdownMessage(content: message.displayContent, textColor: palette.primaryForeground)
                     .font(.system(size: 14))
                     .foregroundStyle(palette.primaryForeground)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: 272, alignment: .leading)
+        .frame(
+            maxWidth: message.role == .assistant ? .infinity : 360,
+            alignment: message.role == .user ? .trailing : .leading
+        )
         .background(
             message.role == .user
                 ? AnyShapeStyle(.tint)
@@ -220,23 +227,42 @@ struct AiPanel: View {
         ))
     }
 
+    private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sources & actions")
+                .font(.caption)
+                .foregroundStyle(palette.mutedForeground)
+                .padding(.horizontal, 4)
+
+            ForEach(summaries) { summary in
+                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources and actions")
+    }
+
     /// Copy / Quote / Add-as-note row under each assistant reply.
     private func messageActions(_ message: AiMessage) -> some View {
         HStack(spacing: 2) {
-            IconButton(help: "Copy", action: { copyToPasteboard(message.content) }) {
+            IconButton(help: "Copy answer", action: { copyToPasteboard(message.displayContent) }) {
                 Image(systemName: "doc.on.doc").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.copy")
 
             IconButton(help: "Quote in reply", action: {
-                aiStore.addReference(AiReference(kind: .quote(text: message.content, messageId: message.id)))
+                aiStore.addReference(AiReference(kind: .quote(
+                    text: message.displayContent,
+                    messageId: message.id
+                )))
             }) {
                 Image(systemName: "quote.bubble").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.quote")
 
             IconButton(help: "Add as note — click on the page to place it", action: {
-                appStore.beginNoteWithContent(message.content)
+                appStore.beginNoteWithContent(message.displayContent)
             }) {
                 Image(systemName: "note.text.badge.plus").font(.system(size: 12))
             }

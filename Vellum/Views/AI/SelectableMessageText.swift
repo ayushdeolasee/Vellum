@@ -59,9 +59,15 @@ struct SelectableMessageText: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MessageContainerView, context: Context) -> CGSize? {
-        let width = proposal.width ?? 248
-        let clamped = min(max(width, 80), 248)
+        let clamped = Self.resolvedWidth(proposal.width)
         return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
+    }
+
+    /// The answer follows the inspector's proposed width instead of retaining
+    /// the old 248-point ceiling. The floor prevents pathological text layout
+    /// if AppKit briefly proposes a near-zero width during a resize.
+    static func resolvedWidth(_ proposed: CGFloat?) -> CGFloat {
+        max(proposed ?? 248, 120)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

@@ -60,6 +60,9 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// Per-response token/cost telemetry; absent on messages persisted
     /// before telemetry existed and on user messages.
     var usage: AiUsage? = nil
+    /// Compact, structured sources and document actions used for this reply.
+    /// Optional so conversations persisted before this UI existed decode unchanged.
+    var toolSummaries: [AiToolSummary]? = nil
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -538,15 +541,10 @@ final class AiStore {
         (pageText?.count ?? 0) < autoPageImageTextThreshold
     }
 
-    /// Persisted assistant content = reply + compact per-action receipts.
-    /// Raw tool payloads (full page text / search results) must never reach
-    /// the persisted message — only these one-line receipts do.
-    static func composeAssistantContent(reply: String, receipts: [String]) -> String {
-        guard !receipts.isEmpty else {
-            return reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return (reply + "\n\nActions:\n" + receipts.map { "- \($0)" }.joined(separator: "\n"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The reply is persisted independently from its structured tool summaries
+    /// so the useful answer renders first and sources can stay collapsed.
+    nonisolated static func composeAssistantContent(reply: String, receipts _: [AiToolSummary]) -> String {
+        reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The conversation-block slice: everything BEFORE the newest user message.
@@ -792,12 +790,17 @@ final class AiStore {
             // drop the result without persisting or re-appending messages.
             guard !Task.isCancelled else { return }
 
-            // Show the engine's compact per-action summaries, not the raw tool
-            // results in `result.actionResults` — those carry full search/page
-            // payloads that only the model should see.
+            // Keep the concise response independent from its compact structured
+            // sources/actions. Raw payloads remain model-only.
             let finalContent = Self.composeAssistantContent(reply: result.reply, receipts: engine.displayActions)
+            var assistantMessage = AiPersistence.makeMessage(
+                role: .assistant,
+                content: finalContent,
+                id: assistantId
+            )
+            assistantMessage.toolSummaries = engine.displayActions.isEmpty ? nil : engine.displayActions
             let completed = messagesWithUser + [
-                AiPersistence.makeMessage(role: .assistant, content: finalContent, id: assistantId)
+                assistantMessage
             ]
             AiPersistence.saveConversation(for: documentForPersist, messages: completed)
             if app.activeTabId == sessionIdAtStart {
