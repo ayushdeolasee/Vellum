@@ -4,22 +4,48 @@ import XCTest
 
 @testable import Vellum
 
-// The walkthrough sheet is a FIXED 620x460 box whose page area is `.clipped()`,
-// so copy that grows by one wrapped line does not scroll, does not resize the
-// sheet, and does not warn — it silently loses its last bullet off the bottom
-// edge. Nothing else in the suite would catch that.
+// Layout safety net for the walkthrough sheet.
 //
-// These tests measure the real wrapped height of each page's text off-screen
-// (NSHostingView in no window; never visible, never takes focus) and check it
-// against the space the sheet actually gives the page. The layout constants
-// below are mirrored from WalkthroughSheet — if the sheet's paddings, fonts or
-// frame change, change them here too.
+// The sheet sizes itself to its tallest page and scrolls if it ever cannot, but
+// both of those are easy to undo by accident — pinning the frame back to a
+// constant, or adding copy that pushes the tallest page past the maxHeight
+// backstop. The invariant that actually matters to a reader is simply that no
+// page's content is taller than the space the sheet gives it, because the page
+// area clips: anything that does not fit is silently cut off rather than
+// announced.
+//
+// So these tests measure both sides for real, off-screen (NSHostingView with no
+// window — never visible, never takes focus): the sheet's own resolved height,
+// and each page's naturally wrapped content height. They keep working if
+// someone adds a bullet, because the sheet is expected to grow with it.
 @MainActor
 final class WalkthroughLayoutTests: XCTestCase {
+    /// Hosting the real sheet runs its `onAppear`, which calls
+    /// `WalkthroughSettings.markSeen()`. The test host shares UserDefaults with
+    /// the real app, so restore whatever the developer running the suite had —
+    /// otherwise measuring layout would quietly consume their first run.
+    private var priorSeen: Any?
+
+    override func setUp() {
+        super.setUp()
+        priorSeen = UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey)
+    }
+
+    override func tearDown() {
+        if let priorSeen {
+            UserDefaults.standard.set(priorSeen, forKey: WalkthroughSettings.seenKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: WalkthroughSettings.seenKey)
+        }
+        super.tearDown()
+    }
+
     // MARK: - Mirrored from WalkthroughSheet
 
     private let sheetWidth: CGFloat = 620
-    private let sheetHeight: CGFloat = 460
+    /// The backstop on the sheet's frame. Past this the page area scrolls
+    /// instead of growing.
+    private let maxSheetHeight: CGFloat = 620
     private let horizontalPadding: CGFloat = 24
     private let topPadding: CGFloat = 22
     private let bottomPadding: CGFloat = 20
@@ -32,44 +58,48 @@ final class WalkthroughLayoutTests: XCTestCase {
     private let footnoteFontSize: CGFloat = 12
     private let lineSpacing: CGFloat = 2
 
-    /// Title bar + two dividers + footer, i.e. everything the page body does not
-    /// get. These are not guesses: each piece was hosted off-screen on its own
-    /// and measured at 44pt (title bar) and 50pt (footer) at the sheet's 620pt
-    /// width, leaving the page area 364pt of the 460pt sheet.
-    ///
-    /// That margin is thin on purpose and worth knowing about: the Storage page
-    /// currently measures ~361pt, so the sheet has roughly 3pt of slack. One
-    /// extra wrapped line of copy anywhere on that page overflows, which is
-    /// exactly the regression these tests exist to catch.
+    /// Title bar + two dividers + footer — everything the page body does not
+    /// get. Each piece was hosted on its own and measured at the sheet's 620pt
+    /// width: 44pt title bar, 50pt footer, 1pt per divider.
     private let chromeHeight: CGFloat = 44 + 2 + 50
 
-    private var availableHeight: CGFloat { sheetHeight - chromeHeight }
     private var contentWidth: CGFloat { sheetWidth - horizontalPadding * 2 }
 
     // MARK: - Off-screen measurement
 
-    /// Wrapped height of a `Text` at a fixed width, laid out by SwiftUI itself
-    /// rather than by a hand-rolled TextKit approximation.
+    /// The height the real sheet resolves to, laid out by SwiftUI itself.
+    private func measuredSheetHeight() -> CGFloat {
+        let host = NSHostingView(
+            rootView: WalkthroughSheet()
+                .environment(\.palette, .light)
+                .tint(ThemePalette.light.primary))
+        return host.fittingSize.height
+    }
+
+    /// Vertical space the sheet actually hands the page body.
+    private func availableHeight() -> CGFloat {
+        measuredSheetHeight() - chromeHeight
+    }
+
+    /// Wrapped height of a `Text` at a fixed width, laid out by SwiftUI rather
+    /// than by a hand-rolled TextKit approximation.
     private func height(of string: String, fontSize: CGFloat, width: CGFloat) -> CGFloat {
         let view = Text(string)
             .font(.system(size: fontSize))
             .lineSpacing(lineSpacing)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: width, alignment: .leading)
-        let host = NSHostingView(rootView: view)
-        // The root view is already pinned to `width`, so fittingSize resolves to
-        // the natural wrapped height at exactly that width.
-        return host.fittingSize.height
+        return NSHostingView(rootView: view).fittingSize.height
     }
 
     /// Width a Keycap occupies: 11pt monospaced glyphs + 6pt padding a side.
     private func keycapWidth(_ keys: String) -> CGFloat {
-        let view = Text(keys).font(.system(size: 11, design: .monospaced))
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: Text(keys).font(.system(size: 11, design: .monospaced)))
         return host.fittingSize.width + 12
     }
 
-    private func measuredHeight(of page: WalkthroughPage) -> CGFloat {
+    /// Height one page's content needs at the sheet's width.
+    private func requiredHeight(of page: WalkthroughPage) -> CGFloat {
         var total = topPadding + bottomPadding
 
         // Hero row: the 44pt glass tile sets the floor; the title is one line.
@@ -97,31 +127,59 @@ final class WalkthroughLayoutTests: XCTestCase {
         return total
     }
 
+    private func tallestPage() -> (id: String, height: CGFloat) {
+        let measured = WalkthroughPage.all.map { (id: $0.id, height: requiredHeight(of: $0)) }
+        return measured.max { $0.height < $1.height } ?? (id: "", height: 0)
+    }
+
     // MARK: - Tests
 
-    func testEveryPageFitsTheFixedSheetHeight() {
+    /// The invariant that matters: nothing a reader is shown gets cut off.
+    func testNoPageIsClipped() {
+        let available = availableHeight()
         for page in WalkthroughPage.all {
-            let measured = measuredHeight(of: page)
+            let required = requiredHeight(of: page)
             XCTAssertLessThanOrEqual(
-                measured, availableHeight,
+                required, available,
                 """
-                Walkthrough page "\(page.id)" needs \(Int(measured))pt but the sheet only \
-                gives the page area \(Int(availableHeight))pt. The sheet is a fixed \
-                \(Int(sheetWidth))x\(Int(sheetHeight)) frame and the page area is clipped, so the \
-                overflow would be invisibly cut off rather than scrolled. Shorten the copy or \
-                raise WalkthroughSheet's frame height (and this file's constants).
+                Walkthrough page "\(page.id)" needs \(Int(required))pt but the sheet gives its \
+                page area only \(Int(available))pt, so the overflow is clipped. The sheet is \
+                supposed to size itself to its tallest page — check that WalkthroughSheet's \
+                frame has not been pinned back to a constant, and that the tallest page still \
+                fits under the \(Int(maxSheetHeight))pt backstop.
                 """)
         }
     }
 
-    func testStoragePageIsStillTheTallestPage() {
-        // WalkthroughSheet's frame comment justifies 460pt by saying the height
-        // is measured against the Storage page. If some other page overtakes
-        // it, that reasoning — and the slack it assumes — no longer holds.
-        let heights = WalkthroughPage.all.map { ($0.id, measuredHeight(of: $0)) }
-        let tallest = heights.max { $0.1 < $1.1 }
+    /// The sheet is expected to derive its height from its content. If someone
+    /// pins it to a constant again, this fails as soon as the constant and the
+    /// copy disagree — which is the state the fixed 460pt frame was in.
+    func testSheetHeightTracksTheTallestPage() {
+        let tallest = tallestPage()
+        let expected = tallest.height + chromeHeight
+        let measured = measuredSheetHeight()
+
         XCTAssertEqual(
-            tallest?.0, "storage",
-            "the tallest page is now \(tallest?.0 ?? "?"), not storage: \(heights.map { "\($0.0)=\(Int($0.1))" })")
+            measured, expected, accuracy: 12,
+            """
+            The sheet resolved to \(Int(measured))pt but its tallest page ("\(tallest.id)", \
+            \(Int(tallest.height))pt) plus \(Int(chromeHeight))pt of chrome wants \
+            \(Int(expected))pt. The sheet should size to its content, not to a constant.
+            """)
+    }
+
+    /// Today's copy must fit without the scrolling backstop kicking in — the
+    /// scroll exists for large system fonts and long translations, not as the
+    /// normal reading experience.
+    func testTallestPageFitsUnderTheBackstopWithoutScrolling() {
+        let tallest = tallestPage()
+        XCTAssertLessThan(
+            tallest.height + chromeHeight, maxSheetHeight,
+            """
+            The tallest page ("\(tallest.id)") plus chrome now needs \
+            \(Int(tallest.height + chromeHeight))pt, at or past the \(Int(maxSheetHeight))pt \
+            backstop, so the walkthrough would open already scrolling. Shorten the copy or \
+            raise the backstop deliberately.
+            """)
     }
 }

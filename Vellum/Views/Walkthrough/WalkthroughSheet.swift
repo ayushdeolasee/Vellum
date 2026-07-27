@@ -36,13 +36,18 @@ struct WalkthroughSheet: View {
             Divider()
             footer
         }
-        // Fixed size on purpose. A sheet that resizes to each page's content
-        // jumps under the cursor every time Next is pressed, which makes the
-        // buttons feel like they move away from you. The height is measured
-        // against the longest page (Storage — four bullets, two of them
-        // wrapping, plus the footnote) with a little slack; shorter pages carry
-        // the difference as trailing whitespace, which is the cheaper tradeoff.
-        .frame(width: 620, height: 460)
+        // Fixed WIDTH, and a height that resolves once to fit the tallest page
+        // (see pageContent) rather than to a constant. The sheet still does not
+        // resize as you page through — that was the original reason for pinning
+        // it, and the ZStack in pageContent preserves it — but it is no longer
+        // possible for copy to outgrow the number someone typed here. Shorter
+        // pages carry the difference as trailing whitespace, as before.
+        //
+        // maxHeight is a backstop, not the layout: at very large system font
+        // sizes the tallest page can exceed what a sheet should occupy, and
+        // past this point pageContent scrolls instead of growing further.
+        .frame(width: 620)
+        .frame(maxHeight: 620)
         .background(palette.surface)
         // Focusable, but with no focus ring: the sheet is claiming focus to
         // receive key presses, not to advertise itself as a control.
@@ -104,24 +109,47 @@ struct WalkthroughSheet: View {
     }
 
     private var pageContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            pageBody(page)
-                // Re-identify on the page slug so SwiftUI treats each page as a
-                // new view and actually runs the transition, rather than
-                // cross-fading text in place.
-                .id(page.id)
-                .transition(
-                    .asymmetric(
-                        insertion: .move(edge: movingForward ? .trailing : .leading)
-                            .combined(with: .opacity),
-                        removal: .move(edge: movingForward ? .leading : .trailing)
-                            .combined(with: .opacity)))
+        // Scrolls, but only when the content genuinely does not fit. This area
+        // used to be a fixed box with `.clipped()`, which meant a page one line
+        // too tall silently lost that line — no scrollbar, no warning, nothing
+        // to tell the reader there was more. A longer translation, a larger
+        // system font, or one extra bullet was enough to trigger it, and the
+        // Storage page was already within a few points of the edge.
+        //
+        // The ScrollView also does the clipping the old `.clipped()` did, so
+        // the sliding page still can't paint over the chrome.
+        ScrollView(.vertical) {
+            ZStack(alignment: .topLeading) {
+                // Every page is laid out here, but only the current one is
+                // drawn. The hidden copies still take part in sizing, so this
+                // ZStack adopts the height of the TALLEST page and holds it —
+                // which is what keeps the footer buttons from jumping as you
+                // page through, the reason the height was pinned to a constant
+                // originally. Sizing to the real content instead means copy
+                // edits and font changes can't outgrow the sheet.
+                ForEach(pages) { item in
+                    pageBody(item)
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
 
-            Spacer(minLength: 0)
+                pageBody(page)
+                    // Re-identify on the page slug so SwiftUI treats each page
+                    // as a new view and actually runs the transition, rather
+                    // than cross-fading text in place.
+                    .id(page.id)
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: movingForward ? .trailing : .leading)
+                                .combined(with: .opacity),
+                            removal: .move(edge: movingForward ? .leading : .trailing)
+                                .combined(with: .opacity)))
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Clip the slide so the outgoing page doesn't paint over the chrome.
-        .clipped()
+        // No rubber-banding on pages that already fit, so the scroll only shows
+        // itself when it is actually doing something.
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private func pageBody(_ page: WalkthroughPage) -> some View {
