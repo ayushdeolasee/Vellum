@@ -141,18 +141,22 @@ struct AiSettings: Codable, Equatable, Sendable {
     func isConfigured(chatGPTSignedIn: Bool) -> Bool {
         switch provider {
         case .gemini:
-            !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasValue(apiKey) && hasValue(model)
         case .openai:
-            !openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasValue(openaiApiKey) && hasValue(openaiModel)
         case .openrouter:
-            !openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasValue(openrouterApiKey) && hasValue(openrouterModel)
         case .chatgpt:
-            chatGPTSignedIn
+            chatGPTSignedIn && hasValue(chatgptModel)
         case .opencode:
-            !opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasValue(opencodeApiKey) && hasValue(opencodeModel)
         case .opencodeGo:
-            !opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasValue(opencodeGoApiKey) && hasValue(opencodeGoModel)
         }
+    }
+
+    private func hasValue(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

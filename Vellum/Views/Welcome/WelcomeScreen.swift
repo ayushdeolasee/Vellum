@@ -13,7 +13,8 @@ struct WelcomeScreen: View {
     @State private var urlInput = ""
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
-    @State private var updateChecker = UpdateChecker()
+
+    private var updateChecker: UpdateChecker { workspace.updateChecker }
 
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
@@ -80,9 +81,6 @@ struct WelcomeScreen: View {
         .padding(.horizontal, 16)
         .frame(height: 44)
         .background(palette.background)
-        .task {
-            await updateChecker.check(silent: true)
-        }
     }
 
     private func showSettings() {
