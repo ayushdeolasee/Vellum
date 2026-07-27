@@ -34,6 +34,9 @@ struct AnnotationSidebar: View {
                                 onSaveEdit: { saveEdit(annotation.id) },
                                 onCancelEdit: { cancelEdit() },
                                 onChangeColor: { color in changeColor(annotation, to: color) },
+                                onTogglePin: {
+                                    Task { await annotationStore.togglePin(id: annotation.id) }
+                                },
                                 onDelete: {
                                     Task { await annotationStore.deleteAnnotation(id: annotation.id) }
                                 }
@@ -151,6 +154,7 @@ struct AnnotationSidebar: View {
     }
 
     private var filteredAnnotations: [Annotation] {
+        // Store already keeps pin/page/created order; filter only by type.
         guard let filter else { return annotationStore.annotations }
         return annotationStore.annotations.filter { $0.type == filter }
     }
@@ -260,6 +264,7 @@ private struct AnnotationRow: View {
     let onSaveEdit: () -> Void
     let onCancelEdit: () -> Void
     let onChangeColor: (String) -> Void
+    let onTogglePin: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.palette) private var palette
@@ -280,6 +285,12 @@ private struct AnnotationRow: View {
                         .tracking(0.5)
                     Text("·")
                     Text("p.\(annotation.pageNumber)")
+                    if annotation.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: metaSize - 1))
+                            .foregroundStyle(palette.primary)
+                            .accessibilityLabel("Pinned")
+                    }
                 }
                 .font(.system(size: metaSize, weight: .medium))
                 .foregroundStyle(palette.mutedForeground)
@@ -324,6 +335,21 @@ private struct AnnotationRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            // Pin is a sibling control (not nested under the row tap) so it
+            // never also navigates — same pattern as ModelSelector stars.
+            Button(action: onTogglePin) {
+                Image(systemName: annotation.pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 13))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(annotation.pinned ? palette.primary : palette.mutedForeground)
+            .opacity(hovering || selected || annotation.pinned ? 1 : 0)
+            .help(annotation.pinned ? "Unpin annotation" : "Pin annotation to top")
+            .accessibilityLabel(annotation.pinned ? "Unpin annotation" : "Pin annotation")
+            .accessibilityIdentifier("annotationRow.pin")
+
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 14))
@@ -347,6 +373,10 @@ private struct AnnotationRow: View {
         .contentShape(RoundedRectangle(cornerRadius: Radius.lg))
         .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
+        .contextMenu {
+            Button(annotation.pinned ? "Unpin" : "Pin to Top", action: onTogglePin)
+            Button("Delete", role: .destructive, action: onDelete)
+        }
     }
 
     @ViewBuilder
