@@ -1,3 +1,4 @@
+import PDFKit
 import XCTest
 @testable import Vellum
 
@@ -230,6 +231,39 @@ final class PaneTreeTests: XCTestCase {
         ws.residency.handleMemoryPressure(.critical)
 
         XCTAssertEqual(ws.residency.residentTabIds, [firstId, secondId])
+    }
+
+    /// The byte budget is only meaningful if a tab reports what it actually
+    /// holds: nothing before it has loaded, its file size once a PDF is parsed,
+    /// and nothing again after eviction. The last one is the important half —
+    /// if the runtime kept the parsed document, the memory the eviction existed
+    /// to reclaim would still be held.
+    func testRuntimeCostsNothingBeforeLoadAndNothingAfterEviction() {
+        let ws = makeWorkspace()
+        let runtime = ws.liveTabRuntime(for: "sized")
+        XCTAssertEqual(runtime.residencyCostBytes, 0)
+
+        runtime.adoptPreparedPdf(PDFDocument(), byteCount: 4_000_000)
+        XCTAssertEqual(runtime.residencyCostBytes, 4_000_000)
+
+        runtime.releaseResidency()
+        XCTAssertNil(runtime.preparedDocument)
+        XCTAssertEqual(runtime.residencyCostBytes, 0)
+    }
+
+    /// `releaseResidency` is reached from several paths (close, ceiling, window,
+    /// pressure) and must be safe to call twice.
+    func testReleasingARuntimeTwiceIsANoOp() {
+        let ws = makeWorkspace()
+        let runtime = ws.liveTabRuntime(for: "twice")
+        runtime.adoptPreparedPdf(PDFDocument(), byteCount: 100)
+        runtime.releaseResidency()
+        let controllerAfterFirst = runtime.pdfController
+
+        runtime.releaseResidency()
+
+        XCTAssertTrue(runtime.pdfController === controllerAfterFirst)
+        XCTAssertTrue(runtime.isEvicted)
     }
 
     func testPdfControllerActiveGateFollowsReboundPane() {
