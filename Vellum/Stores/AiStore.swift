@@ -798,10 +798,12 @@ final class AiStore {
                 content: finalContent,
                 id: assistantId
             )
-            assistantMessage.toolSummaries = engine.displayActions.isEmpty ? nil : engine.displayActions
-            let completed = messagesWithUser + [
+            assistantMessage.toolSummaries = engine.displayActions.isEmpty
+                ? nil
+                : AiPersistence.sanitizeToolSummaries(engine.displayActions)
+            let completed = AiPersistence.limitedMessages(messagesWithUser + [
                 assistantMessage
-            ]
+            ])
             AiPersistence.saveConversation(for: documentForPersist, messages: completed)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed

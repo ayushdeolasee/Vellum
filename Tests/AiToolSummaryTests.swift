@@ -131,6 +131,67 @@ struct AiToolSummaryTests {
         #expect(message.content == content)
     }
 
+    @Test("Ordinary Actions sections remain part of message content")
+    func legitimateActionsContentIsNotTreatedAsLegacyReceipts() {
+        let assistantContent = """
+        Here is the plan.
+
+        Actions:
+        - Review the introduction
+        - Compare the two arguments
+        """
+        let assistant = AiMessage(
+            id: "assistant-plan",
+            role: .assistant,
+            content: assistantContent,
+            createdAt: "now"
+        )
+        let userContent = """
+        Please remember this:
+
+        Actions:
+        - Read page 12.
+        """
+        let user = AiMessage(
+            id: "user-actions",
+            role: .user,
+            content: userContent,
+            createdAt: "now"
+        )
+
+        #expect(assistant.displayContent == assistantContent)
+        #expect(assistant.displayToolSummaries.isEmpty)
+        #expect(assistant.promptContent == assistantContent)
+        #expect(user.displayContent == userContent)
+        #expect(user.displayToolSummaries.isEmpty)
+        #expect(user.promptContent == userContent)
+    }
+
+    @Test("Legacy raw retrieval payloads become compact follow-up receipts")
+    func legacyRawPayloadIsCompactedForPrompt() {
+        let marker = "RAW-SOURCE-MARKER"
+        let message = AiMessage(
+            id: "legacy-raw",
+            role: .assistant,
+            content: """
+            The answer.
+
+            Actions:
+            - Found 2 pages with a match:
+            page 4 — "…\(marker) first…"
+            page 9 — "…\(marker) second…"
+            """,
+            createdAt: "now"
+        )
+
+        let prompt = message.promptContent
+
+        #expect(prompt.contains("The answer."))
+        #expect(prompt.contains("- Document search"))
+        #expect(prompt.contains(marker) == false)
+        #expect(prompt.contains("page 4 —") == false)
+    }
+
     @Test("Follow-up prompts retain compact tool receipts without source payloads")
     func followUpPromptUsesCompactToolReceipts() {
         var message = AiMessage(
@@ -155,5 +216,72 @@ struct AiToolSummaryTests {
         #expect(prompt.contains("- Searched for “register allocation”"))
         #expect(prompt.contains("8 pages") == false)
         #expect(prompt.contains("long source excerpt") == false)
+    }
+
+    @Test("Imported structured summaries are bounded at the shared persistence boundary")
+    func hostileImportedSummariesAreBounded() throws {
+        let huge = String(repeating: "oversized ", count: 2_000)
+        var message = AiMessage(
+            id: "hostile-import",
+            role: .assistant,
+            content: "answer",
+            createdAt: "now"
+        )
+        message.toolSummaries = (0..<(AiPersistence.maxToolSummariesPerMessage + 10)).map { index in
+            AiToolSummary(
+                id: huge,
+                title: "\(index)-\(huge)",
+                detail: huge,
+                sources: (0..<(AiPersistence.maxToolSourcesPerSummary + 5)).map { sourceIndex in
+                    .init(
+                        id: huge,
+                        page: sourceIndex == 0 ? Int.max : sourceIndex + 1,
+                        excerpt: huge
+                    )
+                },
+                destinationPage: Int.max
+            )
+        }
+
+        let boundedMessage = try #require(AiPersistence.limitedMessages([message]).first)
+        let summaries = try #require(boundedMessage.toolSummaries)
+        let first = try #require(summaries.first)
+
+        #expect(summaries.count == AiPersistence.maxToolSummariesPerMessage)
+        #expect(first.id.count <= AiPersistence.maxToolIdentifierCharacters)
+        #expect(first.title.count <= AiPersistence.maxToolSummaryTitleCharacters)
+        #expect((first.detail?.count ?? 0) <= AiPersistence.maxToolSummaryDetailCharacters)
+        #expect(first.sources.count == AiPersistence.maxToolSourcesPerSummary)
+        #expect(first.sources[0].id.count <= AiPersistence.maxToolIdentifierCharacters)
+        #expect(first.sources[0].excerpt.count <= AiPersistence.maxToolSourceExcerptCharacters)
+        #expect(first.destinationPage == nil)
+        #expect(first.sources[0].page == nil)
+        #expect(Set(summaries.map(\.id)).count == summaries.count)
+        #expect(Set(first.sources.map(\.id)).count == first.sources.count)
+        #expect(AiPersistence.sanitizeToolSummaries(summaries) == summaries)
+    }
+
+    @Test("Reparsed legacy summaries retain stable disclosure identity")
+    func legacySummaryIdentityIsStableAcrossRenders() throws {
+        let message = AiMessage(
+            id: "stable-message",
+            role: .assistant,
+            content: """
+            Answer.
+
+            Actions:
+            - Found 2 pages with a match:
+            page 2 — "…alpha…"
+            page 7 — "…beta…"
+            """,
+            createdAt: "now"
+        )
+
+        let firstRender = try #require(message.displayToolSummaries.first)
+        let secondRender = try #require(message.displayToolSummaries.first)
+
+        #expect(firstRender.id == secondRender.id)
+        #expect(firstRender.sources.map(\.id) == secondRender.sources.map(\.id))
+        #expect(Set(firstRender.sources.map(\.id)).count == firstRender.sources.count)
     }
 }

@@ -49,9 +49,9 @@ struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
                 ? result.trimmingCharacters(in: .whitespacesAndNewlines)
                 : "\(count) \(count == 1 ? "page" : "pages")"
             return AiToolSummary(
-                title: "Searched for “\(query)”",
+                title: clipped("Searched for “\(query)”", limit: 240),
                 detail: clipped(detail, limit: 160),
-                sources: sources
+                sources: Array(sources.prefix(8))
             )
 
         case "getPageText":
@@ -85,42 +85,128 @@ struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    /// Converts the pre-structured "Actions:" suffix used by older Vellum
-    /// versions into the same compact presentation. This prevents an existing
-    /// multi-page retrieval transcript from remaining permanently oversized.
-    static func fromLegacyActions(_ text: String) -> [AiToolSummary] {
+    /// Strictly recognizes the receipt formats emitted by older Vellum builds.
+    /// Returning nil (rather than an empty list) is important: arbitrary prose
+    /// headed "Actions:" must remain ordinary message content.
+    static func parseLegacyActions(_ text: String, messageId: String) -> [AiToolSummary]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else { return [] }
-
-        let sources = searchSources(from: trimmed)
-        if sources.isEmpty == false {
-            let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? "Document search"
-            return [AiToolSummary(
-                title: firstLine.removingListMarker(),
-                detail: "\(sources.count) \(sources.count == 1 ? "page" : "pages")",
-                sources: sources
-            )]
-        }
-
+        guard trimmed.isEmpty == false else { return nil }
         let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let first = lines.first.map(String.init) else { return [] }
-        let title = first.removingListMarker()
-        let page = pageNumber(from: title)
-        let excerpt = lines.dropFirst().joined(separator: "\n")
-        if excerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return [AiToolSummary(
-                title: page.map { "Read page \($0)" } ?? title,
-                detail: "Document source",
-                sources: [Source(page: page, excerpt: clipped(excerpt, limit: 280))],
-                destinationPage: page
-            )]
+            .map(String.init)
+
+        // A short-lived older build persisted the raw search result. Accept only
+        // the exact header + page-source grammar, never arbitrary suffix text.
+        let sources = searchSources(from: trimmed)
+        if let first = lines.first,
+           fullMatch(first, pattern: #"- Found \d+ pages? with a match(?: \(showing first \d+\))?:"#),
+           firstInteger(in: first) == sources.count,
+           sources.isEmpty == false,
+           lines.dropFirst().allSatisfy({
+               $0.isEmpty || fullMatch($0, pattern: #"page \d+ — ["“].+["”]"#)
+           }) {
+            return assigningStableIds([
+                AiToolSummary(
+                    title: "Document search",
+                    detail: "\(sources.count) \(sources.count == 1 ? "page" : "pages")",
+                    sources: Array(sources.prefix(8))
+                )
+            ], messageId: messageId)
         }
 
-        return [AiToolSummary(
-            title: clipped(title, limit: 160),
+        // The long-lived format was a list of one-line receipts. Require every
+        // line to match a result string that the historical tool engine emitted.
+        let compact = lines.compactMap(legacyCompactSummary)
+        guard compact.count == lines.count, compact.isEmpty == false else { return nil }
+        return assigningStableIds(compact, messageId: messageId)
+    }
+
+    private static func legacyCompactSummary(_ line: String) -> AiToolSummary? {
+        guard line.hasPrefix("- ") else { return nil }
+        let receipt = String(line.dropFirst(2))
+
+        if fullMatch(receipt, pattern: #"Searched the document for “.+”\."#) {
+            return AiToolSummary(title: clipped(receipt, limit: 240), detail: "Document search")
+        }
+        if fullMatch(receipt, pattern: #"Read page \d+\."#) {
+            let page = pageNumber(from: receipt)
+            return AiToolSummary(
+                title: page.map { "Read page \($0)" } ?? "Read a page",
+                detail: "Document source",
+                destinationPage: page
+            )
+        }
+
+        let knownWritePatterns = [
+            #"Navigated to page \d+\."#,
+            #"Added note on page \d+\."#,
+            #"Highlighted ".+" on page \d+\."#,
+            #"Skipped addNote: empty text\."#,
+            #"Skipped addHighlight: no text provided to locate\."#,
+            #"Skipped addHighlight: couldn't find ".+" on page \d+\."#,
+            #"Skipped unknown tool: .+\."#,
+        ]
+        guard knownWritePatterns.contains(where: { fullMatch(receipt, pattern: $0) })
+        else { return nil }
+        return AiToolSummary(
+            title: clipped(receipt, limit: 240),
             detail: "Document action",
-            destinationPage: page
-        )]
+            destinationPage: pageNumber(from: receipt)
+        )
+    }
+
+    private static func assigningStableIds(
+        _ summaries: [AiToolSummary],
+        messageId: String
+    ) -> [AiToolSummary] {
+        summaries.enumerated().map { summaryIndex, original in
+            var summary = original
+            let signature = [
+                summary.title,
+                summary.detail ?? "",
+                summary.destinationPage.map(String.init) ?? "",
+            ].joined(separator: "\u{1f}")
+            summary.id = stableId("\(messageId)\u{1f}\(summaryIndex)\u{1f}\(signature)")
+            summary.sources = summary.sources.enumerated().map { sourceIndex, originalSource in
+                var source = originalSource
+                let sourceSignature = [
+                    source.page.map(String.init) ?? "",
+                    source.excerpt,
+                ].joined(separator: "\u{1f}")
+                source.id = stableId(
+                    "\(messageId)\u{1f}\(summaryIndex)\u{1f}\(sourceIndex)\u{1f}\(sourceSignature)"
+                )
+                return source
+            }
+            return summary
+        }
+    }
+
+    /// FNV-1a is deliberately simple and deterministic across launches. Swift's
+    /// `Hasher` is randomized and would recreate DisclosureGroup identity.
+    private static func stableId(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "legacy-\(String(hash, radix: 16))"
+    }
+
+    private static func fullMatch(_ text: String, pattern: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: "^(?:\(pattern))$") else {
+            return false
+        }
+        return regex.firstMatch(
+            in: text,
+            range: NSRange(text.startIndex..<text.endIndex, in: text)
+        ) != nil
+    }
+
+    private static func firstInteger(in text: String) -> Int? {
+        guard let range = text.range(of: #"\d+"#, options: .regularExpression) else {
+            return nil
+        }
+        return Int(text[range])
     }
 
     private static func searchSources(from result: String) -> [Source] {
@@ -164,36 +250,51 @@ struct AiToolSummary: Codable, Equatable, Identifiable, Sendable {
 }
 
 extension AiMessage {
-    /// Answer text without the legacy inline tool-receipt suffix.
-    var displayContent: String {
-        guard toolSummaries == nil,
-              let range = content.range(of: "\n\nActions:\n", options: .backwards)
-        else { return content }
-        return String(content[..<range.lowerBound])
+    private var legacyReceipt: (answer: String, summaries: [AiToolSummary])? {
+        guard role == .assistant,
+              toolSummaries == nil,
+              let range = content.range(of: "\n\nActions:\n", options: .backwards),
+              let summaries = AiToolSummary.parseLegacyActions(
+                  String(content[range.upperBound...]),
+                  messageId: id
+              )
+        else { return nil }
+        let answer = String(content[..<range.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (answer, summaries)
     }
 
-    /// New messages use persisted structured summaries. Older messages are
-    /// upgraded at presentation time, leaving their on-disk representation intact.
+    /// Answer text without a strictly recognized legacy tool-receipt suffix.
+    var displayContent: String {
+        legacyReceipt?.answer ?? content
+    }
+
+    /// New messages use persisted structured summaries. Recognized older
+    /// messages are upgraded at presentation time without changing their data.
     var displayToolSummaries: [AiToolSummary] {
         if let toolSummaries { return toolSummaries }
-        guard let range = content.range(of: "\n\nActions:\n", options: .backwards)
-        else { return [] }
-        return AiToolSummary.fromLegacyActions(String(content[range.upperBound...]))
+        return legacyReceipt?.summaries ?? []
     }
 
-    /// Keeps a compact receipt of prior tool use available to follow-up turns.
-    /// The model needs to know which document operations already ran, but not
-    /// the excerpts that were intentionally omitted from transcript storage.
+    /// Keeps compact prior tool use available to follow-up turns without
+    /// resending raw legacy search/page payloads.
     var promptContent: String {
-        guard let toolSummaries, toolSummaries.isEmpty == false else { return content }
-        let actions = toolSummaries.map { "- \($0.title)" }.joined(separator: "\n")
-        return "\(content)\n\nActions:\n\(actions)"
+        guard role == .assistant else { return content }
+        if let toolSummaries, toolSummaries.isEmpty == false {
+            return contentWithCompactActions(answer: content, summaries: toolSummaries)
+        }
+        guard let legacyReceipt else { return content }
+        return contentWithCompactActions(
+            answer: legacyReceipt.answer,
+            summaries: legacyReceipt.summaries
+        )
     }
-}
 
-private extension String {
-    func removingListMarker() -> String {
-        hasPrefix("- ") ? String(dropFirst(2)) : self
+    private func contentWithCompactActions(
+        answer: String,
+        summaries: [AiToolSummary]
+    ) -> String {
+        let actions = summaries.map { "- \($0.title)" }.joined(separator: "\n")
+        return "\(answer)\n\nActions:\n\(actions)"
     }
 }
