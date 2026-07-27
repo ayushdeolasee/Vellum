@@ -278,6 +278,47 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertNil(app.pendingNoteContent)
     }
 
+    func testInteractionCompletionKeepsTheTargetThatWasArmedBeforeReset() {
+        let app = makeWorkspace().focusedPane.app
+
+        app.beginRegionCapture(target: .scratchpad)
+        XCTAssertEqual(app.finishRegionCapture(), .scratchpad)
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.tabs.first(where: { $0.id == app.activeTabId })?.regionCaptureTarget)
+    }
+
+    func testDelayedNoteCompletionNeverClearsAnotherTabMode() {
+        let app = makeWorkspace().focusedPane.app
+        let originSessionId = app.activeTabId!
+        app.beginNoteWithContent("Note for A")
+
+        app.newStartTab()
+        let otherSessionId = app.activeTabId!
+        app.beginNoteWithContent("Note for B")
+
+        app.finishNotePlacement(forSessionId: originSessionId)
+
+        XCTAssertEqual(app.activeTabId, otherSessionId)
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "Note for B")
+
+        app.activateTab(originSessionId)
+        app.finishNotePlacement(forSessionId: originSessionId)
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
+    func testNotePlacementConsumesItsQueuedContentBeforeModeReset() {
+        let app = makeWorkspace().focusedPane.app
+        app.beginNoteWithContent("AI response")
+
+        XCTAssertEqual(app.consumePendingNoteContent(), "AI response")
+        app.finishNotePlacement(forSessionId: app.activeTabId!)
+
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
     func testCloseOthersAndCloseRightPreserveExpectedTabs() async {
         let ws = makeWorkspace()
         let app = ws.focusedPane.app

@@ -35,6 +35,8 @@ struct WebNoteComposerState {
     var point: CGPoint
     var anchor: WebNoteAnchor
     var openedAt: Date
+    /// AI "Add as note" text consumed for this placement, if any.
+    var initialContent: String = ""
 }
 
 struct WebContextMenuState {
@@ -79,8 +81,8 @@ struct WebViewerView: View {
                 // the marquee itself can never end up inside the crop.
                 if appStore.mode == .snapshotRegion {
                     RegionCaptureOverlay { rect in
-                        appStore.setMode(.view)
-                        captureRegion(rect)
+                        let target = appStore.finishRegionCapture()
+                        captureRegion(rect, target: target)
                     } onCancel: {
                         // Plain click or tiny wobble: back out of capture mode
                         // without a warning — the user changed their mind.
@@ -136,6 +138,7 @@ struct WebViewerView: View {
                         placement: .below, containerSize: proxy.size
                     ) {
                         WebNoteComposerView(
+                            initialContent: composer.initialContent,
                             onSubmit: { content in
                                 controller.createAnchoredNote(anchor: composer.anchor, content: content)
                                 controller.closeNoteComposer()
@@ -222,8 +225,8 @@ struct WebViewerView: View {
     /// PdfOverlayStack.captureRegion). The AI path stays silent on a miss — a
     /// failed takeSnapshot mid-scroll is not worth a banner; the scratchpad path
     /// warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect) {
-        switch appStore.regionCaptureTarget {
+    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
+        switch target {
         case .ai:
             Task {
                 // A web capture always stamps the virtual page it was taken on,
@@ -958,14 +961,20 @@ final class WebViewerController: NSObject {
             if let editor = highlightEditor, clickOutside(editor.openedAt) { highlightEditor = nil }
 
         case "note-placed":
-            guard let anchor = parseNoteAnchor(data) else { break }
+            guard let anchor = parseNoteAnchor(data), let sessionId = mountTabId else { break }
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             hideContextMenu()
             noteViewer = nil
-            noteComposer = WebNoteComposerState(point: point, anchor: anchor, openedAt: Date())
-            // Mirror the PDF viewer: placing a note returns to view mode.
-            app.setMode(.view)
+            // The active tab is verified against mountTabId above, so consume
+            // its payload before leaving note mode clears the transient state.
+            let pendingContent = app.consumePendingNoteContent()
+            noteComposer = WebNoteComposerState(
+                point: point, anchor: anchor, openedAt: Date(),
+                initialContent: pendingContent ?? "")
+            // Match the PDF path without allowing a stale web message to reset
+            // a different session's mode.
+            app.finishNotePlacement(forSessionId: sessionId)
 
         case "context-menu":
             let point = frameToParent(

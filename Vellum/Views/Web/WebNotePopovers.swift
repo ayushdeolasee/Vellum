@@ -183,10 +183,20 @@ private struct SmallPrimaryButton: View {
 // MARK: - WebNoteComposer
 
 struct WebNoteComposerView: View {
+    init(
+        initialContent: String = "",
+        onSubmit: @escaping (String) -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self.onSubmit = onSubmit
+        self.onClose = onClose
+        _text = State(initialValue: initialContent)
+    }
+
     var onSubmit: (String) -> Void
     var onClose: () -> Void
 
-    @State private var text = ""
+    @State private var text: String
     @Environment(\.palette) private var palette
 
     var body: some View {

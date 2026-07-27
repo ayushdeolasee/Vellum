@@ -404,11 +404,17 @@ final class PdfViewerController {
                     let clickY = Double((tp.y - frame.minY) / zoom)
                     let pageWidth = Double(frame.width / zoom)
                     let pageHeight = Double(frame.height / zoom)
+                    // Capture the session and queued AI payload while this
+                    // click still belongs to its originating tab; the Task may
+                    // not begin until after the user switches tabs.
+                    guard let app, let originSessionId = app.activeTabId else { return false }
+                    let pendingContent = app.consumePendingNoteContent()
                     suppressNextMouseUp = true
                     Task {
                         await self.placeNote(
                             pageNumber: pageNumber, clickX: clickX, clickY: clickY,
-                            pageWidth: pageWidth, pageHeight: pageHeight)
+                            pageWidth: pageWidth, pageHeight: pageHeight,
+                            pendingContent: pendingContent, originSessionId: originSessionId)
                     }
                     return true
                 }
@@ -673,11 +679,14 @@ final class PdfViewerController {
 
     private func placeNote(
         pageNumber: Int, clickX: Double, clickY: Double,
-        pageWidth: Double, pageHeight: Double
+        pageWidth: Double, pageHeight: Double,
+        pendingContent: String?, originSessionId: String
     ) async {
-        // An AI "Add as note" click carries the reply text; a plain note tool
-        // click leaves it nil so the sticky opens empty for typing.
-        let pendingContent = app?.consumePendingNoteContent()
+        // AnnotationStore captures its session as the add begins, but its save
+        // completion can resume after the user changes tabs. Do not turn a
+        // queued task into a write against a newly active session.
+        guard let app, app.activeTabId == originSessionId else { return }
+        let originAnnotationStore = annotationStore
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth,
@@ -692,11 +701,12 @@ final class PdfViewerController {
         let input = CreateAnnotationInput(
             type: .note, pageNumber: pageNumber, color: nil, content: pendingContent,
             positionData: position)
-        if let annotation = await annotationStore?.addNote(input) {
-            annotationStore?.selectAnnotation(annotation.id)
+        if let annotation = await originAnnotationStore?.addNote(input) {
+            originAnnotationStore?.selectAnnotation(annotation.id)
         }
-        // Note mode ALWAYS returns to view after a placement attempt.
-        app?.setMode(.view)
+        // Only the still-active origin session may leave note mode; tab B may
+        // have armed an unrelated interaction while A's save was in flight.
+        app.finishNotePlacement(forSessionId: originSessionId)
     }
 
     func addNoteFromContextMenu() {

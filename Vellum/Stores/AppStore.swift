@@ -664,6 +664,22 @@ final class AppStore {
         updateActiveTab { $0.pendingNoteContent = content }
     }
 
+    /// Complete a note placement only when its originating session remains the
+    /// active note interaction. A delayed save from tab A must never dismiss a
+    /// note interaction the user started after switching to tab B.
+    func finishNotePlacement(forSessionId sessionId: String) {
+        guard activeTabId == sessionId, mode == .note else { return }
+        setMode(.view)
+    }
+
+    /// Capture the active tab's crop destination before returning it to view
+    /// mode, which deliberately clears the transient destination.
+    func finishRegionCapture() -> RegionCaptureTarget {
+        let target = regionCaptureTarget
+        setMode(.view)
+        return target
+    }
+
     /// Consumed by the viewer when it places a note; nil once used.
     func consumePendingNoteContent() -> String? {
         let content = pendingNoteContent
