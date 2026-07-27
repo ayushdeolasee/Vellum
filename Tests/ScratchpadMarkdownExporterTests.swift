@@ -156,6 +156,48 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
         XCTAssertEqual(summary.copiedImageCount, 1)
     }
 
+    func testExportTreatsFourSpaceIndentedFencesAsRegularMarkdown() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "capture.png", in: sourceDirectory)
+        let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+        let markdown = [
+            "   ```markdown",
+            "![Three-space fence](vellum-scratchpad://capture)",
+            "   ```",
+            "    ```markdown",
+            "![Four-space indentation](vellum-scratchpad://capture)",
+            "    ```",
+            ">    ```markdown",
+            "> ![Quoted three-space fence](vellum-scratchpad://capture)",
+            ">    ```",
+            ">     ```markdown",
+            "> ![Quoted four-space indentation](vellum-scratchpad://capture)",
+            ">     ```"
+        ].joined(separator: "\n")
+
+        let summary = try ScratchpadMarkdownExporter.export(
+            markdown: markdown,
+            to: destination,
+            options: exportOptions(),
+            attachmentsDirectory: sourceDirectory
+        )
+
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        XCTAssertTrue(exported.contains(
+            "![Three-space fence](vellum-scratchpad://capture)"
+        ))
+        XCTAssertTrue(exported.contains(
+            "![Quoted three-space fence](vellum-scratchpad://capture)"
+        ))
+        XCTAssertTrue(exported.contains(
+            "![Four-space indentation](Notes Assets/capture.png)"
+        ))
+        XCTAssertTrue(exported.contains(
+            "![Quoted four-space indentation](Notes Assets/capture.png)"
+        ))
+        XCTAssertEqual(summary.copiedImageCount, 1)
+    }
+
     func testExportMergesLeadingYAMLFrontMatter() throws {
         let destination = temporaryDirectory.appendingPathComponent("Notes.md")
         let markdown = """
@@ -187,20 +229,28 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
         )
     }
 
-    func testSuccessfulExportRemovesTemporaryOwnershipMarker() throws {
+    func testExportRejectsDirectoryAttachmentBeforeStagingIt() throws {
         let sourceDirectory = try makeSourceDirectory()
-        try writeImage(named: "capture.png", in: sourceDirectory)
+        try FileManager.default.createDirectory(
+            at: sourceDirectory.appendingPathComponent("capture.png", isDirectory: true),
+            withIntermediateDirectories: false
+        )
         let destination = temporaryDirectory.appendingPathComponent("Notes.md")
 
-        _ = try ScratchpadMarkdownExporter.export(
-            markdown: "![Image](vellum-scratchpad://capture)",
-            to: destination,
-            options: exportOptions(),
-            attachmentsDirectory: sourceDirectory
-        )
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryDirectory
-            .appendingPathComponent("Notes Assets/.vellum-scratchpad-export-owner").path))
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Image](vellum-scratchpad://capture)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .unsafeSourceAttachment(_) = exportError else {
+                return XCTFail("Expected unsafe source error, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
     func testExportRollsBackWhenAnyReferencedImageIsUnavailable() throws {

@@ -20,7 +20,6 @@ enum ScratchpadMarkdownExportError: LocalizedError {
     case unsafeSourceAttachment(URL)
     case unsafeAssetsDirectory(URL)
     case assetNameCollision(String)
-    case rollbackFailed
 
     var errorDescription: String? {
         switch self {
@@ -36,8 +35,6 @@ enum ScratchpadMarkdownExportError: LocalizedError {
             "The adjacent assets folder is a symbolic link: \(url.lastPathComponent)."
         case let .assetNameCollision(name):
             "Multiple linked images would overwrite \(name)."
-        case .rollbackFailed:
-            "The export could not be completed and its copied assets could not be removed."
         }
     }
 }
@@ -159,33 +156,17 @@ enum ScratchpadMarkdownExporter {
         try Data(exportedMarkdown.utf8).write(to: stagedMarkdownURL, options: .atomic)
         let stagedAssetsURL = stagingURL.appendingPathComponent(
             assetDirectoryName, isDirectory: true)
-        let exportOwner = UUID().uuidString
         if !assetCopies.isEmpty {
             try fileManager.createDirectory(
                 at: stagedAssetsURL,
                 withIntermediateDirectories: false
             )
-            guard let ownerData = exportOwner.data(using: .utf8) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            try ownerData.write(
-                to: ownerMarkerURL(in: stagedAssetsURL),
-                options: .atomic
-            )
             for asset in assetCopies.values {
-                // Revalidate at the point of use. This cannot prevent an
-                // attachment from changing contents during a normal file copy,
-                // but it rejects a path replaced by a link before copying it.
-                guard sourceIsSafe(
+                try copySafeSourceAsset(
                     asset.sourceURL,
+                    to: stagedAssetsURL.appendingPathComponent(asset.filename),
                     attachmentsDirectory: attachmentsDirectory,
                     fileManager: fileManager
-                ) else {
-                    throw ScratchpadMarkdownExportError.unsafeSourceAttachment(asset.sourceURL)
-                }
-                try fileManager.copyItem(
-                    at: asset.sourceURL,
-                    to: stagedAssetsURL.appendingPathComponent(asset.filename)
                 )
             }
         }
@@ -204,39 +185,21 @@ enum ScratchpadMarkdownExporter {
             throw ScratchpadMarkdownExportError.assetsDirectoryAlreadyExists(assetsURL)
         }
 
-        var publishedAssets = false
-        do {
-            if !assetCopies.isEmpty {
-                try publishExclusively(
-                    stagedAssetsURL,
-                    to: assetsURL,
-                    conflict: .assetsDirectoryAlreadyExists(assetsURL)
-                )
-                publishedAssets = true
-            }
+        if !assetCopies.isEmpty {
             try publishExclusively(
-                stagedMarkdownURL,
-                to: destinationURL,
-                conflict: .destinationAlreadyExists(destinationURL)
+                stagedAssetsURL,
+                to: assetsURL,
+                conflict: .assetsDirectoryAlreadyExists(assetsURL)
             )
-            if publishedAssets {
-                // The marker exists only while this transaction might need a
-                // rollback. A failure to remove it must not turn a completed
-                // export into a failed one.
-                try? fileManager.removeItem(at: ownerMarkerURL(in: assetsURL))
-            }
-        } catch {
-            if publishedAssets {
-                if removeOwnedAssets(
-                    at: assetsURL,
-                    exportOwner: exportOwner,
-                    fileManager: fileManager
-                ) == false {
-                    throw ScratchpadMarkdownExportError.rollbackFailed
-                }
-            }
-            throw error
         }
+        // Do not roll back a published assets directory if this publication
+        // fails. A path-based delete could remove a directory another process
+        // replaced after publication; leaving this owned orphan is safe.
+        try publishExclusively(
+            stagedMarkdownURL,
+            to: destinationURL,
+            conflict: .destinationAlreadyExists(destinationURL)
+        )
 
         return ScratchpadMarkdownExportSummary(
             markdownURL: destinationURL,
@@ -387,10 +350,6 @@ enum ScratchpadMarkdownExporter {
         )
     }
 
-    private static func ownerMarkerURL(in assetsURL: URL) -> URL {
-        assetsURL.appendingPathComponent(".vellum-scratchpad-export-owner")
-    }
-
     private static func publishExclusively(
         _ stagedURL: URL,
         to destinationURL: URL,
@@ -413,27 +372,43 @@ enum ScratchpadMarkdownExporter {
         }
     }
 
-    /// The marker is created in the unique staging directory, then moved into
-    /// place atomically with the assets. Never delete an adjacent folder unless
-    /// it still carries this transaction's marker.
-    private static func removeOwnedAssets(
-        at assetsURL: URL,
-        exportOwner: String,
+    /// Opens the final source path without following a symlink, verifies the
+    /// opened object is a regular file, then reads from that descriptor. The
+    /// descriptor keeps a post-validation path replacement from changing what
+    /// is copied into the staging directory.
+    private static func copySafeSourceAsset(
+        _ sourceURL: URL,
+        to destinationURL: URL,
+        attachmentsDirectory: URL?,
         fileManager: FileManager
-    ) -> Bool {
-        guard itemExists(at: assetsURL, fileManager: fileManager) else { return true }
-        let markerURL = ownerMarkerURL(in: assetsURL)
-        guard let marker = try? String(contentsOf: markerURL, encoding: .utf8),
-              marker == exportOwner
+    ) throws {
+        guard sourceIsSafe(
+            sourceURL,
+            attachmentsDirectory: attachmentsDirectory,
+            fileManager: fileManager
+        ) else {
+            throw ScratchpadMarkdownExportError.unsafeSourceAttachment(sourceURL)
+        }
+
+        let descriptor = sourceURL.path.withCString {
+            open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard descriptor >= 0 else {
+            throw ScratchpadMarkdownExportError.unsafeSourceAttachment(sourceURL)
+        }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG
         else {
-            return false
+            close(descriptor)
+            throw ScratchpadMarkdownExportError.unsafeSourceAttachment(sourceURL)
         }
-        do {
-            try fileManager.removeItem(at: assetsURL)
-            return true
-        } catch {
-            return false
-        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        let contents = try handle.readToEnd() ?? Data()
+        try contents.write(to: destinationURL, options: .atomic)
     }
 
     private static func sourceIsSafe(
@@ -529,22 +504,25 @@ enum ScratchpadMarkdownExporter {
         return content.dropFirst(fenceLength).allSatisfy { $0 == " " || $0 == "\t" }
     }
 
-    /// Fenced code blocks can sit inside block quotes. Ignore up to three
-    /// spaces around each quote marker, while requiring the same quote depth
-    /// for a closing fence.
+    /// Fenced code blocks can sit inside block quotes. Each container prefix
+    /// may have up to three leading spaces; a fourth space starts indented code
+    /// instead of a fence. Closing fences use the same container prefix.
     private static func fenceContent(in line: Substring) -> (Substring, Int) {
         var content = line
-        content = content.drop(while: { $0 == " " || $0 == "\t" })
         var quoteDepth = 0
-        while content.first == ">" {
+
+        while true {
+            let indentation = content.prefix(while: { $0 == " " }).count
+            guard indentation <= 3 else { return (content, quoteDepth) }
+            content = content.dropFirst(indentation)
+            guard content.first == ">" else { return (content, quoteDepth) }
+
             quoteDepth += 1
             content = content.dropFirst()
             if content.first == " " || content.first == "\t" {
                 content = content.dropFirst()
             }
-            content = content.drop(while: { $0 == " " || $0 == "\t" })
         }
-        return (content, quoteDepth)
     }
 
     private static func imageReferences(
