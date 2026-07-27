@@ -57,6 +57,23 @@ private struct StubError: Error, LocalizedError {
     var errorDescription: String? { "not connected" }
 }
 
+/// A `.live` provider that never answers on its own. `StubProvider`'s response
+/// is synchronous, so it can never be caught mid-flight; this one parks on a
+/// long sleep, which is the only way a test can observe what the engine does
+/// when the surrounding task is cancelled underneath an in-flight remote
+/// source — exactly what the 120ms debounce does on every keystroke.
+private struct HangingLiveProvider: HomeSearchProvider {
+    let id = "later"
+    let displayName = "Read Later"
+    let mode = HomeSearchProviderMode.live
+
+    func items(matching _: String) async throws -> [HomeSearchItem] {
+        // Throws `CancellationError` as soon as the task is cancelled.
+        try await Task.sleep(for: .seconds(30))
+        return []
+    }
+}
+
 private func stubItem(
     id: String, identity: String, section: HomeSearchSection = .readLater, title: String
 ) -> HomeSearchItem {
@@ -250,6 +267,36 @@ struct LibraryDocumentsSearchProviderTests {
         #expect(item.badges.contains(.missing))
         #expect(!item.canRevealInFinder)
     }
+
+    /// A meta.json can carry a blank `last_known_path`. Those entries must be
+    /// dropped, not mapped: the locator IS the dedupe identity, so two of them
+    /// would share the identity `""` and `HomeSearchEngine.deduplicated` would
+    /// silently collapse them into one row — and that row's target is
+    /// `.file(path: "")`, which cannot open. Asserting through the engine
+    /// (rather than the provider alone) is what pins the collapse.
+    @Test("Documents with no recorded path are dropped, not collapsed into one row")
+    func blankPathDocumentsAreDropped() async throws {
+        let provider = LibraryDocumentsSearchProvider(
+            load: {
+                [
+                    DocumentDataStore.DocumentMetaEntry(
+                        key: "blank-1", meta: meta(title: "First", path: ""), hasUserData: true),
+                    DocumentDataStore.DocumentMetaEntry(
+                        key: "blank-2", meta: meta(title: "Second", path: "   "),
+                        hasUserData: true),
+                    DocumentDataStore.DocumentMetaEntry(
+                        key: "real", meta: meta(title: "Real", path: "/docs/real.pdf"),
+                        hasUserData: true),
+                ]
+            },
+            fileExists: { _ in true })
+
+        #expect(try await provider.items(matching: "").map(\.title) == ["Real"])
+
+        let engine = HomeSearchEngine(providers: [provider])
+        await engine.reload()
+        #expect(await engine.corpus.map(\.title) == ["Real"])
+    }
 }
 
 // MARK: - Engine
@@ -368,6 +415,28 @@ struct HomeSearchEngineTests {
 
         flaky.shouldFail = false
         _ = await engine.results(query: "remote", now: Date())
+        #expect(await engine.failures.isEmpty)
+    }
+
+    /// The debounce cancels the previous pass on every keystroke, and that
+    /// cancellation propagates into any in-flight live provider. If the engine
+    /// treated the resulting error like a source outage, a connected read-later
+    /// account would flash "Read Later: cancelled" under the results of nearly
+    /// every word typed — a broken-looking integration that is in fact working
+    /// perfectly.
+    @Test("A pass cancelled by the debounce is not reported as a broken source")
+    func cancellationIsNotAFailure() async throws {
+        let engine = HomeSearchEngine(providers: [HangingLiveProvider()])
+        await engine.reload()
+
+        let task = Task { await engine.results(query: "remote", now: Date()) }
+        // Let the provider actually reach its suspension point, so cancellation
+        // is observed INSIDE `items(matching:)` rather than before the task body
+        // starts — otherwise the test could pass without exercising the catch.
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+        _ = await task.value
+
         #expect(await engine.failures.isEmpty)
     }
 

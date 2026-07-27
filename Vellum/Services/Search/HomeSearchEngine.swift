@@ -99,6 +99,16 @@ actor HomeSearchEngine {
                     searchable = Self.deduplicated(searchable + remote)
                     failures.removeAll { $0.hasPrefix("\(provider.displayName): ") }
                 } catch {
+                    // A pass abandoned by the debounce is NOT a broken source.
+                    // `HomeSearchStore` drives ranking from `.task(id:)`, which
+                    // cancels the previous pass on every keystroke, and that
+                    // cancellation propagates into the provider — URLSession
+                    // surfaces it as `URLError.cancelled`, structured code as
+                    // `CancellationError`. Recording either would park a
+                    // "Read Later: cancelled" banner under the results of
+                    // almost every word the user types. Ask the task, not the
+                    // error, so both spellings are covered.
+                    if Task.isCancelled { break }
                     let message = "\(provider.displayName): \(error.localizedDescription)"
                     if !failures.contains(message) { failures.append(message) }
                 }

@@ -78,6 +78,15 @@ struct WelcomeScreen: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
+                // A split window can host TWO welcome screens, and each would
+                // otherwise register the same ⌘F. SwiftUI picks between
+                // duplicate shortcuts arbitrarily, so ⌘F could hand the
+                // keyboard to the pane the user is not looking at. Disabling
+                // the shortcut in the unfocused pane leaves exactly one
+                // claimant. (`.disabled` suppresses the key equivalent too,
+                // which is the whole point — `.hidden()` would also drop it
+                // but would take the button out of the layout.)
+                .disabled(!isPaneFocused)
         }
     }
 

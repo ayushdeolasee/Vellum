@@ -244,7 +244,23 @@ enum HomeSearchRanker {
 
         let tokens = HomeSearchText.tokens(in: query)
         guard !tokens.isEmpty else {
-            return browseSections(candidates, sort: sort)
+            // Zero tokens has TWO causes that must not share an answer.
+            //
+            // A genuinely blank field is the browse list — that is what makes
+            // the home screen show the library at rest.
+            //
+            // A query that merely FOLDS to nothing ("???", "—", an emoji) is
+            // not blank: the user typed something. Browsing for it would
+            // contradict the screen's own chrome, because `HomeSearchStore`
+            // keys `isSearching` off the trimmed query rather than off the
+            // tokens — the bar would read "N results", the top row would be
+            // auto-selected, and ↩ would open an arbitrary document nobody
+            // searched for. It also breaks this ranker's one promise, that
+            // every result visibly contains what was typed. No tokens to
+            // match means no matches.
+            return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? browseSections(candidates, sort: sort)
+                : []
         }
 
         return relevanceSections(

@@ -267,6 +267,41 @@ struct HomeSearchMatchingTests {
         let corpus = [item(id: "a", title: "Kalman Filters")]
         #expect(HomeSearchRanker.results(corpus: corpus, query: "xylophone", now: now).isEmpty)
     }
+
+    /// A query made only of punctuation, symbols, or emoji folds away to zero
+    /// tokens — but it is NOT an empty query. Browsing the whole library for it
+    /// would contradict the screen's own chrome: the store still reports
+    /// `isSearching`, so the bar reads "N results" and the top row is
+    /// auto-selected, meaning ↩ would open an arbitrary document the user never
+    /// searched for. Nothing was typed that any result visibly contains, so the
+    /// honest answer is no matches.
+    @Test(
+        "A query that folds to zero tokens matches nothing rather than everything",
+        arguments: ["???", "—", "🎉", "!!! ...", "· ·"])
+    func unmatchableQueryIsNotABrowse(query: String) {
+        let corpus = [item(id: "a", title: "Kalman Filters"), item(id: "b", title: "Attention")]
+        #expect(HomeSearchRanker.results(corpus: corpus, query: query, now: now).isEmpty)
+    }
+
+    /// The counterpart to the above: genuinely blank input is still a browse,
+    /// which is what makes the empty field show the library.
+    @Test("Blank input still browses", arguments: ["", " ", "\n\t "])
+    func blankQueryStillBrowses(query: String) {
+        let corpus = [item(id: "a", title: "A"), item(id: "b", title: "B")]
+        #expect(rank(corpus, query).count == 2)
+    }
+
+    /// A pathological paste must not be treated as a link and must not match
+    /// everything; it should simply find nothing, quickly.
+    @Test("A very long query narrows to nothing instead of matching everything")
+    func veryLongQuery() {
+        let corpus = [item(id: "a", title: "Kalman Filters")]
+        let query = String(repeating: "kalman ", count: 2_000)
+        // Every token is "kalman", which the title does contain, so this one
+        // still matches — the point is that it terminates and stays correct.
+        #expect(rank(corpus, query).map(\.id) == ["a"])
+        #expect(rank(corpus, String(repeating: "z", count: 100_000)).isEmpty)
+    }
 }
 
 // MARK: - Sections, filtering, ordering

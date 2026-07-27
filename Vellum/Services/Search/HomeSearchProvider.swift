@@ -195,13 +195,24 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
 
     func items(matching _: String) async throws -> [HomeSearchItem] {
         let now = Date()
-        return load().map { entry in
+        return load().compactMap { entry -> HomeSearchItem? in
             let meta = entry.meta
             let isWeb = meta.kind == DocumentKind.web.rawValue
             let kind: DocumentKind = isWeb ? .web : .pdf
             // For web documents `last_known_path` holds the normalized URL —
             // DocumentInfo.pdfPath is the generic document URI, not a file path.
             let locator = meta.lastKnownPath
+            // A meta.json can carry a blank last_known_path (StorageInventory
+            // guards the same case), and such an entry is worse than useless
+            // here: the locator is the dedupe identity, so EVERY blank-path
+            // document collapses into a single row via
+            // `HomeSearchEngine.deduplicated`, hiding all but one of them —
+            // and the survivor is an untitled row whose target is
+            // `.file(path: "")`, so clicking it can only fail. Nothing is
+            // searchable or openable without a locator, so drop it.
+            guard !locator.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
             let name = isWeb
                 ? RecentFilesService.webpageDisplayName(for: locator)
                 : RecentFilesService.fileName(for: locator)
