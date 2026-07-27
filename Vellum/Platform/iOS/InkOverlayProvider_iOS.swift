@@ -5,26 +5,37 @@ import UIKit
 
 /// A `PKCanvasView` that carries its 1-based page number (so the drawing
 /// delegate can route changes back to the controller without a reverse map) and
-/// its current super-sample factor `K` (so persistence can convert strokes back
-/// to page space — see `InkOverlayProvider_iOS` for the whole scheme).
+/// its current super-sample factor `K` (the canvas's `zoomScale` — see
+/// `InkOverlayProvider_iOS` for the whole scheme).
 final class InkPageCanvas_iOS: PKCanvasView {
     var pageNumber = 0
-    /// The linear super-sample factor this canvas currently rasterizes at. The
-    /// canvas draws in a coordinate space `K`× the page's zoom-1 space, so its
-    /// backing store holds `K`× the pixels and PencilKit re-rasterizes the vector
-    /// strokes at that density. `1` means "same as the page" (no super-sampling).
+    /// The linear super-sample factor this canvas currently rasterizes at, i.e.
+    /// its `zoomScale`. The canvas's *content* coordinate space is always the
+    /// page's zoom-1 space; `K` only makes PencilKit rasterize that content into
+    /// a `K`× denser backing store. `1` means "same as the page".
     var superSample: CGFloat = 1
 }
 
 /// Wraps a page's ink canvas so we can super-sample it. PDFKit sizes this
 /// container to the page's zoom-1 bounds and scales it by the live zoom
-/// transform. Inside, the canvas is given `K`× the container's bounds and a
-/// `1/K` view transform, so it *looks* the same size but its backing store — and
-/// therefore PencilKit's stroke rasterization — is `K`× denser. This is the
-/// crucial difference from nudging `contentScaleFactor`: that only changes the
-/// scale hint and PencilKit keeps upscaling its existing low-res bitmap, whereas
-/// enlarging the actual bounds makes PencilKit render the vectors into a bigger
-/// surface (crisp). See `InkOverlayProvider_iOS.superSample(forZoom:)`.
+/// transform. Inside, the canvas is laid out `K`× as large and given
+/// `zoomScale = K`, then shrunk back over the container by a `1/K` view
+/// transform. It *looks* the same size, but its backing store — and therefore
+/// PencilKit's stroke rasterization — is `K`× denser.
+///
+/// `zoomScale` is the load-bearing part. It is how PencilKit is *designed* to be
+/// scaled (`PKCanvasView` is a `UIScrollView`, and Apple's own PencilKit sample
+/// zooms it this way), so PencilKit re-rasterizes the vector strokes at the new
+/// density while the drawing's own coordinates stay in unzoomed content space.
+/// Two alternatives do not work:
+/// * nudging `contentScaleFactor` — that only changes the scale hint, and
+///   PencilKit keeps upscaling its existing low-res bitmap (blurry);
+/// * enlarging the canvas's `bounds` by `K` and scaling stroke geometry to match
+///   — crisp, but it forces the tool width through `PKInkingTool.width`, which
+///   PencilKit clamps (pen 0.88…25.66, marker 7.5…60) and does not map linearly
+///   onto rendered stroke geometry. Strokes then came out ~2× thinner when drawn
+///   while zoomed in than at 100%. Keeping geometry in page space avoids the
+///   whole problem: the tool width is whatever the user picked, at every zoom.
 final class InkOverlayContainer_iOS: UIView {
     let canvas: InkPageCanvas_iOS
 
@@ -42,11 +53,18 @@ final class InkOverlayContainer_iOS: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let k = max(canvas.superSample, 1)
-        // Reset the transform before resizing bounds so the two don't compound,
-        // then re-apply. The canvas ends up `K`× bounds, shrunk by `1/K` back to
-        // the container's size and centered over it.
+        // Reset the transform before resizing so the two don't compound, then
+        // re-apply. The canvas is laid out `K`× the container, zoomed `K`× (so
+        // its content space stays the container's zoom-1 page space and the
+        // content exactly fills the viewport), then shrunk by `1/K` back over
+        // the container.
         canvas.transform = .identity
         canvas.bounds = CGRect(x: 0, y: 0, width: bounds.width * k, height: bounds.height * k)
+        canvas.minimumZoomScale = k
+        canvas.maximumZoomScale = k
+        canvas.zoomScale = k
+        canvas.contentSize = canvas.bounds.size
+        canvas.contentOffset = .zero
         canvas.transform = CGAffineTransform(scaleX: 1 / k, y: 1 / k)
         canvas.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
@@ -70,12 +88,12 @@ final class InkOverlayContainer_iOS: UIView {
 /// looks fuzzy next to the vector-crisp PDF glyphs. Bumping `contentScaleFactor`
 /// does **not** help: PencilKit keeps upscaling its existing bitmap rather than
 /// re-rendering the vectors. Instead we super-sample: give each *on-screen*
-/// canvas a backing store `K = ceil(zoom)`× larger (capped at the app's 4× max
-/// zoom) and draw the strokes at `K`× scale, so PencilKit rasterizes the vectors
-/// at full device resolution. Off-screen pages drop back to `K = 1` to bound
-/// memory (an inked page at 4× is a large bitmap). The stroke geometry stored on
-/// disk is always page (zoom-1) space — we scale by `1/K` before persisting and
-/// by `K` when seeding — so `PdfInk` round-tripping is unchanged.
+/// canvas `zoomScale = K = ceil(zoom)` (capped at the app's 4× max zoom) so
+/// PencilKit rasterizes the vectors at full device resolution. Off-screen pages
+/// drop back to `K = 1` to bound memory (an inked page at 4× is a large bitmap).
+/// Stroke geometry is *always* page (zoom-1) space — the canvas's content space
+/// is page space at every `K` — so seeding and persistence are straight copies
+/// and `PdfInk` round-tripping is unchanged.
 @MainActor
 final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayViewProvider,
     PKCanvasViewDelegate, UIPencilInteractionDelegate {
@@ -140,16 +158,16 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         // be dropped. It lives on the stable PDFView instead (see PdfKitView_iOS).
 
         let container = InkOverlayContainer_iOS(canvas: canvas)
-        let k = superSample(forZoom: pdfScale)
-        canvas.superSample = k
-        canvas.tool = ink?.pkTool(widthScale: k) ?? PKInkingTool(.pen, color: .black, width: 4 * k)
+        canvas.superSample = superSample(forZoom: pdfScale)
+        canvas.tool = ink?.pkTool ?? PKInkingTool(.pen, color: .black, width: 4)
 
-        // Seed from the page's embedded PKDrawing (page space) scaled into the
-        // canvas's `K`× space, then strip the page's native ink so the display
-        // document doesn't double-render behind the canvas.
+        // Seed from the page's embedded PKDrawing — the canvas's content space
+        // is page space at every `K`, so this is a straight copy — then strip
+        // the page's native ink so the display document doesn't double-render
+        // behind the canvas.
         suppressChange = true
         let seeded = PdfInk.drawing(on: page) ?? PKDrawing()
-        canvas.drawing = Self.scaleDrawing(seeded, by: k)
+        canvas.drawing = seeded
         suppressChange = false
         PdfInk.removeVellumInk(from: page)
         if !seeded.strokes.isEmpty {
@@ -175,23 +193,15 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
 
     // MARK: - Render resolution (crispness under zoom)
 
-    /// Change a canvas's super-sample factor: rescale its drawing into the new
-    /// space (so on-disk page-space geometry is preserved), relayout the backing
-    /// store, and re-apply the tool at the matching width. Reassigning `drawing`
-    /// is what forces PencilKit to re-rasterize the vectors at the new density.
+    /// Change a canvas's super-sample factor, relaying out so PencilKit
+    /// re-rasterizes the vectors at the new `zoomScale`. The drawing itself is
+    /// untouched — its coordinates are page space at every `K`.
     private func setSuperSample(_ newK: CGFloat, for container: InkOverlayContainer_iOS) {
         let canvas = container.canvas
-        let oldK = canvas.superSample
-        guard abs(oldK - newK) > 0.001 else { return }
+        guard abs(canvas.superSample - newK) > 0.001 else { return }
         canvas.superSample = newK
-        if !canvas.drawing.strokes.isEmpty {
-            suppressChange = true
-            canvas.drawing = Self.scaleDrawing(canvas.drawing, by: newK / oldK)
-            suppressChange = false
-        }
         container.setNeedsLayout()
         container.layoutIfNeeded()
-        canvas.tool = ink?.pkTool(widthScale: newK) ?? PKInkingTool(.pen, color: .black, width: 4 * newK)
     }
 
     /// Called from `PdfKitView_iOS`'s `.PDFViewScaleChanged` observer. Debounced
@@ -213,24 +223,6 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         for key in displayedKeys {
             if let container = containers[key] { setSuperSample(k, for: container) }
         }
-    }
-
-    /// Scale a drawing by `s` (positions and stroke widths together), returning a
-    /// fresh drawing. Used to move strokes between page space and a canvas's
-    /// super-sampled space. `PKStroke.transform` scales the whole stroke, width
-    /// included, so page-space geometry round-trips exactly.
-    static func scaleDrawing(_ drawing: PKDrawing, by s: CGFloat) -> PKDrawing {
-        guard abs(s - 1) > 0.0001 else { return drawing }
-        let t = CGAffineTransform(scaleX: s, y: s)
-        let strokes = drawing.strokes.map { stroke in
-            PKStroke(
-                ink: stroke.ink,
-                path: stroke.path,
-                transform: stroke.transform.concatenating(t),
-                mask: stroke.mask
-            )
-        }
-        return PKDrawing(strokes: strokes)
     }
 
     /// Drop all cached canvases. Called when a viewer adopts a fresh
@@ -265,13 +257,13 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
 
     // MARK: - State propagation (driven by the controller's didSets)
 
-    /// Re-apply the active tool/color/width to every cached canvas. Each canvas
-    /// scales the tool width by its own super-sample factor so the on-page width
-    /// stays what the user picked.
+    /// Re-apply the active tool/color/width to every cached canvas. The width is
+    /// the one the user picked, unmodified — a canvas's super-sample factor is a
+    /// rasterization detail and never touches stroke geometry.
     func applyTool() {
         guard let ink else { return }
         for container in containers.values {
-            container.canvas.tool = ink.pkTool(widthScale: container.canvas.superSample)
+            container.canvas.tool = ink.pkTool
         }
     }
 
@@ -298,21 +290,10 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         guard !suppressChange,
               let canvas = canvasView as? InkPageCanvas_iOS,
               canvas.pageNumber >= 1 else { return }
-        // The canvas draws in `K`× page space; persist page (zoom-1) space so the
-        // on-disk `/Ink` geometry is resolution-independent.
-        let pageDrawing = Self.scaleDrawing(canvasView.drawing, by: 1 / max(canvas.superSample, 1))
-        #if DEBUG
-        if let last = canvasView.drawing.strokes.last {
-            let pts = Array(last.path)
-            let meanSize = pts.map { ($0.size.width + $0.size.height) / 2 }.reduce(0, +) / CGFloat(max(pts.count, 1))
-            let sx = sqrt(last.transform.a * last.transform.a + last.transform.c * last.transform.c)
-            NSLog("[ink-width] K=%.2f pdfScale=%.2f canvasBounds=%.0f toolW=%@ meanPtSize=%.3f strokeSX=%.3f pageW=%.3f",
-                  canvas.superSample, pdfScale, canvas.bounds.width,
-                  String(describing: (canvas.tool as? PKInkingTool)?.width ?? -1),
-                  meanSize, sx, meanSize * sx / max(canvas.superSample, 1))
-        }
-        #endif
-        ink?.drawingChanged(pageDrawing, page: canvas.pageNumber)
+        // The canvas's content space is page (zoom-1) space at every `K`, so the
+        // drawing persists as-is and the on-disk `/Ink` geometry is
+        // resolution-independent.
+        ink?.drawingChanged(canvasView.drawing, page: canvas.pageNumber)
     }
 
     // MARK: - UIPencilInteractionDelegate

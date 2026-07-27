@@ -307,26 +307,27 @@ final class InkController_iOS {
         drawingVersion &+= 1
     }
 
-    var pkTool: PKTool { pkTool(widthScale: 1) }
-
-    /// The active PencilKit tool, with its width multiplied by `widthScale`. The
-    /// ink canvases draw in a super-sampled space (see `InkOverlayProvider_iOS`),
-    /// so each passes its own `K` here to keep the on-page stroke width equal to
-    /// what the user selected regardless of the backing-store density.
-    func pkTool(widthScale: CGFloat) -> PKTool {
+    /// The active PencilKit tool. The width is exactly the one the user picked:
+    /// ink canvases super-sample by raising their `zoomScale`, which is purely a
+    /// rasterization concern and leaves stroke geometry in page space, so the
+    /// width must NOT be scaled to compensate. (It used to be, and because
+    /// PencilKit clamps `PKInkingTool.width` — pen 0.88…25.66, marker 7.5…60 —
+    /// and doesn't map it linearly onto rendered geometry, strokes drawn while
+    /// zoomed in came out about half as thick as strokes drawn at 100%.)
+    var pkTool: PKTool {
         switch tool {
         case .pen:
-            return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth * widthScale)
+            return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth)
         case .highlighter:
-            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth * widthScale)
+            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth)
         case .eraser:
             // Explicit width — the default reports 0 ("system default"), which
             // leaves the erase radius an unknown.
             switch eraserMode {
             case .pixel:
-                return PKEraserTool(.bitmap, width: activeWidth * widthScale)
+                return PKEraserTool(.bitmap, width: activeWidth)
             case .object:
-                return PKEraserTool(.vector, width: activeWidth * widthScale)
+                return PKEraserTool(.vector, width: activeWidth)
             }
         }
     }
