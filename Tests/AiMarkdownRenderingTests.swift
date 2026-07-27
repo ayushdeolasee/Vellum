@@ -280,6 +280,14 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.plainPreview("a\n\n***\n\nb"), "a b")
     }
 
+    /// Rule detection runs on the raw line, so it must not reach inside a code
+    /// fence and turn a line of dashes in a snippet into a horizontal rule.
+    func testRuleDetectionDoesNotReachIntoCodeFences() {
+        XCTAssertEqual(
+            MarkdownParser.parse("```\n---\n***\n```"),
+            [.code("---\n***")])
+    }
+
     // MARK: - Headings deeper than ###
 
     func testHeadingLevelsFourThroughSixAreParsed() {
