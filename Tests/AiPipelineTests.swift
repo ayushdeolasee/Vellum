@@ -407,7 +407,56 @@ final class AiPipelineTests: XCTestCase {
 
         // And messages persisted before telemetry (no usage key) still decode.
         let legacy = Data(#"{"id":"a","role":"assistant","content":"old","createdAt":"2026-01-01T00:00:00.000Z"}"#.utf8)
-        XCTAssertNil(try JSONDecoder().decode(AiMessage.self, from: legacy).usage)
+        let decodedLegacy = try JSONDecoder().decode(AiMessage.self, from: legacy)
+        XCTAssertNil(decodedLegacy.usage)
+        XCTAssertTrue(decodedLegacy.references.isEmpty)
+    }
+
+    /// Sent references survive persistence without retaining image payloads,
+    /// and preserve enough provenance to explain the completed turn.
+    func testSentReferenceProvenanceSurvivesEncodingRoundTrip() throws {
+        let reference = AiReference(kind: .selection(
+            text: "  A selected passage\nwith whitespace.  ",
+            page: 7
+        ))
+        let provenance = AiMessageReference(reference: reference, documentTitle: "Research.pdf")
+        let message = AiPersistence.makeMessage(
+            role: .user,
+            content: "Explain this",
+            references: [provenance]
+        )
+
+        let decoded = try JSONDecoder().decode(
+            AiMessage.self,
+            from: JSONEncoder().encode(message)
+        )
+
+        XCTAssertEqual(decoded.references.count, 1)
+        XCTAssertEqual(decoded.references.first?.kind, .selection)
+        XCTAssertEqual(decoded.references.first?.label, "A selected passage with whitespace.")
+        XCTAssertEqual(decoded.references.first?.page, 7)
+        XCTAssertEqual(decoded.references.first?.documentTitle, "Research.pdf")
+    }
+
+    /// Every attachment action requests focus (including repeated actions) and
+    /// moves the window-global inspector to AI in one state transition.
+    @MainActor
+    func testAddingReferenceOpensAiAndRequestsComposerFocus() {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        workspace.sidebarOpen = false
+        workspace.sidebarTab = .annotations
+        let initialRequest = store.composerFocusRequest
+
+        store.addReference(AiReference(kind: .selection(text: "First", page: 1)))
+        XCTAssertTrue(workspace.sidebarOpen)
+        XCTAssertEqual(workspace.sidebarTab, .ai)
+        XCTAssertEqual(store.composerFocusRequest, initialRequest + 1)
+        XCTAssertEqual(store.composerReferences.count, 1)
+
+        store.addReference(AiReference(kind: .selection(text: "Second", page: 2)))
+        XCTAssertEqual(store.composerFocusRequest, initialRequest + 2)
+        XCTAssertEqual(store.composerReferences.count, 2)
     }
 
     // MARK: - Auto page-image gating

@@ -52,6 +52,68 @@ enum AiThinkingMode: String, Codable, Sendable, CaseIterable {
     }
 }
 
+struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case selection
+        case highlight
+        case region
+        case pageSnapshot
+        case quote
+        case image
+    }
+
+    var id: String
+    var kind: Kind
+    /// Compact, immutable description of what was sent. Image bytes are
+    /// deliberately not persisted with the transcript.
+    var label: String
+    var page: Int?
+    /// The document active when the reference was sent. This makes provenance
+    /// unambiguous when a conversation is exported or revisited later.
+    var documentTitle: String?
+
+    init(reference: AiReference, documentTitle: String?) {
+        id = reference.id
+        let trimmedTitle = documentTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.documentTitle = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
+        switch reference.kind {
+        case let .selection(text, page):
+            kind = .selection
+            label = Self.collapsed(text)
+            self.page = page
+        case let .highlight(text, page):
+            kind = .highlight
+            label = Self.collapsed(text)
+            self.page = page
+        case let .region(_, page):
+            kind = .region
+            label = "Region"
+            self.page = page
+        case let .pageSnapshot(_, page):
+            kind = .pageSnapshot
+            label = "Page \(page)"
+            self.page = page
+        case let .quote(text, _):
+            kind = .quote
+            label = Self.collapsed(text)
+            page = nil
+        case let .image(_, name):
+            kind = .image
+            label = name
+            page = nil
+        }
+    }
+
+    private static func collapsed(_ text: String) -> String {
+        let collapsed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > 80 else { return collapsed }
+        return String(collapsed.prefix(77)) + "…"
+    }
+}
+
 struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var role: AiRole
@@ -60,6 +122,39 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// Per-response token/cost telemetry; absent on messages persisted
     /// before telemetry existed and on user messages.
     var usage: AiUsage? = nil
+    /// Immutable provenance for references attached to this user turn.
+    /// Empty for assistant messages and conversations written before #58.
+    var references: [AiMessageReference] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, content, createdAt, usage, references
+    }
+
+    init(
+        id: String,
+        role: AiRole,
+        content: String,
+        createdAt: String,
+        usage: AiUsage? = nil,
+        references: [AiMessageReference] = []
+    ) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.createdAt = createdAt
+        self.usage = usage
+        self.references = references
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        role = try values.decode(AiRole.self, forKey: .role)
+        content = try values.decode(String.self, forKey: .content)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        usage = try values.decodeIfPresent(AiUsage.self, forKey: .usage)
+        references = try values.decodeIfPresent([AiMessageReference].self, forKey: .references) ?? []
+    }
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -218,6 +313,9 @@ final class AiStore {
     /// Context the user has attached to the next message (selection, highlight,
     /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
     private(set) var composerReferences: [AiReference] = []
+    /// Monotonic request observed by the AppKit-backed composer. A counter (not
+    /// a Bool) means repeated "Add to AI Chat" actions always refocus it.
+    private(set) var composerFocusRequest = 0
 
     /// Registered by the PDF viewer: locate a verbatim phrase on a page at
     /// zoom 1 in top-left-origin PDF points (lib/highlight-locator.ts).
@@ -343,6 +441,7 @@ final class AiStore {
         composerReferences.append(reference)
         app?.workspace?.sidebarTab = .ai
         app?.workspace?.sidebarOpen = true
+        composerFocusRequest &+= 1
     }
 
     func removeReference(id: String) {
@@ -601,7 +700,14 @@ final class AiStore {
             return
         }
 
-        let userMessage = AiPersistence.makeMessage(role: .user, content: trimmed)
+        let sentReferences = context.references.map {
+            AiMessageReference(reference: $0, documentTitle: documentAtStart.title)
+        }
+        let userMessage = AiPersistence.makeMessage(
+            role: .user,
+            content: trimmed,
+            references: sentReferences
+        )
         messages.append(userMessage)
         // Empty assistant placeholder the stream fills in-place. Kept out of the
         // persisted list until it has content so a mid-stream crash leaves no

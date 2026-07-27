@@ -310,12 +310,18 @@ enum AiPersistence {
         dirtyKeys.remove(key)
     }
 
-    static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {
+    static func makeMessage(
+        role: AiRole,
+        content: String,
+        id: String? = nil,
+        references: [AiMessageReference] = []
+    ) -> AiMessage {
         AiMessage(
             id: id ?? UUID().uuidString.lowercased(),
             role: role,
             content: content,
-            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date())
+            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date()),
+            references: references
         )
     }
 
@@ -426,12 +432,18 @@ enum AiPersistence {
            let usageData = try? JSONSerialization.data(withJSONObject: usageValue) {
             usage = try? JSONDecoder().decode(AiUsage.self, from: usageData)
         }
+        var references: [AiMessageReference] = []
+        if let referencesValue = value["references"] as? [[String: Any]],
+           let referencesData = try? JSONSerialization.data(withJSONObject: referencesValue) {
+            references = (try? JSONDecoder().decode([AiMessageReference].self, from: referencesData)) ?? []
+        }
         return AiMessage(
             id: rawId?.isEmpty == false ? rawId! : UUID().uuidString.lowercased(),
             role: role,
             content: content,
             createdAt: rawDate?.isEmpty == false ? rawDate! : ISO8601DateFormatter.aiTimestamp.string(from: Date()),
-            usage: usage
+            usage: usage,
+            references: references
         )
     }
 

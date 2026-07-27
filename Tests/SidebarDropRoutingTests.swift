@@ -100,6 +100,34 @@ final class SidebarDropRoutingTests: XCTestCase {
         pump(0.4)
     }
 
+    /// "Add to AI Chat" must not leave keyboard users stranded in the document:
+    /// the same state mutation that reveals AI requests first responder for the
+    /// real AppKit composer, so typing or Return works immediately.
+    func testAddingReferenceFocusesRealComposer() throws {
+        let mounted = hostSidebar(initialTab: .annotations)
+        let composer = try XCTUnwrap(firstSubview(of: SubmitTextView.self, in: mounted.host))
+        XCTAssertFalse(window?.firstResponder === composer)
+
+        mounted.pane.ai.addReference(
+            AiReference(kind: .selection(text: "Focus this passage", page: 3))
+        )
+        mounted.host.layoutSubtreeIfNeeded()
+        pump(0.5)
+
+        XCTAssertEqual(mounted.workspace.sidebarTab, .ai)
+        XCTAssertTrue(mounted.workspace.sidebarOpen)
+        XCTAssertTrue(window?.firstResponder === composer)
+        XCTAssertEqual(mounted.pane.ai.composerReferences.count, 1)
+    }
+
+    private func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
+        if let match = root as? T { return match }
+        for child in root.subviews {
+            if let match = firstSubview(of: type, in: child) { return match }
+        }
+        return nil
+    }
+
     /// The registered drag destination AppKit would route a drop at
     /// `windowPoint` to: the deepest registered view along the frontmost sibling
     /// branch containing the point. Front-to-back = `subviews` reversed.

@@ -22,6 +22,86 @@ struct ReferenceChipRow: View {
     }
 }
 
+/// Immutable provenance shown beneath a sent user message. Unlike composer
+/// chips these have no remove affordance because they describe what was already
+/// sent, not what will be sent next.
+struct SentReferenceChipRow: View {
+    let references: [AiMessageReference]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(references) { reference in
+                    SentReferenceChip(reference: reference)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(maxHeight: 34)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("References sent with this message")
+    }
+}
+
+private struct SentReferenceChip: View {
+    let reference: AiMessageReference
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Label {
+            Text(summary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } icon: {
+            Image(systemName: icon)
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(palette.mutedForeground)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.quaternary.opacity(0.35), in: Capsule())
+        .overlay { Capsule().strokeBorder(palette.border) }
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var summary: String {
+        let source = reference.documentTitle.flatMap { $0.isEmpty ? nil : $0 }
+        let locator = reference.page.map { "p.\($0)" }
+        return [reference.label, locator, source].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var accessibilitySummary: String {
+        let page = reference.page.map { ", page \($0)" } ?? ""
+        let document = reference.documentTitle.map { ", from \($0)" } ?? ""
+        return "\(reference.kind.accessibilityName): \(reference.label)\(page)\(document)"
+    }
+
+    private var icon: String {
+        switch reference.kind {
+        case .selection: "text.quote"
+        case .highlight: "highlighter"
+        case .region: "square.dashed"
+        case .pageSnapshot: "doc.richtext"
+        case .quote: "quote.bubble"
+        case .image: "photo"
+        }
+    }
+}
+
+private extension AiMessageReference.Kind {
+    var accessibilityName: String {
+        switch self {
+        case .selection: "Text selection"
+        case .highlight: "Highlight"
+        case .region: "Document region"
+        case .pageSnapshot: "Page snapshot"
+        case .quote: "Assistant quote"
+        case .image: "Attached image"
+        }
+    }
+}
+
 private struct ReferenceChip: View {
     let reference: AiReference
     let onRemove: () -> Void

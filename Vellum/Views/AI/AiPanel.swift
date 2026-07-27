@@ -81,11 +81,18 @@ struct AiPanel: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 15))
                     .foregroundStyle(palette.primary)
-                Text("AI Assistant")
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("AI Assistant")
+                        .font(.system(size: 14, weight: .medium))
+                    Text(documentScopeTitle)
+                        .font(.caption)
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("AI Assistant for \(documentScopeTitle)")
             Spacer(minLength: 8)
             HStack(spacing: 2) {
                 IconButton(
@@ -174,6 +181,11 @@ struct AiPanel: View {
             .padding(.horizontal, 4)
 
             messageBubble(message)
+
+            if message.role == .user, !message.references.isEmpty {
+                SentReferenceChipRow(references: message.references)
+                    .accessibilityIdentifier("aiMessage.sentReferences")
+            }
 
             if message.role == .assistant, !message.content.isEmpty {
                 messageActions(message)
@@ -351,6 +363,7 @@ struct AiPanel: View {
             ComposerTextView(
                 text: $input,
                 placeholder: "Ask about this document…",
+                focusRequest: aiStore.composerFocusRequest,
                 onSubmit: submit,
                 // The composer's NSTextView is a registered drag destination and
                 // AppKit hands it any drop over its bounds before SwiftUI's
@@ -373,6 +386,13 @@ struct AiPanel: View {
             .accessibilityLabel("Send message")
             .accessibilityIdentifier("aiPanel.send")
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Message composer for \(documentScopeTitle)")
+    }
+
+    private var documentScopeTitle: String {
+        let title = appStore.document?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title?.isEmpty == false ? title! : "current document"
     }
 
     /// "+" attach menu: a current-page snapshot or drag-to-crop region of the
@@ -547,6 +567,7 @@ private struct AnimatedDots: View {
 private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
+    let focusRequest: Int
     let onSubmit: () -> Void
     /// A file or image dropped onto the field itself; nil disables interception, so
     /// AppKit's own drag handling (text, file paths) is left alone.
@@ -564,6 +585,7 @@ private struct ComposerTextView: View {
         ComposerTextViewRep(
             text: $text,
             placeholder: placeholder,
+            focusRequest: focusRequest,
             onSubmit: onSubmit,
             onAttachmentDrop: onAttachmentDrop,
             onDropTargeted: onDropTargeted,
@@ -576,6 +598,7 @@ private struct ComposerTextView: View {
 private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
+    let focusRequest: Int
     let onSubmit: () -> Void
     let onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     let onDropTargeted: (Bool) -> Void
@@ -596,6 +619,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         textView.onDropTargeted = onDropTargeted
         textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
+        textView.setAccessibilityIdentifier("aiPanel.composer")
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 14)
         textView.alignment = .left
@@ -629,11 +653,19 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
         context.coordinator.publishHeight(for: textView)
+        if focusRequest != context.coordinator.fulfilledFocusRequest {
+            context.coordinator.fulfilledFocusRequest = focusRequest
+            Task { @MainActor [weak textView] in
+                guard let textView, let window = textView.window else { return }
+                window.makeFirstResponder(textView)
+            }
+        }
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextViewRep
+        var fulfilledFocusRequest = 0
         init(parent: ComposerTextViewRep) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
