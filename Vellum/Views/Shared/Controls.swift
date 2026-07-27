@@ -175,6 +175,31 @@ struct GlassSegmentedPicker<Value: Hashable>: View {
     }
 }
 
+/// A keyboard shortcut rendered as a physical key — monospaced glyphs on a
+/// faint slab with a hairline edge. Used wherever the UI teaches a shortcut
+/// (the welcome screen's ⌘O hint, the walkthrough's bullets) so a shortcut
+/// always reads as a key rather than as more prose.
+struct Keycap: View {
+    let keys: String
+
+    var body: some View {
+        Text(keys)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(.separator)
+            }
+            // Announced as one shortcut; VoiceOver spelling out "⌘⌥S" as three
+            // symbols is noise, and the surrounding sentence already has the verb.
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard shortcut \(keys)")
+    }
+}
+
 /// The Vellum wordmark. Set in the serif display face — the one place the
 /// "parchment" identity is allowed to speak loudly. Render at the real point
 /// size: scaling it up with scaleEffect rasterizes the small glyphs and

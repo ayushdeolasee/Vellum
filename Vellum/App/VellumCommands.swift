@@ -204,6 +204,20 @@ struct VellumCommands: Commands {
             }
         }
 
+        // MARK: Help
+        // Replaces the stock "Vellum Help" item, which opens Help Viewer and
+        // reports that no help book is installed — Vellum ships none. The
+        // walkthrough is the app's actual help, so it takes the slot.
+        //
+        // Not gated on `hasFocus`: unlike every command above, this one targets
+        // no document, and someone who has just closed their last tab is
+        // exactly who wants it.
+        CommandGroup(replacing: .help) {
+            Button("Vellum Walkthrough") {
+                NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+            }
+        }
+
         // MARK: Annotations
         CommandMenu("Annotations") {
             Button(isBookmarked ? "Remove Bookmark" : "Bookmark Page") {

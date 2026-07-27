@@ -75,6 +75,7 @@ struct VellumApp: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
+    @State private var showWalkthrough = false
 
     init() {
         let theme = ThemeStore()
@@ -127,9 +128,29 @@ struct VellumApp: App {
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                    // Only one sheet at a time. On a true first launch the
+                    // storage choice goes first — it decides where everything
+                    // the walkthrough describes gets written — and hands off to
+                    // the walkthrough when it closes.
+                    if !showStorageChoice {
+                        showWalkthrough = WalkthroughSettings.needsFirstRun
+                    }
                 }
-                .sheet(isPresented: $showStorageChoice) {
+                .sheet(
+                    isPresented: $showStorageChoice,
+                    onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
+                ) {
                     StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
+                }
+                // Help ▸ Vellum Walkthrough and the welcome screen's help button
+                // both route here, since the sheet's presentation state lives
+                // with the window rather than with either caller.
+                .onReceive(NotificationCenter.default.publisher(for: .vellumShowWalkthrough)) { _ in
+                    showWalkthrough = true
+                }
+                .sheet(isPresented: $showWalkthrough) {
+                    WalkthroughSheet()
                         .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
