@@ -95,15 +95,15 @@ final class OpenAIClient {
                 }
             }
 
+            // `response.incomplete` is terminal. The API can deliver completed
+            // function-call items before this event, but its output budget has
+            // been exhausted, so those queued calls must not start another turn.
+            if !Self.shouldExecuteQueuedToolCalls(hitTokenLimit: hitTokenLimit) {
+                return try Self.outputLimitResult(text: text, actionResults: actionResults)
+            }
+
             if calls.isEmpty {
-                var reply = text
-                if hitTokenLimit {
-                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        throw AiClientError.message("OpenAI hit the output-token limit before producing any text. Try a lower thinking mode.")
-                    }
-                    reply += "\n\n_(reply truncated at the output-token limit)_"
-                }
-                return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
+                return AiProviderResult(reply: Self.finalize(text, actions: actionResults), actionResults: actionResults)
             }
 
             for call in calls {
@@ -179,6 +179,23 @@ final class OpenAIClient {
             throw AiClientError.message(incompleteMessage(reason: reason ?? "unknown"))
         }
         return true
+    }
+
+    /// A max-output-tokens event ends the current response, even when function
+    /// calls were already queued by preceding stream events.
+    static func shouldExecuteQueuedToolCalls(hitTokenLimit: Bool) -> Bool {
+        !hitTokenLimit
+    }
+
+    /// Converts a terminal output-limit event into the only successful partial
+    /// result allowed for that turn. No visible text means there is no reply to
+    /// return, so surface the provider failure instead.
+    static func outputLimitResult(text: String, actionResults: [String]) throws -> AiProviderResult {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AiClientError.message("OpenAI hit the output-token limit before producing any text. Try a lower thinking mode.")
+        }
+        let reply = text + "\n\n_(reply truncated at the output-token limit)_"
+        return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
     }
 
     private func openStream(_ request: URLRequest) async throws -> URLSession.AsyncBytes {

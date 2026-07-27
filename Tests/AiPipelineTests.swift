@@ -277,6 +277,51 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(try OpenAIClient.isOutputLimitIncompleteEvent(event))
     }
 
+    /// A completed function-call item can precede `response.incomplete` in the
+    /// same SSE stream. The terminal output-limit event must prevent the queued
+    /// item from invoking a tool or starting a follow-up turn.
+    func testOpenAIOutputLimitAfterFunctionCallInvokesZeroTools() throws {
+        let fixture: [[String: Any]] = [
+            [
+                "type": "response.output_item.done",
+                "item": [
+                    "type": "function_call",
+                    "name": "getPageText",
+                    "call_id": "call_123",
+                    "arguments": "{\"pageNumber\":2}",
+                ],
+            ],
+            [
+                "type": "response.incomplete",
+                "response": ["incomplete_details": ["reason": "max_output_tokens"]],
+            ],
+        ]
+        var queuedCalls: [[String: Any]] = []
+        var hitTokenLimit = false
+        var toolInvocationCount = 0
+
+        for event in fixture {
+            switch event["type"] as? String {
+            case "response.output_item.done":
+                if let item = event["item"] as? [String: Any],
+                   item["type"] as? String == "function_call" {
+                    queuedCalls.append(item)
+                }
+            case "response.incomplete":
+                hitTokenLimit = try OpenAIClient.isOutputLimitIncompleteEvent(event)
+            default:
+                break
+            }
+        }
+
+        if OpenAIClient.shouldExecuteQueuedToolCalls(hitTokenLimit: hitTokenLimit) {
+            toolInvocationCount += queuedCalls.count
+        }
+
+        XCTAssertEqual(queuedCalls.count, 1, "fixture must queue a function call before becoming incomplete")
+        XCTAssertEqual(toolInvocationCount, 0)
+    }
+
     func testOpenAINonTokenIncompleteTerminalEventThrowsProviderFailure() {
         let event: [String: Any] = [
             "type": "response.incomplete",

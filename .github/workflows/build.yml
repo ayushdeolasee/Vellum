@@ -20,8 +20,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen 2.45.4
+        run: |
+          readonly xcodegen_version=2.45.4
+          readonly xcodegen_root="$RUNNER_TEMP/xcodegen-$xcodegen_version"
+          curl --fail --location --retry 3 \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/$xcodegen_version/xcodegen.zip" \
+            --output "$RUNNER_TEMP/xcodegen.zip"
+          mkdir -p "$xcodegen_root/bin"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$xcodegen_root"
+          install -m 755 "$xcodegen_root/xcodegen" "$xcodegen_root/bin/xcodegen"
+          "$xcodegen_root/bin/xcodegen" version | grep --fixed-strings "Version: $xcodegen_version"
+          echo "$xcodegen_root/bin" >> "$GITHUB_PATH"
 
       - name: Verify generated project
         run: |
