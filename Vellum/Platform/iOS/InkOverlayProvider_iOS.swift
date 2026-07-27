@@ -14,6 +14,14 @@ final class InkPageCanvas_iOS: PKCanvasView {
     /// page's zoom-1 space; `K` only makes PencilKit rasterize that content into
     /// a `K`× denser backing store. `1` means "same as the page".
     var superSample: CGFloat = 1
+    /// The drawing as of the last change this provider processed.
+    ///
+    /// PencilKit hands the delegate the whole drawing, never "the stroke that
+    /// just landed", so scratch-out detection diffs against this to find the
+    /// stroke the user just finished — and the scratch-out undo action restores
+    /// it. It is refreshed on seeding *and* on every delegate callback, so a
+    /// programmatic mutation (clear page, undo, redo) can never leave it stale.
+    var committedDrawing = PKDrawing()
 }
 
 /// Wraps a page's ink canvas so we can super-sample it. PDFKit sizes this
@@ -168,6 +176,7 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         suppressChange = true
         let seeded = PdfInk.drawing(on: page) ?? PKDrawing()
         canvas.drawing = seeded
+        canvas.committedDrawing = seeded
         suppressChange = false
         PdfInk.removeVellumInk(from: page)
         if !seeded.strokes.isEmpty {
@@ -290,10 +299,87 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         guard !suppressChange,
               let canvas = canvasView as? InkPageCanvas_iOS,
               canvas.pageNumber >= 1 else { return }
+        // Scratch-out runs first, and synchronously (see `applyScratchOut`): if
+        // the stroke the user just finished is a scribble over existing ink, what
+        // we persist is the *post*-erase drawing, so the scribble itself never
+        // reaches the canvas's steady state or the disk.
+        let drawing = scratchOutErase(on: canvas) ?? canvasView.drawing
+        canvas.committedDrawing = drawing
         // The canvas's content space is page (zoom-1) space at every `K`, so the
         // drawing persists as-is and the on-disk `/Ink` geometry is
         // resolution-independent.
-        ink?.drawingChanged(canvasView.drawing, page: canvas.pageNumber)
+        ink?.drawingChanged(drawing, page: canvas.pageNumber)
+    }
+
+    // MARK: - Scratch out to erase
+
+    /// If the stroke the user just finished is a scratch-out over existing ink,
+    /// delete it and everything it covered and return the resulting drawing.
+    /// `nil` means "nothing to do" — the caller persists the drawing unchanged.
+    ///
+    /// Preconditions beyond the geometry (see `ScratchOutRecognizer` for those):
+    /// * the user has the feature on (Settings ▸ Reading ▸ Apple Pencil);
+    /// * ink mode is active, so this can only ever be a stroke the user drew;
+    /// * an **inking** tool is selected, and specifically the *pen*. The
+    ///   highlighter is excluded because sweeping a marker back and forth over a
+    ///   word to deepen the highlight is a legitimate, common action with exactly
+    ///   the geometry of a scratch-out. The eraser is excluded because it can't
+    ///   produce a stroke at all;
+    /// * the drawing grew by exactly one stroke. Anything else — a bitmap erase
+    ///   (masks strokes, count unchanged), a vector erase (count drops), an undo,
+    ///   a programmatic clear — is not a freshly drawn stroke. PencilKit appends
+    ///   new strokes, so the last one is the one that just landed.
+    private func scratchOutErase(on canvas: InkPageCanvas_iOS) -> PKDrawing? {
+        guard InkController_iOS.scratchOutToErase,
+              let ink, ink.isActive, ink.tool == .pen else { return nil }
+        let drawing = canvas.drawing
+        guard drawing.strokes.count == canvas.committedDrawing.strokes.count + 1 else { return nil }
+        guard let result = ScratchOutInk.erase(
+            scratchIndex: drawing.strokes.count - 1,
+            in: drawing) else { return nil }
+
+        #if DEBUG
+        NSLog("[ink-debug] scratch-out on page %d erased %d stroke(s)",
+              canvas.pageNumber, result.erasedStrokeCount)
+        #endif
+        applyScratchOut(result.drawing, undoingTo: canvas.committedDrawing, on: canvas)
+        return result.drawing
+    }
+
+    /// Swap a canvas's drawing for `new`, registering an undo that restores
+    /// `old`. Recursive by design: the undo's own registration becomes the redo.
+    ///
+    /// ## Undo grouping
+    /// `old` is deliberately the drawing from *before* the scribble was drawn,
+    /// not the drawing PencilKit just handed us. PencilKit has already registered
+    /// its own "I added a stroke" undo for the scribble; because this runs
+    /// synchronously inside `canvasViewDrawingDidChange` — the same run-loop
+    /// iteration as that registration — UIKit's `UndoManager.groupsByEvent`
+    /// folds both actions into a single group, so one ⌘Z (or one toolbar undo)
+    /// restores every erased stroke at once.
+    ///
+    /// Restoring the *pre-scribble* drawing also makes the pairing degrade
+    /// safely if the two actions ever land in separate groups: the first undo
+    /// already puts the page back exactly as it was, and PencilKit's leftover
+    /// "remove the scribble" action then applies to a drawing that no longer
+    /// contains it — a no-op, not a corruption.
+    private func applyScratchOut(
+        _ new: PKDrawing,
+        undoingTo old: PKDrawing,
+        on canvas: InkPageCanvas_iOS
+    ) {
+        canvas.undoManager?.registerUndo(withTarget: self) { [weak canvas] provider in
+            guard let canvas else { return }
+            provider.applyScratchOut(old, undoingTo: new, on: canvas)
+            provider.ink?.drawingChanged(old, page: canvas.pageNumber)
+        }
+        canvas.undoManager?.setActionName("Erase")
+        // Reassigning `drawing` re-enters the delegate; suppress so the swap
+        // isn't mistaken for a second user edit (and re-scanned for scratch-out).
+        suppressChange = true
+        canvas.drawing = new
+        suppressChange = false
+        canvas.committedDrawing = new
     }
 
     // MARK: - UIPencilInteractionDelegate

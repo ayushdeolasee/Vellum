@@ -126,6 +126,18 @@ final class InkController_iOS {
     static var autoHideSidebarWhileInking: Bool {
         UserDefaults.standard.object(forKey: autoHideSidebarKey) as? Bool ?? true
     }
+
+    /// User preference: whether scribbling over existing ink with the pen erases
+    /// what the scribble covers, instead of leaving the scribble as ink (see
+    /// `ScratchOutRecognizer`). Defaults to on — it matches Notes/GoodNotes and
+    /// the recognizer is tuned to be conservative — but it is a *destructive*
+    /// gesture, so anyone whose drawing style trips it (heavy hatching over an
+    /// existing sketch is the plausible case) needs a way out. Persisted under
+    /// `scratchOutToEraseKey`.
+    static let scratchOutToEraseKey = "ink.scratchOutToErase"
+    static var scratchOutToErase: Bool {
+        UserDefaults.standard.object(forKey: scratchOutToEraseKey) as? Bool ?? true
+    }
     var tool: InkTool = .pen {
         didSet {
             guard oldValue != tool else { return }
