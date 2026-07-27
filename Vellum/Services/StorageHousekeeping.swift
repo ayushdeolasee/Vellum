@@ -37,9 +37,15 @@ enum StorageHousekeeping {
     /// body of the launch sweep and the "Run Cleanup Now" button. Open documents
     /// are excluded exactly as at launch: the text cache by storage key, the web
     /// store by URL. A "Never" policy is a no-op.
-    static func runCleanup(openPdfKeys: Set<String>, openWebUrls: Set<String>) async {
-        guard let cutoff = evictionCutoff() else { return }
+    @discardableResult
+    static func runCleanup(openPdfKeys: Set<String>, openWebUrls: Set<String>) async -> Int64 {
+        guard let cutoff = evictionCutoff() else { return 0 }
+        let cacheBefore = await PageTextCache.shared.listEntries().reduce(Int64(0)) { $0 + $1.byteSize }
+        let webBefore = WebLibrary.listSnapshotStorage().reduce(Int64(0)) { $0 + $1.byteSize }
         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openPdfKeys)
         WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+        let cacheAfter = await PageTextCache.shared.listEntries().reduce(Int64(0)) { $0 + $1.byteSize }
+        let webAfter = WebLibrary.listSnapshotStorage().reduce(Int64(0)) { $0 + $1.byteSize }
+        return max(0, cacheBefore + webBefore - cacheAfter - webAfter)
     }
 }

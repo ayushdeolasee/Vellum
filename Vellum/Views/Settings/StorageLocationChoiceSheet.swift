@@ -16,6 +16,13 @@ import SwiftUI
 /// marker. Two passes running at once would race on both.
 @MainActor
 enum WebStorageRelocator {
+    struct Status: Equatable {
+        var isInProgress = false
+        var needsRecovery = false
+        var message = ""
+    }
+
+    private(set) static var status = Status()
     /// Back-to-back moves chain (each awaits the previous one), and
     /// only the newest change may clear the shared resume marker.
     private static var relocationChain: Task<Void, Never>?
@@ -38,7 +45,25 @@ enum WebStorageRelocator {
     /// destination while this is still queued — and awaits completion, since
     /// callers go on to walk the store this sweep is still moving.
     static func sweepAtLaunch() async {
+        let isResuming = UserDefaults.standard.string(
+            forKey: WebStorageSettings.pendingRelocationKey
+        ) != nil
+        if isResuming {
+            status = Status(isInProgress: true, message: "Resuming an interrupted storage move…")
+            NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+        }
         await enqueue { WebStorageMigrator.sweepAtLaunch() }.value
+        if isResuming {
+            if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
+                status = Status(message: "Interrupted storage move recovered successfully.")
+            } else {
+                status = Status(
+                    needsRecovery: true,
+                    message: "The previous location is still unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
+                )
+            }
+            NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+        }
     }
 
     static func apply(mode: WebStorageMode, customPath: String? = nil) {
@@ -52,21 +77,39 @@ enum WebStorageRelocator {
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
+        status = Status(isInProgress: true, message: "Moving storage…")
+        NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
 
         guard sourceReachable else {
             // Nothing can move while the old root is unreachable (iCloud
             // signed out, folder unmounted). Keep the marker: the launch
             // sweep migrates the stranded files when the root comes back.
+            status = Status(
+                needsRecovery: true,
+                message: "The previous location is unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
+            )
+            NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
             return
         }
 
         relocationGeneration += 1
         let generation = relocationGeneration
         enqueue {
-            guard WebStorageMigrator.relocate(from: source, to: destination) else { return }
+            guard WebStorageMigrator.relocate(from: source, to: destination) else {
+                await MainActor.run {
+                    status = Status(
+                        needsRecovery: true,
+                        message: "The move was interrupted. Your original data remains safe and Vellum will retry at next launch."
+                    )
+                    NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+                }
+                return
+            }
             await MainActor.run {
                 if generation == relocationGeneration {
                     WebStorageMigrator.clearPendingRelocation()
+                    status = Status(message: "Storage move complete.")
+                    NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
                 }
             }
         }
@@ -84,6 +127,10 @@ enum WebStorageRelocator {
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         return url.path
     }
+}
+
+extension Notification.Name {
+    static let vellumStorageRelocationChanged = Notification.Name("vellumStorageRelocationChanged")
 }
 
 /// One-time sheet shown at first launch after updating to (or installing) a

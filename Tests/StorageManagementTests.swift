@@ -30,6 +30,57 @@ final class StorageManagementTests: XCTestCase {
         FileManager.default.fileExists(atPath: url.path)
     }
 
+    func testInventorySearchMatchesTitlePathAndType() {
+        let pdf = StorageInventory.DocumentRow(
+            key: "pdf", title: "Research Paper", kind: .pdf, lastOpened: nil,
+            sourceExists: true, sourcePath: "/Documents/special-report.pdf", isDocIdKeyed: true,
+            notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0)
+        let web = StorageInventory.DocumentRow(
+            key: "web", title: "Swift Forums", kind: .web, lastOpened: nil,
+            sourceExists: true, sourcePath: "https://forums.swift.org", isDocIdKeyed: true,
+            notesBytes: 0, conversationBytes: 0, cacheBytes: 0, archiveBytes: 1)
+
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "research"))
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "special-report"))
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "PDF"))
+        XCTAssertTrue(StorageInventory.matches(web, searchText: "web page"))
+        XCTAssertFalse(StorageInventory.matches(web, searchText: "research"))
+    }
+
+    func testInventoryTypeSortGroupsKindThenTitle() {
+        let rows = [
+            StorageInventory.DocumentRow(
+                key: "web", title: "Zeta", kind: .web, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 0, conversationBytes: 0, cacheBytes: 0, archiveBytes: 1),
+            StorageInventory.DocumentRow(
+                key: "pdf-z", title: "Zulu", kind: .pdf, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0),
+            StorageInventory.DocumentRow(
+                key: "pdf-a", title: "Alpha", kind: .pdf, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0),
+        ]
+
+        XCTAssertEqual(StorageInventory.sorted(rows, by: .type).map(\.key), ["pdf-a", "pdf-z", "web"])
+    }
+
+    func testConnectionValidationRequestsNeverPutCredentialsInURLs() throws {
+        var settings = AiSettings()
+        settings.provider = .gemini
+        settings.apiKey = "AIza-secret"
+        let gemini = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+        XCTAssertNil(gemini.url?.absoluteString.range(of: "AIza-secret"))
+        XCTAssertEqual(gemini.value(forHTTPHeaderField: "x-goog-api-key"), "AIza-secret")
+
+        settings.provider = .openai
+        settings.openaiApiKey = "sk-secret"
+        let openAI = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+        XCTAssertNil(openAI.url?.absoluteString.range(of: "sk-secret"))
+        XCTAssertEqual(openAI.value(forHTTPHeaderField: "Authorization"), "Bearer sk-secret")
+    }
+
     // MARK: - listDocuments sizes
 
     func testListDocumentsReportsNoteAndChatBytes() throws {

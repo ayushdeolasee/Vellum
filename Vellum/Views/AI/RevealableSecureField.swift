@@ -7,6 +7,7 @@ import SwiftUI
 /// stock SwiftUI field and an AppKit one let the system autofill helper attach
 /// to the stock side and crash the app (see below).
 struct RevealableSecureField: View {
+    let accessibilityLabel: String
     let placeholder: String
     @Binding var text: String
 
@@ -15,7 +16,12 @@ struct RevealableSecureField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            AutofillFreeKeyField(placeholder: placeholder, isSecure: !isRevealed, text: $text)
+            AutofillFreeKeyField(
+                placeholder: placeholder,
+                accessibilityLabel: accessibilityLabel,
+                isSecure: !isRevealed,
+                text: $text
+            )
                 // The AppKit field class differs per mode; rebuild it on toggle.
                 .id(isRevealed)
                 .controlSize(.small)
@@ -36,9 +42,10 @@ struct RevealableSecureField: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(isRevealed ? "Hide API key" : "Show API key")
-            .accessibilityLabel(isRevealed ? "Hide API key" : "Show API key")
+            .help(isRevealed ? "Hide \(accessibilityLabel)" : "Show \(accessibilityLabel)")
+            .accessibilityLabel(isRevealed ? "Hide \(accessibilityLabel)" : "Show \(accessibilityLabel)")
         }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -68,12 +75,14 @@ private final class NoAutofillTextField: NSTextField {
 /// creation time — pair a change of it with `.id(...)` so the view is rebuilt.
 private struct AutofillFreeKeyField: NSViewRepresentable {
     let placeholder: String
+    let accessibilityLabel: String
     let isSecure: Bool
     @Binding var text: String
 
     func makeNSView(context: Context) -> NSTextField {
         let field: NSTextField = isSecure ? NoAutofillSecureTextField() : NoAutofillTextField()
         field.placeholderString = placeholder
+        field.setAccessibilityLabel(accessibilityLabel)
         field.bezelStyle = .roundedBezel
         field.controlSize = .small
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
@@ -90,6 +99,7 @@ private struct AutofillFreeKeyField: NSViewRepresentable {
             field.stringValue = text
         }
         field.placeholderString = placeholder
+        field.setAccessibilityLabel(accessibilityLabel)
     }
 
     func makeCoordinator() -> Coordinator {
