@@ -206,7 +206,7 @@ struct VellumCommands: Commands {
 
         // MARK: Annotations
         CommandMenu("Annotations") {
-            Button(isBookmarked ? "Remove Bookmark" : "Bookmark Page") {
+            Button(isBookmarked ? "Remove Bookmark Position" : "Bookmark Position") {
                 if let store = annotationStore { Task { await store.toggleBookmark() } }
             }
             .keyboardShortcut("d", modifiers: .command)

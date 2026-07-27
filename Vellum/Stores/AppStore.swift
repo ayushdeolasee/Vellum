@@ -231,6 +231,71 @@ final class AppStore {
         }
     }
 
+    /// Save the PDF in `tabId` to a new location while keeping the existing tab
+    /// and backend session identity. Keeping the id stable is important: it is
+    /// also the identity used by the viewer, AI conversation, inspector, and
+    /// split-pane placement.
+    ///
+    /// The destination is written before the session is rebound. If reopening
+    /// the new location fails, the original session is restored so Save As
+    /// cannot strand the live tab.
+    @discardableResult
+    func savePdfAs(tabId: String, destination: URL) async throws -> DocumentInfo {
+        guard let tab = tabs.first(where: { $0.id == tabId }),
+              let source = tab.document,
+              source.kind == .pdf else {
+            throw SessionServiceError.invalidDocument("Save As requires an open PDF")
+        }
+
+        let sourceURL = URL(fileURLWithPath: source.pdfPath).standardizedFileURL
+        let destinationURL = destination.standardizedFileURL
+        if sourceURL == destinationURL {
+            return source
+        }
+        // `/var` and `/private/var` can name the same file on macOS without
+        // URL standardization making the strings equal. Compare filesystem
+        // identities when the destination already exists so choosing the
+        // current file in NSSavePanel remains a true no-op.
+        let sourceIdentifier = try? sourceURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destinationURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        if let sourceIdentifier = sourceIdentifier as? NSObject,
+           let destinationIdentifier = destinationIdentifier as? NSObject,
+           sourceIdentifier.isEqual(destinationIdentifier) {
+            return source
+        }
+
+        // Stamp a durable id before copying so document-scoped notes and
+        // conversations follow the PDF to its new location.
+        _ = try await sessions.ensureDocumentId(sessionId: tabId)
+        await syncDocumentId(sessionId: tabId)
+        try await sessions.saveFile(sessionId: tabId)
+        let bytes = try await sessions.readPdfBytes(sessionId: tabId)
+        try await Task.detached {
+            try bytes.write(to: destinationURL, options: .atomic)
+        }.value
+
+        try await sessions.closeFile(sessionId: tabId)
+        let rebound: DocumentInfo
+        do {
+            rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
+        } catch {
+            // Best-effort rollback. The original file is untouched.
+            _ = try? await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+            throw error
+        }
+
+        evictPreparedPdf(tabId: tabId)
+        updateTab(tabId) { $0.document = rebound }
+        if activeTabId == tabId {
+            document = rebound
+        }
+        RecentFilesService.record(rebound)
+        workspace?.scheduleSave()
+        return rebound
+    }
+
     // MARK: - Closing / switching tabs
 
     func closeFile() async {
