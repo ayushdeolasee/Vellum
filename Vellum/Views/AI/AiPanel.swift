@@ -212,10 +212,39 @@ struct AiPanel: View {
             messageBubble(message)
 
             if message.role == .assistant, !message.content.isEmpty {
+                let summaries = message.displayToolSummaries
+                if summaries.isEmpty == false {
+                    toolSummaries(summaries)
+                }
                 messageActions(message)
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    /// The collapsed "what I looked at" trace under an assistant reply.
+    ///
+    /// Deliberately a SIBLING of the bubble rather than content inside it, and
+    /// so deliberately NOT wrapped in `BubbleWidthCap`. The bubble hugs its
+    /// prose because a two-word reply shouldn't paint a slab; a source list is
+    /// a stack of rows that genuinely wants the whole column, and hugging it
+    /// would make every disclosure row a different width. `.infinity` here is
+    /// therefore the right answer and does not compete with the bubble's cap —
+    /// the two never lay out the same subtree.
+    private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sources & actions")
+                .font(.caption)
+                .foregroundStyle(palette.mutedForeground)
+                .padding(.horizontal, 4)
+
+            ForEach(summaries) { summary in
+                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources and actions")
     }
 
     @ViewBuilder
@@ -229,7 +258,12 @@ struct AiPanel: View {
         BubbleWidthCap(maxWidth: textWidth) {
             if message.role == .assistant {
                 SelectableMessageText(
-                    content: message.content,
+                    // `displayContent`, not `content`: a reply persisted by an
+                    // older build has its tool receipts glued onto the end of
+                    // the text. Those are now rendered as a separate collapsed
+                    // trace, so they have to come off the bubble — without
+                    // rewriting what is stored on disk.
+                    content: message.displayContent,
                     color: palette.foreground,
                     secondary: palette.mutedForeground,
                     maxWidth: textWidth,
@@ -271,22 +305,29 @@ struct AiPanel: View {
     }
 
     /// Copy / Quote / Add-as-note row under each assistant reply.
+    ///
+    /// All three act on `displayContent` — the answer as shown in the bubble.
+    /// Copying a reply must not silently drag a legacy "Actions:" receipt list
+    /// into the user's clipboard or into a note they place on the page.
     private func messageActions(_ message: AiMessage) -> some View {
         HStack(spacing: 2) {
-            IconButton(help: "Copy", action: { copyToPasteboard(message.content) }) {
+            IconButton(help: "Copy answer", action: { copyToPasteboard(message.displayContent) }) {
                 Image(systemName: "doc.on.doc").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.copy")
 
             IconButton(help: "Quote in reply", action: {
-                aiStore.addReference(AiReference(kind: .quote(text: message.content, messageId: message.id)))
+                aiStore.addReference(AiReference(kind: .quote(
+                    text: message.displayContent,
+                    messageId: message.id
+                )))
             }) {
                 Image(systemName: "quote.bubble").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.quote")
 
             IconButton(help: "Add as note — click on the page to place it", action: {
-                appStore.beginNoteWithContent(message.content)
+                appStore.beginNoteWithContent(message.displayContent)
             }) {
                 Image(systemName: "note.text.badge.plus").font(.system(size: 12))
             }

@@ -13,33 +13,42 @@ final class AiPipelineTests: XCTestCase {
     // MARK: - §1 Retrieval persistence
 
     /// Raw tool output carries a unique marker; the persisted assistant content
-    /// is composed from compact receipts, so the marker must never survive into
-    /// the message — or, transitively, into the next request's prompt.
+    /// is kept separate from compact summaries, so the marker must never survive
+    /// into the message — or, transitively, into the next request's prompt.
     func testRawRetrievalOutputCannotReachTheNextPrompt() {
         let marker = "UNIQUE-RETRIEVAL-MARKER-93b1f2"
         // What the tool loop saw (transient, provider-side only):
         let rawToolOutput = "Page 20:\nlorem ipsum \(marker) dolor sit amet"
         XCTAssertTrue(rawToolOutput.contains(marker), "fixture sanity")
 
-        // What the store persists: reply + compact receipts.
-        let persisted = AiStore.composeAssistantContent(
-            reply: "Page 20 discusses the marker experiment.",
-            receipts: ["Read page 20.", "Searched the document for \"marker\"."]
-        )
+        // What the store persists as the answer. The trace of what produced it
+        // is a separate structured field, and it too is built only from bounded
+        // excerpts — never the raw payload.
+        let persisted = AiStore.assistantAnswerText(reply: "Page 20 discusses the marker experiment.")
         XCTAssertFalse(persisted.contains(marker))
-        XCTAssertTrue(persisted.contains("Read page 20."))
+        XCTAssertEqual(persisted, "Page 20 discusses the marker experiment.")
 
         // And the next turn's conversation block (built from persisted
-        // messages) cannot resend it.
+        // messages, including their tool summaries) cannot resend it.
+        var assistant = AiPersistence.makeMessage(role: .assistant, content: persisted)
+        assistant.toolSummaries = [AiToolSummary(
+            title: "Read page 20",
+            sources: [.init(page: 20, excerpt: "a bounded excerpt")],
+            destinationPage: 20
+        )]
         let history = [
             AiPersistence.makeMessage(role: .user, content: "What's on page 20?"),
-            AiPersistence.makeMessage(role: .assistant, content: persisted),
+            assistant,
         ]
         XCTAssertFalse(AiPrompts.buildConversationBlock(history).contains(marker))
     }
 
-    func testComposeAssistantContentWithoutReceiptsIsJustTheReply() {
-        XCTAssertEqual(AiStore.composeAssistantContent(reply: "Hello.", receipts: []), "Hello.")
+    /// The answer is the reply and nothing else: no receipts spliced on, and no
+    /// stray whitespace from the provider's framing. Both halves matter —
+    /// `content` is what Copy, Quote and Add-as-note hand to the user.
+    func testAssistantAnswerIsTheTrimmedReplyAndNothingElse() {
+        XCTAssertEqual(AiStore.assistantAnswerText(reply: "\n  Hello.  \n"), "Hello.")
+        XCTAssertFalse(AiStore.assistantAnswerText(reply: "Hello.").contains("Actions:"))
     }
 
     func testPageReadIsBounded() {
