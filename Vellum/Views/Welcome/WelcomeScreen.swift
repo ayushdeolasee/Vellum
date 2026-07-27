@@ -11,6 +11,9 @@ struct WelcomeScreen: View {
     @State private var urlInput = ""
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
+    @State private var searchQuery = ""
+    @State private var filter: LibraryFilter = .all
+    @FocusState private var searchFocused: Bool
 
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
@@ -117,6 +120,46 @@ struct WelcomeScreen: View {
                 sortMenu
             }
 
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(palette.mutedForeground)
+                    TextField("Search title, filename, domain, or URL", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .accessibilityIdentifier("welcome.librarySearch")
+                    if searchQuery.isEmpty == false {
+                        Button("Clear search", systemImage: "xmark.circle.fill") {
+                            searchQuery = ""
+                            searchFocused = true
+                        }
+                        .buttonStyle(.plain)
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(palette.mutedForeground)
+                        .accessibilityIdentifier("welcome.librarySearch.clear")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: 420)
+                .frame(height: 34)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Radius.md))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Radius.md)
+                        .strokeBorder(.separator)
+                }
+
+                Picker("Filter library", selection: $filter) {
+                    ForEach(LibraryFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .accessibilityIdentifier("welcome.libraryFilter")
+
+                Spacer(minLength: 0)
+            }
+
             if appStore.error != nil {
                 errorBanner
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -152,34 +195,43 @@ struct WelcomeScreen: View {
     }
 
     private var libraryList: some View {
-        List(selection: $selection) {
-            if !recentItems.isEmpty {
-                Section("Recent") {
-                    ForEach(recentItems) { LibraryRow(item: $0) }
+        Group {
+            if visibleItems.isEmpty {
+                LibraryNoResultsView(
+                    query: searchQuery,
+                    filter: filter,
+                    reset: resetLibrarySearch
+                )
+            } else {
+                List(selection: $selection) {
+                    Section("Library") {
+                        ForEach(visibleItems) { LibraryRow(item: $0) }
+                    }
                 }
-            }
-            if !savedItems.isEmpty {
-                Section("Saved") {
-                    ForEach(savedItems) { LibraryRow(item: $0) }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(palette.well)
+                .environment(\.defaultMinListRowHeight, 52)
+                .contextMenu(forSelectionType: LibraryItem.ID.self) { ids in
+                    contextMenu(for: ids)
+                } primaryAction: { ids in
+                    for id in ids { open(id) }
                 }
+                .onDeleteCommand { removeSelected() }
+                .onKeyPress(.return) {
+                    guard let selection else { return .ignored }
+                    open(selection)
+                    return .handled
+                }
+                .accessibilityIdentifier("welcome.library")
             }
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .background(palette.well)
-        .environment(\.defaultMinListRowHeight, 52)
-        .contextMenu(forSelectionType: LibraryItem.ID.self) { ids in
-            contextMenu(for: ids)
-        } primaryAction: { ids in
-            for id in ids { open(id) }
+        .onChange(of: searchQuery) {
+            clearInvisibleSelection()
         }
-        .onDeleteCommand { removeSelected() }
-        .onKeyPress(.return) {
-            guard let selection else { return .ignored }
-            open(selection)
-            return .handled
+        .onChange(of: filter) {
+            clearInvisibleSelection()
         }
-        .accessibilityIdentifier("welcome.library")
     }
 
     @ViewBuilder
@@ -189,9 +241,18 @@ struct WelcomeScreen: View {
             if item.canRevealInFinder {
                 Button("Show in Finder") { revealInFinder(item) }
             }
-            Divider()
-            Button(item.section == .saved ? "Remove from Saved" : "Remove from Recent", role: .destructive) {
-                remove(id)
+            if item.recordedRecentKey != nil || item.savedKey != nil {
+                Divider()
+            }
+            if item.recordedRecentKey != nil {
+                Button("Remove from Recent", role: .destructive) {
+                    removeFromRecent(item)
+                }
+            }
+            if item.savedKey != nil {
+                Button("Remove from Saved", role: .destructive) {
+                    removeFromSaved(item)
+                }
             }
         }
     }
@@ -296,22 +357,28 @@ struct WelcomeScreen: View {
 
     // MARK: - Library item model
 
-    private var recentItems: [LibraryItem] {
-        let items = recentDocuments.map(LibraryItem.init(recent:))
-        return sort == .name
-            ? items.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            : items
+    private var visibleItems: [LibraryItem] {
+        LibraryCatalog.items(
+            recent: recentDocuments,
+            saved: savedPages,
+            query: searchQuery,
+            filter: filter,
+            sort: sort
+        )
     }
 
-    private var savedItems: [LibraryItem] {
-        let items = savedPages.map(LibraryItem.init(saved:))
-        return sort == .name
-            ? items.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            : items
+    private var allItems: [LibraryItem] {
+        LibraryCatalog.items(
+            recent: recentDocuments,
+            saved: savedPages,
+            query: "",
+            filter: .all,
+            sort: sort
+        )
     }
 
     private func item(for id: LibraryItem.ID) -> LibraryItem? {
-        recentItems.first { $0.id == id } ?? savedItems.first { $0.id == id }
+        allItems.first { $0.id == id }
     }
 
     // MARK: - Actions
@@ -329,38 +396,54 @@ struct WelcomeScreen: View {
 
     private func open(_ id: LibraryItem.ID) {
         guard let item = item(for: id), !appStore.isLoading else { return }
-        switch item.section {
-        case .recent:
-            if item.kind == .web {
-                Task { await appStore.openUrl(item.key) }
-            } else {
-                // A moved PDF re-resolved to a new path: drop the stale entry so
-                // the re-record (on successful open) doesn't leave a duplicate.
-                if item.key != item.recordedKey {
-                    recentDocuments = RecentFilesService.remove(path: item.recordedKey)
-                }
-                Task { await appStore.openFile(path: item.key) }
-            }
-        case .saved:
+        if item.kind == .web {
             Task { await appStore.openUrl(item.key) }
+        } else {
+            // A moved PDF re-resolved to a new path: drop the stale entry so
+            // the re-record (on successful open) doesn't leave a duplicate.
+            if let recordedKey = item.recordedRecentKey, item.key != recordedKey {
+                recentDocuments = RecentFilesService.remove(path: recordedKey)
+            }
+            Task { await appStore.openFile(path: item.key) }
         }
     }
 
-    private func remove(_ id: LibraryItem.ID) {
-        guard let item = item(for: id) else { return }
-        switch item.section {
-        case .recent:
-            recentDocuments = RecentFilesService.remove(path: item.key)
-        case .saved:
-            savedPages.removeAll { $0.url == item.key }
-            Task { try? await appStore.sessions.removeSavedWebpage(url: item.key) }
-        }
-        if selection == id { selection = nil }
+    private func removeFromRecent(_ item: LibraryItem) {
+        guard let recordedKey = item.recordedRecentKey else { return }
+        recentDocuments = RecentFilesService.remove(path: recordedKey)
+        if selection == item.id { selection = nil }
+    }
+
+    private func removeFromSaved(_ item: LibraryItem) {
+        guard let savedKey = item.savedKey else { return }
+        savedPages.removeAll { $0.url == savedKey }
+        Task { try? await appStore.sessions.removeSavedWebpage(url: savedKey) }
+        if selection == item.id { selection = nil }
     }
 
     private func removeSelected() {
+        guard let selection, let item = item(for: selection) else { return }
+        switch LibraryCatalog.removalTarget(for: item, activeFilter: filter) {
+        case .recent:
+            removeFromRecent(item)
+        case .saved:
+            removeFromSaved(item)
+        case nil:
+            break
+        }
+    }
+
+    private func resetLibrarySearch() {
+        searchQuery = ""
+        filter = .all
+        searchFocused = true
+    }
+
+    private func clearInvisibleSelection() {
         guard let selection else { return }
-        remove(selection)
+        if visibleItems.contains(where: { $0.id == selection }) == false {
+            self.selection = nil
+        }
     }
 
     private func revealInFinder(_ item: LibraryItem) {
@@ -384,102 +467,6 @@ struct WelcomeScreen: View {
         guard panel.runModal() == .OK else { return }
         let paths = panel.urls.map(\.path)
         Task { await appStore.openFiles(paths: paths) }
-    }
-}
-
-// MARK: - Library sort
-
-private enum LibrarySort: String, CaseIterable {
-    case recent
-    case name
-
-    var label: String {
-        switch self {
-        case .recent: "Recently opened"
-        case .name: "Name"
-        }
-    }
-}
-
-// MARK: - Unified library item
-
-private struct LibraryItem: Identifiable, Hashable {
-    enum Section { case recent, saved }
-
-    let id: String
-    let section: Section
-    let kind: DocumentKind
-    /// The path/URL to actually open — the recorded one, or a re-resolved path
-    /// when a moved PDF was found via its docId's meta.json.
-    let key: String
-    /// The path exactly as stored in the recent entry, so `open` can dedupe the
-    /// stale entry when it re-resolved to a new location.
-    let recordedKey: String
-    let icon: String
-    let title: String
-    let subtitle: String
-    let tooltip: String
-    let canRevealInFinder: Bool
-
-    init(recent entry: RecentDocument) {
-        let fileName = entry.kind == .web
-            ? RecentFilesService.webpageDisplayName(for: entry.pdfPath)
-            : RecentFilesService.fileName(for: entry.pdfPath)
-        let trimmedTitle = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let displayTitle = trimmedTitle.isEmpty ? fileName : trimmedTitle
-
-        var pieces: [String] = []
-        if displayTitle != fileName { pieces.append(fileName) }
-        if entry.kind == .pdf, let count = entry.pageCount, count != 0 {
-            pieces.append("\(count) \(count == 1 ? "page" : "pages")")
-        }
-        pieces.append(Self.formatOpenedDate(entry.openedAt))
-
-        // Re-resolve a moved PDF by its stable id (design §7): when the recorded
-        // path is gone but the document carries a /VellumDocId, meta.json's
-        // last_known_path (kept fresh by DocumentDataStore.touch) may point at
-        // where the file moved to.
-        let resolvedPath = RecentFilesService.resolvedPath(for: entry)
-        let onDisk = entry.kind == .pdf && FileManager.default.fileExists(atPath: resolvedPath)
-
-        id = "recent:\(entry.pdfPath)"
-        section = .recent
-        kind = entry.kind
-        key = resolvedPath
-        recordedKey = entry.pdfPath
-        icon = entry.kind == .web ? "globe" : "doc.text"
-        title = displayTitle
-        subtitle = pieces.joined(separator: " · ")
-        tooltip = resolvedPath
-        canRevealInFinder = onDisk
-    }
-
-    init(saved page: WebLibraryEntry) {
-        let displayName = RecentFilesService.webpageDisplayName(for: page.url)
-        let trimmedTitle = page.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let displayTitle = trimmedTitle.isEmpty ? displayName : trimmedTitle
-
-        id = "saved:\(page.url)"
-        section = .saved
-        kind = .web
-        key = page.url
-        recordedKey = page.url
-        icon = "globe"
-        title = displayTitle
-        subtitle = displayName + (page.hasSnapshot ? " · available offline" : "")
-        tooltip = page.url
-        canRevealInFinder = false
-    }
-
-    private static func formatOpenedDate(_ openedAt: String) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = iso.date(from: openedAt) ?? ISO8601DateFormatter().date(from: openedAt)
-        guard let date else { return "Recently opened" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
     }
 }
 
@@ -513,6 +500,13 @@ private struct LibraryRow: View {
             }
 
             Spacer(minLength: 0)
+
+            if item.isSaved {
+                LibraryBadge("Saved", systemImage: "bookmark.fill")
+            }
+            if item.isOffline {
+                LibraryBadge("Offline", systemImage: "arrow.down.circle.fill")
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)

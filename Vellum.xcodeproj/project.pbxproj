@@ -98,6 +98,7 @@
 		9C7F3F0B4C0CDEE7ED83CBB4 /* AnnotationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */; };
 		9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E2B3DF66E30481C363C740 /* ToolbarView.swift */; };
 		9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */; };
+		A312A073C601D23C37AD97EA /* LibraryCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C307643429DD5B843ADC2C10 /* LibraryCatalogTests.swift */; };
 		A5E5A42BE09B4A7911646AFF /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723EC058218A6DF8D994CC26 /* UpdateChecker.swift */; };
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */ = {isa = PBXBuildFile; fileRef = 88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */; };
@@ -114,6 +115,7 @@
 		C4998709FBAE647C23BF3E5A /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */; };
 		C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */; };
 		C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */; };
+		C7013C855B1B3B20CCDECC1A /* LibraryNoResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88FC76B0CE4906E1523EB539 /* LibraryNoResultsView.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
 		C82D9FC05EC46B7D699B8B0F /* KaTeX_Size1-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */; };
 		CA6BCC8D048C1E43CBC52E99 /* KaTeX_SansSerif-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */; };
@@ -140,10 +142,12 @@
 		F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */; };
 		F33467F1BF882C20214E4EB4 /* editor.html in Resources */ = {isa = PBXBuildFile; fileRef = C024B0FD91AE2990C4277000 /* editor.html */; };
 		F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */; };
+		F3E3199E51D6E4D1F467168D /* LibraryBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CAA039E3AA4702D7F4EACC /* LibraryBadge.swift */; };
 		F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8909CC21C72AF947D20B4B6C /* AppStore.swift */; };
 		F9DA8014506FBB48C440F718 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
 		FE3F6412427EE4948EC38358 /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = BA27035FFAE43080C7118AC4 /* katex.min.css */; };
 		FE7D8E1CF0734B927687D5AF /* OpenRouterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96768879872A93B8FD39C342 /* OpenRouterClient.swift */; };
+		FEA3C5C8BFE548371A791831 /* LibraryCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E666A0B25070B7D3EDB09D52 /* LibraryCatalog.swift */; };
 		FF8B0D4EDFA98B3310F21727 /* VellumBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95809D33AB6DF0D9BCF1BE88 /* VellumBundle.swift */; };
 		FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */; };
 /* End PBXBuildFile section */
@@ -224,6 +228,7 @@
 		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
 		88261ED7614D2528C41ED0E5 /* editor.bundle.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = editor.bundle.js; sourceTree = "<group>"; };
 		88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-native.md"; sourceTree = "<group>"; };
+		88FC76B0CE4906E1523EB539 /* LibraryNoResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryNoResultsView.swift; sourceTree = "<group>"; };
 		8909CC21C72AF947D20B4B6C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		89E21441131E7C57CE324E83 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		8A774391C8C286453B790F75 /* MarkdownMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMessage.swift; sourceTree = "<group>"; };
@@ -267,6 +272,7 @@
 		C1F083E5C02A66A025F06638 /* WebContentScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebContentScript.swift; sourceTree = "<group>"; };
 		C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfMetadata.swift; sourceTree = "<group>"; };
 		C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Italic.woff2"; sourceTree = "<group>"; };
+		C307643429DD5B843ADC2C10 /* LibraryCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCatalogTests.swift; sourceTree = "<group>"; };
 		C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiClient.swift; sourceTree = "<group>"; };
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
 		C75C2F535B12256E191B781C /* PdfKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView.swift; sourceTree = "<group>"; };
@@ -289,6 +295,7 @@
 		E064C75923B5E7D98E256470 /* WebArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebArchive.swift; sourceTree = "<group>"; };
 		E201F2530645C6348ECC59AA /* AiStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiStreaming.swift; sourceTree = "<group>"; };
 		E30CD609AEA2C0A662890153 /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
+		E666A0B25070B7D3EDB09D52 /* LibraryCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCatalog.swift; sourceTree = "<group>"; };
 		E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Typewriter-Regular.woff2"; sourceTree = "<group>"; };
 		E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadStore.swift; sourceTree = "<group>"; };
 		E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataStoreTests.swift; sourceTree = "<group>"; };
@@ -298,6 +305,7 @@
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
 		F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Regular.woff2"; sourceTree = "<group>"; };
+		F9CAA039E3AA4702D7F4EACC /* LibraryBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryBadge.swift; sourceTree = "<group>"; };
 		FD01D08235008A4E602D0373 /* PaneTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeView.swift; sourceTree = "<group>"; };
 		FF653B1B8741B61DBE9B55EE /* WebStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -386,6 +394,7 @@
 				E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */,
 				CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */,
 				5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */,
+				C307643429DD5B843ADC2C10 /* LibraryCatalogTests.swift */,
 				6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */,
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
@@ -592,6 +601,9 @@
 		CF0E2D9A717E39ABDB39C16B /* Welcome */ = {
 			isa = PBXGroup;
 			children = (
+				F9CAA039E3AA4702D7F4EACC /* LibraryBadge.swift */,
+				E666A0B25070B7D3EDB09D52 /* LibraryCatalog.swift */,
+				88FC76B0CE4906E1523EB539 /* LibraryNoResultsView.swift */,
 				4E282C555B1B420914134C74 /* WelcomeScreen.swift */,
 			);
 			path = Welcome;
@@ -817,6 +829,9 @@
 				4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */,
 				4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */,
 				D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */,
+				F3E3199E51D6E4D1F467168D /* LibraryBadge.swift in Sources */,
+				FEA3C5C8BFE548371A791831 /* LibraryCatalog.swift in Sources */,
+				C7013C855B1B3B20CCDECC1A /* LibraryNoResultsView.swift in Sources */,
 				E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */,
 				ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */,
 				6D737237057DD944A4616889 /* ModelSelector.swift in Sources */,
@@ -890,6 +905,7 @@
 				252A859CBF3B6F40740EC8BB /* DocumentDataStoreTests.swift in Sources */,
 				53B7BE4E93C5CF617CF049D6 /* DocumentIdentityTests.swift in Sources */,
 				831CF3958ED8C1AF87C6319A /* DocumentsRelocationTests.swift in Sources */,
+				A312A073C601D23C37AD97EA /* LibraryCatalogTests.swift in Sources */,
 				8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */,
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
