@@ -226,6 +226,29 @@ final class HomeSearchStore {
         await load()
     }
 
+    /// Retitle a result and re-index so the new name is live everywhere.
+    ///
+    /// The write is a detached task because it touches three on-disk stores;
+    /// the reload afterwards is what makes the renamed row re-sort under a
+    /// name sort and become findable by its new title without the user having
+    /// to do anything.
+    func rename(_ item: HomeSearchItem, to newTitle: String) async {
+        let target = DocumentRenameService.Target(item: item)
+        let title = DocumentRenameService.normalized(newTitle)
+        await Task.detached(priority: .userInitiated) {
+            DocumentRenameService.apply(target, title: title)
+        }.value
+        await load()
+    }
+
+    /// Can this result be renamed here? Everything local can. A remote
+    /// read-later article cannot — there is no local record to write, and
+    /// pretending otherwise would show a rename that silently vanished on the
+    /// next refresh.
+    func canRename(_ item: HomeSearchItem) -> Bool {
+        item.section != .readLater
+    }
+
     /// Which "forget this" actions apply to a result, most relevant first.
     ///
     /// A row can legitimately offer BOTH. Dedupe merges a page that is in the

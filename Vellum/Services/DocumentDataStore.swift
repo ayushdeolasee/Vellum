@@ -432,6 +432,36 @@ enum DocumentDataStore {
         try? writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
     }
 
+    // MARK: - Rename
+
+    /// Set a document's display title without touching anything else.
+    ///
+    /// `touch(document:)` is the only other title writer, and it is the wrong
+    /// tool for a rename: it rewrites `lastKnownPath` and `lastOpened` from the
+    /// passed `DocumentInfo`, so renaming through it would either bump the
+    /// document's last-opened time (reordering the user's recents as a side
+    /// effect of typing a name) or, if the caller assembled the `DocumentInfo`
+    /// carelessly, overwrite a good `lastKnownPath` with a stale one. This is
+    /// the same narrow read-modify-write shape as `relink`, aimed at the other
+    /// field.
+    ///
+    /// A blank title clears the override rather than storing `""`, so the row
+    /// falls back to the filename or host instead of rendering as an empty
+    /// line the user cannot click on or search for.
+    @discardableResult
+    static func setTitle(forKey key: String, title: String?) -> Bool {
+        guard var meta = loadMeta(forKey: key) else { return false }
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        meta.title = trimmed.isEmpty ? nil : trimmed
+        guard let data = try? WebLibrary.jsonEncoderPretty.encode(meta) else { return false }
+        do {
+            try writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Size helpers
 
     /// Placeholder-aware size: `WebICloud.size` returns the materialized file's

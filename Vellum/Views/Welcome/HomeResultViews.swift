@@ -9,6 +9,41 @@ import SwiftUI
 // `Radius`, `SelectionStyle`/`selectionSurface`, and the same SF Symbols the
 // rest of the chrome uses. No new visual language.
 
+// MARK: - Shared page geometry
+
+/// The home screen's column measurements, in ONE place.
+///
+/// The header block and the result list are separate view trees that have to
+/// look like a single column, and when each carried its own copy of these
+/// numbers they drifted: the search field's content sat 16pt inside the column
+/// while every result row and section header sat 10pt inside it, so the search
+/// glyph and the row glyphs below it were not on the same vertical line and the
+/// list read as a differently-sized block bolted under the field.
+///
+/// `column()` is what makes the two blocks the same width by construction
+/// rather than by two copies of the same literals, and `rowInset` is the single
+/// inner inset every row-like thing uses so their leading edges agree.
+enum HomeLayout {
+    /// Widest the content column is allowed to get. Past roughly this, a row's
+    /// title and its date column drift so far apart that they stop reading as
+    /// one line.
+    static let contentMaxWidth: CGFloat = 900
+    /// Gutter between the column and the window edge.
+    static let columnPadding: CGFloat = 24
+    /// Inner leading/trailing inset shared by the search field's contents, the
+    /// result rows and the section headers.
+    static let rowInset: CGFloat = 16
+}
+
+extension View {
+    /// Constrain to the shared content column: capped, centred, and guttered.
+    func homeContentColumn() -> some View {
+        frame(maxWidth: HomeLayout.contentMaxWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, HomeLayout.columnPadding)
+    }
+}
+
 // MARK: - Result row
 
 /// One openable result. Single click opens — this screen is a launcher, not a
@@ -20,6 +55,7 @@ struct HomeResultRow: View {
     let isSelected: Bool
     let open: () -> Void
     let reveal: (() -> Void)?
+    let rename: (() -> Void)?
     /// Every "forget this" action that applies, in menu order. A row can offer
     /// more than one — a saved article that is also a recent can be dropped
     /// from either shelf independently.
@@ -62,7 +98,7 @@ struct HomeResultRow: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, HomeLayout.rowInset)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .selectionSurface(
@@ -79,6 +115,9 @@ struct HomeResultRow: View {
         .accessibilityValue(item.subtitle)
         .contextMenu {
             Button("Open") { open() }
+            if let rename {
+                Button("Rename…") { rename() }
+            }
             if let reveal {
                 Button("Show in Finder") { reveal() }
             }
@@ -173,7 +212,7 @@ struct HomeLinkActionRow: View {
 
                 KeyCapsule(label: "↩")
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, HomeLayout.rowInset)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .selectionSurface(
@@ -211,7 +250,7 @@ struct HomeSectionHeader: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(palette.mutedForeground)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, HomeLayout.rowInset)
         .padding(.top, 14)
         .padding(.bottom, 6)
         // Pinned headers scroll over rows, so they need the page's own

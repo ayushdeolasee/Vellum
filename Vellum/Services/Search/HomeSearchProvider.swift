@@ -115,7 +115,11 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
                 badges: badges,
                 canRevealInFinder: onDisk,
                 haystack: HomeSearchHaystack(
-                    title: title, name: name, location: resolved, extra: "recent"))
+                    title: title, name: name, location: resolved, extra: "recent"),
+                // The stamped docId when the file has one; otherwise the same
+                // path hash the stores fell back to when it was last opened.
+                storageKey: entry.docId.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? DocumentIdentity.sha256Hex(entry.pdfPath))
         }
     }
 }
@@ -162,7 +166,10 @@ struct SavedWebpagesSearchProvider: HomeSearchProvider {
                     title: title,
                     name: HomeSearchItemBuilder.host(of: entry.url) ?? name,
                     location: entry.url,
-                    extra: "saved webpage"))
+                    extra: "saved webpage"),
+                // Web documents key on the sha256 of their normalized URL,
+                // which is exactly what `WebLibrary.pageKey` computes.
+                storageKey: WebLibrary.pageKey(entry.url))
         }
     }
 }
@@ -240,7 +247,10 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
                     title: title,
                     name: isWeb ? (HomeSearchItemBuilder.host(of: locator) ?? name) : name,
                     location: locator,
-                    extra: entry.hasUserData ? "notes annotations library" : "library"))
+                    extra: entry.hasUserData ? "notes annotations library" : "library"),
+                // This provider IS the documents directory, so the folder
+                // name is the key by definition.
+                storageKey: entry.key)
         }
     }
 }

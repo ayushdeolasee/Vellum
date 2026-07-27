@@ -32,12 +32,9 @@ struct WelcomeScreen: View {
     /// First-run hero only. The library layout uses the search field itself for
     /// links (see `HomeSearchLinkDetector`) plus the Add Webpage button.
     @State private var urlInput = ""
+    /// The row whose rename sheet is open, if any.
+    @State private var renamingItem: HomeSearchItem?
     @FocusState private var searchFocused: Bool
-
-    /// Widest the content column is allowed to get. Past roughly this, a row's
-    /// title and its date column drift so far apart that they stop reading as
-    /// one line.
-    private let contentMaxWidth: CGFloat = 900
 
     /// The calm first-run hero, shown only once we KNOW there is nothing to
     /// browse — never while the first load is still in flight, or the screen
@@ -81,6 +78,16 @@ struct WelcomeScreen: View {
         ) { _ in
             Task { await store.load() }
         }
+        .sheet(item: $renamingItem) { item in
+            RenameDocumentSheet(
+                currentTitle: item.title,
+                // `subtitle` is the filename for a PDF and host+path for a
+                // page — exactly what the row falls back to with no override.
+                fallbackName: item.subtitle,
+                commit: { newTitle in
+                    Task { await store.rename(item, to: newTitle) }
+                })
+        }
         .background {
             // ⌘F focuses the search field here. The menu's Find… command and the
             // window's key monitor both bail out when there is no document open
@@ -116,9 +123,7 @@ struct WelcomeScreen: View {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .frame(maxWidth: contentMaxWidth)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 24)
+            .homeContentColumn()
             .padding(.top, 22)
             .padding(.bottom, 12)
 
@@ -206,7 +211,7 @@ struct WelcomeScreen: View {
                 .accessibilityIdentifier("welcome.clearSearch")
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, HomeLayout.rowInset)
         .frame(height: 46)
         .glassEffect(.regular, in: .capsule)
         .overlay {
@@ -291,6 +296,7 @@ struct WelcomeScreen: View {
                                     isSelected: store.selectedId == item.id,
                                     open: { open(item) },
                                     reveal: revealAction(for: item),
+                                    rename: renameAction(for: item),
                                     removals: removalActions(for: item)
                                 )
                                 .id(item.id)
@@ -308,9 +314,7 @@ struct WelcomeScreen: View {
                             .padding(.top, 56)
                     }
                 }
-                .frame(maxWidth: contentMaxWidth)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24)
+                .homeContentColumn()
                 .padding(.bottom, 24)
             }
             .scrollContentBackground(.hidden)
@@ -546,6 +550,11 @@ struct WelcomeScreen: View {
     private func revealAction(for item: HomeSearchItem) -> (() -> Void)? {
         guard item.canRevealInFinder, case .file(let path, _) = item.target else { return nil }
         return { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+    }
+
+    private func renameAction(for item: HomeSearchItem) -> (() -> Void)? {
+        guard store.canRename(item) else { return nil }
+        return { renamingItem = item }
     }
 
     private func removalActions(

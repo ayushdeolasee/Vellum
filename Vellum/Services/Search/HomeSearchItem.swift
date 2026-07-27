@@ -138,6 +138,15 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     var badges: HomeSearchBadges
     let canRevealInFinder: Bool
     let haystack: HomeSearchHaystack
+    /// The `documents/<key>/` folder this item's `meta.json` lives under, when
+    /// the source knows it. Renaming needs it and cannot re-derive it: for a
+    /// PDF the key is the stamped `/VellumDocId` when there is one, which only
+    /// the recents record and the library folder actually know. Nil for a
+    /// remote read-later result, which has no local metadata to write.
+    ///
+    /// A `var` with a default so the three providers can opt in without every
+    /// test fixture in the suite having to name it.
+    var storageKey: String?
 
     /// Row glyph, matching the icons the previous welcome list used.
     var systemImage: String { kind == .web ? "globe" : "doc.text" }
