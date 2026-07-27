@@ -36,25 +36,21 @@ struct MarkdownMessage: View {
                 .font(.system(size: baseSize))
                 .lineSpacing(3)
                 .padding(.bottom, 8)
-        case .unordered(let items):
+        case .list(let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text("•")
-                        inlineText(item).lineSpacing(3)
+                        Text(item.marker.label)
+                            // The glyph is decoration; `accessibilityLabel`
+                            // below speaks the item's kind and number instead.
+                            .accessibilityHidden(true)
+                        inlineText(item.text).lineSpacing(3)
                     }
-                }
-            }
-            .font(.system(size: baseSize))
-            .padding(.leading, 12)
-            .padding(.bottom, 8)
-        case .ordered(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text("\(index + 1).")
-                        inlineText(item).lineSpacing(3)
-                    }
+                    .padding(.leading, item.indent)
+                    // Without this the bullet and the text are two separate
+                    // VoiceOver stops, and the depth is inaudible.
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(item.accessibilityLabel)
                 }
             }
             .font(.system(size: baseSize))
@@ -167,8 +163,11 @@ struct MarkdownMessage: View {
 enum MarkdownBlock: Equatable {
     case heading(Int, String)
     case paragraph(String)
-    case unordered([String])
-    case ordered([String])
+    /// A run of consecutive list lines, bullets and numbers together. One case
+    /// rather than separate `.unordered`/`.ordered` ones because a model's list
+    /// routinely mixes the two across nesting levels ("2. …" with "- …"
+    /// children), and splitting them threw the nesting away.
+    case list([MarkdownListItem])
     case quote(String)
     case code(String)
     case table(String)
@@ -178,6 +177,46 @@ enum MarkdownBlock: Equatable {
     /// line fell through to `.paragraph` and the dashes rendered literally
     /// (issue #57); models emit them constantly as section separators.
     case rule
+}
+
+/// One line of a list, with the nesting the parser recovered from its indent.
+struct MarkdownListItem: Equatable {
+    enum Marker: Equatable {
+        case unordered
+        /// The number to *display*, which is not always the one the model
+        /// wrote — see `MarkdownParser.listItems`.
+        case ordered(Int)
+
+        var label: String {
+            switch self {
+            case .unordered: "•"
+            case .ordered(let number): "\(number)."
+            }
+        }
+    }
+
+    /// 0 for a top-level item, 1 for its children, and so on.
+    let depth: Int
+    let marker: Marker
+    let text: String
+
+    /// Leading inset for this item's row.
+    ///
+    /// Capped: an assistant bubble is 272pt wide, so past three levels the
+    /// indent costs more legibility than the nesting conveys. `depth` itself is
+    /// left uncapped so `accessibilityLabel` can still announce the real level.
+    var indent: CGFloat { CGFloat(min(depth, 3)) * 16 }
+
+    /// Spoken as one utterance per row — the marker glyph on its own is
+    /// meaningless, and visual indentation is invisible to VoiceOver.
+    var accessibilityLabel: String {
+        let kind = switch marker {
+        case .unordered: "List item"
+        case .ordered(let number): "Item \(number)"
+        }
+        let readable = MarkdownParser.plainPreview(text)
+        return depth == 0 ? "\(kind), \(readable)" : "\(kind), level \(depth + 1), \(readable)"
+    }
 }
 
 enum MarkdownParser {
@@ -210,8 +249,11 @@ enum MarkdownParser {
             // chew "***" down to a stray "*".
             #"(?m)^[ \t]*(?:-[ \t]*){3,}$|^[ \t]*(?:\*[ \t]*){3,}$|^[ \t]*(?:_[ \t]*){3,}$"#,
             #"(?m)^>\s?"#,            // quotes
-            #"(?m)^[-*+]\s+"#,        // bullets
-            #"(?m)^\d+\.\s+"#,        // ordered lists
+            // Bullets and ordered markers, indented or not, so a nested item's
+            // leading "- " does not survive into the pill. Kept in step with
+            // `listItem(_:)`, which accepts the same two marker shapes.
+            #"(?m)^[ \t]*[-*+]\s+"#,   // bullets
+            #"(?m)^[ \t]*\d+[.)]\s+"#, // ordered lists
             "```[a-zA-Z]*",           // code fences
             #"\*\*|\*|__|`|\$\$|\\\[|\\\]"#, // emphasis + display-math delimiters
         ] {
@@ -282,19 +324,12 @@ enum MarkdownParser {
                 blocks.append(.quote(quoted.joined(separator: "\n")))
                 continue
             }
-            if isUnordered(line) {
-                var items: [String] = []
-                while index < lines.count, isUnordered(lines[index]) {
-                    items.append(String(lines[index].dropFirst(2))); index += 1
+            if listLine(line) != nil {
+                var run: [RawListLine] = []
+                while index < lines.count, let raw = listLine(lines[index]) {
+                    run.append(raw); index += 1
                 }
-                blocks.append(.unordered(items)); continue
-            }
-            if orderedText(line) != nil {
-                var items: [String] = []
-                while index < lines.count, let item = orderedText(lines[index]) {
-                    items.append(item); index += 1
-                }
-                blocks.append(.ordered(items)); continue
+                blocks.append(.list(listItems(run))); continue
             }
             if line.contains("|"), index + 1 < lines.count, isTableSeparator(lines[index + 1]) {
                 var rows = [line]
@@ -322,7 +357,14 @@ enum MarkdownParser {
     private static func heading(_ line: String) -> MarkdownBlock? {
         for level in stride(from: 6, through: 1, by: -1) {
             let prefix = String(repeating: "#", count: level) + " "
-            if line.hasPrefix(prefix) { return .heading(level, String(line.dropFirst(prefix.count))) }
+            guard line.hasPrefix(prefix) else { continue }
+            let text = String(line.dropFirst(prefix.count))
+            // Mid-stream the marker arrives before its text. An empty heading
+            // renders as a zero-height block, so the reply appears to lose its
+            // last line until the next token lands; leave "## " as a paragraph
+            // until there is something to head.
+            guard !text.isEmpty else { return nil }
+            return .heading(level, text)
         }
         return nil
     }
@@ -341,13 +383,68 @@ enum MarkdownParser {
         return markers.count >= 3 && markers.allSatisfy { $0 == marker }
     }
 
-    private static func isUnordered(_ line: String) -> Bool {
-        line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ")
+    /// One list line before nesting is resolved: its indent measured in
+    /// columns, the marker the model wrote, and the item text.
+    private struct RawListLine {
+        let column: Int
+        /// `nil` for a bullet; the literal number for an ordered marker.
+        let number: Int?
+        let text: String
     }
 
-    private static func orderedText(_ line: String) -> String? {
-        guard let range = line.range(of: #"^\d+\.\s+"#, options: .regularExpression) else { return nil }
-        return String(line[range.upperBound...])
+    /// Match a single list line, indented or not, with either a `-`/`*`/`+`
+    /// bullet or an `N.`/`N)` ordered marker.
+    ///
+    /// Indent used to be rejected outright (`hasPrefix("- ")`), so a nested
+    /// item fell through to `.paragraph` and rendered its own `- ` literally —
+    /// the follow-up defect reported on this PR.
+    private static func listLine(_ line: String) -> RawListLine? {
+        guard let match = line.wholeMatch(of: /^([ \t]*)([-+*]|\d+[.)])[ \t]+(.+)$/) else { return nil }
+        // A tab indents to the next 4-column stop in every renderer models are
+        // trained against; treating it as one column would flatten tab-nested
+        // lists.
+        let column = match.1.reduce(into: 0) { $0 += $1 == "\t" ? 4 : 1 }
+        return RawListLine(column: column, number: Int(String(match.2).dropLast()), text: String(match.3))
+    }
+
+    /// Resolve a run of list lines into depths and display numbers.
+    ///
+    /// Depth comes from a stack of indent columns rather than dividing the
+    /// column count by a fixed step: models indent children by two spaces, four
+    /// spaces or a tab depending on the model and the surrounding text, and any
+    /// fixed divisor renders one of those conventions at the wrong depth.
+    ///
+    /// Numbering follows CommonMark: only the first marker of an ordered level
+    /// is honoured and the rest of that level counts up from it. Models very
+    /// often emit `1.` for every item, which must still read 1, 2, 3 — but a
+    /// list that genuinely starts at `3.` must start at 3.
+    private static func listItems(_ run: [RawListLine]) -> [MarkdownListItem] {
+        var columns: [Int] = []      // indent column of each currently open level
+        var counters: [Int: Int] = [:] // depth -> next number to display
+        var items: [MarkdownListItem] = []
+
+        for raw in run {
+            while let last = columns.last, raw.column < last {
+                counters[columns.count - 1] = nil
+                columns.removeLast()
+            }
+            if columns.last != raw.column { columns.append(raw.column) }
+            let depth = columns.count - 1
+
+            let marker: MarkdownListItem.Marker
+            if let number = raw.number {
+                let display = counters[depth] ?? number
+                counters[depth] = display + 1
+                marker = .ordered(display)
+            } else {
+                // A bullet breaks the ordered sequence at this level, so the
+                // next number after it restarts from what the model wrote.
+                counters[depth] = nil
+                marker = .unordered
+            }
+            items.append(MarkdownListItem(depth: depth, marker: marker, text: raw.text))
+        }
+        return items
     }
 
     private static func isTableSeparator(_ line: String) -> Bool {
@@ -356,7 +453,7 @@ enum MarkdownParser {
 
     private static func startsBlock(_ line: String) -> Bool {
         line.hasPrefix("```") || line.hasPrefix("$$") || line.hasPrefix("\\[") || line.hasPrefix(">")
-            || heading(line) != nil || isUnordered(line) || orderedText(line) != nil || isRule(line)
+            || heading(line) != nil || listLine(line) != nil || isRule(line)
     }
 
     private static func formatTable(_ rows: [String]) -> String {

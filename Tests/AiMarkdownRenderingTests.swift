@@ -129,7 +129,7 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(blocks.count(where: Self.isMath), 5, "expected the sample's 5 display equations")
         XCTAssertEqual(blocks.count(where: { $0 == .rule }), 3, "expected the sample's 3 thematic breaks")
         XCTAssertEqual(blocks.count(where: Self.isQuote), 3, "expected the sample's 3 blockquotes")
-        XCTAssertEqual(blocks.count(where: Self.isUnordered), 3, "expected the sample's 3 bullet lists")
+        XCTAssertEqual(blocks.count(where: Self.isList), 3, "expected the sample's 3 bullet lists")
     }
 
     private static func isHeading(_ block: MarkdownBlock) -> Bool {
@@ -147,8 +147,8 @@ final class AiMarkdownRenderingTests: XCTestCase {
         return false
     }
 
-    private static func isUnordered(_ block: MarkdownBlock) -> Bool {
-        if case .unordered = block { return true }
+    private static func isList(_ block: MarkdownBlock) -> Bool {
+        if case .list = block { return true }
         return false
     }
 
@@ -257,7 +257,10 @@ final class AiMarkdownRenderingTests: XCTestCase {
     /// A table's `|---|---|` separator and a `- item` bullet both contain rule
     /// characters and must not be swallowed as rules.
     func testRuleDetectionDoesNotEatTablesOrBullets() {
-        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.unordered(["a", "b"])])
+        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.list([
+            MarkdownListItem(depth: 0, marker: .unordered, text: "a"),
+            MarkdownListItem(depth: 0, marker: .unordered, text: "b"),
+        ])])
         let table = MarkdownParser.parse("|a|b|\n|---|---|\n|1|2|")
         XCTAssertEqual(table.count, 1)
         guard case .table = table.first else { return XCTFail("expected a table, got \(table)") }
@@ -377,6 +380,240 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertFalse(attributed.string.contains("---"), "the rule's dashes reached the screen")
     }
 
+    // MARK: - Nested lists
+
+    /// The follow-up defect reported on this PR: a model's sub-bullets are
+    /// indented, and indent used to disqualify a line from being a list item at
+    /// all — so the whole nested group fell through to `.paragraph` and showed
+    /// its own `- ` markers, with the code spans inside them unstyled because a
+    /// paragraph is not a list.
+    func testIndentedSubItemsParseAsNestedListItems() {
+        let source = """
+            1. If the next characters are whitespace, skip them.
+            2. Otherwise, try every token pattern, like:
+               - `int\\b` for the `int` keyword
+               - `[0-9]+\\b` for constants like `2`
+            3. Choose the **longest match at the start**.
+            """
+        let blocks = MarkdownParser.parse(source)
+        guard case .list(let items) = blocks.first, blocks.count == 1 else {
+            return XCTFail("expected one nested list, got \(blocks)")
+        }
+        XCTAssertEqual(items.map(\.depth), [0, 0, 1, 1, 0])
+        XCTAssertEqual(items.map(\.marker), [
+            .ordered(1), .ordered(2), .unordered, .unordered, .ordered(3),
+        ])
+        XCTAssertFalse(
+            items.contains { $0.text.hasPrefix("- ") },
+            "a marker survived into the item text: \(items.map(\.text))")
+    }
+
+    /// The code spans inside those sub-items must still style as code.
+    func testCodeSpansInsideNestedItemsAreMonospaced() {
+        guard case .list(let items) = MarkdownParser.parse("- a\n  - `int\\b` for the `int` keyword").first else {
+            return XCTFail("expected a nested list")
+        }
+        let runs = InlineMarkdown.pieces(in: items[1].text).flatMap { piece -> [(String, Bool)] in
+            guard case .prose(let attributed) = piece else { return [] }
+            return attributed.runs.map {
+                (String(attributed[$0.range].characters),
+                 $0.inlinePresentationIntent?.contains(.code) ?? false)
+            }
+        }
+        XCTAssertTrue(runs.contains { $0.0 == "int\\b" && $0.1 }, "backtick span lost its code intent: \(runs)")
+        XCTAssertFalse(runs.contains { $0.0.contains("`") }, "backticks reached the screen: \(runs)")
+    }
+
+    /// Depth comes from a stack of observed indent columns, not a fixed
+    /// divisor, so two-space and four-space nesting both read as one level.
+    func testNestingDepthIsIndependentOfIndentWidth() {
+        for indent in ["  ", "    ", "\t"] {
+            guard case .list(let items) = MarkdownParser.parse("- a\n\(indent)- b\n- c").first else {
+                return XCTFail("expected a list for indent \(indent.debugDescription)")
+            }
+            XCTAssertEqual(items.map(\.depth), [0, 1, 0], "indent \(indent.debugDescription)")
+        }
+    }
+
+    /// CommonMark honours only the first number of an ordered level. Models
+    /// very often write `1.` for every item, which must still read 1, 2, 3 —
+    /// but a list that genuinely starts at 3 must start at 3.
+    func testOrderedNumberingFollowsTheFirstMarker() {
+        guard case .list(let repeated) = MarkdownParser.parse("1. a\n1. b\n1. c").first else {
+            return XCTFail("expected a list")
+        }
+        XCTAssertEqual(repeated.map(\.marker), [.ordered(1), .ordered(2), .ordered(3)])
+
+        guard case .list(let offset) = MarkdownParser.parse("3. three\n4. four").first else {
+            return XCTFail("expected a list")
+        }
+        XCTAssertEqual(offset.map(\.marker), [.ordered(3), .ordered(4)])
+    }
+
+    /// A mixed list keeps both marker kinds instead of being split into two
+    /// blocks that lose their relationship.
+    func testMixedMarkersStayOneList() {
+        guard case .list(let items) = MarkdownParser.parse("1. step\n   - detail\n2. step").first else {
+            return XCTFail("expected one mixed list")
+        }
+        XCTAssertEqual(items.map(\.marker), [.ordered(1), .unordered, .ordered(2)])
+    }
+
+    func testPlainPreviewStripsIndentedListMarkers() {
+        XCTAssertEqual(MarkdownParser.plainPreview("- a\n  - b\n  2. c"), "a b c")
+    }
+
+    // MARK: - Overlapping emphasis
+
+    /// CommonMark rejects same-marker nesting like `**a **b** c**` by design,
+    /// and Foundation then leaves every marker literal — the leaked-syntax
+    /// artifact issue #57 is about. Dropping the emphasis reads better than
+    /// showing the syntax.
+    func testOverlappingEmphasisIsRecoveredAsPlainProse() {
+        let visible = Self.visibleText(
+            InlineMarkdown.pieces(in: "**What **FOR UPDATE** does** and *an *overlap* here*"))
+        XCTAssertEqual(visible, "What FOR UPDATE does and an overlap here")
+    }
+
+    /// The recovery must never strip emphasis that Foundation resolved
+    /// correctly. Here the leaked `**` comes from the *escaped* pair, so
+    /// removing the real `**b**` would de-bold `b` and leave the leak in place.
+    /// The re-parse check sees `**` still present and abandons the repair.
+    func testRecoveryIsAbandonedWhenItWouldNotRemoveTheLeak() {
+        let prose = Self.proseRuns(InlineMarkdown.pieces(in: #"\*\*a\*\* and **b**"#))
+        XCTAssertTrue(
+            prose.contains { $0.text.contains("b") && $0.isBold },
+            "legitimate bold was stripped by the recovery pass: \(prose)")
+        XCTAssertTrue(
+            prose.contains { $0.text.contains("**a**") },
+            "the escaped literal should survive: \(prose)")
+    }
+
+    /// Multiplication, code spans and blank lines are not emphasis and must be
+    /// left exactly as written.
+    func testRecoveryLeavesOperatorsAndCodeSpansAlone() {
+        let visible = Self.visibleText(InlineMarkdown.pieces(in: "2 * 3 and **bold**\n`a*b` stays code"))
+        XCTAssertEqual(visible, "2 * 3 and bold\na*b stays code")
+        XCTAssertTrue(
+            Self.proseRuns(InlineMarkdown.pieces(in: "2 * 3 and **bold**")).contains { $0.text == "bold" && $0.isBold },
+            "an unrelated operator must not disable emphasis on the same line")
+        XCTAssertFalse(
+            Self.proseRuns(InlineMarkdown.pieces(in: "use snake_case_names here")).contains(where: \.isItalic),
+            "intraword underscores are not emphasis")
+    }
+
+    // MARK: - Streaming prefixes
+
+    /// Every prefix of a reply is rendered as it arrives. None may crash, lose
+    /// the text that has already landed, or leak a half-arrived marker.
+    func testPartialRepliesStayRenderable() {
+        let cases: [(source: String, mustContain: String)] = [
+            ("#", "#"),
+            ("# ", "#"),
+            ("# Heading\n\n**bold", "bold"),
+            ("# Heading\n\n**bold $x", "bold"),
+            ("# Heading\n\n**bold $x$ text**\n\n$", "text"),
+            ("# Heading\n\n**bold $x$ text**\n\n$$\n\\frac{a}", "text"),
+        ]
+        for (source, expected) in cases {
+            let rendered = AiAttributedRenderer.attributedString(
+                for: source, color: .labelColor, secondary: .secondaryLabelColor)
+            XCTAssertTrue(
+                rendered.string.contains(expected),
+                "\(source.debugDescription) dropped \(expected.debugDescription): \(rendered.string.debugDescription)")
+        }
+        // A heading marker with no text yet stays visible as a paragraph rather
+        // than collapsing to a zero-height block that hides the last token.
+        XCTAssertEqual(MarkdownParser.parse("## "), [.paragraph("## ")])
+        XCTAssertEqual(MarkdownParser.parse("## T"), [.heading(2, "T")])
+    }
+
+    func testMalformedBlocksDegradeInsteadOfDisappearing() {
+        XCTAssertEqual(MarkdownParser.parse("$$\n\\frac{a}{b}"), [.code("\\frac{a}{b}")])
+        XCTAssertEqual(MarkdownParser.parse("####### not a heading"), [.paragraph("####### not a heading")])
+        for source in ["**unclosed emphasis", "[broken link](https://example.com", "```\nunclosed code", "-"] {
+            let rendered = AiAttributedRenderer.attributedString(
+                for: source, color: .labelColor, secondary: .secondaryLabelColor)
+            XCTAssertGreaterThan(rendered.length, 0, source)
+            XCTAssertTrue(MessageContainerView.measureHeight(rendered, width: 120).isFinite, source)
+        }
+    }
+
+    // MARK: - Attachments at narrow widths
+
+    /// Equations and rules are authored at the bubble's default content width,
+    /// but the inspector column goes down to 240pt and list items indent
+    /// further still. An attachment cannot size itself against its container,
+    /// so it has to be scaled to the line fragment it will actually occupy.
+    func testAttachmentsAreScaledIntoTheirLineFragment() {
+        let source = "- Parent\n    - Wide $\\frac{abcdefghijklmnopqrstuvwxyz}{1234567890}$\n\n---\n\n$$\nP(X, Y)\n$$"
+        let attributed = AiAttributedRenderer.attributedString(
+            for: source, color: .labelColor, secondary: .secondaryLabelColor)
+
+        for width in [248.0, 120.0] as [CGFloat] {
+            let fitted = MessageContainerView.fittedAttachments(in: attributed, width: width)
+            var seen = 0
+            fitted.enumerateAttribute(.attachment, in: NSRange(location: 0, length: fitted.length)) { value, range, _ in
+                guard let attachment = value as? NSTextAttachment else { return }
+                seen += 1
+                let paragraph = fitted.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+                    as? NSParagraphStyle
+                let indent = max(paragraph?.firstLineHeadIndent ?? 0, paragraph?.headIndent ?? 0)
+                XCTAssertLessThanOrEqual(
+                    attachment.bounds.width, width - indent + 0.5,
+                    "attachment overflows its indented line fragment at \(width)")
+            }
+            XCTAssertGreaterThan(seen, 0, "expected attachments to fit at \(width)")
+        }
+
+        // The originals are untouched, so widening the panel restores full size
+        // rather than compounding the scale.
+        let widths = Self.attachmentWidths(in: attributed)
+        _ = MessageContainerView.fittedAttachments(in: attributed, width: 100)
+        XCTAssertEqual(Self.attachmentWidths(in: attributed), widths)
+    }
+
+    // MARK: - Quoting and accessibility
+
+    /// `textView.string` is full of U+FFFC — one per equation and per rule — so
+    /// quoting a selection used to paste object-replacement characters into the
+    /// composer, and the bubble's accessibility value read them out.
+    func testAttachmentsBecomeSourceTextRatherThanReplacementCharacters() {
+        let content = "Before $x^2$ here\n\n---\n\n$$\nP(X, Y)\n$$"
+        let attributed = AiAttributedRenderer.attributedString(
+            for: content, color: .labelColor, secondary: .secondaryLabelColor)
+        XCTAssertTrue(attributed.string.contains("\u{FFFC}"), "attachments should be present to begin with")
+
+        let quoted = MessageContainerView.plainText(
+            in: attributed, range: NSRange(location: 0, length: attributed.length), form: \.markdown)
+        XCTAssertFalse(quoted.contains("\u{FFFC}"), quoted.debugDescription)
+        XCTAssertTrue(quoted.contains("$x^2$"), "inline math should quote with its delimiters: \(quoted)")
+        XCTAssertTrue(quoted.contains("$$\nP(X, Y)\n$$"), "display math should quote as display math: \(quoted)")
+        XCTAssertFalse(quoted.contains("---"), "the decorative rule should quote as nothing")
+
+        let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 80))
+        container.setAttributed(attributed, content: content, color: .labelColor, secondary: .secondaryLabelColor)
+        let spoken = container.textView.accessibilityValue()
+        XCTAssertNotNil(spoken)
+        XCTAssertFalse(spoken?.contains("\u{FFFC}") ?? true, "VoiceOver would read the replacement character")
+        XCTAssertTrue(spoken?.contains("Equation: x^2") ?? false, "the equation was not spoken: \(spoken ?? "nil")")
+    }
+
+    private static func attachmentWidths(in attributed: NSAttributedString) -> [CGFloat] {
+        var widths: [CGFloat] = []
+        attributed.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributed.length)) { value, _, _ in
+            if let attachment = value as? NSTextAttachment { widths.append(attachment.bounds.width) }
+        }
+        return widths
+    }
+
+    private static func visibleText(_ pieces: [InlinePiece]) -> String {
+        pieces.compactMap { piece in
+            guard case .prose(let prose) = piece else { return nil }
+            return String(prose.characters)
+        }.joined()
+    }
+
     // MARK: - Helpers
 
     private struct ProseRun: CustomStringConvertible {
@@ -411,7 +648,7 @@ final class AiMarkdownRenderingTests: XCTestCase {
     private static func inlineSources(of block: MarkdownBlock) -> [String] {
         switch block {
         case .heading(_, let text), .paragraph(let text), .quote(let text): return [text]
-        case .unordered(let items), .ordered(let items): return items
+        case .list(let items): return items.map(\.text)
         case .code, .table, .math, .rule: return []
         }
     }

@@ -7,6 +7,33 @@ import SwiftUI
 // and flattens each block into one NSAttributedString styled to match the
 // SwiftUI `MarkdownMessage` renderer used for user messages.
 
+/// What an image attachment should contribute when the transcript is flattened
+/// back to plain text — quoting a selection into the composer, or handing the
+/// bubble an AppKit accessibility value.
+///
+/// Attachments otherwise surface as U+FFFC, so without this a quoted sentence
+/// containing an equation pasted an object-replacement character into the
+/// composer, and a thematic rule pasted one too.
+final class AttachmentText: NSObject {
+    /// Markdown that reproduces the attachment, so a quoted equation still
+    /// renders as an equation when it is sent back. Empty for decorative
+    /// attachments (thematic rules), which quote as nothing at all.
+    let markdown: String
+    /// What VoiceOver should hear in place of the image. Empty to skip.
+    let spoken: String
+
+    init(markdown: String, spoken: String) {
+        self.markdown = markdown
+        self.spoken = spoken
+    }
+}
+
+extension NSAttributedString.Key {
+    /// Carries an `AttachmentText` on every image-attachment run this renderer
+    /// produces.
+    static let vellumAttachmentText = NSAttributedString.Key("com.vellum.ai.attachment-text")
+}
+
 struct SelectableMessageText: NSViewRepresentable {
     let content: String
     /// Base text color (the assistant bubble's foreground).
@@ -64,6 +91,7 @@ struct SelectableMessageText: NSViewRepresentable {
         return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onQuote: (String) -> Void
         weak var container: MessageContainerView?
@@ -75,10 +103,12 @@ struct SelectableMessageText: NSViewRepresentable {
         }
 
         func quoteCurrentSelection() {
-            guard let textView = container?.textView else { return }
+            guard let textView = container?.textView, let storage = textView.textStorage else { return }
             let range = textView.selectedRange()
             guard range.length > 0 else { return }
-            let text = (textView.string as NSString).substring(with: range)
+            // Not `textView.string`: that hands back a U+FFFC for every
+            // equation and rule in the selection.
+            let text = MessageContainerView.plainText(in: storage, range: range, form: \.markdown)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             onQuote(text)
@@ -129,13 +159,21 @@ final class MessageContainerView: NSView {
     private(set) var appliedContent: String?
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
+    /// Width the text storage's attachments were last fitted to; nil forces a
+    /// refit on the next layout.
+    private var fittedWidth: CGFloat?
 
     func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
         self.attributed = attributed
         self.appliedContent = content
         self.appliedColor = color
         self.appliedSecondary = secondary
+        fittedWidth = nil
         textView.textStorage?.setAttributedString(attributed)
+        // The text view reads as one accessibility element whose value is its
+        // string — which is full of U+FFFC without this substitution.
+        textView.setAccessibilityValue(
+            Self.plainText(in: attributed, range: NSRange(location: 0, length: attributed.length), form: \.spoken))
         needsLayout = true
     }
 
@@ -144,7 +182,83 @@ final class MessageContainerView: NSView {
     /// layout pass, and driving `ensureLayout` on the on-screen view there
     /// tripped "-ensureLayoutForTextContainer while already performing layout".
     func height(forWidth width: CGFloat) -> CGFloat {
-        Self.measureHeight(attributed, width: max(1, width))
+        let width = max(1, width)
+        // Measure what will actually be shown: `layout()` installs the same
+        // fitted copy, and a scaled-down equation is shorter than its original.
+        return Self.measureHeight(Self.fittedAttachments(in: attributed, width: width), width: width)
+    }
+
+    /// Scale image attachments down to the width they are actually being laid
+    /// out in.
+    ///
+    /// `AiAttributedRenderer` authors equations and rules at `contentWidth`, the
+    /// usable width of a default-size bubble. An attachment cannot size itself
+    /// against its text container, so at the inspector's 240pt minimum (see
+    /// `inspectorColumnWidth` in `ContentView`) — or inside an indented list
+    /// item — a full-width attachment overflows its line fragment and clips.
+    /// The originals are kept in `attributed`, so widening the panel again
+    /// restores full size rather than compounding the scale.
+    static func fittedAttachments(in attributed: NSAttributedString, width: CGFloat) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: attributed)
+        let available = max(1, width)
+        result.enumerateAttribute(.attachment, in: NSRange(location: 0, length: result.length)) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            let paragraph = result.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+                as? NSParagraphStyle
+            let lineWidth = availableLineWidth(containerWidth: available, paragraph: paragraph)
+            guard attachment.bounds.width > lineWidth else { return }
+            // A fresh attachment rather than a mutation: the original is shared
+            // with `attributed`, and scaling it in place would be cumulative.
+            let fitted = NSTextAttachment()
+            fitted.image = attachment.image
+            var bounds = attachment.bounds
+            let scale = lineWidth / bounds.width
+            bounds.size = CGSize(width: lineWidth, height: max(1, bounds.height * scale))
+            // `origin.y` is the negated descent, which scales with the image.
+            bounds.origin.y *= scale
+            fitted.bounds = bounds
+            result.addAttribute(.attachment, value: fitted, range: range)
+        }
+        return result
+    }
+
+    /// Width a line fragment actually offers under a paragraph style, once its
+    /// list/quote indents are taken out.
+    private static func availableLineWidth(containerWidth: CGFloat, paragraph: NSParagraphStyle?) -> CGFloat {
+        guard let paragraph else { return max(1, containerWidth) }
+        let leading = max(0, max(paragraph.firstLineHeadIndent, paragraph.headIndent))
+        // A positive tailIndent is an absolute column; a negative one is an
+        // inset from the trailing edge. Zero means the full width.
+        let trailingEdge = paragraph.tailIndent > 0
+            ? min(containerWidth, paragraph.tailIndent)
+            : containerWidth + paragraph.tailIndent
+        return max(1, trailingEdge - leading)
+    }
+
+    /// Flatten attributed transcript content back to plain text, substituting
+    /// `AttachmentText` for image attachments rather than leaking U+FFFC.
+    ///
+    /// `form` picks which substitution to use — `\.markdown` for quoting,
+    /// `\.spoken` for accessibility. An empty substitution drops the run, which
+    /// is how decorative rules disappear from both.
+    static func plainText(
+        in attributed: NSAttributedString,
+        range requestedRange: NSRange,
+        form: KeyPath<AttachmentText, String>
+    ) -> String {
+        let range = NSIntersectionRange(requestedRange, NSRange(location: 0, length: attributed.length))
+        guard range.length > 0 else { return "" }
+
+        var result = ""
+        attributed.enumerateAttributes(in: range) { attributes, runRange, _ in
+            if attributes[.attachment] is NSTextAttachment {
+                guard let text = attributes[.vellumAttachmentText] as? AttachmentText else { return }
+                result += text[keyPath: form]
+                return
+            }
+            result += (attributed.string as NSString).substring(with: runRange)
+        }
+        return result
     }
 
     static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
@@ -162,6 +276,13 @@ final class MessageContainerView: NSView {
 
     override func layout() {
         super.layout()
+        // Refit attachments whenever the bubble's width changes. Guarded so a
+        // routine layout pass does not rewrite the text storage (which would
+        // clear the selection) on every call.
+        if fittedWidth == nil || abs((fittedWidth ?? 0) - bounds.width) > 0.5 {
+            textView.textStorage?.setAttributedString(Self.fittedAttachments(in: attributed, width: bounds.width))
+            fittedWidth = bounds.width
+        }
         textView.frame = bounds
         updateQuoteButton()
     }
@@ -334,11 +455,8 @@ enum AiAttributedRenderer {
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
             return inline(text, font: base, color: color, paragraph: paragraph)
 
-        case let .unordered(items):
-            return list(items, color: color) { _ in "•  " }
-
-        case let .ordered(items):
-            return list(items, color: color) { "\($0 + 1).  " }
+        case let .list(items):
+            return list(items, color: color)
 
         case let .quote(text):
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
@@ -377,7 +495,8 @@ enum AiAttributedRenderer {
     /// A thematic break (`---`). An attributed string has no "draw a line"
     /// attribute, so the rule is a 1pt-tall image on its own paragraph, sized
     /// to the same fixed bubble content width the math attachments are capped
-    /// to. Left with no `accessibilityDescription`: it is decorative.
+    /// to. Left with no `accessibilityDescription`: it is decorative, and its
+    /// empty `AttachmentText` keeps it out of quotes and VoiceOver alike.
     private static func rule(color: NSColor) -> NSAttributedString {
         let size = CGSize(width: contentWidth, height: 1)
         let attachment = NSTextAttachment()
@@ -391,7 +510,11 @@ enum AiAttributedRenderer {
         paragraph.paragraphSpacingBefore = 4
         let result = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
         result.addAttributes(
-            [.paragraphStyle: paragraph, .foregroundColor: color],
+            [
+                .paragraphStyle: paragraph,
+                .foregroundColor: color,
+                .vellumAttachmentText: AttachmentText(markdown: "", spoken: ""),
+            ],
             range: NSRange(location: 0, length: result.length)
         )
         return result
@@ -410,7 +533,8 @@ enum AiAttributedRenderer {
         }
         let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
         paragraph.alignment = .center
-        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex))
+        let result = NSMutableAttributedString(
+            attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex, display: true))
         result.addAttributes(
             [.paragraphStyle: paragraph, .foregroundColor: color],
             range: NSRange(location: 0, length: result.length)
@@ -421,7 +545,12 @@ enum AiAttributedRenderer {
     /// Wrap a rendered equation in a text attachment whose bounds sit the image
     /// on the text baseline (negative y = the math's descent below it), scaled
     /// down proportionally when wider than the bubble.
-    private static func attachment(for rendered: MathRenderer.Rendered, maxWidth: CGFloat, latex: String) -> NSAttributedString {
+    private static func attachment(
+        for rendered: MathRenderer.Rendered,
+        maxWidth: CGFloat,
+        latex: String,
+        display: Bool
+    ) -> NSAttributedString {
         let attachment = NSTextAttachment()
         attachment.image = rendered.image
         // The attachment renders as an image with no text; expose the LaTeX
@@ -435,7 +564,17 @@ enum AiAttributedRenderer {
             descent *= scale
         }
         attachment.bounds = CGRect(x: 0, y: -descent, width: size.width, height: size.height)
-        return NSAttributedString(attachment: attachment)
+        let result = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        // Quoting an equation must round-trip: re-sending the quote should
+        // typeset the same equation, so the delimiters have to match the
+        // position it was rendered in.
+        result.addAttribute(
+            .vellumAttachmentText,
+            value: AttachmentText(
+                markdown: display ? "$$\n\(latex)\n$$" : "$\(latex)$",
+                spoken: "Equation: \(latex)"),
+            range: NSRange(location: 0, length: result.length))
+        return result
     }
 
     private static var base: NSFont { NSFont.systemFont(ofSize: 14) }
@@ -453,20 +592,23 @@ enum AiAttributedRenderer {
         return style
     }
 
-    private static func list(
-        _ items: [String],
-        color: NSColor,
-        marker: (Int) -> String
-    ) -> NSAttributedString {
+    /// A list, nesting and all. Each item gets its own paragraph style because
+    /// the indents are per-depth; `headIndent` sits one marker-width past
+    /// `firstLineHeadIndent` so a wrapped item aligns under its own text rather
+    /// than back under its bullet.
+    ///
+    /// Mirrors `MarkdownMessage`'s SwiftUI list, including its `indent` cap.
+    private static func list(_ items: [MarkdownListItem], color: NSColor) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 4)
-        paragraph.headIndent = 16
-        paragraph.firstLineHeadIndent = 4
         for (index, item) in items.enumerated() {
-            let line = NSMutableAttributedString(string: marker(index), attributes: [
+            let indent = 4 + item.indent
+            let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 4)
+            paragraph.firstLineHeadIndent = indent
+            paragraph.headIndent = indent + 16
+            let line = NSMutableAttributedString(string: "\(item.marker.label)  ", attributes: [
                 .font: base, .foregroundColor: color, .paragraphStyle: paragraph,
             ])
-            line.append(inline(item, font: base, color: color, paragraph: paragraph))
+            line.append(inline(item.text, font: base, color: color, paragraph: paragraph))
             result.append(line)
             if index < items.count - 1 { result.append(NSAttributedString(string: "\n")) }
         }
@@ -491,7 +633,9 @@ enum AiAttributedRenderer {
                 result.append(inlineProse(attributed, font: font, color: color, paragraph: paragraph))
             case .math(let latex):
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
-                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex))
+                    let math = NSMutableAttributedString(
+                        attributedString: attachment(
+                            for: rendered, maxWidth: contentWidth, latex: latex, display: false))
                     // Keep the run's paragraph style so line spacing stays even.
                     math.addAttributes(
                         [.paragraphStyle: paragraph, .foregroundColor: color],
