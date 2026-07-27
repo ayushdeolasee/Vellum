@@ -22,6 +22,11 @@ final class InkPageCanvas_iOS: PKCanvasView {
     /// it. It is refreshed on seeding *and* on every delegate callback, so a
     /// programmatic mutation (clear page, undo, redo) can never leave it stale.
     var committedDrawing = PKDrawing()
+    /// Guards *this* canvas's programmatic `drawing =` assignments from being
+    /// mistaken for user edits. Per-canvas rather than provider-wide so
+    /// suppressing one page can never swallow another page's change callback
+    /// (which would drop that page's stroke before it was ever persisted).
+    var suppressChange = false
 }
 
 /// Wraps a page's ink canvas so we can super-sample it. PDFKit sizes this
@@ -114,9 +119,10 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     /// Pages PDFKit currently has on screen — only these are super-sampled (so an
     /// inked page that scrolled away doesn't retain a large high-res bitmap).
     private var displayedKeys: Set<ObjectIdentifier> = []
-    /// Guards programmatic `canvas.drawing =` seeding/rescaling from triggering a
-    /// persist.
-    private var suppressChange = false
+    // NB: the guard against programmatic `canvas.drawing =` assignments being
+    // mistaken for user edits lives on the canvas (`InkPageCanvas_iOS
+    // .suppressChange`), not here — a provider-wide flag would let one page's
+    // suppression window swallow another page's change callback.
 
     /// The PDFView's current zoom, tracked so freshly-installed / rescaled pages
     /// pick the right super-sample factor immediately.
@@ -173,11 +179,11 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         // is page space at every `K`, so this is a straight copy — then strip
         // the page's native ink so the display document doesn't double-render
         // behind the canvas.
-        suppressChange = true
+        canvas.suppressChange = true
         let seeded = PdfInk.drawing(on: page) ?? PKDrawing()
         canvas.drawing = seeded
         canvas.committedDrawing = seeded
-        suppressChange = false
+        canvas.suppressChange = false
         PdfInk.removeVellumInk(from: page)
         if !seeded.strokes.isEmpty {
             // Let observers (the sidebar's Handwriting chips) know ink exists
@@ -296,8 +302,8 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     // MARK: - PKCanvasViewDelegate
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-        guard !suppressChange,
-              let canvas = canvasView as? InkPageCanvas_iOS,
+        guard let canvas = canvasView as? InkPageCanvas_iOS,
+              !canvas.suppressChange,
               canvas.pageNumber >= 1 else { return }
         // Scratch-out runs first, and synchronously (see `applyScratchOut`): if
         // the stroke the user just finished is a scribble over existing ink, what
@@ -325,24 +331,34 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     ///   word to deepen the highlight is a legitimate, common action with exactly
     ///   the geometry of a scratch-out. The eraser is excluded because it can't
     ///   produce a stroke at all;
-    /// * the drawing grew by exactly one stroke. Anything else — a bitmap erase
-    ///   (masks strokes, count unchanged), a vector erase (count drops), an undo,
-    ///   a programmatic clear — is not a freshly drawn stroke. PencilKit appends
-    ///   new strokes, so the last one is the one that just landed.
+    /// * we are not inside an undo or redo. `UndoManager` mutating the drawing
+    ///   fires this delegate too, and undoing a single-stroke object-erase
+    ///   restores exactly one stroke — indistinguishable by count from the user
+    ///   drawing one. Without this guard, undo could re-run the recognizer and
+    ///   erase ink *while restoring* it, and the erase would register its own
+    ///   action onto the redo stack mid-group;
+    /// * exactly one stroke was appended, with every earlier stroke unchanged
+    ///   (`ScratchOutInk.appendedStrokeIndex`). A bitmap erase (masks strokes,
+    ///   count unchanged), a vector erase (count drops) and a programmatic clear
+    ///   all fail that test.
     private func scratchOutErase(on canvas: InkPageCanvas_iOS) -> PKDrawing? {
         guard InkController_iOS.scratchOutToErase,
               let ink, ink.isActive, ink.tool == .pen else { return nil }
+        let undoManager = canvas.undoManager
+        guard undoManager?.isUndoing != true, undoManager?.isRedoing != true else { return nil }
+
         let drawing = canvas.drawing
-        guard drawing.strokes.count == canvas.committedDrawing.strokes.count + 1 else { return nil }
-        guard let result = ScratchOutInk.erase(
-            scratchIndex: drawing.strokes.count - 1,
-            in: drawing) else { return nil }
+        guard let scratchIndex = ScratchOutInk.appendedStrokeIndex(
+            in: drawing, after: canvas.committedDrawing) else { return nil }
+        guard let result = ScratchOutInk.erase(scratchIndex: scratchIndex, in: drawing) else {
+            return nil
+        }
 
         #if DEBUG
         NSLog("[ink-debug] scratch-out on page %d erased %d stroke(s)",
               canvas.pageNumber, result.erasedStrokeCount)
         #endif
-        applyScratchOut(result.drawing, undoingTo: canvas.committedDrawing, on: canvas)
+        applyScratchOut(result.drawing, undoingTo: drawing, on: canvas)
         return result.drawing
     }
 
@@ -350,19 +366,26 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     /// `old`. Recursive by design: the undo's own registration becomes the redo.
     ///
     /// ## Undo grouping
-    /// `old` is deliberately the drawing from *before* the scribble was drawn,
-    /// not the drawing PencilKit just handed us. PencilKit has already registered
-    /// its own "I added a stroke" undo for the scribble; because this runs
-    /// synchronously inside `canvasViewDrawingDidChange` — the same run-loop
-    /// iteration as that registration — UIKit's `UndoManager.groupsByEvent`
-    /// folds both actions into a single group, so one ⌘Z (or one toolbar undo)
-    /// restores every erased stroke at once.
+    /// `old` is the drawing PencilKit just handed us — the one that still
+    /// contains the scribble — *not* the pre-scribble drawing. That choice is
+    /// what makes the undo correct without depending on anything we cannot
+    /// verify:
     ///
-    /// Restoring the *pre-scribble* drawing also makes the pairing degrade
-    /// safely if the two actions ever land in separate groups: the first undo
-    /// already puts the page back exactly as it was, and PencilKit's leftover
-    /// "remove the scribble" action then applies to a drawing that no longer
-    /// contains it — a no-op, not a corruption.
+    /// PencilKit has already registered its own "I added a stroke" undo for the
+    /// scribble. If UIKit's `UndoManager.groupsByEvent` folds that registration
+    /// and ours into one group, a single ⌘Z runs both in reverse — ours restores
+    /// the scribble and its victims, then PencilKit's removes the scribble —
+    /// landing exactly on the pre-scribble page. If the two land in *separate*
+    /// groups, the user presses undo twice and sees the same two steps
+    /// individually, each of them coherent.
+    ///
+    /// Separate groups are a real possibility: `PKCanvasViewDelegate` documents
+    /// that `canvasViewDrawingDidChange` "may be called some time after
+    /// `canvasViewDidEndUsingTool`" because Apple Pencil pressure data lags touch
+    /// data — which is precisely the path this feature runs on. Handing
+    /// PencilKit's action back the state it expects (a drawing whose last stroke
+    /// is the scribble) means we never have to care which way it went, and never
+    /// depend on whether PencilKit's own undo is snapshot- or delta-based.
     private func applyScratchOut(
         _ new: PKDrawing,
         undoingTo old: PKDrawing,
@@ -376,9 +399,14 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         canvas.undoManager?.setActionName("Erase")
         // Reassigning `drawing` re-enters the delegate; suppress so the swap
         // isn't mistaken for a second user edit (and re-scanned for scratch-out).
-        suppressChange = true
+        // Per-canvas and saved/restored rather than a provider-wide set/clear: a
+        // delegate callback for a *different* page arriving inside this window
+        // would otherwise be dropped entirely — no `drawingChanged`, so that
+        // page's stroke would never be written to disk.
+        let wasSuppressed = canvas.suppressChange
+        canvas.suppressChange = true
         canvas.drawing = new
-        suppressChange = false
+        canvas.suppressChange = wasSuppressed
         canvas.committedDrawing = new
     }
 

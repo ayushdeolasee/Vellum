@@ -296,6 +296,81 @@ final class ScratchOutRecognizerTests: XCTestCase {
         XCTAssertNil(ScratchOutInk.erase(scratchIndex: 1, in: drawing))
     }
 
+    /// The realistic data-loss case: notes on ruled lines. Scrubbing out a word
+    /// must not reach the line above. The scribble drifts over 18 pt, so with
+    /// 16 pt line spacing the neighbour sits ~16 pt from the scribble's top pass
+    /// — outside the ~9 pt effective hit radius, but only just, which is exactly
+    /// why it needs a test rather than a comment.
+    func testAdjacentLineOfHandwritingSurvives() throws {
+        let target = stroke(polyline([CGPoint(x: 10, y: 9), CGPoint(x: 90, y: 9)]))
+        let lineAbove = stroke(polyline([CGPoint(x: 10, y: -16), CGPoint(x: 90, y: -16)]))
+        let lineBelow = stroke(polyline([CGPoint(x: 10, y: 34), CGPoint(x: 90, y: 34)]))
+        let drawing = PKDrawing(strokes: [lineAbove, target, lineBelow, stroke(scratchOut())])
+
+        let result = try XCTUnwrap(ScratchOutInk.erase(scratchIndex: 3, in: drawing))
+        XCTAssertEqual(result.erasedStrokeCount, 1, "only the scrubbed line is erased")
+        XCTAssertEqual(result.drawing.strokes.count, 2)
+        let survivingMidYs = result.drawing.strokes.map { $0.renderBounds.midY }.sorted()
+        XCTAssertEqual(survivingMidYs[0], -16, accuracy: 2)
+        XCTAssertEqual(survivingMidYs[1], 34, accuracy: 2)
+    }
+
+    /// Undo restoring a stroke looks exactly like the user drawing one if you
+    /// only compare counts, and the restored stroke need not come back at the
+    /// end. Prefix comparison is what makes "appended" a fact.
+    func testAppendedStrokeIndexRejectsANonAppendInsertion() {
+        let a = stroke(polyline([CGPoint(x: 0, y: 0), CGPoint(x: 50, y: 0)]))
+        let b = stroke(polyline([CGPoint(x: 0, y: 20), CGPoint(x: 50, y: 20)]))
+        let restored = stroke(polyline([CGPoint(x: 0, y: 40), CGPoint(x: 50, y: 40)]))
+        let previous = PKDrawing(strokes: [a, b])
+
+        XCTAssertEqual(
+            ScratchOutInk.appendedStrokeIndex(
+                in: PKDrawing(strokes: [a, b, restored]), after: previous),
+            2,
+            "a genuine append is identified")
+        XCTAssertNil(
+            ScratchOutInk.appendedStrokeIndex(
+                in: PKDrawing(strokes: [restored, a, b]), after: previous),
+            "a stroke restored at the front is not an append")
+        XCTAssertNil(
+            ScratchOutInk.appendedStrokeIndex(
+                in: PKDrawing(strokes: [a, restored, b]), after: previous),
+            "a stroke restored in the middle is not an append")
+        XCTAssertNil(
+            ScratchOutInk.appendedStrokeIndex(in: PKDrawing(strokes: [a]), after: previous),
+            "a vector erase is not an append")
+        XCTAssertNil(
+            ScratchOutInk.appendedStrokeIndex(in: previous, after: previous),
+            "an unchanged drawing is not an append")
+    }
+
+    /// The bitmap eraser masks a stroke instead of shortening it, so coverage has
+    /// to be measured against what still renders. Half-erase a word, scribble
+    /// over the surviving half, and it must go: against the full original path
+    /// that scores ≈0.5 and falls just under `minimumCoverage`.
+    func testCoverageMeasuresOnlyTheUnmaskedPartOfAStroke() throws {
+        let word = stroke(polyline([CGPoint(x: 0, y: 9), CGPoint(x: 200, y: 9)]))
+        // Keep only x ≤ 100 — the half the scribble (x 0…100) sits over.
+        let halfErased = PKStroke(
+            ink: word.ink,
+            path: word.path,
+            transform: word.transform,
+            mask: UIBezierPath(rect: CGRect(x: -50, y: -50, width: 150, height: 200)))
+        XCTAssertTrue(PdfInk.strokeHasVisibleInk(halfErased), "precondition: half survives")
+
+        let visible = ScratchOutInk.centerline(of: halfErased)
+        XCTAssertLessThan(
+            visible.map(\.x).max() ?? .greatestFiniteMagnitude, 130,
+            "the centreline stops at the mask rather than running the full 200 pt")
+
+        let result = try XCTUnwrap(
+            ScratchOutInk.erase(
+                scratchIndex: 1,
+                in: PKDrawing(strokes: [halfErased, stroke(scratchOut())])))
+        XCTAssertEqual(result.erasedStrokeCount, 1, "the surviving half is fully covered")
+    }
+
     func testAlreadyErasedStrokesAreNotCounted() {
         // A stroke the bitmap eraser wiped out still lives in `drawing.strokes`.
         // It renders as nothing, so a scribble over its old position must not

@@ -202,15 +202,16 @@ enum ScratchOutRecognizer {
         guard !polyline.isEmpty, path.count >= 2 else { return 0 }
         let total = CGFloat(polyline.count)
         var covered = 0
-        var missed = 0
-        let allowedMisses = Int((1 - giveUpBelow) * total)
+        var remaining = polyline.count
         for point in polyline {
-            if distance(from: point, toPolyline: path) <= radius {
-                covered += 1
-            } else {
-                missed += 1
-                if missed > allowedMisses { return 0 }
-            }
+            if distance(from: point, toPolyline: path) <= radius { covered += 1 }
+            remaining -= 1
+            // Bail once the threshold is arithmetically out of reach. Compared
+            // directly rather than via a precomputed miss budget: `Int((1 -
+            // giveUpBelow) * total)` truncates, and for thresholds whose binary
+            // representation is inexact (0.3 × 90 = 62.999…) that rounds the
+            // budget down by one and bails on a stroke that exactly met the bar.
+            if CGFloat(covered + remaining) < giveUpBelow * total { return 0 }
         }
         return CGFloat(covered) / total
     }

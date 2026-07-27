@@ -104,19 +104,60 @@ enum ScratchOutInk {
         return Result(drawing: PKDrawing(strokes: kept), erasedStrokeCount: doomed.count - 1)
     }
 
-    /// A stroke's centreline in page space, resampled at `sampleSpacing`.
+    /// Index of the single stroke `drawing` has that `previous` didn't, but only
+    /// if every earlier stroke is unchanged — i.e. only if this really was an
+    /// *append*. `nil` otherwise.
+    ///
+    /// The count alone (`previous.count + 1`) is not enough. Undoing a
+    /// single-stroke object-erase also restores exactly one stroke, and it does
+    /// not have to come back at the end; taking `strokes.last` on that callback
+    /// would run the recognizer against an unrelated older stroke and, if that
+    /// one happened to be scribble-shaped and over ink, delete it and everything
+    /// under it. Comparing the prefix makes "a stroke landed at the end" a fact
+    /// rather than an assumption.
+    static func appendedStrokeIndex(in drawing: PKDrawing, after previous: PKDrawing) -> Int? {
+        let strokes = drawing.strokes
+        let old = previous.strokes
+        guard strokes.count == old.count + 1 else { return nil }
+        for index in old.indices where !isSameStroke(strokes[index], old[index]) { return nil }
+        return old.count
+    }
+
+    /// Cheap identity proxy. `PKStroke` isn't `Equatable`, but a stroke's path
+    /// creation date, control-point count and rendered bounds together are
+    /// specific enough to tell "this is the same stroke object" from "the list
+    /// shifted underneath us", which is all `appendedStrokeIndex` needs.
+    private static func isSameStroke(_ lhs: PKStroke, _ rhs: PKStroke) -> Bool {
+        lhs.path.creationDate == rhs.path.creationDate
+            && lhs.path.count == rhs.path.count
+            && lhs.renderBounds == rhs.renderBounds
+    }
+
+    /// A stroke's *visible* centreline in page space, resampled at
+    /// `sampleSpacing`.
+    ///
+    /// Only the surviving `maskedPathRanges` are walked. This matters for
+    /// coverage: the bitmap eraser masks a stroke rather than shortening it, so
+    /// sampling the whole path would measure the fraction covered against the
+    /// stroke's *original* length. Erase the right half of a word with the pixel
+    /// eraser, then scribble over the surviving left half, and a full-path
+    /// denominator scores ≈0.5 — just under `minimumCoverage` — leaving the
+    /// remnant behind even though the user covered all of it.
+    ///
     /// `stroke.transform` must be applied: PencilKit stores a path plus a
     /// transform, and undo/redo can leave a non-identity one behind.
     static func centerline(of stroke: PKStroke) -> [CGPoint] {
         guard !stroke.path.isEmpty else { return [] }
         var points: [CGPoint] = []
-        for point in stroke.path.interpolatedPoints(by: .distance(sampleSpacing)) {
-            points.append(point.location.applying(stroke.transform))
+        for range in stroke.maskedPathRanges {
+            for point in stroke.path.interpolatedPoints(in: range, by: .distance(sampleSpacing)) {
+                points.append(point.location.applying(stroke.transform))
+            }
         }
-        // A tap-dot can interpolate to nothing; fall back to the control point so
-        // the stroke still has a position for the overlap test.
-        if points.isEmpty {
-            points.append(stroke.path[0].location.applying(stroke.transform))
+        // A tap-dot can interpolate to nothing; fall back to the first control
+        // point so the stroke still has a position for the overlap test.
+        if points.isEmpty, let first = stroke.path.first {
+            points.append(first.location.applying(stroke.transform))
         }
         return points
     }
