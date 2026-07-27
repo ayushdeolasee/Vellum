@@ -448,7 +448,7 @@ enum VellumBundle {
 
     /// The per-document conversation caps (mirrors AiPersistence.limit, using its
     /// public constants so the two never drift): keep the newest N, truncate
-    /// over-long content.
+    /// over-long content, and bound each message's references.
     private static func capConversation(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(AiPersistence.maxMessagesPerDocument).map { message in
             var message = message
@@ -456,6 +456,20 @@ enum VellumBundle {
                 let end = message.content.index(
                     message.content.startIndex, offsetBy: AiPersistence.maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
+            }
+            // The reference caps have to be applied here too, not just in
+            // AiPersistence.limit: this writes straight to
+            // documents/<key>/conversations.json, and the incoming bytes come
+            // from a `.vellum` file we did not write (readCapped allows up to
+            // maxConversationsBytes = 32 MB). Without this, an imported bundle
+            // whose references still carry their base64 pixels — or a
+            // whole-document excerpt — lands verbatim on disk and is re-encoded
+            // and rewritten in full on every subsequent turn, exactly the churn
+            // AiReference.strippingImageData exists to prevent.
+            if !message.references.isEmpty {
+                message.references = message.references.map {
+                    $0.truncatingText(to: AiPersistence.maxReferenceCharacters).strippingImageData
+                }
             }
             return message
         }

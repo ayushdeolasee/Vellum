@@ -164,10 +164,18 @@ struct AiReference: Identifiable, Equatable, Sendable, Codable {
     }
 
     /// The image payload, if this reference carries one.
+    ///
+    /// Exhaustive on purpose — no `default`. This is the gate `strippingImageData`
+    /// checks before deciding a reference has nothing to strip, so a future
+    /// image-carrying `Kind` case that fell through a `default: return nil` would
+    /// not merely mis-render a chip: its full base64 pixels would be written to
+    /// `conversations.json` on every turn, silently defeating the whole point of
+    /// stripping. Listing every case makes adding one a compile error here, the
+    /// same way it already is in `strippingImageData` and `text`.
     var image: AiPageImageSnapshot? {
         switch kind {
         case let .region(image, _), let .pageSnapshot(image, _), let .image(image, _): return image
-        default: return nil
+        case .selection, .highlight, .quote: return nil
         }
     }
 
