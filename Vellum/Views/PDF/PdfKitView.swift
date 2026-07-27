@@ -81,6 +81,12 @@ struct PdfKitView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PDFView {
         if let retained = controller.pdfView, retained.document === document {
+            // Same reasoning as `WebViewRepresentable.makeNSView`: the PDFView
+            // belongs to the tab's `LiveTabRuntime` and outlives this host, so a
+            // remount (tab dragged to another pane, or two hosts transiently
+            // claiming the tab during View ▸ Merge Panes) must hand the new host
+            // a parentless view — an NSView may only have one superview.
+            retained.removeFromSuperview()
             context.coordinator.attach(to: retained)
             controller.documentAttached()
             return retained

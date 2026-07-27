@@ -306,7 +306,17 @@ private struct WebViewRepresentable: NSViewRepresentable {
     let controller: WebViewerController
 
     func makeNSView(context: Context) -> WKWebView {
-        controller.webView
+        // The web view now outlives any single host: it belongs to the tab's
+        // `LiveTabRuntime`, and the host is remounted whenever the tab is
+        // dragged to another pane or its runtime comes back from eviction. An
+        // NSView may only have one superview, and `WorkspaceStore.mergeAll`
+        // copies tabs into the surviving pane before the donor pane's subtree
+        // is torn down — a window in which two hosts can briefly claim the same
+        // tab. Detaching first means the new host always adopts a parentless
+        // view, exactly as it would a freshly created one.
+        let webView = controller.webView
+        webView.removeFromSuperview()
+        return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
@@ -354,6 +364,10 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var mountTabId: String?
     @ObservationIgnored private var mountDocument: DocumentInfo?
     @ObservationIgnored private var attached = false
+    /// True once this controller has ever built and loaded its `WKWebView`. The
+    /// view is created lazily, so a controller belonging to a tab the user has
+    /// never opened costs nothing and must not be charged for one.
+    @ObservationIgnored private var didCreateWebView = false
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
     @ObservationIgnored private var supportsPositions = false
@@ -390,6 +404,11 @@ final class WebViewerController: NSObject {
     private static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")
 
     private func makeWebView() -> WKWebView {
+        // Runs exactly once, from `_webView`'s lazy initializer. This is the
+        // authoritative point at which this tab starts costing a web content
+        // process, so it is where the residency policy's byte estimate switches
+        // on — not `attach`, which can race the representable's `makeNSView`.
+        didCreateWebView = true
         let configuration = WKWebViewConfiguration()
         let schemeHandler = VellumWebSchemeHandler()
         configuration.setURLSchemeHandler(
@@ -453,6 +472,13 @@ final class WebViewerController: NSObject {
         webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
     }
 
+    /// Rough resident footprint for the residency policy's byte budget. A loaded
+    /// `WKWebView` carries its own web content process, so it is never cheap;
+    /// WebKit offers no way to ask what a given page actually costs, so this is
+    /// a flat, deliberately pessimistic estimate for "a real webpage with its
+    /// process attached". Zero until the view actually exists.
+    var residencyCostBytes: Int { didCreateWebView ? 96 * 1024 * 1024 : 0 }
+
     /// Release transient UI owned by an inactive mount while keeping the native
     /// view, history, scroll position, and extracted text intact.
     func deactivate() {
@@ -505,10 +531,45 @@ final class WebViewerController: NSObject {
 
     }
 
-    func detach() {
+    /// Hard teardown, driven by `TabResidencyManager` through `LiveTabRuntime`:
+    /// the tab was closed, sat idle past the retention window, or the system
+    /// asked for memory back. This is the point at which the page really is
+    /// thrown away.
+    func releaseResidency() {
+        // A debounced auto-archive is a real write to the user's library — the
+        // offline snapshot of the page. Never drop one: keep this controller
+        // (and the session it archives through) alive until the task lands. The
+        // debounce is 1.5s, so by the time a two-hour timeout fires there is
+        // nothing pending; this matters for a tab closed, or evicted under
+        // memory pressure, in the second after a page finished loading.
+        let pendingArchive = archiveTask
+        archiveTask = nil
+        if let pendingArchive {
+            Task { await pendingArchive.value; withExtendedLifetime(self) {} }
+        }
+        detach()
+        // Unhook the WebKit delegates. They are a resurrection path: eviction
+        // targets tabs that are still OPEN, so `mountDocument` still resolves,
+        // and a late `webViewWebContentProcessDidTerminate` would re-load the
+        // tab's real URL over the network into a view nobody can see. That
+        // callback is not hypothetical — jetsamming background web content
+        // processes is precisely what the system does under the memory pressure
+        // that triggered the eviction in the first place.
+        //
+        // Note we do NOT navigate to about:blank to "retire the content process
+        // early": `decidePolicyFor` cancels every non-http(s) main-frame
+        // navigation that is not one of our own proxy schemes, so that load is
+        // simply refused. Dropping the last reference to the controller — which
+        // is what `LiveTabRuntime.releaseResidency` does immediately after this
+        // returns — is what actually releases the view and its process.
+        guard didCreateWebView else { return }
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
+    private func detach() {
         guard attached else { return }
         attached = false
-        cancelPendingArchive()
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
         for resolve in pendingCaptures.values { resolve(nil) }
@@ -527,9 +588,14 @@ final class WebViewerController: NSObject {
             app.findClearHandler = nil
             app.printHandler = nil
         }
-        webView.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
-        webView.stopLoading()
+        // `webView` is lazy, so only touch it when one was actually built —
+        // otherwise tearing down a never-opened tab would create the very web
+        // view (and content process) the teardown is meant to avoid.
+        if didCreateWebView {
+            webView.configuration.userContentController
+                .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
+            webView.stopLoading()
+        }
         mountDocument = nil
         runtime = nil
     }

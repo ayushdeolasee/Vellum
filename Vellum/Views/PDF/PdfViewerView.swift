@@ -111,9 +111,12 @@ struct PdfViewerView: View {
             let data = try await app.sessions.readPdfBytes(sessionId: tabId)
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             let document: PDFDocument
-            if let cached = app.cachedPreparedPdf(tabId: tabId) {
-                // Fast path: this tab was opened recently — reuse the prepared
-                // document, skipping the disk read, parse, and strip entirely.
+            if let cached = runtime.preparedDocument {
+                // Fast path: this tab already parsed its document and a switch
+                // away cancelled the load before it finished wiring up. Reuse
+                // the prepared document, skipping the parse and strip entirely.
+                // Eviction clears it, so this can never resurrect a document the
+                // residency policy has already reclaimed.
                 document = cached
             } else {
                 // Parse the PDF and strip its embedded annotations OFF the main
@@ -135,7 +138,9 @@ struct PdfViewerView: View {
                     runtime.pdfLoadState = .parseFailed
                     return
                 }
-                app.storePreparedPdf(parsed, tabId: tabId)
+                // The byte count is what the residency policy costs this tab at
+                // when ranking eviction candidates against its byte budget.
+                runtime.adoptPreparedPdf(parsed, byteCount: data.count)
                 document = parsed
             }
             // Restore persisted page text before adopting (PDF only; this view

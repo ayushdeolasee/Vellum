@@ -16,34 +16,15 @@ final class AppStore {
 
     let sessions: SessionService
 
-    // MARK: - Prepared-PDF cache
+    // MARK: - Prepared PDFs
     //
-    // A live tab keeps its PDFDocument mounted. This cache still matters for
-    // memory-pressure/view eviction and for a viewer whose first load is
-    // interrupted by a rapid switch. A stripped display doc stays valid across
-    // annotation edits, so invalidation is only needed on close/LRU.
-    private static let maxPreparedCache = 3
-    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
-
-    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
-        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
-        // Touch: move to most-recently-used.
-        let entry = preparedPdfCache.remove(at: index)
-        preparedPdfCache.append(entry)
-        return entry.doc
-    }
-
-    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-        preparedPdfCache.append((tabId, doc))
-        if preparedPdfCache.count > Self.maxPreparedCache {
-            preparedPdfCache.removeFirst()
-        }
-    }
-
-    func evictPreparedPdf(tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-    }
+    // There used to be a three-entry LRU of parsed `PDFDocument`s here, because
+    // switching tabs tore down and rebuilt the viewer. Tabs now keep their whole
+    // viewer mounted, and the parsed document lives on the tab's
+    // `LiveTabRuntime` (issue #52). Keeping a second copy here would be actively
+    // harmful: evicting a runtime under memory pressure would free the view but
+    // leave the document alive in the LRU, so the memory the eviction existed to
+    // reclaim would not actually come back. One owner, one lifetime.
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -241,7 +222,6 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        evictPreparedPdf(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
@@ -783,6 +763,10 @@ final class AppStore {
 
     private func applyActiveState(from tab: PdfTab) {
         pendingNoteContent = nil
+        // Pin the incoming tab (never evictable while it is on screen) and
+        // restart the outgoing tab's idle countdown from now — it was in use
+        // until this instant, so its two hours start here, not at activation.
+        workspace?.paneDidActivateTab(self, tabId: tab.id)
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -801,6 +785,8 @@ final class AppStore {
     private func applyEmptyActiveState() {
         resetFindState()
         pendingNoteContent = nil
+        // No tab on screen here, so this pane pins nothing.
+        workspace?.paneDidActivateTab(self, tabId: nil)
         activeTabId = nil
         document = nil
         currentPage = 1

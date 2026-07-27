@@ -151,16 +151,26 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(second.pageTexts[1], "second page")
     }
 
-    func testLiveRuntimeLimitEvictsLeastRecentlyUsedInactiveTab() {
+    /// The workspace hands every activated runtime to the residency policy, so
+    /// the tab ceiling bounds how many tabs hold native state at once. The trim
+    /// is deferred by one main-actor hop (see
+    /// `TabResidencyManager.scheduleCeilingEnforcement`), hence the yield.
+    func testLiveRuntimeLimitEvictsLeastRecentlyUsedInactiveTab() async {
         let ws = makeWorkspace()
         var runtimes: [LiveTabRuntime] = []
-        for index in 0...WorkspaceStore.maxLiveTabRuntimes {
+        for index in 0...TabResidencyManager.residentTabLimit {
             let runtime = ws.liveTabRuntime(for: "runtime-\(index)")
             ws.activateLiveTabRuntime(runtime)
             runtimes.append(runtime)
         }
 
-        XCTAssertEqual(ws.liveRuntimeCountForTesting, WorkspaceStore.maxLiveTabRuntimes)
+        var spins = 0
+        while ws.residency.residentTabCount > TabResidencyManager.residentTabLimit, spins < 100 {
+            await Task.yield()
+            spins += 1
+        }
+
+        XCTAssertEqual(ws.residency.residentTabCount, TabResidencyManager.residentTabLimit)
         XCTAssertTrue(runtimes[0].isEvicted)
         XCTAssertFalse(runtimes.last!.isEvicted)
     }
@@ -176,12 +186,50 @@ final class PaneTreeTests: XCTestCase {
         ws.activateLiveTabRuntime(active)
         ws.activateLiveTabRuntime(inactive)
 
-        ws.handleMemoryPressureForTesting()
+        // `.critical` is the harshest level the system can report: everything
+        // off screen goes. The pane's own tab is pinned and must survive it.
+        ws.residency.handleMemoryPressure(.critical)
 
         XCTAssertFalse(active.isEvicted)
         XCTAssertTrue(inactive.isEvicted)
         XCTAssertFalse(inactive.webController === inactiveWebController)
+        // Page text is deliberately kept across eviction: cheap, and it keeps
+        // the AI context truthful while the viewer restores.
         XCTAssertEqual(inactive.pageTexts[1], "retained extraction")
+    }
+
+    /// Closing a tab must hand its memory back immediately rather than leaving
+    /// it to the two-hour window — the tab is gone, not idle.
+    func testClosingATabReleasesItsRuntimeImmediately() {
+        let ws = makeWorkspace()
+        let runtime = ws.liveTabRuntime(for: "doomed")
+        ws.activateLiveTabRuntime(runtime)
+        XCTAssertTrue(ws.residency.isResident(tabId: "doomed"))
+
+        ws.removeLiveTabRuntime(for: "doomed")
+
+        XCTAssertFalse(ws.residency.isResident(tabId: "doomed"))
+        XCTAssertTrue(runtime.isEvicted)
+        XCTAssertNil(ws.existingLiveTabRuntime(for: "doomed"))
+    }
+
+    /// A split window shows two documents at once; the policy must pin one tab
+    /// per pane, not one per window, or the second pane's document would be
+    /// evictable while the user is looking at it.
+    func testEachPanePinsItsOwnTabAgainstCriticalPressure() {
+        let ws = makeWorkspace()
+        ws.focusedPane.app.newStartTab()
+        let firstId = ws.focusedPane.app.activeTabId!
+        ws.splitFocused(.horizontal)
+        let secondId = ws.focusedPane.app.activeTabId!
+        XCTAssertNotEqual(firstId, secondId)
+        for id in [firstId, secondId] {
+            ws.activateLiveTabRuntime(ws.liveTabRuntime(for: id))
+        }
+
+        ws.residency.handleMemoryPressure(.critical)
+
+        XCTAssertEqual(ws.residency.residentTabIds, [firstId, secondId])
     }
 
     func testPdfControllerActiveGateFollowsReboundPane() {

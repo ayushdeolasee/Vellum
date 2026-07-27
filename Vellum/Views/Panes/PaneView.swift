@@ -214,21 +214,19 @@ private struct LiveTabHost: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: isActive) {
-            if isActive {
-                workspace.activateLiveTabRuntime(runtime)
-                return
-            }
-            // Live native views are intentionally expensive. Preserve them for
-            // the two-hour working-set window from Issue #52, then let SwiftUI
-            // release PDFKit/WKWebView state. Selecting an evicted tab mounts it
-            // again and the viewer's normal loading state explains restoration.
-            do {
-                try await Task.sleep(for: .seconds(2 * 60 * 60))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled, !isActive else { return }
-            workspace.evictInactiveRuntime(tabId)
+            guard isActive else { return }
+            // Hand the runtime to the residency policy. Reclaiming it later is
+            // entirely that policy's job (Services/TabResidency.swift): a single
+            // shared sweeper applies the two-hour window and the ceilings, and a
+            // memory-pressure source can pull the trigger early.
+            //
+            // Deliberately NOT a per-tab `Task.sleep(for: .seconds(2 * 60 * 60))`
+            // here. A view-owned timer is one wakeup per inactive tab, it dies
+            // silently whenever the host unmounts (a tab dragged to another pane
+            // would never be reclaimed at all), it has no ceiling and no
+            // pressure valve, and there is no way to test the two-hour boundary
+            // without waiting two hours.
+            workspace.activateLiveTabRuntime(runtime)
         }
     }
 }
