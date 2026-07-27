@@ -6,14 +6,29 @@ struct WelcomeScreen: View {
     @Environment(AppStore.self) private var appStore
     @Environment(\.palette) private var palette
 
-    @State private var recentDocuments = RecentFilesService.getRecent()
+    @State private var recentDocuments: [RecentDocument]
     @State private var savedPages: [WebLibraryEntry] = []
+    @State private var catalogItems: [LibraryItem]
+    @State private var visibleItems: [LibraryItem]
     @State private var urlInput = ""
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
     @State private var searchQuery = ""
     @State private var filter: LibraryFilter = .all
     @FocusState private var searchFocused: Bool
+
+    init() {
+        let recentDocuments = RecentFilesService.getRecent()
+        let catalogItems = LibraryCatalog.makeItems(recent: recentDocuments, saved: [])
+        _recentDocuments = State(initialValue: recentDocuments)
+        _catalogItems = State(initialValue: catalogItems)
+        _visibleItems = State(initialValue: LibraryCatalog.filteredItems(
+            catalogItems,
+            query: "",
+            filter: .all,
+            sort: .recent
+        ))
+    }
 
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
@@ -22,7 +37,7 @@ struct WelcomeScreen: View {
     var body: some View {
         Group {
             if hasLibrary {
-                libraryLayout
+                libraryLayout(items: visibleItems)
             } else {
                 emptyLayout
             }
@@ -33,7 +48,26 @@ struct WelcomeScreen: View {
             if let pages = try? await appStore.sessions.listSavedWebpages() {
                 guard !Task.isCancelled else { return }
                 savedPages = pages
+                rebuildCatalog()
             }
+        }
+        .onChange(of: visibleItems.map(\.id)) { _, visibleIDs in
+            guard let selection else { return }
+            if visibleIDs.contains(selection) == false {
+                self.selection = nil
+            }
+        }
+        .onChange(of: searchQuery) {
+            refreshVisibleItems()
+        }
+        .onChange(of: filter) {
+            refreshVisibleItems()
+        }
+        .onChange(of: sort) {
+            refreshVisibleItems()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            rebuildCatalog()
         }
     }
 
@@ -56,11 +90,11 @@ struct WelcomeScreen: View {
 
     // MARK: - Library layout (native list, uses the window width)
 
-    private var libraryLayout: some View {
+    private func libraryLayout(items: [LibraryItem]) -> some View {
         VStack(spacing: 0) {
             libraryHeader
             Divider()
-            libraryList
+            libraryList(items: items)
         }
     }
 
@@ -194,9 +228,9 @@ struct WelcomeScreen: View {
         .accessibilityIdentifier("welcome.sort")
     }
 
-    private var libraryList: some View {
+    private func libraryList(items: [LibraryItem]) -> some View {
         Group {
-            if visibleItems.isEmpty {
+            if items.isEmpty {
                 LibraryNoResultsView(
                     query: searchQuery,
                     filter: filter,
@@ -205,7 +239,7 @@ struct WelcomeScreen: View {
             } else {
                 List(selection: $selection) {
                     Section("Library") {
-                        ForEach(visibleItems) { LibraryRow(item: $0) }
+                        ForEach(items) { LibraryRow(item: $0) }
                     }
                 }
                 .listStyle(.inset)
@@ -225,12 +259,6 @@ struct WelcomeScreen: View {
                 }
                 .accessibilityIdentifier("welcome.library")
             }
-        }
-        .onChange(of: searchQuery) {
-            clearInvisibleSelection()
-        }
-        .onChange(of: filter) {
-            clearInvisibleSelection()
         }
     }
 
@@ -355,30 +383,15 @@ struct WelcomeScreen: View {
         }
     }
 
-    // MARK: - Library item model
-
-    private var visibleItems: [LibraryItem] {
-        LibraryCatalog.items(
-            recent: recentDocuments,
-            saved: savedPages,
-            query: searchQuery,
-            filter: filter,
-            sort: sort
-        )
-    }
-
-    private var allItems: [LibraryItem] {
-        LibraryCatalog.items(
-            recent: recentDocuments,
-            saved: savedPages,
-            query: "",
-            filter: .all,
-            sort: sort
-        )
-    }
-
     private func item(for id: LibraryItem.ID) -> LibraryItem? {
-        allItems.first { $0.id == id }
+        catalogItems.first { $0.id == id }
+    }
+
+    private func freshItem(for id: LibraryItem.ID) -> LibraryItem? {
+        LibraryCatalog.makeItems(
+            recent: recentDocuments,
+            saved: savedPages
+        ).first { $0.id == id }
     }
 
     // MARK: - Actions
@@ -395,7 +408,7 @@ struct WelcomeScreen: View {
     }
 
     private func open(_ id: LibraryItem.ID) {
-        guard let item = item(for: id), !appStore.isLoading else { return }
+        guard let item = freshItem(for: id), !appStore.isLoading else { return }
         if item.kind == .web {
             Task { await appStore.openUrl(item.key) }
         } else {
@@ -403,6 +416,7 @@ struct WelcomeScreen: View {
             // the re-record (on successful open) doesn't leave a duplicate.
             if let recordedKey = item.recordedRecentKey, item.key != recordedKey {
                 recentDocuments = RecentFilesService.remove(path: recordedKey)
+                rebuildCatalog()
             }
             Task { await appStore.openFile(path: item.key) }
         }
@@ -411,12 +425,14 @@ struct WelcomeScreen: View {
     private func removeFromRecent(_ item: LibraryItem) {
         guard let recordedKey = item.recordedRecentKey else { return }
         recentDocuments = RecentFilesService.remove(path: recordedKey)
+        rebuildCatalog()
         if selection == item.id { selection = nil }
     }
 
     private func removeFromSaved(_ item: LibraryItem) {
         guard let savedKey = item.savedKey else { return }
         savedPages.removeAll { $0.url == savedKey }
+        rebuildCatalog()
         Task { try? await appStore.sessions.removeSavedWebpage(url: savedKey) }
         if selection == item.id { selection = nil }
     }
@@ -439,15 +455,26 @@ struct WelcomeScreen: View {
         searchFocused = true
     }
 
-    private func clearInvisibleSelection() {
-        guard let selection else { return }
-        if visibleItems.contains(where: { $0.id == selection }) == false {
-            self.selection = nil
-        }
+    private func rebuildCatalog() {
+        let items = LibraryCatalog.makeItems(
+            recent: recentDocuments,
+            saved: savedPages
+        )
+        catalogItems = items
+        refreshVisibleItems(from: items)
+    }
+
+    private func refreshVisibleItems(from items: [LibraryItem]? = nil) {
+        visibleItems = LibraryCatalog.filteredItems(
+            items ?? catalogItems,
+            query: searchQuery,
+            filter: filter,
+            sort: sort
+        )
     }
 
     private func revealInFinder(_ item: LibraryItem) {
-        guard item.canRevealInFinder else { return }
+        guard let item = freshItem(for: item.id), item.canRevealInFinder else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.key)])
     }
 

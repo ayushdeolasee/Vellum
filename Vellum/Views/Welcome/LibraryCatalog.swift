@@ -54,6 +54,12 @@ struct LibraryItem: Identifiable, Hashable {
 }
 
 enum LibraryCatalog {
+    private static let fractionalISO8601Format = Date.ISO8601FormatStyle(
+        includingFractionalSeconds: true
+    )
+    private static let ISO8601Format = Date.ISO8601FormatStyle()
+    private static let openedDateFormat = Date.FormatStyle(date: .abbreviated, time: .omitted)
+
     static func removalTarget(
         for item: LibraryItem,
         activeFilter: LibraryFilter
@@ -77,7 +83,29 @@ enum LibraryCatalog {
         filter: LibraryFilter,
         sort: LibrarySort
     ) -> [LibraryItem] {
-        let allItems = mergedItems(recent: recent, saved: saved)
+        filteredItems(
+            makeItems(recent: recent, saved: saved),
+            query: query,
+            filter: filter,
+            sort: sort
+        )
+    }
+
+    /// Builds the stable catalog metadata once when its source collections
+    /// change. Search and sort updates can then reuse these items.
+    static func makeItems(
+        recent: [RecentDocument],
+        saved: [WebLibraryEntry]
+    ) -> [LibraryItem] {
+        mergedItems(recent: recent, saved: saved)
+    }
+
+    static func filteredItems(
+        _ allItems: [LibraryItem],
+        query: String,
+        filter: LibraryFilter,
+        sort: LibrarySort
+    ) -> [LibraryItem] {
         let terms = query
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .split(whereSeparator: \.isWhitespace)
@@ -92,11 +120,7 @@ enum LibraryCatalog {
             }
             guard includedByFilter else { return false }
             guard terms.isEmpty == false else { return true }
-            let searchable = item.searchText.folding(
-                options: [.caseInsensitive, .diacriticInsensitive],
-                locale: .current
-            )
-            return terms.allSatisfy(searchable.contains)
+            return terms.allSatisfy(item.searchText.contains)
         }
 
         switch sort {
@@ -126,7 +150,7 @@ enum LibraryCatalog {
     ) -> [LibraryItem] {
         var savedByURL: [String: WebLibraryEntry] = [:]
         for page in saved {
-            savedByURL[normalizedURL(page.url)] = page
+            savedByURL[canonicalWebIdentity(page.url)] = page
         }
 
         var items: [LibraryItem] = []
@@ -135,7 +159,7 @@ enum LibraryCatalog {
 
         for (index, entry) in recent.enumerated() {
             if entry.kind == .web {
-                let normalized = normalizedURL(entry.pdfPath)
+                let normalized = canonicalWebIdentity(entry.pdfPath)
                 guard representedRecentURLs.insert(normalized).inserted else { continue }
                 let savedPage = savedByURL[normalized]
                 if savedPage != nil {
@@ -148,7 +172,7 @@ enum LibraryCatalog {
         }
 
         for (index, page) in saved.enumerated() {
-            let normalized = normalizedURL(page.url)
+            let normalized = canonicalWebIdentity(page.url)
             guard representedSavedURLs.contains(normalized) == false else { continue }
             items.append(webItem(
                 recent: nil,
@@ -173,8 +197,13 @@ enum LibraryCatalog {
 
         let resolvedPath = RecentFilesService.resolvedPath(for: entry)
         let onDisk = FileManager.default.fileExists(atPath: resolvedPath)
-        let searchText = [title, fileName, entry.pdfPath, resolvedPath, details.joined(separator: " ")]
-            .joined(separator: "\n")
+        let searchText = normalizedSearchText([
+            title,
+            fileName,
+            entry.pdfPath,
+            resolvedPath,
+            details.joined(separator: " ")
+        ])
 
         return LibraryItem(
             // A moved stamped PDF can temporarily have two recent records with
@@ -213,7 +242,7 @@ enum LibraryCatalog {
         if let openedAt = recent?.openedAt {
             details.append(formatOpenedDate(openedAt))
         }
-        let searchText = [
+        let searchText = normalizedSearchText([
             title,
             recent?.title ?? "",
             saved?.title ?? "",
@@ -222,11 +251,10 @@ enum LibraryCatalog {
             url,
             saved?.url ?? "",
             details.joined(separator: " ")
-        ]
-            .joined(separator: "\n")
+        ])
 
         return LibraryItem(
-            id: "web:\(normalizedURL(url))",
+            id: "web:\(canonicalWebIdentity(url))",
             kind: .web,
             key: url,
             recordedRecentKey: recent?.pdfPath,
@@ -255,30 +283,23 @@ enum LibraryCatalog {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func normalizedURL(_ value: String) -> String {
-        guard var components = URLComponents(string: value) else { return value.lowercased() }
-        components.scheme = components.scheme?.lowercased()
-        components.host = components.host?.lowercased()
-        components.fragment = nil
-        if components.path == "/" {
-            components.path = ""
-        } else if components.path.hasSuffix("/") {
-            components.path.removeLast()
-        }
-        return components.string ?? value.lowercased()
+    static func canonicalWebIdentity(_ value: String) -> String {
+        (try? WebUrl.normalize(value)) ?? value
+    }
+
+    private static func normalizedSearchText(_ components: [String]) -> String {
+        components
+            .joined(separator: "\n")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
     private static func parseDate(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        (try? fractionalISO8601Format.parse(value))
+            ?? (try? ISO8601Format.parse(value))
     }
 
     private static func formatOpenedDate(_ openedAt: String) -> String {
         guard let date = parseDate(openedAt) else { return "Recently opened" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
+        return date.formatted(openedDateFormat)
     }
 }

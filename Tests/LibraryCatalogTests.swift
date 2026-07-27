@@ -55,6 +55,59 @@ struct LibraryCatalogTests {
         #expect(readingList.savedKey != nil)
     }
 
+    @Test("Canonical URL identity preserves meaningful trailing slashes")
+    func keepsDistinctWebPathsSeparate() throws {
+        let recentPage = RecentDocument(
+            pdfPath: "https://example.com/article",
+            kind: .web,
+            title: "Recent article",
+            pageCount: nil,
+            openedAt: "2026-07-27T10:00:00.000Z"
+        )
+        let savedPage = WebLibraryEntry(
+            url: "https://example.com/article/",
+            title: "Saved article",
+            pageCount: nil,
+            savedAt: "2026-07-26T10:00:00.000Z",
+            hasSnapshot: true
+        )
+
+        let items = LibraryCatalog.makeItems(recent: [recentPage], saved: [savedPage])
+
+        #expect(items.count == 2)
+        #expect(Set(items.map(\.id)).count == 2)
+        let recentItem = try #require(items.first { $0.recordedRecentKey != nil })
+        let savedItem = try #require(items.first { $0.savedKey != nil })
+        let canonicalRecentURL = try WebUrl.normalize(recentPage.pdfPath)
+        let canonicalSavedURL = try WebUrl.normalize(savedPage.url)
+        #expect(recentItem.savedKey == nil)
+        #expect(savedItem.recordedRecentKey == nil)
+        #expect(LibraryCatalog.canonicalWebIdentity(recentPage.pdfPath) == canonicalRecentURL)
+        #expect(LibraryCatalog.canonicalWebIdentity(savedPage.url) == canonicalSavedURL)
+    }
+
+    @Test("Search reuses precomputed catalog metadata")
+    func filtersPrecomputedCatalog() {
+        let catalog = LibraryCatalog.makeItems(recent: recent, saved: saved)
+
+        let titleMatches = LibraryCatalog.filteredItems(
+            catalog,
+            query: "transformers",
+            filter: .all,
+            sort: .recent
+        )
+        let domainMatches = LibraryCatalog.filteredItems(
+            catalog,
+            query: "swift.org",
+            filter: .web,
+            sort: .name
+        )
+
+        #expect(catalog.count == 3)
+        #expect(titleMatches.map(\.title) == ["Transformers"])
+        #expect(domainMatches.map(\.title) == ["Swift 6"])
+    }
+
     @Test(
         "Search checks titles, filenames, domains, and URLs",
         arguments: ["transformers", "attention", "example.com", "research/reading-list"]
