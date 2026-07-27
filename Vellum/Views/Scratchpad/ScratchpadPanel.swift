@@ -211,10 +211,7 @@ struct ScratchpadPanel: View {
                 attachmentsDirectory: ScratchpadAttachmentStore.activeDirectory
             )
             let imageDetail: String
-            if summary.skippedImageCount > 0 {
-                imageDetail =
-                    " \(summary.copiedImageCount) images copied; \(summary.skippedImageCount) unavailable."
-            } else if summary.copiedImageCount > 0 {
+            if summary.copiedImageCount > 0 {
                 imageDetail = " \(summary.copiedImageCount) images copied."
             } else {
                 imageDetail = ""

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct ScratchpadMarkdownExportOptions: Equatable, Sendable {
@@ -9,7 +10,6 @@ struct ScratchpadMarkdownExportOptions: Equatable, Sendable {
 struct ScratchpadMarkdownExportSummary: Equatable, Sendable {
     var markdownURL: URL
     var copiedImageCount: Int
-    var skippedImageCount: Int
     var assetsDirectoryURL: URL?
 }
 
@@ -53,6 +53,17 @@ enum ScratchpadMarkdownExporter {
         var filename: String
     }
 
+    private struct CodeFence {
+        var character: Character
+        var length: Int
+        var quoteDepth: Int
+    }
+
+    private struct LeadingFrontMatter {
+        var headerRange: Range<String.Index>
+        var closingRange: Range<String.Index>
+    }
+
     static func suggestedFilename(title: String, in directory: URL) -> String {
         let base = sanitizedFilenameComponent(title).isEmpty
             ? "Scratchpad"
@@ -77,7 +88,11 @@ enum ScratchpadMarkdownExporter {
             .appendingPathComponent(safeBase)
             .appendingPathExtension(pathExtension)
         var suffix = 2
-        while fileManager.fileExists(atPath: candidate.path) {
+        while itemExists(at: candidate, fileManager: fileManager)
+            || itemExists(
+                at: assetsURL(for: candidate),
+                fileManager: fileManager
+            ) {
             candidate = directory
                 .appendingPathComponent("\(safeBase) \(suffix)")
                 .appendingPathExtension(pathExtension)
@@ -144,12 +159,30 @@ enum ScratchpadMarkdownExporter {
         try Data(exportedMarkdown.utf8).write(to: stagedMarkdownURL, options: .atomic)
         let stagedAssetsURL = stagingURL.appendingPathComponent(
             assetDirectoryName, isDirectory: true)
+        let exportOwner = UUID().uuidString
         if !assetCopies.isEmpty {
             try fileManager.createDirectory(
                 at: stagedAssetsURL,
                 withIntermediateDirectories: false
             )
+            guard let ownerData = exportOwner.data(using: .utf8) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try ownerData.write(
+                to: ownerMarkerURL(in: stagedAssetsURL),
+                options: .atomic
+            )
             for asset in assetCopies.values {
+                // Revalidate at the point of use. This cannot prevent an
+                // attachment from changing contents during a normal file copy,
+                // but it rejects a path replaced by a link before copying it.
+                guard sourceIsSafe(
+                    asset.sourceURL,
+                    attachmentsDirectory: attachmentsDirectory,
+                    fileManager: fileManager
+                ) else {
+                    throw ScratchpadMarkdownExportError.unsafeSourceAttachment(asset.sourceURL)
+                }
                 try fileManager.copyItem(
                     at: asset.sourceURL,
                     to: stagedAssetsURL.appendingPathComponent(asset.filename)
@@ -174,15 +207,31 @@ enum ScratchpadMarkdownExporter {
         var publishedAssets = false
         do {
             if !assetCopies.isEmpty {
-                try fileManager.moveItem(at: stagedAssetsURL, to: assetsURL)
+                try publishExclusively(
+                    stagedAssetsURL,
+                    to: assetsURL,
+                    conflict: .assetsDirectoryAlreadyExists(assetsURL)
+                )
                 publishedAssets = true
             }
-            try fileManager.moveItem(at: stagedMarkdownURL, to: destinationURL)
+            try publishExclusively(
+                stagedMarkdownURL,
+                to: destinationURL,
+                conflict: .destinationAlreadyExists(destinationURL)
+            )
+            if publishedAssets {
+                // The marker exists only while this transaction might need a
+                // rollback. A failure to remove it must not turn a completed
+                // export into a failed one.
+                try? fileManager.removeItem(at: ownerMarkerURL(in: assetsURL))
+            }
         } catch {
             if publishedAssets {
-                do {
-                    try fileManager.removeItem(at: assetsURL)
-                } catch {
+                if removeOwnedAssets(
+                    at: assetsURL,
+                    exportOwner: exportOwner,
+                    fileManager: fileManager
+                ) == false {
                     throw ScratchpadMarkdownExportError.rollbackFailed
                 }
             }
@@ -192,7 +241,6 @@ enum ScratchpadMarkdownExporter {
         return ScratchpadMarkdownExportSummary(
             markdownURL: destinationURL,
             copiedImageCount: assetCopies.count,
-            skippedImageCount: 0,
             assetsDirectoryURL: assetCopies.isEmpty ? nil : assetsURL
         )
     }
@@ -275,7 +323,48 @@ enum ScratchpadMarkdownExporter {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: " ")
-        return "---\ntitle: \"\(escapedTitle)\"\n---\n\n\(markdown)"
+        let titleLine = "title: \"\(escapedTitle)\""
+
+        guard let frontMatter = leadingFrontMatter(in: markdown) else {
+            return "---\n\(titleLine)\n---\n\n\(markdown)"
+        }
+
+        var headerLines = String(markdown[frontMatter.headerRange])
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if let existingTitle = headerLines.firstIndex(where: { $0.hasPrefix("title:") }) {
+            headerLines[existingTitle] = titleLine
+        } else {
+            headerLines.append(titleLine)
+        }
+        var updatedHeader = headerLines.joined(separator: "\n")
+        if updatedHeader.isEmpty == false, updatedHeader.hasSuffix("\n") == false {
+            updatedHeader.append("\n")
+        }
+        return "---\n\(updatedHeader)\(markdown[frontMatter.closingRange.lowerBound...])"
+    }
+
+    private static func leadingFrontMatter(in markdown: String) -> LeadingFrontMatter? {
+        guard let openerEnd = markdown.firstIndex(of: "\n"),
+              markdown[..<openerEnd] == "---"
+        else {
+            return nil
+        }
+        let headerStart = markdown.index(after: openerEnd)
+        var lineStart = headerStart
+        while lineStart <= markdown.endIndex {
+            let lineEnd = markdown[lineStart...].firstIndex(of: "\n") ?? markdown.endIndex
+            let line = markdown[lineStart..<lineEnd]
+            if line == "---" || line == "..." {
+                return LeadingFrontMatter(
+                    headerRange: headerStart..<lineStart,
+                    closingRange: lineStart..<lineEnd
+                )
+            }
+            guard lineEnd < markdown.endIndex else { break }
+            lineStart = markdown.index(after: lineEnd)
+        }
+        return nil
     }
 
     private static func canonicalDirectory(
@@ -289,6 +378,62 @@ enum ScratchpadMarkdownExporter {
             throw CocoaError(.fileNoSuchFile)
         }
         return directory.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private static func assetsURL(for markdownURL: URL) -> URL {
+        markdownURL.deletingLastPathComponent().appendingPathComponent(
+            "\(markdownURL.deletingPathExtension().lastPathComponent) Assets",
+            isDirectory: true
+        )
+    }
+
+    private static func ownerMarkerURL(in assetsURL: URL) -> URL {
+        assetsURL.appendingPathComponent(".vellum-scratchpad-export-owner")
+    }
+
+    private static func publishExclusively(
+        _ stagedURL: URL,
+        to destinationURL: URL,
+        conflict: ScratchpadMarkdownExportError
+    ) throws {
+        let result = stagedURL.path.withCString { sourcePath in
+            destinationURL.path.withCString { destinationPath in
+                renameatx_np(
+                    AT_FDCWD,
+                    sourcePath,
+                    AT_FDCWD,
+                    destinationPath,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard result == 0 else {
+            if errno == EEXIST { throw conflict }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+
+    /// The marker is created in the unique staging directory, then moved into
+    /// place atomically with the assets. Never delete an adjacent folder unless
+    /// it still carries this transaction's marker.
+    private static func removeOwnedAssets(
+        at assetsURL: URL,
+        exportOwner: String,
+        fileManager: FileManager
+    ) -> Bool {
+        guard itemExists(at: assetsURL, fileManager: fileManager) else { return true }
+        let markerURL = ownerMarkerURL(in: assetsURL)
+        guard let marker = try? String(contentsOf: markerURL, encoding: .utf8),
+              marker == exportOwner
+        else {
+            return false
+        }
+        do {
+            try fileManager.removeItem(at: assetsURL)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func sourceIsSafe(
@@ -313,8 +458,12 @@ enum ScratchpadMarkdownExporter {
     }
 
     private static func itemDoesNotExist(at url: URL, fileManager: FileManager) -> Bool {
+        itemExists(at: url, fileManager: fileManager) == false
+    }
+
+    private static func itemExists(at url: URL, fileManager: FileManager) -> Bool {
         fileManager.fileExists(atPath: url.path)
-            == false && (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) == nil
+            || (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
     private static func isSymbolicLink(at url: URL, fileManager: FileManager) -> Bool {
@@ -337,18 +486,18 @@ enum ScratchpadMarkdownExporter {
     private static func imageReferences(in markdown: String) -> [ImageReference] {
         var references = [ImageReference]()
         var index = markdown.startIndex
-        var fencedBy: Character?
+        var openFence: CodeFence?
 
         while index < markdown.endIndex {
             let lineEnd = markdown[index...].firstIndex(of: "\n") ?? markdown.endIndex
             let line = markdown[index..<lineEnd]
-            if let fence = fenceCharacter(in: line) {
-                if fencedBy == nil {
-                    fencedBy = fence
-                } else if fencedBy == fence {
-                    fencedBy = nil
+            if let openFence {
+                if isClosingFence(line, for: openFence) {
+                    openFence = nil
                 }
-            } else if fencedBy == nil {
+            } else if let fence = openingFence(in: line) {
+                openFence = fence
+            } else {
                 references.append(contentsOf: imageReferences(inLine: markdown, range: index..<lineEnd))
             }
             index = lineEnd < markdown.endIndex
@@ -358,13 +507,44 @@ enum ScratchpadMarkdownExporter {
         return references
     }
 
-    private static func fenceCharacter(in line: Substring) -> Character? {
-        let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
-        guard let character = trimmed.first, character == "`" || character == "~" else {
+    private static func openingFence(in line: Substring) -> CodeFence? {
+        let (content, quoteDepth) = fenceContent(in: line)
+        guard let character = content.first, character == "`" || character == "~" else {
             return nil
         }
-        let length = trimmed.prefix(while: { $0 == character }).count
-        return length >= 3 ? character : nil
+        let length = content.prefix(while: { $0 == character }).count
+        guard length >= 3 else { return nil }
+        return CodeFence(character: character, length: length, quoteDepth: quoteDepth)
+    }
+
+    private static func isClosingFence(_ line: Substring, for fence: CodeFence) -> Bool {
+        let (content, quoteDepth) = fenceContent(in: line)
+        guard quoteDepth == fence.quoteDepth,
+              content.first == fence.character
+        else {
+            return false
+        }
+        let fenceLength = content.prefix(while: { $0 == fence.character }).count
+        guard fenceLength >= fence.length else { return false }
+        return content.dropFirst(fenceLength).allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
+    /// Fenced code blocks can sit inside block quotes. Ignore up to three
+    /// spaces around each quote marker, while requiring the same quote depth
+    /// for a closing fence.
+    private static func fenceContent(in line: Substring) -> (Substring, Int) {
+        var content = line
+        content = content.drop(while: { $0 == " " || $0 == "\t" })
+        var quoteDepth = 0
+        while content.first == ">" {
+            quoteDepth += 1
+            content = content.dropFirst()
+            if content.first == " " || content.first == "\t" {
+                content = content.dropFirst()
+            }
+            content = content.drop(while: { $0 == " " || $0 == "\t" })
+        }
+        return (content, quoteDepth)
     }
 
     private static func imageReferences(
@@ -386,7 +566,10 @@ enum ScratchpadMarkdownExporter {
                     index = markdown.index(closing, offsetBy: tickCount)
                     continue
                 }
-                break
+                // An unmatched delimiter is literal Markdown, not the start
+                // of a code span that hides the remainder of the line.
+                index = afterTicks
+                continue
             }
             if markdown[index] == "!", isEscaped(markdown, at: index) == false,
                let reference = imageReference(in: markdown, startingAt: index, limit: range.upperBound) {
@@ -425,8 +608,16 @@ enum ScratchpadMarkdownExporter {
         limit: String.Index
     ) -> String.Index? {
         var index = markdown.index(after: openBracket)
+        var depth = 1
         while index < limit {
-            if markdown[index] == "]", isEscaped(markdown, at: index) == false { return index }
+            if isEscaped(markdown, at: index) == false {
+                if markdown[index] == "[" {
+                    depth += 1
+                } else if markdown[index] == "]" {
+                    depth -= 1
+                    if depth == 0 { return index }
+                }
+            }
             index = markdown.index(after: index)
         }
         return nil
