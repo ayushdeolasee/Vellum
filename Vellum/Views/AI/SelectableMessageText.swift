@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+fileprivate extension NSAttributedString.Key {
+    static let vellumDecorativeRule = NSAttributedString.Key(
+        "com.vellum.ai.decorative-rule"
+    )
+}
+
 // Assistant-message renderer backed by an NSTextView so the user can select any
 // substring of a reply and quote it back into the composer (the floating "Quote"
 // button in the reference design). Reuses `MarkdownParser` for block structure
@@ -64,6 +70,7 @@ struct SelectableMessageText: NSViewRepresentable {
         return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onQuote: (String) -> Void
         weak var container: MessageContainerView?
@@ -75,10 +82,15 @@ struct SelectableMessageText: NSViewRepresentable {
         }
 
         func quoteCurrentSelection() {
-            guard let textView = container?.textView else { return }
+            guard let textView = container?.textView,
+                  let storage = textView.textStorage else { return }
             let range = textView.selectedRange()
             guard range.length > 0 else { return }
-            let text = (textView.string as NSString).substring(with: range)
+            let text = MessageContainerView.plainText(
+                in: storage,
+                range: range,
+                mathDelimiters: true
+            )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             onQuote(text)
@@ -138,6 +150,13 @@ final class MessageContainerView: NSView {
         self.appliedSecondary = secondary
         renderedWidth = nil
         textView.textStorage?.setAttributedString(attributed)
+        textView.setAccessibilityValue(
+            Self.plainText(
+                in: attributed,
+                range: NSRange(location: 0, length: attributed.length),
+                mathDelimiters: false
+            )
+        )
         needsLayout = true
     }
 
@@ -163,19 +182,76 @@ final class MessageContainerView: NSView {
             .attachment,
             in: NSRange(location: 0, length: result.length)
         ) { value, range, _ in
-            guard let attachment = value as? NSTextAttachment,
-                  attachment.bounds.width > available else { return }
+            guard let attachment = value as? NSTextAttachment else { return }
+            let paragraph = result.attribute(
+                .paragraphStyle,
+                at: range.location,
+                effectiveRange: nil
+            ) as? NSParagraphStyle
+            let lineWidth = availableLineWidth(
+                containerWidth: available,
+                paragraph: paragraph
+            )
+            guard attachment.bounds.width > lineWidth else { return }
             let fitted = NSTextAttachment()
             fitted.image = attachment.image
             var bounds = attachment.bounds
-            let scale = available / bounds.width
+            let scale = lineWidth / bounds.width
             bounds.size = CGSize(
-                width: available,
+                width: lineWidth,
                 height: max(1, bounds.height * scale)
             )
             bounds.origin.y *= scale
             fitted.bounds = bounds
             result.addAttribute(.attachment, value: fitted, range: range)
+        }
+        return result
+    }
+
+    private static func availableLineWidth(
+        containerWidth: CGFloat,
+        paragraph: NSParagraphStyle?
+    ) -> CGFloat {
+        guard let paragraph else { return max(1, containerWidth) }
+        let leading = max(
+            0,
+            max(paragraph.firstLineHeadIndent, paragraph.headIndent)
+        )
+        let trailingEdge = paragraph.tailIndent > 0
+            ? min(containerWidth, paragraph.tailIndent)
+            : containerWidth + paragraph.tailIndent
+        return max(1, trailingEdge - leading)
+    }
+
+    /// Converts attributed transcript content into text suitable for quoting or
+    /// AppKit accessibility. Decorative rules disappear; equations use their
+    /// LaTeX source instead of leaking the object-replacement character.
+    static func plainText(
+        in attributed: NSAttributedString,
+        range requestedRange: NSRange,
+        mathDelimiters: Bool
+    ) -> String {
+        let range = NSIntersectionRange(
+            requestedRange,
+            NSRange(location: 0, length: attributed.length)
+        )
+        guard range.length > 0 else { return "" }
+
+        var result = ""
+        attributed.enumerateAttributes(in: range) { attributes, runRange, _ in
+            if attributes[.vellumDecorativeRule] as? Bool == true {
+                return
+            }
+            if let attachment = attributes[.attachment] as? NSTextAttachment {
+                guard let latex = attachment.image?.accessibilityDescription,
+                      !latex.isEmpty else {
+                    return
+                }
+                result += mathDelimiters ? "$\(latex)$" : "Equation: \(latex)"
+                return
+            }
+            let text = (attributed.string as NSString).substring(with: runRange)
+            result += text.replacingOccurrences(of: "\u{FFFC}", with: "")
         }
         return result
     }
@@ -413,7 +489,11 @@ enum AiAttributedRenderer {
         paragraph.paragraphSpacingBefore = 4
         let result = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
         result.addAttributes(
-            [.paragraphStyle: paragraph, .foregroundColor: color],
+            [
+                .paragraphStyle: paragraph,
+                .foregroundColor: color,
+                .vellumDecorativeRule: true,
+            ],
             range: NSRange(location: 0, length: result.length)
         )
         return result

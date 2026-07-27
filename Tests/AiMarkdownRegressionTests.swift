@@ -192,6 +192,33 @@ final class AiMarkdownRegressionTests: XCTestCase {
         XCTAssertFalse(visible.contains("*"))
     }
 
+    func testMalformedEmphasisRecoveryPreservesLiteralOperatorsCodeAndWhitespace() {
+        let source = """
+        2 * 3 and **bold**
+        `a*b` stays code
+
+        **What **FOR UPDATE** does**
+        """
+        let pieces = InlineMarkdown.pieces(in: source)
+        let visible = pieces.compactMap { piece -> String? in
+            guard case .prose(let prose) = piece else { return nil }
+            return String(prose.characters)
+        }.joined()
+
+        XCTAssertEqual(
+            visible,
+            """
+            2 * 3 and bold
+            a*b stays code
+
+            What FOR UPDATE does
+            """
+        )
+        XCTAssertTrue(visible.contains("2 * 3"))
+        XCTAssertTrue(visible.contains("a*b"))
+        XCTAssertTrue(visible.contains("\n\n"))
+    }
+
     func testCorpusLayoutIsFiniteAtNarrowAndDefaultWidths() {
         let attributed = AiAttributedRenderer.attributedString(
             for: Self.corpus,
@@ -215,6 +242,111 @@ final class AiMarkdownRegressionTests: XCTestCase {
             guard let attachment = value as? NSTextAttachment else { return }
             XCTAssertLessThanOrEqual(attachment.bounds.width, 120)
         }
+    }
+
+    func testNestedListAttachmentsFitIndentedLineFragments() {
+        let source = """
+        - Parent
+            - A deliberately wide equation $\\frac{abcdefghijklmnopqrstuvwxyz}{1234567890}$
+        """
+        let attributed = AiAttributedRenderer.attributedString(
+            for: source,
+            color: .labelColor,
+            secondary: .secondaryLabelColor
+        )
+
+        for width in [248.0, 120.0] as [CGFloat] {
+            let fitted = MessageContainerView.fittedAttachments(
+                in: attributed,
+                width: width
+            )
+            let storage = NSTextStorage(attributedString: fitted)
+            let container = NSTextContainer(
+                size: NSSize(width: width, height: .greatestFiniteMagnitude)
+            )
+            container.lineFragmentPadding = 0
+            let layout = NSLayoutManager()
+            layout.addTextContainer(container)
+            storage.addLayoutManager(layout)
+            layout.ensureLayout(for: container)
+
+            fitted.enumerateAttribute(
+                .attachment,
+                in: NSRange(location: 0, length: fitted.length)
+            ) { value, range, _ in
+                guard let attachment = value as? NSTextAttachment else { return }
+                let paragraph = fitted.attribute(
+                    .paragraphStyle,
+                    at: range.location,
+                    effectiveRange: nil
+                ) as? NSParagraphStyle
+                let available = width - max(
+                    paragraph?.firstLineHeadIndent ?? 0,
+                    paragraph?.headIndent ?? 0
+                )
+                XCTAssertLessThanOrEqual(
+                    attachment.bounds.width,
+                    available + 0.5,
+                    "attachment exceeds indented line width at \(width)"
+                )
+
+                let glyphRange = layout.glyphRange(
+                    forCharacterRange: range,
+                    actualCharacterRange: nil
+                )
+                guard glyphRange.length > 0 else {
+                    return XCTFail("attachment produced no glyph")
+                }
+                let attachmentRect = layout.boundingRect(
+                    forGlyphRange: glyphRange,
+                    in: container
+                )
+                let lineRect = layout.lineFragmentUsedRect(
+                    forGlyphAt: glyphRange.location,
+                    effectiveRange: nil
+                )
+                XCTAssertLessThanOrEqual(
+                    attachmentRect.maxX,
+                    lineRect.maxX + 0.5,
+                    "attachment clips its line fragment at \(width)"
+                )
+                XCTAssertLessThanOrEqual(attachmentRect.maxX, width + 0.5)
+            }
+        }
+    }
+
+    func testDecorativeRuleDoesNotLeakIntoQuotesOrAccessibility() {
+        let attributed = AiAttributedRenderer.attributedString(
+            for: "Before\n\n---\n\nAfter",
+            color: .labelColor,
+            secondary: .secondaryLabelColor
+        )
+        XCTAssertTrue(attributed.string.contains("\u{FFFC}"))
+
+        let plain = MessageContainerView.plainText(
+            in: attributed,
+            range: NSRange(location: 0, length: attributed.length),
+            mathDelimiters: true
+        )
+        XCTAssertFalse(plain.contains("\u{FFFC}"))
+        XCTAssertEqual(
+            plain.split(whereSeparator: \.isWhitespace).joined(separator: " "),
+            "Before After"
+        )
+
+        let view = MessageContainerView(
+            frame: NSRect(x: 0, y: 0, width: 248, height: 80)
+        )
+        view.setAttributed(
+            attributed,
+            content: "Before\n\n---\n\nAfter",
+            color: .labelColor,
+            secondary: .secondaryLabelColor
+        )
+        let accessibilityValue = view.textView.accessibilityValue() as? String
+        XCTAssertNotNil(accessibilityValue)
+        XCTAssertFalse(accessibilityValue?.contains("\u{FFFC}") ?? true)
+        XCTAssertFalse(accessibilityValue?.contains("---") ?? true)
     }
 
     func testLiveTextViewUsesSameLayoutEngineAsMeasurement() {
