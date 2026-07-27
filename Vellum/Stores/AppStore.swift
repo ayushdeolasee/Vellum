@@ -70,8 +70,9 @@ final class AppStore {
     // Active interaction mode
     private(set) var mode: InteractionMode = .view
 
-    /// AI reply queued for the next note placement (see `beginNoteWithContent`).
-    /// Not per-tab: it is short-lived and consumed on the very next click.
+    /// AI reply queued for the active tab's next note placement (see
+    /// `beginNoteWithContent`). The source of truth lives on `PdfTab`, so this
+    /// mirror changes whenever the active tab does.
     private(set) var pendingNoteContent: String?
 
     // Find bar (⌘F). `findVisible` drives the slim bar under the toolbar; the
@@ -81,10 +82,9 @@ final class AppStore {
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
-    /// Where a `.snapshotRegion` drag sends its crop. Both the AI panel and the
-    /// scratchpad panel arm the same capture mode, so the viewer overlays read
-    /// this to know which store to hand the snapshot to.
-    enum RegionCaptureTarget { case ai, scratchpad }
+    /// Where the active tab's `.snapshotRegion` drag sends its crop. Both the
+    /// AI panel and scratchpad arm the same capture mode; `PdfTab` retains the
+    /// value when the user changes tabs mid-gesture.
     private(set) var regionCaptureTarget: RegionCaptureTarget = .ai
 
     /// The window's workspace. One AppStore now backs one *pane*; app-global
@@ -417,29 +417,59 @@ final class AppStore {
     }
 
     /// Rebuild this pane's tabs from persisted descriptors (launch restore).
-    /// Opens each document with a fresh session; missing files are skipped.
-    /// Applies each tab's saved page/zoom/mode, then activates the saved tab.
+    /// This deliberately bypasses the regular open path's location
+    /// deduplication: two saved web tabs at the same URL are independent live
+    /// sessions and must both survive a relaunch. Missing files are skipped;
+    /// the saved active index is mapped to its successfully restored tab rather
+    /// than used against the compacted `tabs` array.
     func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
-        for descriptor in descriptors {
-            guard let doc = descriptor.document else {
-                newStartTab()
+        var restoredTabIds: [Int: String] = [:]
+
+        for (descriptorIndex, descriptor) in descriptors.enumerated() {
+            guard let savedDocument = descriptor.document else { continue }
+            let sessionId = UUID().uuidString.lowercased()
+            do {
+                var opened: DocumentInfo
+                if savedDocument.kind == .web {
+                    if savedDocument.pdfPath.lowercased().hasSuffix(".vellumweb") {
+                        opened = try await sessions.openVellumwebFile(
+                            path: savedDocument.pdfPath, sessionId: sessionId)
+                    } else {
+                        opened = try await sessions.openWebDocument(
+                            url: savedDocument.pdfPath, sessionId: sessionId)
+                    }
+                } else {
+                    opened = try await sessions.openFile(path: savedDocument.pdfPath, sessionId: sessionId)
+                }
+                // Preserve a title learned by the prior web session until the
+                // re-opened page reports a newer document title.
+                opened.title = savedDocument.title ?? opened.title
+                RecentFilesService.record(opened)
+                let restoredMode: InteractionMode = descriptor.mode == .snapshotRegion ? .view : descriptor.mode
+                let tab = PdfTab(
+                    id: sessionId,
+                    document: opened,
+                    currentPage: descriptor.currentPage,
+                    numPages: opened.pageCount ?? 0,
+                    zoom: descriptor.zoom,
+                    visiblePages: [],
+                    webVisibleRange: nil,
+                    webVisibleBookmarks: [],
+                    mode: restoredMode)
+                tabs.append(tab)
+                restoredTabIds[descriptorIndex] = sessionId
+            } catch {
+                // One unavailable document must not prevent the rest of the
+                // workspace from restoring. The reconciled tree is saved by
+                // WorkspaceStore after all panes have finished.
                 continue
             }
-            let before = tabs.count
-            if doc.kind == .web {
-                await openUrl(doc.pdfPath)
-            } else {
-                await openFiles(paths: [doc.pdfPath])
-            }
-            // Apply the saved viewport only if a new tab actually opened.
-            if tabs.count > before {
-                setZoom(descriptor.zoom)
-                setCurrentPage(descriptor.currentPage)
-                setMode(descriptor.mode)
-            }
         }
-        if let activeIndex, tabs.indices.contains(activeIndex) {
-            activateTab(tabs[activeIndex].id)
+
+        if let activeTabId = activeIndex.flatMap({ restoredTabIds[$0] })
+            ?? tabs.last?.id,
+           let activeTab = tabs.first(where: { $0.id == activeTabId }) {
+            applyActiveState(from: activeTab)
         }
     }
 
@@ -587,33 +617,58 @@ final class AppStore {
 
     func setMode(_ mode: InteractionMode) {
         self.mode = mode
-        // Leaving note placement (or entering the plain note tool) drops any
-        // AI-reply payload queued for the next placement.
-        if mode != .note { pendingNoteContent = nil }
-        // `snapshotRegion` is a transient capture gesture — never persist it to
-        // the tab, or restoring the tab would reopen the marquee overlay.
-        if mode != .snapshotRegion { updateActiveTab { $0.mode = mode } }
+        switch mode {
+        case .snapshotRegion:
+            // `beginRegionCapture(target:)` records the destination first. Do
+            // not persist this transient interaction across relaunch.
+            break
+        case .note:
+            regionCaptureTarget = .ai
+            updateActiveTab {
+                $0.mode = .note
+                $0.regionCaptureTarget = nil
+            }
+        case .view:
+            pendingNoteContent = nil
+            regionCaptureTarget = .ai
+            updateActiveTab {
+                $0.mode = .view
+                $0.pendingNoteContent = nil
+                $0.regionCaptureTarget = nil
+            }
+        }
     }
 
     /// Arm drag-to-crop region capture, recording which panel asked for it so
     /// the viewer overlay routes the resulting snapshot to the right store.
     func beginRegionCapture(target: RegionCaptureTarget) {
         regionCaptureTarget = target
-        setMode(.snapshotRegion)
+        pendingNoteContent = nil
+        mode = .snapshotRegion
+        updateActiveTab {
+            // A region capture replaces an armed note placement. Both pieces
+            // of state belong to the tab, so its indicator remains accurate
+            // while another tab is foregrounded.
+            $0.mode = .view
+            $0.pendingNoteContent = nil
+            $0.regionCaptureTarget = target
+        }
     }
 
     /// Enter note-placement mode carrying an AI reply: the next click on the
     /// page drops a pre-filled sticky note instead of an empty one. Used by the
     /// AI panel's "Add as note" action.
     func beginNoteWithContent(_ content: String) {
-        pendingNoteContent = content
         setMode(.note)
+        pendingNoteContent = content
+        updateActiveTab { $0.pendingNoteContent = content }
     }
 
     /// Consumed by the viewer when it places a note; nil once used.
     func consumePendingNoteContent() -> String? {
         let content = pendingNoteContent
         pendingNoteContent = nil
+        updateActiveTab { $0.pendingNoteContent = nil }
         return content
     }
 
@@ -839,7 +894,7 @@ final class AppStore {
         // The find bar belongs to the outgoing viewer; the incoming one
         // registers its own handlers on mount.
         resetFindState()
-        pendingNoteContent = nil
+        pendingNoteContent = tab.pendingNoteContent
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -848,7 +903,8 @@ final class AppStore {
         visiblePages = tab.visiblePages
         webVisibleRange = tab.webVisibleRange
         webVisibleBookmarks = tab.webVisibleBookmarks
-        mode = tab.mode
+        regionCaptureTarget = tab.regionCaptureTarget ?? .ai
+        mode = tab.regionCaptureTarget == nil ? tab.mode : .snapshotRegion
     }
 
     private func applyEmptyActiveState() {
@@ -862,6 +918,7 @@ final class AppStore {
         visiblePages = []
         webVisibleRange = nil
         webVisibleBookmarks = []
+        regionCaptureTarget = .ai
         mode = .view
     }
 

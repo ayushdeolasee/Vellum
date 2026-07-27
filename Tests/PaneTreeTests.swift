@@ -109,6 +109,57 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(sizes, [75, 25])
     }
 
+    func testPruneAbandonedEmptyPanesCollapsesSplit() {
+        let ws = makeWorkspace()
+        let original = ws.focusedPane
+        ws.splitFocused(.horizontal)
+        let temporary = ws.focusedPane
+
+        // `detachTab` mirrors an interrupted move: it leaves a live but empty
+        // split leaf, exactly what a restore can produce when a saved document
+        // no longer opens.
+        _ = temporary.app.detachTab(temporary.app.tabs[0].id)
+        ws.pruneAbandonedEmptyPanes()
+
+        XCTAssertFalse(ws.isSplit)
+        XCTAssertEqual(ws.root.leaf(id: original.id)?.id, original.id)
+        XCTAssertNil(ws.root.leaf(id: temporary.id))
+    }
+
+    func testAllTabsIncludesEveryPaneAndActivationFocusesOwningPane() {
+        let ws = makeWorkspace()
+        let firstPane = ws.focusedPane
+        firstPane.app.newStartTab()
+        let firstPaneTabId = firstPane.app.tabs[1].id
+        ws.splitFocused(.vertical)
+        let secondPane = ws.focusedPane
+        let secondPaneTabId = secondPane.app.tabs[0].id
+
+        XCTAssertEqual(ws.allTabs.map(\.tab.id).sorted(), [
+            firstPane.app.tabs[0].id, firstPaneTabId, secondPaneTabId,
+        ].sorted())
+        XCTAssertEqual(
+            ws.allTabs.first(where: { $0.tab.id == secondPaneTabId })?.paneId,
+            secondPane.id)
+
+        ws.activateWorkspaceTab(paneId: firstPane.id, tabId: firstPaneTabId)
+        XCTAssertEqual(ws.focusedPaneId, firstPane.id)
+        XCTAssertEqual(firstPane.app.activeTabId, firstPaneTabId)
+    }
+
+    func testWorkspaceCloseRoutesToTheOwningPane() async {
+        let ws = makeWorkspace()
+        let firstPane = ws.focusedPane
+        let firstPaneTabId = firstPane.app.tabs[0].id
+        ws.splitFocused(.horizontal)
+        let survivor = ws.focusedPane
+
+        await ws.closeWorkspaceTab(paneId: firstPane.id, tabId: firstPaneTabId)
+
+        XCTAssertNil(ws.root.leaf(id: firstPane.id))
+        XCTAssertEqual(ws.root.leaf(id: survivor.id)?.id, survivor.id)
+    }
+
     // MARK: - Persistence round-trip
 
     func testWorkspaceStateRoundTrips() throws {
@@ -184,6 +235,47 @@ final class PaneTreeTests: XCTestCase {
         }
         XCTAssertEqual(tabs.count, 1)
         XCTAssertNil(activeIndex)
+    }
+
+    func testSerializePreservesDuplicateWebTabsAndTheirSelection() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let document = DocumentInfo(
+            kind: .web, pdfPath: "https://example.com/article", title: "Article",
+            pageCount: 1, lastPage: 1)
+        app.attachTab(makeTab(id: "web-a", document: document))
+        app.attachTab(makeTab(id: "web-b", document: document))
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.map(\.document?.pdfPath), [
+            "https://example.com/article", "https://example.com/article",
+        ])
+        XCTAssertEqual(activeIndex, 1)
+    }
+
+    func testPendingNoteAndRegionCaptureBelongToTheirTabAcrossSwitches() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let noteTabId = app.activeTabId!
+
+        app.beginNoteWithContent("Queued AI reply")
+        app.newStartTab()
+        XCTAssertNil(app.pendingNoteContent)
+        XCTAssertEqual(app.tabs.first(where: { $0.id == noteTabId })?.pendingNoteContent, "Queued AI reply")
+
+        app.activateTab(noteTabId)
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "Queued AI reply")
+
+        app.beginRegionCapture(target: .scratchpad)
+        app.newStartTab()
+        app.activateTab(noteTabId)
+        XCTAssertEqual(app.mode, .snapshotRegion)
+        XCTAssertEqual(app.regionCaptureTarget, .scratchpad)
+        XCTAssertEqual(app.tabs.first(where: { $0.id == noteTabId })?.regionCaptureTarget, .scratchpad)
+        XCTAssertNil(app.pendingNoteContent)
     }
 
     func testCloseOthersAndCloseRightPreserveExpectedTabs() async {

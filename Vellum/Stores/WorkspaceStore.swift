@@ -156,6 +156,30 @@ final class WorkspaceStore {
     /// True when the window shows more than one pane (drives focus rings etc.).
     var isSplit: Bool { !root.isLeaf }
 
+    /// Every live tab in this window, in pane-tree order. The pane id travels
+    /// with the tab so workspace-level UI never accidentally activates or
+    /// closes an identically positioned tab in the pane that opened it.
+    var allTabs: [WorkspaceTab] {
+        root.allLeaves().enumerated().flatMap { paneIndex, pane in
+            pane.app.tabs.map { tab in
+                WorkspaceTab(paneId: pane.id, paneIndex: paneIndex, tab: tab)
+            }
+        }
+    }
+
+    func activateWorkspaceTab(paneId: String, tabId: String) {
+        guard let pane = root.leaf(id: paneId),
+              pane.app.tabs.contains(where: { $0.id == tabId }) else { return }
+        focus(paneId)
+        pane.app.activateTab(tabId)
+    }
+
+    func closeWorkspaceTab(paneId: String, tabId: String) async {
+        guard let pane = root.leaf(id: paneId),
+              pane.app.tabs.contains(where: { $0.id == tabId }) else { return }
+        await pane.app.closeTab(tabId)
+    }
+
     // MARK: - Pane construction
 
     private func makePane(startTab: Bool) -> PaneModel {
@@ -353,7 +377,11 @@ final class WorkspaceStore {
             // user's reading tabs after relaunch.
             let liveTabs = pane.app.tabs.filter { $0.document != nil }
             let tabs = liveTabs.map {
-                TabDescriptor(document: $0.document, currentPage: $0.currentPage, zoom: $0.zoom, mode: $0.mode)
+                TabDescriptor(
+                    document: $0.document,
+                    currentPage: $0.currentPage,
+                    zoom: $0.zoom,
+                    mode: $0.regionCaptureTarget == nil ? $0.mode : .view)
             }
             let activeIndex = pane.app.activeTabId.flatMap { id in
                 liveTabs.firstIndex { $0.id == id }
@@ -397,13 +425,32 @@ final class WorkspaceStore {
         for work in leafWork {
             await work.pane.app.restoreTabs(work.tabs, activeIndex: work.activeIndex)
         }
-        let leaves = root.allLeaves()
-        if leaves.indices.contains(state.focusedLeafIndex) {
-            focusedPaneId = leaves[state.focusedLeafIndex].id
+        let restoredFocusedPaneId = root.allLeaves().indices.contains(state.focusedLeafIndex)
+            ? root.allLeaves()[state.focusedLeafIndex].id
+            : nil
+        pruneAbandonedEmptyPanes()
+        if let restoredFocusedPaneId, root.leaf(id: restoredFocusedPaneId) != nil {
+            focusedPaneId = restoredFocusedPaneId
         }
         isRestoring = false
         // Persist the reconciled state (some tabs may have failed to reopen).
         scheduleSave()
+    }
+
+    /// A persisted split can become partially empty when documents disappear
+    /// before the next launch. Empty leaves are not useful split targets, so
+    /// collapse them after restore while preserving one Welcome pane if every
+    /// saved document was unavailable.
+    func pruneAbandonedEmptyPanes() {
+        let fallback = root.allLeaves().first
+        if let pruned = pruningEmptyLeaves(root) {
+            root = pruned
+        } else if let fallback {
+            root = .leaf(fallback)
+        }
+        if root.leaf(id: focusedPaneId) == nil {
+            focusedPaneId = root.firstLeafId
+        }
     }
 
     private func buildNode(
@@ -423,4 +470,32 @@ final class WorkspaceStore {
                 sizes: sizes)
         }
     }
+
+    private func pruningEmptyLeaves(_ node: PaneNode) -> PaneNode? {
+        switch node {
+        case .leaf(let pane):
+            return pane.app.tabs.isEmpty ? nil : node
+        case .split(let id, let direction, let children, let sizes):
+            var keptChildren: [PaneNode] = []
+            var keptSizes: [Double] = []
+            for (index, child) in children.enumerated() {
+                if let survivor = pruningEmptyLeaves(child) {
+                    keptChildren.append(survivor)
+                    keptSizes.append(sizes.indices.contains(index) ? sizes[index] : 1)
+                }
+            }
+            if keptChildren.isEmpty { return nil }
+            if keptChildren.count == 1 { return keptChildren[0] }
+            return .split(id: id, direction: direction, children: keptChildren, sizes: normalized(keptSizes))
+        }
+    }
+}
+
+struct WorkspaceTab: Identifiable, Equatable {
+    let paneId: String
+    let paneIndex: Int
+    let tab: PdfTab
+
+    var id: String { "\(paneId):\(tab.id)" }
+    var paneLabel: String { "Pane \(paneIndex + 1)" }
 }

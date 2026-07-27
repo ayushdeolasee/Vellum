@@ -56,13 +56,14 @@ struct TabBarView: View {
             .accessibilityIdentifier("tabBar.overview")
             .popover(isPresented: $showingOverview, arrowEdge: .bottom) {
                 TabOverview(
-                    tabs: appStore.tabs,
-                    activeTabId: appStore.activeTabId,
+                    tabs: workspace.allTabs,
                     onActivate: {
-                        appStore.activateTab($0)
+                        workspace.activateWorkspaceTab(paneId: $0.paneId, tabId: $0.tab.id)
                         showingOverview = false
                     },
-                    onClose: { id in Task { await appStore.closeTab(id) } }
+                    onClose: { tab in
+                        Task { await workspace.closeWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id) }
+                    }
                 )
             }
 
@@ -151,7 +152,7 @@ private struct TabItem: View {
     @State private var hovering = false
 
     private var hasPendingAction: Bool {
-        tab.mode != .view || (isActive && appStore.pendingNoteContent != nil)
+        tab.mode != .view || tab.pendingNoteContent != nil || tab.regionCaptureTarget != nil
     }
 
     private var iconName: String {
@@ -272,22 +273,22 @@ private struct TabItem: View {
 }
 
 private struct TabOverview: View {
-    let tabs: [PdfTab]
-    let activeTabId: String?
-    let onActivate: (String) -> Void
-    let onClose: (String) -> Void
+    let tabs: [WorkspaceTab]
+    let onActivate: (WorkspaceTab) -> Void
+    let onClose: (WorkspaceTab) -> Void
 
-    @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @State private var query = ""
 
-    private var filteredTabs: [PdfTab] {
+    private var filteredTabs: [WorkspaceTab] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return tabs }
         return tabs.filter {
-            TabPresentation.title(for: $0)
+            TabPresentation.title(for: $0.tab)
                 .localizedStandardContains(needle)
-                || TabPresentation.typeLabel(for: $0)
+                || TabPresentation.typeLabel(for: $0.tab)
                 .localizedStandardContains(needle)
+                || $0.paneLabel.localizedStandardContains(needle)
         }
     }
 
@@ -309,20 +310,20 @@ private struct TabOverview: View {
                         ForEach(filteredTabs) { tab in
                             HStack(spacing: 8) {
                                 Button {
-                                    onActivate(tab.id)
+                                    onActivate(tab)
                                 } label: {
                                     HStack(spacing: 8) {
-                                        Image(systemName: TabPresentation.iconName(for: tab))
+                                        Image(systemName: TabPresentation.iconName(for: tab.tab))
                                             .foregroundStyle(.secondary)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(TabPresentation.title(for: tab))
+                                            Text(TabPresentation.title(for: tab.tab))
                                                 .lineLimit(2)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                            Text(TabPresentation.typeLabel(for: tab))
+                                            Text("\(tab.paneLabel) · \(TabPresentation.typeLabel(for: tab.tab))")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         }
-                                        if tab.id == activeTabId {
+                                        if isFocusedActive(tab) {
                                             Image(systemName: "checkmark")
                                                 .foregroundStyle(.tint)
                                                 .accessibilityLabel("Current tab")
@@ -338,26 +339,26 @@ private struct TabOverview: View {
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(
-                                    "\(TabPresentation.title(for: tab)), "
-                                        + "\(TabPresentation.typeLabel(for: tab))"
+                                    "\(TabPresentation.title(for: tab.tab)), "
+                                        + "\(tab.paneLabel), \(TabPresentation.typeLabel(for: tab.tab))"
                                         + (isPending(tab) ? ", action pending" : ""))
                                 .accessibilityIdentifier("tabOverview.tab.\(tab.id)")
 
                                 Button {
-                                    onClose(tab.id)
+                                    onClose(tab)
                                 } label: {
                                     Image(systemName: "xmark")
                                         .frame(width: 22, height: 22)
                                 }
                                 .buttonStyle(.plain)
-                                .help("Close \(TabPresentation.title(for: tab))")
-                                .accessibilityLabel("Close \(TabPresentation.title(for: tab))")
+                                .help("Close \(TabPresentation.title(for: tab.tab))")
+                                .accessibilityLabel("Close \(TabPresentation.title(for: tab.tab))")
                                 .accessibilityIdentifier("tabOverview.close.\(tab.id)")
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
                             .background(
-                                tab.id == activeTabId
+                                isFocusedActive(tab)
                                     ? Color.accentColor.opacity(0.12)
                                     : Color.clear,
                                 in: RoundedRectangle(cornerRadius: Radius.md))
@@ -371,8 +372,12 @@ private struct TabOverview: View {
         .frame(width: 360)
     }
 
-    private func isPending(_ tab: PdfTab) -> Bool {
-        tab.mode != .view || (tab.id == activeTabId && appStore.pendingNoteContent != nil)
+    private func isPending(_ tab: WorkspaceTab) -> Bool {
+        tab.tab.mode != .view || tab.tab.pendingNoteContent != nil || tab.tab.regionCaptureTarget != nil
+    }
+
+    private func isFocusedActive(_ tab: WorkspaceTab) -> Bool {
+        tab.paneId == workspace.focusedPaneId && tab.tab.id == workspace.focusedPane.app.activeTabId
     }
 }
 

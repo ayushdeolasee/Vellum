@@ -193,6 +193,14 @@ enum InteractionMode: String, Codable, Sendable {
     case snapshotRegion
 }
 
+/// Which side panel receives a pending drag-to-crop capture. This is kept on
+/// the live tab rather than the pane-wide active state so changing tabs cannot
+/// silently lose, or misroute, an armed capture.
+enum RegionCaptureTarget: Sendable, Equatable {
+    case ai
+    case scratchpad
+}
+
 struct WebVisibleRange: Equatable, Sendable {
     var start: Int
     var end: Int
@@ -214,6 +222,12 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// now (web documents only; reported by the content script).
     var webVisibleBookmarks: [String]
     var mode: InteractionMode
+    /// AI text queued for the next placed note. It deliberately remains live
+    /// only: relaunching restores the note tool, never a stale AI reply.
+    var pendingNoteContent: String? = nil
+    /// An in-progress region capture is also live-only, but belongs to its tab
+    /// while the user moves around the workspace.
+    var regionCaptureTarget: RegionCaptureTarget? = nil
 }
 
 struct HighlightColor: Identifiable, Sendable {
