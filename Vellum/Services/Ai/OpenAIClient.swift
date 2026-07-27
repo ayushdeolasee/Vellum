@@ -154,8 +154,15 @@ final class OpenAIClient {
 
     /// Whether `model` takes a `reasoning` field at all. Everything else rejects
     /// it outright, so the field is omitted for them.
+    ///
+    /// The o-series belongs here as much as the gpt-5 line does: `o1`/`o3`/`o4`
+    /// all take a reasoning effort. They're unreachable from the OpenAI-direct
+    /// picker, but OpenRouter's catalog is live, so `openai/o3` is one search
+    /// away — and OpenRouter routes every `openai/` id through this table.
     static func isReasoningModel(_ model: String) -> Bool {
-        model.lowercased().hasPrefix("gpt-5")
+        let lowered = model.lowercased()
+        return lowered.hasPrefix("gpt-5")
+            || lowered.hasPrefix("o1") || lowered.hasPrefix("o3") || lowered.hasPrefix("o4")
     }
 
     /// Efforts ordered weakest to strongest. Used to fall back to the nearest
@@ -172,17 +179,45 @@ final class OpenAIClient {
     /// it rejects — which 400'd every request before streaming. Now an
     /// unrecognized model returns an empty set and we send nothing, so a new
     /// release degrades to the API's own default instead of breaking.
+    ///
+    /// Rows come from each family's page under `developers.openai.com/api/docs/
+    /// models`, cross-checked against the Azure Foundry reasoning matrix. The
+    /// shape of the vocabulary over time: `minimal` exists only on the original
+    /// gpt-5 line and is gone from 5.1 onward; `none` arrives with 5.1; `xhigh`
+    /// arrives with 5.4. Omitting a family is not free — several of these models
+    /// default to `none`, so sending nothing means *no reasoning at all*, not
+    /// "a sensible middle". A family the picker ships needs a row.
     static func supportedEfforts(model: String) -> Set<String> {
         let lowered = model.lowercased()
         guard isReasoningModel(lowered) else { return [] }
-        // The -pro variants accept only "high".
-        if lowered.contains("gpt-5-pro") || lowered.contains("gpt-5.1-pro") { return ["high"] }
-        // gpt-5.5 dropped "minimal" and added "none" and "xhigh". Taken verbatim
-        // from the API's own rejection: "Supported values are: 'none', 'low',
-        // 'medium', 'high', and 'xhigh'."
-        if lowered.contains("gpt-5.5") { return ["none", "low", "medium", "high", "xhigh"] }
-        // gpt-5.1 rejects "minimal".
-        if lowered.contains("gpt-5.1") { return ["low", "medium", "high"] }
+        // The o-series takes low/medium/high, every model of it except o1-mini,
+        // which has no effort parameter at all. Checked first so o3-pro doesn't
+        // fall into the gpt-5 -pro rows below.
+        if !lowered.hasPrefix("gpt-") {
+            return lowered.hasPrefix("o1-mini") ? [] : ["low", "medium", "high"]
+        }
+        // The -pro variants each have their own vocabulary, checked before the
+        // base families so they never inherit one: gpt-5.4-pro rejects the
+        // "none" and "low" that plain gpt-5.4 accepts, so inheriting would 400
+        // exactly the way #94 did. A -pro we haven't been taught omits.
+        if lowered.contains("-pro") {
+            if lowered.contains("gpt-5-pro") || lowered.contains("gpt-5.1-pro") { return ["high"] }
+            if lowered.contains("gpt-5.4-pro") { return ["medium", "high", "xhigh"] }
+            return []
+        }
+        // 5.2 through 5.5 share a vocabulary: no "minimal", plus "none" and
+        // "xhigh". gpt-5.5's row is also quoted verbatim by the API's own
+        // rejection: "Supported values are: 'none', 'low', 'medium', 'high', and
+        // 'xhigh'."
+        if lowered.contains("gpt-5.5") || lowered.contains("gpt-5.4") || lowered.contains("gpt-5.2") {
+            return ["none", "low", "medium", "high", "xhigh"]
+        }
+        // gpt-5.1 added "none" but has neither "minimal" nor "xhigh". This also
+        // catches the 5.1-codex variants; codex-max additionally takes "xhigh",
+        // which no thinking mode can ask for, so the narrower row costs nothing.
+        if lowered.contains("gpt-5.1") { return ["none", "low", "medium", "high"] }
+        // gpt-5-codex is the one model on the classic line that rejects "minimal".
+        if lowered.contains("codex") { return ["low", "medium", "high"] }
         // Classic gpt-5 / gpt-5-mini / gpt-5-nano accept every effort incl. minimal.
         if lowered.hasPrefix("gpt-5-") || lowered == "gpt-5" { return ["minimal", "low", "medium", "high"] }
         // A gpt-5.x we don't know yet: omit rather than guess.

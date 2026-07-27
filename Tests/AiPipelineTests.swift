@@ -318,14 +318,59 @@ final class AiPipelineTests: XCTestCase {
         // Classic gpt-5 still takes "minimal".
         XCTAssertEqual(
             OpenAIClient.supportedReasoningEffort(model: "gpt-5-mini", requested: "minimal"), "minimal")
-        // gpt-5.1 has no "minimal"; nearest rung is "low".
+        // gpt-5.1 dropped "minimal" and gained "none", so Instant lands there.
         XCTAssertEqual(
-            OpenAIClient.supportedReasoningEffort(model: "gpt-5.1", requested: "minimal"), "low")
-        // The -pro variants accept only "high", whatever was asked for.
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.1", requested: "minimal"), "none")
+        // Dated snapshots resolve to their family, not to the unknown row.
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.1-2025-11-13", requested: "minimal"), "none")
+        // gpt-5-pro accepts only "high", whatever was asked for.
         XCTAssertEqual(
             OpenAIClient.supportedReasoningEffort(model: "gpt-5-pro", requested: "low"), "high")
         // Non-reasoning models never get the field.
         XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-4o", requested: "high"))
+    }
+
+    /// Omitting a family is not the safe default it looks like: gpt-5.2/5.4
+    /// default to `reasoning.effort: none`, so an omitted field means the user
+    /// picked "High" and got *no* reasoning. Every gpt-5 id the pickers actually
+    /// ship has to resolve an explicit mode to something.
+    func testEveryShippedGpt5ModelHonoursAnExplicitMode() {
+        let shipped = AiModelCatalog.openAI + AiModelCatalog.chatgpt + AiModelCatalog.opencode
+        for model in Set(shipped).filter({ $0.hasPrefix("gpt-5") }).sorted() {
+            XCTAssertNotNil(
+                OpenAIClient.supportedReasoningEffort(model: model, requested: "high"),
+                "\(model) is in a model picker but High resolves to no effort at all")
+        }
+    }
+
+    /// 5.2 through 5.5 share one vocabulary, but their -pro variants do not, and
+    /// the -pro rows are checked first so they can't inherit a value they reject.
+    func testProVariantsDoNotInheritTheirFamilysVocabulary() {
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.4", requested: "minimal"), "none")
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.4-mini", requested: "minimal"), "none")
+        // gpt-5.4-pro takes only medium/high/xhigh — inheriting gpt-5.4's "none"
+        // would 400 the same way #94 did.
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5.4-pro", requested: "minimal"), "medium")
+        // A -pro variant with no row of its own omits rather than guessing.
+        XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-5.5-pro", requested: "low"))
+    }
+
+    /// Two families that don't match the plain `gpt-5.x` shapes: codex slugs on
+    /// the classic line reject "minimal", and the o-series takes reasoning
+    /// effort despite not starting with "gpt" — `openai/o3` reaches this table
+    /// through OpenRouter's live catalog.
+    func testCodexAndOSeriesResolveToValuesTheyAccept() {
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "gpt-5-codex", requested: "minimal"), "low")
+        XCTAssertEqual(OpenAIClient.supportedReasoningEffort(model: "o3", requested: "high"), "high")
+        XCTAssertEqual(
+            OpenAIClient.supportedReasoningEffort(model: "o4-mini", requested: "minimal"), "low")
+        // o1-mini is the one reasoning model with no effort parameter at all.
+        XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "o1-mini", requested: "high"))
     }
 
     /// Explicit choices a model does support must survive untouched.
@@ -369,6 +414,27 @@ final class AiPipelineTests: XCTestCase {
         // All three images are still attached, just without breakpoints.
         let userContent = try XCTUnwrap(messages.last?["content"] as? [[String: Any]])
         XCTAssertEqual(userContent.filter { $0["type"] as? String == "image_url" }.count, 3)
+    }
+
+    /// OpenRouter resolves `openai/` ids through the shared table, so the
+    /// gateway inherits both halves of #94: gpt-5.5 must not receive "minimal",
+    /// and a model the table has nothing to say about must not lose the user's
+    /// choice — `openai/o3` reasons, it just doesn't start with "gpt".
+    func testOpenRouterResolvesOpenAIEffortsThroughTheSharedTable() {
+        func effort(_ model: String, _ mode: AiThinkingMode) -> String? {
+            let body = OpenRouterClient.requestBody(
+                model: model, messages: [], thinkingMode: mode, allowTools: false, sessionId: "t")
+            return (body["reasoning"] as? [String: Any])?["effort"] as? String
+        }
+        XCTAssertEqual(effort("openai/gpt-5.5", .instant), "none")
+        XCTAssertEqual(effort("openai/gpt-5.4", .high), "high")
+        XCTAssertEqual(effort("openai/o3", .high), "high")
+        XCTAssertEqual(effort("openai/o3", .instant), "low")
+        // Non-reasoning OpenAI models take no reasoning field at all.
+        XCTAssertNil(effort("openai/gpt-4o", .high))
+        // Everything else on the gateway keeps the plain low/medium/high rule.
+        XCTAssertEqual(effort("anthropic/claude-sonnet-5", .instant), "low")
+        XCTAssertNil(effort("openai/gpt-5.5", .auto))
     }
 
     /// Counts a key recursively through the nested JSON-ish structure.
