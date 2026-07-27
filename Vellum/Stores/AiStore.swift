@@ -509,11 +509,12 @@ final class AiStore {
     /// after the clear stay at the end of the conversation.
     @discardableResult
     func undoClear(_ transaction: AiConversationClearTransaction) -> Bool {
-        let current = AiPersistence.loadConversation(for: transaction.document)
+        guard let document = currentDocument(for: transaction) else { return false }
+        let current = AiPersistence.loadConversation(for: document)
         let currentIds = Set(current.map(\.id))
         let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
-        AiPersistence.saveConversation(for: transaction.document, messages: restored)
-        if isShowing(transaction) {
+        AiPersistence.saveConversation(for: document, messages: restored)
+        if isShowing(transaction, document: document) {
             cancelActiveRequest()
             messages = restored
             error = nil
@@ -525,11 +526,12 @@ final class AiStore {
     /// after the clear (or after Undo) remain intact.
     @discardableResult
     func redoClear(_ transaction: AiConversationClearTransaction) -> Bool {
+        guard let document = currentDocument(for: transaction) else { return false }
         let removedIds = Set(transaction.removedMessages.map(\.id))
-        let remaining = AiPersistence.loadConversation(for: transaction.document)
+        let remaining = AiPersistence.loadConversation(for: document)
             .filter { !removedIds.contains($0.id) }
-        AiPersistence.saveConversation(for: transaction.document, messages: remaining)
-        if isShowing(transaction) {
+        AiPersistence.saveConversation(for: document, messages: remaining)
+        if isShowing(transaction, document: document) {
             cancelActiveRequest()
             messages = remaining
             error = nil
@@ -537,12 +539,28 @@ final class AiStore {
         return true
     }
 
-    private func isShowing(_ transaction: AiConversationClearTransaction) -> Bool {
-        guard app?.activeTabId == transaction.sessionId, let document = app?.document else {
+    /// Resolve through the transaction's tab rather than the clear-time
+    /// `DocumentInfo`: a first post-clear write can stamp the PDF and change its
+    /// storage key while this tab remains the same document. The path/kind guard
+    /// keeps a stale undo transaction from following a reused tab into another
+    /// document.
+    private func currentDocument(for transaction: AiConversationClearTransaction) -> DocumentInfo? {
+        guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
+              isSameDocument(document, transaction.document) else { return nil }
+        return document
+    }
+
+    private func isShowing(
+        _ transaction: AiConversationClearTransaction, document targetDocument: DocumentInfo
+    ) -> Bool {
+        guard app?.activeTabId == transaction.sessionId, let activeDocument = app?.document else {
             return false
         }
-        return DocumentIdentity.storageKey(for: document)
-            == DocumentIdentity.storageKey(for: transaction.document)
+        return isSameDocument(activeDocument, targetDocument)
+    }
+
+    private func isSameDocument(_ lhs: DocumentInfo, _ rhs: DocumentInfo) -> Bool {
+        lhs.kind == rhs.kind && lhs.pdfPath == rhs.pdfPath
     }
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).

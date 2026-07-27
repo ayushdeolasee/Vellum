@@ -136,15 +136,17 @@ final class ScratchpadStore {
     /// bytes are restored before the markdown is persisted.
     @discardableResult
     func undoClear(_ transaction: ScratchpadClearTransaction) -> ScratchpadClearRestoration? {
-        let showing = isShowing(transaction)
+        guard let target = currentTarget(for: transaction) else { return nil }
+        let showing = isShowing(transaction, document: target.document)
         if showing { cancelPendingSave() }
+        if showing { adoptVisibleIdentity(target) }
         let current = showing
             ? text
-            : ScratchpadPersistence.load(forKey: transaction.key)
+            : ScratchpadPersistence.load(forKey: target.key)
         let separator = current.isEmpty ? "" : "\n\n"
         let prefix = transaction.removedText + separator
         let restored = prefix + current
-        let directory = DocumentDataStore.attachmentsDir(forKey: transaction.key)
+        let directory = DocumentDataStore.attachmentsDir(forKey: target.key)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             for attachment in transaction.attachments {
@@ -167,18 +169,20 @@ final class ScratchpadStore {
     @discardableResult
     func redoClear(_ restoration: ScratchpadClearRestoration) -> Bool {
         let transaction = restoration.transaction
-        let showing = isShowing(transaction)
+        guard let target = currentTarget(for: transaction) else { return false }
+        let showing = isShowing(transaction, document: target.document)
         if showing { cancelPendingSave() }
+        if showing { adoptVisibleIdentity(target) }
         let current = showing
             ? text
-            : ScratchpadPersistence.load(forKey: transaction.key)
+            : ScratchpadPersistence.load(forKey: target.key)
         guard current.hasPrefix(restoration.insertedPrefix) else {
             showWarning("Couldn't redo Clear Scratchpad because the restored text was edited.")
             return false
         }
         let remaining = String(current.dropFirst(restoration.insertedPrefix.count))
         do {
-            try ScratchpadPersistence.save(forKey: transaction.key, schemeText: remaining)
+            try ScratchpadPersistence.save(forKey: target.key, schemeText: remaining)
         } catch {
             showWarning("Couldn't redo Clear Scratchpad.")
             return false
@@ -187,8 +191,44 @@ final class ScratchpadStore {
         return true
     }
 
-    private func isShowing(_ transaction: ScratchpadClearTransaction) -> Bool {
-        currentSessionId == transaction.sessionId && currentKey == transaction.key
+    private struct ClearTarget {
+        var document: DocumentInfo
+        var key: String
+    }
+
+    /// Resolve through the transaction's tab on every operation. A first write
+    /// after Clear may have stamped this still-open PDF, replacing its path-hash
+    /// key with a doc ID; a different tab must never satisfy this lookup.
+    private func currentTarget(for transaction: ScratchpadClearTransaction) -> ClearTarget? {
+        guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
+              isSameDocument(document, transaction.document) else { return nil }
+        let key = DocumentIdentity.storageKey(for: document)
+        if key != transaction.key {
+            DocumentDataStore.rekey(from: transaction.key, to: key)
+        }
+        return ClearTarget(document: document, key: key)
+    }
+
+    private func isShowing(_ transaction: ScratchpadClearTransaction, document: DocumentInfo) -> Bool {
+        guard currentSessionId == transaction.sessionId, let currentDocument else { return false }
+        return isSameDocument(currentDocument, document)
+    }
+
+    /// The visible editor can still hold the pre-stamp key when another action
+    /// stamped its tab. Retarget it before restoring so subsequent autosaves and
+    /// attachments remain under the current document identity.
+    private func adoptVisibleIdentity(_ target: ClearTarget) {
+        let oldKey = currentKey
+        currentDocument = target.document
+        currentKey = target.key
+        if let oldKey, oldKey != target.key {
+            DocumentDataStore.rekey(from: oldKey, to: target.key)
+        }
+        ScratchpadAttachmentStore.activeDirectory = DocumentDataStore.attachmentsDir(forKey: target.key)
+    }
+
+    private func isSameDocument(_ lhs: DocumentInfo, _ rhs: DocumentInfo) -> Bool {
+        lhs.kind == rhs.kind && lhs.pdfPath == rhs.pdfPath
     }
 
     /// Restore the note for `document`, first flushing the previous document's
