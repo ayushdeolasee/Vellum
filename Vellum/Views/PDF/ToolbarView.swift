@@ -68,8 +68,14 @@ struct VellumToolbar: ToolbarContent {
             }
         }
 
-        ToolbarItem {
-            OverflowMenu()
+        if hasDocument {
+            ToolbarItem {
+                OverflowMenu()
+            }
+        } else {
+            ToolbarItem {
+                HomeUpdateMenu()
+            }
         }
     }
 }
@@ -426,8 +432,8 @@ private struct OverflowMenu: View {
         }
     }
 
-    /// Save = mark the page kept AND make sure its offline copy exists (the
-    /// re-archive covers a copy the user deleted from Settings ▸ Storage).
+    /// Save = create an offline snapshot, then mark the page kept. The button
+    /// only reports an offline copy after the archive was actually written.
     /// Remove = un-keep and delete the offline copy; the record — highlights,
     /// notes, reading position — always survives.
     private func toggleSavedPage() {
@@ -444,19 +450,26 @@ private struct OverflowMenu: View {
         saveToggleTask = Task {
             await prior?.value
             do {
-                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
                 if next {
-                    // Best-effort: membership is saved even if the archive
-                    // write fails (offline, no snapshot yet) — the copy is
-                    // rewritten on the next open of the page.
-                    _ = try? await appStore.sessions.archiveWebpageDefault(
+                    let archived = try await appStore.sessions.archiveWebpageDefault(
                         sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+                    guard archived else {
+                        throw SessionServiceError.io("The webpage changed before its offline copy could be created.")
+                    }
+                    try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: true)
+                } else {
+                    try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: false)
                 }
             } catch {
-                // Only the newest toggle owns the button: an older one failing
-                // behind a queued newer one must not resurrect its own state.
+                // If archiving fails, undo any membership change so Saved and
+                // offline availability cannot diverge. Only the newest toggle
+                // owns visible state or its error message.
+                if next {
+                    try? await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: false)
+                }
                 if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
                     pageSaved = !next
+                    appStore.error = "Keep Offline failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -620,6 +633,39 @@ private struct OverflowMenu: View {
             while slug.hasSuffix("-") { slug.removeLast() }
         }
         return slug.isEmpty ? "article" : slug
+    }
+}
+
+/// Home has no current document, so it must not show the empty document-overflow
+/// control. Updates remain reachable here as the one genuinely global action.
+private struct HomeUpdateMenu: View {
+    @State private var updateChecker = UpdateChecker()
+
+    var body: some View {
+        Menu {
+            if updateChecker.state == .available,
+               let version = updateChecker.availableVersion {
+                Button(action: updateChecker.install) {
+                    Label("Install Update \(version)", systemImage: "arrow.down.circle")
+                }
+            }
+            Button {
+                Task { await updateChecker.check() }
+            } label: {
+                Label("Check for Updates…", systemImage: "arrow.clockwise")
+            }
+            .disabled(updateChecker.state == .checking)
+        } label: {
+            Label("Updates", systemImage: "arrow.clockwise")
+                .labelStyle(.iconOnly)
+        }
+        .menuIndicator(.hidden)
+        .help(updateChecker.tooltip)
+        .accessibilityLabel("Updates")
+        .accessibilityIdentifier("toolbar.homeUpdates")
+        .task {
+            await updateChecker.check(silent: true)
+        }
     }
 }
 

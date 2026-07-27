@@ -196,6 +196,14 @@ private struct WindowChrome: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
+        .overlay(alignment: .top) {
+            if focused.app.document != nil, let error = focused.app.error {
+                DocumentErrorNotice(message: error) {
+                    focused.app.error = nil
+                }
+                .padding(.top, 12)
+            }
+        }
         .toolbar {
             VellumToolbar()
         }
@@ -241,6 +249,34 @@ private struct WindowChrome: View {
     private var sidebar: some View {
         SidebarPanelStack()
             .onHover { sidebarHovering = $0 }
+    }
+}
+
+/// Errors from document-scoped actions used to be visible only after returning
+/// to Home. Keep them in the current reading surface, with an explicit dismiss
+/// action so a stale failure never obscures the document.
+private struct DocumentErrorNotice: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message)
+                .lineLimit(3)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss error")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.red.opacity(0.18), in: Capsule())
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier("document.errorNotice")
     }
 }
 

@@ -86,6 +86,51 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertNil(PdfMetadata.documentId(atPath: source.path))
     }
 
+    func testSaveAsStampsReadOnlySourceFallbackIdentityIntoWritableCopy() async throws {
+        let lockedDirectory = tempDirectory.appendingPathComponent("read-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: lockedDirectory, withIntermediateDirectories: true)
+        let source = lockedDirectory.appendingPathComponent("Original.pdf")
+        makePDF(at: source, pages: 1)
+        let sourceBytes = try Data(contentsOf: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedDirectory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDirectory.path) }
+        let destination = tempDirectory.appendingPathComponent("Writable Copy.pdf")
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: source.path)
+        let tabId = try XCTUnwrap(app.activeTabId)
+
+        let rebound = try await app.savePdfAs(tabId: tabId, destination: destination)
+
+        let fallback = DocumentIdentity.byteHash(sourceBytes)
+        XCTAssertEqual(PdfMetadata.documentId(atPath: source.path), nil)
+        XCTAssertEqual(PdfMetadata.documentId(atPath: destination.path), fallback)
+        XCTAssertEqual(rebound.docId, fallback)
+    }
+
+    func testSaveAsRefusesDestinationAlreadyOpenInAnotherPane() async throws {
+        let source = tempDirectory.appendingPathComponent("Source.pdf")
+        let destination = tempDirectory.appendingPathComponent("Open Elsewhere.pdf")
+        makePDF(at: source, pages: 1)
+        makePDF(at: destination, pages: 1)
+
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let sourcePane = workspace.focusedPane
+        await sourcePane.app.openFile(path: source.path)
+        let sourceTab = try XCTUnwrap(sourcePane.app.activeTabId)
+        workspace.splitFocused(.horizontal)
+        await workspace.focusedPane.app.openFile(path: destination.path)
+
+        do {
+            _ = try await sourcePane.app.savePdfAs(tabId: sourceTab, destination: destination)
+            XCTFail("Save As must not retarget onto another open tab")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("already open"))
+        }
+        XCTAssertEqual(sourcePane.app.document?.pdfPath, source.path)
+        XCTAssertEqual(workspace.focusedPane.app.document?.pdfPath, destination.path)
+    }
+
     private func makePDF(at url: URL, pages: Int) {
         var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
         let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil)!

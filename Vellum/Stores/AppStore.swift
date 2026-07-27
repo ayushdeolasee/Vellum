@@ -266,9 +266,26 @@ final class AppStore {
             return source
         }
 
+        // Retargeting this tab to a file another tab already owns would leave
+        // two independent backend sessions writing the same PDF. That is
+        // particularly unsafe across panes, where neither tab is necessarily
+        // visible while the other saves. A Save As target must therefore be a
+        // genuinely new document location.
+        let openTabs = workspace?.root.allLeaves().flatMap { $0.app.tabs } ?? tabs
+        if openTabs.contains(where: { other in
+            guard other.id != tabId,
+                  let otherDocument = other.document,
+                  otherDocument.kind == .pdf else { return false }
+            return Self.sameFile(sourceURL: URL(fileURLWithPath: otherDocument.pdfPath), destinationURL: destinationURL)
+        }) {
+            throw SessionServiceError.invalidDocument(
+                "That PDF is already open in another tab. Close it before using Save As."
+            )
+        }
+
         // Stamp a durable id before copying so document-scoped notes and
         // conversations follow the PDF to its new location.
-        _ = try await sessions.ensureDocumentId(sessionId: tabId)
+        let preservedDocumentId = try await sessions.ensureDocumentId(sessionId: tabId)
         await syncDocumentId(sessionId: tabId)
         try await sessions.saveFile(sessionId: tabId)
         let bytes = try await sessions.readPdfBytes(sessionId: tabId)
@@ -276,14 +293,38 @@ final class AppStore {
             try bytes.write(to: destinationURL, options: .atomic)
         }.value
 
+        // A read-only, unstamped source resolves to a stable byte-hash fallback
+        // rather than a persisted /VellumDocId. Its Save As copy *is* writable,
+        // so stamp that fallback into the destination before reopening it. This
+        // keeps its conversation/scratchpad identity continuous instead of
+        // assigning a fresh id after the source becomes writable by copying.
+        if PdfMetadata.documentId(atPath: destinationURL.path) == nil {
+            try PdfMetadata.stampDocumentId(atPath: destinationURL.path, id: preservedDocumentId)
+        }
+
         try await sessions.closeFile(sessionId: tabId)
         let rebound: DocumentInfo
         do {
             rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
-        } catch {
-            // Best-effort rollback. The original file is untouched.
-            _ = try? await sessions.openFile(path: sourceURL.path, sessionId: tabId)
-            throw error
+        } catch let reopenError {
+            do {
+                // The original file is untouched, and a successful rollback
+                // restores the exact live tab rather than stranding it.
+                let restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                updateTab(tabId) { $0.document = restored }
+                if activeTabId == tabId {
+                    document = restored
+                }
+            } catch let rollbackError {
+                // There is no longer a backend for this tab. Remove it rather
+                // than showing a document whose actions will all fail; the
+                // untouched original remains available to reopen from Recents.
+                await closeTab(tabId)
+                throw SessionServiceError.io(
+                    "Save As wrote the copy but could not reopen it (\(reopenError.localizedDescription)) or restore the original (\(rollbackError.localizedDescription)). The tab was closed; reopen the original file to continue."
+                )
+            }
+            throw reopenError
         }
 
         evictPreparedPdf(tabId: tabId)
@@ -294,6 +335,21 @@ final class AppStore {
         RecentFilesService.record(rebound)
         workspace?.scheduleSave()
         return rebound
+    }
+
+    private static func sameFile(sourceURL: URL, destinationURL: URL) -> Bool {
+        let source = sourceURL.standardizedFileURL
+        let destination = destinationURL.standardizedFileURL
+        guard source != destination else { return true }
+        let sourceIdentifier = try? source.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destination.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        guard let sourceIdentifier = sourceIdentifier as? NSObject,
+              let destinationIdentifier = destinationIdentifier as? NSObject else {
+            return false
+        }
+        return sourceIdentifier.isEqual(destinationIdentifier)
     }
 
     // MARK: - Closing / switching tabs
