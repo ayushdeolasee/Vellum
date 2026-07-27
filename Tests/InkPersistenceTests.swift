@@ -23,6 +23,20 @@ final class InkPersistenceTests: XCTestCase {
         return (document, page)
     }
 
+    /// A multi-page US-Letter PDF, written to `url`.
+    private func writeBlankDocument(pageCount: Int, to url: URL) throws {
+        let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let renderer = UIGraphicsPDFRenderer(bounds: bounds)
+        let data: Data = renderer.pdfData { ctx in
+            for _ in 0..<pageCount {
+                ctx.beginPage()
+                UIColor.white.setFill()
+                UIRectFill(bounds)
+            }
+        }
+        try data.write(to: url)
+    }
+
     private func sampleDrawing() -> PKDrawing {
         var points: [PKStrokePoint] = []
         for i in 0..<10 {
@@ -151,7 +165,7 @@ final class InkPersistenceTests: XCTestCase {
 
         let session = try await PdfSessionBackend().open(path: url.path, sessionId: UUID().uuidString)
 
-        let inkData = sampleDrawing().dataRepresentation()
+        let inkDrawing = sampleDrawing()
         let inkPath = url.path
 
         // Run the two writers concurrently against the same file.
@@ -168,7 +182,7 @@ final class InkPersistenceTests: XCTestCase {
         // Exercise the production writer, including the iPadOS 26 main-actor
         // PDFKit compatibility path and the shared non-reentrant file gate.
         async let inkDone: Void = InkDiskWriter().write(
-            data: inkData, page: 1, path: inkPath)
+            drawings: [1: inkDrawing], path: inkPath)
 
         let created = try await annotation
         _ = await inkDone
@@ -212,10 +226,7 @@ final class InkPersistenceTests: XCTestCase {
                 startOffset: nil, endOffset: nil, prefix: nil, suffix: nil,
                 viewportOffset: nil)))
 
-        await InkDiskWriter().write(
-            data: sampleDrawing().dataRepresentation(),
-            page: 1,
-            path: url.path)
+        await InkDiskWriter().write(drawings: [1: sampleDrawing()], path: url.path)
 
         let reloaded = try await PdfSessionBackend().open(
             path: url.path,
@@ -262,6 +273,105 @@ final class InkPersistenceTests: XCTestCase {
         let reloaded = try XCTUnwrap(PDFDocument(url: url))
         let page = try XCTUnwrap(reloaded.page(at: 0))
         XCTAssertTrue(PdfInk.hasInk(on: page))
+    }
+
+    /// Every dirty page is folded into ONE read-modify-write of the PDF. A
+    /// per-page loop re-read, re-parsed, re-serialized and rewrote the whole
+    /// file once per page, which on a large document was the app's single
+    /// biggest energy cost while taking notes.
+    @MainActor
+    func testBatchedWriteAppliesInkToEveryDirtyPage() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-batch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("batch.pdf")
+        try writeBlankDocument(pageCount: 3, to: url)
+
+        await InkDiskWriter().write(
+            drawings: [1: sampleDrawing(), 3: sampleDrawing()],
+            path: url.path)
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertEqual(reloaded.pageCount, 3)
+        XCTAssertTrue(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 0))), "page 1 ink")
+        XCTAssertFalse(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 1))), "page 2 untouched")
+        XCTAssertTrue(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 2))), "page 3 ink")
+    }
+
+    /// An out-of-range page must not discard the pages that ARE valid — the
+    /// batch writer applies what it can rather than bailing on the whole file.
+    @MainActor
+    func testBatchedWriteSkipsOutOfRangePagesWithoutLosingValidOnes() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-range-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("range.pdf")
+        try writeBlankDocument(pageCount: 2, to: url)
+
+        await InkDiskWriter().write(
+            drawings: [1: sampleDrawing(), 99: sampleDrawing()],
+            path: url.path)
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertTrue(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 0))))
+    }
+
+    /// Inking two pages inside one debounce window must persist both. The
+    /// controller now keeps a single coalesced batch rather than a task per
+    /// page, so this pins down that neither page is dropped.
+    @MainActor
+    func testFlushPersistsEveryPageDirtiedInOneWindow() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-multipage-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("multipage.pdf")
+        try writeBlankDocument(pageCount: 2, to: url)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: url.path)
+        let controller = InkController_iOS()
+        controller.app = app
+        controller.drawingChanged(sampleDrawing(), page: 1)
+        controller.drawingChanged(sampleDrawing(), page: 2)
+
+        await controller.flushPendingInkAndWait()
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertTrue(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 0))), "page 1 ink")
+        XCTAssertTrue(PdfInk.hasInk(on: try XCTUnwrap(reloaded.page(at: 1))), "page 2 ink")
+    }
+
+    /// The last drawing wins: a page re-inked before the debounce elapses must
+    /// persist its newest state, not the one that was pending first.
+    @MainActor
+    func testLatestDrawingForAPageWins() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-ink-latest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("latest.pdf")
+        try writeBlankDocument(pageCount: 1, to: url)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: url.path)
+        let controller = InkController_iOS()
+        controller.app = app
+        // Ink, then erase it all again inside the same debounce window.
+        controller.drawingChanged(sampleDrawing(), page: 1)
+        controller.drawingChanged(PKDrawing(), page: 1)
+
+        await controller.flushPendingInkAndWait()
+
+        let reloaded = try XCTUnwrap(PDFDocument(url: url))
+        let page = try XCTUnwrap(reloaded.page(at: 0))
+        XCTAssertFalse(PdfInk.hasInk(on: page), "the empty drawing was the newest state")
     }
 }
 #endif

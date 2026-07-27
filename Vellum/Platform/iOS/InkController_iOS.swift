@@ -204,14 +204,46 @@ final class InkController_iOS {
         drawingChanged(PKDrawing(), page: page)
     }
 
-    /// Debounce state per page — each page's canvas persists independently, so
-    /// inking two pages inside one debounce window must not drop either write.
-    @ObservationIgnored private var persistTasks: [Int: Task<Void, Never>] = [:]
-    @ObservationIgnored private var pendingWrites: [Int: (data: Data, path: String)] = [:]
-    /// Retains the active immediate flush. Backgrounding joins this exact task
-    /// instead of seeing emptied dictionaries and ending its assertion while a
-    /// previously launched PDF rewrite is still running.
-    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    /// How long the canvas must stay quiet before ink is written to disk.
+    ///
+    /// Every write is a full read-modify-write of the PDF (see `InkDiskWriter`),
+    /// so on a large document each one costs tens of MB of I/O plus two complete
+    /// parses. At the previous 700ms the natural pauses between words triggered
+    /// a rewrite more or less continuously while taking notes, which was a
+    /// significant battery cost. Durability does not rest on this value: ink is
+    /// flushed unconditionally when ink mode turns off (`flushPendingInk`) and
+    /// before the scene suspends (`flushPendingInkAndWait`), so it bounds only
+    /// the window a hard crash could lose.
+    @ObservationIgnored private static let persistDebounce = Duration.milliseconds(2500)
+
+    /// Ceiling on how long a page may stay dirty. Uninterrupted drawing keeps
+    /// resetting the debounce, so without this a long unbroken passage would
+    /// never reach disk at all — an unbounded window the previous per-page
+    /// debounce had too. This makes the crash window strictly bounded.
+    @ObservationIgnored private static let maxDirtyAge = Duration.seconds(15)
+
+    /// Pages whose canvas has changed but whose ink is not yet on disk, grouped
+    /// by the file they belong to (switching tabs mid-debounce can leave two
+    /// documents dirty at once).
+    ///
+    /// This holds the `PKDrawing` itself — a `Sendable` value type — rather than
+    /// its encoded bytes, which keeps `dataRepresentation()` off the per-stroke
+    /// path. That call serializes *every* stroke on the page, and PencilKit
+    /// invokes `canvasViewDrawingDidChange` repeatedly *during* a stroke, so
+    /// encoding inline cost O(strokes already on the page) of main-actor work at
+    /// Pencil input rate — up to 120Hz on a ProMotion display.
+    @ObservationIgnored private var pendingDrawings: [String: [Int: PKDrawing]] = [:]
+
+    /// When the oldest currently-unwritten change arrived, for `maxDirtyAge`.
+    @ObservationIgnored private var oldestDirtyAt: ContinuousClock.Instant?
+
+    /// The pending debounce timer. Cancelled and restarted on every change.
+    @ObservationIgnored private var debounceTask: Task<Void, Never>?
+
+    /// Retains the active drain. Backgrounding joins this exact task instead of
+    /// seeing emptied dictionaries and ending its assertion while a previously
+    /// launched PDF rewrite is still running.
+    @ObservationIgnored private var drainTask: Task<Void, Never>?
 
     var activeColor: Color {
         get { tool == .highlighter ? highlighterColor : penColor }
@@ -339,15 +371,15 @@ final class InkController_iOS {
     /// no display-document mutation here.
     func drawingChanged(_ drawing: PKDrawing, page: Int) {
         drawingVersion &+= 1
-        persist(drawing: drawing, page: page, debounce: true)
+        persist(drawing: drawing, page: page)
     }
 
     // MARK: - Persistence to the on-disk PDF
 
-    /// Write all pending debounced ink immediately (no 700ms wait). Called when
-    /// ink mode turns off so a fast app-kill can't drop the last strokes.
+    /// Write all pending debounced ink immediately (no debounce wait). Called
+    /// when ink mode turns off so a fast app-kill can't drop the last strokes.
     func flushPendingInk() {
-        _ = ensureFlushTask()
+        _ = ensureDrainTask()
     }
 
     /// Cancel the debounce and wait until every pending page rewrite is durable.
@@ -355,58 +387,62 @@ final class InkController_iOS {
     /// the app, so a stroke made immediately before pressing Home cannot vanish.
     func flushPendingInkAndWait() async {
         // A stroke can arrive while an earlier flush is suspended in PDFKit.
-        // Keep joining/draining until there is neither an active flush nor new
+        // Keep joining/draining until there is neither an active drain nor new
         // pending state.
-        while let task = ensureFlushTask() {
+        while let task = ensureDrainTask() {
             await task.value
         }
     }
 
-    private func ensureFlushTask() -> Task<Void, Never>? {
-        if let flushTask { return flushTask }
-        guard !pendingWrites.isEmpty || !persistTasks.isEmpty else { return nil }
+    private func ensureDrainTask() -> Task<Void, Never>? {
+        // The debounce has been superseded: whatever it was waiting to write is
+        // still in `pendingDrawings` and the drain below picks it up.
+        debounceTask?.cancel()
+        debounceTask = nil
+        if let drainTask { return drainTask }
+        guard !pendingDrawings.isEmpty else { return nil }
         let task = Task { [weak self] in
             guard let self else { return }
             await self.drainPendingInk()
-            self.flushTask = nil
+            self.drainTask = nil
         }
-        flushTask = task
+        drainTask = task
         return task
     }
 
     private func drainPendingInk() async {
-        while !pendingWrites.isEmpty || !persistTasks.isEmpty {
-            let pending = pendingWrites
-            let scheduled = Array(persistTasks.values)
-            for task in scheduled { task.cancel() }
-            persistTasks.removeAll()
-            pendingWrites.removeAll()
-
-            // Cancellation does not interrupt a writer that already passed its
-            // debounce. Join those tasks before the background assertion ends;
-            // writing the captured latest page state again is intentional and
-            // leaves the newest drawing authoritative.
-            for task in scheduled { await task.value }
-            for (page, write) in pending {
-                await Self.writer.write(data: write.data, page: page, path: write.path)
+        // A stroke can land while an earlier batch is inside PDFKit, so keep
+        // draining until nothing new has arrived.
+        while !pendingDrawings.isEmpty {
+            let batch = pendingDrawings
+            pendingDrawings.removeAll()
+            oldestDirtyAt = nil
+            for (path, pages) in batch {
+                await Self.writer.write(drawings: pages, path: path)
             }
         }
     }
 
-    private func persist(drawing: PKDrawing, page: Int, debounce: Bool = false) {
-        guard let path = app?.document?.pdfPath else { return }
-        persistTasks[page]?.cancel()
-        let data = drawing.dataRepresentation()
-        pendingWrites[page] = (data, path)
-        persistTasks[page] = Task { [weak self] in
-            if debounce {
-                try? await Task.sleep(for: .milliseconds(700))
-                if Task.isCancelled { return }
-            }
-            await Self.writer.write(data: data, page: page, path: path)
-            if Task.isCancelled { return }
-            self?.pendingWrites.removeValue(forKey: page)
-            self?.persistTasks.removeValue(forKey: page)
+    private func persist(drawing: PKDrawing, page: Int) {
+        guard let path = app?.document?.pdfPath, page >= 1 else { return }
+        // O(1): just retain the drawing. Encoding happens once per write, off
+        // the main actor — see `pendingDrawings`.
+        pendingDrawings[path, default: [:]][page] = drawing
+        let now = ContinuousClock.now
+        let dirtiedAt = oldestDirtyAt ?? now
+        oldestDirtyAt = dirtiedAt
+        // Continuous drawing keeps resetting the debounce below, so stop
+        // deferring once the batch has been dirty for `maxDirtyAge`.
+        guard now - dirtiedAt < Self.maxDirtyAge else {
+            flushPendingInk()
+            return
+        }
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.persistDebounce)
+            guard !Task.isCancelled else { return }
+            self?.debounceTask = nil
+            self?.flushPendingInk()
         }
     }
 
@@ -417,28 +453,40 @@ final class InkController_iOS {
 }
 
 /// Loads a FRESH copy of the on-disk PDF (so the highlight/note annotations
-/// written by the atomic writer are preserved), replaces one page's ink, and
-/// atomically writes it back. Every ink write is routed through the shared
-/// `PdfFileGate` so it can never interleave with an annotation/metadata rewrite
-/// of the same file (both are full read-modify-writes; interleaving would lose
-/// one side's changes). The gate also runs the PDFKit mutation + write off the
-/// main thread.
+/// written by the atomic writer are preserved), replaces the ink on every dirty
+/// page, and atomically writes it back. Every ink write is routed through the
+/// shared `PdfFileGate` so it can never interleave with an annotation/metadata
+/// rewrite of the same file (both are full read-modify-writes; interleaving
+/// would lose one side's changes). The gate also runs the PDFKit mutation +
+/// write off the main thread.
 struct InkDiskWriter {
-    func write(data: Data, page: Int, path: String) async {
+    /// Apply every dirty page's ink in ONE read-modify-write cycle.
+    ///
+    /// A rewrite re-reads the whole file, re-parses it, re-serializes it, and —
+    /// on iPadOS 26, where PDFKit drops Vellum's custom annotation keys — parses
+    /// it a second time to rehydrate them. Writing pages one at a time paid all
+    /// of that per page, so inking across a spread cost two full rewrites of a
+    /// document that might be tens of MB.
+    func write(drawings: [Int: PKDrawing], path: String) async {
+        guard !drawings.isEmpty else { return }
         await PdfFileGate.shared.perform {
-            Self.writeSync(data: data, page: page, path: path)
+            Self.writeSync(drawings: drawings, path: path)
         }
     }
 
-    private static func writeSync(data: Data, page: Int, path: String) {
+    private static func writeSync(drawings: [Int: PKDrawing], path: String) {
         let url = URL(fileURLWithPath: path)
         guard let originalData = try? Data(contentsOf: url),
-              let document = PDFDocument(data: originalData),
-              page >= 1, page <= document.pageCount,
-              let pdfPage = document.page(at: page - 1) else { return }
-        let drawing = (try? PKDrawing(data: data)) ?? PKDrawing()
-        PdfInk.apply(drawing, to: pdfPage)
-        guard let rewritten = document.dataRepresentation() else { return }
+              let document = PDFDocument(data: originalData) else { return }
+        var didApply = false
+        for (page, drawing) in drawings {
+            guard page >= 1, page <= document.pageCount,
+                  let pdfPage = document.page(at: page - 1) else { continue }
+            PdfInk.apply(drawing, to: pdfPage)
+            didApply = true
+        }
+        // Nothing landed (every page out of range): don't pay the rewrite.
+        guard didApply, let rewritten = document.dataRepresentation() else { return }
         try? PdfDocumentSession.persistPdfKitRewrite(
             rewritten,
             preservingMetadataFrom: originalData,
