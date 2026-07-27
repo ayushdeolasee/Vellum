@@ -128,9 +128,48 @@ final class SelectableMessageTests: XCTestCase {
         let narrow = try measureBubble(content: content, width: 248)
         let wide = try measureBubble(content: content, width: 520)
 
-        XCTAssertEqual(narrow.width, 248, accuracy: 1)
-        XCTAssertEqual(wide.width, 520, accuracy: 1)
+        // Not equality with the cap: the bubble hugs, so a wrapped paragraph
+        // stops at the last word that fit rather than at the cap exactly.
+        XCTAssertGreaterThan(narrow.width, 248 - Self.wordBreakSlack)
+        XCTAssertLessThanOrEqual(narrow.width, 248)
+        XCTAssertGreaterThan(wide.width, 520 - Self.wordBreakSlack)
+        XCTAssertLessThanOrEqual(wide.width, 520)
         XCTAssertLessThan(wide.height, narrow.height, "wider column should wrap onto fewer lines")
+    }
+
+    /// A hugging bubble ends at the last word that fit, so "filled the column"
+    /// means "within about one word of the cap", never the cap to the point.
+    private static let wordBreakSlack: CGFloat = 60
+
+    /// The point of hugging (#51 review): at a 700pt sidebar the cap is ~650pt,
+    /// and returning the cap regardless of content painted "Yes." across the
+    /// whole of it. Same cap, two lengths, wildly different bubbles.
+    func testShortReplyHugsWhileALongOneStillFillsTheColumn() throws {
+        let cap: CGFloat = 520
+        let short = try measureBubble(content: "Yes.", width: cap)
+        let long = try measureBubble(
+            content: String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 6),
+            width: cap)
+
+        XCTAssertLessThan(short.width, 150, "a four-character reply must not span the column")
+        XCTAssertGreaterThan(long.width, cap - Self.wordBreakSlack, "a long reply should still fill it")
+        XCTAssertLessThanOrEqual(long.width, cap, "and must never exceed it")
+    }
+
+    /// Hugging measures the laid-out glyphs, and a typeset equation is laid out
+    /// like any other glyph — so the bubble has to stay wide enough to hold it
+    /// at every cap, including one narrow enough to have scaled it down.
+    func testHuggingNeverClipsTypesetMath() throws {
+        let latex = "$$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
+        for cap in [120, 520] as [CGFloat] {
+            let bubble = try measureBubble(content: latex, width: cap)
+            let attributed = AiAttributedRenderer.attributedString(
+                for: latex, color: .labelColor, secondary: .secondaryLabelColor,
+                mathMaxWidth: max(cap, 80))
+            let equation = try XCTUnwrap(Self.firstAttachmentWidth(in: attributed))
+            XCTAssertGreaterThanOrEqual(bubble.width + 1, equation, "equation clipped at cap \(cap)")
+            XCTAssertLessThanOrEqual(bubble.width, cap + 1, "bubble exceeded its cap at \(cap)")
+        }
     }
 
     /// Display math is rasterized into the attributed string against the
@@ -249,6 +288,93 @@ final class SelectableMessageTests: XCTestCase {
             if let match = firstSubview(of: type, in: subview) { return match }
         }
         return nil
+    }
+}
+
+/// Captures a size out of a SwiftUI geometry callback.
+private final class SizeBox {
+    var size: CGSize = .zero
+}
+
+// The SwiftUI half of the hugging bubble. `MarkdownMessage` renders user
+// messages in the AI panel AND the three fixed-width surfaces (sticky notes,
+// the annotation sidebar, web note popovers), so its filling behaviour had to
+// become opt-out rather than change for everyone — these pin both sides of that.
+@MainActor
+final class MarkdownMessageWidthTests: XCTestCase {
+    /// None of the three fixed-width hosts passes `fillsAvailableWidth`, and
+    /// all three left-align text inside a card that decides its own width. The
+    /// default therefore has to keep stretching exactly as it did before.
+    func testDefaultStillFillsTheOfferedWidth() {
+        let size = measure(offered: 400) {
+            MarkdownMessage(content: "Hi", textColor: .primary)
+        }
+        XCTAssertEqual(size.width, 400, accuracy: 1, "the fixed-width callers depend on this")
+    }
+
+    /// The AI panel's user bubbles opt out, so a short message stops at its text
+    /// instead of painting a tinted bar across the sidebar.
+    func testOptingOutHugsTheContent() {
+        let size = measure(offered: 400) {
+            MarkdownMessage(content: "Hi", textColor: .primary, fillsAvailableWidth: false)
+        }
+        XCTAssertGreaterThan(size.width, 0)
+        XCTAssertLessThan(size.width, 100, "a two-letter message must not span the bubble")
+    }
+
+    /// Hugging must not turn into "never wrap": long content still has to break
+    /// at the width it was offered.
+    func testOptingOutStillWrapsAtTheOfferedWidth() {
+        let size = measure(offered: 400) {
+            MarkdownMessage(
+                content: String(repeating: "wrap me please ", count: 20),
+                textColor: .primary, fillsAvailableWidth: false)
+        }
+        XCTAssertGreaterThan(size.width, 300, "long content should reach the offered width")
+        XCTAssertLessThanOrEqual(size.width, 401, "and must not overflow it")
+    }
+
+    /// `BubbleWidthCap` exists because `.frame(maxWidth:)` is greedy — a
+    /// flexible frame reports the whole clamped proposal, which is what made
+    /// every bubble a full-column slab. The cap must bound long content without
+    /// stretching short content.
+    func testBubbleWidthCapLimitsWithoutStretching() {
+        let long = measure(offered: 600) {
+            BubbleWidthCap(maxWidth: 300) {
+                MarkdownMessage(
+                    content: String(repeating: "wrap me please ", count: 20),
+                    textColor: .primary, fillsAvailableWidth: false)
+            }
+        }
+        XCTAssertLessThanOrEqual(long.width, 301, "cap not honoured")
+        XCTAssertGreaterThan(long.width, 200, "long content should reach the cap")
+
+        let short = measure(offered: 600) {
+            BubbleWidthCap(maxWidth: 300) {
+                MarkdownMessage(content: "Hi", textColor: .primary, fillsAvailableWidth: false)
+            }
+        }
+        XCTAssertLessThan(short.width, 100, "the cap must not stretch short content")
+    }
+
+    /// Size SwiftUI actually settles on for `content` when it is offered
+    /// `width` points. Hosted in an off-screen window that is never ordered on
+    /// screen, so nothing is launched, shown or focused.
+    private func measure(offered width: CGFloat, @ViewBuilder _ content: () -> some View) -> CGSize {
+        let box = SizeBox()
+        let hosting = NSHostingView(
+            rootView: content()
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { box.size = $0 }
+        )
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 500),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView?.addSubview(hosting)
+        hosting.layoutSubtreeIfNeeded()
+        // The geometry callback lands after the layout pass commits.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        return box.size
     }
 }
 

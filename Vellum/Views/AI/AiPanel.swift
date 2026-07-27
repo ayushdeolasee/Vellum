@@ -226,7 +226,7 @@ struct AiPanel: View {
         // read the SwiftUI frame back out.
         let bubbleWidth = bubbleMaxWidth(for: message.role)
         let textWidth = max(bubbleWidth - 24, 80)
-        Group {
+        BubbleWidthCap(maxWidth: textWidth) {
             if message.role == .assistant {
                 SelectableMessageText(
                     content: message.content,
@@ -246,7 +246,11 @@ struct AiPanel: View {
                 MarkdownMessage(
                     content: message.content,
                     textColor: palette.primaryForeground,
-                    mathMaxWidth: textWidth
+                    mathMaxWidth: textWidth,
+                    // Hug, so a short "You" message is a small tinted bubble
+                    // rather than a bar the width of the sidebar. The other
+                    // three MarkdownMessage hosts keep the filling default.
+                    fillsAvailableWidth: false
                 )
                 .font(.system(size: 14))
                 .foregroundStyle(palette.primaryForeground)
@@ -254,7 +258,6 @@ struct AiPanel: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: bubbleWidth, alignment: .leading)
         .background(
             message.role == .user
                 ? AnyShapeStyle(.tint)
@@ -564,6 +567,46 @@ struct AiPanel: View {
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
+    }
+}
+
+/// A width cap that doesn't stretch: it offers its content at most `maxWidth`
+/// and then reports back whatever narrower width the content actually wanted.
+///
+/// `.frame(maxWidth:)` cannot do this. A flexible frame takes the whole clamped
+/// proposal — `Text("Hi").frame(maxWidth: 400)` measures 400pt wide, not 13 —
+/// so wrapping a bubble in one painted every message across the full column no
+/// matter how little was in it. Invisible at the old fixed 272pt cap, glaring
+/// once the cap tracks a 240…700pt sidebar (#51).
+///
+/// Internal (not private) so `SelectableMessageTests` can measure the real
+/// layout rather than a reimplementation of it.
+struct BubbleWidthCap: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        return content.sizeThatFits(
+            ProposedViewSize(width: cap(for: proposal), height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        // Place at the bubble's own (already hugged) size, not the cap, so the
+        // text lands against the leading edge of the background it was measured
+        // for instead of floating in a wider box.
+        content.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+
+    /// A nil proposal (SwiftUI asking for the ideal size) and an infinite one
+    /// both mean "take what you like", which for a bubble means the cap.
+    private func cap(for proposal: ProposedViewSize) -> CGFloat {
+        guard let width = proposal.width, width.isFinite else { return maxWidth }
+        return min(width, maxWidth)
     }
 }
 

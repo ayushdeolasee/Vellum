@@ -83,8 +83,13 @@ struct SelectableMessageText: NSViewRepresentable {
         // column when the sidebar was widened — the cap now comes from
         // `maxWidth`, which the panel derives from the live sidebar width.
         let proposed = proposal.width ?? maxWidth
-        let width = proposed.isFinite ? min(max(proposed, 80), maxWidth) : maxWidth
-        return CGSize(width: width, height: nsView.height(forWidth: width))
+        let cap = proposed.isFinite ? min(max(proposed, 80), maxWidth) : maxWidth
+        // Within that cap the bubble hugs. Returning the cap itself (what this
+        // used to do) painted every reply across the whole column no matter how
+        // little was in it — barely noticeable at the old fixed 248pt, very
+        // noticeable once the cap tracks a 700pt sidebar.
+        let used = nsView.size(forWidth: cap)
+        return CGSize(width: min(cap, max(used.width, 80)), height: used.height)
     }
 
     /// Cap for typeset equations: the full text width, so a wide sidebar shows
@@ -192,8 +197,21 @@ final class MessageContainerView: NSView {
         Self.measureHeight(attributed, width: max(1, width))
     }
 
+    /// Size the text settles at when it is allowed to wrap at `width`: the
+    /// height, plus the width the glyphs ACTUALLY occupy — which is what lets a
+    /// short reply hug instead of stretching an almost-empty bubble across the
+    /// column. Same throwaway layout manager as `height(forWidth:)`, for the
+    /// same reentrancy reason.
+    func size(forWidth width: CGFloat) -> CGSize {
+        Self.measureSize(attributed, width: max(1, width))
+    }
+
     static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
-        guard attributed.length > 0 else { return 0 }
+        measureSize(attributed, width: width).height
+    }
+
+    static func measureSize(_ attributed: NSAttributedString, width: CGFloat) -> CGSize {
+        guard attributed.length > 0 else { return .zero }
         let storage = NSTextStorage(attributedString: attributed)
         let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
@@ -201,8 +219,19 @@ final class MessageContainerView: NSView {
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        let height = layout.usedRect(for: container).height
-        return height.isFinite ? ceil(height) : 0
+        let used = layout.usedRect(for: container)
+        guard used.height.isFinite, used.maxX.isFinite else { return .zero }
+        // `maxX` rather than `width`: a centered display-math paragraph and an
+        // indented blockquote both lay out with a non-zero origin, and the
+        // bubble has to be wide enough to hold the line where it actually sits,
+        // not just the run of glyphs. Attachments are laid out like any other
+        // glyph, so a typeset equation is already accounted for here — an
+        // equation too wide for the cap keeps the bubble at the full cap.
+        //
+        // Re-measuring at this narrower width can't change the answer: every
+        // line already fits inside `maxX`, so the greedy line breaker produces
+        // the same breaks and therefore the same height.
+        return CGSize(width: ceil(used.maxX), height: ceil(used.height))
     }
 
     override func layout() {
