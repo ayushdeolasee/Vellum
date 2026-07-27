@@ -159,7 +159,7 @@ struct HelpTopic: Identifiable, Equatable {
                   summary: "Export a web archive or a Vellum bundle with notes when you need a portable copy.",
                   shortcut: nil, keywords: ["archive", "bundle", "notes", "offline"]),
         HelpTopic(id: "ai-privacy", title: "AI context and privacy", icon: "sparkles",
-                  summary: "AI is optional. Requests include recent conversation and automatic document context: title, visible-page metadata, current-page text and annotations, and a current-page image when applicable. Chips show only extra context you attach. Your provider handles the request under its policy.",
+                  summary: "AI is optional. By default, each request includes your prompt and recent conversation, plus automatic document context: title, visible-page metadata, current-page text and annotations, and a current-page image when applicable. Tool-assisted requests may use whole-document search and send bounded relevant excerpts and annotations from other pages. Chips show only extra context you attach. Your provider handles the request under its policy.",
                   shortcut: nil, keywords: ["provider", "transmitted", "settings", "context", "conversation", "annotations", "image", "attachments"]),
         HelpTopic(id: "settings", title: "Settings", icon: "gearshape",
                   summary: "Choose appearance, reading, annotation, AI, and storage defaults.",

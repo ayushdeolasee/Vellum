@@ -104,6 +104,16 @@ final class OnboardingHelpTests: XCTestCase {
         XCTAssertTrue(HelpTopic.search("definitely absent").isEmpty)
     }
 
+    func testHelpAiPrivacyTopicDistinguishesAutomaticAndToolAssistedContext() {
+        let topic = try! XCTUnwrap(HelpTopic.all.first { $0.id == "ai-privacy" })
+
+        XCTAssertTrue(topic.summary.contains("By default"))
+        XCTAssertTrue(topic.summary.contains("automatic document context"))
+        XCTAssertTrue(topic.summary.contains("Tool-assisted requests"))
+        XCTAssertTrue(topic.summary.contains("whole-document search"))
+        XCTAssertTrue(topic.summary.contains("bounded relevant excerpts and annotations from other pages"))
+    }
+
     func testTourCoversEveryIssue49TopicWithoutProviderSetupGate() {
         XCTAssertEqual(OnboardingStep.all.map(\.id), [
             "open", "annotate", "ai", "storage", "navigate"
