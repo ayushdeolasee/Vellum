@@ -74,10 +74,18 @@ enum ScratchOutInk {
         // fully masked away — they render as nothing, so "erasing" them would
         // silently delete invisible objects the user can't reason about.
         let scratchReach = max(minimumHitRadius, halfWidth(of: scratch) + hitSlack)
+        // Bounds prefilter before paying for centreline sampling: `renderBounds`
+        // is already computed by PencilKit and includes the stroke's rendered
+        // width, and on a densely inked page almost every stroke is nowhere near
+        // the scribble. Without this, a scratch-out on a full page of notes
+        // resamples every stroke on it.
+        let reach = scratch.renderBounds.insetBy(dx: -scratchReach, dy: -scratchReach)
         var candidates: [ScratchOutRecognizer.OverlapCandidate] = []
         var candidateIndices: [Int] = []
         for (index, stroke) in strokes.enumerated() where index != scratchIndex {
-            guard PdfInk.strokeHasVisibleInk(stroke) else { continue }
+            guard PdfInk.strokeHasVisibleInk(stroke), stroke.renderBounds.intersects(reach) else {
+                continue
+            }
             candidates.append(ScratchOutRecognizer.OverlapCandidate(
                 points: centerline(of: stroke),
                 hitRadius: scratchReach + halfWidth(of: stroke)))
