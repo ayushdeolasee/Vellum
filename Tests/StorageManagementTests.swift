@@ -66,6 +66,16 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertEqual(StorageInventory.sorted(rows, by: .type).map(\.key), ["pdf-a", "pdf-z", "web"])
     }
 
+    func testRelocationInventoryReloadPolicySkipsProgressAndReloadsTerminalStates() {
+        XCTAssertFalse(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            isInProgress: true, message: "Moving storage…")))
+        XCTAssertTrue(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            message: "Storage move complete.")))
+        XCTAssertTrue(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            needsRecovery: true,
+            message: "The move was interrupted. Your original data remains safe.")))
+    }
+
     func testConnectionValidationRequestsNeverPutCredentialsInURLs() throws {
         var settings = AiSettings()
         settings.provider = .gemini

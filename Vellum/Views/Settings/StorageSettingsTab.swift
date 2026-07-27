@@ -34,6 +34,7 @@ struct StorageSettingsTab: View {
     @State private var cleanupResult: String?
     @State private var dataRemovalResult: String?
     @State private var relocationStatus = WebStorageRelocator.status
+    @State private var relocationReloadTask: Task<Void, Never>?
     @State private var pendingLocation: PendingLocation?
 
     // Pending destructive confirmations (user data confirms with the title).
@@ -79,7 +80,10 @@ struct StorageSettingsTab: View {
             await reload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumStorageRelocationChanged)) { _ in
-            relocationStatus = WebStorageRelocator.status
+            handleRelocationStatusChange()
+        }
+        .onDisappear {
+            relocationReloadTask?.cancel()
         }
     }
 
@@ -431,6 +435,30 @@ struct StorageSettingsTab: View {
         retentionMonths = StorageHousekeeping.retentionMonths
     }
 
+    /// A relocation notification is also used for progress, so only its
+    /// terminal states may refresh the inventory. The terminal notification is
+    /// posted after a successful move, an interrupted move, or an unavailable
+    /// source has settled on its recovery state.
+    private func handleRelocationStatusChange() {
+        relocationStatus = WebStorageRelocator.status
+        guard StorageRelocationInventoryReloadPolicy.shouldReload(for: relocationStatus) else {
+            relocationReloadTask?.cancel()
+            relocationReloadTask = nil
+            return
+        }
+
+        // Several state changes can arrive in one main-loop turn (for example,
+        // a recovered launch move followed by a location change). Yield once so
+        // they collapse to one inventory read, and cancel any superseded read
+        // before it starts.
+        relocationReloadTask?.cancel()
+        relocationReloadTask = Task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            await reload()
+        }
+    }
+
     // MARK: - Open-document exclusion
 
     private var openDocuments: [DocumentInfo] {
@@ -638,10 +666,6 @@ struct StorageSettingsTab: View {
         WebStorageRelocator.apply(mode: choice.mode, customPath: choice.customPath)
         refreshSettings()
         relocationStatus = WebStorageRelocator.status
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            await reload()
-        }
     }
 
     private func relink(_ row: StorageInventory.DocumentRow) {
