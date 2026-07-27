@@ -33,26 +33,14 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
     }
 
     func testExportAddsFrontMatterCopiesImagesAndRewritesLinks() throws {
-        let sourceDirectory = temporaryDirectory.appendingPathComponent(
-            "source",
-            isDirectory: true
-        )
-        try FileManager.default.createDirectory(
-            at: sourceDirectory,
-            withIntermediateDirectories: true
-        )
-        let imageURL = sourceDirectory.appendingPathComponent("capture.png")
-        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "capture.png", in: sourceDirectory)
         let destination = temporaryDirectory.appendingPathComponent("Research Notes.md")
 
         let summary = try ScratchpadMarkdownExporter.export(
             markdown: "# Thought\n\n![Diagram](vellum-scratchpad://capture)",
             to: destination,
-            options: ScratchpadMarkdownExportOptions(
-                copyLinkedImages: true,
-                includeFrontMatter: true,
-                title: "Research \"Notes\""
-            ),
+            options: exportOptions(includeFrontMatter: true, title: "Research \"Notes\""),
             attachmentsDirectory: sourceDirectory
         )
 
@@ -69,26 +57,163 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
         ))
     }
 
-    func testExportReportsUnavailableImagesWithoutDestroyingReference() throws {
+    func testExportRewritesOnlyMarkdownImageDestinations() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "capture.png", in: sourceDirectory)
         let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+        let markdown = """
+        prose vellum-scratchpad://capture
+        [Ordinary link](vellum-scratchpad://capture)
+        `![Inline code](vellum-scratchpad://capture)`
+        ```markdown
+        ![Fenced](vellum-scratchpad://capture)
+        ```
+        ![First](vellum-scratchpad://capture)
+        ![Repeated](vellum-scratchpad://capture)
+        """
 
         let summary = try ScratchpadMarkdownExporter.export(
-            markdown: "![Missing](vellum-scratchpad://not-here)",
+            markdown: markdown,
             to: destination,
-            options: ScratchpadMarkdownExportOptions(
-                copyLinkedImages: true,
-                includeFrontMatter: false,
-                title: ""
-            ),
-            attachmentsDirectory: temporaryDirectory
+            options: exportOptions(),
+            attachmentsDirectory: sourceDirectory
         )
 
-        XCTAssertEqual(summary.copiedImageCount, 0)
-        XCTAssertEqual(summary.skippedImageCount, 1)
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        XCTAssertTrue(exported.contains("prose vellum-scratchpad://capture"))
+        XCTAssertTrue(exported.contains("[Ordinary link](vellum-scratchpad://capture)"))
+        XCTAssertTrue(exported.contains("`![Inline code](vellum-scratchpad://capture)`"))
+        XCTAssertTrue(exported.contains("![Fenced](vellum-scratchpad://capture)"))
         XCTAssertEqual(
-            try String(contentsOf: destination, encoding: .utf8),
-            "![Missing](vellum-scratchpad://not-here)"
+            exported.components(separatedBy: "Notes Assets/capture.png").count - 1,
+            2
         )
+        XCTAssertEqual(summary.copiedImageCount, 1)
+    }
+
+    func testExportRollsBackWhenAnyReferencedImageIsUnavailable() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "present.png", in: sourceDirectory)
+        let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Present](vellum-scratchpad://present) ![Missing](vellum-scratchpad://missing)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .attachmentUnavailable("missing") = exportError else {
+                return XCTFail("Expected unavailable attachment error, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: temporaryDirectory.appendingPathComponent("Notes Assets").path
+        ))
+    }
+
+    func testExportRejectsExistingOutputConflictsWithoutTouchingThem() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "capture.png", in: sourceDirectory)
+        let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+        try "existing markdown".write(to: destination, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Image](vellum-scratchpad://capture)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .destinationAlreadyExists(_) = exportError else {
+                return XCTFail("Expected destination conflict, got \(error)")
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: destination), "existing markdown")
+
+        try FileManager.default.removeItem(at: destination)
+        let assets = temporaryDirectory.appendingPathComponent("Notes Assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        let sentinel = assets.appendingPathComponent("keep.txt")
+        try "keep".write(to: sentinel, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Image](vellum-scratchpad://capture)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .assetsDirectoryAlreadyExists(_) = exportError else {
+                return XCTFail("Expected assets conflict, got \(error)")
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: sentinel), "keep")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testExportRejectsSymlinkedSourceAndAssetsDirectory() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        let externalImage = temporaryDirectory.appendingPathComponent("external.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: externalImage)
+        let sourceLink = sourceDirectory.appendingPathComponent("capture.png")
+        try FileManager.default.createSymbolicLink(
+            at: sourceLink,
+            withDestinationURL: externalImage
+        )
+        let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Image](vellum-scratchpad://capture)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .unsafeSourceAttachment(_) = exportError else {
+                return XCTFail("Expected unsafe source error, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+
+        try FileManager.default.removeItem(at: sourceLink)
+        try writeImage(named: "capture.png", in: sourceDirectory)
+        let externalAssets = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: externalAssets) }
+        try FileManager.default.createDirectory(at: externalAssets, withIntermediateDirectories: true)
+        let assetsLink = temporaryDirectory.appendingPathComponent("Notes Assets", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: assetsLink,
+            withDestinationURL: externalAssets
+        )
+
+        XCTAssertThrowsError(
+            try ScratchpadMarkdownExporter.export(
+                markdown: "![Image](vellum-scratchpad://capture)",
+                to: destination,
+                options: exportOptions(),
+                attachmentsDirectory: sourceDirectory
+            )
+        ) { error in
+            guard let exportError = error as? ScratchpadMarkdownExportError,
+                  case .unsafeAssetsDirectory(_) = exportError else {
+                return XCTFail("Expected unsafe assets directory error, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: externalAssets.appendingPathComponent("capture.png").path
+        ))
     }
 
     func testStorageExplanationMatchesSyncBehavior() {
@@ -109,6 +234,35 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
                 mode: .local,
                 degraded: true
             ).contains("temporarily stored on this Mac")
+        )
+    }
+
+    private func makeSourceDirectory() throws -> URL {
+        let sourceDirectory = temporaryDirectory.appendingPathComponent(
+            "source",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: sourceDirectory,
+            withIntermediateDirectories: true
+        )
+        return sourceDirectory
+    }
+
+    private func writeImage(named name: String, in directory: URL) throws {
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(
+            to: directory.appendingPathComponent(name)
+        )
+    }
+
+    private func exportOptions(
+        includeFrontMatter: Bool = false,
+        title: String = ""
+    ) -> ScratchpadMarkdownExportOptions {
+        ScratchpadMarkdownExportOptions(
+            copyLinkedImages: true,
+            includeFrontMatter: includeFrontMatter,
+            title: title
         )
     }
 }

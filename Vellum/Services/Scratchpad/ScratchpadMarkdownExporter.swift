@@ -13,9 +13,45 @@ struct ScratchpadMarkdownExportSummary: Equatable, Sendable {
     var assetsDirectoryURL: URL?
 }
 
+enum ScratchpadMarkdownExportError: LocalizedError {
+    case destinationAlreadyExists(URL)
+    case assetsDirectoryAlreadyExists(URL)
+    case attachmentUnavailable(String)
+    case unsafeSourceAttachment(URL)
+    case unsafeAssetsDirectory(URL)
+    case assetNameCollision(String)
+    case rollbackFailed
+
+    var errorDescription: String? {
+        switch self {
+        case let .destinationAlreadyExists(url):
+            "The destination already exists: \(url.lastPathComponent)."
+        case let .assetsDirectoryAlreadyExists(url):
+            "The adjacent assets folder already exists: \(url.lastPathComponent)."
+        case let .attachmentUnavailable(id):
+            "The linked image \(id) is unavailable."
+        case let .unsafeSourceAttachment(url):
+            "The linked image is outside the attachments folder or is a symbolic link: \(url.lastPathComponent)."
+        case let .unsafeAssetsDirectory(url):
+            "The adjacent assets folder is a symbolic link: \(url.lastPathComponent)."
+        case let .assetNameCollision(name):
+            "Multiple linked images would overwrite \(name)."
+        case .rollbackFailed:
+            "The export could not be completed and its copied assets could not be removed."
+        }
+    }
+}
+
 enum ScratchpadMarkdownExporter {
-    private static let imageReferencePattern =
-        #"vellum-scratchpad://([A-Za-z0-9][A-Za-z0-9._-]*)"#
+    private struct ImageReference {
+        var destinationRange: Range<String.Index>
+        var id: String
+    }
+
+    private struct PlannedAsset {
+        var sourceURL: URL
+        var filename: String
+    }
 
     static func suggestedFilename(title: String, in directory: URL) -> String {
         let base = sanitizedFilenameComponent(title).isEmpty
@@ -57,82 +93,107 @@ enum ScratchpadMarkdownExporter {
         attachmentsDirectory: URL?,
         fileManager: FileManager = .default
     ) throws -> ScratchpadMarkdownExportSummary {
-        var exportedMarkdown = markdown
-        var copiedCount = 0
-        var skippedCount = 0
-        var assetsDirectoryURL: URL?
-
-        if options.copyLinkedImages {
-            let assetDirectoryName =
-                "\(markdownURL.deletingPathExtension().lastPathComponent) Assets"
-            let destinationDirectory = markdownURL
-                .deletingLastPathComponent()
-                .appendingPathComponent(assetDirectoryName, isDirectory: true)
-            let references = imageReferences(in: markdown)
-
-            if !references.isEmpty {
-                try fileManager.createDirectory(
-                    at: destinationDirectory,
-                    withIntermediateDirectories: true
-                )
-                assetsDirectoryURL = destinationDirectory
-            }
-
-            for reference in references {
-                guard
-                    let sourceURL = ScratchpadAttachmentStore.fileURL(
-                        for: reference.id,
-                        preferredDir: attachmentsDirectory
-                    )
-                else {
-                    skippedCount += 1
-                    continue
-                }
-
-                let destinationURL = destinationDirectory
-                    .appendingPathComponent(sourceURL.lastPathComponent)
-                do {
-                    if fileManager.fileExists(atPath: destinationURL.path) {
-                        let existing = try Data(contentsOf: destinationURL)
-                        let source = try Data(contentsOf: sourceURL)
-                        guard existing == source else {
-                            skippedCount += 1
-                            continue
-                        }
-                    } else {
-                        try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                    }
-                    let relativePath =
-                        "\(assetDirectoryName)/\(sourceURL.lastPathComponent)"
-                    exportedMarkdown = exportedMarkdown.replacingOccurrences(
-                        of: reference.url,
-                        with: relativePath
-                    )
-                    copiedCount += 1
-                } catch {
-                    skippedCount += 1
-                }
-            }
+        let destinationParent = try canonicalDirectory(
+            markdownURL.deletingLastPathComponent(), fileManager: fileManager)
+        let destinationURL = destinationParent.appendingPathComponent(
+            markdownURL.lastPathComponent)
+        guard itemDoesNotExist(at: destinationURL, fileManager: fileManager) else {
+            throw ScratchpadMarkdownExportError.destinationAlreadyExists(destinationURL)
         }
 
+        let references = options.copyLinkedImages ? imageReferences(in: markdown) : []
+        let assetDirectoryName =
+            "\(destinationURL.deletingPathExtension().lastPathComponent) Assets"
+        let assetsURL = destinationParent.appendingPathComponent(
+            assetDirectoryName, isDirectory: true)
+        guard contains(assetsURL, within: destinationParent) else {
+            throw ScratchpadMarkdownExportError.unsafeAssetsDirectory(assetsURL)
+        }
+        if !references.isEmpty, itemDoesNotExist(at: assetsURL, fileManager: fileManager) == false {
+            if isSymbolicLink(at: assetsURL, fileManager: fileManager) {
+                throw ScratchpadMarkdownExportError.unsafeAssetsDirectory(assetsURL)
+            }
+            throw ScratchpadMarkdownExportError.assetsDirectoryAlreadyExists(assetsURL)
+        }
+
+        let plannedAssets = try plannedAssets(
+            for: references,
+            attachmentsDirectory: attachmentsDirectory,
+            fileManager: fileManager
+        )
+        let assetCopies = uniqueAssets(from: plannedAssets)
+        var exportedMarkdown = replacingImageDestinations(
+            in: markdown,
+            references: references,
+            assetDirectoryName: assetDirectoryName,
+            plannedAssets: plannedAssets
+        )
         if options.includeFrontMatter {
-            let title = options.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !title.isEmpty {
-                let escapedTitle = title
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "\"", with: "\\\"")
-                    .replacingOccurrences(of: "\n", with: " ")
-                exportedMarkdown =
-                    "---\ntitle: \"\(escapedTitle)\"\n---\n\n\(exportedMarkdown)"
+            exportedMarkdown = addingFrontMatter(to: exportedMarkdown, title: options.title)
+        }
+
+        let stagingURL = destinationParent.appendingPathComponent(
+            ".vellum-scratchpad-export-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: stagingURL) }
+        try fileManager.createDirectory(
+            at: stagingURL,
+            withIntermediateDirectories: false
+        )
+
+        let stagedMarkdownURL = stagingURL.appendingPathComponent(destinationURL.lastPathComponent)
+        try Data(exportedMarkdown.utf8).write(to: stagedMarkdownURL, options: .atomic)
+        let stagedAssetsURL = stagingURL.appendingPathComponent(
+            assetDirectoryName, isDirectory: true)
+        if !assetCopies.isEmpty {
+            try fileManager.createDirectory(
+                at: stagedAssetsURL,
+                withIntermediateDirectories: false
+            )
+            for asset in assetCopies.values {
+                try fileManager.copyItem(
+                    at: asset.sourceURL,
+                    to: stagedAssetsURL.appendingPathComponent(asset.filename)
+                )
             }
         }
 
-        try Data(exportedMarkdown.utf8).write(to: markdownURL, options: .atomic)
+        // Re-check immediately before publishing. The save panel's conflict
+        // prompt cannot protect against another process creating either output
+        // while the assets are being staged.
+        guard itemDoesNotExist(at: destinationURL, fileManager: fileManager) else {
+            throw ScratchpadMarkdownExportError.destinationAlreadyExists(destinationURL)
+        }
+        if !assetCopies.isEmpty,
+           itemDoesNotExist(at: assetsURL, fileManager: fileManager) == false {
+            if isSymbolicLink(at: assetsURL, fileManager: fileManager) {
+                throw ScratchpadMarkdownExportError.unsafeAssetsDirectory(assetsURL)
+            }
+            throw ScratchpadMarkdownExportError.assetsDirectoryAlreadyExists(assetsURL)
+        }
+
+        var publishedAssets = false
+        do {
+            if !assetCopies.isEmpty {
+                try fileManager.moveItem(at: stagedAssetsURL, to: assetsURL)
+                publishedAssets = true
+            }
+            try fileManager.moveItem(at: stagedMarkdownURL, to: destinationURL)
+        } catch {
+            if publishedAssets {
+                do {
+                    try fileManager.removeItem(at: assetsURL)
+                } catch {
+                    throw ScratchpadMarkdownExportError.rollbackFailed
+                }
+            }
+            throw error
+        }
+
         return ScratchpadMarkdownExportSummary(
-            markdownURL: markdownURL,
-            copiedImageCount: copiedCount,
-            skippedImageCount: skippedCount,
-            assetsDirectoryURL: assetsDirectoryURL
+            markdownURL: destinationURL,
+            copiedImageCount: assetCopies.count,
+            skippedImageCount: 0,
+            assetsDirectoryURL: assetCopies.isEmpty ? nil : assetsURL
         )
     }
 
@@ -150,6 +211,116 @@ enum ScratchpadMarkdownExporter {
         }
     }
 
+    private static func plannedAssets(
+        for references: [ImageReference],
+        attachmentsDirectory: URL?,
+        fileManager: FileManager
+    ) throws -> [String: PlannedAsset] {
+        var planned = [String: PlannedAsset]()
+        var filenames = [String: URL]()
+        for reference in references {
+            guard let sourceURL = ScratchpadAttachmentStore.fileURL(
+                for: reference.id,
+                preferredDir: attachmentsDirectory
+            ) else {
+                throw ScratchpadMarkdownExportError.attachmentUnavailable(reference.id)
+            }
+            guard sourceIsSafe(
+                sourceURL,
+                attachmentsDirectory: attachmentsDirectory,
+                fileManager: fileManager
+            ) else {
+                throw ScratchpadMarkdownExportError.unsafeSourceAttachment(sourceURL)
+            }
+
+            let filename = sourceURL.lastPathComponent
+            if let existing = filenames[filename], existing != sourceURL {
+                throw ScratchpadMarkdownExportError.assetNameCollision(filename)
+            }
+            filenames[filename] = sourceURL
+            planned[reference.id] = PlannedAsset(sourceURL: sourceURL, filename: filename)
+        }
+        return planned
+    }
+
+    private static func replacingImageDestinations(
+        in markdown: String,
+        references: [ImageReference],
+        assetDirectoryName: String,
+        plannedAssets: [String: PlannedAsset]
+    ) -> String {
+        var result = markdown
+        for reference in references.reversed() {
+            guard let asset = plannedAssets[reference.id] else { continue }
+            result.replaceSubrange(
+                reference.destinationRange,
+                with: "\(assetDirectoryName)/\(asset.filename)"
+            )
+        }
+        return result
+    }
+
+    private static func uniqueAssets(
+        from plannedAssets: [String: PlannedAsset]
+    ) -> [String: PlannedAsset] {
+        plannedAssets.values.reduce(into: [String: PlannedAsset]()) { result, asset in
+            result[asset.filename] = asset
+        }
+    }
+
+    private static func addingFrontMatter(to markdown: String, title: String) -> String {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return markdown }
+        let escapedTitle = title
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "---\ntitle: \"\(escapedTitle)\"\n---\n\n\(markdown)"
+    }
+
+    private static func canonicalDirectory(
+        _ directory: URL,
+        fileManager: FileManager
+    ) throws -> URL {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return directory.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private static func sourceIsSafe(
+        _ sourceURL: URL,
+        attachmentsDirectory: URL?,
+        fileManager: FileManager
+    ) -> Bool {
+        guard isSymbolicLink(at: sourceURL, fileManager: fileManager) == false else {
+            return false
+        }
+        let roots = [attachmentsDirectory, ScratchpadAttachmentStore.activeDirectory,
+                     ScratchpadAttachmentStore.directory].compactMap { $0 }
+        return roots.contains { root in
+            contains(sourceURL, within: root)
+        }
+    }
+
+    private static func contains(_ url: URL, within root: URL) -> Bool {
+        let resolvedURL = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
+        return resolvedURL == resolvedRoot || resolvedURL.hasPrefix(resolvedRoot + "/")
+    }
+
+    private static func itemDoesNotExist(at url: URL, fileManager: FileManager) -> Bool {
+        fileManager.fileExists(atPath: url.path)
+            == false && (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) == nil
+    }
+
+    private static func isSymbolicLink(at url: URL, fileManager: FileManager) -> Bool {
+        (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
     private static func sanitizedFilenameComponent(_ value: String) -> String {
         let invalid = CharacterSet(charactersIn: "/:\\")
             .union(.controlCharacters)
@@ -161,20 +332,219 @@ enum ScratchpadMarkdownExporter {
             .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
     }
 
-    private static func imageReferences(in markdown: String) -> [(url: String, id: String)] {
-        guard let regex = try? NSRegularExpression(pattern: imageReferencePattern) else {
-            return []
+    /// Only Markdown image destinations are eligible for rewriting. This keeps
+    /// prose, code spans/fences, and ordinary links byte-for-byte intact.
+    private static func imageReferences(in markdown: String) -> [ImageReference] {
+        var references = [ImageReference]()
+        var index = markdown.startIndex
+        var fencedBy: Character?
+
+        while index < markdown.endIndex {
+            let lineEnd = markdown[index...].firstIndex(of: "\n") ?? markdown.endIndex
+            let line = markdown[index..<lineEnd]
+            if let fence = fenceCharacter(in: line) {
+                if fencedBy == nil {
+                    fencedBy = fence
+                } else if fencedBy == fence {
+                    fencedBy = nil
+                }
+            } else if fencedBy == nil {
+                references.append(contentsOf: imageReferences(inLine: markdown, range: index..<lineEnd))
+            }
+            index = lineEnd < markdown.endIndex
+                ? markdown.index(after: lineEnd)
+                : markdown.endIndex
         }
-        let range = NSRange(markdown.startIndex..., in: markdown)
-        var seen = Set<String>()
-        return regex.matches(in: markdown, range: range).compactMap { match in
-            guard
-                let urlRange = Range(match.range(at: 0), in: markdown),
-                let idRange = Range(match.range(at: 1), in: markdown)
-            else { return nil }
-            let url = String(markdown[urlRange])
-            guard seen.insert(url).inserted else { return nil }
-            return (url, String(markdown[idRange]))
+        return references
+    }
+
+    private static func fenceCharacter(in line: Substring) -> Character? {
+        let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+        guard let character = trimmed.first, character == "`" || character == "~" else {
+            return nil
         }
+        let length = trimmed.prefix(while: { $0 == character }).count
+        return length >= 3 ? character : nil
+    }
+
+    private static func imageReferences(
+        inLine markdown: String,
+        range: Range<String.Index>
+    ) -> [ImageReference] {
+        var references = [ImageReference]()
+        var index = range.lowerBound
+        while index < range.upperBound {
+            if markdown[index] == "`" {
+                let tickCount = markdown[index...].prefix(while: { $0 == "`" }).count
+                let afterTicks = markdown.index(index, offsetBy: tickCount)
+                if let closing = closingBackticks(
+                    in: markdown,
+                    from: afterTicks,
+                    to: range.upperBound,
+                    count: tickCount
+                ) {
+                    index = markdown.index(closing, offsetBy: tickCount)
+                    continue
+                }
+                break
+            }
+            if markdown[index] == "!", isEscaped(markdown, at: index) == false,
+               let reference = imageReference(in: markdown, startingAt: index, limit: range.upperBound) {
+                references.append(reference.reference)
+                index = reference.nextIndex
+                continue
+            }
+            index = markdown.index(after: index)
+        }
+        return references
+    }
+
+    private static func imageReference(
+        in markdown: String,
+        startingAt start: String.Index,
+        limit: String.Index
+    ) -> (reference: ImageReference, nextIndex: String.Index)? {
+        let openBracket = markdown.index(after: start)
+        guard openBracket < limit, markdown[openBracket] == "[",
+              let closeBracket = closingBracket(in: markdown, from: openBracket, limit: limit)
+        else { return nil }
+        let openParen = markdown.index(after: closeBracket)
+        guard openParen < limit, markdown[openParen] == "(" else { return nil }
+        let destinationStart = markdown.index(after: openParen)
+        guard let destination = markdownDestination(
+            in: markdown, from: destinationStart, limit: limit
+        ) else { return nil }
+        let url = String(markdown[destination.range])
+        guard let id = attachmentID(from: url) else { return nil }
+        return (ImageReference(destinationRange: destination.range, id: id), destination.nextIndex)
+    }
+
+    private static func closingBracket(
+        in markdown: String,
+        from openBracket: String.Index,
+        limit: String.Index
+    ) -> String.Index? {
+        var index = markdown.index(after: openBracket)
+        while index < limit {
+            if markdown[index] == "]", isEscaped(markdown, at: index) == false { return index }
+            index = markdown.index(after: index)
+        }
+        return nil
+    }
+
+    private static func markdownDestination(
+        in markdown: String,
+        from start: String.Index,
+        limit: String.Index
+    ) -> (range: Range<String.Index>, nextIndex: String.Index)? {
+        guard start < limit else { return nil }
+        if markdown[start] == "<" {
+            guard let close = markdown[markdown.index(after: start)..<limit].firstIndex(of: ">") else {
+                return nil
+            }
+            let afterClose = markdown.index(after: close)
+            guard afterClose < limit, markdown[afterClose] == ")" else { return nil }
+            return (markdown.index(after: start)..<close, markdown.index(after: afterClose))
+        }
+
+        var index = start
+        var depth = 0
+        while index < limit {
+            let character = markdown[index]
+            if character == "\\", isEscaped(markdown, at: index) == false {
+                index = markdown.index(after: index)
+                if index < limit { index = markdown.index(after: index) }
+                continue
+            }
+            if character == "(" { depth += 1 }
+            if character == ")" {
+                if depth == 0 {
+                    return (start..<index, markdown.index(after: index))
+                }
+                depth -= 1
+            }
+            if character == " " || character == "\t" {
+                return destinationWithTitle(
+                    in: markdown,
+                    destinationRange: start..<index,
+                    from: index,
+                    limit: limit
+                )
+            }
+            index = markdown.index(after: index)
+        }
+        return nil
+    }
+
+    private static func destinationWithTitle(
+        in markdown: String,
+        destinationRange: Range<String.Index>,
+        from start: String.Index,
+        limit: String.Index
+    ) -> (range: Range<String.Index>, nextIndex: String.Index)? {
+        var index = start
+        while index < limit, markdown[index] == " " || markdown[index] == "\t" {
+            index = markdown.index(after: index)
+        }
+        guard index < limit else { return nil }
+        if markdown[index] == ")" {
+            return (destinationRange, markdown.index(after: index))
+        }
+        guard markdown[index] == "\"" || markdown[index] == "'" else { return nil }
+        let quote = markdown[index]
+        index = markdown.index(after: index)
+        while index < limit {
+            if markdown[index] == quote, isEscaped(markdown, at: index) == false {
+                index = markdown.index(after: index)
+                while index < limit, markdown[index] == " " || markdown[index] == "\t" {
+                    index = markdown.index(after: index)
+                }
+                guard index < limit, markdown[index] == ")" else { return nil }
+                return (destinationRange, markdown.index(after: index))
+            }
+            index = markdown.index(after: index)
+        }
+        return nil
+    }
+
+    private static func attachmentID(from url: String) -> String? {
+        let prefix = "\(ScratchpadAttachmentStore.scheme)://"
+        guard url.hasPrefix(prefix) else { return nil }
+        let id = String(url.dropFirst(prefix.count))
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard let first = id.unicodeScalars.first,
+              CharacterSet.alphanumerics.contains(first),
+              id.unicodeScalars.allSatisfy(allowed.contains)
+        else { return nil }
+        return id
+    }
+
+    private static func closingBackticks(
+        in markdown: String,
+        from start: String.Index,
+        to limit: String.Index,
+        count: Int
+    ) -> String.Index? {
+        var index = start
+        while index < limit {
+            if markdown[index] == "`",
+               markdown[index...].prefix(while: { $0 == "`" }).count == count {
+                return index
+            }
+            index = markdown.index(after: index)
+        }
+        return nil
+    }
+
+    private static func isEscaped(_ markdown: String, at index: String.Index) -> Bool {
+        var cursor = index
+        var slashCount = 0
+        while cursor > markdown.startIndex {
+            let previous = markdown.index(before: cursor)
+            guard markdown[previous] == "\\" else { break }
+            slashCount += 1
+            cursor = previous
+        }
+        return slashCount.isMultiple(of: 2) == false
     }
 }
