@@ -40,6 +40,9 @@ enum WebStorageSettings {
     nonisolated(unsafe) static var customRootOverride: URL?
     nonisolated(unsafe) static var icloudDriveRootOverride: URL?
     nonisolated(unsafe) static var autoSavePagesOverride: Bool?
+    /// Process-scoped launch/test override. Unlike `setMode`, it never writes a
+    /// storage preference, so a UI-test reset cannot alter a user's setup.
+    nonisolated(unsafe) static var needsFirstLaunchChoiceOverride: Bool?
 
     /// Nil until the user has made the first-launch choice.
     static var chosenMode: WebStorageMode? {
@@ -66,7 +69,18 @@ enum WebStorageSettings {
         return chosenMode != effectiveMode
     }
 
-    static var needsFirstLaunchChoice: Bool { chosenMode == nil }
+    static var needsFirstLaunchChoice: Bool {
+        needsFirstLaunchChoiceOverride ?? (chosenMode == nil)
+    }
+
+    /// The onboarding reset argument must reveal the tour without allowing the
+    /// unrelated storage-location sheet to win the launch presentation race.
+    /// This is intentionally in-memory only; normal launches clear the seam.
+    static func applyLaunchArguments(_ arguments: [String]) {
+        needsFirstLaunchChoiceOverride = arguments.contains(OnboardingProgress.resetLaunchArgument)
+            ? false
+            : nil
+    }
 
     static func setMode(_ mode: WebStorageMode, customPath: String? = nil) {
         let defaults = UserDefaults.standard

@@ -165,7 +165,6 @@ struct OnboardingView: View {
             }
             .buttonStyle(.glassProminent)
             .keyboardShortcut(.defaultAction)
-            .keyboardShortcut(.rightArrow, modifiers: [.command])
             .accessibilityIdentifier(
                 selectedStep == steps.count - 1 ? "onboarding.finish" : "onboarding.next")
         }
@@ -214,8 +213,9 @@ struct OnboardingStep: Identifiable, Equatable {
             icon: "sparkles",
             introduction: "Reading and annotation work without an AI provider. Configure one later in Settings ▸ AI.",
             points: [
-                "Vellum sends only the prompt, attachments, and document excerpts needed for a request.",
-                "Reference chips show what context will be included before you send.",
+                "Each request includes your prompt and recent conversation, plus the document title, visible-page metadata, and current-page text and annotations.",
+                "For scanned or low-text pages, Vellum automatically includes a current-page image when applicable.",
+                "Reference chips show extra selections, quotes, and images you explicitly attach; automatic document context is not shown as a chip.",
                 "Your provider receives that request under its own privacy and retention policy."
             ],
             note: "Provider setup never blocks this tour or the core reading workflow."),

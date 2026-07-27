@@ -80,7 +80,9 @@ struct WorkspaceState: Codable, Equatable {
 }
 
 enum WorkspaceService {
-    private static let storageKey = "vellum.workspace"
+    /// A persisted workspace is an unambiguous marker that this installation
+    /// predates first-run-only UI such as the welcome tour.
+    static let storageKey = "vellum.workspace"
 
     static func save(_ state: WorkspaceState) {
         guard let data = try? JSONEncoder().encode(state),

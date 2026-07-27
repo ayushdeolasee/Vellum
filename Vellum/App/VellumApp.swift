@@ -127,8 +127,10 @@ struct VellumApp: App {
                         await StorageHousekeeping.runCleanup(
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
+                    let launchArguments = ProcessInfo.processInfo.arguments
                     let onboarding = OnboardingProgress()
-                    onboarding.applyLaunchArguments(ProcessInfo.processInfo.arguments)
+                    onboarding.applyLaunchArguments(launchArguments)
+                    WebStorageSettings.applyLaunchArguments(launchArguments)
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     showOnboarding = !showStorageChoice && !onboarding.isComplete
                 }
