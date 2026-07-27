@@ -233,6 +233,52 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(ws.residency.residentTabIds, [firstId, secondId])
     }
 
+    /// The middle tier, end to end through the real store: a sixth tab pushes
+    /// the oldest out of the hot 5, which stops it being rendered — `PaneView`
+    /// reads `isRendered` to decide whether to mount the viewer at all — without
+    /// releasing anything it owns.
+    func testSixthTabStopsRenderingButKeepsItsResources() {
+        let ws = makeWorkspace()
+        var runtimes: [LiveTabRuntime] = []
+        for index in 0...TabResidencyManager.hotTabLimit {
+            let runtime = ws.liveTabRuntime(for: "hot-\(index)")
+            runtime.adoptPreparedPdf(PDFDocument(), byteCount: 1_000)
+            ws.activateLiveTabRuntime(runtime)
+            runtimes.append(runtime)
+        }
+
+        XCTAssertFalse(runtimes[0].isRendered)
+        XCTAssertFalse(runtimes[0].isEvicted)
+        XCTAssertNotNil(runtimes[0].preparedDocument)
+        XCTAssertTrue(ws.residency.isResident(tabId: "hot-0"))
+        for runtime in runtimes.dropFirst() { XCTAssertTrue(runtime.isRendered) }
+    }
+
+    /// Re-selecting a warm tab must put it straight back on screen, and must do
+    /// it by re-parenting the native view it still owns rather than reloading.
+    func testReactivatingAWarmRuntimeRendersItWithoutReloading() {
+        let ws = makeWorkspace()
+        var runtimes: [LiveTabRuntime] = []
+        for index in 0...TabResidencyManager.hotTabLimit {
+            let runtime = ws.liveTabRuntime(for: "warm-\(index)")
+            runtime.adoptPreparedPdf(PDFDocument(), byteCount: 1_000)
+            ws.activateLiveTabRuntime(runtime)
+            runtimes.append(runtime)
+        }
+        let demoted = runtimes[0]
+        let controllerWhileWarm = demoted.pdfController
+        let documentWhileWarm = demoted.preparedDocument
+        XCTAssertFalse(demoted.isRendered)
+
+        ws.activateLiveTabRuntime(demoted)
+
+        XCTAssertTrue(demoted.isRendered)
+        XCTAssertFalse(demoted.isEvicted)
+        // Same controller, same parsed document: nothing was rebuilt.
+        XCTAssertTrue(demoted.pdfController === controllerWhileWarm)
+        XCTAssertTrue(demoted.preparedDocument === documentWhileWarm)
+    }
+
     /// The byte budget is only meaningful if a tab reports what it actually
     /// holds: nothing before it has loaded, its file size once a PDF is parsed,
     /// and nothing again after eviction. The last one is the important half —

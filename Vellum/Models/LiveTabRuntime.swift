@@ -33,6 +33,15 @@ final class LiveTabRuntime {
     var pageTexts: [Int: String] = [:]
     private(set) var isEvicted = false
 
+    /// Whether this tab is in the hot tier and should therefore be mounted and
+    /// drawn. `PaneView` reads it, so it is observed: a demotion on the
+    /// sweeper's tick pulls the viewer out of the rendered tree by itself.
+    ///
+    /// Starts `false` — a tab the user has never opened has nothing to render
+    /// and should not build a viewer just to sit at opacity 0. The residency
+    /// policy sets it on the first activation.
+    private(set) var isRendered = false
+
     /// The parsed, annotation-stripped display document, kept beside
     /// `pdfLoadState` so it survives a *cancelled* load. `.task(id: isActive)`
     /// is cancelled whenever the user switches away mid-load, which resets the
@@ -73,6 +82,23 @@ final class LiveTabRuntime {
         pdfByteCount + webController.residencyCostBytes
     }
 
+    /// Hot ⇄ warm. Warm keeps everything expensive — the parsed `PDFDocument`,
+    /// the `PDFView`, the `WKWebView` and its content process are all still
+    /// here, held by the controllers below — and only stops the tab being drawn:
+    /// `PaneView` swaps the viewer for `Color.clear`, which unmounts the
+    /// representable and takes the native view out of the window's layout and
+    /// display cycle. Coming back re-parents that same native view instead of
+    /// rebuilding it, which is the point of having a middle tier at all.
+    ///
+    /// The equality guard matters: this is called for every resident tab on
+    /// every sweeper tick, and `isRendered` is `@Observable`, so writing it
+    /// unconditionally would invalidate every pane once a minute forever.
+    func applyResidencyTier(_ tier: TabResidencyTier) {
+        let rendered = tier == .hot
+        guard isRendered != rendered else { return }
+        isRendered = rendered
+    }
+
     /// Reclaim the native state. Reached from the residency policy (idle
     /// timeout, tab/byte ceiling, memory pressure) and directly on tab close.
     /// Idempotent.
@@ -98,6 +124,7 @@ final class LiveTabRuntime {
         pdfLoadState = .idle
         preparedDocument = nil
         pdfByteCount = 0
+        isRendered = false
         // `pageTexts` is deliberately kept: it is a few hundred KB of strings at
         // most, it is what lets the AI context stay truthful while an evicted
         // viewer restores, and it saves the restore a full extraction walk.

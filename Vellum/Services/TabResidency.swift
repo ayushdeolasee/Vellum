@@ -24,16 +24,27 @@ import Foundation
 //     path to being jetsammed by a user with forty tabs of scanned PDFs, so
 //     residency needs a ceiling, an idle window, and a pressure valve.
 //
-// The policy has three layers, in priority order:
+// A tab moves through three tiers, and the boundaries between them come from
+// the repo owner's request on PR #67 (quoted on each constant below):
 //
-//   1. A tab that is *active* in some pane is never evicted, however long the
-//      user has been sitting on it. Pinning is per-pane, so a split window
-//      keeps BOTH visible documents resident.
-//   2. A tab idle for longer than `retentionWindow` (2 hours) is evicted.
-//   3. Ceilings — a resident-tab count limit and an approximate byte budget —
-//      evict the least-recently-active *inactive* tabs early, and the system
-//      memory-pressure source tightens both sharply when the OS says it is
-//      short on RAM.
+//   HOT   — the 5 most recently used tabs, for 10 minutes since last active.
+//           Kept mounted and rendered, so switching to one is instant. This is
+//           the tier the whole feature exists for.
+//   WARM  — still resident (parsed `PDFDocument` and live `WKWebView` alive)
+//           but dropped out of the rendered tree, so it costs no draw, layout
+//           or tile work. Switching back re-parents the existing native view:
+//           much faster than a cold open, not quite instant.
+//   COLD  — evicted at 30 minutes idle. The next visit reloads from scratch.
+//
+// Two rules cut across all three:
+//
+//   * A tab that is *active* in some pane is pinned: always hot, never evicted,
+//     however long the user sits on it. Pinning is per-pane, so a split window
+//     keeps BOTH visible documents rendered.
+//   * Ceilings — a resident-tab count limit and an approximate byte budget —
+//     evict the least-recently-active unpinned tabs early, and the system
+//     memory-pressure source tightens both sharply when the OS says it is
+//     short on RAM.
 //
 // Everything here is main-actor: the stores it serves are `@Observable` and
 // main-actor, and eviction reaches into PDFKit/WebKit objects that are only
@@ -72,6 +83,18 @@ final class ContinuousResidencyClock: ResidencyClock {
     var now: Duration { ContinuousClock.now - origin }
 }
 
+// MARK: - Tiers
+
+/// Which of the two *resident* tiers a tab is in. (The third tier, cold, is not
+/// a state a resource can be in — it has been released and forgotten.)
+enum TabResidencyTier: Sendable {
+    /// Mounted and rendered. Switching to this tab is instant.
+    case hot
+    /// Resident but not rendered: the parsed `PDFDocument` and the live
+    /// `WKWebView` are still here, but nothing is drawn or laid out for them.
+    case warm
+}
+
 // MARK: - Resident resources
 
 /// The expensive native state one tab owns and the policy can reclaim: in
@@ -97,6 +120,13 @@ protocol TabResidentResource: AnyObject {
     /// lazily at sweep time, so it may grow as the tab loads.
     var residencyCostBytes: Int { get }
 
+    /// Move the resource between the hot (rendered) and warm (resident but not
+    /// rendered) tiers. Called whenever the hot set changes, which includes
+    /// every sweep, so implementations must ignore a no-op transition rather
+    /// than signalling a change — `LiveTabRuntime` is `@Observable` and would
+    /// otherwise invalidate every pane once a minute forever.
+    func applyResidencyTier(_ tier: TabResidencyTier)
+
     /// Release the native state. Called on the main actor and must be
     /// idempotent — `release(tabId:)` and a sweep can both reach the same
     /// resource, and `LiveTabRuntime` is also evicted directly on tab close.
@@ -107,13 +137,45 @@ protocol TabResidentResource: AnyObject {
 
 @MainActor
 final class TabResidencyManager {
-    /// **The retention window.** An open tab keeps everything expensive it owns
-    /// for this long after it was last the active tab; past it, the resources
-    /// are reclaimed and the next visit reloads from scratch. Two hours per
-    /// issue #52 — long enough that a normal day of hopping between references
-    /// never pays a reload, short enough that yesterday's reading does not
-    /// still own a gigabyte this morning.
-    static let retentionWindow: Duration = .seconds(2 * 60 * 60)
+    // MARK: The three numbers
+    //
+    // All three come from the repo owner's request on PR #67 and were chosen
+    // deliberately. Do not "optimise" them without going back to that comment:
+    //
+    //   "Maybe we can keep rendering the previous 5 tabs opened by the user for
+    //    10 minutes let's say. So that it's instant when switching but if the
+    //    user hasn't gone back to it then we stop rendering and then after 30
+    //    minutes let say we can clean that out of the memory completely."
+
+    /// **Hot set size** — "the previous **5** tabs opened by the user".
+    ///
+    /// The 5 most recently active tabs stay mounted and rendered. Pinned tabs
+    /// (whatever each pane is showing right now) are hot *in addition* to these,
+    /// not out of the same budget: a split window must never leave a visible
+    /// document unrendered just because the user has been round five other tabs.
+    static let hotTabLimit = 5
+
+    /// **How long a tab stays rendered** — "for **10 minutes** … then we stop
+    /// rendering".
+    ///
+    /// Measured from when the tab was last active. Past it the tab drops to
+    /// warm: its resources stay, but nothing is drawn or laid out for it.
+    /// Enforced by the shared sweeper, so the real boundary is 10 minutes plus
+    /// up to one `sweepInterval` — irrelevant for a tier whose only effect is
+    /// saving draw work.
+    static let hotWindow: Duration = .seconds(10 * 60)
+
+    /// **The retention window** — "after **30 minutes** … we can clean that out
+    /// of the memory completely".
+    ///
+    /// NOTE THE TENSION: issue #52 says "only remove them if inactive for more
+    /// than 2 hours". The owner's later comment on PR #67 says 30 minutes. We
+    /// implement 30 minutes as the later and more specific instruction, and the
+    /// three-tier split is what makes that defensible — under the old two-tier
+    /// design, dropping from 2 hours to 30 minutes would have meant a cold
+    /// reload after half an hour, whereas now the tab spends minutes 10–30 warm
+    /// and only genuinely reloads past 30.
+    static let retentionWindow: Duration = .seconds(30 * 60)
 
     /// Ceiling on how many tabs stay resident at once, regardless of how recently
     /// they were used. Eight covers "a paper plus its references" comfortably
@@ -137,9 +199,10 @@ final class TabResidencyManager {
     static let pressureByteBudget = 128 * 1024 * 1024
 
     /// How often the shared sweeper wakes. One tick per minute is ample
-    /// resolution for a two-hour window, and the generous tolerance lets the
-    /// kernel coalesce it with other timers so an idle Vellum is not the reason
-    /// a Mac stays awake. The sweeper only runs while something is resident.
+    /// resolution for a 10-minute demotion and a 30-minute eviction, and the
+    /// generous tolerance lets the kernel coalesce it with other timers so an
+    /// idle Vellum is not the reason a Mac stays awake. The sweeper only runs
+    /// while something is resident.
     static let sweepInterval: Duration = .seconds(60)
     static let sweepTolerance: Duration = .seconds(30)
 
@@ -158,6 +221,8 @@ final class TabResidencyManager {
 
     private let clock: ResidencyClock
     private let retention: Duration
+    private let hotLimit: Int
+    private let hot: Duration
     private let tabLimit: Int
     private let byteBudget: Int
     /// False in tests: no background sweeper task, no memory-pressure source, so
@@ -185,12 +250,16 @@ final class TabResidencyManager {
     init(
         clock: ResidencyClock = ContinuousResidencyClock(),
         retention: Duration = TabResidencyManager.retentionWindow,
+        hotLimit: Int = TabResidencyManager.hotTabLimit,
+        hotWindow: Duration = TabResidencyManager.hotWindow,
         tabLimit: Int = TabResidencyManager.residentTabLimit,
         byteBudget: Int = TabResidencyManager.residentByteBudget,
         automaticMaintenance: Bool = true
     ) {
         self.clock = clock
         self.retention = retention
+        self.hotLimit = hotLimit
+        self.hot = hotWindow
         self.tabLimit = tabLimit
         self.byteBudget = byteBudget
         self.automaticMaintenance = automaticMaintenance
@@ -232,6 +301,7 @@ final class TabResidencyManager {
         // earlier from `applyActiveState`; doing it here too means a caller that
         // forgets to can never hand us something that is stale on arrival.
         entries[tabId] = Entry(resource: resource, lastActive: clock.now)
+        refreshTiers()
         startSweeperIfNeeded()
         scheduleCeilingEnforcement()
     }
@@ -263,6 +333,9 @@ final class TabResidencyManager {
         } else {
             activeTabByOwner[owner] = nil
         }
+        // The switch reorders the hot set — the incoming tab is now the most
+        // recent, and whatever fell off the end of the 5 must stop rendering.
+        refreshTiers()
     }
 
     /// Drop a pane's pin when the pane itself goes away (collapsed by a split
@@ -271,6 +344,7 @@ final class TabResidencyManager {
     func forgetOwner(_ owner: ObjectIdentifier) {
         guard let tabId = activeTabByOwner.removeValue(forKey: owner) else { return }
         stamp(tabId)
+        refreshTiers()
     }
 
     private func stamp(_ tabId: String) {
@@ -284,6 +358,9 @@ final class TabResidencyManager {
     /// one gives its memory back straight away rather than two hours later.
     func release(tabId: String) {
         entries.removeValue(forKey: tabId)?.resource.releaseResidency()
+        // A hot slot just came free; whichever warm tab is next in line can be
+        // promoted back into it and start rendering again.
+        refreshTiers()
         stopSweeperIfIdle()
     }
 
@@ -382,8 +459,50 @@ final class TabResidencyManager {
             evicted.append(victim)
         }
 
+        // Pass 3 — retier whatever is left. This is where the 10-minute
+        // demotion actually happens: a tab that outlived `hotWindow`, or that
+        // has been pushed out of the 5 most recent, stops being rendered.
+        refreshTiers()
+
         stopSweeperIfIdle()
         return evicted
+    }
+
+    // MARK: - Tiering
+
+    /// The tabs that should currently be mounted and rendered: every pinned tab,
+    /// plus the `hotLimit` most recently active tabs that are still inside
+    /// `hotWindow`.
+    var hotTabIds: Set<String> {
+        let pinned = Set(activeTabByOwner.values)
+        let now = clock.now
+        // A pinned tab spends one of the 5 slots — the owner asked for "the
+        // previous 5 tabs", and in a single-pane window that reads as the one
+        // you are on plus four behind it, not five *behind* the one you are on.
+        // But a pinned tab can never be *displaced* by the limit: the union
+        // below puts every pane's visible document back regardless. So a
+        // three-way split still renders all three visible documents even though
+        // that leaves only two slots for recents, and a window with more panes
+        // than `hotLimit` renders all of them and no recents.
+        let slots = max(0, hotLimit - pinned.intersection(entries.keys).count)
+        let recent = entries
+            // A tab past the hot window is not a candidate however few tabs are
+            // open — "for 10 minutes" is a ceiling, not a quota to fill.
+            .filter { !pinned.contains($0.key) && now - $0.value.lastActive < hot }
+            .sorted { $0.value.lastActive > $1.value.lastActive }
+            .prefix(slots)
+            .map(\.key)
+        return pinned.union(recent)
+    }
+
+    /// Push the current tier down to every resident resource. Cheap and
+    /// idempotent — conformers ignore a no-op transition — so it is safe to call
+    /// from every mutation rather than trying to work out which tabs moved.
+    private func refreshTiers() {
+        let hotIds = hotTabIds
+        for (tabId, entry) in entries {
+            entry.resource.applyResidencyTier(hotIds.contains(tabId) ? .hot : .warm)
+        }
     }
 
     /// Resident, unpinned tabs ordered most-idle first — i.e. ascending by

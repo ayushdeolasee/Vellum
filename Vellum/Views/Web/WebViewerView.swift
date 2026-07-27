@@ -74,7 +74,7 @@ struct WebViewerView: View {
 
     var body: some View {
         Group {
-            if hasActivated || isActive {
+            if hasActivated || isActive || controller.isAttached {
                 GeometryReader { proxy in
                     ZStack(alignment: .topLeading) {
                 WebViewRepresentable(controller: controller)
@@ -471,6 +471,15 @@ final class WebViewerController: NSObject {
         guard document.kind == .web else { return }
         webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
     }
+
+    /// Whether this controller is still bound to a live, loaded page. A warm tab
+    /// promoted back into the hot set (because a hot slot came free) is
+    /// remounted while still inactive, and `WebViewerView`'s `hasActivated`
+    /// state does not survive that remount — without this it would render
+    /// `Color.clear` and the retained web view would not be re-parented until
+    /// the tab was next selected, which is exactly the cost the hot tier exists
+    /// to have already paid.
+    var isAttached: Bool { attached }
 
     /// Rough resident footprint for the residency policy's byte budget. A loaded
     /// `WKWebView` carries its own web content process, so it is never cheap;

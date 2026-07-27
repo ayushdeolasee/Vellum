@@ -186,6 +186,11 @@ private struct LiveTabHost: View {
     let runtime: LiveTabRuntime
     @Environment(WorkspaceStore.self) private var workspace
 
+    /// The active tab always renders, whatever the policy currently thinks —
+    /// `body` runs before the `.task` below has had a chance to promote it, and
+    /// the tab the user just clicked must never be the one we decline to draw.
+    private var shouldRender: Bool { isActive || runtime.isRendered }
+
     var body: some View {
         Group {
             if runtime.isEvicted {
@@ -198,6 +203,19 @@ private struct LiveTabHost: View {
                 } else {
                     Color.clear
                 }
+            } else if !shouldRender {
+                // WARM. The tab's `PDFView`/`WKWebView` are alive on its runtime,
+                // but nothing here holds them, so they leave the window's layout
+                // and display cycle entirely — no draw, no tile work, no
+                // relayout on a window resize. Coming back re-parents the same
+                // native view (`PdfKitView.makeNSView` returns the retained
+                // `PDFView`; `WebViewerController.attach` takes its
+                // already-attached branch and never reloads), so the restore is
+                // a re-parent rather than a parse or a network fetch.
+                //
+                // This host itself stays mounted so the `.task` below still runs
+                // and can promote the tab back to hot the moment it is selected.
+                Color.clear
             } else if let document {
                 if document.kind == .web {
                     WebViewerView(
