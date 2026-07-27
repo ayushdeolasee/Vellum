@@ -436,27 +436,175 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertEqual(decoded.references.first?.label, "A selected passage with whitespace.")
         XCTAssertEqual(decoded.references.first?.page, 7)
         XCTAssertEqual(decoded.references.first?.documentTitle, "Research.pdf")
+        XCTAssertEqual(decoded.references.first?.delivery, .sent)
     }
 
-    /// Every attachment action requests focus (including repeated actions) and
-    /// moves the window-global inspector to AI in one state transition.
+    /// Focus requests are one-shot store-owned tokens, so fulfilling one cannot
+    /// replay when the inspector is closed and rebuilt.
     @MainActor
     func testAddingReferenceOpensAiAndRequestsComposerFocus() {
         let workspace = WorkspaceStore(sessions: DocumentSessionManager())
         let store = workspace.focusedPane.ai
         workspace.sidebarOpen = false
         workspace.sidebarTab = .annotations
-        let initialRequest = store.composerFocusRequest
 
         store.addReference(AiReference(kind: .selection(text: "First", page: 1)))
         XCTAssertTrue(workspace.sidebarOpen)
         XCTAssertEqual(workspace.sidebarTab, .ai)
-        XCTAssertEqual(store.composerFocusRequest, initialRequest + 1)
+        let firstRequest = store.composerFocusRequest
+        XCTAssertNotNil(firstRequest)
         XCTAssertEqual(store.composerReferences.count, 1)
+        store.consumeComposerFocusRequest(try! XCTUnwrap(firstRequest))
+        XCTAssertNil(store.composerFocusRequest)
 
         store.addReference(AiReference(kind: .selection(text: "Second", page: 2)))
-        XCTAssertEqual(store.composerFocusRequest, initialRequest + 2)
+        XCTAssertNotNil(store.composerFocusRequest)
+        XCTAssertNotEqual(store.composerFocusRequest, firstRequest)
         XCTAssertEqual(store.composerReferences.count, 2)
+    }
+
+    /// Split panes own independent one-shot focus namespaces.
+    @MainActor
+    func testComposerFocusRequestsAreScopedToTheirSplitPane() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let original = workspace.focusedPane.ai
+        original.addReference(AiReference(kind: .selection(text: "Left", page: 1)))
+        let originalRequest = try XCTUnwrap(original.composerFocusRequest)
+        original.consumeComposerFocusRequest(originalRequest)
+
+        workspace.splitFocused(.horizontal)
+        let split = workspace.focusedPane.ai
+        split.addReference(AiReference(kind: .selection(text: "Right", page: 1)))
+
+        XCTAssertNil(original.composerFocusRequest)
+        XCTAssertNotNil(split.composerFocusRequest)
+        XCTAssertNotEqual(split.composerFocusRequest, originalRequest)
+    }
+
+    /// A PDF capture that completes after a tab switch must not attach bytes
+    /// from the old PDF to the newly active document.
+    @MainActor
+    func testPdfPageCaptureAfterAwaitIsRejectedAfterTabSwitch() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        let app = workspace.focusedPane.app
+        app.attachTab(Self.tab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+                pageCount: 1, lastPage: 1, docId: "doc-a"
+            )
+        ))
+        let target = try XCTUnwrap(store.currentReferenceTarget())
+        app.attachTab(Self.tab(
+            id: "pdf-b",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/b.pdf", title: "B",
+                pageCount: 1, lastPage: 1, docId: "doc-b"
+            )
+        ))
+
+        let attached = store.addCapturedReference(
+            AiReference(kind: .pageSnapshot(image: Self.snapshot, page: 1)),
+            target: target
+        )
+
+        XCTAssertFalse(attached)
+        XCTAssertTrue(store.composerReferences.isEmpty)
+    }
+
+    /// The same post-await identity check protects web region captures.
+    @MainActor
+    func testWebRegionCaptureAfterAwaitIsRejectedAfterTabSwitch() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        let app = workspace.focusedPane.app
+        app.attachTab(Self.tab(
+            id: "web-a",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://a.example", title: "A",
+                pageCount: 1, lastPage: 1, docId: "web-doc-a"
+            )
+        ))
+        let target = try XCTUnwrap(store.currentReferenceTarget())
+        app.attachTab(Self.tab(
+            id: "web-b",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://b.example", title: "B",
+                pageCount: 1, lastPage: 1, docId: "web-doc-b"
+            )
+        ))
+
+        let attached = store.addCapturedReference(
+            AiReference(kind: .region(image: Self.snapshot, page: 1)),
+            target: target
+        )
+
+        XCTAssertFalse(attached)
+        XCTAssertTrue(store.composerReferences.isEmpty)
+    }
+
+    func testReferencePlanPersistsWholeReferenceBudgetOmissionsAccurately() {
+        let references = (1...5).map {
+            AiReference(kind: .selection(
+                text: String(repeating: Character("\($0)"), count: 8_000),
+                page: $0
+            ))
+        }
+
+        let plan = AiPrompts.planReferences(
+            references,
+            supportsImages: true,
+            documentTitle: "Large.pdf"
+        )
+
+        XCTAssertEqual(plan.provenance.count, 5)
+        XCTAssertEqual(
+            plan.provenance.filter { $0.delivery == .sent }.count,
+            plan.included.count
+        )
+        XCTAssertGreaterThan(plan.included.count, 0)
+        XCTAssertLessThan(plan.included.count, references.count)
+        XCTAssertEqual(
+            plan.provenance.filter { $0.delivery == .omittedBudget }.count,
+            references.count - plan.included.count
+        )
+    }
+
+    func testReferencePlanOmitsImagesForTextOnlyModels() {
+        let image = AiReference(kind: .image(image: Self.snapshot, name: "diagram.png"))
+        let plan = AiPrompts.planReferences(
+            [image],
+            supportsImages: false,
+            documentTitle: "Notes"
+        )
+
+        XCTAssertTrue(plan.included.isEmpty)
+        XCTAssertEqual(plan.provenance.map(\.delivery), [.omittedUnsupportedImage])
+    }
+
+    func testReferenceMetadataIsNormalizedWhenDecoded() throws {
+        let references = (0..<20).map { index in
+            """
+            {"id":"\(String(repeating: "i", count: 200))\(index)","kind":"selection",\
+            "label":"\(String(repeating: "l", count: 220))","page":-2,\
+            "documentTitle":"\(String(repeating: "d", count: 300))","delivery":"sent"}
+            """
+        }.joined(separator: ",")
+        let data = Data("""
+        {"id":"message","role":"user","content":"hello","createdAt":"now",\
+        "references":[\(references)]}
+        """.utf8)
+
+        let message = try JSONDecoder().decode(AiMessage.self, from: data)
+
+        XCTAssertEqual(message.references.count, AiMessageReference.maxPerMessage)
+        XCTAssertTrue(message.references.allSatisfy {
+            $0.id.count <= AiMessageReference.maxIdCharacters
+                && $0.label.count <= AiMessageReference.maxLabelCharacters
+                && ($0.documentTitle?.count ?? 0) <= AiMessageReference.maxDocumentTitleCharacters
+                && $0.page == nil
+        })
     }
 
     // MARK: - Auto page-image gating
@@ -586,6 +734,28 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .opencode, model: "claude-sonnet-5", catalog: nil))
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .gemini, model: "anything", catalog: nil))
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .openrouter, model: "vendor/unknown", catalog: nil))
+    }
+
+    private static let snapshot = AiPageImageSnapshot(
+        pageNumber: 1,
+        base64Data: "aGVsbG8=",
+        mediaType: "image/png",
+        width: 12,
+        height: 9
+    )
+
+    private static func tab(id: String, document: DocumentInfo) -> PdfTab {
+        PdfTab(
+            id: id,
+            document: document,
+            currentPage: 1,
+            numPages: 1,
+            zoom: 1,
+            visiblePages: [1],
+            webVisibleRange: nil,
+            webVisibleBookmarks: [],
+            mode: .view
+        )
     }
 
     /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file.

@@ -48,7 +48,22 @@ final class VellumBundleTests: XCTestCase {
             message(id: "imp-1", role: .user, content: "imported q", createdAt: "2026-02-01T00:00:00Z"),
             message(id: "imp-2", role: .assistant, content: "imported a", createdAt: "2026-02-01T00:00:01Z"),
         ]
-        let conversationsData = try JSONEncoder().encode(exportedConversation)
+        var encodedConversation = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(exportedConversation)
+            ) as? [[String: Any]]
+        )
+        encodedConversation[0]["references"] = (0..<20).map { index in
+            [
+                "id": String(repeating: "i", count: 200) + "\(index)",
+                "kind": "image",
+                "label": String(repeating: "l", count: 220),
+                "page": -1,
+                "documentTitle": String(repeating: "d", count: 300),
+                "delivery": "sent",
+            ] as [String: Any]
+        }
+        let conversationsData = try JSONSerialization.data(withJSONObject: encodedConversation)
         let documentData = Data("%PDF-1.7 fake pdf bytes".utf8)
 
         let content = VellumBundle.Content(
@@ -105,6 +120,17 @@ final class VellumBundleTests: XCTestCase {
         let mergedData = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: installKey))
         let merged = try JSONDecoder().decode([AiMessage].self, from: mergedData)
         XCTAssertEqual(merged.map(\.id), ["local-1", "imp-1", "imp-2"])
+        let importedReferences = try XCTUnwrap(
+            merged.first(where: { $0.id == "imp-1" })?.references
+        )
+        XCTAssertEqual(importedReferences.count, AiMessageReference.maxPerMessage)
+        XCTAssertTrue(importedReferences.allSatisfy {
+            $0.id.count <= AiMessageReference.maxIdCharacters
+                && $0.label.count <= AiMessageReference.maxLabelCharacters
+                && ($0.documentTitle?.count ?? 0)
+                    <= AiMessageReference.maxDocumentTitleCharacters
+                && $0.page == nil
+        })
     }
 
     // MARK: - Unstamped-PDF import stamps the manifest id

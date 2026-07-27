@@ -364,6 +364,7 @@ struct AiPanel: View {
                 text: $input,
                 placeholder: "Ask about this document…",
                 focusRequest: aiStore.composerFocusRequest,
+                onFocusRequestConsumed: aiStore.consumeComposerFocusRequest,
                 onSubmit: submit,
                 // The composer's NSTextView is a registered drag destination and
                 // AppKit hands it any drop over its bounds before SwiftUI's
@@ -443,9 +444,15 @@ struct AiPanel: View {
 
     private func attachCurrentPage() {
         let page = appStore.currentPage
+        guard let target = aiStore.currentReferenceTarget(),
+              let capturePage = aiStore.capturePageImageHandler
+        else { return }
         Task {
-            guard let image = await aiStore.capturePageImageHandler?(page) else { return }
-            aiStore.addReference(AiReference(kind: .pageSnapshot(image: image, page: page)))
+            guard let image = await capturePage(page) else { return }
+            aiStore.addCapturedReference(
+                AiReference(kind: .pageSnapshot(image: image, page: page)),
+                target: target
+            )
         }
     }
 
@@ -567,7 +574,8 @@ private struct AnimatedDots: View {
 private struct ComposerTextView: View {
     @Binding var text: String
     let placeholder: String
-    let focusRequest: Int
+    let focusRequest: String?
+    let onFocusRequestConsumed: (String) -> Void
     let onSubmit: () -> Void
     /// A file or image dropped onto the field itself; nil disables interception, so
     /// AppKit's own drag handling (text, file paths) is left alone.
@@ -586,6 +594,7 @@ private struct ComposerTextView: View {
             text: $text,
             placeholder: placeholder,
             focusRequest: focusRequest,
+            onFocusRequestConsumed: onFocusRequestConsumed,
             onSubmit: onSubmit,
             onAttachmentDrop: onAttachmentDrop,
             onDropTargeted: onDropTargeted,
@@ -598,7 +607,8 @@ private struct ComposerTextView: View {
 private struct ComposerTextViewRep: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let focusRequest: Int
+    let focusRequest: String?
+    let onFocusRequestConsumed: (String) -> Void
     let onSubmit: () -> Void
     let onAttachmentDrop: ((AttachmentDropPayload) -> Void)?
     let onDropTargeted: (Bool) -> Void
@@ -653,11 +663,14 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
         context.coordinator.publishHeight(for: textView)
-        if focusRequest != context.coordinator.fulfilledFocusRequest {
+        if let focusRequest,
+           focusRequest != context.coordinator.fulfilledFocusRequest {
             context.coordinator.fulfilledFocusRequest = focusRequest
+            let onFocusRequestConsumed = onFocusRequestConsumed
             Task { @MainActor [weak textView] in
                 guard let textView, let window = textView.window else { return }
-                window.makeFirstResponder(textView)
+                guard window.makeFirstResponder(textView) else { return }
+                onFocusRequestConsumed(focusRequest)
             }
         }
     }
@@ -665,7 +678,7 @@ private struct ComposerTextViewRep: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextViewRep
-        var fulfilledFocusRequest = 0
+        var fulfilledFocusRequest: String?
         init(parent: ComposerTextViewRep) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {

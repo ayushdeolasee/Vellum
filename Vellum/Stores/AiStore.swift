@@ -53,6 +53,11 @@ enum AiThinkingMode: String, Codable, Sendable, CaseIterable {
 }
 
 struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
+    static let maxPerMessage = 16
+    static let maxIdCharacters = 128
+    static let maxLabelCharacters = 160
+    static let maxDocumentTitleCharacters = 256
+
     enum Kind: String, Codable, Sendable {
         case selection
         case highlight
@@ -60,6 +65,12 @@ struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
         case pageSnapshot
         case quote
         case image
+    }
+
+    enum Delivery: String, Codable, Sendable {
+        case sent
+        case omittedBudget
+        case omittedUnsupportedImage
     }
 
     var id: String
@@ -71,11 +82,26 @@ struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
     /// The document active when the reference was sent. This makes provenance
     /// unambiguous when a conversation is exported or revisited later.
     var documentTitle: String?
+    /// Whether the payload reached the provider. Omitted references remain in
+    /// provenance so the transcript never claims that context was sent.
+    var delivery: Delivery
 
-    init(reference: AiReference, documentTitle: String?) {
-        id = reference.id
-        let trimmedTitle = documentTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.documentTitle = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, label, page, documentTitle, delivery
+    }
+
+    init(
+        reference: AiReference,
+        documentTitle: String?,
+        delivery: Delivery = .sent
+    ) {
+        id = Self.boundedMetadata(reference.id, max: Self.maxIdCharacters)
+        if id.isEmpty { id = UUID().uuidString.lowercased() }
+        self.documentTitle = Self.optionalBounded(
+            documentTitle,
+            max: Self.maxDocumentTitleCharacters
+        )
+        self.delivery = delivery
         switch reference.kind {
         case let .selection(text, page):
             kind = .selection
@@ -99,9 +125,43 @@ struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
             page = nil
         case let .image(_, name):
             kind = .image
-            label = name
+            label = Self.boundedMetadata(name, max: Self.maxLabelCharacters)
             page = nil
         }
+        label = Self.boundedMetadata(label, max: Self.maxLabelCharacters)
+        self.page = self.page.flatMap { $0 > 0 ? min($0, 1_000_000) : nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let rawId = try values.decodeIfPresent(String.self, forKey: .id) ?? ""
+        id = Self.boundedMetadata(rawId, max: Self.maxIdCharacters)
+        if id.isEmpty { id = UUID().uuidString.lowercased() }
+        kind = try values.decode(Kind.self, forKey: .kind)
+        label = Self.boundedMetadata(
+            try values.decodeIfPresent(String.self, forKey: .label) ?? "",
+            max: Self.maxLabelCharacters
+        )
+        let decodedPage = try values.decodeIfPresent(Int.self, forKey: .page)
+        page = decodedPage.flatMap { $0 > 0 ? min($0, 1_000_000) : nil }
+        documentTitle = Self.optionalBounded(
+            try values.decodeIfPresent(String.self, forKey: .documentTitle),
+            max: Self.maxDocumentTitleCharacters
+        )
+        delivery = try values.decodeIfPresent(Delivery.self, forKey: .delivery) ?? .sent
+    }
+
+    func normalized() -> Self {
+        var copy = self
+        copy.id = Self.boundedMetadata(copy.id, max: Self.maxIdCharacters)
+        if copy.id.isEmpty { copy.id = UUID().uuidString.lowercased() }
+        copy.label = Self.boundedMetadata(copy.label, max: Self.maxLabelCharacters)
+        copy.page = copy.page.flatMap { $0 > 0 ? min($0, 1_000_000) : nil }
+        copy.documentTitle = Self.optionalBounded(
+            copy.documentTitle,
+            max: Self.maxDocumentTitleCharacters
+        )
+        return copy
     }
 
     private static func collapsed(_ text: String) -> String {
@@ -111,6 +171,29 @@ struct AiMessageReference: Codable, Equatable, Identifiable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard collapsed.count > 80 else { return collapsed }
         return String(collapsed.prefix(77)) + "…"
+    }
+
+    private static func optionalBounded(_ value: String?, max: Int) -> String? {
+        guard let value else { return nil }
+        let bounded = boundedMetadata(value, max: max)
+        return bounded.isEmpty ? nil : bounded
+    }
+
+    private static func boundedMetadata(_ value: String, max: Int) -> String {
+        let cleaned = value
+            .replacingOccurrences(
+                of: "[\\p{Cc}\\p{Cf}]",
+                with: " ",
+                options: .regularExpression
+            )
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return bounded(cleaned, max: max)
+    }
+
+    private static func bounded(_ value: String, max: Int) -> String {
+        guard value.count > max else { return value }
+        return String(value.prefix(max))
     }
 }
 
@@ -143,7 +226,9 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
         self.content = content
         self.createdAt = createdAt
         self.usage = usage
-        self.references = references
+        self.references = Array(
+            references.prefix(AiMessageReference.maxPerMessage).map { $0.normalized() }
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -153,7 +238,19 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
         content = try values.decode(String.self, forKey: .content)
         createdAt = try values.decode(String.self, forKey: .createdAt)
         usage = try values.decodeIfPresent(AiUsage.self, forKey: .usage)
-        references = try values.decodeIfPresent([AiMessageReference].self, forKey: .references) ?? []
+        references = Array(
+            (try values.decodeIfPresent([AiMessageReference].self, forKey: .references) ?? [])
+                .prefix(AiMessageReference.maxPerMessage)
+                .map { $0.normalized() }
+        )
+    }
+
+    func normalizedReferenceMetadata() -> Self {
+        var copy = self
+        copy.references = Array(
+            references.prefix(AiMessageReference.maxPerMessage).map { $0.normalized() }
+        )
+        return copy
     }
 }
 
@@ -175,6 +272,7 @@ enum AiActivity: Equatable, Sendable {
 /// or a quote pulled from a previous AI reply. Rendered as chips in the
 /// composer and folded into the prompt / image inputs at send time.
 struct AiReference: Identifiable, Equatable, Sendable {
+    static let maxImageNameCharacters = 160
     /// `page` is meaningful for web documents too: the injected content script
     /// paginates an archived page into virtual pages (it reports pageCount and
     /// per-page text, and the AI's scroll/read tools address those numbers), so
@@ -205,6 +303,36 @@ struct AiReference: Identifiable, Equatable, Sendable {
         case let .region(image, _), let .pageSnapshot(image, _), let .image(image, _): return image
         default: return nil
         }
+    }
+
+    func normalizedMetadata() -> Self {
+        var normalizedId = String(
+            id
+                .replacingOccurrences(
+                    of: "[\\p{Cc}\\p{Cf}\\s]",
+                    with: "",
+                    options: .regularExpression
+                )
+                .prefix(AiMessageReference.maxIdCharacters)
+        )
+        if normalizedId.isEmpty { normalizedId = UUID().uuidString.lowercased() }
+        var normalizedKind = kind
+        if case let .image(image, name) = kind {
+            let cleaned = name
+                .replacingOccurrences(
+                    of: "[\\p{Cc}\\p{Cf}]",
+                    with: " ",
+                    options: .regularExpression
+                )
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = cleaned.isEmpty ? "Image" : cleaned
+            normalizedKind = .image(
+                image: image,
+                name: String(fallback.prefix(Self.maxImageNameCharacters))
+            )
+        }
+        return Self(id: normalizedId, kind: normalizedKind)
     }
 }
 
@@ -257,6 +385,16 @@ struct AiContextSnapshot: Sendable {
     var currentPageImage: AiPageImageSnapshot?
     /// User-attached references (selection / highlight / snapshot / quote).
     var references: [AiReference] = []
+}
+
+/// Exact destination captured before an async reference operation starts.
+/// A pane reuses one AiStore across tabs, so both the session and document
+/// identity must still match after an await before bytes can enter the composer.
+struct AiReferenceTarget: Equatable, Sendable {
+    var sessionId: String
+    var kind: DocumentKind
+    var path: String
+    var documentId: String?
 }
 
 /// Result of locating a phrase in a document (PDF text layer or web content
@@ -313,9 +451,10 @@ final class AiStore {
     /// Context the user has attached to the next message (selection, highlight,
     /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
     private(set) var composerReferences: [AiReference] = []
-    /// Monotonic request observed by the AppKit-backed composer. A counter (not
-    /// a Bool) means repeated "Add to AI Chat" actions always refocus it.
-    private(set) var composerFocusRequest = 0
+    /// One-shot, store-namespaced request observed by the AppKit composer.
+    /// Consumption clears it in the store, so inspector remounts cannot replay
+    /// an old focus request and a different split pane cannot collide with it.
+    private(set) var composerFocusRequest: String?
 
     /// Registered by the PDF viewer: locate a verbatim phrase on a page at
     /// zoom 1 in top-left-origin PDF points (lib/highlight-locator.ts).
@@ -434,6 +573,11 @@ final class AiStore {
 
     /// Attach a reference and reveal the AI panel so the user sees it land.
     func addReference(_ reference: AiReference) {
+        guard composerReferences.count < AiMessageReference.maxPerMessage else {
+            error = "You can attach at most \(AiMessageReference.maxPerMessage) references to one message."
+            return
+        }
+        let reference = reference.normalizedMetadata()
         if reference.image != nil, !canAttachMoreImages {
             error = "You can attach at most \(Self.maxImageReferences) images to one message."
             return
@@ -441,7 +585,34 @@ final class AiStore {
         composerReferences.append(reference)
         app?.workspace?.sidebarTab = .ai
         app?.workspace?.sidebarOpen = true
-        composerFocusRequest &+= 1
+        composerFocusRequest = UUID().uuidString.lowercased()
+    }
+
+    func consumeComposerFocusRequest(_ request: String) {
+        guard composerFocusRequest == request else { return }
+        composerFocusRequest = nil
+    }
+
+    func currentReferenceTarget() -> AiReferenceTarget? {
+        guard let app,
+              let sessionId = app.activeTabId,
+              let document = app.document
+        else { return nil }
+        return AiReferenceTarget(
+            sessionId: sessionId,
+            kind: document.kind,
+            path: document.pdfPath,
+            documentId: document.docId
+        )
+    }
+
+    /// Commit bytes produced by an async page/region capture only if the pane is
+    /// still showing the exact tab and document that initiated it.
+    @discardableResult
+    func addCapturedReference(_ reference: AiReference, target: AiReferenceTarget) -> Bool {
+        guard let current = currentReferenceTarget(), current == target else { return false }
+        addReference(reference)
+        return true
     }
 
     func removeReference(id: String) {
@@ -658,6 +829,25 @@ final class AiStore {
         return Array(messages[..<lastUserIndex])
     }
 
+    private static func selectedModel(in settings: AiSettings) -> String {
+        switch settings.provider {
+        case .gemini: settings.model
+        case .openai: settings.openaiModel
+        case .openrouter: settings.openrouterModel
+        case .chatgpt: settings.chatgptModel
+        case .opencode: settings.opencodeModel
+        case .opencodeGo: settings.opencodeGoModel
+        }
+    }
+
+    private func supportsImages(in settings: AiSettings) -> Bool {
+        AiModelCatalog.supportsVision(
+            provider: settings.provider,
+            model: Self.selectedModel(in: settings),
+            catalog: openRouterCatalog
+        )
+    }
+
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
@@ -700,13 +890,20 @@ final class AiStore {
             return
         }
 
-        let sentReferences = context.references.map {
-            AiMessageReference(reference: $0, documentTitle: documentAtStart.title)
+        let supportsImagesAtStart = supportsImages(in: settingsAtStart)
+        let referencePlan = AiPrompts.planReferences(
+            context.references,
+            supportsImages: supportsImagesAtStart,
+            documentTitle: documentAtStart.title
+        )
+        context.references = referencePlan.included
+        if !supportsImagesAtStart {
+            context.currentPageImage = nil
         }
         let userMessage = AiPersistence.makeMessage(
             role: .user,
             content: trimmed,
-            references: sentReferences
+            references: referencePlan.provenance
         )
         messages.append(userMessage)
         // Empty assistant placeholder the stream fills in-place. Kept out of the
@@ -825,15 +1022,13 @@ final class AiStore {
                 }
                 // Unknown ids (stale cache) default to permissive so we never
                 // silently strip a capability the model actually has.
-                let supportsVision = AiModelCatalog.supportsVision(
-                    provider: .openrouter, model: model, catalog: openRouterCatalog)
                 let supportsTools = openRouterCatalog?.model(for: model)?.supportsTools ?? true
                 result = try await OpenRouterClient().generate(
                     apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    images: supportsVision ? images : [],
+                    images: supportsImagesAtStart ? images : [],
                     allowTools: supportsTools,
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
@@ -868,8 +1063,7 @@ final class AiStore {
                     // Only text-only open models drop the images (page snapshot +
                     // user-attached references); the gateway rejects image parts
                     // for models that can't read them.
-                    images: AiModelCatalog.supportsVision(
-                        provider: .opencode, model: model, catalog: openRouterCatalog) ? images : [],
+                    images: supportsImagesAtStart ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,
@@ -885,8 +1079,7 @@ final class AiStore {
                     model: model,
                     systemPrompt: try AiPrompts.nativeSystemPrompt(),
                     prompt: prompt,
-                    images: AiModelCatalog.supportsVision(
-                        provider: .opencodeGo, model: model, catalog: openRouterCatalog) ? images : [],
+                    images: supportsImagesAtStart ? images : [],
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,

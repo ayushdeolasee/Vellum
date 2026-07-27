@@ -28,12 +28,66 @@ struct AiUserPrompt {
     var joined: String { stable + "\n\n" + volatile }
 }
 
+struct AiReferencePlan: Sendable {
+    var included: [AiReference]
+    var provenance: [AiMessageReference]
+}
+
 enum AiPrompts {
     static let maxContextCharacters = 120_000
     /// Per-reference text cap so a single quoted reply or selection can't bloat
     /// the prompt, plus an overall cap on the joined referenced block.
     static let maxReferenceCharacters = 8_000
     static let maxReferencedBlockCharacters = 32_000
+
+    /// Select whole references for the provider payload. This is deliberately
+    /// done before persistence so provenance can say which references were sent
+    /// and which were omitted, instead of claiming a joined block's truncated
+    /// tail reached the model.
+    static func planReferences(
+        _ references: [AiReference],
+        supportsImages: Bool,
+        documentTitle: String?
+    ) -> AiReferencePlan {
+        var included: [AiReference] = []
+        var provenance: [AiMessageReference] = []
+        var usedCharacters = 0
+
+        for rawReference in references.prefix(AiMessageReference.maxPerMessage) {
+            let reference = rawReference.normalizedMetadata()
+            if reference.image != nil, !supportsImages {
+                provenance.append(AiMessageReference(
+                    reference: reference,
+                    documentTitle: documentTitle,
+                    delivery: .omittedUnsupportedImage
+                ))
+                continue
+            }
+
+            let line = referenceLine(reference)
+            let separatorCharacters = included.isEmpty ? 0 : 1
+            guard usedCharacters + separatorCharacters + line.count
+                    <= maxReferencedBlockCharacters
+            else {
+                provenance.append(AiMessageReference(
+                    reference: reference,
+                    documentTitle: documentTitle,
+                    delivery: .omittedBudget
+                ))
+                continue
+            }
+
+            usedCharacters += separatorCharacters + line.count
+            included.append(reference)
+            provenance.append(AiMessageReference(
+                reference: reference,
+                documentTitle: documentTitle,
+                delivery: .sent
+            ))
+        }
+
+        return AiReferencePlan(included: included, provenance: provenance)
+    }
 
     static func nativeSystemPrompt() throws -> String {
         try loadTemplate(named: "tool-mode-native")
@@ -89,7 +143,7 @@ enum AiPrompts {
             "attached (\($0.width)x\($0.height), \($0.mediaType))"
         } ?? "none"
 
-        let referenced = boundedReferencedBlock(context.references.map(referenceLine).joined(separator: "\n"))
+        let referenced = context.references.map(referenceLine).joined(separator: "\n")
 
         // Ordered most-stable-first so the leading bytes stay identical across a
         // session and stay cacheable (PR A.5). Session-invariant document
@@ -141,14 +195,6 @@ enum AiPrompts {
         guard text.count > maxReferenceCharacters else { return text }
         let end = text.index(text.startIndex, offsetBy: maxReferenceCharacters)
         return String(text[..<end]) + "…[truncated]"
-    }
-
-    /// Cap the whole referenced block after joining, in case many references add
-    /// up past the limit even when each fits under the per-item cap.
-    private static func boundedReferencedBlock(_ block: String) -> String {
-        guard block.count > maxReferencedBlockCharacters else { return block }
-        let end = block.index(block.startIndex, offsetBy: maxReferencedBlockCharacters)
-        return String(block[..<end]) + "\n[referenced context truncated]"
     }
 
     private static func annotationLine(_ annotation: Annotation) -> String {

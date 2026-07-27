@@ -451,7 +451,7 @@ enum VellumBundle {
     /// over-long content.
     private static func capConversation(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(AiPersistence.maxMessagesPerDocument).map { message in
-            var message = message
+            var message = message.normalizedReferenceMetadata()
             if message.content.count > AiPersistence.maxMessageCharacters {
                 let end = message.content.index(
                     message.content.startIndex, offsetBy: AiPersistence.maxMessageCharacters)

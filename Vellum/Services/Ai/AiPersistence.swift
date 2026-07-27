@@ -384,7 +384,7 @@ enum AiPersistence {
 
     private static func limit(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(maxMessagesPerDocument).map { message in
-            var message = message
+            var message = message.normalizedReferenceMetadata()
             if message.content.count > maxMessageCharacters {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"

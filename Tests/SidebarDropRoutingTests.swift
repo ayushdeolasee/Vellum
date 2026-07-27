@@ -118,6 +118,43 @@ final class SidebarDropRoutingTests: XCTestCase {
         XCTAssertTrue(mounted.workspace.sidebarOpen)
         XCTAssertTrue(window?.firstResponder === composer)
         XCTAssertEqual(mounted.pane.ai.composerReferences.count, 1)
+        XCTAssertNil(mounted.pane.ai.composerFocusRequest)
+
+        // Closing and reopening the inspector remounts its AppKit composer.
+        // The consumed token must not replay and steal focus from another
+        // control in the new hierarchy.
+        window?.orderOut(nil)
+        let root = SidebarPanelStack()
+            .environment(mounted.workspace)
+            .environment(mounted.pane.app)
+            .environment(mounted.pane.annotations)
+            .environment(mounted.pane.ai)
+            .environment(mounted.pane.scratchpad)
+        let remountedHost = NSHostingView(rootView: root)
+        remountedHost.frame = NSRect(x: 0, y: 0, width: 340, height: 700)
+        let remountedWindow = NSWindow(
+            contentRect: remountedHost.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let focusSentinel = NSButton(title: "Sentinel", target: nil, action: nil)
+        let container = NSView(frame: remountedHost.frame)
+        container.addSubview(remountedHost)
+        focusSentinel.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        container.addSubview(focusSentinel)
+        remountedWindow.contentView = container
+        XCTAssertTrue(remountedWindow.makeFirstResponder(focusSentinel))
+        remountedHost.layoutSubtreeIfNeeded()
+        pump(0.5)
+        let remountedComposer = try XCTUnwrap(
+            firstSubview(of: SubmitTextView.self, in: remountedHost)
+        )
+
+        XCTAssertTrue(remountedWindow.firstResponder === focusSentinel)
+        XCTAssertFalse(remountedWindow.firstResponder === remountedComposer)
+        XCTAssertNil(mounted.pane.ai.composerFocusRequest)
+        window = remountedWindow
     }
 
     private func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {

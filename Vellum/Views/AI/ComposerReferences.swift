@@ -39,7 +39,7 @@ struct SentReferenceChipRow: View {
         }
         .frame(maxHeight: 34)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("References sent with this message")
+        .accessibilityLabel("Reference delivery for this message")
     }
 }
 
@@ -57,7 +57,7 @@ private struct SentReferenceChip: View {
             Image(systemName: icon)
         }
         .font(.system(size: 11))
-        .foregroundStyle(palette.mutedForeground)
+        .foregroundStyle(isSent ? palette.mutedForeground : Color.orange)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.quaternary.opacity(0.35), in: Capsule())
@@ -68,23 +68,44 @@ private struct SentReferenceChip: View {
     private var summary: String {
         let source = reference.documentTitle.flatMap { $0.isEmpty ? nil : $0 }
         let locator = reference.page.map { "p.\($0)" }
-        return [reference.label, locator, source].compactMap { $0 }.joined(separator: " · ")
+        return [reference.label, locator, source, deliverySummary].compactMap { $0 }.joined(separator: " · ")
     }
 
     private var accessibilitySummary: String {
         let page = reference.page.map { ", page \($0)" } ?? ""
         let document = reference.documentTitle.map { ", from \($0)" } ?? ""
-        return "\(reference.kind.accessibilityName): \(reference.label)\(page)\(document)"
+        return "\(reference.kind.accessibilityName): \(reference.label)\(page)\(document), \(deliveryAccessibilitySummary)"
     }
 
     private var icon: String {
-        switch reference.kind {
+        guard isSent else { return "exclamationmark.triangle" }
+        return switch reference.kind {
         case .selection: "text.quote"
         case .highlight: "highlighter"
         case .region: "square.dashed"
         case .pageSnapshot: "doc.richtext"
         case .quote: "quote.bubble"
         case .image: "photo"
+        }
+    }
+
+    private var isSent: Bool {
+        reference.delivery == .sent
+    }
+
+    private var deliverySummary: String? {
+        switch reference.delivery {
+        case .sent: nil
+        case .omittedBudget: "Not sent: context limit"
+        case .omittedUnsupportedImage: "Not sent: model cannot read images"
+        }
+    }
+
+    private var deliveryAccessibilitySummary: String {
+        switch reference.delivery {
+        case .sent: "sent"
+        case .omittedBudget: "not sent because the context limit was reached"
+        case .omittedUnsupportedImage: "not sent because the selected model cannot read images"
         }
     }
 }
