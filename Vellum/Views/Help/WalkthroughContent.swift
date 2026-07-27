@@ -86,12 +86,11 @@ extension WalkthroughPage {
             points: [
                 WalkthroughPoint(
                     symbol: "highlighter",
-                    // "color", not "colour": every other user-facing string in
-                    // the app spells it the American way ("Change highlight
-                    // color", "Set highlight color: …", the Settings default
-                    // -highlight copy), and this is the first screen a new user
-                    // reads.
-                    text: "Select text and pick a color — yellow, green, blue, pink, or purple."),
+                    // The palette used to be spelled out here. It was cut on
+                    // review: naming five colors teaches nothing a reader won't
+                    // see the instant the popover opens, and it dates the copy
+                    // the moment the palette changes.
+                    text: "Select text to highlight it, or turn the selection into a note."),
                 WalkthroughPoint(
                     symbol: "note.text",
                     text: "Press N for note mode, then click anywhere on the page to drop a sticky note.",
@@ -136,27 +135,40 @@ extension WalkthroughPage {
             id: "connect",
             symbol: "sparkles",
             title: "Connect an AI model",
+            // "nothing from your documents leaves this Mac", not a blanket
+            // "nothing is sent anywhere": selecting OpenRouter and opening the
+            // model picker fires a keyless GET to its public model catalog
+            // (OpenRouterCatalog.refresh) before any account exists. No user
+            // content is in that request, so the scoped claim is the true one.
             summary:
-                "Vellum ships no model of its own — you bring your own account, and nothing is sent "
-                + "anywhere until you do. Set it up in the inspector's AI tab, or in Settings ▸ AI.",
+                "Vellum ships no model of its own — you bring your own account, and nothing from "
+                + "your documents leaves this Mac until you do. Set it up in the inspector's AI "
+                + "tab, or in Settings ▸ AI.",
             points: [
+                // Leads with "optional" on purpose. This is the page most
+                // likely to make a new reader think they have hit a paywall or
+                // a required signup, and everything in the three pages before
+                // it works with no account at all.
+                WalkthroughPoint(
+                    symbol: "checkmark.circle",
+                    text:
+                        "Reading, highlighting, notes and the Scratchpad all work with no AI "
+                        + "account at all. This page is optional."),
                 WalkthroughPoint(
                     symbol: "key",
                     text:
                         "Paste an API key for Gemini, the OpenAI API, OpenRouter, OpenCode Zen, "
                         + "or OpenCode Go."),
+                // Not "the OpenAI API": ChatGPTAuth replicates the Codex CLI
+                // login against OpenAI's own auth server and talks to the
+                // ChatGPT Codex backend, so this bills against a ChatGPT
+                // subscription rather than against API credit. Reviewed and
+                // reworded to say so.
                 WalkthroughPoint(
                     symbol: "person.crop.circle.badge.checkmark",
                     text:
-                        "Or choose \"ChatGPT (Codex)\" and sign in through your browser — nothing to paste."),
-                WalkthroughPoint(
-                    symbol: "lock.shield",
-                    text: "Credentials go into the macOS Keychain, never into a settings file."),
-                WalkthroughPoint(
-                    symbol: "slider.horizontal.3",
-                    text:
-                        "Pick a model from the selector and star the ones you use. OpenRouter's catalog "
-                        + "loads live, with pricing and context length."),
+                        "Or choose \"ChatGPT (Codex)\" and sign in through your browser to use an "
+                        + "existing ChatGPT subscription instead of an API key."),
             ]
         ),
 
@@ -173,21 +185,25 @@ extension WalkthroughPage {
                     text:
                         "It can read any page, search the whole document, and list the highlights and "
                         + "notes you've already made."),
+                // The "capped at five changes per reply" clause was cut on
+                // review. AiToolEngine.maxWrites is still 5 and still enforced;
+                // the cap is simply an implementation guardrail, not something
+                // a first-time reader needs on screen.
                 WalkthroughPoint(
                     symbol: "hand.tap",
-                    text:
-                        "It can jump to a page, add a note, and highlight text it finds — capped at five "
-                        + "changes per reply, so it can't run away with your document."),
+                    text: "It can jump to a page, add a note, and highlight text it finds."),
                 WalkthroughPoint(
                     symbol: "quote.opening",
                     text:
                         "Select a passage and choose \"Ask AI about this\" to quote it into the composer. "
                         + "Its replies can be quoted back the same way."),
+                // The "anything else is named back to you" clause was cut on
+                // review. AiFileAttachment still reports a non-image drop by
+                // name rather than swallowing it, but describing the failure
+                // mode of a drop the reader has not made yet is noise.
                 WalkthroughPoint(
                     symbol: "photo",
-                    text:
-                        "Attach the current page, a cropped region, or an image file. Images only — "
-                        + "anything else is named back to you instead of vanishing."),
+                    text: "Attach the current page, a cropped region, or an image file. Images only."),
             ]
         ),
 
@@ -230,7 +246,9 @@ extension WalkthroughPage {
                     text:
                         "Your library can live in iCloud Drive, in a folder you choose, or only on this Mac."),
             ],
-            footnote: "You can reopen this any time from Help ▸ Vellum Walkthrough."
+            footnote:
+                "Reopen this any time from Help ▸ Vellum Walkthrough. For a searchable list of "
+                + "every feature and shortcut, open Help ▸ Vellum Help (⌘?)."
         ),
     ]
 }

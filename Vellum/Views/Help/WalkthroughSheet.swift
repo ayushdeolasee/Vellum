@@ -48,7 +48,15 @@ struct WalkthroughSheet: View {
         // past this point pageContent scrolls instead of growing further.
         .frame(width: 620)
         .frame(maxHeight: 620)
-        .background(palette.surface)
+        // No explicit background. This used to paint `palette.surface`, which
+        // in the light palette is a flat #ffffff slab — the only sheet in the
+        // app that opted out of the system sheet material, and it read as a
+        // white rectangle pasted onto the warm parchment chrome (reported on
+        // review as "the light mode is just not as pretty"). The app's other
+        // sheet, StorageLocationChoiceSheet, sets no background at all and
+        // takes the system material; matching it is what makes this one look
+        // like it belongs, and it lets the glass tiles read against something
+        // other than pure white.
         // Focusable, but with no focus ring: the sheet is claiming focus to
         // receive key presses, not to advertise itself as a control.
         .focusable()
@@ -72,10 +80,11 @@ struct WalkthroughSheet: View {
             go(to: index + 1)
             return .handled
         }
-        // Escape closes the sheet. Nothing else provides this: Skip is hidden
-        // on the last page, and a SwiftUI sheet with no `.cancelAction` button
-        // does not dismiss on Escape by itself — so without this the only way
-        // out of the final page is the mouse.
+        // Secondary Escape path, behind the title bar's `.cancelAction` close
+        // button. It only fires when the container above actually holds focus,
+        // which is the thing we cannot confirm without running the app — so the
+        // close button is the guarantee and this is the belt. `dismiss()` twice
+        // is a no-op, so the overlap is harmless.
         .onKeyPress(.escape) {
             dismiss()
             return .handled
@@ -103,9 +112,30 @@ struct WalkthroughSheet: View {
             Text("\(index + 1) of \(pages.count)")
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(palette.mutedForeground)
+
+            // The only dismiss affordance present on EVERY page, and the one
+            // that carries Escape.
+            //
+            // `.cancelAction` is routed by AppKit to the sheet's cancel button
+            // through the responder chain, so unlike the `.onKeyPress(.escape)`
+            // below it does not depend on any view having claimed keyboard
+            // focus — which matters because with Full Keyboard Access off (the
+            // macOS default) a sheet of plain Buttons has no focusable view.
+            // The footer's Skip button cannot own this: it is hidden on the
+            // last page, which is exactly where a reader who wants out has no
+            // other keyboard exit.
+            IconButton(help: "Close the walkthrough", action: { dismiss() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .keyboardShortcut(.cancelAction)
+            .accessibilityIdentifier("walkthrough.close")
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        // 8pt, not 12: the 28pt icon button is now the tallest thing in the
+        // row, and this keeps the bar at the same 44pt the layout test's
+        // chrome constant is measured against.
+        .padding(.vertical, 8)
     }
 
     private var pageContent: some View {
@@ -266,10 +296,16 @@ struct WalkthroughSheet: View {
                 let isCurrent = offset == index
                 Button { go(to: offset) } label: {
                     Capsule()
-                        .fill(
-                            isCurrent
-                                ? AnyShapeStyle(palette.primary)
-                                : AnyShapeStyle(.quaternary))
+                        // Inactive dots are palette.borderStrong, not
+                        // `.quaternary`. SwiftUI's quaternary fill resolves
+                        // from the color scheme, not from our palette, and on
+                        // the light parchment chrome it came out so faint the
+                        // dots were invisible — reported on review with a
+                        // screenshot showing only the active pill. borderStrong
+                        // is the same hairline value the rest of the app uses
+                        // for "present but quiet", and it is defined for both
+                        // schemes (#d6cdbb / #45413a), so it reads in each.
+                        .fill(isCurrent ? palette.primary : palette.borderStrong)
                         .frame(width: isCurrent ? 18 : 6, height: 6)
                         .contentShape(Capsule().inset(by: -6))
                 }

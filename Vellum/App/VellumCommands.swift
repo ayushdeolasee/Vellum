@@ -34,6 +34,9 @@ extension FocusedValues {
 /// (bare N for note mode, Escape, and the pointer-contextual sidebar font size).
 struct VellumCommands: Commands {
     @FocusedValue(\.vellumFocus) private var focus
+    /// Only used by the Help menu. The Help centre is a scene of its own rather
+    /// than a sheet, so it is opened by id instead of by a presentation flag.
+    @Environment(\.openWindow) private var openWindow
 
     // MARK: Availability (drives menu validation)
 
@@ -206,22 +209,27 @@ struct VellumCommands: Commands {
 
         // MARK: Help
         // Replaces the stock "Vellum Help" item, which opens Help Viewer and
-        // reports that no help book is installed — Vellum ships none. The
-        // walkthrough is the app's actual help, so it takes the slot.
+        // reports that no help book is installed — Vellum ships none (there is
+        // no CFBundleHelpBookName in Info.plist and nothing calls
+        // NSHelpManager, so nothing depended on the item being there).
         //
-        // Not gated on `hasFocus`: unlike every command above, this one targets
-        // no document, and someone who has just closed their last tab is
-        // exactly who wants it.
+        // Two items, because they answer two different questions. "Vellum Help"
+        // is the searchable reference and keeps the stock item's name and its
+        // ⌘? key equivalent, so muscle memory lands somewhere sensible rather
+        // than on a tour a returning user has already seen. "Vellum
+        // Walkthrough" is the first-run tour, replayable but unbound — it is
+        // the rarer of the two once you have used the app once.
+        //
+        // Neither is gated on `hasFocus`: unlike every command above, these
+        // target no document, and someone who has just closed their last tab is
+        // exactly who wants them.
         CommandGroup(replacing: .help) {
+            Button("Vellum Help") { openWindow(id: HelpScene.windowId) }
+                .keyboardShortcut("?", modifiers: .command)
+
             Button("Vellum Walkthrough") {
                 NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
             }
-            // Keeps ⌘? on the Help menu's primary item, which is where macOS
-            // has trained everyone to reach for it — the stock "Vellum Help"
-            // item this replaces carried exactly that key equivalent, so
-            // dropping it would be a silent regression. No other command in the
-            // app binds "?".
-            .keyboardShortcut("?", modifiers: .command)
         }
 
         // MARK: Annotations
