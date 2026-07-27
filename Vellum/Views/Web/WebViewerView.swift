@@ -61,6 +61,7 @@ struct WebViewerView: View {
     let tabId: String
     let document: DocumentInfo
     let isActive: Bool
+    let runtime: LiveTabRuntime
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
@@ -68,8 +69,8 @@ struct WebViewerView: View {
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
-    @State private var controller = WebViewerController()
     @State private var hasActivated = false
+    private var controller: WebViewerController { runtime.webController }
 
     var body: some View {
         Group {
@@ -200,10 +201,8 @@ struct WebViewerView: View {
                 annotationStore: annotationStore,
                 aiStore: aiStore,
                 tabId: tabId,
-                document: document)
-        }
-        .onDisappear {
-            controller.detach()
+                document: document,
+                runtime: runtime)
         }
         .onChange(of: controller.initCount) {
             guard isActive else { return }
@@ -236,14 +235,18 @@ struct WebViewerView: View {
             controller.applyZoom(zoom)
         }
         .onChange(of: isActive) { _, active in
-            guard active else { return }
+            guard active else {
+                controller.deactivate()
+                return
+            }
             hasActivated = true
             controller.attach(
                 app: appStore,
                 annotationStore: annotationStore,
                 aiStore: aiStore,
                 tabId: tabId,
-                document: document)
+                document: document,
+                runtime: runtime)
             controller.pushAnnotations(annotationStore.annotations)
             controller.pushMode(appStore.mode)
             controller.pushSelectedHighlight()
@@ -347,7 +350,9 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private weak var app: AppStore?
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
     @ObservationIgnored private weak var aiStore: AiStore?
+    @ObservationIgnored private weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var mountTabId: String?
+    @ObservationIgnored private var mountDocument: DocumentInfo?
     @ObservationIgnored private var attached = false
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
@@ -418,23 +423,42 @@ final class WebViewerController: NSObject {
         annotationStore: AnnotationStore,
         aiStore: AiStore,
         tabId: String,
-        document: DocumentInfo
+        document: DocumentInfo,
+        runtime: LiveTabRuntime
     ) {
-        if attached {
-            activateSharedHandlers()
-            return
-        }
-        attached = true
+        // A tab can migrate to another pane while its native WKWebView stays
+        // alive. Always rebind pane-scoped stores and document identity.
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
+        self.runtime = runtime
         mountTabId = tabId
+        mountDocument = document
+        if attached {
+            aiStore.restorePageTexts(runtime.pageTexts)
+            activateSharedHandlers()
+            // An init message may have been queued and intentionally discarded
+            // while this tab was inactive; ask the preserved page for a fresh
+            // snapshot so extraction and viewport state catch up.
+            post("request-init")
+            return
+        }
+        attached = true
+        aiStore.restorePageTexts(runtime.pageTexts)
         applyZoom(app.zoom)
 
         activateSharedHandlers()
 
         guard document.kind == .web else { return }
         webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
+    }
+
+    /// Release transient UI owned by an inactive mount while keeping the native
+    /// view, history, scroll position, and extracted text intact.
+    func deactivate() {
+        clearSelection()
+        closeNotePopovers()
+        removeEventMonitor()
     }
 
     /// Command hooks are window-shared, so the active preserved WKWebView
@@ -506,6 +530,8 @@ final class WebViewerController: NSObject {
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "vellum", contentWorld: Self.bridgeWorld)
         webView.stopLoading()
+        mountDocument = nil
+        runtime = nil
     }
 
     // MARK: Outbound commands
@@ -1167,7 +1193,7 @@ final class WebViewerController: NSObject {
     /// content script's link interception, the navigation delegate's escape
     /// hatch for router-driven top-level loads, and window.open routing.
     func navigateTo(_ url: String) {
-        guard let app, let tabId = app.activeTabId else { return }
+        guard let app, let tabId = mountTabId, app.containsTab(id: tabId) else { return }
         // A pending auto-archive for the outgoing page must not fire
         // against the rebound session.
         cancelPendingArchive()
@@ -1180,10 +1206,12 @@ final class WebViewerController: NSObject {
         processReloadedUrl = nil
         clearSelection()
         closeNotePopovers()
-        let outgoing = app.document?.pdfPath
+        let outgoing = mountDocument?.pdfPath
         Task { [weak self] in
             guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                  let self else { return }
+                  let self, self.mountTabId == tabId, app.containsTab(id: tabId)
+            else { return }
+            self.mountDocument = rebound
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.initCount = 0
@@ -1193,7 +1221,8 @@ final class WebViewerController: NSObject {
     }
 
     private func handleInit(_ data: [String: Any], app: AppStore) {
-        guard let tabId = app.activeTabId, let currentDoc = app.document else { return }
+        guard let tabId = mountTabId, app.activeTabId == tabId,
+              let currentDoc = mountDocument else { return }
 
         let reportedUrl = data["url"] as? String
 
@@ -1226,7 +1255,9 @@ final class WebViewerController: NSObject {
             closeNotePopovers()
             Task { [weak self] in
                 guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
-                      let self else { return }
+                      let self, self.mountTabId == tabId, app.containsTab(id: tabId)
+                else { return }
+                self.mountDocument = rebound
                 // Server redirect: the destination's HTML was served under
                 // the pre-redirect request URL, so window.location still
                 // shows the old path and strict client routers would hydrate
@@ -1265,7 +1296,9 @@ final class WebViewerController: NSObject {
                       let number = intValue(page["number"]),
                       let text = page["text"] as? String else { continue }
                 pages.append(WebPageText(number: number, text: text))
-                aiStore?.setPageText(page: number, text: text)
+                if let normalized = aiStore?.setPageText(page: number, text: text) {
+                    runtime?.pageTexts[number] = normalized
+                }
             }
         }
 
@@ -1470,7 +1503,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard let doc = app?.document, doc.kind == .web else { return }
+        guard let doc = mountDocument, doc.kind == .web else { return }
         if processReloadedUrl == doc.pdfPath {
             loadSnapshotFallback()
         } else {
@@ -1493,7 +1526,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
     /// Serve the offline snapshot (or Vellum's own error page) instead of
     /// ever leaving the user on WebKit's native error screen.
     private func loadSnapshotFallback() {
-        guard let app, let doc = app.document, doc.kind == .web else { return }
+        guard let doc = mountDocument, doc.kind == .web else { return }
         // The fallback itself failing must not loop.
         guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
         initCount = 0

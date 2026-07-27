@@ -247,8 +247,13 @@ final class AppStore {
         if closingTab.document != nil {
             try? await sessions.setDocumentMetadata(
                 sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
+            // Metadata rewrites the PDF and therefore its validation hash.
+            // Flush extraction after that rewrite and before dropping the
+            // runtime so the cache is keyed to the bytes that will reopen.
+            await workspace?.existingLiveTabRuntime(for: tabId)?.flushPdfText()
             try? await sessions.closeFile(sessionId: closingTab.id)
         }
+        workspace?.removeLiveTabRuntime(for: tabId)
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }

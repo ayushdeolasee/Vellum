@@ -115,7 +115,8 @@ struct PaneView: View {
                 LiveTabHost(
                     tabId: tab.id,
                     document: tab.document,
-                    isActive: tab.id == app.activeTabId
+                    isActive: tab.id == app.activeTabId,
+                    runtime: workspace.liveTabRuntime(for: tab.id)
                 )
                 .opacity(tab.id == app.activeTabId ? 1 : 0)
                 .allowsHitTesting(tab.id == app.activeTabId)
@@ -141,6 +142,10 @@ struct PaneView: View {
             forKey: DocumentIdentity.storageKey(for: document))
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
+        if let tabId = app.activeTabId,
+           let runtime = workspace.existingLiveTabRuntime(for: tabId) {
+            pane.ai.restorePageTexts(runtime.pageTexts)
+        }
         pane.scratchpad.loadForDocument(app.document)
     }
 
@@ -178,17 +183,30 @@ private struct LiveTabHost: View {
     let tabId: String
     let document: DocumentInfo?
     let isActive: Bool
-    @State private var isEvicted = false
+    let runtime: LiveTabRuntime
+    @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
         Group {
-            if isEvicted && !isActive {
-                Color.clear
+            if runtime.isEvicted {
+                if isActive {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Restoring tab…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Color.clear
+                }
             } else if let document {
                 if document.kind == .web {
-                    WebViewerView(tabId: tabId, document: document, isActive: isActive)
+                    WebViewerView(
+                        tabId: tabId, document: document, isActive: isActive,
+                        runtime: runtime)
                 } else {
-                    PdfViewerView(tabId: tabId, documentInfo: document, isActive: isActive)
+                    PdfViewerView(
+                        tabId: tabId, documentInfo: document, isActive: isActive,
+                        runtime: runtime)
                 }
             } else {
                 WelcomeScreen()
@@ -197,7 +215,7 @@ private struct LiveTabHost: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: isActive) {
             if isActive {
-                isEvicted = false
+                workspace.activateLiveTabRuntime(runtime)
                 return
             }
             // Live native views are intentionally expensive. Preserve them for
@@ -210,7 +228,7 @@ private struct LiveTabHost: View {
                 return
             }
             guard !Task.isCancelled, !isActive else { return }
-            isEvicted = true
+            workspace.evictInactiveRuntime(tabId)
         }
     }
 }

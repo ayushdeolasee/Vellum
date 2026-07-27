@@ -18,27 +18,17 @@ struct PdfViewerView: View {
     let tabId: String
     let documentInfo: DocumentInfo
     let isActive: Bool
+    let runtime: LiveTabRuntime
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
-    @State private var controller = PdfViewerController()
-    @State private var loadState: LoadState = .idle
+    private var controller: PdfViewerController { runtime.pdfController }
     /// Tab the shared handler slots are currently registered for; nil when
     /// this view has no live registration (see teardown's ownership guard).
     @State private var handlersTabId: String?
-
-    private enum LoadState {
-        case idle
-        case loading
-        /// readPdfBytes failed.
-        case readFailed(String)
-        /// Bytes arrived but PDFKit could not parse them (pdf.js error state).
-        case parseFailed
-        case loaded(PDFDocument, tabId: String)
-    }
 
     var body: some View {
         content(tabId: tabId)
@@ -47,26 +37,25 @@ struct PdfViewerView: View {
             // handlers, preserving native scroll, selection, and find state.
             .task(id: isActive) {
                 guard isActive else {
-                    deactivate()
+                    await deactivate()
                     return
                 }
-                if case .idle = loadState {
+                if case .idle = runtime.pdfLoadState {
                     await load(tabId: tabId)
                 } else {
                     activate()
                 }
             }
-            .onDisappear { teardown() }
     }
 
     @ViewBuilder
     private func content(tabId: String) -> some View {
-        switch loadState {
+        switch runtime.pdfLoadState {
         case .readFailed(let message):
             statusView(Text("Failed to read PDF: \(message)").foregroundStyle(palette.destructive))
         case .parseFailed:
             statusView(Text("Failed to load PDF").foregroundStyle(palette.destructive))
-        case .loaded(let document, let loadedTabId) where loadedTabId == tabId:
+        case .loaded(let document):
             // Explicit concrete frame from the container size. PDFView's own
             // fitting size is the full document (much larger than the viewport
             // when zoomed in); pinning the host to the geometry size stops
@@ -79,7 +68,6 @@ struct PdfViewerView: View {
                         controller: controller,
                         document: document,
                         isActive: isActive)
-                        .id(loadedTabId)
                         .frame(width: geo.size.width, height: geo.size.height)
                     PdfOverlayStack(controller: controller)
                 }
@@ -102,8 +90,8 @@ struct PdfViewerView: View {
             // `.task(id: isActive)` is intentionally cancelled on a rapid
             // switch. Leave the host retryable rather than stranded forever in
             // its loading placeholder.
-            if Task.isCancelled, case .loading = loadState {
-                loadState = .idle
+            if Task.isCancelled, case .loading = runtime.pdfLoadState {
+                runtime.pdfLoadState = .idle
             }
         }
         // The OUTGOING document's pending page text is flushed by ITS OWN
@@ -113,7 +101,7 @@ struct PdfViewerView: View {
         unregisterHandlers()
         handlersTabId = nil
         controller.reset()
-        loadState = .loading
+        runtime.pdfLoadState = .loading
         // Document/tab changed: reset the AI document context (PdfViewer.tsx
         // clears it alongside the local state reset).
         if isActive { aiStore.clearDocumentContext() }
@@ -144,7 +132,7 @@ struct PdfViewerView: View {
                 }.value
                 guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
                 guard let parsed = prepared.document else {
-                    loadState = .parseFailed
+                    runtime.pdfLoadState = .parseFailed
                     return
                 }
                 app.storePreparedPdf(parsed, tabId: tabId)
@@ -170,7 +158,8 @@ struct PdfViewerView: View {
             // Unconditional replace (empty on a miss): anything an outgoing
             // tab's extraction wrote into pageTexts during the awaits above
             // belongs to the OLD document and must not survive into this one.
-            if isActive { aiStore.restorePageTexts(cached ?? [:]) }
+            runtime.pageTexts = cached ?? [:]
+            if isActive { aiStore.restorePageTexts(runtime.pageTexts) }
             let initialPage = app.tab(id: tabId)?.currentPage ?? 1
             controller.adopt(
                 document: document,
@@ -178,7 +167,8 @@ struct PdfViewerView: View {
                 annotationStore: annotationStore,
                 ai: aiStore,
                 initialPage: initialPage,
-                tabId: tabId
+                tabId: tabId,
+                runtime: runtime
             )
             if isActive { app.setNumPages(document.pageCount) }
             if document.pageCount >= 1 {
@@ -189,12 +179,12 @@ struct PdfViewerView: View {
                     pageCount: document.pageCount,
                     seeded: cached ?? [:]))
             }
-            loadState = .loaded(document, tabId: tabId)
+            runtime.pdfLoadState = .loaded(document)
             if isActive { activate() }
         } catch {
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             NSLog("[PdfViewer] readPdfBytes FAILED: %@", error.localizedDescription)
-            loadState = .readFailed(error.localizedDescription)
+            runtime.pdfLoadState = .readFailed(error.localizedDescription)
         }
     }
 
@@ -237,15 +227,20 @@ struct PdfViewerView: View {
 
     private func activate() {
         guard app.activeTabId == tabId else { return }
+        controller.rebind(
+            app: app, annotationStore: annotationStore, ai: aiStore, tabId: tabId,
+            runtime: runtime)
+        aiStore.restorePageTexts(runtime.pageTexts)
         registerHandlers()
         handlersTabId = tabId
         controller.startTextExtraction()
-        if case .loaded(let pdf, _) = loadState {
+        if case .loaded(let pdf) = runtime.pdfLoadState {
             app.setNumPages(pdf.pageCount)
         }
     }
 
-    private func deactivate() {
+    private func deactivate() async {
+        await controller.pauseTextExtraction()
         guard handlersTabId == tabId else { return }
         // If another document host is taking over, it owns these shared slots
         // now (or is about to). Clearing blindly here can race after its
@@ -269,20 +264,4 @@ struct PdfViewerView: View {
         app.flushPageTextCacheHandler = nil
     }
 
-    private func teardown() {
-        // SwiftUI mounts the replacement viewer (onAppear/task) BEFORE this
-        // onDisappear fires, so only clear the shared handler slots and the AI
-        // document context when no replacement viewer has taken over — same
-        // ownership guard as WebViewerController.detach. A replacement's own
-        // load() unconditionally unregisters before re-registering, so stale
-        // handlers never leak.
-        if app.activeTabId == handlersTabId || app.document == nil {
-            unregisterHandlers()
-            controller.flushAndDropPersister()
-            aiStore.clearDocumentContext()
-        }
-        handlersTabId = nil
-        controller.reset()
-        loadState = .idle
-    }
 }

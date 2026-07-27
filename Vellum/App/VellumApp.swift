@@ -49,17 +49,19 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     for tab in leaf.app.tabs {
                         try? await workspace.sessions.setDocumentMetadata(
                             sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                    }
+                }
+                // Metadata rewrites PDFs and changes their validation hashes.
+                // Flush every runtime after those writes (not only the focused
+                // pane's shared handler), then close the backend sessions.
+                await workspace.flushLivePageTextCaches()
+                for leaf in leaves {
+                    for tab in leaf.app.tabs {
                         try? await workspace.sessions.closeFile(sessionId: tab.id)
                     }
                 }
-                // Persist the active document's in-flight page text after the
-                // last_page writes (each refreshed the cache's validation hash),
-                // so a reopen still hits (issue #37 PR B). Then drain detached
-                // flushes from persisters dropped by a recent tab switch, whose
-                // controller no longer exists to be flushed via the handler.
-                for leaf in leaves {
-                    await leaf.app.flushPageTextCacheHandler?()
-                }
+                // Also drain detached flushes from controllers dropped by a
+                // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
                 await AiPersistence.awaitPendingFlush()
                 sender.reply(toApplicationShouldTerminate: true)

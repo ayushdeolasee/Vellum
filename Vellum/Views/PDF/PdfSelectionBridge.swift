@@ -32,12 +32,15 @@ struct PdfContextMenuState {
 @MainActor
 @Observable
 final class PdfViewerController {
-    weak var pdfView: PDFView?
+    /// Strong so a workspace-owned runtime can carry the exact native PDFView
+    /// between pane hosts. `reset()` releases it on close/eviction.
+    var pdfView: PDFView?
     private(set) var document: PDFDocument?
 
     @ObservationIgnored weak var app: AppStore?
     @ObservationIgnored weak var annotationStore: AnnotationStore?
     @ObservationIgnored weak var ai: AiStore?
+    @ObservationIgnored weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var tabId: String?
 
     /// Bumped whenever scroll/zoom/layout moves page geometry so the SwiftUI
@@ -74,6 +77,7 @@ final class PdfViewerController {
         guard let tabId else { return false }
         return app?.activeTabId == tabId
     }
+    var isActiveMount: Bool { isActiveTab }
 
     var isNoteMode: Bool { isActiveTab && app?.mode == .note }
     var isSnapshotRegionMode: Bool { isActiveTab && app?.mode == .snapshotRegion }
@@ -86,7 +90,8 @@ final class PdfViewerController {
         annotationStore: AnnotationStore,
         ai: AiStore,
         initialPage: Int,
-        tabId: String
+        tabId: String,
+        runtime: LiveTabRuntime
     ) {
         reset()
         self.document = document
@@ -94,11 +99,26 @@ final class PdfViewerController {
         self.annotationStore = annotationStore
         self.ai = ai
         self.tabId = tabId
+        self.runtime = runtime
         self.initialPage = initialPage
         // Embedded annotations are stripped off-main by the caller (PdfViewerView
         // .load) before adopt, so they render ONLY from store overlays and never
         // double-draw. Stripping here would repeat that heavy work on the main
         // thread — see PreparedPdf.
+    }
+
+    func rebind(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        ai: AiStore,
+        tabId: String,
+        runtime: LiveTabRuntime
+    ) {
+        self.app = app
+        self.annotationStore = annotationStore
+        self.ai = ai
+        self.tabId = tabId
+        self.runtime = runtime
     }
 
     func reset() {
@@ -108,7 +128,9 @@ final class PdfViewerController {
         extractionTask?.cancel()
         extractionTask = nil
         document = nil
+        pdfView = nil
         tabId = nil
+        runtime = nil
         selection = nil
         selectionPopoverPosition = nil
         contextMenu = nil
@@ -746,6 +768,14 @@ final class PdfViewerController {
         await persister?.flush()
     }
 
+    /// Stop the background walk before flushing so every page produced before
+    /// deactivation is included and no writer races the persisted snapshot.
+    func pauseTextExtraction() async {
+        extractionTask?.cancel()
+        extractionTask = nil
+        await persister?.flush()
+    }
+
     /// Synchronous flush-and-drop that survives `reset()`: the flush runs on
     /// the captured persister (which owns its own page data), so nil'ing the
     /// property here can't lose pages. Idempotent — a clean persister flushes
@@ -783,6 +813,7 @@ final class PdfViewerController {
                 // page.string (the expensive part) — true resume of a partial walk.
                 if self.ai?.pageTexts[pageNumber] == nil,
                    let normalized = self.ai?.setPageText(page: pageNumber, text: page.string ?? "") {
+                    self.runtime?.pageTexts[pageNumber] = normalized
                     self.persister?.noteExtracted(page: pageNumber, text: normalized)
                 }
             }
@@ -819,6 +850,7 @@ final class PdfViewerController {
             guard self.document === document, app?.activeTabId == tabId,
                   let page = document.page(at: pageNumber - 1) else { break }
             if let normalized = ai.setPageText(page: pageNumber, text: page.string ?? "") {
+                runtime?.pageTexts[pageNumber] = normalized
                 persister?.noteExtracted(page: pageNumber, text: normalized)
             }
             extracted += 1

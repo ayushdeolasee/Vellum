@@ -122,6 +122,13 @@ final class WorkspaceStore {
     @ObservationIgnored private var isRestoring = false
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
+    // MARK: - Workspace-owned live tab runtimes
+
+    static let maxLiveTabRuntimes = 8
+    @ObservationIgnored private var liveTabRuntimes: [String: LiveTabRuntime] = [:]
+    @ObservationIgnored private var runtimeAccessOrdinal = 0
+    @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
+
     // MARK: - Init
 
     init(sessions: SessionService) {
@@ -139,6 +146,83 @@ final class WorkspaceStore {
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
         pane.app.workspace = self
+        installMemoryPressureObserver()
+    }
+
+    func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
+        liveTabRuntimes[tabId] ?? {
+            let created = LiveTabRuntime(tabId: tabId)
+            liveTabRuntimes[tabId] = created
+            return created
+        }()
+    }
+
+    func activateLiveTabRuntime(_ runtime: LiveTabRuntime) {
+        runtimeAccessOrdinal &+= 1
+        runtime.accessOrdinal = runtimeAccessOrdinal
+        runtime.reactivate()
+        enforceLiveRuntimeLimit(excluding: runtime.tabId)
+    }
+
+    func existingLiveTabRuntime(for tabId: String) -> LiveTabRuntime? {
+        liveTabRuntimes[tabId]
+    }
+
+    func removeLiveTabRuntime(for tabId: String) {
+        liveTabRuntimes.removeValue(forKey: tabId)?.evict()
+    }
+
+    func evictInactiveRuntime(_ tabId: String) {
+        guard !activeTabIds.contains(tabId) else { return }
+        liveTabRuntimes[tabId]?.evict()
+    }
+
+    func flushLivePageTextCaches() async {
+        for runtime in liveTabRuntimes.values {
+            await runtime.flushPdfText()
+        }
+    }
+
+    var liveRuntimeCountForTesting: Int {
+        liveTabRuntimes.values.filter { !$0.isEvicted }.count
+    }
+
+    func handleMemoryPressureForTesting() {
+        evictInactiveRuntimes()
+    }
+
+    private var activeTabIds: Set<String> {
+        Set(root.allLeaves().compactMap { $0.app.activeTabId })
+    }
+
+    private func enforceLiveRuntimeLimit(excluding tabId: String) {
+        let active = activeTabIds
+        while liveTabRuntimes.values.filter({ !$0.isEvicted }).count > Self.maxLiveTabRuntimes {
+            guard let victim = liveTabRuntimes.values
+                .filter({ !$0.isEvicted && $0.tabId != tabId && !active.contains($0.tabId) })
+                .min(by: { $0.accessOrdinal < $1.accessOrdinal })
+            else { return }
+            victim.evict()
+        }
+    }
+
+    private func installMemoryPressureObserver() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.evictInactiveRuntimes()
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    private func evictInactiveRuntimes() {
+        let active = activeTabIds
+        for runtime in liveTabRuntimes.values where !active.contains(runtime.tabId) {
+            runtime.evict()
+        }
     }
 
     // MARK: - Focus
@@ -226,7 +310,10 @@ final class WorkspaceStore {
     /// Collapse a pane; its sibling reclaims the space. Closing the last pane
     /// resets the window to a single empty pane.
     func closePane(_ paneId: String) {
-        guard root.leaf(id: paneId) != nil else { return }
+        guard let closingPane = root.leaf(id: paneId) else { return }
+        for tab in closingPane.app.tabs {
+            removeLiveTabRuntime(for: tab.id)
+        }
         if root.isLeaf {
             let pane = makePane(startTab: false)
             root = .leaf(pane)

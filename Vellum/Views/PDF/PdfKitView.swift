@@ -80,6 +80,11 @@ struct PdfKitView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> PDFView {
+        if let retained = controller.pdfView, retained.document === document {
+            context.coordinator.attach(to: retained)
+            controller.documentAttached()
+            return retained
+        }
         let view = PDFView()
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -234,9 +239,6 @@ struct PdfKitView: NSViewRepresentable {
                 view.removeTrackingArea(trackingArea)
             }
             trackingArea = nil
-            if controller.pdfView === view {
-                controller.pdfView = nil
-            }
             self.view = nil
         }
 
@@ -256,6 +258,7 @@ struct PdfKitView: NSViewRepresentable {
                     guard let self, let view = self.view, event.window === view.window else {
                         return false
                     }
+                    guard self.controller.isActiveMount else { return false }
                     let native = view.convert(event.locationInWindow, from: nil)
                     guard view.bounds.contains(native) else {
                         // Window-wide dismissal (the original listens on
@@ -284,7 +287,8 @@ struct PdfKitView: NSViewRepresentable {
                     // (overlays only stop propagation for mousedown/click), so
                     // no hit-test gate here — just bounds containment.
                     guard let self, let view = self.view,
-                          event.window === view.window else { return }
+                          event.window === view.window,
+                          self.controller.isActiveMount else { return }
                     let point = view.convert(event.locationInWindow, from: nil)
                     guard view.bounds.contains(point) else { return }
                     self.controller.handleMouseUp(atNative: point)
@@ -296,7 +300,8 @@ struct PdfKitView: NSViewRepresentable {
 
             if let monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown, handler: { [weak self] event in
                 let overPdf = MainActor.assumeIsolated { () -> Bool in
-                    guard let self, let point = self.pdfPoint(for: event) else { return false }
+                    guard let self, self.controller.isActiveMount,
+                          let point = self.pdfPoint(for: event) else { return false }
                     _ = self.controller.handleRightMouseDown(atNative: point)
                     return true
                 }
@@ -310,7 +315,8 @@ struct PdfKitView: NSViewRepresentable {
 
             if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .cursorUpdate], handler: { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, let cursor = self.modeCursor,
+                    guard let self, self.controller.isActiveMount,
+                          self.modeCursor != nil,
                           self.pointerOverViewer(event) else { return }
                     // The PDFView (and the SwiftUI overlay above it) re-set their
                     // own cursor while handling this event, so asserting here

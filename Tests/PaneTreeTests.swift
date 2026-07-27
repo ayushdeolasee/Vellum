@@ -44,10 +44,13 @@ final class PaneTreeTests: XCTestCase {
         let ws = makeWorkspace()
         ws.splitFocused(.horizontal)
         let toClose = ws.focusedPaneId
+        let closingTabId = ws.focusedPane.app.activeTabId!
+        _ = ws.liveTabRuntime(for: closingTabId)
         ws.closePane(toClose)
         XCTAssertEqual(ws.root.allLeaves().count, 1)
         XCTAssertFalse(ws.isSplit)
         XCTAssertNil(ws.root.leaf(id: toClose))
+        XCTAssertNil(ws.existingLiveTabRuntime(for: closingTabId))
         // Focus lands on a surviving pane.
         XCTAssertNotNil(ws.root.leaf(id: ws.focusedPaneId))
     }
@@ -84,6 +87,7 @@ final class PaneTreeTests: XCTestCase {
         let source = ws.focusedPane
         source.app.newStartTab()
         let movingId = source.app.tabs.last!.id
+        let runtimeBeforeMove = ws.liveTabRuntime(for: movingId)
         let sourceCount = source.app.tabs.count
         ws.splitFocused(.horizontal)
         let dest = ws.focusedPane
@@ -94,6 +98,7 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(dest.app.tabs.count, destCount + 1)
         XCTAssertTrue(dest.app.tabs.contains { $0.id == movingId })
         XCTAssertEqual(ws.focusedPaneId, dest.id)
+        XCTAssertTrue(ws.liveTabRuntime(for: movingId) === runtimeBeforeMove)
     }
 
     func testFindStateFollowsItsDocumentTab() {
@@ -118,12 +123,83 @@ final class PaneTreeTests: XCTestCase {
             webVisibleBookmarks: [], mode: .view))
         XCTAssertFalse(app.findVisible)
         XCTAssertEqual(app.findQuery, "")
+        app.showFind()
+        app.performFind("web query")
+        app.setFindResults(count: 2, current: 1)
 
         app.activateTab("pdf")
         XCTAssertTrue(app.findVisible)
         XCTAssertEqual(app.findQuery, "retained query")
         XCTAssertEqual(app.findMatchCount, 4)
         XCTAssertEqual(app.findCurrentMatch, 2)
+
+        app.activateTab("web")
+        XCTAssertTrue(app.findVisible)
+        XCTAssertEqual(app.findQuery, "web query")
+        XCTAssertEqual(app.findMatchCount, 2)
+        XCTAssertEqual(app.findCurrentMatch, 1)
+    }
+
+    func testLiveRuntimeTextIsIsolatedPerTab() {
+        let ws = makeWorkspace()
+        let first = ws.liveTabRuntime(for: "first")
+        let second = ws.liveTabRuntime(for: "second")
+        first.pageTexts = [1: "first page"]
+        second.pageTexts = [1: "second page"]
+
+        XCTAssertEqual(first.pageTexts[1], "first page")
+        XCTAssertEqual(second.pageTexts[1], "second page")
+    }
+
+    func testLiveRuntimeLimitEvictsLeastRecentlyUsedInactiveTab() {
+        let ws = makeWorkspace()
+        var runtimes: [LiveTabRuntime] = []
+        for index in 0...WorkspaceStore.maxLiveTabRuntimes {
+            let runtime = ws.liveTabRuntime(for: "runtime-\(index)")
+            ws.activateLiveTabRuntime(runtime)
+            runtimes.append(runtime)
+        }
+
+        XCTAssertEqual(ws.liveRuntimeCountForTesting, WorkspaceStore.maxLiveTabRuntimes)
+        XCTAssertTrue(runtimes[0].isEvicted)
+        XCTAssertFalse(runtimes.last!.isEvicted)
+    }
+
+    func testMemoryPressureEvictsInactiveButKeepsActiveRuntime() {
+        let ws = makeWorkspace()
+        ws.focusedPane.app.newStartTab()
+        let activeId = ws.focusedPane.app.activeTabId!
+        let active = ws.liveTabRuntime(for: activeId)
+        let inactive = ws.liveTabRuntime(for: "inactive")
+        let inactiveWebController = inactive.webController
+        inactive.pageTexts = [1: "retained extraction"]
+        ws.activateLiveTabRuntime(active)
+        ws.activateLiveTabRuntime(inactive)
+
+        ws.handleMemoryPressureForTesting()
+
+        XCTAssertFalse(active.isEvicted)
+        XCTAssertTrue(inactive.isEvicted)
+        XCTAssertFalse(inactive.webController === inactiveWebController)
+        XCTAssertEqual(inactive.pageTexts[1], "retained extraction")
+    }
+
+    func testPdfControllerActiveGateFollowsReboundPane() {
+        let ws = makeWorkspace()
+        let source = ws.focusedPane
+        source.app.newStartTab()
+        let tabId = source.app.activeTabId!
+        let runtime = ws.liveTabRuntime(for: tabId)
+        runtime.pdfController.rebind(
+            app: source.app,
+            annotationStore: source.annotations,
+            ai: source.ai,
+            tabId: tabId,
+            runtime: runtime)
+        XCTAssertTrue(runtime.pdfController.isActiveMount)
+
+        source.app.newStartTab()
+        XCTAssertFalse(runtime.pdfController.isActiveMount)
     }
 
     func testSetSizesUpdatesRatios() {
