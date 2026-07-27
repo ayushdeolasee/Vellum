@@ -213,7 +213,8 @@ struct OnboardingStep: Identifiable, Equatable {
             icon: "sparkles",
             introduction: "Reading and annotation work without an AI provider. Configure one later in Settings ▸ AI.",
             points: [
-                "Each request includes your prompt and recent conversation, plus the document title, visible-page metadata, and current-page text and annotations.",
+                "By default, each request includes your prompt and recent conversation, plus the document title, visible-page metadata, and current-page text and annotations.",
+                "Tool-assisted requests may use whole-document search and send bounded relevant excerpts and annotations from other pages.",
                 "For scanned or low-text pages, Vellum automatically includes a current-page image when applicable.",
                 "Reference chips show extra selections, quotes, and images you explicitly attach; automatic document context is not shown as a chip.",
                 "Your provider receives that request under its own privacy and retention policy."

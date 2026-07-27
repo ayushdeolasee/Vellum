@@ -40,10 +40,6 @@ enum WebStorageSettings {
     nonisolated(unsafe) static var customRootOverride: URL?
     nonisolated(unsafe) static var icloudDriveRootOverride: URL?
     nonisolated(unsafe) static var autoSavePagesOverride: Bool?
-    /// Process-scoped launch/test override. Unlike `setMode`, it never writes a
-    /// storage preference, so a UI-test reset cannot alter a user's setup.
-    nonisolated(unsafe) static var needsFirstLaunchChoiceOverride: Bool?
-
     /// Nil until the user has made the first-launch choice.
     static var chosenMode: WebStorageMode? {
         if let modeOverride { return modeOverride }
@@ -69,16 +65,13 @@ enum WebStorageSettings {
         return chosenMode != effectiveMode
     }
 
-    static var needsFirstLaunchChoice: Bool {
-        needsFirstLaunchChoiceOverride ?? (chosenMode == nil)
-    }
-
-    /// The onboarding reset argument must reveal the tour without allowing the
-    /// unrelated storage-location sheet to win the launch presentation race.
-    /// This is intentionally in-memory only; normal launches clear the seam.
-    static func applyLaunchArguments(_ arguments: [String]) {
-        needsFirstLaunchChoiceOverride = arguments.contains(OnboardingProgress.resetLaunchArgument)
-            ? false
+    /// A reset UI-test launch needs a deterministic, process-local storage
+    /// choice to reach onboarding. It never persists a storage preference and
+    /// is unavailable to production builds because its caller verifies XCTest.
+    static func applyLaunchArguments(_ arguments: [String], isIsolatedUITestLaunch: Bool) {
+        modeOverride = isIsolatedUITestLaunch
+            && arguments.contains(OnboardingProgress.resetLaunchArgument)
+            ? .local
             : nil
     }
 

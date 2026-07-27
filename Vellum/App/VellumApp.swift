@@ -128,14 +128,21 @@ struct VellumApp: App {
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     let launchArguments = ProcessInfo.processInfo.arguments
+                    let isIsolatedUITestLaunch = OnboardingProgress.isIsolatedUITestLaunch(
+                        environment: ProcessInfo.processInfo.environment)
                     let onboarding = OnboardingProgress()
-                    onboarding.applyLaunchArguments(launchArguments)
-                    WebStorageSettings.applyLaunchArguments(launchArguments)
-                    showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
-                    showOnboarding = !showStorageChoice && !onboarding.isComplete
+                    onboarding.applyLaunchArguments(
+                        launchArguments,
+                        isIsolatedUITestLaunch: isIsolatedUITestLaunch)
+                    WebStorageSettings.applyLaunchArguments(
+                        launchArguments,
+                        isIsolatedUITestLaunch: isIsolatedUITestLaunch)
+                    updateFirstLaunchPresentation()
                 }
                 .sheet(isPresented: $showStorageChoice, onDismiss: {
-                    showOnboarding = !OnboardingProgress().isComplete
+                    // Escape/click-away is not a storage choice. Re-present the
+                    // required choice instead of advancing to onboarding.
+                    updateFirstLaunchPresentation()
                 }) {
                     StorageLocationChoiceSheet()
                         .environment(\.palette, themeStore.palette)
@@ -194,6 +201,23 @@ struct VellumApp: App {
                 .tint(themeStore.palette.primary)
         }
         .windowResizability(.contentSize)
+    }
+
+    private func updateFirstLaunchPresentation() {
+        switch FirstLaunchPresentation.resolve(
+            chosenMode: WebStorageSettings.chosenMode,
+            onboardingComplete: OnboardingProgress().isComplete
+        ) {
+        case .storageChoice:
+            showStorageChoice = true
+            showOnboarding = false
+        case .onboarding:
+            showStorageChoice = false
+            showOnboarding = true
+        case .none:
+            showStorageChoice = false
+            showOnboarding = false
+        }
     }
 }
 

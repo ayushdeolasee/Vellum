@@ -7,13 +7,15 @@ final class OnboardingHelpTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        OnboardingProgress.completionOverride = nil
         suiteName = "OnboardingHelpTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
     }
 
     override func tearDown() {
-        WebStorageSettings.needsFirstLaunchChoiceOverride = nil
+        OnboardingProgress.completionOverride = nil
+        WebStorageSettings.modeOverride = nil
         defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
         suiteName = nil
@@ -34,38 +36,65 @@ final class OnboardingHelpTests: XCTestCase {
     func testLaunchArgumentsProvideDeterministicUITestState() {
         let progress = OnboardingProgress(defaults: defaults)
 
-        progress.applyLaunchArguments([OnboardingProgress.skipLaunchArgument])
+        progress.applyLaunchArguments(
+            [OnboardingProgress.skipLaunchArgument],
+            isIsolatedUITestLaunch: true)
         XCTAssertTrue(progress.isComplete)
 
-        progress.applyLaunchArguments([
-            OnboardingProgress.skipLaunchArgument,
-            OnboardingProgress.resetLaunchArgument
-        ])
+        progress.applyLaunchArguments(
+            [OnboardingProgress.skipLaunchArgument, OnboardingProgress.resetLaunchArgument],
+            isIsolatedUITestLaunch: true)
         XCTAssertFalse(progress.isComplete, "reset must win when both arguments are present")
     }
 
     func testExistingWorkspaceMigratesWithoutSkippingTrueFirstLaunch() {
         let firstLaunch = OnboardingProgress(defaults: defaults)
-        firstLaunch.applyLaunchArguments([])
+        firstLaunch.applyLaunchArguments([], isIsolatedUITestLaunch: false)
         XCTAssertFalse(firstLaunch.isComplete)
 
         defaults.set("persisted workspace", forKey: WorkspaceService.storageKey)
         let existingInstall = OnboardingProgress(defaults: defaults)
-        existingInstall.applyLaunchArguments([])
+        existingInstall.applyLaunchArguments([], isIsolatedUITestLaunch: false)
         XCTAssertTrue(existingInstall.isComplete)
     }
 
-    func testResetLaunchShowsTourWithoutPersistingAStorageChoice() {
+    func testResetLaunchIsLimitedToAnIsolatedUITestAndUsesAnInMemoryStorageChoice() {
         let progress = OnboardingProgress(defaults: defaults)
         progress.complete()
-        WebStorageSettings.needsFirstLaunchChoiceOverride = true
 
         let arguments = [OnboardingProgress.resetLaunchArgument]
-        progress.applyLaunchArguments(arguments)
-        WebStorageSettings.applyLaunchArguments(arguments)
+        progress.applyLaunchArguments(arguments, isIsolatedUITestLaunch: false)
+        WebStorageSettings.applyLaunchArguments(arguments, isIsolatedUITestLaunch: false)
+
+        XCTAssertTrue(progress.isComplete, "production launch arguments must not reset onboarding")
+        XCTAssertNil(WebStorageSettings.modeOverride)
+
+        progress.applyLaunchArguments(arguments, isIsolatedUITestLaunch: true)
+        WebStorageSettings.applyLaunchArguments(arguments, isIsolatedUITestLaunch: true)
 
         XCTAssertFalse(progress.isComplete)
-        XCTAssertFalse(WebStorageSettings.needsFirstLaunchChoice)
+        XCTAssertTrue(defaults.bool(forKey: OnboardingProgress.completionKey))
+        XCTAssertEqual(WebStorageSettings.modeOverride, .local)
+        XCTAssertEqual(WebStorageSettings.chosenMode, .local)
+    }
+
+    func testFirstLaunchPresentationRequiresAChosenStorageMode() {
+        XCTAssertEqual(
+            FirstLaunchPresentation.resolve(chosenMode: nil, onboardingComplete: false),
+            .storageChoice)
+        XCTAssertEqual(
+            FirstLaunchPresentation.resolve(chosenMode: .local, onboardingComplete: false),
+            .onboarding)
+        XCTAssertEqual(
+            FirstLaunchPresentation.resolve(chosenMode: .local, onboardingComplete: true),
+            .none)
+    }
+
+    func testXCTestEnvironmentIsRequiredForTheUITestLaunchSeam() {
+        XCTAssertFalse(OnboardingProgress.isIsolatedUITestLaunch(
+            environment: [:]))
+        XCTAssertTrue(OnboardingProgress.isIsolatedUITestLaunch(
+            environment: [OnboardingProgress.xctestConfigurationEnvironmentKey: "/tmp/config.xctest"]))
     }
 
     func testHelpSearchMatchesFeaturesConceptsAndShortcuts() {
@@ -83,6 +112,10 @@ final class OnboardingHelpTests: XCTestCase {
         XCTAssertTrue(ai.introduction.contains("without an AI provider"))
         XCTAssertTrue(ai.note?.contains("never blocks") == true)
         XCTAssertTrue(ai.points.joined().contains("recent conversation"))
+        XCTAssertTrue(ai.points.joined().contains("By default"))
+        XCTAssertTrue(ai.points.joined().contains("Tool-assisted requests"))
+        XCTAssertTrue(ai.points.joined().contains("whole-document search"))
+        XCTAssertTrue(ai.points.joined().contains("other pages"))
         XCTAssertTrue(ai.points.joined().contains("current-page image"))
         XCTAssertTrue(ai.points.joined().contains("not shown as a chip"))
     }

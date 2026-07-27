@@ -10,6 +10,16 @@ struct OnboardingProgress {
     static let resetLaunchArgument = "--reset-onboarding"
     static let skipLaunchArgument = "--skip-onboarding"
 
+    /// Xcode puts this in the launched app's environment for XCTest runs. The
+    /// onboarding launch arguments are deliberately ignored outside that
+    /// isolated test process so a production launch can never rewrite a
+    /// person's onboarding preference.
+    static let xctestConfigurationEnvironmentKey = "XCTestConfigurationFilePath"
+
+    /// Process-local state used only after the XCTest launch check succeeds.
+    /// It keeps reset/skip UI tests out of the user's real defaults domain.
+    nonisolated(unsafe) static var completionOverride: Bool?
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -17,14 +27,22 @@ struct OnboardingProgress {
     }
 
     var isComplete: Bool {
-        defaults.bool(forKey: Self.completionKey)
+        Self.completionOverride ?? defaults.bool(forKey: Self.completionKey)
     }
 
     func complete() {
+        if Self.completionOverride != nil {
+            Self.completionOverride = true
+            return
+        }
         defaults.set(true, forKey: Self.completionKey)
     }
 
     func reset() {
+        if Self.completionOverride != nil {
+            Self.completionOverride = false
+            return
+        }
         defaults.removeObject(forKey: Self.completionKey)
     }
 
@@ -38,16 +56,43 @@ struct OnboardingProgress {
         complete()
     }
 
-    /// Applies deterministic launch arguments before the app decides whether
-    /// to present the tour. Reset wins when both are supplied and deliberately
-    /// bypasses legacy migration so an isolated UI-test launch can show it.
-    func applyLaunchArguments(_ arguments: [String]) {
-        if arguments.contains(Self.resetLaunchArgument) {
-            reset()
-        } else if arguments.contains(Self.skipLaunchArgument) {
-            complete()
-        } else {
+    /// Returns true only for a Debug app launched by XCTest. The release app
+    /// never honors onboarding reset/skip arguments.
+    static func isIsolatedUITestLaunch(environment: [String: String]) -> Bool {
+        #if DEBUG
+        environment[xctestConfigurationEnvironmentKey] != nil
+        #else
+        false
+        #endif
+    }
+
+    /// Applies deterministic UI-test launch arguments before the app decides
+    /// whether to present the tour. Reset wins when both are supplied.
+    func applyLaunchArguments(_ arguments: [String], isIsolatedUITestLaunch: Bool) {
+        guard isIsolatedUITestLaunch else {
+            Self.completionOverride = nil
             migrateExistingInstallIfNeeded()
+            return
         }
+        if arguments.contains(Self.resetLaunchArgument) {
+            Self.completionOverride = false
+        } else if arguments.contains(Self.skipLaunchArgument) {
+            Self.completionOverride = true
+        } else {
+            Self.completionOverride = defaults.bool(forKey: Self.completionKey)
+        }
+    }
+}
+
+/// The two first-launch sheets are mutually exclusive. A storage choice must
+/// exist before the onboarding sheet is allowed to appear.
+enum FirstLaunchPresentation: Equatable {
+    case storageChoice
+    case onboarding
+    case none
+
+    static func resolve(chosenMode: WebStorageMode?, onboardingComplete: Bool) -> Self {
+        guard chosenMode != nil else { return .storageChoice }
+        return onboardingComplete ? .none : .onboarding
     }
 }
