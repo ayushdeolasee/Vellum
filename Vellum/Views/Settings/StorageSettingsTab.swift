@@ -617,7 +617,7 @@ struct StorageSettingsTab: View {
 
     private func reclaimedMessage(_ bytes: Int64) -> String {
         bytes == 0
-            ? "Cleanup complete — no space needed reclaiming."
+            ? "No space needed reclaiming."
             : "Reclaimed \(bytes.formatted(.byteCount(style: .file)))."
     }
 

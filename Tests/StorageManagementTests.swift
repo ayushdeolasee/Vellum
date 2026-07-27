@@ -79,6 +79,22 @@ final class StorageManagementTests: XCTestCase {
         let openAI = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
         XCTAssertNil(openAI.url?.absoluteString.range(of: "sk-secret"))
         XCTAssertEqual(openAI.value(forHTTPHeaderField: "Authorization"), "Bearer sk-secret")
+
+        let bearerProviders: [(AiProvider, WritableKeyPath<AiSettings, String>, String)] = [
+            (.openrouter, \.openrouterApiKey, "sk-or-secret"),
+            (.opencode, \.opencodeApiKey, "sk-zen-secret"),
+            (.opencodeGo, \.opencodeGoApiKey, "sk-go-secret"),
+        ]
+        for (provider, keyPath, secret) in bearerProviders {
+            settings.provider = provider
+            settings[keyPath: keyPath] = secret
+            let request = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+            XCTAssertFalse(request.url?.absoluteString.contains(secret) ?? true, "\(provider) leaked its key in the URL")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer \(secret)",
+                "\(provider) must authenticate in the header")
+        }
     }
 
     // MARK: - listDocuments sizes

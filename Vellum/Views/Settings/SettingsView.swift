@@ -205,11 +205,19 @@ private struct AiSettingsTab: View {
                         validationState = .checking
                         let settings = aiStore.settings
                         let signedIn = chatGPTAuth.isSignedIn
+                        let provider = settings.provider
+                        let model = aiStore.activeModelName
+                        let credential = aiStore.apiKeyBinding.wrappedValue
                         Task {
-                            validationState = await AiConnectionValidator.validate(
+                            let result = await AiConnectionValidator.validate(
                                 settings: settings,
                                 chatGPTSignedIn: signedIn
                             )
+                            guard aiStore.settings.provider == provider,
+                                  aiStore.activeModelName == model,
+                                  aiStore.apiKeyBinding.wrappedValue == credential,
+                                  chatGPTAuth.isSignedIn == signedIn else { return }
+                            validationState = result
                         }
                     }
                     .disabled(validationState == .checking || !canValidate)
@@ -224,6 +232,8 @@ private struct AiSettingsTab: View {
         .scrollDisabled(true)
         .onChange(of: aiStore.settings.provider) { _, _ in validationState = .idle }
         .onChange(of: aiStore.activeModelName) { _, _ in validationState = .idle }
+        .onChange(of: aiStore.apiKeyBinding.wrappedValue) { _, _ in validationState = .idle }
+        .onChange(of: chatGPTAuth.isSignedIn) { _, _ in validationState = .idle }
     }
 
     private var canValidate: Bool {

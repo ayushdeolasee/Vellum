@@ -80,6 +80,12 @@ enum WebStorageRelocator {
         status = Status(isInProgress: true, message: "Moving storage…")
         NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
 
+        // Invalidate any older queued move even when this source is currently
+        // unreachable. Otherwise the older move can finish afterward and clear
+        // the recovery marker that belongs to this newer request.
+        relocationGeneration += 1
+        let generation = relocationGeneration
+
         guard sourceReachable else {
             // Nothing can move while the old root is unreachable (iCloud
             // signed out, folder unmounted). Keep the marker: the launch
@@ -92,11 +98,10 @@ enum WebStorageRelocator {
             return
         }
 
-        relocationGeneration += 1
-        let generation = relocationGeneration
         enqueue {
             guard WebStorageMigrator.relocate(from: source, to: destination) else {
                 await MainActor.run {
+                    guard generation == relocationGeneration else { return }
                     status = Status(
                         needsRecovery: true,
                         message: "The move was interrupted. Your original data remains safe and Vellum will retry at next launch."
