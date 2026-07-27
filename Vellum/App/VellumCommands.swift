@@ -216,6 +216,12 @@ struct VellumCommands: Commands {
             Button("Vellum Walkthrough") {
                 NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
             }
+            // Keeps ⌘? on the Help menu's primary item, which is where macOS
+            // has trained everyone to reach for it — the stock "Vellum Help"
+            // item this replaces carried exactly that key equivalent, so
+            // dropping it would be a silent regression. No other command in the
+            // app binds "?".
+            .keyboardShortcut("?", modifiers: .command)
         }
 
         // MARK: Annotations

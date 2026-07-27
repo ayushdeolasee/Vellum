@@ -140,4 +140,25 @@ final class WalkthroughContentTests: XCTestCase {
         let mentionsOptions = storage?.points.contains { $0.text.contains("1, 3, 6 or 12 months") } ?? false
         XCTAssertTrue(mentionsOptions, "storage page no longer lists the selectable retention windows")
     }
+
+    func testStoragePageStatesTheConversationCap() {
+        // AI conversations are the one thing on this page that the app DOES
+        // shorten by itself: every saveConversation runs through
+        // AiPersistence.limit, which keeps only the last
+        // maxMessagesPerDocument messages and persists the truncated list. The
+        // copy names that number, so pin it — if the cap moves, the sentence
+        // has to move with it.
+        XCTAssertEqual(AiPersistence.maxMessagesPerDocument, 120)
+        let storage = pages.first { $0.id == "storage" }
+        let statesCap = storage?.points.contains { $0.text.contains("120 messages") } ?? false
+        XCTAssertTrue(statesCap, "storage page no longer states the AI conversation cap")
+
+        // Guard the inverse too: conversations must not be listed among the
+        // things only the user deletes, which is what the page claimed before
+        // the cap was noticed.
+        let overclaims = storage?.points.contains {
+            $0.text.contains("AI conversations") && $0.text.contains("Only you delete")
+        } ?? false
+        XCTAssertFalse(overclaims, "storage page claims AI conversations are never trimmed")
+    }
 }

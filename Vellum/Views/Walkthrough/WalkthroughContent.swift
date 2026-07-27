@@ -75,14 +75,23 @@ extension WalkthroughPage {
             id: "annotate",
             symbol: "highlighter",
             title: "Mark up the page",
+            // "as you make them", not "when you save": PdfSessionBackend.save()
+            // is a documented no-op because createAnnotation/updateAnnotation
+            // already write the PDF back to disk. Telling a new reader their
+            // markings are unsaved until ⌘S would be actively misleading.
             summary:
                 "Highlights and notes work the same way on a PDF and on a web page. In a PDF they "
-                + "are written into the file itself when you save; on a web page they are kept with "
-                + "the page in your library.",
+                + "are written into the file itself as you make them; on a web page they are kept "
+                + "with the page in your library.",
             points: [
                 WalkthroughPoint(
                     symbol: "highlighter",
-                    text: "Select text and pick a colour — yellow, green, blue, pink, or purple."),
+                    // "color", not "colour": every other user-facing string in
+                    // the app spells it the American way ("Change highlight
+                    // color", "Set highlight color: …", the Settings default
+                    // -highlight copy), and this is the first screen a new user
+                    // reads.
+                    text: "Select text and pick a color — yellow, green, blue, pink, or purple."),
                 WalkthroughPoint(
                     symbol: "note.text",
                     text: "Press N for note mode, then click anywhere on the page to drop a sticky note.",
@@ -146,7 +155,7 @@ extension WalkthroughPage {
                 WalkthroughPoint(
                     symbol: "slider.horizontal.3",
                     text:
-                        "Pick a model from the selector and star the ones you use. OpenRouter's catalogue "
+                        "Pick a model from the selector and star the ones you use. OpenRouter's catalog "
                         + "loads live, with pricing and context length."),
             ]
         ),
@@ -186,15 +195,25 @@ extension WalkthroughPage {
             id: "storage",
             symbol: "externaldrive",
             title: "Where your work lives",
+            // Not "never deletes on its own" — see the AI-conversation note on
+            // the first bullet. "Keeps" is the claim the code actually backs.
             summary:
-                "Vellum splits your data in two: the things you made, which it never deletes on its "
-                + "own, and the things it can rebuild, which it tidies up.",
+                "Vellum splits your data in two: the things you made, which it keeps, and the "
+                + "things it can rebuild, which it tidies up.",
             points: [
+                // AI conversations are deliberately NOT inside the "only you
+                // delete these" list: AiPersistence.saveConversation runs every
+                // save through `limit`, which keeps only the last
+                // `maxMessagesPerDocument` messages and hard-truncates any
+                // single message past `maxMessageCharacters`. That trim is
+                // written straight to conversations.json, so the older messages
+                // are genuinely gone — claiming otherwise would be the one lie
+                // on the page the whole feature was filed for.
                 WalkthroughPoint(
                     symbol: "checkmark.seal",
                     text:
-                        "Kept indefinitely: highlights, notes, bookmarks, reading positions, saved pages, "
-                        + "and AI conversations. Only you delete these."),
+                        "Kept indefinitely: highlights, notes, bookmarks, reading positions, and saved "
+                        + "pages. AI conversations stay too, trimmed to the last 120 messages."),
                 WalkthroughPoint(
                     symbol: "clock.arrow.circlepath",
                     text:

@@ -14,6 +14,13 @@ struct WalkthroughSheet: View {
     /// Direction of the last page change, so the outgoing and incoming pages
     /// slide the way the user just moved. Without it, Back animates like Next.
     @State private var movingForward = true
+    /// Parks keyboard focus on the sheet itself. `onKeyPress` only fires for the
+    /// focused view or one of its ancestors, and with Full Keyboard Access off
+    /// (the macOS default) a sheet of plain Buttons has NO focusable view at
+    /// all — the focused element stays the window, so every key press below is
+    /// dropped. Making the container focusable and claiming focus on appear is
+    /// what actually wires the keyboard up.
+    @FocusState private var keyboardFocused: Bool
 
     private let pages = WalkthroughPage.all
 
@@ -37,10 +44,16 @@ struct WalkthroughSheet: View {
         // the difference as trailing whitespace, which is the cheaper tradeoff.
         .frame(width: 620, height: 460)
         .background(palette.surface)
+        // Focusable, but with no focus ring: the sheet is claiming focus to
+        // receive key presses, not to advertise itself as a control.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($keyboardFocused)
         .onAppear {
             // Presented, therefore seen — see WalkthroughSettings.markSeen for
             // why this is not tied to the Done button.
             WalkthroughSettings.markSeen()
+            keyboardFocused = true
         }
         // Arrow keys page the sheet. The buttons stay the primary affordance;
         // this just makes the sheet behave the way a paged sheet should.
@@ -52,6 +65,14 @@ struct WalkthroughSheet: View {
         .onKeyPress(.rightArrow) {
             guard !isLast else { return .ignored }
             go(to: index + 1)
+            return .handled
+        }
+        // Escape closes the sheet. Nothing else provides this: Skip is hidden
+        // on the last page, and a SwiftUI sheet with no `.cancelAction` button
+        // does not dismiss on Escape by itself — so without this the only way
+        // out of the final page is the mouse.
+        .onKeyPress(.escape) {
+            dismiss()
             return .handled
         }
         // .contain keeps each control its own AX element with its own
