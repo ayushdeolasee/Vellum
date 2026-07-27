@@ -22,7 +22,36 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
+    private(set) var sidebarWidth: CGFloat = 340
     enum SidebarTab: Sendable { case annotations, ai, scratchpad }
+
+    /// Whether SwiftUI should currently present the document inspector.
+    ///
+    /// `sidebarOpen` is the user's window-level preference. A start tab has no
+    /// document, so it temporarily suppresses the inspector without changing
+    /// that preference. Keeping these concepts separate preserves the selected
+    /// panel and AppKit-managed column width when the user returns to a document.
+    var inspectorPresented: Bool {
+        focusedPane.app.document != nil && sidebarOpen
+    }
+
+    /// Applies a presentation change originating from SwiftUI's inspector host.
+    /// When focus moves to a start tab SwiftUI writes `false` because the
+    /// inspector is conditionally unavailable; that is not a user request to
+    /// close it, so ignore the write until a document is focused.
+    func setInspectorPresented(_ isPresented: Bool) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarOpen = isPresented
+    }
+
+    /// Remembers user resizing while the inspector is genuinely visible.
+    /// Geometry briefly collapses when a start tab suppresses the inspector;
+    /// rejecting that transient measurement lets the next document reopen at
+    /// the user's prior width.
+    func rememberSidebarWidth(_ width: CGFloat) {
+        guard inspectorPresented, (240...700).contains(width) else { return }
+        sidebarWidth = width
+    }
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
