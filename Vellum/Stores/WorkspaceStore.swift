@@ -348,11 +348,15 @@ final class WorkspaceStore {
     private func dto(from node: PaneNode) -> PaneNodeDTO {
         switch node {
         case .leaf(let pane):
-            let tabs = pane.app.tabs.map {
+            // Start tabs are a transient navigation surface, not documents.
+            // Persisting them strands abandoned "New Tab" entries among the
+            // user's reading tabs after relaunch.
+            let liveTabs = pane.app.tabs.filter { $0.document != nil }
+            let tabs = liveTabs.map {
                 TabDescriptor(document: $0.document, currentPage: $0.currentPage, zoom: $0.zoom, mode: $0.mode)
             }
             let activeIndex = pane.app.activeTabId.flatMap { id in
-                pane.app.tabs.firstIndex { $0.id == id }
+                liveTabs.firstIndex { $0.id == id }
             }
             return .leaf(tabs: tabs, activeTabIndex: activeIndex)
         case .split(_, let direction, let children, let sizes):

@@ -144,4 +144,96 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(dir, .vertical)
         XCTAssertEqual(children.count, 2)
     }
+
+    func testSerializeDropsTransientNewTabsAndReindexesSelection() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let first = makeTab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+                pageCount: 10, lastPage: 3))
+        let second = makeTab(
+            id: "web-b",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://example.com", title: "Example",
+                pageCount: 1, lastPage: 1))
+        app.attachTab(first)
+        app.newStartTab()
+        app.attachTab(second)
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.map(\.document?.title), ["A", "Example"])
+        XCTAssertEqual(activeIndex, 1)
+    }
+
+    func testSerializeDoesNotRestoreAbandonedActiveNewTab() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        app.attachTab(makeTab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+                pageCount: 10, lastPage: 3)))
+        app.newStartTab()
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.count, 1)
+        XCTAssertNil(activeIndex)
+    }
+
+    func testCloseOthersAndCloseRightPreserveExpectedTabs() async {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        app.newStartTab()
+        app.newStartTab()
+        app.newStartTab()
+        app.newStartTab()
+        let ids = app.tabs.map(\.id)
+
+        await app.closeTabsToRight(of: ids[1])
+        XCTAssertEqual(app.tabs.map(\.id), Array(ids.prefix(2)))
+
+        app.newStartTab()
+        await app.closeOtherTabs(keeping: ids[1])
+        XCTAssertEqual(app.tabs.map(\.id), [ids[1]])
+        XCTAssertEqual(app.activeTabId, ids[1])
+    }
+
+    func testTabPresentationUsesFullTitleAndType() {
+        let pdf = makeTab(
+            id: "pdf",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/Fallback.pdf",
+                title: "A long, fully searchable document title",
+                pageCount: 10, lastPage: 1))
+        let web = makeTab(
+            id: "web",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://example.com",
+                title: "Example", pageCount: 1, lastPage: 1))
+        let start = makeTab(id: "start", document: nil)
+
+        XCTAssertEqual(TabPresentation.title(for: pdf), "A long, fully searchable document title")
+        XCTAssertEqual(TabPresentation.typeLabel(for: pdf), "PDF")
+        XCTAssertEqual(TabPresentation.typeLabel(for: web), "Webpage")
+        XCTAssertEqual(TabPresentation.title(for: start), "New Tab")
+    }
+
+    private func makeTab(id: String, document: DocumentInfo?) -> PdfTab {
+        PdfTab(
+            id: id,
+            document: document,
+            currentPage: 1,
+            numPages: document?.pageCount ?? 0,
+            zoom: 1,
+            visiblePages: [],
+            webVisibleRange: nil,
+            webVisibleBookmarks: [],
+            mode: .view)
+    }
 }

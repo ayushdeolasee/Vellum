@@ -271,6 +271,88 @@ final class AppStore {
         workspace?.scheduleSave()
     }
 
+    /// Close every tab except `tabId`. Keeping this operation in the store makes
+    /// the tab-strip context menu and any future native command share the same
+    /// backend-session cleanup semantics as an ordinary close.
+    func closeOtherTabs(keeping tabId: String) async {
+        guard tabs.contains(where: { $0.id == tabId }) else { return }
+        let ids = tabs.map(\.id).filter { $0 != tabId }
+        for id in ids {
+            await closeTab(id)
+        }
+        activateTab(tabId)
+    }
+
+    /// Close tabs after `tabId` in visual order.
+    func closeTabsToRight(of tabId: String) async {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }),
+              index + 1 < tabs.count else { return }
+        let ids = tabs[(index + 1)...].map(\.id)
+        for id in ids.reversed() {
+            await closeTab(id)
+        }
+    }
+
+    /// Open a second live session for a tab, preserving its stable viewport.
+    /// Unlike the normal open path this deliberately does not deduplicate by
+    /// location: Duplicate means two independently navigable workspaces.
+    func duplicateTab(_ tabId: String) async {
+        guard let sourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let source = tabs[sourceIndex]
+        guard let sourceDocument = source.document else {
+            newStartTab()
+            return
+        }
+        // PDF mutations are serialized by a per-session IO actor, not a
+        // per-path actor. Two live sessions for the same file could therefore
+        // overwrite each other's annotation writes. Web sidecar mutations have
+        // a per-path lock, so duplicate live webpage sessions are safe.
+        guard sourceDocument.kind == .web else { return }
+
+        isLoading = true
+        error = nil
+        let sessionId = UUID().uuidString.lowercased()
+        do {
+            var opened: DocumentInfo
+            if sourceDocument.kind == .web {
+                opened = try await sessions.openWebDocument(
+                    url: sourceDocument.pdfPath, sessionId: sessionId)
+            } else {
+                opened = try await sessions.openFile(
+                    path: sourceDocument.pdfPath, sessionId: sessionId)
+            }
+            // Keep the title currently visible in the source tab. Web titles in
+            // particular may have been learned after the initial open.
+            opened.title = sourceDocument.title ?? opened.title
+            // Opening suspends this main-actor method. If the user closed the
+            // source tab while its duplicate was loading, do not resurrect it
+            // as an unexpected new tab; release the just-opened session.
+            guard let currentSourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else {
+                try? await sessions.closeFile(sessionId: sessionId)
+                isLoading = false
+                return
+            }
+            let duplicate = PdfTab(
+                id: sessionId,
+                document: opened,
+                currentPage: source.currentPage,
+                numPages: source.numPages,
+                zoom: source.zoom,
+                visiblePages: [],
+                webVisibleRange: nil,
+                webVisibleBookmarks: [],
+                mode: .view
+            )
+            let insertion = min(currentSourceIndex + 1, tabs.count)
+            tabs.insert(duplicate, at: insertion)
+            applyActiveState(from: duplicate)
+            workspace?.scheduleSave()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+
     func activateTab(_ tabId: String) {
         guard activeTabId != tabId, let tab = tabs.first(where: { $0.id == tabId }) else { return }
         if let current = tabs.first(where: { $0.id == activeTabId }), current.document != nil {
