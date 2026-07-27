@@ -200,25 +200,17 @@ private struct WindowChrome: View {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
-                .toolbar {
-                    if inspectorPresented.wrappedValue {
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
+            VStack(spacing: 0) {
+                InspectorTabSwitcher(selection: sidebarTabBinding)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                Divider()
+                sidebar
+            }
+            .inspectorColumnWidth(
+                min: InspectorLayout.minimumWidth,
+                ideal: InspectorLayout.idealWidth,
+                max: InspectorLayout.maximumWidth)
         }
     }
 
