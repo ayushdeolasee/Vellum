@@ -25,10 +25,12 @@ struct MarkdownMessage: View {
     private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .heading(let level, let text):
+            // Only `#` gets its own size; a 272pt-wide bubble has no room for a
+            // six-step type scale, so `##` and deeper lean on weight alone.
             inlineText(text)
                 .font(.system(size: level == 1 ? baseSize + 2 : baseSize, weight: .semibold))
-                .padding(.top, level == 3 ? 8 : 12)
-                .padding(.bottom, level == 3 ? 6 : 8)
+                .padding(.top, level >= 3 ? 8 : 12)
+                .padding(.bottom, level >= 3 ? 6 : 8)
         case .paragraph(let text):
             inlineText(text)
                 .font(.system(size: baseSize))
@@ -84,6 +86,14 @@ struct MarkdownMessage: View {
             .padding(.bottom, 8)
         case .math(let latex):
             mathBlockView(latex)
+        case .rule:
+            Rectangle()
+                .fill(palette.border)
+                .frame(height: 1)
+                .padding(.vertical, 4)
+                .padding(.bottom, 8)
+                // Decorative: the surrounding headings already convey the split.
+                .accessibilityHidden(true)
         }
     }
 
@@ -116,16 +126,18 @@ struct MarkdownMessage: View {
 
     private func inlineText(_ source: String) -> Text {
         // Math spans become typeset images interpolated into the Text run;
-        // everything else goes through native AttributedString markdown
+        // everything else is styled by native AttributedString markdown
         // (emphasis, strong, inline code, strikethrough, links).
+        //
+        // `InlineMarkdown` resolves that markdown across the WHOLE line before
+        // splitting the math back out, so emphasis that straddles an equation
+        // ("**the probability of $Y$ given $X$**") stays bold instead of
+        // leaking literal asterisks. Keep this in step with
+        // `AiAttributedRenderer.inline`, which renders the same pieces in AppKit.
         var result = Text(verbatim: "")
-        for segment in MathRenderer.segments(in: source) {
-            switch segment {
-            case .text(let text):
-                let attributed = (try? AttributedString(
-                    markdown: text,
-                    options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                )) ?? AttributedString(text)
+        for piece in InlineMarkdown.pieces(in: source) {
+            switch piece {
+            case .prose(let attributed):
                 result = result + Text(attributed)
             case .math(let latex):
                 if let rendered = MathRenderer.render(
@@ -162,6 +174,10 @@ enum MarkdownBlock: Equatable {
     case table(String)
     /// Display math: the LaTeX between `$$...$$` or `\[...\]` delimiters.
     case math(String)
+    /// A thematic break — a `---`, `***` or `___` line. Without this case the
+    /// line fell through to `.paragraph` and the dashes rendered literally
+    /// (issue #57); models emit them constantly as section separators.
+    case rule
 }
 
 enum MarkdownParser {
@@ -189,7 +205,10 @@ enum MarkdownParser {
             }.joined()
         }.joined(separator: "\n")
         for pattern in [
-            #"(?m)^#{1,3}\s+"#,       // headings
+            #"(?m)^#{1,6}\s+"#,       // headings
+            // Thematic breaks, stripped before the emphasis pass below would
+            // chew "***" down to a stray "*".
+            #"(?m)^[ \t]*(?:-[ \t]*){3,}$|^[ \t]*(?:\*[ \t]*){3,}$|^[ \t]*(?:_[ \t]*){3,}$"#,
             #"(?m)^>\s?"#,            // quotes
             #"(?m)^[-*+]\s+"#,        // bullets
             #"(?m)^\d+\.\s+"#,        // ordered lists
@@ -238,13 +257,22 @@ enum MarkdownParser {
                     }
                     math = parts.joined(separator: "\n")
                 }
+                // The `$$\n…\n$$` shape leaves the delimiters' own newlines inside
+                // the body. `MathRenderer` trims before typesetting, but the
+                // fallbacks that show unparseable LaTeX as monospaced source do
+                // not — they rendered those newlines as blank lines above and
+                // below the equation. Trim once, here, so every consumer agrees.
+                let body = math.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Still-open block (mid-stream): typesetting a partial equation is a
                 // guaranteed MathRenderer cache miss per token — show it as code until
                 // the closing delimiter arrives (same treatment as an unterminated
                 // code fence above).
-                blocks.append(closed ? .math(math) : .code(math))
+                blocks.append(closed ? .math(body) : .code(body))
                 continue
             }
+            // Before the list check: `* * *` is a thematic break, but its first
+            // two characters also look like a `* ` bullet.
+            if isRule(line) { blocks.append(.rule); index += 1; continue }
             if let heading = heading(line) { blocks.append(heading); index += 1; continue }
             if line.hasPrefix(">") {
                 var quoted: [String] = []
@@ -288,12 +316,29 @@ enum MarkdownParser {
         return blocks
     }
 
+    /// Markdown defines six heading levels. Only `#`…`###` used to be
+    /// recognized, so a `####` line rendered its hashes literally (issue #57).
+    /// Deepest-first so `###` isn't matched as `##` followed by a stray `#`.
     private static func heading(_ line: String) -> MarkdownBlock? {
-        for level in 1...3 {
+        for level in stride(from: 6, through: 1, by: -1) {
             let prefix = String(repeating: "#", count: level) + " "
             if line.hasPrefix(prefix) { return .heading(level, String(line.dropFirst(prefix.count))) }
         }
         return nil
+    }
+
+    /// A thematic break: three or more `-`, `*` or `_`, all the same character,
+    /// alone on the line apart from spaces.
+    ///
+    /// Note this claims `---` even when it directly follows a paragraph line,
+    /// where CommonMark would instead read the pair as a setext `##` heading.
+    /// Models use `---` as a section separator far more often than they use
+    /// setext headings, and a rule is the safer reading of an ambiguous line.
+    private static func isRule(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let marker = trimmed.first, "-*_".contains(marker) else { return false }
+        let markers = trimmed.filter { !$0.isWhitespace }
+        return markers.count >= 3 && markers.allSatisfy { $0 == marker }
     }
 
     private static func isUnordered(_ line: String) -> Bool {
@@ -311,7 +356,7 @@ enum MarkdownParser {
 
     private static func startsBlock(_ line: String) -> Bool {
         line.hasPrefix("```") || line.hasPrefix("$$") || line.hasPrefix("\\[") || line.hasPrefix(">")
-            || heading(line) != nil || isUnordered(line) || orderedText(line) != nil
+            || heading(line) != nil || isUnordered(line) || orderedText(line) != nil || isRule(line)
     }
 
     private static func formatTable(_ rows: [String]) -> String {

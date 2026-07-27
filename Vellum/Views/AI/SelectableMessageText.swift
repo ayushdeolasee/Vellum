@@ -99,7 +99,7 @@ final class MessageContainerView: NSView {
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
-        textView = TranscriptTextView()
+        textView = TranscriptTextView(textKit1ContainerIn: frameRect.size)
         super.init(frame: frameRect)
         configureTextView()
         quoteButton.isHidden = true
@@ -201,6 +201,35 @@ final class TranscriptTextView: NSTextView {
         didSet { updateDragTypeRegistration() }
     }
     var onDropTargeted: ((Bool) -> Void)?
+
+    /// Builds the view on an explicit **TextKit 1** stack.
+    ///
+    /// `NSTextView()` hands back a TextKit 2 view, but everything around this
+    /// one is written against TextKit 1: `MessageContainerView.measureHeight`
+    /// sizes the bubble with a throwaway `NSLayoutManager`, and
+    /// `updateQuoteButton` places the Quote affordance with
+    /// `glyphRange(forCharacterRange:)`. The two engines do not agree about
+    /// `NSParagraphStyle.paragraphSpacing` — the gap this renderer puts after
+    /// every markdown block — so on a long reply the TextKit 1 measurement came
+    /// out ~400pt taller than the TextKit 2 view actually laid out. The text
+    /// view sizes itself (`isVerticallyResizable`), so it shrank to its own
+    /// shorter layout inside the taller bubble SwiftUI had already reserved,
+    /// leaving a large dead space under every long answer (issue #57).
+    ///
+    /// Owning the stack also removes an implicit engine switch: merely reading
+    /// `layoutManager` (which `updateQuoteButton` does on the first selection)
+    /// silently downgrades a TextKit 2 view to TextKit 1 compatibility mode,
+    /// which would re-lay out the message the moment the user selected text.
+    convenience init(textKit1ContainerIn size: NSSize) {
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        // Unbounded height: the bubble grows to fit, it never scrolls its text.
+        let container = NSTextContainer(
+            size: NSSize(width: max(0, size.width), height: .greatestFiniteMagnitude))
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(container)
+        self.init(frame: NSRect(origin: .zero, size: size), textContainer: container)
+    }
 
     /// AppKit funnels every re-registration through this (it runs on window entry
     /// and whenever editable/selectable/rich-text changes) and drops a read-only
@@ -339,7 +368,33 @@ enum AiAttributedRenderer {
 
         case let .math(latex):
             return displayMath(latex, color: color)
+
+        case .rule:
+            return rule(color: secondary)
         }
+    }
+
+    /// A thematic break (`---`). An attributed string has no "draw a line"
+    /// attribute, so the rule is a 1pt-tall image on its own paragraph, sized
+    /// to the same fixed bubble content width the math attachments are capped
+    /// to. Left with no `accessibilityDescription`: it is decorative.
+    private static func rule(color: NSColor) -> NSAttributedString {
+        let size = CGSize(width: contentWidth, height: 1)
+        let attachment = NSTextAttachment()
+        attachment.image = NSImage(size: size, flipped: false) { rect in
+            color.withAlphaComponent(0.5).setFill()
+            rect.fill()
+            return true
+        }
+        attachment.bounds = CGRect(origin: .zero, size: size)
+        let paragraph = paragraphStyle(lineSpacing: 0, spacingAfter: 12)
+        paragraph.paragraphSpacingBefore = 4
+        let result = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        result.addAttributes(
+            [.paragraphStyle: paragraph, .foregroundColor: color],
+            range: NSRange(location: 0, length: result.length)
+        )
+        return result
     }
 
     /// Display equation as a centered typeset image on its own paragraph;
@@ -355,7 +410,7 @@ enum AiAttributedRenderer {
         }
         let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
         paragraph.alignment = .center
-        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
+        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex))
         result.addAttributes(
             [.paragraphStyle: paragraph, .foregroundColor: color],
             range: NSRange(location: 0, length: result.length)
@@ -385,6 +440,12 @@ enum AiAttributedRenderer {
 
     private static var base: NSFont { NSFont.systemFont(ofSize: 14) }
 
+    /// Usable width inside an assistant bubble (`AiPanel` caps the bubble at
+    /// 272pt and pads it by 12pt a side). Attachments can't be laid out
+    /// relative to the text container, so anything image-backed — typeset
+    /// equations, thematic breaks — is sized against this.
+    private static let contentWidth: CGFloat = 240
+
     private static func paragraphStyle(lineSpacing: CGFloat, spacingAfter: CGFloat) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
@@ -413,9 +474,10 @@ enum AiAttributedRenderer {
     }
 
     /// Inline handling: math spans become baseline-aligned typeset attachments,
-    /// the prose between them goes through Foundation's markdown parser for
-    /// emphasis/strong/code/strikethrough/links, mapped onto concrete AppKit
-    /// fonts. Mirrors the SwiftUI `MarkdownMessage` renderer.
+    /// the prose between them carries the emphasis/strong/code/strikethrough/
+    /// link attributes `InlineMarkdown` resolved, mapped onto concrete AppKit
+    /// fonts. Mirrors the SwiftUI `MarkdownMessage.inlineText` renderer — both
+    /// go through `InlineMarkdown` so emphasis spanning an equation survives.
     private static func inline(
         _ source: String,
         font: NSFont,
@@ -423,13 +485,13 @@ enum AiAttributedRenderer {
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        for segment in MathRenderer.segments(in: source) {
-            switch segment {
-            case .text(let text):
-                result.append(inlineProse(text, font: font, color: color, paragraph: paragraph))
+        for piece in InlineMarkdown.pieces(in: source) {
+            switch piece {
+            case .prose(let attributed):
+                result.append(inlineProse(attributed, font: font, color: color, paragraph: paragraph))
             case .math(let latex):
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
-                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
+                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex))
                     // Keep the run's paragraph style so line spacing stays even.
                     math.addAttributes(
                         [.paragraphStyle: paragraph, .foregroundColor: color],
@@ -447,21 +509,15 @@ enum AiAttributedRenderer {
         return result
     }
 
+    /// Map one already-parsed prose run's markdown attributes onto AppKit fonts
+    /// and colors. Takes the parsed `AttributedString` rather than raw source
+    /// because `InlineMarkdown` parses the whole line at once.
     private static func inlineProse(
-        _ source: String,
+        _ attributed: AttributedString,
         font: NSFont,
         color: NSColor,
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
-        guard let attributed = try? AttributedString(
-            markdown: source,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) else {
-            return NSAttributedString(string: source, attributes: [
-                .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
-            ])
-        }
-
         let result = NSMutableAttributedString()
         for run in attributed.runs {
             let substring = String(attributed[run.range].characters)
