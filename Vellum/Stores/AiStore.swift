@@ -137,6 +137,23 @@ struct AiSettings: Codable, Equatable, Sendable {
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
     var reasoningEffort: AiThinkingMode = .auto
+
+    func isConfigured(chatGPTSignedIn: Bool) -> Bool {
+        switch provider {
+        case .gemini:
+            !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openai:
+            !openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openrouter:
+            !openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .chatgpt:
+            chatGPTSignedIn
+        case .opencode:
+            !opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .opencodeGo:
+            !opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
 }
 
 struct AiPageImageSnapshot: Sendable {

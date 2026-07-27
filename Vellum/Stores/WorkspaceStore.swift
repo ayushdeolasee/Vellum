@@ -11,6 +11,14 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceStore {
+    enum SettingsSection: Hashable, Sendable {
+        case general
+        case reading
+        case annotations
+        case ai
+        case storage
+    }
+
     let sessions: SessionService
 
     /// The layout tree. Reassigned wholesale on every structural change.
@@ -23,6 +31,11 @@ final class WorkspaceStore {
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
     enum SidebarTab: Sendable { case annotations, ai, scratchpad }
+
+    /// The destination selected when an in-app action opens the global Settings
+    /// scene. Keeping this at workspace scope lets Home and document panels route
+    /// to the same native window without embedding duplicate settings controls.
+    var settingsSection: SettingsSection = .general
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
