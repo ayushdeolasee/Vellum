@@ -219,14 +219,31 @@ struct HomeSearchMatchingTests {
         #expect(rank(corpus, "residual nowhere").isEmpty)
     }
 
+    /// Isolating the phrase bonus takes some care. The obvious version of this
+    /// test — a short contiguous title against a long scattered one — passes
+    /// whether or not the bonus exists, because the short title also wins on
+    /// `titlePrefix` vs `titleWordPrefix`. Deleting `phraseBonus` outright left
+    /// it green.
+    ///
+    /// So both fixtures below are built to score IDENTICALLY on every other
+    /// axis: each matches both tokens as a word prefix (450 + 450) and neither
+    /// has a date, which leaves contiguity as the only difference between them.
+    /// The scattered title is also alphabetically first, so that if the bonus
+    /// were removed the tie-break would actively reverse the expected order
+    /// rather than happening to preserve it.
     @Test("A contiguous phrase outranks the same words scattered")
     func phraseBonus() {
-        let corpus = [
-            item(id: "scattered", title: "All Models Need Attention"),
-            item(id: "phrase", title: "Attention Need"),
-        ]
-        // Both match; the contiguous one wins on the phrase bonus.
-        #expect(rank(corpus, "attention need").first?.id == "phrase")
+        let contiguous = item(id: "phrase", title: "Attention Is All You Need")
+        let scattered = item(id: "scattered", title: "A Need Not You")
+        let tokens = HomeSearchText.tokens(in: "you need")
+
+        let contiguousScore = HomeSearchRanker.score(contiguous, tokens: tokens, now: now)
+        let scatteredScore = HomeSearchRanker.score(scattered, tokens: tokens, now: now)
+
+        // Exactly the bonus apart — not merely "greater than", which a change
+        // to any other weight could also satisfy.
+        #expect(contiguousScore == (scatteredScore ?? 0) + HomeSearchRanker.phraseBonus)
+        #expect(rank([scattered, contiguous], "you need").map(\.id) == ["phrase", "scattered"])
     }
 
     @Test("An acronym finds the paper")
