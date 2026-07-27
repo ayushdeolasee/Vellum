@@ -4,10 +4,10 @@ import XCTest
 // Scratchpad tab, arm the crop button, drag a rectangle over the page, and
 // assert an attachment file lands on disk (the note now references it).
 //
-// This lives in a UI-testing bundle target (see UITests/README-setup.md for the
-// 20-second Xcode step to create it — a UI test cannot run in the unit-test
-// target). The pure logic it funnels into is already covered deterministically
-// by VellumTests/ScratchpadImportTests; this adds the real drag event stream.
+// This lives in the UI-testing bundle target documented in UITests/README.md;
+// a UI test cannot run in the unit-test target. The pure logic it funnels into
+// is already covered deterministically by VellumTests/ScratchpadImportTests;
+// this adds the real drag event stream.
 //
 // NOT covered here: external image drag-and-drop. XCUITest cannot originate a
 // Finder-style file drop, so that path stays a manual check.
@@ -35,11 +35,14 @@ final class ScratchpadSnapshotUITests: VellumUITestCase {
         let snapButton = app.buttons["scratchpad.snapshotRegion"]
         XCTAssertTrue(snapButton.waitForExistence(timeout: 5), "Snapshot button missing")
         snapButton.tap()
+        XCTAssertTrue(snapButton.isSelected, "Snapshot mode was not selected")
 
-        // Drag a rectangle across the middle of the document area to crop it.
-        let window = app.windows.firstMatch
-        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.35))
-        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.6))
+        // Drag within the app-owned PDF canvas, not the window: toolbar and
+        // inspector geometry vary independently of the rendered page.
+        let canvas = app.descendants(matching: .any)["pdf.canvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5), "PDF canvas missing")
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.35))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.6))
         start.press(forDuration: 0.4, thenDragTo: end)
 
         // The capture writes a JPEG to the attachment store; poll for it.

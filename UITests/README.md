@@ -14,6 +14,9 @@ Each test launches with:
 - `--ui-test-storage-root <path>`, which redirects Application Support,
   document data, web data, scratchpad attachments, and extracted-text caches to
   a per-test temporary directory.
+- an inert Keychain backend under the reserved `com.vellum.ai.uitesting`
+  service name, so UI tests never access the installed app's
+  `com.vellum.ai` credentials.
 
 Tests that need a document generate a small PDF in that directory and pass it
 through `--ui-test-open-document <path>`. This avoids driving the system open

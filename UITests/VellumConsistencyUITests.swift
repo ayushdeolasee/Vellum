@@ -9,7 +9,7 @@ final class VellumConsistencyUITests: VellumUITestCase {
         app.typeKey(",", modifierFlags: .command)
 
         XCTAssertTrue(
-            app.windows["com_apple_SwiftUI_Settings_window"]
+            app.descendants(matching: .any)["settings.content"]
                 .waitForExistence(timeout: 5),
             "Command-comma should expose global settings from Home")
     }
@@ -28,10 +28,32 @@ final class VellumConsistencyUITests: VellumUITestCase {
         }
         XCTAssertTrue(aiTab.waitForExistence(timeout: 3))
 
+        // The custom View command must change the actual inspector content,
+        // rather than merely exposing a menu item.
+        app.menuBars.menuBarItems["View"].click()
+        let hideInspector = app.menuItems["Hide Inspector"]
+        XCTAssertTrue(hideInspector.exists)
+        hideInspector.click()
+        XCTAssertTrue(aiTab.waitForNonExistence(timeout: 3), "Inspector did not hide")
+
+        app.menuBars.menuBarItems["View"].click()
+        let showInspector = app.menuItems["Show Inspector"]
+        XCTAssertTrue(showInspector.exists)
+        showInspector.click()
+        XCTAssertTrue(aiTab.waitForExistence(timeout: 3), "Inspector did not reappear")
+
+        let tabs = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "tabBar.tab."))
+        let initialTabCount = tabs.count
         app.menuBars.menuBarItems["File"].click()
-        XCTAssertTrue(app.menuItems["New Tab"].exists)
+        let newTab = app.menuItems["New Tab"]
+        XCTAssertTrue(newTab.exists)
         XCTAssertTrue(app.menuItems["Open…"].exists)
-        app.typeKey(.escape, modifierFlags: [])
+        newTab.click()
+        XCTAssertTrue(
+            tabs.element(boundBy: initialTabCount).waitForExistence(timeout: 3),
+            "New Tab did not add a tab")
+        XCTAssertEqual(tabs.count, initialTabCount + 1)
     }
 
     func testCorruptedRestorationRecoversToUsableHome() {

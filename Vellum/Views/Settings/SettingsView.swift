@@ -25,6 +25,7 @@ struct SettingsView: View {
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
         }
         .frame(width: 480)
+        .accessibilityIdentifier("settings.content")
     }
 }
 
