@@ -29,6 +29,11 @@ struct AiPanel: View {
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
+    /// Live width of the transcript column. The sidebar is a resizable
+    /// `.inspector` (240…700pt), and bubbles used to be pinned to a fixed
+    /// 272pt — so widening it only grew the empty gutter beside them. Tracking
+    /// the real width lets `bubbleMaxWidth(for:)` spend the extra space.
+    @State private var transcriptWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -125,14 +130,35 @@ struct AiPanel: View {
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
-                .padding(12)
+                .padding(transcriptPadding)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { transcriptWidth = $0 }
             .onChange(of: aiStore.messages.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: aiStore.isThinking) { _, _ in scrollToBottom(proxy) }
             // Streaming appends to a single message, so follow its growing length.
             .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in scrollToBottom(proxy) }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// Inset around the transcript's content, subtracted from the measured
+    /// scroll-view width to get the usable column.
+    private let transcriptPadding: CGFloat = 12
+
+    /// Widest a bubble of `role` may be. Assistant replies are long-form
+    /// (prose, code, typeset math) so they take the whole column; user messages
+    /// stop a little short of it, which is what keeps the trailing-aligned
+    /// "You" bubbles readable as a distinct column at any sidebar width.
+    ///
+    /// Before the first geometry pass — and if the measurement ever comes back
+    /// degenerate — this falls back to the pre-resize 272pt so a bubble is
+    /// never laid out at zero width.
+    private func bubbleMaxWidth(for role: AiRole) -> CGFloat {
+        let column = transcriptWidth > 0
+            ? max(transcriptWidth - transcriptPadding * 2, 160)
+            : 272
+        guard role == .user else { return column }
+        return max(column * 0.82, min(column, 200))
     }
 
     private var emptyState: some View {
@@ -184,12 +210,19 @@ struct AiPanel: View {
 
     @ViewBuilder
     private func messageBubble(_ message: AiMessage) -> some View {
+        // Text width inside the bubble: the bubble's cap minus its own padding.
+        // Both renderers need it explicitly — the AppKit one to size its text
+        // container, and both to cap typeset math images — because neither can
+        // read the SwiftUI frame back out.
+        let bubbleWidth = bubbleMaxWidth(for: message.role)
+        let textWidth = max(bubbleWidth - 24, 80)
         Group {
             if message.role == .assistant {
                 SelectableMessageText(
                     content: message.content,
                     color: palette.foreground,
                     secondary: palette.mutedForeground,
+                    maxWidth: textWidth,
                     onQuote: { text in
                         aiStore.addReference(AiReference(kind: .quote(text: text, messageId: message.id)))
                     },
@@ -200,14 +233,18 @@ struct AiPanel: View {
                     onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
-                MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
-                    .font(.system(size: 14))
-                    .foregroundStyle(palette.primaryForeground)
+                MarkdownMessage(
+                    content: message.content,
+                    textColor: palette.primaryForeground,
+                    mathMaxWidth: textWidth
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(palette.primaryForeground)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: 272, alignment: .leading)
+        .frame(maxWidth: bubbleWidth, alignment: .leading)
         .background(
             message.role == .user
                 ? AnyShapeStyle(.tint)

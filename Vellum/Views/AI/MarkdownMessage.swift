@@ -8,6 +8,10 @@ struct MarkdownMessage: View {
     /// Body text size; headings/display math sit 2pt above, code/tables 2pt
     /// below. Defaults to the AI chat bubble size.
     var baseSize: CGFloat = 14
+    /// Widest a display equation may be drawn before it scales down. The AI
+    /// panel passes the live bubble width so equations grow with the resizable
+    /// sidebar; fixed-width callers (notes, annotation sidebar) keep the default.
+    var mathMaxWidth: CGFloat = 240
 
     @Environment(\.palette) private var palette
 
@@ -99,7 +103,7 @@ struct MarkdownMessage: View {
                 .resizable()
                 .scaledToFit()
                 .frame(
-                    maxWidth: min(rendered.size.width, 240),
+                    maxWidth: min(rendered.size.width, mathMaxWidth),
                     maxHeight: rendered.size.height,
                     alignment: .center
                 )

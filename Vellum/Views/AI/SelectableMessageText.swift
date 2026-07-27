@@ -13,6 +13,11 @@ struct SelectableMessageText: NSViewRepresentable {
     var color: Color
     /// Secondary color for the blockquote bar / muted glyphs.
     var secondary: Color
+    /// Widest the rendered text may be, in points. Threaded down from the panel
+    /// (which measures the resizable sidebar) rather than inferred here, because
+    /// display math is baked into the attributed string at render time and so
+    /// needs the width before layout runs.
+    var maxWidth: CGFloat = 248
     /// Called with the selected substring when the user taps the Quote button.
     var onQuote: (String) -> Void
     /// A file or image dropped onto the bubble itself, which AppKit hands here instead of
@@ -49,20 +54,38 @@ struct SelectableMessageText: NSViewRepresentable {
         let contentChanged = view.appliedContent != content
         let colorsChanged = view.appliedColor != resolvedColor
             || view.appliedSecondary != resolvedSecondary
-        guard contentChanged || colorsChanged else { return }
+        // Display math is rasterized into the attributed string against the
+        // bubble's width, so a sidebar resize has to re-render even when the
+        // text and colors are untouched.
+        let widthChanged = view.appliedMathWidth != mathWidth
+        guard contentChanged || colorsChanged || widthChanged else { return }
         let attributed = AiAttributedRenderer.attributedString(
             for: content,
             color: resolvedColor,
-            secondary: resolvedSecondary
+            secondary: resolvedSecondary,
+            mathMaxWidth: mathWidth
         )
-        view.setAttributed(attributed, content: content, color: resolvedColor, secondary: resolvedSecondary)
+        view.setAttributed(
+            attributed,
+            content: content,
+            color: resolvedColor,
+            secondary: resolvedSecondary,
+            mathWidth: mathWidth
+        )
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MessageContainerView, context: Context) -> CGSize? {
-        let width = proposal.width ?? 248
-        let clamped = min(max(width, 80), 248)
-        return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
+        // The old hard 248pt ceiling here is what pinned replies to a narrow
+        // column when the sidebar was widened — the cap now comes from
+        // `maxWidth`, which the panel derives from the live sidebar width.
+        let proposed = proposal.width ?? maxWidth
+        let width = proposed.isFinite ? min(max(proposed, 80), maxWidth) : maxWidth
+        return CGSize(width: width, height: nsView.height(forWidth: width))
     }
+
+    /// Cap for typeset equations: the full text width, so a wide sidebar shows
+    /// display math at full size instead of scaling it down to the old 240pt.
+    private var mathWidth: CGFloat { max(maxWidth, 80) }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onQuote: (String) -> Void
@@ -129,12 +152,22 @@ final class MessageContainerView: NSView {
     private(set) var appliedContent: String?
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
+    /// Width the typeset-math attachments were sized against, so a sidebar
+    /// resize can be told apart from an unrelated update pass.
+    private(set) var appliedMathWidth: CGFloat?
 
-    func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
+    func setAttributed(
+        _ attributed: NSAttributedString,
+        content: String,
+        color: NSColor,
+        secondary: NSColor,
+        mathWidth: CGFloat? = nil
+    ) {
         self.attributed = attributed
         self.appliedContent = content
         self.appliedColor = color
         self.appliedSecondary = secondary
+        self.appliedMathWidth = mathWidth
         textView.textStorage?.setAttributedString(attributed)
         needsLayout = true
     }
@@ -284,39 +317,52 @@ final class QuoteButton: NSView {
 // drives an offscreen AppKit label); every caller is already main-actor UI code.
 @MainActor
 enum AiAttributedRenderer {
-    static func attributedString(for content: String, color: NSColor, secondary: NSColor) -> NSAttributedString {
+    /// - Parameter mathMaxWidth: widest a typeset equation may be drawn before
+    ///   it is scaled down. The bubble's text width, so equations grow with the
+    ///   resizable sidebar rather than staying capped at the old 240pt.
+    static func attributedString(
+        for content: String,
+        color: NSColor,
+        secondary: NSColor,
+        mathMaxWidth: CGFloat = 240
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let blocks = MarkdownParser.parse(content)
         for (index, block) in blocks.enumerated() {
-            result.append(attributed(for: block, color: color, secondary: secondary))
+            result.append(attributed(for: block, color: color, secondary: secondary, mathMaxWidth: mathMaxWidth))
             if index < blocks.count - 1 { result.append(NSAttributedString(string: "\n")) }
         }
         return result
     }
 
-    private static func attributed(for block: MarkdownBlock, color: NSColor, secondary: NSColor) -> NSAttributedString {
+    private static func attributed(
+        for block: MarkdownBlock,
+        color: NSColor,
+        secondary: NSColor,
+        mathMaxWidth: CGFloat
+    ) -> NSAttributedString {
         switch block {
         case let .heading(level, text):
             let font = NSFont.systemFont(ofSize: level == 1 ? 16 : 14, weight: .semibold)
             let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 6)
-            return inline(text, font: font, color: color, paragraph: paragraph)
+            return inline(text, font: font, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .paragraph(text):
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
-            return inline(text, font: base, color: color, paragraph: paragraph)
+            return inline(text, font: base, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .unordered(items):
-            return list(items, color: color) { _ in "•  " }
+            return list(items, color: color, mathMaxWidth: mathMaxWidth) { _ in "•  " }
 
         case let .ordered(items):
-            return list(items, color: color) { "\($0 + 1).  " }
+            return list(items, color: color, mathMaxWidth: mathMaxWidth) { "\($0 + 1).  " }
 
         case let .quote(text):
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
             paragraph.firstLineHeadIndent = 12
             paragraph.headIndent = 12
             let italic = NSFont(descriptor: base.fontDescriptor.withSymbolicTraits(.italic), size: base.pointSize) ?? base
-            return inline(text, font: italic, color: secondary, paragraph: paragraph)
+            return inline(text, font: italic, color: secondary, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .code(text):
             // A run background is the closest an attributed string gets to the
@@ -338,13 +384,13 @@ enum AiAttributedRenderer {
             ])
 
         case let .math(latex):
-            return displayMath(latex, color: color)
+            return displayMath(latex, color: color, mathMaxWidth: mathMaxWidth)
         }
     }
 
     /// Display equation as a centered typeset image on its own paragraph;
     /// unparseable LaTeX falls back to monospaced source.
-    private static func displayMath(_ latex: String, color: NSColor) -> NSAttributedString {
+    private static func displayMath(_ latex: String, color: NSColor, mathMaxWidth: CGFloat) -> NSAttributedString {
         guard let rendered = MathRenderer.render(latex: latex, fontSize: 16, color: color, display: true) else {
             let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 8)
             return NSAttributedString(string: latex, attributes: [
@@ -355,7 +401,7 @@ enum AiAttributedRenderer {
         }
         let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
         paragraph.alignment = .center
-        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
+        let result = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: mathMaxWidth, latex: latex))
         result.addAttributes(
             [.paragraphStyle: paragraph, .foregroundColor: color],
             range: NSRange(location: 0, length: result.length)
@@ -395,6 +441,7 @@ enum AiAttributedRenderer {
     private static func list(
         _ items: [String],
         color: NSColor,
+        mathMaxWidth: CGFloat,
         marker: (Int) -> String
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -405,7 +452,7 @@ enum AiAttributedRenderer {
             let line = NSMutableAttributedString(string: marker(index), attributes: [
                 .font: base, .foregroundColor: color, .paragraphStyle: paragraph,
             ])
-            line.append(inline(item, font: base, color: color, paragraph: paragraph))
+            line.append(inline(item, font: base, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth))
             result.append(line)
             if index < items.count - 1 { result.append(NSAttributedString(string: "\n")) }
         }
@@ -420,7 +467,8 @@ enum AiAttributedRenderer {
         _ source: String,
         font: NSFont,
         color: NSColor,
-        paragraph: NSParagraphStyle
+        paragraph: NSParagraphStyle,
+        mathMaxWidth: CGFloat
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         for segment in MathRenderer.segments(in: source) {
@@ -429,7 +477,7 @@ enum AiAttributedRenderer {
                 result.append(inlineProse(text, font: font, color: color, paragraph: paragraph))
             case .math(let latex):
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
-                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: 240, latex: latex))
+                    let math = NSMutableAttributedString(attributedString: attachment(for: rendered, maxWidth: mathMaxWidth, latex: latex))
                     // Keep the run's paragraph style so line spacing stays even.
                     math.addAttributes(
                         [.paragraphStyle: paragraph, .foregroundColor: color],

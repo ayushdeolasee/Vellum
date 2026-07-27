@@ -118,6 +118,69 @@ final class SelectableMessageTests: XCTestCase {
         )
     }
 
+    /// `sizeThatFits` used to clamp the bubble to a hard 248pt, so dragging the
+    /// resizable sidebar wider only grew the empty gutter beside a reply (#51).
+    /// The ceiling now comes from `maxWidth`, which the panel derives from the
+    /// live transcript width — a wider bubble must actually be laid out wider,
+    /// and the same text must therefore wrap onto fewer lines.
+    func testBubbleGrowsPastTheOldFixedCapWhenGivenAWiderMaxWidth() throws {
+        let content = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 6)
+        let narrow = try measureBubble(content: content, width: 248)
+        let wide = try measureBubble(content: content, width: 520)
+
+        XCTAssertEqual(narrow.width, 248, accuracy: 1)
+        XCTAssertEqual(wide.width, 520, accuracy: 1)
+        XCTAssertLessThan(wide.height, narrow.height, "wider column should wrap onto fewer lines")
+    }
+
+    /// Display math is rasterized into the attributed string against the
+    /// bubble's width, so the renderer has to be told that width up front —
+    /// otherwise equations stay pinned to the old 240pt cap in a wide sidebar.
+    func testDisplayMathScalesWithTheBubbleWidth() throws {
+        let latex = "$$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
+        let narrow = AiAttributedRenderer.attributedString(
+            for: latex, color: .labelColor, secondary: .secondaryLabelColor, mathMaxWidth: 40)
+        let wide = AiAttributedRenderer.attributedString(
+            for: latex, color: .labelColor, secondary: .secondaryLabelColor, mathMaxWidth: 480)
+
+        let narrowWidth = try XCTUnwrap(Self.firstAttachmentWidth(in: narrow), "expected typeset math")
+        let wideWidth = try XCTUnwrap(Self.firstAttachmentWidth(in: wide), "expected typeset math")
+        XCTAssertEqual(narrowWidth, 40, accuracy: 1, "narrow bubble must scale the equation down")
+        XCTAssertGreaterThan(wideWidth, narrowWidth)
+    }
+
+    /// Mount the representable at `width` and report the size AppKit actually
+    /// gave the text container.
+    private func measureBubble(content: String, width: CGFloat) throws -> CGSize {
+        let hosting = NSHostingView(rootView: SelectableMessageText(
+            content: content, color: .primary, secondary: .secondary,
+            maxWidth: width, onQuote: { _ in }
+        ))
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 600)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView?.addSubview(hosting)
+        hosting.layoutSubtreeIfNeeded()
+        let container = try XCTUnwrap(
+            Self.firstSubview(of: MessageContainerView.self, in: hosting),
+            "could not locate MessageContainerView in the hosted hierarchy")
+        return container.bounds.size
+    }
+
+    private static func firstAttachmentWidth(in attributed: NSAttributedString) -> CGFloat? {
+        var found: CGFloat?
+        attributed.enumerateAttribute(
+            .attachment, in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, stop in
+            if let attachment = value as? NSTextAttachment {
+                found = attachment.bounds.width
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
     private static func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
         if let match = root as? T { return match }
         for subview in root.subviews {
