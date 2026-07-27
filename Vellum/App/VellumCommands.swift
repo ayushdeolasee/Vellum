@@ -276,3 +276,22 @@ struct VellumCommands: Commands {
         if let appStore { Task { await appStore.openFiles(paths: paths) } }
     }
 }
+
+/// Help is application-scoped, so it deliberately does not depend on the
+/// focused document command router above.
+struct VellumHelpCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("Vellum Help") {
+                openWindow(id: "help")
+            }
+            .keyboardShortcut("/", modifiers: [.command, .shift])
+
+            Button("Show Welcome Tour") {
+                openWindow(id: "onboarding")
+            }
+        }
+    }
+}

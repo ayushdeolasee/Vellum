@@ -75,6 +75,7 @@ struct VellumApp: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
+    @State private var showOnboarding = false
 
     init() {
         let theme = ThemeStore()
@@ -126,11 +127,23 @@ struct VellumApp: App {
                         await StorageHousekeeping.runCleanup(
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
+                    let onboarding = OnboardingProgress()
+                    onboarding.applyLaunchArguments(ProcessInfo.processInfo.arguments)
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                    showOnboarding = !showStorageChoice && !onboarding.isComplete
                 }
-                .sheet(isPresented: $showStorageChoice) {
+                .sheet(isPresented: $showStorageChoice, onDismiss: {
+                    showOnboarding = !OnboardingProgress().isComplete
+                }) {
                     StorageLocationChoiceSheet()
                         .environment(\.palette, themeStore.palette)
+                }
+                .sheet(isPresented: $showOnboarding) {
+                    OnboardingView {
+                        OnboardingProgress().complete()
+                        showOnboarding = false
+                    }
+                    .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
                 .environment(workspace)
@@ -146,6 +159,7 @@ struct VellumApp: App {
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             VellumCommands()
+            VellumHelpCommands()
         }
 
         // Adds "Settings…" (⌘,) to the app menu automatically.
@@ -159,6 +173,35 @@ struct VellumApp: App {
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
+        }
+
+        Window("Vellum Help", id: "help") {
+            HelpCenterView()
+                .environment(themeStore)
+                .environment(\.palette, themeStore.palette)
+                .preferredColorScheme(themeStore.colorScheme)
+                .tint(themeStore.palette.primary)
+        }
+        .defaultSize(width: 680, height: 640)
+
+        Window("Welcome to Vellum", id: "onboarding") {
+            ReplayOnboardingWindow()
+                .environment(themeStore)
+                .environment(\.palette, themeStore.palette)
+                .preferredColorScheme(themeStore.colorScheme)
+                .tint(themeStore.palette.primary)
+        }
+        .windowResizability(.contentSize)
+    }
+}
+
+private struct ReplayOnboardingWindow: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        OnboardingView {
+            OnboardingProgress().complete()
+            dismissWindow(id: "onboarding")
         }
     }
 }
