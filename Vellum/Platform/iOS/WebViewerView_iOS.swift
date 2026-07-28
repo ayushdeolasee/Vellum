@@ -236,16 +236,52 @@ private struct WebDocumentIdentity_iOS: Hashable {
     var url: String?
 }
 
+/// WKWebView subclass that carries Vellum's hardware-keyboard commands.
+///
+/// WebKit is first responder for essentially the whole time a web tab is open,
+/// and it ships its own bindings for several chords Vellum also uses (⌘F find,
+/// ⌘[ / ⌘] history, ⌘↑ / ⌘↓ scroll-to-end). Its bindings bypass Vellum's
+/// cross-format find bar and its session rebinding, so the Vellum commands are
+/// hung here — nearer the first responder than the SwiftUI menu — to win the
+/// dispatch race. See `VellumShortcutResponder` for the full rationale.
+final class VellumWebView: WKWebView, VellumShortcutResponder {
+    var onShortcut: VellumShortcutHandler?
+
+    /// Built once: `keyCommands` is consulted on every key press, and the array
+    /// is constant for the life of the view.
+    private lazy var vellumCommands: [UIKeyCommand] =
+        vellumKeyCommands(action: #selector(vellumPerformShortcut(_:)))
+
+    /// Vellum's chords first so they beat WebKit's own, `super`'s preserved so
+    /// everything else WebKit offers (text editing, selection) still works.
+    override var keyCommands: [UIKeyCommand]? {
+        vellumCommands + (super.keyCommands ?? [])
+    }
+
+    @objc private func vellumPerformShortcut(_ sender: UIKeyCommand) {
+        vellumPerform(sender)
+    }
+}
+
 /// Hosts the controller's WKWebView. UIKit counterpart of the macOS
 /// NSViewRepresentable — no AppKit involved.
 private struct WebViewRepresentable_iOS: UIViewRepresentable {
     let controller: WebViewerController_iOS
 
-    func makeUIView(context: Context) -> WKWebView {
-        controller.webView
+    @Environment(WorkspaceStore.self) private var workspace
+
+    func makeUIView(context: Context) -> VellumWebView {
+        let webView = controller.webView
+        // Hardware-keyboard commands for when WebKit holds first responder. The
+        // WorkspaceStore lives for the whole app session, so capturing it once
+        // cannot go stale.
+        webView.onShortcut = { [workspace] action in
+            VellumShortcutRouter.perform(action, workspace: workspace)
+        }
+        return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: VellumWebView, context: Context) {}
 }
 
 // MARK: - Controller (the WebViewer bridge logic, iOS)
@@ -306,8 +342,8 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
 
-    @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
-    var webView: WKWebView { _webView }
+    @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
+    var webView: VellumWebView { _webView }
 
     /// Isolated content world for the bridge: the content script and the
     /// "vellum" message handler live here, out of reach of page scripts (a
@@ -317,7 +353,7 @@ final class WebViewerController_iOS: NSObject {
     /// unchanged.
     private static let bridgeWorld = WKContentWorld.world(name: "VellumBridge")
 
-    private func makeWebView() -> WKWebView {
+    private func makeWebView() -> VellumWebView {
         let configuration = WKWebViewConfiguration()
         let schemeHandler = VellumWebSchemeHandler()
         configuration.setURLSchemeHandler(
@@ -337,7 +373,7 @@ final class WebViewerController_iOS: NSObject {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true,
             in: Self.bridgeWorld))
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = VellumWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         // Native edge-swipe back/forward bypasses the session-rebind path
