@@ -463,6 +463,15 @@ enum VellumShortcutCatalog {
     /// Builds the `UIKeyCommand`s for the document surfaces. `action` is the
     /// selector on the hosting view; each command carries its shortcut's string
     /// identity in `propertyList` so one selector can serve the whole table.
+    ///
+    /// `@MainActor` because every UIKit member it touches is — `UIKeyCommand`'s
+    /// initializer, `discoverabilityTitle` and `wantsPriorityOverSystemBehavior`
+    /// are all main-actor isolated, so building the commands from a nonisolated
+    /// context warns today and is an error under a stricter concurrency setting.
+    /// Costs the callers nothing: both are already on the main actor (the
+    /// `VellumShortcutResponder` extension via the `@MainActor` protocol, and the
+    /// `@MainActor` test case).
+    @MainActor
     static func documentSurfaceKeyCommands(action selector: Selector) -> [UIKeyCommand] {
         documentSurfaceShortcuts.flatMap { shortcut in
             ([shortcut.combo] + shortcut.alternates).enumerated().map { index, combo in
