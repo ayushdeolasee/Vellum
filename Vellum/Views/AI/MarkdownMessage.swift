@@ -8,6 +8,17 @@ struct MarkdownMessage: View {
     /// Body text size; headings/display math sit 2pt above, code/tables 2pt
     /// below. Defaults to the AI chat bubble size.
     var baseSize: CGFloat = 14
+    /// Widest a display equation may be drawn before it scales down. The AI
+    /// panel passes the live bubble width so equations grow with the resizable
+    /// sidebar; fixed-width callers (notes, annotation sidebar) keep the default.
+    var mathMaxWidth: CGFloat = 240
+    /// Whether the message stretches to fill whatever width it is offered.
+    /// The fixed-width hosts depend on it — sticky notes, the annotation
+    /// sidebar and web note popovers all left-align their text inside a card
+    /// whose width the card decides, not the text — so it stays the default.
+    /// The AI panel's user bubbles opt out: a bubble has to hug its content,
+    /// or a one-word message paints a tinted slab across a 700pt sidebar.
+    var fillsAvailableWidth = true
 
     @Environment(\.palette) private var palette
 
@@ -17,7 +28,7 @@ struct MarkdownMessage: View {
                 blockView(block)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: .leading)
         .textSelection(.enabled)
     }
 
@@ -105,7 +116,7 @@ struct MarkdownMessage: View {
                 .resizable()
                 .scaledToFit()
                 .frame(
-                    maxWidth: min(rendered.size.width, 240),
+                    maxWidth: min(rendered.size.width, mathMaxWidth),
                     maxHeight: rendered.size.height,
                     alignment: .center
                 )

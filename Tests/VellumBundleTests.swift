@@ -286,6 +286,51 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "the imported note")
     }
 
+    func testImportedConversationCapsNestedToolSummaries() throws {
+        let huge = String(repeating: "oversized ", count: 2_000)
+        var hostile = message(
+            id: "hostile",
+            role: .assistant,
+            content: "answer",
+            createdAt: "2026-01-01T00:00:00Z"
+        )
+        hostile.toolSummaries = (0..<(AiPersistence.maxToolSummariesPerMessage + 4)).map { index in
+            AiToolSummary(
+                id: huge,
+                title: "\(index)-\(huge)",
+                detail: huge,
+                sources: (0..<(AiPersistence.maxToolSourcesPerSummary + 4)).map {
+                    .init(id: huge, page: $0 == 0 ? Int.max : $0 + 1, excerpt: huge)
+                },
+                destinationPage: Int.max
+            )
+        }
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [],
+            conversations: try JSONEncoder().encode([hostile])
+        )
+        let key = "hostile-conversation"
+
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        let data = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+        let stored = try XCTUnwrap(JSONDecoder().decode([AiMessage].self, from: data).first)
+        let summaries = try XCTUnwrap(stored.toolSummaries)
+        let first = try XCTUnwrap(summaries.first)
+        XCTAssertEqual(summaries.count, AiPersistence.maxToolSummariesPerMessage)
+        XCTAssertLessThanOrEqual(first.title.count, AiPersistence.maxToolSummaryTitleCharacters)
+        XCTAssertEqual(first.sources.count, AiPersistence.maxToolSourcesPerSummary)
+        XCTAssertLessThanOrEqual(
+            first.sources.first?.excerpt.count ?? 0,
+            AiPersistence.maxToolSourceExcerptCharacters
+        )
+        XCTAssertNil(first.destinationPage)
+        XCTAssertNil(first.sources.first?.page)
+    }
+
     func testAttachmentNeverOverwritesExistingId() throws {
         let key = "attach-key"
         let dir = DocumentDataStore.attachmentsDir(forKey: key)

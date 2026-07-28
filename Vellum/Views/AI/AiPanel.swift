@@ -29,6 +29,11 @@ struct AiPanel: View {
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
+    /// Live width of the transcript column. The sidebar is a resizable
+    /// `.inspector` (240…700pt), and bubbles used to be pinned to a fixed
+    /// 272pt — so widening it only grew the empty gutter beside them. Tracking
+    /// the real width lets `bubbleMaxWidth(for:)` spend the extra space.
+    @State private var transcriptWidth: CGFloat = 0
 
     /// Whether the transcript follows the tail of a streaming reply.
     ///
@@ -148,8 +153,12 @@ struct AiPanel: View {
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
-                .padding(12)
+                .padding(transcriptPadding)
             }
+            // Width only — the scroll geometry below tracks the vertical side.
+            // Separate observers on purpose: this one has to fire on a sidebar
+            // drag, which does not move the scroll offset at all.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { transcriptWidth = $0 }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                 ScrollMetrics(
                     offsetY: geometry.contentOffset.y,
@@ -209,6 +218,36 @@ struct AiPanel: View {
             .animation(.easeInOut(duration: 0.2), value: showsJumpToLatest)
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// Inset around the transcript's content, subtracted from the measured
+    /// scroll-view width to get the usable column.
+    private let transcriptPadding: CGFloat = 12
+
+    /// Widest a bubble of `role` may be, for the transcript width measured above.
+    private func bubbleMaxWidth(for role: AiRole) -> CGFloat {
+        Self.bubbleMaxWidth(for: role, contentWidth: transcriptWidth - transcriptPadding * 2)
+    }
+
+    /// Widest a bubble of `role` may be inside a content column of
+    /// `contentWidth` points. Assistant replies are long-form (prose, code,
+    /// typeset math) so they take the whole column; user messages stop a little
+    /// short of it, which is what keeps the trailing-aligned "You" bubbles
+    /// readable as a distinct column at any sidebar width.
+    ///
+    /// Before the first geometry pass — and if the measurement ever comes back
+    /// degenerate — this falls back to the pre-resize 272pt so a bubble is
+    /// never laid out at zero width. `isFinite` is checked alongside `> 0`
+    /// because this width is also the cap handed to the math rasterizers: an
+    /// infinite column wouldn't just look odd, it would switch off equation
+    /// downscaling altogether and let a wide display equation overflow.
+    ///
+    /// Static (and not private) so those degenerate inputs are testable without
+    /// mounting the panel and the four stores it reads from the environment.
+    static func bubbleMaxWidth(for role: AiRole, contentWidth: CGFloat) -> CGFloat {
+        let column = contentWidth.isFinite && contentWidth > 0 ? max(contentWidth, 160) : 272
+        guard role == .user else { return column }
+        return max(column * 0.82, min(column, 200))
     }
 
     /// The scroll state the stick-to-bottom rule is derived from. Equatable so
@@ -337,20 +376,61 @@ struct AiPanel: View {
             messageBubble(message)
 
             if message.role == .assistant, !message.content.isEmpty {
+                let summaries = message.displayToolSummaries
+                if summaries.isEmpty == false {
+                    toolSummaries(summaries)
+                }
                 messageActions(message)
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
+    /// The collapsed "what I looked at" trace under an assistant reply.
+    ///
+    /// Deliberately a SIBLING of the bubble rather than content inside it, and
+    /// so deliberately NOT wrapped in `BubbleWidthCap`. The bubble hugs its
+    /// prose because a two-word reply shouldn't paint a slab; a source list is
+    /// a stack of rows that genuinely wants the whole column, and hugging it
+    /// would make every disclosure row a different width. `.infinity` here is
+    /// therefore the right answer and does not compete with the bubble's cap —
+    /// the two never lay out the same subtree.
+    private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sources & actions")
+                .font(.caption)
+                .foregroundStyle(palette.mutedForeground)
+                .padding(.horizontal, 4)
+
+            ForEach(summaries) { summary in
+                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources and actions")
+    }
+
     @ViewBuilder
     private func messageBubble(_ message: AiMessage) -> some View {
-        Group {
+        // Text width inside the bubble: the bubble's cap minus its own padding.
+        // Both renderers need it explicitly — the AppKit one to size its text
+        // container, and both to cap typeset math images — because neither can
+        // read the SwiftUI frame back out.
+        let bubbleWidth = bubbleMaxWidth(for: message.role)
+        let textWidth = max(bubbleWidth - 24, 80)
+        BubbleWidthCap(maxWidth: textWidth) {
             if message.role == .assistant {
                 SelectableMessageText(
-                    content: message.content,
+                    // `displayContent`, not `content`: a reply persisted by an
+                    // older build has its tool receipts glued onto the end of
+                    // the text. Those are now rendered as a separate collapsed
+                    // trace, so they have to come off the bubble — without
+                    // rewriting what is stored on disk.
+                    content: message.displayContent,
                     color: palette.foreground,
                     secondary: palette.mutedForeground,
+                    maxWidth: textWidth,
                     onQuote: { text in
                         aiStore.addReference(AiReference(kind: .quote(text: text, messageId: message.id)))
                     },
@@ -361,14 +441,21 @@ struct AiPanel: View {
                     onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
-                MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
-                    .font(.system(size: 14))
-                    .foregroundStyle(palette.primaryForeground)
+                MarkdownMessage(
+                    content: message.content,
+                    textColor: palette.primaryForeground,
+                    mathMaxWidth: textWidth,
+                    // Hug, so a short "You" message is a small tinted bubble
+                    // rather than a bar the width of the sidebar. The other
+                    // three MarkdownMessage hosts keep the filling default.
+                    fillsAvailableWidth: false
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(palette.primaryForeground)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: 272, alignment: .leading)
         .background(
             message.role == .user
                 ? AnyShapeStyle(.tint)
@@ -382,22 +469,29 @@ struct AiPanel: View {
     }
 
     /// Copy / Quote / Add-as-note row under each assistant reply.
+    ///
+    /// All three act on `displayContent` — the answer as shown in the bubble.
+    /// Copying a reply must not silently drag a legacy "Actions:" receipt list
+    /// into the user's clipboard or into a note they place on the page.
     private func messageActions(_ message: AiMessage) -> some View {
         HStack(spacing: 2) {
-            IconButton(help: "Copy", action: { copyToPasteboard(message.content) }) {
+            IconButton(help: "Copy answer", action: { copyToPasteboard(message.displayContent) }) {
                 Image(systemName: "doc.on.doc").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.copy")
 
             IconButton(help: "Quote in reply", action: {
-                aiStore.addReference(AiReference(kind: .quote(text: message.content, messageId: message.id)))
+                aiStore.addReference(AiReference(kind: .quote(
+                    text: message.displayContent,
+                    messageId: message.id
+                )))
             }) {
                 Image(systemName: "quote.bubble").font(.system(size: 12))
             }
             .accessibilityIdentifier("aiMessage.quote")
 
             IconButton(help: "Add as note — click on the page to place it", action: {
-                appStore.beginNoteWithContent(message.content)
+                appStore.beginNoteWithContent(message.displayContent)
             }) {
                 Image(systemName: "note.text.badge.plus").font(.system(size: 12))
             }
@@ -688,6 +782,46 @@ struct AiPanel: View {
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
+    }
+}
+
+/// A width cap that doesn't stretch: it offers its content at most `maxWidth`
+/// and then reports back whatever narrower width the content actually wanted.
+///
+/// `.frame(maxWidth:)` cannot do this. A flexible frame takes the whole clamped
+/// proposal — `Text("Hi").frame(maxWidth: 400)` measures 400pt wide, not 13 —
+/// so wrapping a bubble in one painted every message across the full column no
+/// matter how little was in it. Invisible at the old fixed 272pt cap, glaring
+/// once the cap tracks a 240…700pt sidebar (#51).
+///
+/// Internal (not private) so `SelectableMessageTests` can measure the real
+/// layout rather than a reimplementation of it.
+struct BubbleWidthCap: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        return content.sizeThatFits(
+            ProposedViewSize(width: cap(for: proposal), height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        // Place at the bubble's own (already hugged) size, not the cap, so the
+        // text lands against the leading edge of the background it was measured
+        // for instead of floating in a wider box.
+        content.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+
+    /// A nil proposal (SwiftUI asking for the ideal size) and an infinite one
+    /// both mean "take what you like", which for a bubble means the cap.
+    private func cap(for proposal: ProposedViewSize) -> CGFloat {
+        guard let width = proposal.width, width.isFinite else { return maxWidth }
+        return min(width, maxWidth)
     }
 }
 

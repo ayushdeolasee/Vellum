@@ -14,6 +14,13 @@ enum AiPersistence {
     static let conversationsKey = "research-reader-ai-conversations-v1"
     static let maxMessagesPerDocument = 120
     static let maxMessageCharacters = 12_000
+    static let maxToolSummariesPerMessage = 24
+    static let maxToolSourcesPerSummary = 8
+    static let maxToolSummaryTitleCharacters = 240
+    static let maxToolSummaryDetailCharacters = 160
+    static let maxToolSourceExcerptCharacters = 280
+    static let maxToolIdentifierCharacters = 128
+    static let maxToolPageNumber = 1_000_000
 
     private struct ConversationEntry: Sendable {
         var key: String
@@ -171,7 +178,7 @@ enum AiPersistence {
 
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let document, let key = storageKey(for: document) else { return }
-        let limited = limit(messages)
+        let limited = limitedMessages(messages)
         cache[key] = limited
         // A non-empty conversation is real class-B data; ensure meta.json exists
         // so recents can re-resolve the document by its docId later. The actual
@@ -278,7 +285,7 @@ enum AiPersistence {
         guard let data = DocumentDataStore.loadConversationsData(forKey: key),
               let messages = try? JSONDecoder().decode([AiMessage].self, from: data)
         else { return [] }
-        return limit(messages)
+        return limitedMessages(messages)
     }
 
     /// Await any scheduled write — called from applicationShouldTerminate.
@@ -376,15 +383,89 @@ enum AiPersistence {
         writeConversations(entries)
     }
 
-    private static func limit(_ messages: [AiMessage]) -> [AiMessage] {
+    /// The single conversation boundary used by live saves, cold loads, legacy
+    /// migration, and `.vellum` imports. Structured fields must be bounded here
+    /// as well as message content so nested JSON cannot bypass storage/UI caps.
+    static func limitedMessages(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(maxMessagesPerDocument).map { message in
             var message = message
             if message.content.count > maxMessageCharacters {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
             }
+            if let summaries = message.toolSummaries {
+                message.toolSummaries = sanitizeToolSummaries(summaries)
+            }
             return message
         }
+    }
+
+    static func sanitizeToolSummaries(_ summaries: [AiToolSummary]) -> [AiToolSummary] {
+        var seenSummaryIds = Set<String>()
+        var sanitized: [AiToolSummary] = []
+        for (summaryIndex, original) in summaries.prefix(maxToolSummariesPerMessage).enumerated() {
+            var summary = original
+            summary.title = bounded(summary.title, limit: maxToolSummaryTitleCharacters)
+            guard summary.title.isEmpty == false else { continue }
+            summary.id = uniqueIdentifier(
+                summary.id,
+                fallback: "summary-\(summaryIndex)",
+                seen: &seenSummaryIds
+            )
+            summary.detail = summary.detail.map {
+                bounded($0, limit: maxToolSummaryDetailCharacters)
+            }
+            summary.destinationPage = boundedPage(summary.destinationPage)
+            var seenSourceIds = Set<String>()
+            summary.sources = summary.sources.prefix(maxToolSourcesPerSummary)
+                .enumerated()
+                .map { sourceIndex, originalSource in
+                var source = originalSource
+                source.id = uniqueIdentifier(
+                    source.id,
+                    fallback: "source-\(sourceIndex)",
+                    seen: &seenSourceIds
+                )
+                source.page = boundedPage(source.page)
+                source.excerpt = bounded(
+                    source.excerpt,
+                    limit: maxToolSourceExcerptCharacters
+                )
+                return source
+            }
+            sanitized.append(summary)
+        }
+        return sanitized
+    }
+
+    private static func uniqueIdentifier(
+        _ value: String,
+        fallback: String,
+        seen: inout Set<String>
+    ) -> String {
+        let candidate = bounded(value, limit: maxToolIdentifierCharacters)
+        if candidate.isEmpty == false, seen.insert(candidate).inserted {
+            return candidate
+        }
+        var attempt = 0
+        while true {
+            let suffix = attempt == 0 ? fallback : "\(fallback)-\(attempt)"
+            let identifier = bounded(suffix, limit: maxToolIdentifierCharacters)
+            if seen.insert(identifier).inserted { return identifier }
+            attempt += 1
+        }
+    }
+
+    private static func bounded(_ value: String, limit: Int) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func boundedPage(_ page: Int?) -> Int? {
+        guard let page, (1...maxToolPageNumber).contains(page) else { return nil }
+        return page
     }
 
     private static func readConversations() -> [ConversationEntry] {
@@ -398,7 +479,7 @@ enum AiPersistence {
         for key in orderedKeys where object[key] is [Any] {
             guard let values = object[key] as? [Any] else { continue }
             let messages = values.compactMap(sanitizeMessage)
-            let bounded = limit(messages)
+            let bounded = limitedMessages(messages)
             if !bounded.isEmpty {
                 entries.append(ConversationEntry(key: key, messages: bounded))
             }
@@ -406,7 +487,7 @@ enum AiPersistence {
         // A malformed order scan should not discard otherwise readable data.
         for key in object.keys.sorted() where !entries.contains(where: { $0.key == key }) {
             guard let values = object[key] as? [Any] else { continue }
-            let bounded = limit(values.compactMap(sanitizeMessage))
+            let bounded = limitedMessages(values.compactMap(sanitizeMessage))
             if !bounded.isEmpty { entries.append(ConversationEntry(key: key, messages: bounded)) }
         }
         // No cap: return every entry so lazy migration can find any document,

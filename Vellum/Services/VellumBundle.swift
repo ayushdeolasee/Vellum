@@ -440,24 +440,9 @@ enum VellumBundle {
             merged.append(message)
         }
         merged.sort { $0.createdAt < $1.createdAt }
-        let capped = capConversation(merged)
+        let capped = AiPersistence.limitedMessages(merged)
         guard !capped.isEmpty else { return }
         let data = try JSONEncoder().encode(capped)
         try DocumentDataStore.saveConversationsData(forKey: key, data: data)
-    }
-
-    /// The per-document conversation caps (mirrors AiPersistence.limit, using its
-    /// public constants so the two never drift): keep the newest N, truncate
-    /// over-long content.
-    private static func capConversation(_ messages: [AiMessage]) -> [AiMessage] {
-        messages.suffix(AiPersistence.maxMessagesPerDocument).map { message in
-            var message = message
-            if message.content.count > AiPersistence.maxMessageCharacters {
-                let end = message.content.index(
-                    message.content.startIndex, offsetBy: AiPersistence.maxMessageCharacters)
-                message.content = String(message.content[..<end]) + "\n[truncated]"
-            }
-            return message
-        }
     }
 }

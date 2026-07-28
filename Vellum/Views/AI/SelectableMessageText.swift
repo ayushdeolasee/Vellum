@@ -40,6 +40,11 @@ struct SelectableMessageText: NSViewRepresentable {
     var color: Color
     /// Secondary color for the blockquote bar / muted glyphs.
     var secondary: Color
+    /// Widest the rendered text may be, in points. Threaded down from the panel
+    /// (which measures the resizable sidebar) rather than inferred here, because
+    /// display math is baked into the attributed string at render time and so
+    /// needs the width before layout runs.
+    var maxWidth: CGFloat = 248
     /// Called with the selected substring when the user taps the Quote button.
     var onQuote: (String) -> Void
     /// A file or image dropped onto the bubble itself, which AppKit hands here instead of
@@ -76,20 +81,48 @@ struct SelectableMessageText: NSViewRepresentable {
         let contentChanged = view.appliedContent != content
         let colorsChanged = view.appliedColor != resolvedColor
             || view.appliedSecondary != resolvedSecondary
-        guard contentChanged || colorsChanged else { return }
+        // Display math and thematic rules are rasterized into the attributed
+        // string against the bubble's width, so a sidebar resize has to
+        // re-render even when the text and colors are untouched — but ONLY
+        // those image attachments depend on that width. Gating on "the last
+        // render actually produced one" keeps the early return intact for the
+        // overwhelming majority of replies, which is what stops a resize drag
+        // from re-parsing every bubble in the transcript on every frame.
+        let widthChanged = view.renderedContainsScaledAttachments
+            && view.appliedMathWidth != mathWidth
+        guard contentChanged || colorsChanged || widthChanged else { return }
         let attributed = AiAttributedRenderer.attributedString(
             for: content,
             color: resolvedColor,
-            secondary: resolvedSecondary
+            secondary: resolvedSecondary,
+            mathMaxWidth: mathWidth
         )
-        view.setAttributed(attributed, content: content, color: resolvedColor, secondary: resolvedSecondary)
+        view.setAttributed(
+            attributed,
+            content: content,
+            color: resolvedColor,
+            secondary: resolvedSecondary,
+            mathWidth: mathWidth
+        )
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MessageContainerView, context: Context) -> CGSize? {
-        let width = proposal.width ?? 248
-        let clamped = min(max(width, 80), 248)
-        return CGSize(width: clamped, height: nsView.height(forWidth: clamped))
+        // The old hard 248pt ceiling here is what pinned replies to a narrow
+        // column when the sidebar was widened — the cap now comes from
+        // `maxWidth`, which the panel derives from the live sidebar width.
+        let proposed = proposal.width ?? maxWidth
+        let cap = proposed.isFinite ? min(max(proposed, 80), maxWidth) : maxWidth
+        // Within that cap the bubble hugs. Returning the cap itself (what this
+        // used to do) painted every reply across the whole column no matter how
+        // little was in it — barely noticeable at the old fixed 248pt, very
+        // noticeable once the cap tracks a 700pt sidebar.
+        let used = nsView.size(forWidth: cap)
+        return CGSize(width: min(cap, max(used.width, 80)), height: used.height)
     }
+
+    /// Cap for typeset equations: the full text width, so a wide sidebar shows
+    /// display math at full size instead of scaling it down to the old 240pt.
+    private var mathWidth: CGFloat { max(maxWidth, 80) }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -159,15 +192,36 @@ final class MessageContainerView: NSView {
     private(set) var appliedContent: String?
     private(set) var appliedColor: NSColor?
     private(set) var appliedSecondary: NSColor?
-    /// Width the text storage's attachments were last fitted to; nil forces a
-    /// refit on the next layout.
+    /// Width the image attachments were AUTHORED against, so a sidebar resize
+    /// can be told apart from an unrelated update pass.
+    private(set) var appliedMathWidth: CGFloat?
+    /// Whether the last render actually produced image attachments — typeset
+    /// equations or thematic rules, the only two things this renderer draws as
+    /// images, and the only two whose rendering depends on the bubble's width.
+    /// A reply with neither renders identically at every width, so the SwiftUI
+    /// layer can skip it entirely while the sidebar is being dragged instead of
+    /// re-parsing its markdown once per frame.
+    private(set) var renderedContainsScaledAttachments = false
+    /// Width the text storage's attachments were last fitted DOWN to; nil forces
+    /// a refit on the next layout. Distinct from `appliedMathWidth`: that is the
+    /// width the renderer drew at, this is the width `layout()` squeezed the
+    /// result into.
     private var fittedWidth: CGFloat?
 
-    func setAttributed(_ attributed: NSAttributedString, content: String, color: NSColor, secondary: NSColor) {
+    func setAttributed(
+        _ attributed: NSAttributedString,
+        content: String,
+        color: NSColor,
+        secondary: NSColor,
+        mathWidth: CGFloat? = nil
+    ) {
         self.attributed = attributed
         self.appliedContent = content
         self.appliedColor = color
         self.appliedSecondary = secondary
+        self.appliedMathWidth = mathWidth
+        self.renderedContainsScaledAttachments = attributed.containsAttachments(
+            in: NSRange(location: 0, length: attributed.length))
         fittedWidth = nil
         textView.textStorage?.setAttributedString(attributed)
         // The text view reads as one accessibility element whose value is its
@@ -182,10 +236,19 @@ final class MessageContainerView: NSView {
     /// layout pass, and driving `ensureLayout` on the on-screen view there
     /// tripped "-ensureLayoutForTextContainer while already performing layout".
     func height(forWidth width: CGFloat) -> CGFloat {
+        size(forWidth: width).height
+    }
+
+    /// Size the text settles at when it is allowed to wrap at `width`: the
+    /// height, plus the width the glyphs ACTUALLY occupy — which is what lets a
+    /// short reply hug instead of stretching an almost-empty bubble across the
+    /// column. Same throwaway layout manager as `height(forWidth:)`, for the
+    /// same reentrancy reason.
+    func size(forWidth width: CGFloat) -> CGSize {
         let width = max(1, width)
         // Measure what will actually be shown: `layout()` installs the same
         // fitted copy, and a scaled-down equation is shorter than its original.
-        return Self.measureHeight(Self.fittedAttachments(in: attributed, width: width), width: width)
+        return Self.measureSize(Self.fittedAttachments(in: attributed, width: width), width: width)
     }
 
     /// Scale image attachments down to the width they are actually being laid
@@ -262,7 +325,11 @@ final class MessageContainerView: NSView {
     }
 
     static func measureHeight(_ attributed: NSAttributedString, width: CGFloat) -> CGFloat {
-        guard attributed.length > 0 else { return 0 }
+        measureSize(attributed, width: width).height
+    }
+
+    static func measureSize(_ attributed: NSAttributedString, width: CGFloat) -> CGSize {
+        guard attributed.length > 0 else { return .zero }
         let storage = NSTextStorage(attributedString: attributed)
         let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
@@ -270,8 +337,19 @@ final class MessageContainerView: NSView {
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        let height = layout.usedRect(for: container).height
-        return height.isFinite ? ceil(height) : 0
+        let used = layout.usedRect(for: container)
+        guard used.height.isFinite, used.maxX.isFinite else { return .zero }
+        // `maxX` rather than `width`: a centered display-math paragraph and an
+        // indented blockquote both lay out with a non-zero origin, and the
+        // bubble has to be wide enough to hold the line where it actually sits,
+        // not just the run of glyphs. Attachments are laid out like any other
+        // glyph, so a typeset equation is already accounted for here — an
+        // equation too wide for the cap keeps the bubble at the full cap.
+        //
+        // Re-measuring at this narrower width can't change the answer: every
+        // line already fits inside `maxX`, so the greedy line breaker produces
+        // the same breaks and therefore the same height.
+        return CGSize(width: ceil(used.maxX), height: ceil(used.height))
     }
 
     override func layout() {
@@ -434,36 +512,51 @@ final class QuoteButton: NSView {
 // drives an offscreen AppKit label); every caller is already main-actor UI code.
 @MainActor
 enum AiAttributedRenderer {
-    static func attributedString(for content: String, color: NSColor, secondary: NSColor) -> NSAttributedString {
+    /// - Parameter mathMaxWidth: widest an image attachment — a typeset equation
+    ///   or a thematic rule — may be drawn before it is scaled down. The
+    ///   bubble's text width, so both grow with the resizable sidebar rather
+    ///   than staying capped at `contentWidth`, which is only the fallback for
+    ///   callers that have no width to offer.
+    static func attributedString(
+        for content: String,
+        color: NSColor,
+        secondary: NSColor,
+        mathMaxWidth: CGFloat = AiAttributedRenderer.contentWidth
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let blocks = MarkdownParser.parse(content)
         for (index, block) in blocks.enumerated() {
-            result.append(attributed(for: block, color: color, secondary: secondary))
+            result.append(attributed(for: block, color: color, secondary: secondary, mathMaxWidth: mathMaxWidth))
             if index < blocks.count - 1 { result.append(NSAttributedString(string: "\n")) }
         }
         return result
     }
 
-    private static func attributed(for block: MarkdownBlock, color: NSColor, secondary: NSColor) -> NSAttributedString {
+    private static func attributed(
+        for block: MarkdownBlock,
+        color: NSColor,
+        secondary: NSColor,
+        mathMaxWidth: CGFloat
+    ) -> NSAttributedString {
         switch block {
         case let .heading(level, text):
             let font = NSFont.systemFont(ofSize: level == 1 ? 16 : 14, weight: .semibold)
             let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 6)
-            return inline(text, font: font, color: color, paragraph: paragraph)
+            return inline(text, font: font, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .paragraph(text):
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
-            return inline(text, font: base, color: color, paragraph: paragraph)
+            return inline(text, font: base, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .list(items):
-            return list(items, color: color)
+            return list(items, color: color, mathMaxWidth: mathMaxWidth)
 
         case let .quote(text):
             let paragraph = paragraphStyle(lineSpacing: 3, spacingAfter: 8)
             paragraph.firstLineHeadIndent = 12
             paragraph.headIndent = 12
             let italic = NSFont(descriptor: base.fontDescriptor.withSymbolicTraits(.italic), size: base.pointSize) ?? base
-            return inline(text, font: italic, color: secondary, paragraph: paragraph)
+            return inline(text, font: italic, color: secondary, paragraph: paragraph, mathMaxWidth: mathMaxWidth)
 
         case let .code(text):
             // A run background is the closest an attributed string gets to the
@@ -485,20 +578,22 @@ enum AiAttributedRenderer {
             ])
 
         case let .math(latex):
-            return displayMath(latex, color: color)
+            return displayMath(latex, color: color, mathMaxWidth: mathMaxWidth)
 
         case .rule:
-            return rule(color: secondary)
+            return rule(color: secondary, width: mathMaxWidth)
         }
     }
 
     /// A thematic break (`---`). An attributed string has no "draw a line"
     /// attribute, so the rule is a 1pt-tall image on its own paragraph, sized
-    /// to the same fixed bubble content width the math attachments are capped
-    /// to. Left with no `accessibilityDescription`: it is decorative, and its
-    /// empty `AttachmentText` keeps it out of quotes and VoiceOver alike.
-    private static func rule(color: NSColor) -> NSAttributedString {
-        let size = CGSize(width: contentWidth, height: 1)
+    /// to the same bubble content width the math attachments are capped to —
+    /// which now tracks the resizable sidebar, so a divider spans the reply
+    /// instead of stopping at a 240pt stub in a wide panel. Left with no
+    /// `accessibilityDescription`: it is decorative, and its empty
+    /// `AttachmentText` keeps it out of quotes and VoiceOver alike.
+    private static func rule(color: NSColor, width: CGFloat) -> NSAttributedString {
+        let size = CGSize(width: max(1, width), height: 1)
         let attachment = NSTextAttachment()
         attachment.image = NSImage(size: size, flipped: false) { rect in
             color.withAlphaComponent(0.5).setFill()
@@ -522,7 +617,7 @@ enum AiAttributedRenderer {
 
     /// Display equation as a centered typeset image on its own paragraph;
     /// unparseable LaTeX falls back to monospaced source.
-    private static func displayMath(_ latex: String, color: NSColor) -> NSAttributedString {
+    private static func displayMath(_ latex: String, color: NSColor, mathMaxWidth: CGFloat) -> NSAttributedString {
         guard let rendered = MathRenderer.render(latex: latex, fontSize: 16, color: color, display: true) else {
             let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 8)
             return NSAttributedString(string: latex, attributes: [
@@ -534,7 +629,7 @@ enum AiAttributedRenderer {
         let paragraph = paragraphStyle(lineSpacing: 2, spacingAfter: 10)
         paragraph.alignment = .center
         let result = NSMutableAttributedString(
-            attributedString: attachment(for: rendered, maxWidth: contentWidth, latex: latex, display: true))
+            attributedString: attachment(for: rendered, maxWidth: mathMaxWidth, latex: latex, display: true))
         result.addAttributes(
             [.paragraphStyle: paragraph, .foregroundColor: color],
             range: NSRange(location: 0, length: result.length)
@@ -579,11 +674,13 @@ enum AiAttributedRenderer {
 
     private static var base: NSFont { NSFont.systemFont(ofSize: 14) }
 
-    /// Usable width inside an assistant bubble (`AiPanel` caps the bubble at
-    /// 272pt and pads it by 12pt a side). Attachments can't be laid out
-    /// relative to the text container, so anything image-backed — typeset
-    /// equations, thematic breaks — is sized against this.
-    private static let contentWidth: CGFloat = 240
+    /// Usable width inside a FALLBACK-width assistant bubble (`AiPanel` falls
+    /// back to a 272pt bubble padded by 12pt a side when it has no live
+    /// transcript measurement yet). Attachments can't be laid out relative to
+    /// their text container, so anything image-backed — typeset equations,
+    /// thematic breaks — is sized against `mathMaxWidth`, and this is only its
+    /// default for callers that don't measure.
+    static let contentWidth: CGFloat = 240
 
     private static func paragraphStyle(lineSpacing: CGFloat, spacingAfter: CGFloat) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -598,7 +695,11 @@ enum AiAttributedRenderer {
     /// than back under its bullet.
     ///
     /// Mirrors `MarkdownMessage`'s SwiftUI list, including its `indent` cap.
-    private static func list(_ items: [MarkdownListItem], color: NSColor) -> NSAttributedString {
+    private static func list(
+        _ items: [MarkdownListItem],
+        color: NSColor,
+        mathMaxWidth: CGFloat
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         for (index, item) in items.enumerated() {
             let indent = 4 + item.indent
@@ -608,7 +709,8 @@ enum AiAttributedRenderer {
             let line = NSMutableAttributedString(string: "\(item.marker.label)  ", attributes: [
                 .font: base, .foregroundColor: color, .paragraphStyle: paragraph,
             ])
-            line.append(inline(item.text, font: base, color: color, paragraph: paragraph))
+            line.append(
+                inline(item.text, font: base, color: color, paragraph: paragraph, mathMaxWidth: mathMaxWidth))
             result.append(line)
             if index < items.count - 1 { result.append(NSAttributedString(string: "\n")) }
         }
@@ -624,7 +726,8 @@ enum AiAttributedRenderer {
         _ source: String,
         font: NSFont,
         color: NSColor,
-        paragraph: NSParagraphStyle
+        paragraph: NSParagraphStyle,
+        mathMaxWidth: CGFloat
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         for piece in InlineMarkdown.pieces(in: source) {
@@ -635,7 +738,7 @@ enum AiAttributedRenderer {
                 if let rendered = MathRenderer.render(latex: latex, fontSize: font.pointSize, color: color, display: false) {
                     let math = NSMutableAttributedString(
                         attributedString: attachment(
-                            for: rendered, maxWidth: contentWidth, latex: latex, display: false))
+                            for: rendered, maxWidth: mathMaxWidth, latex: latex, display: false))
                     // Keep the run's paragraph style so line spacing stays even.
                     math.addAttributes(
                         [.paragraphStyle: paragraph, .foregroundColor: color],
