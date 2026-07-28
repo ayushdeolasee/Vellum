@@ -555,7 +555,141 @@ final class AiPipelineTests: XCTestCase {
 
         // And messages persisted before telemetry (no usage key) still decode.
         let legacy = Data(#"{"id":"a","role":"assistant","content":"old","createdAt":"2026-01-01T00:00:00.000Z"}"#.utf8)
-        XCTAssertNil(try JSONDecoder().decode(AiMessage.self, from: legacy).usage)
+        let decodedLegacy = try JSONDecoder().decode(AiMessage.self, from: legacy)
+        XCTAssertNil(decodedLegacy.usage)
+        XCTAssertTrue(decodedLegacy.references.isEmpty)
+    }
+
+    // MARK: - Composer focus requests
+
+    /// Attaching context reveals the AI panel AND asks the composer for the
+    /// keyboard, every time — including the second attach in a row, which a Bool
+    /// flag would swallow. Tokens are one-shot: once consumed there is no
+    /// pending request left to replay.
+    func testAddingReferenceOpensAiAndRequestsComposerFocus() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        workspace.sidebarOpen = false
+        workspace.sidebarTab = .annotations
+        XCTAssertNil(store.composerFocusRequest, "no request before any attach")
+
+        store.addReference(AiReference(kind: .selection(text: "First", page: 1)))
+        XCTAssertTrue(workspace.sidebarOpen)
+        XCTAssertEqual(workspace.sidebarTab, .ai)
+        XCTAssertEqual(store.composerReferences.count, 1)
+        let first = try XCTUnwrap(store.composerFocusRequest)
+
+        store.consumeComposerFocusRequest(first)
+        XCTAssertNil(store.composerFocusRequest)
+
+        store.addReference(AiReference(kind: .selection(text: "Second", page: 2)))
+        let second = try XCTUnwrap(store.composerFocusRequest)
+        XCTAssertNotEqual(second, first, "a second attach must be a distinct request")
+        XCTAssertEqual(store.composerReferences.count, 2)
+    }
+
+    /// A stale token — one a torn-down composer fulfilled before the user
+    /// attached again — must not cancel the request that is actually pending.
+    func testConsumingAStaleFocusRequestLeavesTheCurrentOnePending() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        store.addReference(AiReference(kind: .selection(text: "First", page: 1)))
+        let stale = try XCTUnwrap(store.composerFocusRequest)
+        store.consumeComposerFocusRequest(stale)
+        store.addReference(AiReference(kind: .selection(text: "Second", page: 2)))
+        let current = try XCTUnwrap(store.composerFocusRequest)
+
+        store.consumeComposerFocusRequest(stale)
+
+        XCTAssertEqual(store.composerFocusRequest, current)
+    }
+
+    /// Split panes each own their focus namespace, so attaching in one pane
+    /// can't pull the keyboard into the other pane's composer.
+    func testComposerFocusRequestsAreScopedToTheirSplitPane() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let original = workspace.focusedPane.ai
+        original.addReference(AiReference(kind: .selection(text: "Left", page: 1)))
+        let originalRequest = try XCTUnwrap(original.composerFocusRequest)
+        original.consumeComposerFocusRequest(originalRequest)
+
+        workspace.splitFocused(.horizontal)
+        let split = workspace.focusedPane.ai
+        split.addReference(AiReference(kind: .selection(text: "Right", page: 1)))
+
+        XCTAssertNil(original.composerFocusRequest)
+        XCTAssertNotNil(split.composerFocusRequest)
+        XCTAssertNotEqual(split.composerFocusRequest, originalRequest)
+    }
+
+    // MARK: - Capture targets survive the await
+
+    /// A page render that finishes after the user switched tabs must not attach
+    /// the old document's pixels to the new one.
+    func testPdfPageCaptureAfterAwaitIsRejectedAfterTabSwitch() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        let app = workspace.focusedPane.app
+        app.attachTab(Self.tab(id: "pdf-a", document: DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+            pageCount: 1, lastPage: 1, docId: "doc-a")))
+        let target = try XCTUnwrap(store.currentReferenceTarget())
+        app.attachTab(Self.tab(id: "pdf-b", document: DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/b.pdf", title: "B",
+            pageCount: 1, lastPage: 1, docId: "doc-b")))
+
+        let attached = store.addCapturedReference(
+            AiReference(kind: .pageSnapshot(image: Self.snapshot, page: 1)), target: target)
+
+        XCTAssertFalse(attached)
+        XCTAssertTrue(store.composerReferences.isEmpty)
+    }
+
+    /// The same guard covers web region crops, whose capture is also async.
+    func testWebRegionCaptureAfterAwaitIsRejectedAfterTabSwitch() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        let app = workspace.focusedPane.app
+        app.attachTab(Self.tab(id: "web-a", document: DocumentInfo(
+            kind: .web, pdfPath: "https://a.example", title: "A",
+            pageCount: 1, lastPage: 1, docId: "web-doc-a")))
+        let target = try XCTUnwrap(store.currentReferenceTarget())
+        app.attachTab(Self.tab(id: "web-b", document: DocumentInfo(
+            kind: .web, pdfPath: "https://b.example", title: "B",
+            pageCount: 1, lastPage: 1, docId: "web-doc-b")))
+
+        let attached = store.addCapturedReference(
+            AiReference(kind: .region(image: Self.snapshot, page: 1)), target: target)
+
+        XCTAssertFalse(attached)
+        XCTAssertTrue(store.composerReferences.isEmpty)
+    }
+
+    /// The guard must not be so strict that the ordinary case — nothing changed
+    /// while the page rendered — is rejected too.
+    func testCaptureIsAttachedWhenTheTabIsStillTheSameOne() throws {
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let store = workspace.focusedPane.ai
+        let app = workspace.focusedPane.app
+        app.attachTab(Self.tab(id: "pdf-a", document: DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+            pageCount: 1, lastPage: 1, docId: "doc-a")))
+        let target = try XCTUnwrap(store.currentReferenceTarget())
+
+        let attached = store.addCapturedReference(
+            AiReference(kind: .pageSnapshot(image: Self.snapshot, page: 1)), target: target)
+
+        XCTAssertTrue(attached)
+        XCTAssertEqual(store.composerReferences.count, 1)
+    }
+
+    private static let snapshot = AiPageImageSnapshot(
+        pageNumber: 1, base64Data: "aGVsbG8=", mediaType: "image/png", width: 12, height: 9)
+
+    private static func tab(id: String, document: DocumentInfo) -> PdfTab {
+        PdfTab(
+            id: id, document: document, currentPage: 1, numPages: 1, zoom: 1,
+            visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view)
     }
 
     // MARK: - Auto page-image gating

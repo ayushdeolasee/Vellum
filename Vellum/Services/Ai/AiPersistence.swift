@@ -14,6 +14,22 @@ enum AiPersistence {
     static let conversationsKey = "research-reader-ai-conversations-v1"
     static let maxMessagesPerDocument = 120
     static let maxMessageCharacters = 12_000
+    /// Per-reference excerpt cap, the counterpart to `maxMessageCharacters` for
+    /// `AiMessage.references`. A single selection can be a whole page and one
+    /// message may carry several, so without this a turn could write far more to
+    /// `conversations.json` than the body cap allows. Generous enough that a
+    /// realistic selection or quote is stored verbatim; the prompt applies its
+    /// own, tighter bound separately (`AiPrompts.maxReferenceCharacters`).
+    static let maxReferenceCharacters = 4_000
+    /// Ceiling on references of any kind attached to one message, images
+    /// included. `AiStore.maxImageReferences` bounds the *request* payload; this
+    /// bounds the *transcript*. Every reference is persisted on the user message
+    /// and `conversations.json` is rewritten in full on every turn, so a hundred
+    /// selections attached in one gesture would be re-encoded forever after.
+    /// Enforced by the composer (`AiStore.addReference`) and again on the way to
+    /// disk, for lists that never came through the composer — an imported
+    /// `.vellum` bundle, or a hand-edited file.
+    static let maxReferencesPerMessage = 16
     static let maxToolSummariesPerMessage = 24
     static let maxToolSourcesPerSummary = 8
     static let maxToolSummaryTitleCharacters = 240
@@ -317,12 +333,18 @@ enum AiPersistence {
         dirtyKeys.remove(key)
     }
 
-    static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {
+    static func makeMessage(
+        role: AiRole,
+        content: String,
+        id: String? = nil,
+        references: [AiReference] = []
+    ) -> AiMessage {
         AiMessage(
             id: id ?? UUID().uuidString.lowercased(),
             role: role,
             content: content,
-            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date())
+            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date()),
+            references: references
         )
     }
 
@@ -393,10 +415,32 @@ enum AiPersistence {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
             }
+            message.references = capReferences(message.references)
             if let summaries = message.toolSummaries {
                 message.toolSummaries = sanitizeToolSummaries(summaries)
             }
             return message
+        }
+    }
+
+    /// The per-message reference caps. Reached only through `limitedMessages`,
+    /// which is now the single conversation boundary for live saves, cold loads,
+    /// legacy migration, and `.vellum` imports alike — `VellumBundle` used to
+    /// keep a parallel `capConversation` that restated these rules and drifted
+    /// out of sync once already; #64 deleted it in favour of calling
+    /// `limitedMessages` directly, so there is exactly one implementation.
+    /// Defensive on both save and load: a list that arrived oversized,
+    /// was hand-edited on disk, or came out of a `.vellum` file we didn't write
+    /// is clipped here rather than carried around in memory and rewritten in
+    /// full on every flush.
+    static func capReferences(_ references: [AiReference]) -> [AiReference] {
+        guard !references.isEmpty else { return references }
+        // Newest-last, so keep the *first* N: unlike messages, where the recent
+        // turns matter most, references are a single message's attachment list
+        // in the order the user built it, and truncating the tail is what the
+        // composer's own cap would have done.
+        return references.prefix(maxReferencesPerMessage).map {
+            $0.truncatingText(to: maxReferenceCharacters).strippingImageData
         }
     }
 
@@ -495,6 +539,10 @@ enum AiPersistence {
         return entries
     }
 
+    /// Legacy-blob reader. Deliberately does NOT look for `references`: the blob
+    /// is a read-only migration source frozen before that field existed, so an
+    /// entry can never carry one. Migrated messages come out with `references`
+    /// empty, which is correct — those turns really had no attachments recorded.
     private static func sanitizeMessage(_ raw: Any) -> AiMessage? {
         guard let value = raw as? [String: Any],
               let roleString = value["role"] as? String,

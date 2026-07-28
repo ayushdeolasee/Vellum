@@ -234,13 +234,19 @@ struct WebViewerView: View {
     private func captureRegion(_ rect: CGRect) {
         switch appStore.regionCaptureTarget {
         case .ai:
+            // Pin the tab + document the crop was drawn on before the await; a
+            // capture that lands after the user navigated or switched tabs must
+            // be discarded, not attached to whatever is showing now. See
+            // `AiReferenceTarget`.
+            guard let target = aiStore.currentReferenceTarget() else { return }
             Task {
                 // A web capture always stamps the virtual page it was taken on,
                 // so the snapshot's optional page is always populated here.
                 guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
                       let page = snapshot.pageNumber
                 else { return }
-                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+                aiStore.addCapturedReference(
+                    AiReference(kind: .region(image: snapshot, page: page)), target: target)
             }
         case .scratchpad:
             Task {
