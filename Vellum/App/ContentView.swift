@@ -204,36 +204,31 @@ private struct WindowChrome: View {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(
-                    min: WorkspaceStore.minSidebarWidth,
-                    ideal: workspace.sidebarWidth,
-                    max: WorkspaceStore.maxSidebarWidth)
-                // Feeds the user's splitter drag back to the store so the next
-                // document reopens the column where they left it. The store
-                // rejects the collapsed measurements a start tab produces.
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.width
-                } action: { width in
-                    workspace.rememberSidebarWidth(width)
-                }
-                .toolbar {
-                    if inspectorPresented.wrappedValue {
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
+            VStack(spacing: 0) {
+                InspectorTabSwitcher(selection: sidebarTabBinding)
+                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+                    .padding(.vertical, 8)
+                Divider()
+                sidebar
+            }
+            .inspectorColumnWidth(
+                min: InspectorLayout.minimumWidth,
+                ideal: workspace.sidebarWidth,
+                max: InspectorLayout.maximumWidth)
+            // Feeds the user's splitter drag back to the store so the next
+            // document reopens the column where they left it. The store
+            // rejects the collapsed measurements a start tab produces.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                workspace.rememberSidebarWidth(width)
+            }
         }
     }
 

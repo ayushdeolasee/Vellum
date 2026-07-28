@@ -46,6 +46,7 @@
 		2F52BBA445E0EE94526EC6E5 /* editor.bundle.js in Resources */ = {isa = PBXBuildFile; fileRef = 88261ED7614D2528C41ED0E5 /* editor.bundle.js */; };
 		309920512501052A787792CF /* PKCE.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6E95679B108A0702A0657D8 /* PKCE.swift */; };
 		30F9DFF4371A901244DAD7BE /* AiUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17D3131ADA1819B327BDBB6 /* AiUsage.swift */; };
+		3134DD9F8B448D0A1DC4BB69 /* InspectorTabSwitcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E7DC69283E8EFA7F1D589A3 /* InspectorTabSwitcherTests.swift */; };
 		32DBC725A181B5D35FB41434 /* PdfKitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75C2F535B12256E191B781C /* PdfKitView.swift */; };
 		32F89094157CF2CB633E7E52 /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */; };
 		332DDCE78567FAF8C323DE23 /* auto-render.min.js in Resources */ = {isa = PBXBuildFile; fileRef = AEC0C786A891A12086DE4A53 /* auto-render.min.js */; };
@@ -144,6 +145,7 @@
 		CA6BCC8D048C1E43CBC52E99 /* KaTeX_SansSerif-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */; };
 		CB58CF712FE221F08C846934 /* InspectorPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B2FF4EC7260E5A86C069B /* InspectorPresentationTests.swift */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
+		CE12B2EB31D5767A335D7E04 /* InspectorTabSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
 		D3E15D784AC0EF97D1BE22E8 /* purify.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B707464546ECFFA1A49EBDE /* purify.min.js */; };
 		D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F38132FDC803C6ACEB43CC /* AiStore.swift */; };
@@ -302,6 +304,7 @@
 		9BAF3F69842AC6333D1D9C38 /* WebProxyUrlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebProxyUrlTests.swift; sourceTree = "<group>"; };
 		9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthLoopbackServer.swift; sourceTree = "<group>"; };
 		9D58D6980122701CBA30200F /* Vellum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vellum.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9E7DC69283E8EFA7F1D589A3 /* InspectorTabSwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorTabSwitcherTests.swift; sourceTree = "<group>"; };
 		9E9308A43A15E8D1EAAEC887 /* AiToolSourceRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolSourceRow.swift; sourceTree = "<group>"; };
 		9F7F3D4199D08A3DEE3D8641 /* KaTeX_Caligraphic-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Bold.woff2"; sourceTree = "<group>"; };
 		A17D3131ADA1819B327BDBB6 /* AiUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiUsage.swift; sourceTree = "<group>"; };
@@ -312,6 +315,7 @@
 		AEC0C786A891A12086DE4A53 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
 		B06DA428592587D5CC42B840 /* KaTeX_Size2-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size2-Regular.woff2"; sourceTree = "<group>"; };
 		B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationStore.swift; sourceTree = "<group>"; };
+		B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorTabSwitcher.swift; sourceTree = "<group>"; };
 		B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadDropRegistrationTests.swift; sourceTree = "<group>"; };
 		B313F26C338D071377D89FE9 /* KaTeX_Math-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-BoldItalic.woff2"; sourceTree = "<group>"; };
 		B4AF0117D296B571E62111BB /* AiToolSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolSummary.swift; sourceTree = "<group>"; };
@@ -470,6 +474,7 @@
 				BF3639A904AFB66CC400B4A4 /* HomeSearchRankerTests.swift */,
 				9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */,
 				4F2B2FF4EC7260E5A86C069B /* InspectorPresentationTests.swift */,
+				9E7DC69283E8EFA7F1D589A3 /* InspectorTabSwitcherTests.swift */,
 				6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */,
 				13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */,
 				524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */,
@@ -734,6 +739,7 @@
 			children = (
 				F2630E8BE36D65B9E485FD6F /* Controls.swift */,
 				0A7870954383EAE833F32ABF /* FindBar.swift */,
+				B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */,
 				C8B60F6CDB9021A07B1D678D /* SidebarDropCatcher.swift */,
 				D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */,
 			);
@@ -950,6 +956,7 @@
 				1B5C72C374CA117AE2A542A3 /* HomeSearchRanker.swift in Sources */,
 				C0467FFEFEFFFC2D272897A1 /* HomeSearchStore.swift in Sources */,
 				49311DE585F9B39D74851556 /* InlineMarkdown.swift in Sources */,
+				CE12B2EB31D5767A335D7E04 /* InspectorTabSwitcher.swift in Sources */,
 				D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */,
 				179624D568F6AF9C1077ECD1 /* LiveTabRuntime.swift in Sources */,
 				E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */,
@@ -1042,6 +1049,7 @@
 				1B5F21D31EC3CF8C1A2AB3C7 /* HomeSearchRankerTests.swift in Sources */,
 				D95609F2F3FB73070B563A14 /* HomeSearchStoreTests.swift in Sources */,
 				CB58CF712FE221F08C846934 /* InspectorPresentationTests.swift in Sources */,
+				3134DD9F8B448D0A1DC4BB69 /* InspectorTabSwitcherTests.swift in Sources */,
 				8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */,
 				91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */,
 				2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */,
