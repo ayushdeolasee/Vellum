@@ -329,15 +329,12 @@ private struct NoteToolToggle: View {
 
 // MARK: - Overflow menu
 
-/// One trailing Menu that collects the low-frequency actions that used to each
-/// claim their own toolbar circle: Open, Save, web library + Export, and the
-/// updater. Keeping them here is what removes the "pill soup" while leaving the
-/// reading controls (nav, zoom, bookmark, note, inspector) permanently visible.
+/// One trailing Menu that collects low-frequency document actions. Global app
+/// actions such as Settings and update checking live on Home instead.
 private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
 
-    @State private var updateChecker = UpdateChecker()
     @State private var pageSaved = false
     @State private var exporting = false
     /// Separate guard for the "Export with Notes…" flow so it can't double-fire
@@ -399,20 +396,6 @@ private struct OverflowMenu: View {
                 }
             }
 
-            Section {
-                if updateChecker.state == .available,
-                   let version = updateChecker.availableVersion {
-                    Button(action: updateChecker.install) {
-                        Label("Install Update \(version)", systemImage: "arrow.down.circle")
-                    }
-                }
-                Button {
-                    Task { await updateChecker.check() }
-                } label: {
-                    Label("Check for Updates…", systemImage: "arrow.clockwise")
-                }
-                .disabled(updateChecker.state == .checking)
-            }
         } label: {
             Label("More", systemImage: "ellipsis")
                 // Icon-only keeps the pod the same circle as the neighboring
@@ -421,12 +404,9 @@ private struct OverflowMenu: View {
                 .labelStyle(.iconOnly)
         }
         .menuIndicator(.hidden)
-        .help("More — open, save, export, and updates")
+        .help("More — open, save, and export")
         .accessibilityLabel("More actions")
         .accessibilityIdentifier("toolbar.overflowMenu")
-        .task {
-            await updateChecker.check(silent: true)
-        }
         .task(id: DocumentKey(appStore)) {
             await loadSavedState(for: DocumentKey(appStore))
         }

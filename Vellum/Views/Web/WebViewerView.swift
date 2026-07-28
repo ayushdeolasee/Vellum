@@ -35,6 +35,9 @@ struct WebNoteComposerState {
     var point: CGPoint
     var anchor: WebNoteAnchor
     var openedAt: Date
+    /// Text the composer opens pre-filled with — an AI reply routed here by the
+    /// panel's "Add as note". Empty for a plain note-tool placement.
+    var initialContent: String = ""
 }
 
 struct WebContextMenuState {
@@ -144,12 +147,18 @@ struct WebViewerView: View {
                         placement: .below, containerSize: proxy.size
                     ) {
                         WebNoteComposerView(
+                            initialContent: composer.initialContent,
                             onSubmit: { content in
                                 controller.createAnchoredNote(anchor: composer.anchor, content: content)
                                 controller.closeNoteComposer()
                             },
                             onClose: { controller.closeNoteComposer() })
                     }
+                    // The composer seeds its editable text from `initialContent`
+                    // once, at init. Keying on the placement timestamp gives each
+                    // placement a fresh identity, so placing a second note
+                    // without closing the first can't reuse the previous text.
+                    .id(composer.openedAt)
                     .zIndex(50)
                 }
 
@@ -266,13 +275,19 @@ struct WebViewerView: View {
     private func captureRegion(_ rect: CGRect) {
         switch appStore.regionCaptureTarget {
         case .ai:
+            // Pin the tab + document the crop was drawn on before the await; a
+            // capture that lands after the user navigated or switched tabs must
+            // be discarded, not attached to whatever is showing now. See
+            // `AiReferenceTarget`.
+            guard let target = aiStore.currentReferenceTarget() else { return }
             Task {
                 // A web capture always stamps the virtual page it was taken on,
                 // so the snapshot's optional page is always populated here.
                 guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
                       let page = snapshot.pageNumber
                 else { return }
-                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+                aiStore.addCapturedReference(
+                    AiReference(kind: .region(image: snapshot, page: page)), target: target)
             }
         case .scratchpad:
             Task {
@@ -1120,7 +1135,20 @@ final class WebViewerController: NSObject {
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             hideContextMenu()
             noteViewer = nil
-            noteComposer = WebNoteComposerState(point: point, anchor: anchor, openedAt: Date())
+            // An AI "Add as note" click carries the reply text; a plain note
+            // tool click leaves it nil so the composer opens empty for typing.
+            // This MUST happen before `setMode(.view)` below, which drops any
+            // unconsumed payload. Skipping it was the whole bug behind issue
+            // #57's "Add as note just offers a new empty note": the PDF viewer
+            // consumed the reply in `PdfSelectionBridge.placeNote`, the web
+            // viewer never did, so the text was silently thrown away here.
+            let pendingContent = app.consumePendingNoteContent()
+            noteComposer = WebNoteComposerState(
+                point: point,
+                anchor: anchor,
+                openedAt: Date(),
+                initialContent: pendingContent ?? ""
+            )
             // Mirror the PDF viewer: placing a note returns to view mode.
             app.setMode(.view)
 

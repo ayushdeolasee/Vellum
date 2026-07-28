@@ -190,6 +190,44 @@ final class AppStore {
         }
     }
 
+    /// Rename the open document from the tab bar.
+    ///
+    /// Distinct from `updateDocumentTitle` above, which exists for the webpage
+    /// content script reporting the DOM `<title>` and is deliberately
+    /// in-memory-only and non-empty-only: a page reporting its own title should
+    /// not permanently overwrite a name the user chose, and a page reporting an
+    /// empty one should be ignored. A user rename is the opposite on both
+    /// counts — it must persist, and clearing it must be allowed to mean
+    /// "go back to the filename".
+    ///
+    /// The file on disk is untouched; see `DocumentRenameService` for why.
+    func renameDocument(tabId: String, title: String) async {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
+            return
+        }
+        let normalized = DocumentRenameService.normalized(title)
+        let target = DocumentRenameService.Target(
+            kind: document.kind,
+            locator: document.pdfPath,
+            recordedPath: document.pdfPath,
+            storageKey: DocumentIdentity.storageKey(for: document))
+
+        await Task.detached(priority: .userInitiated) {
+            DocumentRenameService.apply(target, title: normalized)
+        }.value
+
+        var updated = document
+        updated.title = normalized
+        updateTab(tabId) { $0.document = updated }
+        if activeTabId == tabId { document_setActive(updated) }
+    }
+
+    /// Split out so `renameDocument` reads as one thought; assigning
+    /// `self.document` inline shadows the local `document` binding above it.
+    private func document_setActive(_ info: DocumentInfo) {
+        document = info
+    }
+
     /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
     /// resolved id up into the in-memory DocumentInfo so class-B stores can key
     /// off it this session. The stamp itself already happened during the write —

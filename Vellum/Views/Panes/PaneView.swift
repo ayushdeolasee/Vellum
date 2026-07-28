@@ -110,18 +110,27 @@ struct PaneView: View {
 
     @ViewBuilder
     private var content: some View {
-        ZStack {
-            ForEach(app.tabs) { tab in
-                LiveTabHost(
-                    tabId: tab.id,
-                    document: tab.document,
-                    isActive: tab.id == app.activeTabId,
-                    runtime: workspace.liveTabRuntime(for: tab.id)
-                )
-                .opacity(tab.id == app.activeTabId ? 1 : 0)
-                .allowsHitTesting(tab.id == app.activeTabId)
-                .accessibilityHidden(tab.id != app.activeTabId)
-                .zIndex(tab.id == app.activeTabId ? 1 : 0)
+        if app.tabs.isEmpty {
+            // No tab at all: closing the last tab in a lone pane leaves the pane
+            // open on the home screen (`AppStore.closeTab` → `paneDidEmpty`).
+            // The `ForEach` below would render an empty ZStack here, so this
+            // case has to be spelled out — there is no tab to host it.
+            WelcomeScreen(isPaneFocused: isFocused)
+        } else {
+            ZStack {
+                ForEach(app.tabs) { tab in
+                    LiveTabHost(
+                        tabId: tab.id,
+                        document: tab.document,
+                        isActive: tab.id == app.activeTabId,
+                        isPaneFocused: isFocused,
+                        runtime: workspace.liveTabRuntime(for: tab.id)
+                    )
+                    .opacity(tab.id == app.activeTabId ? 1 : 0)
+                    .allowsHitTesting(tab.id == app.activeTabId)
+                    .accessibilityHidden(tab.id != app.activeTabId)
+                    .zIndex(tab.id == app.activeTabId ? 1 : 0)
+                }
             }
         }
     }
@@ -183,6 +192,9 @@ private struct LiveTabHost: View {
     let tabId: String
     let document: DocumentInfo?
     let isActive: Bool
+    /// Whether the *pane* is the focused one. Only ever passed on to the home
+    /// screen, ANDed with `isActive` — see the start-tab branch in `body`.
+    let isPaneFocused: Bool
     let runtime: LiveTabRuntime
     @Environment(WorkspaceStore.self) private var workspace
 
@@ -227,7 +239,15 @@ private struct LiveTabHost: View {
                         runtime: runtime)
                 }
             } else {
-                WelcomeScreen()
+                // A start tab. `isPaneFocused` is what stops an *invisible* home
+                // screen from taking the keyboard: hosts stay mounted here, so a
+                // pane can have several start tabs alive at once, and the home
+                // screen both grabs first responder on appear and registers ⌘F.
+                // Opacity and hit-testing do not suppress either of those, so the
+                // claim has to be gated on being the selected tab as well as
+                // being in the focused pane — one claimant per window, exactly as
+                // the two-pane case already required.
+                WelcomeScreen(isPaneFocused: isPaneFocused && isActive)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

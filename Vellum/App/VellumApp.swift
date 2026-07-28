@@ -77,6 +77,7 @@ struct VellumApp: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
+    @State private var showWalkthrough = false
 
     init() {
         let theme = ThemeStore()
@@ -129,9 +130,32 @@ struct VellumApp: App {
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                    // Only one sheet at a time. On a true first launch the
+                    // storage choice goes first — it decides where everything
+                    // the walkthrough describes gets written — and hands off to
+                    // the walkthrough when it closes.
+                    if !showStorageChoice {
+                        showWalkthrough = WalkthroughSettings.needsFirstRun
+                    }
                 }
-                .sheet(isPresented: $showStorageChoice) {
+                .task {
+                    await workspace.checkForUpdatesAutomatically()
+                }
+                .sheet(
+                    isPresented: $showStorageChoice,
+                    onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
+                ) {
                     StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
+                }
+                // Help ▸ Vellum Walkthrough and the welcome screen's help button
+                // both route here, since the sheet's presentation state lives
+                // with the window rather than with either caller.
+                .onReceive(NotificationCenter.default.publisher(for: .vellumShowWalkthrough)) { _ in
+                    showWalkthrough = true
+                }
+                .sheet(isPresented: $showWalkthrough) {
+                    WalkthroughSheet()
                         .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
@@ -162,5 +186,24 @@ struct VellumApp: App {
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
         }
+
+        // The searchable Help centre (Help ▸ Vellum Help, ⌘?). A scene rather
+        // than a sheet on the main window: a reference is only useful if you
+        // can leave it open next to the document it describes, which a modal
+        // sheet cannot do. It publishes no `vellumFocus`, so every
+        // document-scoped menu command correctly greys out while it is key.
+        //
+        // It gets the theme environment but deliberately not the workspace —
+        // it reads nothing from the app's state, which is what keeps it safe to
+        // open with no document at all.
+        Window(HelpScene.title, id: HelpScene.windowId) {
+            HelpCenterView()
+                .environment(themeStore)
+                .environment(\.palette, themeStore.palette)
+                .preferredColorScheme(themeStore.colorScheme)
+                .background(themeStore.palette.background)
+                .tint(themeStore.palette.primary)
+        }
+        .defaultSize(width: 640, height: 660)
     }
 }
