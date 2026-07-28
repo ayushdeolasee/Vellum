@@ -7,6 +7,7 @@ DerivedData/
 # Tooling scratch
 .dd/
 SCRATCHPAD.md
+.logs/
 
 # Editor directories and files
 .vscode/*
