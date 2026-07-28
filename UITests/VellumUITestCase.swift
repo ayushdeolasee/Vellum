@@ -5,35 +5,36 @@ import XCTest
 
 @MainActor
 class VellumUITestCase: XCTestCase {
-    private(set) var storageRoot: URL!
-    private var applications: [XCUIApplication] = []
+    // XCTest's `setUpWithError`/`tearDownWithError` are nonisolated, so an
+    // override cannot inherit this class's `@MainActor` — but the class
+    // annotation is what keeps the ~90 XCUI calls in the tests themselves
+    // isolation-clean. Keep the fixture state reachable from both by declaring
+    // it nonisolated; only XCTest touches it, one test method at a time.
+    nonisolated(unsafe) private(set) var storageRoot: URL!
+    nonisolated(unsafe) private var applications: [XCUIApplication] = []
 
-    // XCTest declares `setUpWithError`/`tearDownWithError` as nonisolated, so an
-    // override cannot carry this class's `@MainActor`. XCTest does run them on
-    // the main thread for a synchronous test case (that is what lets XCUITest
-    // and AppKit work at all), so recover the isolation explicitly rather than
-    // scattering `nonisolated(unsafe)` over the fixture state.
-    override func setUpWithError() throws {
-        try MainActor.assumeIsolated {
-            continueAfterFailure = false
-            storageRoot = FileManager.default.temporaryDirectory
-                .appendingPathComponent("VellumUITests", isDirectory: true)
-                .appendingPathComponent(
-                    "\(String(describing: type(of: self))).\(name)", isDirectory: true)
-            try? FileManager.default.removeItem(at: storageRoot)
-            try FileManager.default.createDirectory(
-                at: storageRoot, withIntermediateDirectories: true)
-        }
+    nonisolated override func setUpWithError() throws {
+        continueAfterFailure = false
+        storageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VellumUITests", isDirectory: true)
+            .appendingPathComponent(
+                "\(String(describing: type(of: self))).\(name)", isDirectory: true)
+        try? FileManager.default.removeItem(at: storageRoot)
+        try FileManager.default.createDirectory(
+            at: storageRoot, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    nonisolated override func tearDownWithError() throws {
+        let launched = applications
+        applications = []
+        // XCTest runs teardown on the main thread for a synchronous test case,
+        // which is what makes the XCUI calls above legal in the first place.
         MainActor.assumeIsolated {
-            for application in applications {
+            for application in launched {
                 application.terminate()
             }
-            applications.removeAll()
-            try? FileManager.default.removeItem(at: storageRoot)
         }
+        try? FileManager.default.removeItem(at: storageRoot)
     }
 
     func makeApp(
