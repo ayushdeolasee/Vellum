@@ -450,3 +450,78 @@ final class AiPanelBubbleWidthTests: XCTestCase {
         }
     }
 }
+
+// The sent-reference chips (#58) render as a sibling ABOVE the user bubble in
+// `messageRow`, so nothing about the bubble's own layout constrains them. They
+// used to carry a hardcoded `.frame(maxWidth: 272)` — correct while the bubble
+// was a fixed 272pt, silently wrong once #64 made `bubbleMaxWidth` scale with
+// the resizable sidebar. These pin the two together.
+@MainActor
+final class SentReferenceChipsWidthTests: XCTestCase {
+    /// Four mixed-width chips, enough to force a wrap at any realistic cap.
+    private var references: [AiReference] {
+        let snapshot = AiPageImageSnapshot(
+            pageNumber: 2, base64Data: "", mediaType: "image/jpeg", width: 1280, height: 1656)
+        return [
+            AiReference(kind: .selection(
+                text: "Chlorophyll a absorbs light most strongly in the blue and red bands "
+                    + "of the visible spectrum.", page: 2)),
+            AiReference(kind: .highlight(text: "Calvin cycle", page: 3)),
+            AiReference(kind: .pageSnapshot(image: snapshot, page: 2)),
+            AiReference(kind: .image(image: snapshot, name: "absorption-spectrum.png")),
+        ]
+    }
+
+    private func chips(maxWidth: CGFloat) -> some View {
+        SentReferenceChips(
+            references: references,
+            onGoToPage: { _ in },
+            previewData: { _ in nil },
+            maxWidth: maxWidth
+        )
+        .environment(\.palette, .dark)
+    }
+
+    /// The regression the merge of #64 into this branch would otherwise have
+    /// shipped: offered far more room than the cap, the chips must wrap at the
+    /// cap rather than running out to the full transcript width.
+    ///
+    /// Verified to bite: restoring the old hardcoded `.frame(maxWidth: 272)`
+    /// fails this (measures ~272 against a 200pt cap).
+    func testChipsWrapAtTheCapNotTheOfferedWidth() {
+        let size = measureChips(offered: 600, cap: 200)
+        XCTAssertLessThanOrEqual(
+            size.width, 201, "chips overflowed the bubble's cap")
+        XCTAssertGreaterThan(
+            size.height, 20, "four chips capped at 200pt should have wrapped onto several lines")
+    }
+
+    /// A chips row may never be wider than the user bubble it labels, anywhere
+    /// in the sidebar's 240…700pt range — including the narrow end, where the
+    /// old 272pt literal was WIDER than the whole user column (200pt).
+    func testChipsNeverExceedTheUserBubbleAcrossTheSidebarRange() {
+        for sidebar in stride(from: CGFloat(240), through: CGFloat(700), by: CGFloat(100)) {
+            let cap = AiPanel.bubbleMaxWidth(for: .user, contentWidth: sidebar - 24)
+            let size = measureChips(offered: sidebar, cap: cap)
+            XCTAssertLessThanOrEqual(
+                size.width, cap + 1,
+                "chips exceeded the \(cap)pt user bubble at a \(sidebar)pt sidebar")
+        }
+    }
+
+    private func measureChips(offered width: CGFloat, cap: CGFloat) -> CGSize {
+        let box = SizeBox()
+        let hosting = NSHostingView(
+            rootView: chips(maxWidth: cap)
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { box.size = $0 }
+        )
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 500),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView?.addSubview(hosting)
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        return box.size
+    }
+}
