@@ -255,15 +255,14 @@ private struct LiveTabHost: View {
             guard isActive else { return }
             // Hand the runtime to the residency policy. Reclaiming it later is
             // entirely that policy's job (Services/TabResidency.swift): a single
-            // shared sweeper applies the two-hour window and the ceilings, and a
-            // memory-pressure source can pull the trigger early.
+            // shared sweeper applies the hot/warm/cold windows and the ceilings,
+            // and a memory-pressure source can pull the trigger early.
             //
-            // Deliberately NOT a per-tab `Task.sleep(for: .seconds(2 * 60 * 60))`
-            // here. A view-owned timer is one wakeup per inactive tab, it dies
-            // silently whenever the host unmounts (a tab dragged to another pane
-            // would never be reclaimed at all), it has no ceiling and no
-            // pressure valve, and there is no way to test the two-hour boundary
-            // without waiting two hours.
+            // Deliberately NOT a per-tab `Task.sleep` here. A view-owned timer is
+            // one wakeup per inactive tab, it dies silently whenever the host
+            // unmounts (a tab dragged to another pane would never be reclaimed at
+            // all), it has no ceiling and no pressure valve, and there is no way
+            // to test a 30-minute boundary without waiting 30 minutes.
             workspace.activateLiveTabRuntime(runtime)
         }
     }

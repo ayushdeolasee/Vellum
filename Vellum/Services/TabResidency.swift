@@ -354,7 +354,8 @@ final class TabResidencyManager {
 
     /// Immediate, unconditional release of everything a tab owns. This is the
     /// close-tab path: retention is about tabs that are still *open*, so closing
-    /// one gives its memory back straight away rather than two hours later.
+    /// one gives its memory back straight away rather than a `retentionWindow`
+    /// later.
     func release(tabId: String) {
         entries.removeValue(forKey: tabId)?.resource.releaseResidency()
         // A hot slot just came free; whichever warm tab is next in line can be
@@ -384,8 +385,9 @@ final class TabResidencyManager {
     /// is the *wrong* place to bound a burst: it first ticks a full
     /// `sweepInterval` (60s) after the first resource is stored, so without this
     /// everything a user could open in a minute stayed resident no matter how
-    /// far past the ceilings it went. The window itself is left to the sweeper —
-    /// nothing can newly cross a two-hour threshold as a result of a store.
+    /// far past the ceilings it went. The windows themselves are left to the
+    /// sweeper — nothing can newly cross `hotWindow` or `retentionWindow` as a
+    /// result of a store.
     @discardableResult
     func enforceCeilings() -> [String] {
         evict(tabLimit: tabLimit, byteBudget: byteBudget, expireIdle: false)

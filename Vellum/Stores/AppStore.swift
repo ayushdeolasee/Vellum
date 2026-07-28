@@ -803,7 +803,7 @@ final class AppStore {
         pendingNoteContent = nil
         // Pin the incoming tab (never evictable while it is on screen) and
         // restart the outgoing tab's idle countdown from now — it was in use
-        // until this instant, so its two hours start here, not at activation.
+        // until this instant, so its idle clock starts here, not at activation.
         workspace?.paneDidActivateTab(self, tabId: tab.id)
         activeTabId = tab.id
         document = tab.document

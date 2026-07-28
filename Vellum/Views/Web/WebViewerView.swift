@@ -563,7 +563,7 @@ final class WebViewerController: NSObject {
         // A debounced auto-archive is a real write to the user's library — the
         // offline snapshot of the page. Never drop one: keep this controller
         // (and the session it archives through) alive until the task lands. The
-        // debounce is 1.5s, so by the time a two-hour timeout fires there is
+        // debounce is 1.5s, so by the time an idle timeout fires there is
         // nothing pending; this matters for a tab closed, or evicted under
         // memory pressure, in the second after a page finished loading.
         let pendingArchive = archiveTask
