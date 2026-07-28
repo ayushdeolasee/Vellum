@@ -190,7 +190,12 @@ final class WebDocumentSession: DocumentSession {
     }
 
     func isSaved() async throws -> Bool {
-        await io.isSaved()
+        // The toolbar's promise is "Keep Offline", not merely that the page
+        // has a Saved-library record. Settings can remove snapshots while
+        // retaining that record, so expose offline availability only when a
+        // real local/managed snapshot remains.
+        let saved = await io.isSaved()
+        return saved && WebLibrary.hasLocalSnapshot(forKey: key)
     }
 
     // MARK: - Archiving

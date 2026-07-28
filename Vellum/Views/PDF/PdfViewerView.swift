@@ -14,6 +14,13 @@ private struct PreparedPdf: @unchecked Sendable {
     let document: PDFDocument?
 }
 
+/// What makes the viewer's load task run again: becoming active, or the tab's
+/// file being replaced underneath it (`LiveTabRuntime.documentGeneration`).
+private struct PdfLoadTrigger: Equatable {
+    let isActive: Bool
+    let generation: Int
+}
+
 struct PdfViewerView: View {
     let tabId: String
     let documentInfo: DocumentInfo
@@ -35,7 +42,10 @@ struct PdfViewerView: View {
             // First activation prepares the document. Subsequent activations
             // reuse the same PDFView/controller and only reclaim shared command
             // handlers, preserving native scroll, selection, and find state.
-            .task(id: isActive) {
+            // `documentGeneration` covers the one case where this tab's file
+            // changes without the tab, the host, or `isActive` changing: PDF
+            // Save As retargets the live session to a new location.
+            .task(id: PdfLoadTrigger(isActive: isActive, generation: runtime.documentGeneration)) {
                 guard isActive else {
                     await deactivate()
                     return

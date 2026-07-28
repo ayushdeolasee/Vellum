@@ -156,6 +156,10 @@ struct VellumApp: App {
                     // Home's chrome, which is the opposite of deterministic
                     // (and rate-limits the release API across a test run).
                     guard !UITestLaunchConfiguration.isEnabled else { return }
+                    // The checker belongs to the workspace, not the Home
+                    // toolbar, so this continues to represent the same check
+                    // while documents are opened or Home is revisited — and it
+                    // is the same instance the app menu's update commands use.
                     await workspace.checkForUpdatesAutomatically()
                 }
                 .sheet(
@@ -188,7 +192,7 @@ struct VellumApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
-            VellumCommands()
+            VellumCommands(appWorkspace: workspace)
         }
 
         // Adds "Settings…" (⌘,) to the app menu automatically.
