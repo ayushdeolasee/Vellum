@@ -111,7 +111,10 @@ struct PaneView: View {
     @ViewBuilder
     private var content: some View {
         if app.document == nil {
-            WelcomeScreen()
+            // The home screen grabs first responder for its search field on
+            // appear, so it needs to know whether this pane is the focused one —
+            // two side-by-side welcome screens must not fight over the keyboard.
+            WelcomeScreen(isPaneFocused: isFocused)
         } else if app.document?.kind == .web {
             WebViewerView()
                 .id(app.activeTabId)

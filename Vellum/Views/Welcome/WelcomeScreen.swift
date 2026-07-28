@@ -2,46 +2,307 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+// The app's front door (issue #62).
+//
+// The old welcome screen listed Recent and Saved and nothing else, which meant
+// anything past the eighth document was unreachable without the Finder. This
+// version is built around one prominent search field that ranks EVERY source
+// the app knows about — recents, saved webpages, and every document carrying
+// notes in the library — plus a browse view for when the field is empty.
+//
+// Layout: a single centered content column (capped, so a wide window doesn't
+// stretch rows into an unreadable ribbon) holding a compact header, the search
+// field, a filter/sort bar, and the result list.
+//
+// Search architecture: this view owns no matching logic at all. It reads
+// `HomeSearchStore` (main-actor, observable, debounced selection + query),
+// which talks to `HomeSearchEngine` (an actor), which fans out to
+// `HomeSearchProvider`s. See `HomeSearchProvider.swift` for how a connected
+// read-later account will slot in.
+
 struct WelcomeScreen: View {
+    /// Whether the pane hosting this screen is the focused one. A split window
+    /// can show two welcome screens; only the focused one may grab the keyboard.
+    var isPaneFocused = true
+
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @Environment(\.openSettings) private var openSettings
 
-    @State private var recentDocuments = RecentFilesService.getRecent()
-    @State private var savedPages: [WebLibraryEntry] = []
+    @State private var store = HomeSearchStore()
+    /// First-run hero only. The library layout uses the search field itself for
+    /// links (see `HomeSearchLinkDetector`) plus the Add Webpage button.
     @State private var urlInput = ""
-    @State private var selection: LibraryItem.ID?
-    @State private var sort: LibrarySort = .recent
+    /// The row whose rename sheet is open, if any.
+    @State private var renamingItem: HomeSearchItem?
+    @FocusState private var searchFocused: Bool
 
     private var updateChecker: UpdateChecker { workspace.updateChecker }
 
-    private var hasLibrary: Bool {
-        !recentDocuments.isEmpty || !savedPages.isEmpty
+    /// The calm first-run hero, shown only once we KNOW there is nothing to
+    /// browse — never while the first load is still in flight, or the screen
+    /// would flash "welcome" at someone with a full library.
+    ///
+    /// This replaces main's `hasLibrary` (which read `recentDocuments` /
+    /// `savedPages` directly): the corpus now comes from `HomeSearchStore`,
+    /// which knows about library documents too, not just recents and saved
+    /// pages, and which can distinguish "empty" from "not loaded yet".
+    private var showsFirstRun: Bool {
+        !store.isLoading && store.libraryIsEmpty && !store.isSearching
     }
 
     var body: some View {
+        // #70's Home chrome — title, update affordances, settings gear — stays
+        // above BOTH layouts exactly as it did on main. The search revamp
+        // replaces only what used to live below this divider.
         VStack(spacing: 0) {
             homeHeader
             Divider()
             Group {
-                if hasLibrary {
-                    libraryLayout
+                if showsFirstRun {
+                    firstRunLayout
                 } else {
-                    emptyLayout
+                    libraryLayout
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
-        .task {
-            if let pages = try? await appStore.sessions.listSavedWebpages() {
-                guard !Task.isCancelled else { return }
-                savedPages = pages
+        .task { await store.load() }
+        // One driver for every input that invalidates the results (query,
+        // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
+        // which is exactly the debounce semantics we want while typing.
+        .task(id: store.refreshKey) { await store.refresh() }
+        .onAppear {
+            // Focus the field on arrival so the front door is type-ready — but
+            // only in the focused pane, or two side-by-side welcome screens
+            // would fight over first responder.
+            if isPaneFocused { searchFocused = true }
+        }
+        // Re-index when the app comes back to the front. The corpus is a
+        // snapshot of three on-disk sources, and all three can change while
+        // Vellum is in the background — the other pane opens a document, the
+        // Storage pane deletes one, a file is moved or deleted in the Finder.
+        // Without this the home screen keeps confidently offering rows that no
+        // longer exist until the pane is rebuilt. The reload is off the main
+        // thread on `HomeSearchEngine` and leaves the current results on screen
+        // while it runs, so the cost of being wrong here is far higher than the
+        // cost of the walk.
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            Task { await store.load() }
+        }
+        .sheet(item: $renamingItem) { item in
+            RenameDocumentSheet(
+                currentTitle: item.title,
+                // `subtitle` is the filename for a PDF and host+path for a
+                // page — exactly what the row falls back to with no override.
+                fallbackName: item.subtitle,
+                commit: { newTitle in
+                    Task { await store.rename(item, to: newTitle) }
+                })
+        }
+        .background {
+            // ⌘F focuses the search field here. The menu's Find… command and the
+            // window's key monitor both bail out when there is no document open
+            // (which is exactly when this screen is on screen), so the chord is
+            // free to mean "search my library".
+            Button("Search Library", action: focusSearchField)
+                .keyboardShortcut("f", modifiers: .command)
+                .buttonStyle(.plain)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                // A split window can host TWO welcome screens, and each would
+                // otherwise register the same ⌘F. SwiftUI picks between
+                // duplicate shortcuts arbitrarily, so ⌘F could hand the
+                // keyboard to the pane the user is not looking at. Disabling
+                // the shortcut in the unfocused pane leaves exactly one
+                // claimant. (`.disabled` suppresses the key equivalent too,
+                // which is the whole point — `.hidden()` would also drop it
+                // but would take the button out of the layout.)
+                .disabled(!isPaneFocused)
+        }
+    }
+
+    // MARK: - Library layout
+
+    private var libraryLayout: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 14) {
+                header
+                searchField
+                controlBar
+                if appStore.error != nil {
+                    errorBanner.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .homeContentColumn()
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+
+            Divider()
+
+            resultList
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(.tint)
+                .frame(width: 44, height: 44)
+                .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Wordmark(size: 22)
+                Text("Everything you've read, in one place.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+
+            Spacer(minLength: 12)
+
+            TextButton(disabled: appStore.isLoading, action: openDocuments) {
+                Image(systemName: "folder")
+                    .font(.system(size: 14))
+                Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+            }
+            .accessibilityIdentifier("welcome.openPdf")
+
+            TextButton(variant: .secondary, disabled: appStore.isLoading) {
+                NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+            } label: {
+                Image(systemName: "globe")
+                    .font(.system(size: 14))
+                Text("Add Webpage")
+            }
+            .help("Open a webpage by URL (⌘L)")
+            .accessibilityIdentifier("welcome.addWebpage")
+
+            // #65's walkthrough entry point. Returning users get the compact
+            // icon form — this header is already dense, and they've seen the
+            // offer before; the first-run hero spells it out as a text link
+            // instead. The two layouts are mutually exclusive, so exactly one
+            // `welcome.walkthrough` is ever on screen.
+            IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 14))
+            }
+            .accessibilityIdentifier("welcome.walkthrough")
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15))
+                .foregroundStyle(palette.mutedForeground)
+
+            TextField("Search your library — or paste a link", text: $store.query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                .foregroundStyle(palette.foreground)
+                .focused($searchFocused)
+                .accessibilityIdentifier("welcome.search")
+                // Arrow keys walk the results while the caret stays in the
+                // field, so the user never has to leave the keyboard or tab
+                // into the list. Return opens; Escape clears then unfocuses.
+                .onKeyPress(.downArrow) {
+                    store.moveSelection(1)
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    store.moveSelection(-1)
+                    return .handled
+                }
+                .onKeyPress(.return) { openSelection() }
+                .onKeyPress(.escape) {
+                    if store.clearQuery() { return .handled }
+                    searchFocused = false
+                    return .handled
+                }
+
+            if store.query.isEmpty {
+                Keycap(keys: "⌘F")
+            } else {
+                IconButton(help: "Clear search") {
+                    store.clearQuery()
+                    focusSearchField()
+                } icon: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                }
+                .accessibilityIdentifier("welcome.clearSearch")
+            }
+        }
+        .padding(.horizontal, HomeLayout.rowInset)
+        .frame(height: 46)
+        .glassEffect(.regular, in: .capsule)
+        .overlay {
+            // A hairline primary edge on focus, the same "this is current"
+            // language `SelectionStyle` uses everywhere else.
+            Capsule().strokeBorder(
+                SelectionStyle.edge(palette, selected: searchFocused), lineWidth: 1)
+        }
+        .animation(.easeOut(duration: 0.12), value: searchFocused)
+    }
+
+    private var controlBar: some View {
+        HStack(spacing: 8) {
+            ForEach(HomeSearchFilter.allCases, id: \.self) { option in
+                HomeFilterChip(label: option.label, isSelected: store.filter == option) {
+                    store.filter = option
+                    // Clicking a chip moves first responder to the button; hand
+                    // the keyboard straight back so typing continues to search.
+                    focusSearchField()
+                }
+                .accessibilityIdentifier("welcome.filter.\(option.label)")
+            }
+
+            Spacer(minLength: 12)
+
+            if store.isSearching {
+                Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.mutedForeground)
+                    .accessibilityIdentifier("welcome.resultCount")
+            } else {
+                sortMenu
             }
         }
     }
 
+    private var sortMenu: some View {
+        Menu {
+            Picker("Sort by", selection: $store.sort) {
+                ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 12))
+                Text(store.sort.label)
+                    .font(.system(size: 12, weight: .medium))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(palette.mutedForeground)
+        .help("Change how the library is sorted")
+        .accessibilityIdentifier("welcome.sort")
+    }
+
+    // MARK: - Home chrome (from #70)
+
+    /// The window's Home bar. Carried over from #70 unchanged: it is the app's
+    /// only settings entry point outside ⌘, so it has to survive the revamp.
     private var homeHeader: some View {
         HStack(spacing: 8) {
             Text("Home")
@@ -88,9 +349,121 @@ struct WelcomeScreen: View {
         openSettings()
     }
 
-    // MARK: - Empty / first-run layout (the calm hero)
+    // MARK: - Results
 
-    private var emptyLayout: some View {
+    private var resultList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    if let link = store.linkSuggestion {
+                        HomeLinkActionRow(
+                            url: link,
+                            isSelected: store.selectedId == HomeSearchStore.linkRowId,
+                            open: { openLink(link) }
+                        )
+                        .id(HomeSearchStore.linkRowId)
+                        .padding(.top, 10)
+                    }
+
+                    ForEach(store.sections) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                HomeResultRow(
+                                    item: item,
+                                    isSelected: store.selectedId == item.id,
+                                    open: { open(item) },
+                                    reveal: revealAction(for: item),
+                                    rename: renameAction(for: item),
+                                    removals: removalActions(for: item)
+                                )
+                                .id(item.id)
+                            }
+                        } header: {
+                            HomeSectionHeader(section: group.section, count: group.items.count)
+                        }
+                    }
+
+                    // A pinned link IS the answer to a pasted URL, so "no
+                    // matches" would be both wrong and unhelpful next to it.
+                    if store.sections.isEmpty, store.linkSuggestion == nil, !store.isLoading {
+                        emptyResults
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 56)
+                    }
+                }
+                .homeContentColumn()
+                .padding(.bottom, 24)
+            }
+            .scrollContentBackground(.hidden)
+            .accessibilityIdentifier("welcome.results")
+            .onChange(of: store.selectedId) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+    }
+
+    /// Two different "nothing here" messages, because they need two different
+    /// answers: a failed search wants advice on widening it, an empty filter
+    /// wants a way back to All.
+    @ViewBuilder
+    private var emptyResults: some View {
+        VStack(spacing: 8) {
+            Image(systemName: store.isSearching ? "magnifyingglass" : "tray")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(palette.mutedForeground)
+                .padding(.bottom, 4)
+
+            if store.isSearching {
+                Text("No matches for “\(store.trimmedQuery)”")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.foreground)
+                Text("Search matches titles, filenames, and web addresses. Try fewer words.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Nothing in \(store.filter.label) yet")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.foreground)
+                Text("Open a PDF or add a webpage and it will show up here.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+
+            // One button that undoes BOTH constraints, because from the outside
+            // a query that matches nothing and a filter that excludes
+            // everything produce the identical blank screen — asking the user
+            // to work out which one to lift is a puzzle. The label names
+            // whichever is the likelier culprit.
+            if store.isSearching || store.filter != .all {
+                TextButton(variant: .secondary, size: .sm) {
+                    store.resetSearch()
+                    focusSearchField()
+                } label: {
+                    Text(store.isSearching ? "Clear search" : "Search everything")
+                }
+                .padding(.top, 6)
+                .accessibilityIdentifier("welcome.resetSearch")
+            }
+
+            // A source that failed to load has silently narrowed the search —
+            // say so rather than letting the user conclude the document is gone.
+            ForEach(store.failures, id: \.self) { failure in
+                Label(failure, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.destructive)
+            }
+        }
+        .frame(maxWidth: 420)
+        .accessibilityIdentifier("welcome.emptyResults")
+    }
+
+    // MARK: - First-run hero
+
+    private var firstRunLayout: some View {
         ScrollView {
             VStack(spacing: 0) {
                 hero
@@ -105,161 +478,6 @@ struct WelcomeScreen: View {
             .frame(maxWidth: .infinity)
         }
     }
-
-    // MARK: - Library layout (native list, uses the window width)
-
-    private var libraryLayout: some View {
-        VStack(spacing: 0) {
-            libraryHeader
-            Divider()
-            libraryList
-        }
-    }
-
-    private var libraryHeader: some View {
-        VStack(spacing: 16) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "doc.text")
-                    .font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(.tint)
-                    .frame(width: 44, height: 44)
-                    .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Wordmark(size: 22)
-                    Text("Pick up where you left off, or open something new.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(palette.mutedForeground)
-                }
-
-                Spacer(minLength: 12)
-
-                TextButton(disabled: appStore.isLoading, action: openDocuments) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 14))
-                    Text(appStore.isLoading ? "Opening…" : "Open a PDF")
-                }
-                .accessibilityIdentifier("welcome.openPdf")
-            }
-
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 14))
-                        .foregroundStyle(palette.mutedForeground)
-                    TextField("Read a webpage — paste an article URL", text: $urlInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundStyle(palette.foreground)
-                        .disabled(appStore.isLoading)
-                        .onSubmit(openUrl)
-                        .accessibilityIdentifier("welcome.urlField")
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 36)
-                .glassEffect(.regular, in: .capsule)
-
-                TextButton(
-                    disabled: appStore.isLoading || trimmedUrl.isEmpty,
-                    action: openUrl
-                ) {
-                    Text("Open")
-                }
-                .accessibilityIdentifier("welcome.openUrl")
-
-                Spacer(minLength: 12)
-
-                // Returning users get the compact icon form — the library
-                // header is already dense, and they've seen the offer before.
-                IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
-                    Image(systemName: "questionmark.circle")
-                        .font(.system(size: 14))
-                }
-                .accessibilityIdentifier("welcome.walkthrough")
-
-                sortMenu
-            }
-
-            if appStore.error != nil {
-                errorBanner
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            Picker("Sort by", selection: $sort) {
-                ForEach(LibrarySort.allCases, id: \.self) { option in
-                    Text(option.label).tag(option)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12))
-                Text(sort.label)
-                    .font(.system(size: 12, weight: .medium))
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .foregroundStyle(palette.mutedForeground)
-        .help("Change how the library is sorted")
-        .accessibilityIdentifier("welcome.sort")
-    }
-
-    private var libraryList: some View {
-        List(selection: $selection) {
-            if !recentItems.isEmpty {
-                Section("Recent") {
-                    ForEach(recentItems) { LibraryRow(item: $0) }
-                }
-            }
-            if !savedItems.isEmpty {
-                Section("Saved") {
-                    ForEach(savedItems) { LibraryRow(item: $0) }
-                }
-            }
-        }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .background(palette.well)
-        .environment(\.defaultMinListRowHeight, 52)
-        .contextMenu(forSelectionType: LibraryItem.ID.self) { ids in
-            contextMenu(for: ids)
-        } primaryAction: { ids in
-            for id in ids { open(id) }
-        }
-        .onDeleteCommand { removeSelected() }
-        .onKeyPress(.return) {
-            guard let selection else { return .ignored }
-            open(selection)
-            return .handled
-        }
-        .accessibilityIdentifier("welcome.library")
-    }
-
-    @ViewBuilder
-    private func contextMenu(for ids: Set<LibraryItem.ID>) -> some View {
-        if let id = ids.first, let item = item(for: id) {
-            Button("Open") { open(id) }
-            if item.canRevealInFinder {
-                Button("Show in Finder") { revealInFinder(item) }
-            }
-            Divider()
-            Button(item.section == .saved ? "Remove from Saved" : "Remove from Recent", role: .destructive) {
-                remove(id)
-            }
-        }
-    }
-
-    // MARK: - Reusable pieces shared by both layouts
 
     private var hero: some View {
         VStack(spacing: 0) {
@@ -329,7 +547,7 @@ struct WelcomeScreen: View {
                     .font(.system(size: 14))
                     .foregroundStyle(palette.foreground)
                     .disabled(appStore.isLoading)
-                    .onSubmit(openUrl)
+                    .onSubmit(openTypedUrl)
                     .accessibilityIdentifier("welcome.urlField")
             }
             .padding(.horizontal, 14)
@@ -337,8 +555,8 @@ struct WelcomeScreen: View {
             .glassEffect(.regular, in: .capsule)
 
             TextButton(
-                disabled: appStore.isLoading || trimmedUrl.isEmpty,
-                action: openUrl
+                disabled: appStore.isLoading || trimmedUrlInput.isEmpty,
+                action: openTypedUrl
             ) {
                 Text("Open")
             }
@@ -368,29 +586,9 @@ struct WelcomeScreen: View {
         }
     }
 
-    // MARK: - Library item model
-
-    private var recentItems: [LibraryItem] {
-        let items = recentDocuments.map(LibraryItem.init(recent:))
-        return sort == .name
-            ? items.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            : items
-    }
-
-    private var savedItems: [LibraryItem] {
-        let items = savedPages.map(LibraryItem.init(saved:))
-        return sort == .name
-            ? items.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            : items
-    }
-
-    private func item(for id: LibraryItem.ID) -> LibraryItem? {
-        recentItems.first { $0.id == id } ?? savedItems.first { $0.id == id }
-    }
-
     // MARK: - Actions
 
-    private var trimmedUrl: String {
+    private var trimmedUrlInput: String {
         urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -401,52 +599,79 @@ struct WelcomeScreen: View {
         NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
     }
 
-    private func openUrl() {
-        let value = trimmedUrl
+    private func focusSearchField() {
+        searchFocused = true
+    }
+
+    /// Return: open whatever the keyboard is on. With nothing selected but a
+    /// link typed, open the link — that is the ⌘V ↩ path.
+    private func openSelection() -> KeyPress.Result {
+        if store.selectedId == HomeSearchStore.linkRowId, let link = store.linkSuggestion {
+            openLink(link)
+            return .handled
+        }
+        if let item = store.selectedItem {
+            open(item)
+            return .handled
+        }
+        if let link = store.linkSuggestion {
+            openLink(link)
+            return .handled
+        }
+        return .ignored
+    }
+
+    private func open(_ item: HomeSearchItem) {
+        guard !appStore.isLoading else { return }
+        switch item.target {
+        case .url(let url):
+            Task { await appStore.openUrl(url) }
+        case .file(let path, let recordedPath):
+            // A moved PDF re-resolved to a new path: drop the stale recents
+            // entry so the re-record on open can't leave a duplicate (§7).
+            if path != recordedPath {
+                _ = RecentFilesService.remove(path: recordedPath)
+            }
+            Task { await appStore.openFile(path: path) }
+        }
+    }
+
+    private func openLink(_ link: String) {
+        guard !appStore.isLoading else { return }
+        store.query = ""
+        Task { await appStore.openUrl(link) }
+    }
+
+    private func openTypedUrl() {
+        let value = trimmedUrlInput
         guard !value.isEmpty else { return }
         urlInput = ""
         Task { await appStore.openUrl(value) }
     }
 
-    private func open(_ id: LibraryItem.ID) {
-        guard let item = item(for: id), !appStore.isLoading else { return }
-        switch item.section {
-        case .recent:
-            if item.kind == .web {
-                Task { await appStore.openUrl(item.key) }
-            } else {
-                // A moved PDF re-resolved to a new path: drop the stale entry so
-                // the re-record (on successful open) doesn't leave a duplicate.
-                if item.key != item.recordedKey {
-                    recentDocuments = RecentFilesService.remove(path: item.recordedKey)
-                }
-                Task { await appStore.openFile(path: item.key) }
-            }
-        case .saved:
-            Task { await appStore.openUrl(item.key) }
+    /// Context-menu actions are built here rather than inline in the row's
+    /// argument list: a ternary between a closure literal and `nil` gives the
+    /// type checker no way to resolve the closure's own body.
+    private func revealAction(for item: HomeSearchItem) -> (() -> Void)? {
+        guard item.canRevealInFinder, case .file(let path, _) = item.target else { return nil }
+        return { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+    }
+
+    private func renameAction(for item: HomeSearchItem) -> (() -> Void)? {
+        guard store.canRename(item) else { return nil }
+        return { renamingItem = item }
+    }
+
+    private func removalActions(
+        for item: HomeSearchItem
+    ) -> [(removal: HomeSearchRemoval, action: () -> Void)] {
+        store.removalOptions(for: item).map { removal in
+            // The closure is annotated rather than inferred: a bare
+            // `{ Task { … } }` reads as returning the Task, which makes the
+            // `Task.init` overload set ambiguous.
+            let action: () -> Void = { Task { await store.remove(item, from: removal) } }
+            return (removal, action)
         }
-    }
-
-    private func remove(_ id: LibraryItem.ID) {
-        guard let item = item(for: id) else { return }
-        switch item.section {
-        case .recent:
-            recentDocuments = RecentFilesService.remove(path: item.key)
-        case .saved:
-            savedPages.removeAll { $0.url == item.key }
-            Task { try? await appStore.sessions.removeSavedWebpage(url: item.key) }
-        }
-        if selection == id { selection = nil }
-    }
-
-    private func removeSelected() {
-        guard let selection else { return }
-        remove(selection)
-    }
-
-    private func revealInFinder(_ item: LibraryItem) {
-        guard item.canRevealInFinder else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.key)])
     }
 
     private func openDocuments() {
@@ -465,154 +690,6 @@ struct WelcomeScreen: View {
         guard panel.runModal() == .OK else { return }
         let paths = panel.urls.map(\.path)
         Task { await appStore.openFiles(paths: paths) }
-    }
-}
-
-// MARK: - Library sort
-
-private enum LibrarySort: String, CaseIterable {
-    case recent
-    case name
-
-    var label: String {
-        switch self {
-        case .recent: "Recently opened"
-        case .name: "Name"
-        }
-    }
-}
-
-// MARK: - Unified library item
-
-private struct LibraryItem: Identifiable, Hashable {
-    enum Section { case recent, saved }
-
-    let id: String
-    let section: Section
-    let kind: DocumentKind
-    /// The path/URL to actually open — the recorded one, or a re-resolved path
-    /// when a moved PDF was found via its docId's meta.json.
-    let key: String
-    /// The path exactly as stored in the recent entry, so `open` can dedupe the
-    /// stale entry when it re-resolved to a new location.
-    let recordedKey: String
-    let icon: String
-    let title: String
-    let subtitle: String
-    let tooltip: String
-    let canRevealInFinder: Bool
-
-    init(recent entry: RecentDocument) {
-        let fileName = entry.kind == .web
-            ? RecentFilesService.webpageDisplayName(for: entry.pdfPath)
-            : RecentFilesService.fileName(for: entry.pdfPath)
-        let trimmedTitle = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let displayTitle = trimmedTitle.isEmpty ? fileName : trimmedTitle
-
-        var pieces: [String] = []
-        if displayTitle != fileName { pieces.append(fileName) }
-        if entry.kind == .pdf, let count = entry.pageCount, count != 0 {
-            pieces.append("\(count) \(count == 1 ? "page" : "pages")")
-        }
-        pieces.append(Self.formatOpenedDate(entry.openedAt))
-
-        // Re-resolve a moved PDF by its stable id (design §7): when the recorded
-        // path is gone but the document carries a /VellumDocId, meta.json's
-        // last_known_path (kept fresh by DocumentDataStore.touch) may point at
-        // where the file moved to.
-        let resolvedPath = RecentFilesService.resolvedPath(for: entry)
-        let onDisk = entry.kind == .pdf && FileManager.default.fileExists(atPath: resolvedPath)
-
-        id = "recent:\(entry.pdfPath)"
-        section = .recent
-        kind = entry.kind
-        key = resolvedPath
-        recordedKey = entry.pdfPath
-        icon = entry.kind == .web ? "globe" : "doc.text"
-        title = displayTitle
-        subtitle = pieces.joined(separator: " · ")
-        tooltip = resolvedPath
-        canRevealInFinder = onDisk
-    }
-
-    init(saved page: WebLibraryEntry) {
-        let displayName = RecentFilesService.webpageDisplayName(for: page.url)
-        let trimmedTitle = page.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let displayTitle = trimmedTitle.isEmpty ? displayName : trimmedTitle
-
-        id = "saved:\(page.url)"
-        section = .saved
-        kind = .web
-        key = page.url
-        recordedKey = page.url
-        icon = "globe"
-        title = displayTitle
-        subtitle = displayName + (page.hasSnapshot ? " · available offline" : "")
-        tooltip = page.url
-        canRevealInFinder = false
-    }
-
-    private static func formatOpenedDate(_ openedAt: String) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = iso.date(from: openedAt) ?? ISO8601DateFormatter().date(from: openedAt)
-        guard let date else { return "Recently opened" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
-    }
-}
-
-private struct LibraryRow: View {
-    let item: LibraryItem
-
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: item.icon)
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(.secondary)
-                .frame(width: 34, height: 34)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(.separator)
-                }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(palette.foreground)
-                    .lineLimit(1)
-                Text(item.subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.mutedForeground)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .background {
-            // Subtle hover wash — same neutral fill the chrome uses for
-            // hovered-but-unselected elements (SelectionStyle.fill). The row
-            // content sits inset 5pt within the 52pt row (defaultMinListRowHeight
-            // set on the List), so stretch the wash to the full row height —
-            // otherwise it reads visibly smaller than the native selection
-            // highlight, which fills the row.
-            RoundedRectangle(cornerRadius: Radius.md)
-                .fill(hovering ? AnyShapeStyle(.quaternary.opacity(0.55)) : AnyShapeStyle(Color.clear))
-                .padding(.vertical, -5)
-        }
-        .padding(.horizontal, -6)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(item.tooltip)
     }
 }
 
