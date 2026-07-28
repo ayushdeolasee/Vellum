@@ -205,7 +205,11 @@ private struct LiveTabHost: View {
 
     var body: some View {
         Group {
-            if runtime.isEvicted {
+            // `document != nil` matters: a start tab's runtime can be evicted
+            // like any other, but it has nothing to restore, and flashing
+            // "Restoring tab…" over the home screen for the frame before the
+            // `.task` below reactivates it would read as a bug.
+            if runtime.isEvicted, document != nil {
                 if isActive {
                     VStack(spacing: 8) {
                         ProgressView()
