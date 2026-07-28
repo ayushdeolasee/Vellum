@@ -155,7 +155,11 @@ final class ScratchpadStore {
                         "\(attachment.id).\(attachment.fileExtension)"),
                     options: .atomic)
             }
-            try ScratchpadPersistence.save(forKey: transaction.key, schemeText: restored)
+            // `target.key`, never `transaction.key`: a post-clear stamp moves the
+            // note to the doc-ID folder, and writing the recovered text back to
+            // the abandoned path-hash key would resurrect a folder nothing reads
+            // while leaving the live document's note un-restored on disk.
+            try ScratchpadPersistence.save(forKey: target.key, schemeText: restored)
         } catch {
             showWarning("Couldn't restore the cleared note. Its recovery data is still available in Undo.")
             return nil

@@ -104,7 +104,7 @@ struct ScratchpadPanel: View {
             }
             IconButton(
                 help: "Clear scratchpad note",
-                disabled: scratchpadStore.text.isEmpty || undoManager == nil,
+                disabled: scratchpadStore.text.isEmpty,
                 action: clear
             ) {
                 Image(systemName: "trash").font(.system(size: 15))
@@ -125,21 +125,15 @@ struct ScratchpadPanel: View {
         }
     }
 
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
     private func clear() {
-        guard undoManager != nil else { return }
         guard let transaction = scratchpadStore.clearText() else { return }
-        registerScratchpadUndo(transaction)
-    }
-
-    private func registerScratchpadUndo(_ transaction: ScratchpadClearTransaction) {
         guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: scratchpadStore) { store in
-            guard let restoration = store.undoClear(transaction) else { return }
-            registerScratchpadRedo(restoration, store: store, undoManager: undoManager)
-        }
-        undoManager.setActionName("Clear Scratchpad")
+        registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
     }
-
 }
 
 @MainActor

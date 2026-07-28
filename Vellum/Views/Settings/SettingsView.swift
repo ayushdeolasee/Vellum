@@ -7,22 +7,30 @@ import SwiftUI
 /// highlight color), and AI (provider / key / model). New settings slot
 /// into the matching tab instead of accreting in ad-hoc popovers.
 struct SettingsView: View {
+    @Environment(WorkspaceStore.self) private var workspace
+
     var body: some View {
-        TabView {
+        @Bindable var workspace = workspace
+        TabView(selection: $workspace.settingsSection) {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(WorkspaceStore.SettingsSection.general)
 
             ReadingSettingsTab()
                 .tabItem { Label("Reading", systemImage: "text.book.closed") }
+                .tag(WorkspaceStore.SettingsSection.reading)
 
             AnnotationsSettingsTab()
                 .tabItem { Label("Annotations", systemImage: "highlighter") }
+                .tag(WorkspaceStore.SettingsSection.annotations)
 
             AiSettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(WorkspaceStore.SettingsSection.ai)
 
             StorageSettingsTab()
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
+                .tag(WorkspaceStore.SettingsSection.storage)
         }
         .frame(width: 480)
     }

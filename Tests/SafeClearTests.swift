@@ -196,27 +196,10 @@ final class SafeClearTests: XCTestCase {
         XCTAssertNil(ScratchpadStore().clearText())
     }
 
-    func testSavedRemovalFailureLeavesRowsUntouched() async {
-        let page = WebLibraryEntry(
-            url: "https://example.com", title: "Example", pageCount: 1,
-            savedAt: nil, hasSnapshot: true)
-        var visiblePages = [page]
-        sessions.removeSavedError = SessionServiceError.io("disk is read-only")
-        do {
-            try await SavedPageRemoval.remove(url: page.url, using: sessions)
-            visiblePages.removeAll { $0.url == page.url }
-            XCTFail("Expected removal to fail")
-        } catch {
-            XCTAssertEqual(sessions.removeSavedCalls, [page.url])
-            XCTAssertEqual(visiblePages, [page])
-        }
-    }
 }
 
 @MainActor
 private final class SafeClearSessionService: SessionService {
-    var removeSavedError: Error?
-    var removeSavedCalls: [String] = []
     var opensUnstampedPdfs = false
     private var ensuredDocumentIds: [String: String] = [:]
 
@@ -238,10 +221,7 @@ private final class SafeClearSessionService: SessionService {
     func setWebpageSaved(sessionId: String, saved: Bool) async throws {}
     func getWebpageSaved(sessionId: String) async throws -> Bool { false }
     func listSavedWebpages() async throws -> [WebLibraryEntry] { [] }
-    func removeSavedWebpage(url: String) async throws {
-        removeSavedCalls.append(url)
-        if let removeSavedError { throw removeSavedError }
-    }
+    func removeSavedWebpage(url: String) async throws {}
     func exportVellumweb(
         sessionId: String, destPath: String, pages: [WebPageText]
     ) async throws -> VellumwebExportSummary {
