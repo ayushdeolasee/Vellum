@@ -33,6 +33,7 @@ struct SettingsView: View {
                 .tag(WorkspaceStore.SettingsSection.storage)
         }
         .frame(width: 480)
+        .accessibilityIdentifier("settings.content")
     }
 }
 
@@ -168,6 +169,8 @@ private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
+    @Environment(ChatGPTAuth.self) private var chatGPTAuth
+    @State private var validationState: AiConnectionValidationState = .idle
 
     var body: some View {
         Form {
@@ -182,7 +185,11 @@ private struct AiSettingsTab: View {
                     LabeledContent("Account") { ChatGPTSignInControl() }
                 } else {
                     LabeledContent(aiStore.keyFieldLabel) {
-                        RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
+                        RevealableSecureField(
+                            accessibilityLabel: aiStore.keyFieldLabel,
+                            placeholder: aiStore.keyFieldPlaceholder,
+                            text: aiStore.apiKeyBinding
+                        )
                             .id(aiStore.settings.provider)
                     }
                 }
@@ -196,12 +203,78 @@ private struct AiSettingsTab: View {
                         Text(mode.label).tag(mode)
                     }
                 }
+                LabeledContent("Configuration") {
+                    Text(configurationSummary)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("ai.configurationSummary")
+                }
+                HStack {
+                    Button("Validate Connection") {
+                        validationState = .checking
+                        let settings = aiStore.settings
+                        let signedIn = chatGPTAuth.isSignedIn
+                        let provider = settings.provider
+                        let model = aiStore.activeModelName
+                        let credential = aiStore.apiKeyBinding.wrappedValue
+                        Task {
+                            let result = await AiConnectionValidator.validate(
+                                settings: settings,
+                                chatGPTSignedIn: signedIn
+                            )
+                            guard aiStore.settings.provider == provider,
+                                  aiStore.activeModelName == model,
+                                  aiStore.apiKeyBinding.wrappedValue == credential,
+                                  chatGPTAuth.isSignedIn == signedIn else { return }
+                            validationState = result
+                        }
+                    }
+                    .disabled(validationState == .checking || !canValidate)
+                    .accessibilityIdentifier("ai.validateConnection")
+                    validationLabel
+                }
             } header: {
                 Text("Assistant")
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+        .onChange(of: aiStore.settings.provider) { _, _ in validationState = .idle }
+        .onChange(of: aiStore.activeModelName) { _, _ in validationState = .idle }
+        .onChange(of: aiStore.apiKeyBinding.wrappedValue) { _, _ in validationState = .idle }
+        .onChange(of: chatGPTAuth.isSignedIn) { _, _ in validationState = .idle }
+    }
+
+    private var canValidate: Bool {
+        aiStore.settings.provider == .chatgpt ? chatGPTAuth.isSignedIn : !aiStore.apiKeyBinding.wrappedValue.isEmpty
+    }
+
+    private var configurationSummary: String {
+        let provider = AiProviderOption.all.first { $0.provider == aiStore.settings.provider }?.label
+            ?? aiStore.settings.provider.rawValue
+        let credential = aiStore.settings.provider == .chatgpt
+            ? (chatGPTAuth.isSignedIn ? "signed in" : "not signed in")
+            : (aiStore.apiKeyBinding.wrappedValue.isEmpty ? "credential missing" : "credential saved")
+        return "\(provider) · \(aiStore.activeModelName) · \(credential)"
+    }
+
+    @ViewBuilder
+    private var validationLabel: some View {
+        switch validationState {
+        case .idle:
+            if !canValidate {
+                Text(aiStore.settings.provider == .chatgpt ? "Sign in to validate" : "Add a credential to validate")
+                    .foregroundStyle(.secondary)
+            }
+        case .checking:
+            ProgressView("Checking…").controlSize(.small)
+        case .valid:
+            Label("Connection verified", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .invalid(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(palette.gold)
+        }
     }
 
     @ViewBuilder
@@ -217,6 +290,75 @@ private struct AiSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(palette.gold)
             }
+        }
+    }
+}
+
+enum AiConnectionValidationState: Equatable {
+    case idle
+    case checking
+    case valid
+    case invalid(String)
+}
+
+enum AiConnectionValidator {
+    static func request(settings: AiSettings) -> URLRequest? {
+        let key: String
+        let urlString: String
+        switch settings.provider {
+        case .gemini:
+            key = settings.apiKey
+            urlString = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"
+        case .openai:
+            key = settings.openaiApiKey
+            urlString = "https://api.openai.com/v1/models"
+        case .openrouter:
+            key = settings.openrouterApiKey
+            urlString = "https://openrouter.ai/api/v1/auth/key"
+        case .opencode:
+            key = settings.opencodeApiKey
+            urlString = "https://opencode.ai/zen/v1/models"
+        case .opencodeGo:
+            key = settings.opencodeGoApiKey
+            urlString = "https://opencode.ai/zen/go/v1/models"
+        case .chatgpt:
+            return nil
+        }
+        guard !key.isEmpty, let url = URL(string: urlString) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        if settings.provider == .gemini {
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    static func validate(
+        settings: AiSettings,
+        chatGPTSignedIn: Bool,
+        session: URLSession = .shared
+    ) async -> AiConnectionValidationState {
+        if settings.provider == .chatgpt {
+            return chatGPTSignedIn ? .valid : .invalid("ChatGPT is not signed in")
+        }
+        guard let request = request(settings: settings) else {
+            return .invalid("Credential is missing")
+        }
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .invalid("The provider returned an invalid response")
+            }
+            switch http.statusCode {
+            case 200..<300: return .valid
+            case 401, 403: return .invalid("Credential was rejected")
+            case 429: return .invalid("Provider is reachable but rate limited")
+            default: return .invalid("Provider returned HTTP \(http.statusCode)")
+            }
+        } catch {
+            return .invalid("Couldn’t reach the provider")
         }
     }
 }

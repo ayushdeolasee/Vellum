@@ -14,13 +14,13 @@ struct VellumToolbar: ToolbarContent {
     // moves when the tab type changes:
     //   • LEADING (.navigation): the same navigation slot — web back/forward or
     //     PDF page controls — plus PDF-only reading controls (zoom).
-    //   • CENTER (.principal): the quiet document title/address. .principal is
-    //     genuinely centered by the window, so it never shifts with the leading
-    //     cluster's width the way flexible spacers did.
-    //   • TRAILING: bookmark, note, inspector, and one overflow Menu that holds
-    //     the low-frequency actions (Open, Save, Export, library, updates).
-    // Low-use file/library/update actions no longer each claim a glass circle,
-    // which is what produced the "pill soup".
+    //   • CENTER (.principal): the quiet document title/address and its explicit
+    //     document-action disclosure. .principal is genuinely centered by the
+    //     window, so it never shifts with the leading cluster's width.
+    //   • TRAILING: bookmark, note, inspector, and one overflow Menu containing
+    //     low-frequency actions owned by the current document.
+    // Low-use actions no longer each claim a glass circle, which is what
+    // produced the "pill soup".
     var body: some ToolbarContent {
         // LEADING — navigation. ControlGroup merges related buttons into one
         // shared glass capsule; bare buttons in a group render as zero-gap
@@ -68,8 +68,14 @@ struct VellumToolbar: ToolbarContent {
             }
         }
 
-        ToolbarItem {
-            OverflowMenu()
+        // Home has no current document, so it shows no document-action menu at
+        // all. Updates are not put here as a substitute: Home's own header
+        // already carries Check for Updates / Install Update (#70), and the app
+        // menu carries them for when a document is open.
+        if hasDocument {
+            ToolbarItem {
+                OverflowMenu()
+            }
         }
     }
 }
@@ -287,17 +293,17 @@ private struct BookmarkButton: View {
             Task { await annotationStore.toggleBookmark() }
         } label: {
             Label(
-                isBookmarked ? "Remove bookmark" : "Bookmark",
+                isBookmarked ? "Remove Bookmark Position" : "Bookmark Position",
                 systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
             )
             .foregroundStyle(isBookmarked ? AnyShapeStyle(palette.gold) : AnyShapeStyle(.primary))
         }
         .help(
             isBookmarked
-                ? "Remove bookmark (⌘D)"
+                ? "Remove Bookmark Position (⌘D)"
                 : (isWeb
-                    ? "Bookmark this spot (⌘D) — saves your reading position"
-                    : "Bookmark this page (⌘D) — saves it in the annotations panel"))
+                    ? "Bookmark Position (⌘D) — saves this reading position"
+                    : "Bookmark Position (⌘D) — saves this page in Annotations"))
         .accessibilityAddTraits(isBookmarked ? .isSelected : [])
         .accessibilityIdentifier("toolbar.bookmark")
     }
@@ -329,16 +335,16 @@ private struct NoteToolToggle: View {
 
 // MARK: - Overflow menu
 
-/// One trailing Menu that collects low-frequency document actions. Global app
-/// actions such as Settings and update checking live on Home instead.
+/// Low-frequency actions owned by the current document. Global actions and tab
+/// creation deliberately live on Home / in the File menu, not here.
 private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
 
     @State private var pageSaved = false
     @State private var exporting = false
-    /// Separate guard for the "Export with Notes…" flow so it can't double-fire
-    /// and doesn't fight the web-only "Export a Copy…" guard above.
+    /// Separate guard for the Vellum bundle flow so it can't double-fire or
+    /// conflict with the web-only archive-export guard above.
     @State private var exportingBundle = false
     /// Serializes save/remove so a rapid Remove can't finish before a slow
     /// Save's archive write and get its deletion undone by it.
@@ -352,21 +358,13 @@ private struct OverflowMenu: View {
 
     var body: some View {
         Menu {
-            Section {
-                Button(action: openFiles) {
-                    Label("Open File…", systemImage: "folder")
-                }
-                Button {
-                    NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-                } label: {
-                    Label("Add Webpage…", systemImage: "globe")
-                }
-            }
-
             if hasDocument, !isWeb {
                 Section {
                     Button(action: savePdf) {
                         Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                    Button(action: savePdfAs) {
+                        Label("Save As…", systemImage: "doc.on.doc")
                     }
                 }
             }
@@ -375,12 +373,12 @@ private struct OverflowMenu: View {
                 Section {
                     Button(action: toggleSavedPage) {
                         Label(
-                            pageSaved ? "Remove Offline Copy" : "Save for Offline Use",
+                            pageSaved ? "Remove Offline Copy" : "Keep Offline",
                             systemImage: pageSaved ? "arrow.down.circle.fill" : "arrow.down.circle")
                     }
                     .accessibilityIdentifier("toolbar.saveForOffline")
                     Button(action: exportVellumweb) {
-                        Label("Export a Copy…", systemImage: "square.and.arrow.up")
+                        Label("Export Web Archive…", systemImage: "square.and.arrow.up")
                     }
                     .disabled(exporting)
                 }
@@ -389,7 +387,7 @@ private struct OverflowMenu: View {
             if hasDocument {
                 Section {
                     Button(action: exportWithNotes) {
-                        Label("Export with Notes…", systemImage: "arrow.up.doc")
+                        Label("Export Vellum Bundle with Notes…", systemImage: "arrow.up.doc")
                     }
                     .disabled(exportingBundle)
                     .accessibilityIdentifier("toolbar.exportWithNotes")
@@ -404,8 +402,8 @@ private struct OverflowMenu: View {
                 .labelStyle(.iconOnly)
         }
         .menuIndicator(.hidden)
-        .help("More — open, save, and export")
-        .accessibilityLabel("More actions")
+        .help("More actions for this document")
+        .accessibilityLabel("Document actions")
         .accessibilityIdentifier("toolbar.overflowMenu")
         .task(id: DocumentKey(appStore)) {
             await loadSavedState(for: DocumentKey(appStore))
@@ -414,21 +412,13 @@ private struct OverflowMenu: View {
 
     // MARK: File
 
-    private func openFiles() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        var types: [UTType] = [.pdf]
-        if let archive = UTType(filenameExtension: "vellumweb") { types.append(archive) }
-        if let bundle = UTType(filenameExtension: "vellum") { types.append(bundle) }
-        panel.allowedContentTypes = types
-        guard panel.runModal() == .OK else { return }
-        Task { await appStore.openFiles(paths: panel.urls.map(\.path)) }
-    }
-
     private func savePdf() {
         guard let sessionId = appStore.activeTabId else { return }
         Task { try? await appStore.sessions.saveFile(sessionId: sessionId) }
+    }
+
+    private func savePdfAs() {
+        DocumentActionPresenter.savePdfAs(appStore: appStore)
     }
 
     // MARK: Web library
@@ -442,15 +432,14 @@ private struct OverflowMenu: View {
         }
     }
 
-    /// Save = mark the page kept AND make sure its offline copy exists (the
-    /// re-archive covers a copy the user deleted from Settings ▸ Storage).
+    /// Save = create an offline snapshot, then mark the page kept. The button
+    /// only reports an offline copy after the archive was actually written.
     /// Remove = un-keep and delete the offline copy; the record — highlights,
     /// notes, reading position — always survives.
     private func toggleSavedPage() {
-        guard let sessionId = appStore.activeTabId else { return }
+        guard let identity = appStore.activeWebDocumentActionIdentity() else { return }
         let next = !pageSaved
         pageSaved = next
-        let expectedUrl = appStore.document?.pdfPath ?? ""
         let pages = aiStore.pageTexts
             .sorted { $0.key < $1.key }
             .map { WebPageText(number: $0.key, text: $0.value) }
@@ -459,20 +448,37 @@ private struct OverflowMenu: View {
         let generation = saveToggleGeneration
         saveToggleTask = Task {
             await prior?.value
+            guard appStore.isCurrentWebDocument(identity) else { return }
             do {
-                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
                 if next {
-                    // Best-effort: membership is saved even if the archive
-                    // write fails (offline, no snapshot yet) — the copy is
-                    // rewritten on the next open of the page.
-                    _ = try? await appStore.sessions.archiveWebpageDefault(
-                        sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+                    let archived = try await appStore.sessions.archiveWebpageDefault(
+                        sessionId: identity.sessionId, pages: pages, expectedUrl: identity.url)
+                    // A navigation can reuse the session id while this awaits.
+                    // Never let an old action mark the new URL as saved.
+                    guard appStore.isCurrentWebDocument(identity) else { return }
+                    guard archived else {
+                        throw SessionServiceError.io("The webpage changed before its offline copy could be created.")
+                    }
+                    try await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: true)
+                    guard appStore.isCurrentWebDocument(identity) else { return }
+                } else {
+                    try await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: false)
+                    guard appStore.isCurrentWebDocument(identity) else { return }
                 }
             } catch {
-                // Only the newest toggle owns the button: an older one failing
-                // behind a queued newer one must not resurrect its own state.
-                if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
+                // If archiving fails, undo any membership change so Saved and
+                // offline availability cannot diverge. Only the newest toggle
+                // owns visible state or its error message.
+                guard appStore.isCurrentWebDocument(identity) else { return }
+                if next {
+                    try? await appStore.sessions.setWebpageSaved(sessionId: identity.sessionId, saved: false)
+                    // The rollback itself can suspend; do not update a page
+                    // that rebounded to a different URL while it ran.
+                    guard appStore.isCurrentWebDocument(identity) else { return }
+                }
+                if appStore.isCurrentWebDocument(identity), generation == saveToggleGeneration {
                     pageSaved = !next
+                    appStore.error = "Keep Offline failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -639,9 +645,8 @@ private struct OverflowMenu: View {
     }
 }
 
-/// Safari-style address field: shows the page URL for web tabs (click copies
-/// it, double-click exports the archive) or the file name for PDFs
-/// (double-click = Save As, retargeting the tab to the new location).
+/// Centered informational title plus a conventional disclosure for document
+/// actions. The label itself has no hidden click or double-click behavior.
 private struct DocumentTitleField: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
@@ -653,23 +658,47 @@ private struct DocumentTitleField: View {
     private var isWeb: Bool { appStore.document?.kind == .web }
 
     var body: some View {
-        // Quiet centered title/address — no capsule, no stacked material. It
-        // reads as a label the unified toolbar hosts, not a fake editable pill.
-        // Middle-truncation keeps both the site/name head and the tail visible.
-        Text(feedback ?? displayText)
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .padding(.horizontal, 10)
-            .frame(minWidth: 120, idealWidth: isWeb ? 380 : 260, maxWidth: isWeb ? 440 : 320)
-            .frame(minHeight: 30)
-            .contentShape(Rectangle())
-            .help(helpText)
-            .onTapGesture(count: 2) { saveAs() }
-            .onTapGesture { if isWeb { copyURL() } }
-            .accessibilityLabel(feedback ?? displayText)
-            .accessibilityIdentifier("toolbar.documentTitle")
+        HStack(spacing: 2) {
+            Text(feedback ?? displayText)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 120, idealWidth: isWeb ? 360 : 240, maxWidth: isWeb ? 420 : 300)
+                .accessibilityLabel(feedback ?? displayText)
+                .accessibilityIdentifier("toolbar.documentTitle")
+
+            Menu {
+                if isWeb {
+                    Button(action: copyURL) {
+                        Label("Copy URL", systemImage: "doc.on.doc")
+                    }
+                    Button(action: exportWebArchive) {
+                        Label("Export Web Archive…", systemImage: "square.and.arrow.up")
+                    }
+                } else {
+                    Button(action: revealInFinder) {
+                        Label("Reveal in Finder", systemImage: "folder")
+                    }
+                    Button {
+                        DocumentActionPresenter.savePdfAs(appStore: appStore)
+                    } label: {
+                        Label("Save As…", systemImage: "doc.on.doc")
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 28)
+            }
+            .menuIndicator(.hidden)
+            .accessibilityLabel("Document actions for \(displayText)")
+            .accessibilityIdentifier("toolbar.documentTitleActions")
+        }
+        .padding(.horizontal, 6)
+        .frame(minHeight: 30)
+        .help("Document title and actions")
     }
 
     private var displayText: String {
@@ -680,13 +709,6 @@ private struct DocumentTitleField: View {
             return path
         }
         return (path as NSString).lastPathComponent
-    }
-
-    private var helpText: String {
-        let path = appStore.document?.pdfPath ?? ""
-        return isWeb
-            ? "\(path) — click to copy, double-click to export a copy"
-            : "\(path) — double-click to change where the file is saved"
     }
 
     private func showFeedback(_ text: String) {
@@ -706,40 +728,11 @@ private struct DocumentTitleField: View {
         showFeedback("URL copied")
     }
 
-    private func saveAs() {
-        if isWeb {
-            exportWebArchive()
-        } else {
-            savePdfAs()
-        }
+    private func revealInFinder() {
+        guard let path = appStore.document?.pdfPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    /// Save As for PDFs: flush annotations, copy the file, retarget the tab.
-    private func savePdfAs() {
-        guard let sessionId = appStore.activeTabId,
-              let sourcePath = appStore.document?.pdfPath else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue = (sourcePath as NSString).lastPathComponent
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        let destPath = destination.path
-        guard destPath != sourcePath else { return }
-        Task {
-            do {
-                try await appStore.sessions.saveFile(sessionId: sessionId)
-                if FileManager.default.fileExists(atPath: destPath) {
-                    try FileManager.default.removeItem(atPath: destPath)
-                }
-                try FileManager.default.copyItem(atPath: sourcePath, toPath: destPath)
-                await appStore.closeTab(sessionId)
-                await appStore.openFile(path: destPath)
-            } catch {
-                showFeedback("Save failed")
-            }
-        }
-    }
-
-    /// Double-click on a web tab: export the snapshot archive to a chosen spot.
     private func exportWebArchive() {
         guard let sessionId = appStore.activeTabId else { return }
         let panel = NSSavePanel()
@@ -758,6 +751,27 @@ private struct DocumentTitleField: View {
                 showFeedback("Exported")
             } catch {
                 showFeedback("Export failed")
+            }
+        }
+    }
+}
+
+/// Native Save As presentation shared by the document disclosure and the
+/// current-document overflow menu.
+@MainActor
+private enum DocumentActionPresenter {
+    static func savePdfAs(appStore: AppStore) {
+        guard let sessionId = appStore.activeTabId,
+              let sourcePath = appStore.document?.pdfPath else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = (sourcePath as NSString).lastPathComponent
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task {
+            do {
+                try await appStore.savePdfAs(tabId: sessionId, destination: destination)
+            } catch {
+                appStore.error = "Save As failed: \(error.localizedDescription)"
             }
         }
     }

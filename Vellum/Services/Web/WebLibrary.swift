@@ -65,6 +65,9 @@ enum WebLibrary {
 
     /// The app-data dir the Rust app used: `~/Library/Application Support/<bundle id>`.
     static var appDataDir: URL {
+        if let root = UITestLaunchConfiguration.storageRoot {
+            return root.appendingPathComponent("Application Support", isDirectory: true)
+        }
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first ?? FileManager.default.homeDirectoryForCurrentUser

@@ -438,6 +438,34 @@ final class DocumentDataStoreTests: XCTestCase {
                       "another document's attachment must be untouched")
     }
 
+    /// A sweep collects against a reference set captured at some moment, and it
+    /// can run after that moment — `pruneOrphanedAttachments` hands the work to
+    /// a background task. An attachment written in that gap is absent from the
+    /// set but is not garbage, and deleting it leaves a broken image in the
+    /// note. This is what made `SafeClearTests` flake under full-suite load:
+    /// opening a document sweeps with an empty reference set, and the image
+    /// saved immediately afterwards could be reaped before the note referenced
+    /// it.
+    func testGCSparesAttachmentsWrittenAfterTheReferenceSnapshot() throws {
+        let dir = DocumentDataStore.attachmentsDir(forKey: "gc-cutoff")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let old = dir.appendingPathComponent("old.jpg")
+        try Data([1]).write(to: old)
+
+        // Everything already on disk predates the snapshot; the new file does not.
+        let referencedAsOf = Date()
+        let fresh = dir.appendingPathComponent("fresh.jpg")
+        try Data([2]).write(to: fresh)
+
+        ScratchpadAttachmentStore.collectGarbage(
+            in: dir, referencedIds: [], referencedAsOf: referencedAsOf)
+
+        XCTAssertFalse(exists(old), "an attachment older than the snapshot is still collected")
+        XCTAssertTrue(
+            exists(fresh),
+            "an attachment written after the snapshot belongs to a later edit and must survive")
+    }
+
     // MARK: - F3 #3: read-only session when the note is stuck in iCloud
 
     /// When a document's note exists only as an unmaterialized iCloud placeholder,

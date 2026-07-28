@@ -200,6 +200,18 @@ private struct WindowChrome: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
+        // Only over a document. Home renders the same `app.error` in its own
+        // banner (#68), so an unconditional overlay would show every error
+        // twice — including the terminal Save As rollback, which is precisely
+        // the case that ends up back on Home.
+        .overlay(alignment: .top) {
+            if focused.app.document != nil, let error = focused.app.error {
+                DocumentErrorNotice(message: error) {
+                    focused.app.error = nil
+                }
+                .padding(.top, 12)
+            }
+        }
         .toolbar {
             VellumToolbar()
         }
@@ -252,6 +264,38 @@ private struct WindowChrome: View {
     private var sidebar: some View {
         SidebarPanelStack()
             .onHover { sidebarHovering = $0 }
+    }
+}
+
+/// Document-action failures stay visible in whichever surface remains after
+/// the action. In particular, a terminal Save As rollback can close the last
+/// tab and leave this pane on Home.
+private struct DocumentErrorNotice: View {
+    @Environment(\.palette) private var palette
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message)
+                .lineLimit(3)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss error")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(palette.destructive)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(palette.destructive.opacity(0.12), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(palette.destructive.opacity(0.3))
+        }
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier("document.errorNotice")
     }
 }
 

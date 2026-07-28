@@ -38,6 +38,11 @@ struct VellumCommands: Commands {
     /// Only used by the Help menu. The Help centre is a scene of its own rather
     /// than a sheet, so it is opened by id instead of by a presentation flag.
     @Environment(\.openWindow) private var openWindow
+    /// The update commands are app-global rather than focused-document scoped:
+    /// the app owns exactly one window and one `WorkspaceStore`, so they are
+    /// injected directly instead of read from `vellumFocus`, which would make
+    /// them go dead whenever Settings or the Help centre is key.
+    let appWorkspace: WorkspaceStore
 
     // MARK: Availability (drives menu validation)
 
@@ -55,6 +60,20 @@ struct VellumCommands: Commands {
     private var findVisible: Bool { appStore?.findVisible ?? false }
 
     var body: some Commands {
+        // MARK: App-wide
+        // This remains available with a document open, unlike the Home toolbar
+        // control, and shares its durable state with that control.
+        CommandGroup(after: .appInfo) {
+            if appWorkspace.updateChecker.state == .available,
+               let version = appWorkspace.updateChecker.availableVersion {
+                Button("Install Update \(version)", action: appWorkspace.updateChecker.install)
+            }
+            Button("Check for Updates…") {
+                Task { await appWorkspace.updateChecker.check() }
+            }
+            .disabled(appWorkspace.updateChecker.state == .checking)
+        }
+
         // MARK: File
         CommandGroup(replacing: .newItem) {
             Button("New Tab") { appStore?.newStartTab() }
@@ -235,7 +254,7 @@ struct VellumCommands: Commands {
 
         // MARK: Annotations
         CommandMenu("Annotations") {
-            Button(isBookmarked ? "Remove Bookmark" : "Bookmark Page") {
+            Button(isBookmarked ? "Remove Bookmark Position" : "Bookmark Position") {
                 if let store = annotationStore { Task { await store.toggleBookmark() } }
             }
             .keyboardShortcut("d", modifiers: .command)

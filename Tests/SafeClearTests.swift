@@ -13,6 +13,10 @@ final class SafeClearTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         DocumentDataStore.rootDirectoryOverride = root
         ScratchpadAttachmentStore.directoryOverride = root.appendingPathComponent("legacy")
+        // These seams are process-global (#102), so claim all three on the way in
+        // as well as releasing them on the way out — this suite must not inherit
+        // an attachment directory from whatever ran before it.
+        ScratchpadAttachmentStore.activeDirectory = nil
         sessions = SafeClearSessionService()
         app = AppStore(sessions: sessions)
     }

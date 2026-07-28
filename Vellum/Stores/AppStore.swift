@@ -73,6 +73,14 @@ final class AppStore {
     /// workspace owns the pane which owns this store.
     weak var workspace: WorkspaceStore?
 
+    /// The full identity for an asynchronous webpage action. A tab id by
+    /// itself is not enough: in-page navigation deliberately reuses it while
+    /// rebinding the tab to a different URL.
+    struct WebDocumentActionIdentity: Equatable, Sendable {
+        let sessionId: String
+        let url: String
+    }
+
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
     var zoomToHandler: ((Double) -> Void)?
@@ -176,6 +184,26 @@ final class AppStore {
         }
     }
 
+    /// Captures the active webpage before an asynchronous action begins.
+    /// Callers must validate this identity again after every suspension before
+    /// changing visible state or performing a compensating mutation.
+    func activeWebDocumentActionIdentity() -> WebDocumentActionIdentity? {
+        guard let sessionId = activeTabId,
+              let document,
+              document.kind == .web else { return nil }
+        return WebDocumentActionIdentity(sessionId: sessionId, url: document.pdfPath)
+    }
+
+    /// True only while the active tab still represents the exact webpage that
+    /// began the action. This rejects a same-tab URL rebind after an `await`.
+    func isCurrentWebDocument(_ identity: WebDocumentActionIdentity) -> Bool {
+        guard activeTabId == identity.sessionId,
+              let tab = tabs.first(where: { $0.id == identity.sessionId }),
+              let document = tab.document,
+              document.kind == .web else { return false }
+        return document.pdfPath == identity.url
+    }
+
     /// Update a tab's document title (reported by the webpage content script).
     func updateDocumentTitle(tabId: String, title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -247,6 +275,138 @@ final class AppStore {
         if activeTabId == sessionId, document?.docId == nil {
             document?.docId = id
         }
+    }
+
+    /// Save the PDF in `tabId` to a new location while keeping the existing tab
+    /// and backend session identity. Keeping the id stable is important: it is
+    /// also the identity used by the viewer, AI conversation, inspector, and
+    /// split-pane placement.
+    ///
+    /// The destination is written before the session is rebound. If reopening
+    /// the new location fails, the original session is restored so Save As
+    /// cannot strand the live tab.
+    @discardableResult
+    func savePdfAs(tabId: String, destination: URL) async throws -> DocumentInfo {
+        guard let tab = tabs.first(where: { $0.id == tabId }),
+              let source = tab.document,
+              source.kind == .pdf else {
+            throw SessionServiceError.invalidDocument("Save As requires an open PDF")
+        }
+
+        let sourceURL = URL(fileURLWithPath: source.pdfPath).standardizedFileURL
+        let destinationURL = destination.standardizedFileURL
+        if sourceURL == destinationURL {
+            return source
+        }
+        // `/var` and `/private/var` can name the same file on macOS without
+        // URL standardization making the strings equal. Compare filesystem
+        // identities when the destination already exists so choosing the
+        // current file in NSSavePanel remains a true no-op.
+        let sourceIdentifier = try? sourceURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destinationURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        if let sourceIdentifier = sourceIdentifier as? NSObject,
+           let destinationIdentifier = destinationIdentifier as? NSObject,
+           sourceIdentifier.isEqual(destinationIdentifier) {
+            return source
+        }
+
+        // Retargeting this tab to a file another tab already owns would leave
+        // two independent backend sessions writing the same PDF. That is
+        // particularly unsafe across panes, where neither tab is necessarily
+        // visible while the other saves. A Save As target must therefore be a
+        // genuinely new document location.
+        let openTabs = workspace?.root.allLeaves().flatMap { $0.app.tabs } ?? tabs
+        if openTabs.contains(where: { other in
+            guard other.id != tabId,
+                  let otherDocument = other.document,
+                  otherDocument.kind == .pdf else { return false }
+            return Self.sameFile(sourceURL: URL(fileURLWithPath: otherDocument.pdfPath), destinationURL: destinationURL)
+        }) {
+            throw SessionServiceError.invalidDocument(
+                "That PDF is already open in another tab. Close it before using Save As."
+            )
+        }
+
+        // Stamp a durable id before copying so document-scoped notes and
+        // conversations follow the PDF to its new location.
+        let preservedDocumentId = try await sessions.ensureDocumentId(sessionId: tabId)
+        await syncDocumentId(sessionId: tabId)
+        try await sessions.saveFile(sessionId: tabId)
+        let bytes = try await sessions.readPdfBytes(sessionId: tabId)
+        try await Task.detached {
+            try bytes.write(to: destinationURL, options: .atomic)
+        }.value
+
+        // A read-only, unstamped source resolves to a stable byte-hash fallback
+        // rather than a persisted /VellumDocId. Its Save As copy *is* writable,
+        // so stamp that fallback into the destination before reopening it. This
+        // keeps its conversation/scratchpad identity continuous instead of
+        // assigning a fresh id after the source becomes writable by copying.
+        if PdfMetadata.documentId(atPath: destinationURL.path) == nil {
+            try PdfMetadata.stampDocumentId(atPath: destinationURL.path, id: preservedDocumentId)
+        }
+
+        try await sessions.closeFile(sessionId: tabId)
+        let rebound: DocumentInfo
+        do {
+            rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
+        } catch let reopenError {
+            do {
+                // The original file is untouched, and a successful rollback
+                // restores the exact live tab rather than stranding it.
+                let restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                updateTab(tabId) { $0.document = restored }
+                if activeTabId == tabId {
+                    document = restored
+                }
+            } catch let rollbackError {
+                // There is no longer a backend for this tab. Remove it rather
+                // than showing a document whose actions will all fail; the
+                // untouched original remains available to reopen from Recents.
+                await closeTab(tabId)
+                let terminalError = SessionServiceError.io(
+                    "Save As wrote the copy but could not reopen it (\(reopenError.localizedDescription)) or restore the original (\(rollbackError.localizedDescription)). The tab was closed; reopen the original file to continue."
+                )
+                // `closeTab` may leave this pane on Home. Keep the terminal
+                // action error on the store so WindowChrome can present it
+                // there as well as above an open document.
+                error = terminalError.localizedDescription
+                throw terminalError
+            }
+            throw reopenError
+        }
+
+        // Retargeting keeps the tab live (issue #52 residency): its host stays
+        // mounted and `isActive` never changes, so the viewer would go on
+        // showing the document it parsed from the old location — and the copy's
+        // bytes differ from the source's anyway once /VellumDocId is stamped
+        // into it. Invalidate the runtime's parsed document so the mounted
+        // viewer re-reads the new file.
+        workspace?.existingLiveTabRuntime(for: tabId)?.invalidateLoadedPdf()
+        updateTab(tabId) { $0.document = rebound }
+        if activeTabId == tabId {
+            document = rebound
+        }
+        RecentFilesService.record(rebound)
+        workspace?.scheduleSave()
+        return rebound
+    }
+
+    private static func sameFile(sourceURL: URL, destinationURL: URL) -> Bool {
+        let source = sourceURL.standardizedFileURL
+        let destination = destinationURL.standardizedFileURL
+        guard source != destination else { return true }
+        let sourceIdentifier = try? source.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destination.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        guard let sourceIdentifier = sourceIdentifier as? NSObject,
+              let destinationIdentifier = destinationIdentifier as? NSObject else {
+            return false
+        }
+        return sourceIdentifier.isEqual(destinationIdentifier)
     }
 
     // MARK: - Closing / switching tabs

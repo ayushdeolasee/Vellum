@@ -92,6 +92,8 @@ struct PdfKitView: NSViewRepresentable {
             return retained
         }
         let view = PDFView()
+        view.setAccessibilityIdentifier("pdf.canvas")
+        view.setAccessibilityLabel("PDF canvas")
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = false
