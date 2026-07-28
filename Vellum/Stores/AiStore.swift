@@ -73,10 +73,18 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// see `AiReference.strippingImageData`.
     var references: [AiReference] = []
 
+    /// Compact, structured sources and document actions used for this reply.
+    /// Optional so conversations persisted before this UI existed decode unchanged,
+    /// and so `nil` (never had summaries — eligible for the legacy-receipt upgrade
+    /// in `displayToolSummaries`) stays distinguishable from `[]` (ran no tools).
+    var toolSummaries: [AiToolSummary]? = nil
+
     /// Explicit so `encode(to:)` synthesis and the hand-written `init(from:)`
-    /// below agree on the on-disk key names.
+    /// below agree on the on-disk key names. Every stored property must be
+    /// listed: an omission here silently drops the field from both the encoded
+    /// file and the decode, with no compiler error.
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, createdAt, usage, references
+        case id, role, content, createdAt, usage, references, toolSummaries
     }
 }
 
@@ -105,6 +113,11 @@ extension AiMessage {
         // than failing the message.
         let lossy = try? container.decodeIfPresent([LossyAiReference].self, forKey: .references)
         references = lossy?.compactMap(\.value) ?? []
+        // Decoded strictly, matching the synthesized behaviour this hand-written
+        // initializer replaced. `decodeIfPresent` keeps the nil/[] distinction
+        // `displayToolSummaries` relies on to decide whether a legacy "Actions:"
+        // receipt should be upgraded.
+        toolSummaries = try container.decodeIfPresent([AiToolSummary].self, forKey: .toolSummaries)
     }
 }
 
@@ -356,6 +369,27 @@ struct AiSettings: Codable, Equatable, Sendable {
     /// Model ids the user has pinned to the top of the model selector.
     var pinnedModels: [String] = []
     var reasoningEffort: AiThinkingMode = .auto
+
+    func isConfigured(chatGPTSignedIn: Bool) -> Bool {
+        switch provider {
+        case .gemini:
+            hasValue(apiKey) && hasValue(model)
+        case .openai:
+            hasValue(openaiApiKey) && hasValue(openaiModel)
+        case .openrouter:
+            hasValue(openrouterApiKey) && hasValue(openrouterModel)
+        case .chatgpt:
+            chatGPTSignedIn && hasValue(chatgptModel)
+        case .opencode:
+            hasValue(opencodeApiKey) && hasValue(opencodeModel)
+        case .opencodeGo:
+            hasValue(opencodeGoApiKey) && hasValue(opencodeGoModel)
+        }
+    }
+
+    private func hasValue(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 struct AiPageImageSnapshot: Codable, Sendable {
@@ -892,15 +926,18 @@ final class AiStore {
         (pageText?.count ?? 0) < autoPageImageTextThreshold
     }
 
-    /// Persisted assistant content = reply + compact per-action receipts.
-    /// Raw tool payloads (full page text / search results) must never reach
-    /// the persisted message — only these one-line receipts do.
-    static func composeAssistantContent(reply: String, receipts: [String]) -> String {
-        guard !receipts.isEmpty else {
-            return reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return (reply + "\n\nActions:\n" + receipts.map { "- \($0)" }.joined(separator: "\n"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The text persisted as an assistant message: the reply, and nothing else.
+    ///
+    /// This used to splice the tool receipts onto the end of the answer, which
+    /// is why it was called "compose". Receipts are now a structured field on
+    /// the message (`toolSummaries`), so the answer stays clean — a reply can
+    /// be copied, quoted or turned into a page note without dragging an
+    /// "Actions:" list along with it. Kept as a named function rather than an
+    /// inline `trimmingCharacters` because it is the one place that defines
+    /// what "the assistant's answer" means, and `AiPipelineTests` asserts on
+    /// it that no raw tool payload can ever reach a persisted message.
+    nonisolated static func assistantAnswerText(reply: String) -> String {
+        reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The conversation-block slice: everything BEFORE the newest user message.
@@ -1160,13 +1197,20 @@ final class AiStore {
             // drop the result without persisting or re-appending messages.
             guard !Task.isCancelled else { return }
 
-            // Show the engine's compact per-action summaries, not the raw tool
-            // results in `result.actionResults` — those carry full search/page
-            // payloads that only the model should see.
-            let finalContent = Self.composeAssistantContent(reply: result.reply, receipts: engine.displayActions)
-            let completed = messagesWithUser + [
-                AiPersistence.makeMessage(role: .assistant, content: finalContent, id: assistantId)
-            ]
+            // The answer and the trace of what produced it are persisted as two
+            // separate things. Raw tool payloads remain model-only: they reach
+            // neither `content` nor the bounded excerpts in `toolSummaries`.
+            var assistantMessage = AiPersistence.makeMessage(
+                role: .assistant,
+                content: Self.assistantAnswerText(reply: result.reply),
+                id: assistantId
+            )
+            assistantMessage.toolSummaries = engine.displayActions.isEmpty
+                ? nil
+                : AiPersistence.sanitizeToolSummaries(engine.displayActions)
+            let completed = AiPersistence.limitedMessages(messagesWithUser + [
+                assistantMessage
+            ])
             AiPersistence.saveConversation(for: documentForPersist, messages: completed)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed

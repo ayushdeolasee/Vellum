@@ -43,7 +43,7 @@ enum MathRenderer {
     /// Render a LaTeX string (no delimiters) to an image. Returns nil when the
     /// source fails to parse, so callers can fall back to styled plain text.
     static func render(latex: String, fontSize: CGFloat, color: NSColor, display: Bool) -> Rendered? {
-        let trimmed = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = normalizeCommands(latex.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !trimmed.isEmpty else { return nil }
 
         // Resolve dynamic (catalog/appearance) colors to concrete sRGB so the
@@ -88,6 +88,31 @@ enum MathRenderer {
         let rendered = Rendered(image: image, descent: descent)
         cache.setObject(CachedRender(rendered), forKey: key)
         return rendered
+    }
+
+    /// Rewrite LaTeX commands SwiftMath 1.7.3 does not implement into the
+    /// equivalent it does. A single unknown command fails the WHOLE equation —
+    /// `label.error` is set, `render` returns nil, and the bubble falls back to
+    /// showing raw monospaced LaTeX source. `\dots` is the one models reach for
+    /// constantly (it is the modern spelling `\ldots` in text position), and it
+    /// is why two of the equations in issue #57's sample reply rendered as
+    /// literal `x_1, x_2, x_3, \dots`.
+    ///
+    /// The negative lookahead keeps `\dotsb`/`\dotsc`/… from being mangled, and
+    /// requiring the backslash immediately before `dots` leaves `\ldots` and
+    /// `\cdots` — both of which SwiftMath already understands — untouched.
+    nonisolated private static let dotsRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\\dots(?![a-zA-Z])"#)
+
+    nonisolated private static func normalizeCommands(_ latex: String) -> String {
+        // Cheap guard: the substring test skips the regex for the ~all of
+        // equations that don't use the command.
+        guard latex.contains("\\dots"), let regex = dotsRegex else { return latex }
+        return regex.stringByReplacingMatches(
+            in: latex,
+            range: NSRange(location: 0, length: (latex as NSString).length),
+            withTemplate: #"\\ldots"#
+        )
     }
 
     /// Compiled once: `segments(in:)` runs on every streamed delta, so building

@@ -440,37 +440,9 @@ enum VellumBundle {
             merged.append(message)
         }
         merged.sort { $0.createdAt < $1.createdAt }
-        let capped = capConversation(merged)
+        let capped = AiPersistence.limitedMessages(merged)
         guard !capped.isEmpty else { return }
         let data = try JSONEncoder().encode(capped)
         try DocumentDataStore.saveConversationsData(forKey: key, data: data)
-    }
-
-    /// The per-document conversation caps (mirrors AiPersistence.limit, using its
-    /// public constants so the two never drift): keep the newest N, truncate
-    /// over-long content, and bound each message's references.
-    private static func capConversation(_ messages: [AiMessage]) -> [AiMessage] {
-        messages.suffix(AiPersistence.maxMessagesPerDocument).map { message in
-            var message = message
-            if message.content.count > AiPersistence.maxMessageCharacters {
-                let end = message.content.index(
-                    message.content.startIndex, offsetBy: AiPersistence.maxMessageCharacters)
-                message.content = String(message.content[..<end]) + "\n[truncated]"
-            }
-            // The reference caps have to be applied here too, not just in
-            // AiPersistence.limit: this writes straight to
-            // documents/<key>/conversations.json, and the incoming bytes come
-            // from a `.vellum` file we did not write (readCapped allows up to
-            // maxConversationsBytes = 32 MB). Without this, an imported bundle
-            // whose references still carry their base64 pixels — or a
-            // whole-document excerpt, or ten thousand of them — lands verbatim
-            // on disk and is re-encoded and rewritten in full on every
-            // subsequent turn, exactly the churn AiReference.strippingImageData
-            // exists to prevent. Calls the same function AiPersistence.limit
-            // does rather than restating the rules, which is how this drifted
-            // out of sync the first time.
-            message.references = AiPersistence.capReferences(message.references)
-            return message
-        }
     }
 }

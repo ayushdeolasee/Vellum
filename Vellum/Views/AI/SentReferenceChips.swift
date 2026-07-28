@@ -82,6 +82,13 @@ struct SentReferenceChips: View {
     /// session cache (`AiStore.referencePreviewData(for:)`) and are unavailable
     /// for a message restored from an earlier run.
     let previewData: (AiReference) -> Data?
+    /// The width the chips wrap at — the same cap the bubble below them uses
+    /// (`AiPanel.bubbleMaxWidth(for:contentWidth:)`), passed in rather than
+    /// hardcoded. It used to be a literal 272, which was the bubble's fixed
+    /// width until #64 made bubbles scale with the resizable sidebar; left
+    /// alone it would pin the chips at 272 while a wide sidebar grew the bubble
+    /// past them, and overflow the bubble on a sidebar narrower than 272.
+    let maxWidth: CGFloat
 
     var body: some View {
         ChipFlowLayout(spacing: 4, lineSpacing: 4, alignment: .trailing) {
@@ -91,7 +98,7 @@ struct SentReferenceChips: View {
             }
         }
         // Matches the bubble's own cap so the chips read as one column with it.
-        .frame(maxWidth: 272, alignment: .trailing)
+        .frame(maxWidth: maxWidth, alignment: .trailing)
         .accessibilityIdentifier("aiMessage.references")
     }
 }
@@ -306,14 +313,17 @@ private struct SentReferenceDetail: View {
             onGoToPage: { _ in },
             // Stands in for a reference reloaded from a previous session: no
             // pixels, so its popover shows the "preview unavailable" branch.
-            previewData: { _ in nil }
+            previewData: { _ in nil },
+            // The user-bubble cap for this preview's 300pt column.
+            maxWidth: AiPanel.bubbleMaxWidth(for: .user, contentWidth: 300)
         )
         // The single-chip case, which must hug the trailing edge like the bubble.
         SentReferenceChips(
             references: [AiReference(kind: .quote(
                 text: "Green light is largely reflected.", messageId: "a1"))],
             onGoToPage: { _ in },
-            previewData: { _ in nil }
+            previewData: { _ in nil },
+            maxWidth: AiPanel.bubbleMaxWidth(for: .user, contentWidth: 300)
         )
     }
     .frame(width: 300, alignment: .trailing)
