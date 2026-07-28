@@ -92,7 +92,14 @@ struct PaneView_iOS: View {
         })
         .task(id: documentIdentity) { await loadDocumentState() }
         .onAppear { inkRegistry.register(ink, for: pane.id) }
-        .onDisappear { inkRegistry.remove(pane.id) }
+        .onDisappear {
+            // Flush BEFORE deregistering. The scene-background flush drains the
+            // registry, so a controller with debounced ink that has already been
+            // removed would never be reached — closing a split pane moments
+            // before pressing Home would drop the last strokes.
+            ink.flushPendingInk()
+            inkRegistry.remove(pane.id)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }

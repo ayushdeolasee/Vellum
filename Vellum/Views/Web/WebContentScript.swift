@@ -1400,15 +1400,56 @@ enum WebContentScript {
   }
 
   var scrollTicking = false;
+  var scrollIdleTimer = null;
+  var lastDismissPostAt = 0;
+  var lastScrollReportAt = 0;
+  var scrollTrailingTimer = null;
+  // Viewport reporting drives the page-number readout and the bookmark star,
+  // and each call forces layout once per resolved bookmark. Neither consumer
+  // needs anything close to the 120Hz a ProMotion scroll delivers.
+  var SCROLL_REPORT_MS = 66;
+  // The app shell dismisses viewport-anchored transient UI on "viewport-scrolled".
+  // It is ALMOST idempotent — a note composer younger than 0.4s is deliberately
+  // kept — so this cannot be a pure leading-edge post: during one long fling the
+  // composer would age past its grace period with no further event to dismiss
+  // it, and would sit pinned while the content scrolled out from under it.
+  // Re-posting a few times a second preserves that behavior at ~1/50th the
+  // wakeups of the per-frame post this replaces.
+  var SCROLL_DISMISS_MS = 400;
+
   function onScroll() {
+    var dismissNow = Date.now();
+    if (dismissNow - lastDismissPostAt >= SCROLL_DISMISS_MS) {
+      lastDismissPostAt = dismissNow;
+      post("viewport-scrolled");
+    }
+    // Re-arm on the resting position too, so a gesture that ends inside the
+    // window still leaves the shell with a final dismissal.
+    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = setTimeout(function () {
+      scrollIdleTimer = null;
+      lastDismissPostAt = Date.now();
+      post("viewport-scrolled");
+    }, SCROLL_DISMISS_MS);
+
     if (scrollTicking) return;
     scrollTicking = true;
     requestAnimationFrame(function () {
       scrollTicking = false;
-      // Unconditional (reportScroll dedupes): the app shell hides the
-      // selection popover, whose position is viewport-anchored.
-      post("viewport-scrolled");
-      reportScroll(false);
+      var now = Date.now();
+      var since = now - lastScrollReportAt;
+      if (since >= SCROLL_REPORT_MS) {
+        lastScrollReportAt = now;
+        reportScroll(false);
+      } else if (!scrollTrailingTimer) {
+        // Always report the resting position, even when the gesture ends inside
+        // the throttle window.
+        scrollTrailingTimer = setTimeout(function () {
+          scrollTrailingTimer = null;
+          lastScrollReportAt = Date.now();
+          reportScroll(false);
+        }, SCROLL_REPORT_MS - since);
+      }
     });
   }
 
@@ -2056,12 +2097,67 @@ enum WebContentScript {
     // on subtree mutations, ignoring our own overlay churn. Observing the
     // documentElement survives full <body> replacement.
     if (window.MutationObserver) {
-      var remap = debounce(function () {
+      // A remap re-walks the entire DOM, rebuilds a per-character index of the
+      // whole page, and tears down and re-lays-out every highlight. On a page
+      // with a live region — a clock, a ticker, a video timestamp, a chat feed —
+      // mutations never stop, so a fixed 600ms debounce meant paying that
+      // forever at ~1.7Hz for as long as the tab stayed open.
+      //
+      // So: throttle rather than debounce, and let the interval adapt. A page
+      // that churns straight through a remap gets backed off geometrically; a
+      // page that had gone quiet — the SPA route change this observer exists for
+      // — keeps the responsive floor.
+      var REMAP_MIN_MS = 600;
+      // Ceiling on the backoff. This is also the worst case for how long a
+      // highlight can sit stale on a page that both re-renders AND churns
+      // continuously, so it stays modest rather than maximally thrifty.
+      var REMAP_MAX_MS = 5000;
+      // Quiet period after which the next mutation is treated as a fresh burst
+      // rather than continued churn. A FIXED constant, deliberately: scaling it
+      // off the current delay meant a page already backed off to REMAP_MAX_MS
+      // needed 2x that much silence to recover, so an SPA route change on a
+      // chatty page — exactly what this observer exists for — would remap at
+      // the 5s ceiling instead of the floor.
+      var REMAP_RESET_MS = 1500;
+      var remapDelay = REMAP_MIN_MS;
+      var remapTimer = null;
+      var lastRemapAt = 0;
+      var remapWhenVisible = false;
+
+      function runRemap() {
+        remapTimer = null;
+        lastRemapAt = Date.now();
+        // Nothing here is on screen while the page is hidden, so skip it and
+        // catch up on visibilitychange. NB: an inactive tab's web view is torn
+        // down rather than hidden, so in practice this fires for app
+        // backgrounding — where WebKit already throttles us — and is a
+        // belt-and-braces guard rather than a measured win.
+        if (document.visibilityState === "hidden") {
+          remapWhenVisible = true;
+          return;
+        }
         initialize(false); // resends init only if the text changed >15%
         pageTops = null;
         renderHighlights();
         reportScroll(true);
-      }, 600);
+      }
+
+      function remap() {
+        if (remapTimer) return; // already queued — it will see this mutation too
+        var quietFor = Date.now() - lastRemapAt;
+        remapDelay =
+          quietFor > REMAP_RESET_MS
+            ? REMAP_MIN_MS
+            : Math.min(remapDelay * 2, REMAP_MAX_MS);
+        remapTimer = setTimeout(runRemap, remapDelay);
+      }
+
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState !== "visible" || !remapWhenVisible) return;
+        remapWhenVisible = false;
+        lastRemapAt = 0; // becoming visible is not "churn" — remap promptly
+        remap();
+      });
       // Our own transient drag chrome (the resize shield + user-select lock
       // style) is added/removed on document.body/head during a drag; those
       // mutations must not trigger a re-extract that rebuilds the handles
