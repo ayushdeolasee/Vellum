@@ -264,15 +264,48 @@ enum ScratchpadAttachmentStore {
     /// Delete files in `directory` whose id isn't in `referencedIds`. Scoped to
     /// one document's attachments dir, so it can never touch another document's
     /// still-referenced images.
-    static func collectGarbage(in directory: URL, referencedIds: Set<String>) {
+    /// Delete files in `directory` whose id isn't in `referencedIds`.
+    ///
+    /// `referencedIds` is a snapshot of the note as it read at some moment, and
+    /// this sweep can run later — `pruneOrphanedAttachments` dispatches it to a
+    /// background task, and a debounced save persists text captured earlier. An
+    /// attachment written in that gap is, correctly, not in the snapshot, but it
+    /// is also not garbage: it belongs to an edit the snapshot predates. Passing
+    /// the moment the snapshot was taken as `referencedAsOf` keeps the sweep
+    /// from reaping it. Without that, dropping an image immediately after
+    /// opening a document (which sweeps with an empty reference set) could
+    /// delete the bytes just written and leave a broken reference in the note.
+    ///
+    /// A file spared this way is not leaked: if it really is an orphan, the next
+    /// sweep sees it as older than that snapshot and collects it.
+    static func collectGarbage(
+        in directory: URL, referencedIds: Set<String>, referencedAsOf: Date? = nil
+    ) {
         guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil) else { return }
+            at: directory, includingPropertiesForKeys: [
+                .creationDateKey, .contentModificationDateKey,
+            ]) else { return }
         for url in entries {
             let id = url.deletingPathExtension().lastPathComponent.lowercased()
-            if !referencedIds.contains(id) {
-                try? FileManager.default.removeItem(at: url)
-            }
+            guard !referencedIds.contains(id) else { continue }
+            if let referencedAsOf, isNewerThan(referencedAsOf, url: url) { continue }
+            try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// True when the file was created or last written at or after `date` — i.e.
+    /// it may postdate the reference snapshot being collected against.
+    private static func isNewerThan(_ date: Date, url: URL) -> Bool {
+        guard let values = try? url.resourceValues(
+            forKeys: [.creationDateKey, .contentModificationDateKey])
+        else {
+            // Unreadable timestamps: keep the file. A missed collection is
+            // recoverable, deleting a live attachment is not.
+            return true
+        }
+        return [values.creationDate, values.contentModificationDate]
+            .compactMap { $0 }
+            .contains { $0 >= date }
     }
 
     /// Copy the given ids' files from the legacy global pool into `dir` (lazy
