@@ -30,6 +30,26 @@ struct AiPanel: View {
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
 
+    /// Whether the transcript follows the tail of a streaming reply.
+    ///
+    /// It used to follow unconditionally — every streamed token re-ran
+    /// `scrollToBottom`, so scrolling up to re-read something earlier in the
+    /// answer yanked you straight back down and reading back mid-generation was
+    /// impossible (issue #57). Now this is the usual "stick to bottom": true
+    /// while the reader is parked at the end, false the moment they scroll away,
+    /// true again when they come back (or take the Jump to latest shortcut).
+    @State private var followsTail = true
+
+    /// How close to the end still counts as "at the bottom", in points. Absorbs
+    /// sub-pixel rounding, the 1pt bottom anchor, and the few points a reader
+    /// drifts without meaning to leave the tail.
+    ///
+    /// Must stay above the transcript's 12pt bottom padding: `scrollToBottom`
+    /// aligns the 1pt `ai-bottom` anchor with the viewport's bottom edge, which
+    /// leaves that padding below it — so even a perfectly followed transcript
+    /// reports ~12pt of `distanceFromBottom`.
+    static let bottomSlack: CGFloat = 24
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -37,17 +57,6 @@ struct AiPanel: View {
                 configureAiBanner
             }
             messages
-                // Floating toast for declined attachment drops — overlaid on the
-                // messages area so it sits above the composer WITHOUT moving it,
-                // and never shoves the transcript the way an inline banner would.
-                .overlay(alignment: .bottom) {
-                    if let notice = aiStore.attachmentNotice {
-                        attachmentNoticeBanner(notice)
-                            .padding(12)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                .animation(.easeInOut(duration: 0.2), value: aiStore.attachmentNotice)
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -141,12 +150,150 @@ struct AiPanel: View {
                 }
                 .padding(12)
             }
-            .onChange(of: aiStore.messages.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: aiStore.isThinking) { _, _ in scrollToBottom(proxy) }
+            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                ScrollMetrics(
+                    offsetY: geometry.contentOffset.y,
+                    contentHeight: geometry.contentSize.height,
+                    viewportHeight: geometry.containerSize.height
+                )
+            } action: { old, new in
+                let wasFollowing = followsTail
+                followsTail = Self.follows(was: wasFollowing, from: old, to: new)
+                // A viewport that shrank under a *followed* transcript has just
+                // pushed the tail off the bottom of the screen without anyone
+                // scrolling, and nothing else will put it back: `followTail` only
+                // runs on a message/token change, which may be a long way off —
+                // or never, if the reply already finished. Close the gap here.
+                if followsTail, wasFollowing,
+                   new.viewportHeight != old.viewportHeight,
+                   new.distanceFromBottom > Self.bottomSlack {
+                    scrollToBottom(proxy)
+                }
+            }
+            .onChange(of: aiStore.messages.count) { _, _ in
+                // A cleared conversation has no tail to be away from.
+                if aiStore.messages.isEmpty { followsTail = true }
+                followTail(proxy)
+            }
+            // A tab switch swaps the whole transcript: `AiStore` reloads
+            // `messages` for the incoming document. Whatever the reader had
+            // scrolled away from no longer exists, so re-arm rather than opening
+            // an unrelated conversation stranded mid-history behind a Jump to
+            // latest pill. (The message *count* can easily match across the two
+            // conversations, so the `messages.count` handler above is not enough.)
+            .onChange(of: appStore.activeTabId) { _, _ in
+                followsTail = true
+                followTail(proxy)
+            }
+            .onChange(of: aiStore.isThinking) { _, _ in followTail(proxy) }
             // Streaming appends to a single message, so follow its growing length.
-            .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in followTail(proxy) }
+            // Both float over the transcript so they sit above the composer
+            // WITHOUT moving it, and never shove the transcript the way an
+            // inline banner would. Stacked rather than overlaid on each other so
+            // a declined drop and a scrolled-up reader can coexist.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 8) {
+                    if showsJumpToLatest {
+                        jumpToLatestButton(proxy)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if let notice = aiStore.attachmentNotice {
+                        attachmentNoticeBanner(notice)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .padding(12)
+            }
+            .animation(.easeInOut(duration: 0.2), value: aiStore.attachmentNotice)
+            .animation(.easeInOut(duration: 0.2), value: showsJumpToLatest)
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// The scroll state the stick-to-bottom rule is derived from. Equatable so
+    /// `onScrollGeometryChange` only wakes us when one of these actually moves.
+    struct ScrollMetrics: Equatable {
+        var offsetY: CGFloat
+        var contentHeight: CGFloat
+        var viewportHeight: CGFloat
+
+        /// Points of content below the viewport. Clamped at zero so rubber-band
+        /// overscroll past the end doesn't read as "far from the bottom".
+        var distanceFromBottom: CGFloat {
+            max(0, contentHeight - viewportHeight - offsetY)
+        }
+    }
+
+    /// The stick-to-bottom rule itself: given the previous scroll state and the
+    /// new one, should the transcript still follow the tail?
+    ///
+    /// Lifted out of the `onScrollGeometryChange` closure and made pure so it can
+    /// be exercised headlessly (`AiTranscriptFollowTests`). Every scenario this
+    /// has to get right — a reader scrolling up mid-stream, scrolling back down,
+    /// the panel's own chrome resizing underneath them — otherwise needs a live
+    /// streamed reply to reproduce, which is why the original went out untested.
+    ///
+    /// Being away from the end is not by itself evidence the reader moved. Three
+    /// very different things land us there and only one of them is a person:
+    ///  • the transcript grew, so a streamed token moved the end away from a
+    ///    stationary reader. That must NOT unstick them, which is exactly what a
+    ///    naive "am I at the end?" test would do.
+    ///  • the viewport shrank, which moves the end away by just as much with
+    ///    nobody touching the scroller. This panel does that constantly: opening
+    ///    the settings section, a reference chip appearing, the composer growing
+    ///    from 36pt to 120pt as the user types a multi-line question, or the
+    ///    window being resized all steal height from the transcript. Watching
+    ///    only `contentHeight` here meant typing a three-line question unstuck a
+    ///    reader who had never scrolled, froze the streaming reply in place and
+    ///    popped the Jump to latest pill.
+    ///  • the offset moved, i.e. the reader scrolled. This is the signal that
+    ///    stops us following.
+    ///
+    /// A resize is still conclusive in one direction: neither appending text nor
+    /// shrinking the viewport can move you UP, so an offset that decreased across
+    /// one is unambiguously the reader. (The viewport *growing* can clamp the
+    /// offset down, but only for a reader already at the end — who is caught by
+    /// the at-the-bottom check first.)
+    static func follows(was following: Bool, from old: ScrollMetrics, to new: ScrollMetrics) -> Bool {
+        // Parked at the end IS the followed state, however the reader got there
+        // — this is what re-arms following when they scroll back down by hand
+        // mid-generation.
+        guard new.distanceFromBottom > bottomSlack else { return true }
+        let resized = new.contentHeight != old.contentHeight
+            || new.viewportHeight != old.viewportHeight
+        guard !resized || new.offsetY < old.offsetY else { return following }
+        return false
+    }
+
+    /// Offered only while there is a tail worth returning to.
+    private var showsJumpToLatest: Bool {
+        !followsTail && !aiStore.messages.isEmpty
+    }
+
+    /// Shortcut back to the end of a reply the reader scrolled away from, which
+    /// also re-arms follow-the-tail. Uses the composer's glass treatment so it
+    /// reads as a floating control rather than transcript content.
+    private func jumpToLatestButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            followsTail = true
+            scrollToBottom(proxy)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Jump to latest")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .glassEffect(.regular, in: .capsule)
+            .overlay { Capsule().strokeBorder(palette.border.opacity(0.6)) }
+        }
+        .buttonStyle(.plain)
+        .help("Scroll to the end of the conversation")
+        .accessibilityIdentifier("aiPanel.jumpToLatest")
     }
 
     private var emptyState: some View {
@@ -486,6 +633,9 @@ struct AiPanel: View {
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
         input = ""
         aiStore.clearComposerReferences()
+        // Sending is an explicit "show me what happens next", so it re-arms
+        // follow-the-tail even if the reader had scrolled up to compose.
+        followsTail = true
         // Capture the session and context synchronously, before any await, so
         // a tab switch during image capture can't send to the wrong tab
         // (mirrors the original's atomic submit -> sendMessage state read).
@@ -527,6 +677,13 @@ struct AiPanel: View {
         }
         // Hand the task to the store so clearing the conversation can cancel it.
         aiStore.registerSendTask(task)
+    }
+
+    /// Scroll to the end only while the reader is still parked there — the
+    /// stick-to-bottom rule that lets them read back mid-generation.
+    private func followTail(_ proxy: ScrollViewProxy) {
+        guard followsTail else { return }
+        scrollToBottom(proxy)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {

@@ -25,8 +25,14 @@ final class MarkdownParserTests: XCTestCase {
     // MARK: - Blocks: lists
 
     func testLists() {
-        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.unordered(["a", "b"])])
-        XCTAssertEqual(MarkdownParser.parse("1. a\n2. b"), [.ordered(["a", "b"])])
+        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.list([
+            MarkdownListItem(depth: 0, marker: .unordered, text: "a"),
+            MarkdownListItem(depth: 0, marker: .unordered, text: "b"),
+        ])])
+        XCTAssertEqual(MarkdownParser.parse("1. a\n2. b"), [.list([
+            MarkdownListItem(depth: 0, marker: .ordered(1), text: "a"),
+            MarkdownListItem(depth: 0, marker: .ordered(2), text: "b"),
+        ])])
     }
 
     // MARK: - Blocks: quotes
