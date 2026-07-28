@@ -30,6 +30,134 @@ final class StorageManagementTests: XCTestCase {
         FileManager.default.fileExists(atPath: url.path)
     }
 
+    func testInventorySearchMatchesTitlePathAndType() {
+        let pdf = StorageInventory.DocumentRow(
+            key: "pdf", title: "Research Paper", kind: .pdf, lastOpened: nil,
+            sourceExists: true, sourcePath: "/Documents/special-report.pdf", isDocIdKeyed: true,
+            notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0)
+        let web = StorageInventory.DocumentRow(
+            key: "web", title: "Swift Forums", kind: .web, lastOpened: nil,
+            sourceExists: true, sourcePath: "https://forums.swift.org", isDocIdKeyed: true,
+            notesBytes: 0, conversationBytes: 0, cacheBytes: 0, archiveBytes: 1)
+
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "research"))
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "special-report"))
+        XCTAssertTrue(StorageInventory.matches(pdf, searchText: "PDF"))
+        XCTAssertTrue(StorageInventory.matches(web, searchText: "web page"))
+        XCTAssertFalse(StorageInventory.matches(web, searchText: "research"))
+    }
+
+    func testInventoryTypeSortGroupsKindThenTitle() {
+        let rows = [
+            StorageInventory.DocumentRow(
+                key: "web", title: "Zeta", kind: .web, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 0, conversationBytes: 0, cacheBytes: 0, archiveBytes: 1),
+            StorageInventory.DocumentRow(
+                key: "pdf-z", title: "Zulu", kind: .pdf, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0),
+            StorageInventory.DocumentRow(
+                key: "pdf-a", title: "Alpha", kind: .pdf, lastOpened: nil,
+                sourceExists: true, sourcePath: nil, isDocIdKeyed: true,
+                notesBytes: 1, conversationBytes: 0, cacheBytes: 0, archiveBytes: 0),
+        ]
+
+        XCTAssertEqual(StorageInventory.sorted(rows, by: .type).map(\.key), ["pdf-a", "pdf-z", "web"])
+    }
+
+    func testRelocationInventoryReloadPolicySkipsProgressAndReloadsTerminalStates() {
+        XCTAssertFalse(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            isInProgress: true, message: "Moving storage…")))
+        XCTAssertTrue(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            message: "Storage move complete.")))
+        XCTAssertTrue(StorageRelocationInventoryReloadPolicy.shouldReload(for: .init(
+            needsRecovery: true,
+            message: "The move was interrupted. Your original data remains safe.")))
+    }
+
+    /// The status-code mapping is the only part of validation the user reads, so
+    /// pin every branch through the injectable session instead of the network.
+    func testConnectionValidationMapsTransportOutcomesToUserFacingStates() async {
+        var settings = AiSettings()
+        settings.provider = .openai
+        settings.openaiApiKey = "sk-test"
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { StubURLProtocol.reset() }
+
+        // `XCTAssertEqual` takes autoclosures, which can't be awaited — bind the
+        // result first, then compare.
+        func expect(
+            _ expected: AiConnectionValidationState,
+            signedIn: Bool = false,
+            line: UInt = #line
+        ) async {
+            let actual = await AiConnectionValidator.validate(
+                settings: settings, chatGPTSignedIn: signedIn, session: session)
+            XCTAssertEqual(actual, expected, line: line)
+        }
+
+        StubURLProtocol.statusCode = 200
+        await expect(.valid)
+        StubURLProtocol.statusCode = 204
+        await expect(.valid)
+        StubURLProtocol.statusCode = 401
+        await expect(.invalid("Credential was rejected"))
+        StubURLProtocol.statusCode = 403
+        await expect(.invalid("Credential was rejected"))
+        StubURLProtocol.statusCode = 429
+        await expect(.invalid("Provider is reachable but rate limited"))
+        StubURLProtocol.statusCode = 500
+        await expect(.invalid("Provider returned HTTP 500"))
+
+        StubURLProtocol.transportError = URLError(.notConnectedToInternet)
+        await expect(.invalid("Couldn’t reach the provider"))
+        StubURLProtocol.reset()
+
+        // An empty credential must never reach the transport at all.
+        settings.openaiApiKey = ""
+        await expect(.invalid("Credential is missing"))
+
+        // ChatGPT authenticates by sign-in, so it short-circuits before any request.
+        settings.provider = .chatgpt
+        await expect(.valid, signedIn: true)
+        await expect(.invalid("ChatGPT is not signed in"), signedIn: false)
+    }
+
+    func testConnectionValidationRequestsNeverPutCredentialsInURLs() throws {
+        var settings = AiSettings()
+        settings.provider = .gemini
+        settings.apiKey = "AIza-secret"
+        let gemini = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+        XCTAssertNil(gemini.url?.absoluteString.range(of: "AIza-secret"))
+        XCTAssertEqual(gemini.value(forHTTPHeaderField: "x-goog-api-key"), "AIza-secret")
+
+        settings.provider = .openai
+        settings.openaiApiKey = "sk-secret"
+        let openAI = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+        XCTAssertNil(openAI.url?.absoluteString.range(of: "sk-secret"))
+        XCTAssertEqual(openAI.value(forHTTPHeaderField: "Authorization"), "Bearer sk-secret")
+
+        let bearerProviders: [(AiProvider, WritableKeyPath<AiSettings, String>, String)] = [
+            (.openrouter, \.openrouterApiKey, "sk-or-secret"),
+            (.opencode, \.opencodeApiKey, "sk-zen-secret"),
+            (.opencodeGo, \.opencodeGoApiKey, "sk-go-secret"),
+        ]
+        for (provider, keyPath, secret) in bearerProviders {
+            settings.provider = provider
+            settings[keyPath: keyPath] = secret
+            let request = try XCTUnwrap(AiConnectionValidator.request(settings: settings))
+            XCTAssertFalse(request.url?.absoluteString.contains(secret) ?? true, "\(provider) leaked its key in the URL")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer \(secret)",
+                "\(provider) must authenticate in the header")
+        }
+    }
+
     // MARK: - listDocuments sizes
 
     func testListDocumentsReportsNoteAndChatBytes() throws {
@@ -289,4 +417,39 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertNil(StorageHousekeeping.retentionMonths)
         XCTAssertNil(StorageHousekeeping.evictionCutoff())
     }
+}
+
+/// Canned-response transport for `AiConnectionValidator`. Lets the validation
+/// tests exercise every status-code branch without a network call — and without
+/// ever sending a credential anywhere.
+private final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var statusCode = 200
+    nonisolated(unsafe) static var transportError: Error?
+
+    static func reset() {
+        statusCode = 200
+        transportError = nil
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        if let error = Self.transportError {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url, statusCode: Self.statusCode, httpVersion: "HTTP/1.1", headerFields: nil)
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
