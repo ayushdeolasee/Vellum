@@ -31,7 +31,11 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            // Commands belong to the main window, not whichever nested
+            // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
+            // A scene-focused value remains available throughout this window
+            // and automatically disappears when Settings becomes key.
+            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
@@ -196,38 +200,57 @@ private struct WindowChrome: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
+        // Only over a document. Home renders the same `app.error` in its own
+        // banner (#68), so an unconditional overlay would show every error
+        // twice — including the terminal Save As rollback, which is precisely
+        // the case that ends up back on Home.
+        .overlay(alignment: .top) {
+            if focused.app.document != nil, let error = focused.app.error {
+                DocumentErrorNotice(message: error) {
+                    focused.app.error = nil
+                }
+                .padding(.top, 12)
+            }
+        }
         .toolbar {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
-                .toolbar {
-                    if inspectorPresented.wrappedValue {
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
+            VStack(spacing: 0) {
+                InspectorTabSwitcher(selection: sidebarTabBinding)
+                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+                    .padding(.vertical, 8)
+                Divider()
+                sidebar
+            }
+            .inspectorColumnWidth(
+                min: InspectorLayout.minimumWidth,
+                ideal: workspace.sidebarWidth,
+                max: InspectorLayout.maximumWidth)
+            // Feeds the user's splitter drag back to the store so the next
+            // document reopens the column where they left it. The store
+            // rejects the collapsed measurements a start tab produces.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                workspace.rememberSidebarWidth(width)
+            }
         }
     }
 
     /// Inspector only makes sense with a document in the focused pane; the open
-    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    /// state itself is window-global (WorkspaceStore) so it survives focus and
+    /// start-tab changes.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { focused.app.document != nil && workspace.sidebarOpen },
-            set: { workspace.sidebarOpen = $0 }
+            get: { workspace.inspectorPresented },
+            set: { workspace.setInspectorPresented($0) }
         )
     }
 
@@ -241,6 +264,38 @@ private struct WindowChrome: View {
     private var sidebar: some View {
         SidebarPanelStack()
             .onHover { sidebarHovering = $0 }
+    }
+}
+
+/// Document-action failures stay visible in whichever surface remains after
+/// the action. In particular, a terminal Save As rollback can close the last
+/// tab and leave this pane on Home.
+private struct DocumentErrorNotice: View {
+    @Environment(\.palette) private var palette
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message)
+                .lineLimit(3)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss error")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(palette.destructive)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(palette.destructive.opacity(0.12), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(palette.destructive.opacity(0.3))
+        }
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier("document.errorNotice")
     }
 }
 

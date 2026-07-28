@@ -4,6 +4,10 @@ import SwiftUI
 // Chips shown above the composer input for each attached reference (selected
 // text, highlight, snapshot, or an AI-reply quote). Removable; images show a
 // small thumbnail.
+//
+// The read-only counterpart that stays with a message after it is sent is
+// `SentReferenceChips`; the icon/label vocabulary both rows use lives on
+// `AiReference` in that file so the two can't drift apart.
 
 struct ReferenceChipRow: View {
     let references: [AiReference]
@@ -32,7 +36,7 @@ private struct ReferenceChip: View {
     var body: some View {
         HStack(spacing: 6) {
             leading
-            Text(label)
+            Text(reference.chipLabel)
                 .font(.system(size: 11))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -66,7 +70,7 @@ private struct ReferenceChip: View {
                 .frame(width: 24, height: 24)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
         } else {
-            Image(systemName: icon)
+            Image(systemName: reference.chipIcon)
                 .font(.system(size: 11))
                 .foregroundStyle(palette.primary)
                 .frame(width: 20, height: 20)
@@ -76,33 +80,5 @@ private struct ReferenceChip: View {
     private func decoded(_ snapshot: AiPageImageSnapshot) -> NSImage? {
         guard let data = Data(base64Encoded: snapshot.base64Data) else { return nil }
         return NSImage(data: data)
-    }
-
-    private var icon: String {
-        switch reference.kind {
-        case .selection: return "text.quote"
-        case .highlight: return "highlighter"
-        case .region: return "square.dashed"
-        case .pageSnapshot: return "doc.richtext"
-        case .quote: return "quote.bubble"
-        case .image: return "photo"
-        }
-    }
-
-    private var label: String {
-        switch reference.kind {
-        case let .selection(text, page): return "“\(collapse(text))” · p.\(page)"
-        case let .highlight(text, page): return "“\(collapse(text))” · p.\(page)"
-        case let .region(_, page): return "Region · p.\(page)"
-        case let .pageSnapshot(_, page): return "Page \(page)"
-        case let .quote(text, _): return "“\(collapse(text))”"
-        case let .image(_, name): return name
-        }
-    }
-
-    private func collapse(_ text: String) -> String {
-        text.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespaces)
     }
 }

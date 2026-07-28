@@ -14,6 +14,29 @@ enum AiPersistence {
     static let conversationsKey = "research-reader-ai-conversations-v1"
     static let maxMessagesPerDocument = 120
     static let maxMessageCharacters = 12_000
+    /// Per-reference excerpt cap, the counterpart to `maxMessageCharacters` for
+    /// `AiMessage.references`. A single selection can be a whole page and one
+    /// message may carry several, so without this a turn could write far more to
+    /// `conversations.json` than the body cap allows. Generous enough that a
+    /// realistic selection or quote is stored verbatim; the prompt applies its
+    /// own, tighter bound separately (`AiPrompts.maxReferenceCharacters`).
+    static let maxReferenceCharacters = 4_000
+    /// Ceiling on references of any kind attached to one message, images
+    /// included. `AiStore.maxImageReferences` bounds the *request* payload; this
+    /// bounds the *transcript*. Every reference is persisted on the user message
+    /// and `conversations.json` is rewritten in full on every turn, so a hundred
+    /// selections attached in one gesture would be re-encoded forever after.
+    /// Enforced by the composer (`AiStore.addReference`) and again on the way to
+    /// disk, for lists that never came through the composer — an imported
+    /// `.vellum` bundle, or a hand-edited file.
+    static let maxReferencesPerMessage = 16
+    static let maxToolSummariesPerMessage = 24
+    static let maxToolSourcesPerSummary = 8
+    static let maxToolSummaryTitleCharacters = 240
+    static let maxToolSummaryDetailCharacters = 160
+    static let maxToolSourceExcerptCharacters = 280
+    static let maxToolIdentifierCharacters = 128
+    static let maxToolPageNumber = 1_000_000
 
     private struct ConversationEntry: Sendable {
         var key: String
@@ -144,13 +167,7 @@ enum AiPersistence {
 
     @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
         guard let document, let key = storageKey(for: document) else { return [] }
-        // A PDF that acquired its /VellumDocId in a previous session may still
-        // have its data in the old path-hash folder — carry the whole folder
-        // over (rekey moves conversations.json + scratchpad + attachments alike).
-        if let docId = document.docId, !docId.isEmpty {
-            let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
-            if pathKey != key { DocumentDataStore.rekey(from: pathKey, to: key) }
-        }
+        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         if let cached = cache[key] { return cached }
         // First load this session: fold in any legacy blob entry, then read the
         // folder file (which the migration just wrote, if there was one).
@@ -171,7 +188,8 @@ enum AiPersistence {
 
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let document, let key = storageKey(for: document) else { return }
-        let limited = limit(messages)
+        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        let limited = limitedMessages(messages)
         cache[key] = limited
         // A non-empty conversation is real class-B data; ensure meta.json exists
         // so recents can re-resolve the document by its docId later. The actual
@@ -278,7 +296,7 @@ enum AiPersistence {
         guard let data = DocumentDataStore.loadConversationsData(forKey: key),
               let messages = try? JSONDecoder().decode([AiMessage].self, from: data)
         else { return [] }
-        return limit(messages)
+        return limitedMessages(messages)
     }
 
     /// Await any scheduled write — called from applicationShouldTerminate.
@@ -310,12 +328,45 @@ enum AiPersistence {
         dirtyKeys.remove(key)
     }
 
-    static func makeMessage(role: AiRole, content: String, id: String? = nil) -> AiMessage {
+    /// Keep the main-actor write-behind state aligned with an on-disk rekey.
+    /// The old key belongs to the same open document, so its cached snapshot is
+    /// authoritative over any stale destination snapshot from before the stamp.
+    @MainActor private static func migrateCachedConversation(from oldKey: String, to newKey: String) {
+        guard oldKey != newKey else { return }
+        if let cached = cache.removeValue(forKey: oldKey) {
+            cache[newKey] = cached
+        }
+        if dirtyKeys.remove(oldKey) != nil {
+            dirtyKeys.insert(newKey)
+        }
+    }
+
+    /// A PDF may acquire its doc ID between any two calls (not only while a
+    /// conversation is loaded). Move both disk and write-behind state before a
+    /// read *or* write under the stamped key so an old queued Clear cannot later
+    /// recreate the path-hash folder.
+    @MainActor private static func migrateToCurrentStorageKeyIfNeeded(
+        document: DocumentInfo, key: String
+    ) {
+        guard let docId = document.docId, !docId.isEmpty else { return }
+        let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+        guard pathKey != key else { return }
+        migrateCachedConversation(from: pathKey, to: key)
+        DocumentDataStore.rekey(from: pathKey, to: key)
+    }
+
+    static func makeMessage(
+        role: AiRole,
+        content: String,
+        id: String? = nil,
+        references: [AiReference] = []
+    ) -> AiMessage {
         AiMessage(
             id: id ?? UUID().uuidString.lowercased(),
             role: role,
             content: content,
-            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date())
+            createdAt: ISO8601DateFormatter.aiTimestamp.string(from: Date()),
+            references: references
         )
     }
 
@@ -376,15 +427,111 @@ enum AiPersistence {
         writeConversations(entries)
     }
 
-    private static func limit(_ messages: [AiMessage]) -> [AiMessage] {
+    /// The single conversation boundary used by live saves, cold loads, legacy
+    /// migration, and `.vellum` imports. Structured fields must be bounded here
+    /// as well as message content so nested JSON cannot bypass storage/UI caps.
+    static func limitedMessages(_ messages: [AiMessage]) -> [AiMessage] {
         messages.suffix(maxMessagesPerDocument).map { message in
             var message = message
             if message.content.count > maxMessageCharacters {
                 let end = message.content.index(message.content.startIndex, offsetBy: maxMessageCharacters)
                 message.content = String(message.content[..<end]) + "\n[truncated]"
             }
+            message.references = capReferences(message.references)
+            if let summaries = message.toolSummaries {
+                message.toolSummaries = sanitizeToolSummaries(summaries)
+            }
             return message
         }
+    }
+
+    /// The per-message reference caps. Reached only through `limitedMessages`,
+    /// which is now the single conversation boundary for live saves, cold loads,
+    /// legacy migration, and `.vellum` imports alike — `VellumBundle` used to
+    /// keep a parallel `capConversation` that restated these rules and drifted
+    /// out of sync once already; #64 deleted it in favour of calling
+    /// `limitedMessages` directly, so there is exactly one implementation.
+    /// Defensive on both save and load: a list that arrived oversized,
+    /// was hand-edited on disk, or came out of a `.vellum` file we didn't write
+    /// is clipped here rather than carried around in memory and rewritten in
+    /// full on every flush.
+    static func capReferences(_ references: [AiReference]) -> [AiReference] {
+        guard !references.isEmpty else { return references }
+        // Newest-last, so keep the *first* N: unlike messages, where the recent
+        // turns matter most, references are a single message's attachment list
+        // in the order the user built it, and truncating the tail is what the
+        // composer's own cap would have done.
+        return references.prefix(maxReferencesPerMessage).map {
+            $0.truncatingText(to: maxReferenceCharacters).strippingImageData
+        }
+    }
+
+    static func sanitizeToolSummaries(_ summaries: [AiToolSummary]) -> [AiToolSummary] {
+        var seenSummaryIds = Set<String>()
+        var sanitized: [AiToolSummary] = []
+        for (summaryIndex, original) in summaries.prefix(maxToolSummariesPerMessage).enumerated() {
+            var summary = original
+            summary.title = bounded(summary.title, limit: maxToolSummaryTitleCharacters)
+            guard summary.title.isEmpty == false else { continue }
+            summary.id = uniqueIdentifier(
+                summary.id,
+                fallback: "summary-\(summaryIndex)",
+                seen: &seenSummaryIds
+            )
+            summary.detail = summary.detail.map {
+                bounded($0, limit: maxToolSummaryDetailCharacters)
+            }
+            summary.destinationPage = boundedPage(summary.destinationPage)
+            var seenSourceIds = Set<String>()
+            summary.sources = summary.sources.prefix(maxToolSourcesPerSummary)
+                .enumerated()
+                .map { sourceIndex, originalSource in
+                var source = originalSource
+                source.id = uniqueIdentifier(
+                    source.id,
+                    fallback: "source-\(sourceIndex)",
+                    seen: &seenSourceIds
+                )
+                source.page = boundedPage(source.page)
+                source.excerpt = bounded(
+                    source.excerpt,
+                    limit: maxToolSourceExcerptCharacters
+                )
+                return source
+            }
+            sanitized.append(summary)
+        }
+        return sanitized
+    }
+
+    private static func uniqueIdentifier(
+        _ value: String,
+        fallback: String,
+        seen: inout Set<String>
+    ) -> String {
+        let candidate = bounded(value, limit: maxToolIdentifierCharacters)
+        if candidate.isEmpty == false, seen.insert(candidate).inserted {
+            return candidate
+        }
+        var attempt = 0
+        while true {
+            let suffix = attempt == 0 ? fallback : "\(fallback)-\(attempt)"
+            let identifier = bounded(suffix, limit: maxToolIdentifierCharacters)
+            if seen.insert(identifier).inserted { return identifier }
+            attempt += 1
+        }
+    }
+
+    private static func bounded(_ value: String, limit: Int) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func boundedPage(_ page: Int?) -> Int? {
+        guard let page, (1...maxToolPageNumber).contains(page) else { return nil }
+        return page
     }
 
     private static func readConversations() -> [ConversationEntry] {
@@ -398,7 +545,7 @@ enum AiPersistence {
         for key in orderedKeys where object[key] is [Any] {
             guard let values = object[key] as? [Any] else { continue }
             let messages = values.compactMap(sanitizeMessage)
-            let bounded = limit(messages)
+            let bounded = limitedMessages(messages)
             if !bounded.isEmpty {
                 entries.append(ConversationEntry(key: key, messages: bounded))
             }
@@ -406,7 +553,7 @@ enum AiPersistence {
         // A malformed order scan should not discard otherwise readable data.
         for key in object.keys.sorted() where !entries.contains(where: { $0.key == key }) {
             guard let values = object[key] as? [Any] else { continue }
-            let bounded = limit(values.compactMap(sanitizeMessage))
+            let bounded = limitedMessages(values.compactMap(sanitizeMessage))
             if !bounded.isEmpty { entries.append(ConversationEntry(key: key, messages: bounded)) }
         }
         // No cap: return every entry so lazy migration can find any document,
@@ -414,6 +561,10 @@ enum AiPersistence {
         return entries
     }
 
+    /// Legacy-blob reader. Deliberately does NOT look for `references`: the blob
+    /// is a read-only migration source frozen before that field existed, so an
+    /// entry can never carry one. Migrated messages come out with `references`
+    /// empty, which is correct — those turns really had no attachments recorded.
     private static func sanitizeMessage(_ raw: Any) -> AiMessage? {
         guard let value = raw as? [String: Any],
               let roleString = value["role"] as? String,

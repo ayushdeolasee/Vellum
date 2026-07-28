@@ -347,6 +347,43 @@ enum DocumentDataStore {
         return out
     }
 
+    // MARK: - Home-screen search inventory
+
+    /// One `documents/<key>/` folder as the home screen's search index sees it:
+    /// just the meta stamp plus whether any user data hangs off it.
+    struct DocumentMetaEntry: Sendable, Equatable {
+        var key: String
+        var meta: Meta
+        /// A note and/or an AI conversation exists for this document. Two
+        /// `fileExists` probes — deliberately NOT the byte totals, see below.
+        var hasUserData: Bool
+    }
+
+    /// Lightweight inventory for `LibraryDocumentsSearchProvider`.
+    ///
+    /// Distinct from `listDocuments()` because the cost profile is different:
+    /// the Storage pane needs exact byte totals and pays for a full recursive
+    /// walk of every attachments/ folder once per visit, whereas the home
+    /// screen rebuilds its corpus every time the welcome screen appears and
+    /// only needs names and dates. Folders with no meta.json are skipped —
+    /// without a stamp there is no title, kind, or path to search on.
+    static func listDocumentMetas() -> [DocumentMetaEntry] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: rootDirectory.path) else { return [] }
+        var out: [DocumentMetaEntry] = []
+        for name in names {
+            let dir = rootDirectory.appendingPathComponent(name, isDirectory: true)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue,
+                  let meta = loadMeta(forKey: name) else { continue }
+            out.append(DocumentMetaEntry(
+                key: name,
+                meta: meta,
+                hasUserData: scratchpadExists(forKey: name) || conversationsExist(forKey: name)))
+        }
+        return out
+    }
+
     /// scratchpad.md + everything under attachments/ (the note's full footprint).
     static func notesBytes(forKey key: String) -> Int64 {
         fileSize(scratchpadPath(forKey: key)) + directorySize(at: attachmentsDir(forKey: key))
@@ -393,6 +430,36 @@ enum DocumentDataStore {
         meta.lastOpened = WebLibrary.rfc3339Now()
         guard let data = try? WebLibrary.jsonEncoderPretty.encode(meta) else { return }
         try? writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+    }
+
+    // MARK: - Rename
+
+    /// Set a document's display title without touching anything else.
+    ///
+    /// `touch(document:)` is the only other title writer, and it is the wrong
+    /// tool for a rename: it rewrites `lastKnownPath` and `lastOpened` from the
+    /// passed `DocumentInfo`, so renaming through it would either bump the
+    /// document's last-opened time (reordering the user's recents as a side
+    /// effect of typing a name) or, if the caller assembled the `DocumentInfo`
+    /// carelessly, overwrite a good `lastKnownPath` with a stale one. This is
+    /// the same narrow read-modify-write shape as `relink`, aimed at the other
+    /// field.
+    ///
+    /// A blank title clears the override rather than storing `""`, so the row
+    /// falls back to the filename or host instead of rendering as an empty
+    /// line the user cannot click on or search for.
+    @discardableResult
+    static func setTitle(forKey key: String, title: String?) -> Bool {
+        guard var meta = loadMeta(forKey: key) else { return false }
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        meta.title = trimmed.isEmpty ? nil : trimmed
+        guard let data = try? WebLibrary.jsonEncoderPretty.encode(meta) else { return false }
+        do {
+            try writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Size helpers
