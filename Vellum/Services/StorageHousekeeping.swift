@@ -54,7 +54,8 @@ enum StorageHousekeeping {
         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openPdfKeys)
         WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
         guard measuringReclaimedBytes else { return 0 }
-        return max(0, before - await derivedByteTotal())
+        let after = await derivedByteTotal()
+        return max(0, before - after)
     }
 
     /// Total on-disk size of the two evictable stores (class C data).

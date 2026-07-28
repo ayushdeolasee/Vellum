@@ -52,8 +52,16 @@ enum WebStorageRelocator {
             status = Status(isInProgress: true, message: "Resuming an interrupted storage move…")
             NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
         }
+        // A user location change can land while this sweep is queued (the
+        // first-launch sheet is shown right after launch). That change bumps the
+        // generation and owns the status from then on, so the sweep must not
+        // publish a verdict of its own afterward: doing so would report a
+        // terminal state — and let Settings reload its inventory — while the
+        // newer move is still running, and would read the *new* request's
+        // pending marker as "the previous location is still unavailable".
+        let generation = relocationGeneration
         await enqueue { WebStorageMigrator.sweepAtLaunch() }.value
-        if isResuming {
+        if isResuming, generation == relocationGeneration {
             if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
                 status = Status(message: "Interrupted storage move recovered successfully.")
             } else {

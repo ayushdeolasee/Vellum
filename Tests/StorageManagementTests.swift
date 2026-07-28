@@ -88,42 +88,43 @@ final class StorageManagementTests: XCTestCase {
         let session = URLSession(configuration: configuration)
         defer { StubURLProtocol.reset() }
 
-        func state() async -> AiConnectionValidationState {
-            await AiConnectionValidator.validate(
-                settings: settings, chatGPTSignedIn: false, session: session)
+        // `XCTAssertEqual` takes autoclosures, which can't be awaited — bind the
+        // result first, then compare.
+        func expect(
+            _ expected: AiConnectionValidationState,
+            signedIn: Bool = false,
+            line: UInt = #line
+        ) async {
+            let actual = await AiConnectionValidator.validate(
+                settings: settings, chatGPTSignedIn: signedIn, session: session)
+            XCTAssertEqual(actual, expected, line: line)
         }
 
         StubURLProtocol.statusCode = 200
-        XCTAssertEqual(await state(), .valid)
+        await expect(.valid)
         StubURLProtocol.statusCode = 204
-        XCTAssertEqual(await state(), .valid)
+        await expect(.valid)
         StubURLProtocol.statusCode = 401
-        XCTAssertEqual(await state(), .invalid("Credential was rejected"))
+        await expect(.invalid("Credential was rejected"))
         StubURLProtocol.statusCode = 403
-        XCTAssertEqual(await state(), .invalid("Credential was rejected"))
+        await expect(.invalid("Credential was rejected"))
         StubURLProtocol.statusCode = 429
-        XCTAssertEqual(await state(), .invalid("Provider is reachable but rate limited"))
+        await expect(.invalid("Provider is reachable but rate limited"))
         StubURLProtocol.statusCode = 500
-        XCTAssertEqual(await state(), .invalid("Provider returned HTTP 500"))
+        await expect(.invalid("Provider returned HTTP 500"))
 
         StubURLProtocol.transportError = URLError(.notConnectedToInternet)
-        XCTAssertEqual(await state(), .invalid("Couldn’t reach the provider"))
+        await expect(.invalid("Couldn’t reach the provider"))
         StubURLProtocol.reset()
 
         // An empty credential must never reach the transport at all.
         settings.openaiApiKey = ""
-        XCTAssertEqual(await state(), .invalid("Credential is missing"))
+        await expect(.invalid("Credential is missing"))
 
         // ChatGPT authenticates by sign-in, so it short-circuits before any request.
         settings.provider = .chatgpt
-        XCTAssertEqual(
-            await AiConnectionValidator.validate(
-                settings: settings, chatGPTSignedIn: true, session: session),
-            .valid)
-        XCTAssertEqual(
-            await AiConnectionValidator.validate(
-                settings: settings, chatGPTSignedIn: false, session: session),
-            .invalid("ChatGPT is not signed in"))
+        await expect(.valid, signedIn: true)
+        await expect(.invalid("ChatGPT is not signed in"), signedIn: false)
     }
 
     func testConnectionValidationRequestsNeverPutCredentialsInURLs() throws {
