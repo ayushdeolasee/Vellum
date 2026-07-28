@@ -7,8 +7,17 @@ enum RecentFilesService {
     static let storageKey = "vellum.recent-pdfs"
     static let maxRecent = 8
 
+    /// Test seam, mirroring `DocumentDataStore.rootDirectoryOverride` and
+    /// `WebLibrary.storeDirOverride`. Without it any test that exercises a
+    /// recents WRITE would edit the real app's recents list, because a hosted
+    /// test bundle shares the app's `UserDefaults` domain — so before this
+    /// existed the only testable parts of this service were the pure ones.
+    nonisolated(unsafe) static var defaultsOverride: UserDefaults?
+
+    private static var defaults: UserDefaults { defaultsOverride ?? .standard }
+
     static func getRecent() -> [RecentDocument] {
-        guard let raw = UserDefaults.standard.string(forKey: storageKey),
+        guard let raw = defaults.string(forKey: storageKey),
               let data = raw.data(using: .utf8) else { return [] }
         guard let parsed = try? JSONDecoder().decode([FailableRecent].self, from: data) else {
             return []
@@ -32,6 +41,29 @@ enum RecentFilesService {
 
     static func remove(path: String) -> [RecentDocument] {
         let next = getRecent().filter { $0.pdfPath != path }
+        write(next)
+        return next
+    }
+
+    /// Retitle a recents entry in place.
+    ///
+    /// Deliberately NOT `record(_:)`, which is the only other way to change a
+    /// recent's title: `record` prepends and re-stamps `openedAt`, so renaming
+    /// through it would jump the document to the top of the recents list and
+    /// claim it was just opened. A rename is not a visit. Order and timestamps
+    /// are left exactly as they were.
+    ///
+    /// A blank title clears the override so the row falls back to the filename
+    /// or host, matching `DocumentDataStore.setTitle`.
+    @discardableResult
+    static func updateTitle(path: String, title: String?) -> [RecentDocument] {
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let next = getRecent().map { entry -> RecentDocument in
+            guard entry.pdfPath == path else { return entry }
+            var updated = entry
+            updated.title = trimmed.isEmpty ? nil : trimmed
+            return updated
+        }
         write(next)
         return next
     }
@@ -82,7 +114,7 @@ enum RecentFilesService {
         // Recent files are a convenience; failures are silently ignored.
         guard let data = try? JSONEncoder().encode(documents),
               let raw = String(data: data, encoding: .utf8) else { return }
-        UserDefaults.standard.set(raw, forKey: storageKey)
+        defaults.set(raw, forKey: storageKey)
     }
 
     /// Skips malformed entries instead of failing the whole list, mirroring the

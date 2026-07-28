@@ -31,7 +31,11 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            // Commands belong to the main window, not whichever nested
+            // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
+            // A scene-focused value remains available throughout this window
+            // and automatically disappears when Settings becomes key.
+            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
