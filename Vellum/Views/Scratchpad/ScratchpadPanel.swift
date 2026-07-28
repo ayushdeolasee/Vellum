@@ -18,6 +18,7 @@ struct ScratchpadPanel: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.undoManager) private var undoManager
     @State private var showsExportOptions = false
     @State private var exportFeedback: ExportFeedback?
 
@@ -143,13 +144,17 @@ struct ScratchpadPanel: View {
             }
             IconButton(
                 help: "Export scratchpad as Markdown",
+                disabled: scratchpadStore.text.isEmpty,
                 action: { showsExportOptions = true }
             ) {
                 Image(systemName: "square.and.arrow.up").font(.system(size: 15))
             }
-            .disabled(scratchpadStore.text.isEmpty)
             .accessibilityIdentifier("scratchpad.exportMarkdown")
-            IconButton(help: "Clear scratchpad", action: clear) {
+            IconButton(
+                help: "Clear scratchpad note",
+                disabled: scratchpadStore.text.isEmpty,
+                action: clear
+            ) {
                 Image(systemName: "trash").font(.system(size: 15))
             }
             .accessibilityIdentifier("scratchpad.clear")
@@ -168,8 +173,14 @@ struct ScratchpadPanel: View {
         }
     }
 
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
     private func clear() {
-        scratchpadStore.text = ""
+        guard let transaction = scratchpadStore.clearText() else { return }
+        guard let undoManager else { return }
+        registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
     }
 
     private var documentTitle: String {
@@ -203,18 +214,26 @@ struct ScratchpadPanel: View {
         )
 
         guard await panel.begin() == .OK, let destination = panel.url else { return }
+        // Read the note and the attachments directory on the main actor, then do
+        // every byte of work off it: a 200k-character note (the persistence cap)
+        // with several megabytes of images stages, reads and copies each file
+        // synchronously, which would otherwise freeze the editor mid-export.
+        let markdown = scratchpadStore.text
+        let attachmentsDirectory = ScratchpadAttachmentStore.activeDirectory
         do {
-            let summary = try ScratchpadMarkdownExporter.export(
-                markdown: scratchpadStore.text,
-                to: destination,
-                options: options,
-                attachmentsDirectory: ScratchpadAttachmentStore.activeDirectory
-            )
+            let summary = try await Task.detached(priority: .userInitiated) {
+                try ScratchpadMarkdownExporter.export(
+                    markdown: markdown,
+                    to: destination,
+                    options: options,
+                    attachmentsDirectory: attachmentsDirectory
+                )
+            }.value
             let imageDetail: String
-            if summary.copiedImageCount > 0 {
-                imageDetail = " \(summary.copiedImageCount) images copied."
-            } else {
-                imageDetail = ""
+            switch summary.copiedImageCount {
+            case 0: imageDetail = ""
+            case 1: imageDetail = " 1 image copied."
+            case let count: imageDetail = " \(count) images copied."
             }
             showExportFeedback(
                 ExportFeedback(
@@ -246,6 +265,7 @@ struct ScratchpadPanel: View {
         var isError: Bool
     }
 }
+
 
 private struct ScratchpadExportOptionsSheet: View {
     var suggestedTitle: String
@@ -284,6 +304,12 @@ private struct ScratchpadExportOptionsSheet: View {
             Form {
                 Toggle("Copy linked images to an adjacent assets folder", isOn: $copyLinkedImages)
                     .accessibilityIdentifier("scratchpad.export.copyImages")
+                if !copyLinkedImages {
+                    Text("Without the assets folder, image links keep Vellum’s internal reference and won’t resolve in other Markdown apps.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Toggle("Include document title as YAML front matter", isOn: $includeFrontMatter)
                     .accessibilityIdentifier("scratchpad.export.frontMatter")
                 if includeFrontMatter {
@@ -323,6 +349,31 @@ private struct ScratchpadExportOptionsSheet: View {
         .frame(width: 480)
         .accessibilityIdentifier("scratchpad.export.options")
     }
+
+@MainActor
+private func registerScratchpadUndo(
+    _ transaction: ScratchpadClearTransaction,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard let restoration = target.undoClear(transaction) else { return }
+        registerScratchpadRedo(restoration, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
+}
+
+@MainActor
+private func registerScratchpadRedo(
+    _ restoration: ScratchpadClearRestoration,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(restoration) else { return }
+        registerScratchpadUndo(restoration.transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
 }
 
 /// Normalize dropped image bytes into a `ScratchpadImageCapture`: keep small

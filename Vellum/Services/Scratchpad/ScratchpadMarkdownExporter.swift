@@ -28,7 +28,8 @@ enum ScratchpadMarkdownExportError: LocalizedError {
         case let .assetsDirectoryAlreadyExists(url):
             "The adjacent assets folder already exists: \(url.lastPathComponent)."
         case let .attachmentUnavailable(id):
-            "The linked image \(id) is unavailable."
+            "The linked image \(id) is unavailable, so nothing was written. "
+                + "Turn off copying linked images to export the text on its own."
         case let .unsafeSourceAttachment(url):
             "The linked image is outside the attachments folder or is a symbolic link: \(url.lastPathComponent)."
         case let .unsafeAssetsDirectory(url):

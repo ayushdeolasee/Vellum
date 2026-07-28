@@ -183,11 +183,21 @@ private struct SmallPrimaryButton: View {
 // MARK: - WebNoteComposer
 
 struct WebNoteComposerView: View {
+    /// Text to open pre-filled with — the AI reply behind "Add as note".
+    /// Seeded into `text` at init so the user can still edit or cancel it.
+    var initialContent: String = ""
     var onSubmit: (String) -> Void
     var onClose: () -> Void
 
-    @State private var text = ""
+    @State private var text: String
     @Environment(\.palette) private var palette
+
+    init(initialContent: String = "", onSubmit: @escaping (String) -> Void, onClose: @escaping () -> Void) {
+        self.initialContent = initialContent
+        self.onSubmit = onSubmit
+        self.onClose = onClose
+        _text = State(initialValue: initialContent)
+    }
 
     var body: some View {
         PopoverCard {
@@ -196,7 +206,7 @@ struct WebNoteComposerView: View {
                     Image(systemName: "note.text")
                         .font(.system(size: 13))
                         .foregroundStyle(WebAmber.amber500)
-                    Text("New note")
+                    Text(initialContent.isEmpty ? "New note" : "New note from AI reply")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(palette.mutedForeground)
                 }

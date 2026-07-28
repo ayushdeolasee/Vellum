@@ -399,6 +399,45 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
         )
     }
 
+    /// A destination that only looks like an attachment reference must not be
+    /// treated as one. An id is a UUID: anything carrying path separators,
+    /// percent escapes, or a traversal prefix is left byte-for-byte alone rather
+    /// than resolved into a file to copy — the export must not become a way to
+    /// read a file outside the attachments directory.
+    func testExportIgnoresDestinationsThatAreNotAttachmentIDs() throws {
+        let sourceDirectory = try makeSourceDirectory()
+        try writeImage(named: "capture.png", in: sourceDirectory)
+        let outsideDirectory = temporaryDirectory.appendingPathComponent(
+            "outside", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outsideDirectory, withIntermediateDirectories: true)
+        try writeImage(named: "secret.png", in: outsideDirectory)
+        let destination = temporaryDirectory.appendingPathComponent("Notes.md")
+        let markdown = """
+        ![Traversal](vellum-scratchpad://../outside/secret)
+        ![Escaped](vellum-scratchpad://..%2Foutside%2Fsecret)
+        ![Absolute](vellum-scratchpad:///etc/hosts)
+        ![Real](vellum-scratchpad://capture)
+        """
+
+        let summary = try ScratchpadMarkdownExporter.export(
+            markdown: markdown,
+            to: destination,
+            options: exportOptions(),
+            attachmentsDirectory: sourceDirectory
+        )
+
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        XCTAssertTrue(exported.contains("![Traversal](vellum-scratchpad://../outside/secret)"))
+        XCTAssertTrue(exported.contains("![Escaped](vellum-scratchpad://..%2Foutside%2Fsecret)"))
+        XCTAssertTrue(exported.contains("![Absolute](vellum-scratchpad:///etc/hosts)"))
+        XCTAssertTrue(exported.contains("![Real](Notes Assets/capture.png)"))
+        XCTAssertEqual(summary.copiedImageCount, 1)
+        let assets = try FileManager.default.contentsOfDirectory(
+            atPath: temporaryDirectory.appendingPathComponent("Notes Assets").path)
+        XCTAssertEqual(assets, ["capture.png"])
+    }
+
     private func makeSourceDirectory() throws -> URL {
         let sourceDirectory = temporaryDirectory.appendingPathComponent(
             "source",
