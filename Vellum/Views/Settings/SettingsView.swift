@@ -33,6 +33,7 @@ struct SettingsView: View {
                 .tag(WorkspaceStore.SettingsSection.storage)
         }
         .frame(width: 480)
+        .accessibilityIdentifier("settings.content")
     }
 }
 

@@ -24,6 +24,7 @@
 		179624D568F6AF9C1077ECD1 /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
 		17AD2204484B61C7A2F1DCD6 /* KaTeX_Fraktur-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 96B5040705B954B3A0A26A2E /* KaTeX_Fraktur-Bold.woff2 */; };
 		17CEDFD80E708ADD26650928 /* RecentsResolveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C2905E4A08861E42C2EED /* RecentsResolveTests.swift */; };
+		181AAB12E647277782335E94 /* ScratchpadSnapshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA2CEFB12B30F2AD86A8E6B1 /* ScratchpadSnapshotUITests.swift */; };
 		18277300524A92AEDAAAEA7E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027E09C0BD7A98F4590A5878 /* ContentView.swift */; };
 		19026EE9153EC91FE9D3DB80 /* ComposerReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */; };
 		1B5C72C374CA117AE2A542A3 /* HomeSearchRanker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D1A270BA1DE40AC978F462 /* HomeSearchRanker.swift */; };
@@ -100,6 +101,7 @@
 		776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */; };
 		7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */; };
 		7A9E17C5B161FD9C0AE88840 /* HomeSearchItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC12177F7D45E8D3AC6AE4E0 /* HomeSearchItem.swift */; };
+		7BE620D1DFB563297E4027DC /* VellumUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FD37E8844D70783282C0EBF /* VellumUITestCase.swift */; };
 		806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5003641A54B311693588C6C /* PdfPersistenceTests.swift */; };
 		82D29BA0A7E0974DDB100F54 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		831CF3958ED8C1AF87C6319A /* DocumentsRelocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */; };
@@ -119,10 +121,12 @@
 		96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */; };
 		9AC827DE4385CD8EC4201A49 /* AnnotationSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9C9C837F5B62D523BD8E97 /* AnnotationSidebar.swift */; };
 		9B5BE4F139A065CDDF4C5A3E /* WalkthroughTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2042B70E9B14894B30A1877 /* WalkthroughTests.swift */; };
+		9C69BAA6A956FC1160E3B96D /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = C3D4323C8161DF4B8E85E221 /* README.md */; };
 		9C7F3F0B4C0CDEE7ED83CBB4 /* AnnotationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */; };
 		9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E2B3DF66E30481C363C740 /* ToolbarView.swift */; };
 		9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4601C034B834B5E610FD84 /* SelectableMessageText.swift */; };
 		A5E5A42BE09B4A7911646AFF /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723EC058218A6DF8D994CC26 /* UpdateChecker.swift */; };
+		A5E81D63CD3B19716028FF80 /* UITestLaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */; };
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */ = {isa = PBXBuildFile; fileRef = 88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */; };
 		ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */; };
@@ -139,6 +143,7 @@
 		BD31BC1F3FB2299BEC39F054 /* AiToolSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4AF0117D296B571E62111BB /* AiToolSummary.swift */; };
 		BF75A2925C8FCE36AD43F41B /* KaTeX_Typewriter-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */; };
 		C0467FFEFEFFFC2D272897A1 /* HomeSearchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */; };
+		C3DFA3D19B92BC3B61286108 /* UITestLaunchConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B421C24A86AB0139E135C7D /* UITestLaunchConfigurationTests.swift */; };
 		C4998709FBAE647C23BF3E5A /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */; };
 		C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */; };
 		C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */; };
@@ -149,6 +154,7 @@
 		CB58CF712FE221F08C846934 /* InspectorPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B2FF4EC7260E5A86C069B /* InspectorPresentationTests.swift */; };
 		CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
 		CE12B2EB31D5767A335D7E04 /* InspectorTabSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */; };
+		CEC1AA6947BD18989D606580 /* VellumConsistencyUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA8A917E6A4B1C20FDC7C74 /* VellumConsistencyUITests.swift */; };
 		D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82487970E20F6628200C4BE /* KeychainStore.swift */; };
 		D3E15D784AC0EF97D1BE22E8 /* purify.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B707464546ECFFA1A49EBDE /* purify.min.js */; };
 		D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F38132FDC803C6ACEB43CC /* AiStore.swift */; };
@@ -190,6 +196,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		571F8729DCE863D2DE7F72A7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0C9BCB1EF43154BF1DE74BAE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 15BDAAE9AA57BC95F9AD6FBB;
+			remoteInfo = Vellum;
+		};
 		8248CBA0A20E015F864F18FD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 0C9BCB1EF43154BF1DE74BAE /* Project object */;
@@ -223,6 +236,7 @@
 		2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionPopover.swift; sourceTree = "<group>"; };
 		2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadImportTests.swift; sourceTree = "<group>"; };
 		2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfAtomicWriter.swift; sourceTree = "<group>"; };
+		2FD37E8844D70783282C0EBF /* VellumUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumUITestCase.swift; sourceTree = "<group>"; };
 		30CC2363C63B98CDE69C7B5A /* WebStorageLocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorageLocationTests.swift; sourceTree = "<group>"; };
 		3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
 		327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiConversationStoreTests.swift; sourceTree = "<group>"; };
@@ -254,11 +268,13 @@
 		5513F929B10D107AED515D1E /* PageTextCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCache.swift; sourceTree = "<group>"; };
 		56E0D2A9B180E6017E9C6CA6 /* HomeSearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchEngine.swift; sourceTree = "<group>"; };
 		583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNavigationTests.swift; sourceTree = "<group>"; };
+		5AA8A917E6A4B1C20FDC7C74 /* VellumConsistencyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumConsistencyUITests.swift; sourceTree = "<group>"; };
 		5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsRelocationTests.swift; sourceTree = "<group>"; };
 		5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDrop.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
 		63D1A270BA1DE40AC978F462 /* HomeSearchRanker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchRanker.swift; sourceTree = "<group>"; };
 		672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageLocationChoiceSheet.swift; sourceTree = "<group>"; };
+		6B421C24A86AB0139E135C7D /* UITestLaunchConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestLaunchConfigurationTests.swift; sourceTree = "<group>"; };
 		6E72498058A69F542C2A4CCF /* ScratchpadPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPanel.swift; sourceTree = "<group>"; };
 		6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParserTests.swift; sourceTree = "<group>"; };
 		6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSessionBackend.swift; sourceTree = "<group>"; };
@@ -283,6 +299,7 @@
 		814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownExporter.swift; sourceTree = "<group>"; };
 		81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Italic.woff2"; sourceTree = "<group>"; };
 		8352DF5C4A0A69EF4D19687D /* WalkthroughLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughLayoutTests.swift; sourceTree = "<group>"; };
+		84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestLaunchConfiguration.swift; sourceTree = "<group>"; };
 		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
 		88261ED7614D2528C41ED0E5 /* editor.bundle.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = editor.bundle.js; sourceTree = "<group>"; };
 		88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-native.md"; sourceTree = "<group>"; };
@@ -342,13 +359,16 @@
 		C1F083E5C02A66A025F06638 /* WebContentScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebContentScript.swift; sourceTree = "<group>"; };
 		C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfMetadata.swift; sourceTree = "<group>"; };
 		C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Italic.woff2"; sourceTree = "<group>"; };
+		C3D4323C8161DF4B8E85E221 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiClient.swift; sourceTree = "<group>"; };
+		C46CB17A77A488D84A4E91A9 /* VellumUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VellumUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
 		C6A0F0FCE599D735A694D605 /* WalkthroughSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughSettings.swift; sourceTree = "<group>"; };
 		C75C2F535B12256E191B781C /* PdfKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfKitView.swift; sourceTree = "<group>"; };
 		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
 		C8B60F6CDB9021A07B1D678D /* SidebarDropCatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarDropCatcher.swift; sourceTree = "<group>"; };
 		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
+		CA2CEFB12B30F2AD86A8E6B1 /* ScratchpadSnapshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadSnapshotUITests.swift; sourceTree = "<group>"; };
 		CC1F783F50CC2705F7C3733D /* SafeClearTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeClearTests.swift; sourceTree = "<group>"; };
 		CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentityTests.swift; sourceTree = "<group>"; };
 		CD3D09C89D224F5C322CE8BB /* AiToolSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolSummaryView.swift; sourceTree = "<group>"; };
@@ -445,6 +465,7 @@
 			children = (
 				9D58D6980122701CBA30200F /* Vellum.app */,
 				775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */,
+				C46CB17A77A488D84A4E91A9 /* VellumUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -497,6 +518,7 @@
 				BF3E4F80AF4A2707D432AF73 /* SidebarDropRoutingTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
 				22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */,
+				6B421C24A86AB0139E135C7D /* UITestLaunchConfigurationTests.swift */,
 				90C50948404B30999979C84A /* VellumBundleTests.swift */,
 				8352DF5C4A0A69EF4D19687D /* WalkthroughLayoutTests.swift */,
 				E2042B70E9B14894B30A1877 /* WalkthroughTests.swift */,
@@ -585,6 +607,7 @@
 			isa = PBXGroup;
 			children = (
 				027E09C0BD7A98F4590A5878 /* ContentView.swift */,
+				84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */,
 				723EC058218A6DF8D994CC26 /* UpdateChecker.swift */,
 				4B19F1048CA6DE0E71C521DB /* VellumApp.swift */,
 				90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */,
@@ -650,6 +673,17 @@
 				63D1A270BA1DE40AC978F462 /* HomeSearchRanker.swift */,
 			);
 			path = Search;
+			sourceTree = "<group>";
+		};
+		B2AF4967848FDE2272E1706F /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				C3D4323C8161DF4B8E85E221 /* README.md */,
+				CA2CEFB12B30F2AD86A8E6B1 /* ScratchpadSnapshotUITests.swift */,
+				5AA8A917E6A4B1C20FDC7C74 /* VellumConsistencyUITests.swift */,
+				2FD37E8844D70783282C0EBF /* VellumUITestCase.swift */,
+			);
+			path = UITests;
 			sourceTree = "<group>";
 		};
 		B9CB30F11C2A59C7A15BFBE6 /* fonts */ = {
@@ -793,6 +827,7 @@
 			isa = PBXGroup;
 			children = (
 				3530FA93B8ACF78B230C657B /* Tests */,
+				B2AF4967848FDE2272E1706F /* UITests */,
 				9E8E2E8E13FD91020A96EDCA /* Vellum */,
 				29E69E12C0148CACEECA83B2 /* Products */,
 			);
@@ -849,6 +884,25 @@
 			productReference = 775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		F0B1727997018498FA5D9430 /* VellumUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1164B4C80CEE71C52FC6AD37 /* Build configuration list for PBXNativeTarget "VellumUITests" */;
+			buildPhases = (
+				FBE0923BD309B3DCB4115BC5 /* Sources */,
+				708BB9867B6078C1A97771C6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C0132FCFB72F973ABB157F01 /* PBXTargetDependency */,
+			);
+			name = VellumUITests;
+			packageProductDependencies = (
+			);
+			productName = VellumUITests;
+			productReference = C46CB17A77A488D84A4E91A9 /* VellumUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -858,6 +912,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					F0B1727997018498FA5D9430 = {
+						TestTargetID = 15BDAAE9AA57BC95F9AD6FBB;
+					};
 				};
 			};
 			buildConfigurationList = 545F98C5AEAB337EC64858B5 /* Build configuration list for PBXProject "Vellum" */;
@@ -879,6 +936,7 @@
 			targets = (
 				15BDAAE9AA57BC95F9AD6FBB /* Vellum */,
 				65E775B7223FE8550067535A /* VellumTests */,
+				F0B1727997018498FA5D9430 /* VellumUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -920,6 +978,14 @@
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
 				AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */,
 				885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		708BB9867B6078C1A97771C6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9C69BAA6A956FC1160E3B96D /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1021,6 +1087,7 @@
 				D8FB17ACCD415EFD9623E48B /* TabResidency.swift in Sources */,
 				1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */,
 				9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */,
+				A5E81D63CD3B19716028FF80 /* UITestLaunchConfiguration.swift in Sources */,
 				A5E5A42BE09B4A7911646AFF /* UpdateChecker.swift in Sources */,
 				8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */,
 				FF8B0D4EDFA98B3310F21727 /* VellumBundle.swift in Sources */,
@@ -1039,6 +1106,16 @@
 				29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */,
 				776EFA95A94B0F3D994B8604 /* WorkspaceService.swift in Sources */,
 				96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FBE0923BD309B3DCB4115BC5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				181AAB12E647277782335E94 /* ScratchpadSnapshotUITests.swift in Sources */,
+				CEC1AA6947BD18989D606580 /* VellumConsistencyUITests.swift in Sources */,
+				7BE620D1DFB563297E4027DC /* VellumUITestCase.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1078,6 +1155,7 @@
 				5236947317CC86594F165BD2 /* SidebarDropRoutingTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */,
+				C3DFA3D19B92BC3B61286108 /* UITestLaunchConfigurationTests.swift in Sources */,
 				742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */,
 				077387370617D3B0DCF008AF /* WalkthroughLayoutTests.swift in Sources */,
 				9B5BE4F139A065CDDF4C5A3E /* WalkthroughTests.swift in Sources */,
@@ -1094,6 +1172,11 @@
 			isa = PBXTargetDependency;
 			target = 15BDAAE9AA57BC95F9AD6FBB /* Vellum */;
 			targetProxy = 8248CBA0A20E015F864F18FD /* PBXContainerItemProxy */;
+		};
+		C0132FCFB72F973ABB157F01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 15BDAAE9AA57BC95F9AD6FBB /* Vellum */;
+			targetProxy = 571F8729DCE863D2DE7F72A7 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1165,6 +1248,40 @@
 			};
 			name = Debug;
 		};
+		2A7117969C457BB329311A66 /* UITesting */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app.uitests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = Vellum;
+			};
+			name = UITesting;
+		};
+		4359BB98E194A6EAF0637A6C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app.uitests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = Vellum;
+			};
+			name = Debug;
+		};
 		672C0C4067484A5A7E4A41CB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1181,6 +1298,27 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum";
 			};
 			name = Debug;
+		};
+		8D0C22B596D762F679BC9150 /* UITesting */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Vellum/Resources/Info.plist;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app.uitesting;
+				SDKROOT = macosx;
+			};
+			name = UITesting;
 		};
 		97E8128E6630313B95C555C5 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1200,6 +1338,23 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app;
 				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		A563BF0E47037A5F3B55E1E6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app.uitests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = Vellum;
 			};
 			name = Release;
 		};
@@ -1284,6 +1439,73 @@
 			};
 			name = Debug;
 		};
+		DFC651D99790316CC73EDCC3 /* UITesting */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+			};
+			name = UITesting;
+		};
 		E6929CFD88DAB8A9865B03C6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1301,14 +1523,42 @@
 			};
 			name = Release;
 		};
+		EDC35C481975223F4F86649A /* UITesting */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum";
+			};
+			name = UITesting;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1164B4C80CEE71C52FC6AD37 /* Build configuration list for PBXNativeTarget "VellumUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4359BB98E194A6EAF0637A6C /* Debug */,
+				A563BF0E47037A5F3B55E1E6 /* Release */,
+				2A7117969C457BB329311A66 /* UITesting */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		545F98C5AEAB337EC64858B5 /* Build configuration list for PBXProject "Vellum" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				28F3A177CF7F85C8D15B007D /* Debug */,
 				B72326C88FF882ADA56835A3 /* Release */,
+				DFC651D99790316CC73EDCC3 /* UITesting */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -1318,6 +1568,7 @@
 			buildConfigurations = (
 				C48A67EF255A25788F4F3D4E /* Debug */,
 				97E8128E6630313B95C555C5 /* Release */,
+				8D0C22B596D762F679BC9150 /* UITesting */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -1327,6 +1578,7 @@
 			buildConfigurations = (
 				672C0C4067484A5A7E4A41CB /* Debug */,
 				E6929CFD88DAB8A9865B03C6 /* Release */,
+				EDC35C481975223F4F86649A /* UITesting */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

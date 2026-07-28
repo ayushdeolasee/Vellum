@@ -78,8 +78,11 @@ struct VellumApp: App {
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
     @State private var showWalkthrough = false
+    @State private var didOpenUITestDocument = false
+    private let uiTestDocumentPath: String?
 
     init() {
+        uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
         let workspace = WorkspaceStore(sessions: sessions)
@@ -137,8 +140,22 @@ struct VellumApp: App {
                     if !showStorageChoice {
                         showWalkthrough = WalkthroughSettings.needsFirstRun
                     }
+                    // UI tests open their generated fixture through this seam
+                    // instead of driving the system open panel. Inert without
+                    // `--ui-testing` (the path is nil), and the launch
+                    // configuration has already marked both first-run sheets as
+                    // handled so neither can cover the document.
+                    if !didOpenUITestDocument, let uiTestDocumentPath {
+                        didOpenUITestDocument = true
+                        await workspace.focusedPane.app.openFile(path: uiTestDocumentPath)
+                    }
                 }
                 .task {
+                    // A UI-test launch skips this: it is a real network request
+                    // whose outcome adds an "install update" affordance to
+                    // Home's chrome, which is the opposite of deterministic
+                    // (and rate-limits the release API across a test run).
+                    guard !UITestLaunchConfiguration.isEnabled else { return }
                     await workspace.checkForUpdatesAutomatically()
                 }
                 .sheet(

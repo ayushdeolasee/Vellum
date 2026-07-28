@@ -1,4 +1,8 @@
 name: Vellum
+configs:
+  Debug: debug
+  Release: release
+  UITesting: debug
 options:
   bundleIdPrefix: com.vellum
   deploymentTarget:
@@ -17,6 +21,10 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     DEAD_CODE_STRIPPING: "YES"
 schemes:
+  # The default scheme's test action stays exactly what it was: the hosted unit
+  # suite, in Debug. XCUITests launch and drive the real app, which is far too
+  # slow (and far too intrusive on a developer's desktop) to run on every
+  # `xcodebuild test -scheme Vellum`, so they live in their own scheme below.
   Vellum:
     build:
       targets:
@@ -27,7 +35,30 @@ schemes:
       config: Debug
       targets:
         - VellumTests
+  VellumUITests:
+    build:
+      targets:
+        Vellum: all
+        VellumUITests: [test]
+    run:
+      config: UITesting
+    test:
+      config: UITesting
+      targets:
+        - VellumUITests
 targets:
+  VellumUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Vellum
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: Vellum
   VellumTests:
     type: bundle.unit-test
     platform: macOS
@@ -58,3 +89,9 @@ targets:
         ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
+      configs:
+        UITesting:
+          # UserDefaults is keyed by bundle identifier. A dedicated identity
+          # makes `--ui-test-reset-state` incapable of touching real Vellum
+          # preferences while the tests still exercise the production app.
+          PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.uitesting

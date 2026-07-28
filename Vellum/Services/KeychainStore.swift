@@ -14,7 +14,15 @@ enum KeychainStore {
     /// prompt — and tests have no business reading the user's real API keys.
     /// Detected via the XCTest environment (set from process start, before the
     /// test bundle is injected) with the class lookup as a fallback.
+    ///
+    /// A UI test is a second process boundary: `XCUIApplication().launch()`
+    /// starts the app fresh, and that process inherits NONE of the XCTest
+    /// environment markers or the XCTestCase class. The `--ui-testing` launch
+    /// argument the harness always passes is the only signal available there,
+    /// so it counts as "under test" too — otherwise every UI-test launch of an
+    /// ad-hoc-signed build would re-prompt for the login keychain password.
     private static let isRunningTests: Bool = {
+        if UITestLaunchConfiguration.isEnabled { return true }
         let env = ProcessInfo.processInfo.environment
         return env["XCTestConfigurationFilePath"] != nil
             || env["XCTestSessionIdentifier"] != nil
