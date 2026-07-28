@@ -8,6 +8,7 @@ struct AiPanel: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.undoManager) private var undoManager
 
     /// The sidebar keeps every panel mounted (ContentView's ZStack), so this
     /// one exists — with live AppKit text views (the composer + transcript
@@ -102,7 +103,11 @@ struct AiPanel: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
-                IconButton(help: "Clear conversation", action: aiStore.clearConversation) {
+                IconButton(
+                    help: "Clear AI conversation",
+                    disabled: aiStore.messages.isEmpty,
+                    action: clearConversation
+                ) {
                     Image(systemName: "trash").font(.system(size: 15))
                 }
                 .accessibilityIdentifier("aiPanel.clearConversation")
@@ -112,6 +117,16 @@ struct AiPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
+    private func clearConversation() {
+        guard let transaction = aiStore.clearConversation() else { return }
+        guard let undoManager else { return }
+        registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
     }
 
     private var configureAiBanner: some View {
@@ -813,6 +828,32 @@ struct AiPanel: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
     }
+}
+
+@MainActor
+private func registerConversationRedo(
+    _ transaction: AiConversationClearTransaction,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(transaction) else { return }
+        registerConversationUndo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
+}
+
+@MainActor
+private func registerConversationUndo(
+    _ transaction: AiConversationClearTransaction,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.undoClear(transaction) else { return }
+        registerConversationRedo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
 }
 
 /// A width cap that doesn't stretch: it offers its content at most `maxWidth`

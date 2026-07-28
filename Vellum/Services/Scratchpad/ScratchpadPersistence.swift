@@ -33,8 +33,10 @@ enum ScratchpadPersistence {
     static func save(forKey key: String, schemeText: String) throws {
         let bounded = String(schemeText.prefix(maxCharacters))
         let referenced = ScratchpadAttachmentStore.referencedIds(in: bounded)
+        let attachmentDirectory = DocumentDataStore.attachmentsDir(forKey: key)
         let relative = schemeToRelative(bounded) {
-            ScratchpadAttachmentStore.fileURL(for: $0)?.pathExtension
+            ScratchpadAttachmentStore.fileURL(
+                for: $0, preferredDir: attachmentDirectory)?.pathExtension
         }
         if relative.isEmpty {
             DocumentDataStore.removeScratchpad(forKey: key)
@@ -44,7 +46,7 @@ enum ScratchpadPersistence {
         // Prune attachments the note no longer points at, then drop the folder
         // entirely if nothing but meta.json is left.
         ScratchpadAttachmentStore.collectGarbage(
-            in: DocumentDataStore.attachmentsDir(forKey: key), referencedIds: referenced)
+            in: attachmentDirectory, referencedIds: referenced)
         DocumentDataStore.pruneEmptyDocumentDir(forKey: key)
     }
 

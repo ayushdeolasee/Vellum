@@ -131,6 +131,15 @@ private struct LossyAiReference: Decodable {
     }
 }
 
+/// A clear transaction is tied to the exact document and tab that owned it.
+/// Undo/Redo can therefore repair that document on disk without ever replacing
+/// the transcript of a different tab that happens to be visible later.
+struct AiConversationClearTransaction: Equatable, Sendable {
+    var document: DocumentInfo
+    var sessionId: String
+    var removedMessages: [AiMessage]
+}
+
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
 /// indicator. `.streaming` means reply text is actively arriving.
 enum AiActivity: Equatable, Sendable {
@@ -864,14 +873,86 @@ final class AiStore {
     }
 
     /// Save an empty list (deleting the document's stored entry) and clear state.
+    /// Returns the removed conversation so the caller can register a reliable
+    /// Undo. Composer attachments are deliberately left alone: they belong to
+    /// the next message, not to the transcript being cleared.
+    ///
     /// Also cancels any in-flight request so a completing response can't
     /// re-append the messages we just cleared.
-    func clearConversation() {
+    @discardableResult
+    func clearConversation() -> AiConversationClearTransaction? {
+        guard !messages.isEmpty,
+              let document = app?.document,
+              let sessionId = app?.activeTabId else { return nil }
+        let transaction = AiConversationClearTransaction(
+            document: document, sessionId: sessionId, removedMessages: messages)
         cancelActiveRequest()
-        AiPersistence.saveConversation(for: app?.document, messages: [])
+        AiPersistence.saveConversation(for: document, messages: [])
         messages = []
-        composerReferences = []
         error = nil
+        return transaction
+    }
+
+    /// Restore only the messages removed by this transaction. Messages created
+    /// after the clear stay at the end of the conversation.
+    @discardableResult
+    func undoClear(_ transaction: AiConversationClearTransaction) -> Bool {
+        guard let document = currentDocument(for: transaction) else { return false }
+        let current = AiPersistence.loadConversation(for: document)
+        let currentIds = Set(current.map(\.id))
+        let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
+        AiPersistence.saveConversation(for: document, messages: restored)
+        if isShowing(transaction, document: document) {
+            cancelActiveRequest()
+            // Read back rather than showing `restored`: the save applies the
+            // message/reference/tool-summary caps, so the un-capped array would
+            // display more than was persisted and silently shrink on the next
+            // tab switch.
+            messages = AiPersistence.loadConversation(for: document)
+            error = nil
+        }
+        return true
+    }
+
+    /// Remove only this transaction's original messages. Any messages added
+    /// after the clear (or after Undo) remain intact.
+    @discardableResult
+    func redoClear(_ transaction: AiConversationClearTransaction) -> Bool {
+        guard let document = currentDocument(for: transaction) else { return false }
+        let removedIds = Set(transaction.removedMessages.map(\.id))
+        let remaining = AiPersistence.loadConversation(for: document)
+            .filter { !removedIds.contains($0.id) }
+        AiPersistence.saveConversation(for: document, messages: remaining)
+        if isShowing(transaction, document: document) {
+            cancelActiveRequest()
+            messages = remaining
+            error = nil
+        }
+        return true
+    }
+
+    /// Resolve through the transaction's tab rather than the clear-time
+    /// `DocumentInfo`: a first post-clear write can stamp the PDF and change its
+    /// storage key while this tab remains the same document. The path/kind guard
+    /// keeps a stale undo transaction from following a reused tab into another
+    /// document.
+    private func currentDocument(for transaction: AiConversationClearTransaction) -> DocumentInfo? {
+        guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
+              isSameDocument(document, transaction.document) else { return nil }
+        return document
+    }
+
+    private func isShowing(
+        _ transaction: AiConversationClearTransaction, document targetDocument: DocumentInfo
+    ) -> Bool {
+        guard app?.activeTabId == transaction.sessionId, let activeDocument = app?.document else {
+            return false
+        }
+        return isSameDocument(activeDocument, targetDocument)
+    }
+
+    private func isSameDocument(_ lhs: DocumentInfo, _ rhs: DocumentInfo) -> Bool {
+        lhs.kind == rhs.kind && lhs.pdfPath == rhs.pdfPath
     }
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).

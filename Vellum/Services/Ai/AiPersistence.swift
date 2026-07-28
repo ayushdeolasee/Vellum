@@ -167,13 +167,7 @@ enum AiPersistence {
 
     @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
         guard let document, let key = storageKey(for: document) else { return [] }
-        // A PDF that acquired its /VellumDocId in a previous session may still
-        // have its data in the old path-hash folder — carry the whole folder
-        // over (rekey moves conversations.json + scratchpad + attachments alike).
-        if let docId = document.docId, !docId.isEmpty {
-            let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
-            if pathKey != key { DocumentDataStore.rekey(from: pathKey, to: key) }
-        }
+        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         if let cached = cache[key] { return cached }
         // First load this session: fold in any legacy blob entry, then read the
         // folder file (which the migration just wrote, if there was one).
@@ -194,6 +188,7 @@ enum AiPersistence {
 
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let document, let key = storageKey(for: document) else { return }
+        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         let limited = limitedMessages(messages)
         cache[key] = limited
         // A non-empty conversation is real class-B data; ensure meta.json exists
@@ -331,6 +326,33 @@ enum AiPersistence {
     @MainActor static func invalidateCachedConversation(forKey key: String) {
         cache.removeValue(forKey: key)
         dirtyKeys.remove(key)
+    }
+
+    /// Keep the main-actor write-behind state aligned with an on-disk rekey.
+    /// The old key belongs to the same open document, so its cached snapshot is
+    /// authoritative over any stale destination snapshot from before the stamp.
+    @MainActor private static func migrateCachedConversation(from oldKey: String, to newKey: String) {
+        guard oldKey != newKey else { return }
+        if let cached = cache.removeValue(forKey: oldKey) {
+            cache[newKey] = cached
+        }
+        if dirtyKeys.remove(oldKey) != nil {
+            dirtyKeys.insert(newKey)
+        }
+    }
+
+    /// A PDF may acquire its doc ID between any two calls (not only while a
+    /// conversation is loaded). Move both disk and write-behind state before a
+    /// read *or* write under the stamped key so an old queued Clear cannot later
+    /// recreate the path-hash folder.
+    @MainActor private static func migrateToCurrentStorageKeyIfNeeded(
+        document: DocumentInfo, key: String
+    ) {
+        guard let docId = document.docId, !docId.isEmpty else { return }
+        let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+        guard pathKey != key else { return }
+        migrateCachedConversation(from: pathKey, to: key)
+        DocumentDataStore.rekey(from: pathKey, to: key)
     }
 
     static func makeMessage(
