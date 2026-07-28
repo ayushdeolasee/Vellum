@@ -60,7 +60,7 @@ enum AiPrompts {
     }
 
     static func buildConversationBlock(_ messages: [AiMessage]) -> String {
-        messages.suffix(10).map { "\($0.role.rawValue.uppercased()): \($0.content)" }
+        messages.suffix(10).map { "\($0.role.rawValue.uppercased()): \($0.promptContent)" }
             .joined(separator: "\n")
     }
 

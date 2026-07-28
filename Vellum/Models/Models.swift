@@ -228,6 +228,12 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// An in-progress region capture is also live-only, but belongs to its tab
     /// while the user moves around the workspace.
     var regionCaptureTarget: RegionCaptureTarget? = nil
+    /// Find is document work, not window chrome. Keep it with the tab so
+    /// switching away does not silently dismiss the query and highlights.
+    var findVisible: Bool = false
+    var findQuery: String = ""
+    var findMatchCount: Int = 0
+    var findCurrentMatch: Int = 0
 }
 
 struct HighlightColor: Identifiable, Sendable {

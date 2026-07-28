@@ -12,6 +12,8 @@ struct TabBarView: View {
     @Environment(\.palette) private var palette
     @State private var joinTargeted = false
     @State private var showingOverview = false
+    /// The tab whose rename sheet is open, if any.
+    @State private var renamingTab: PdfTab?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -34,7 +36,8 @@ struct TabBarView: View {
                                 workspace.splitWithTab(
                                     tabId: tab.id, from: paneId, target: paneId,
                                     direction: .horizontal, before: false)
-                            }
+                            },
+                            onRename: tab.document == nil ? nil : { renamingTab = tab }
                         )
                     }
                 }
@@ -91,6 +94,14 @@ struct TabBarView: View {
         .padding(.leading, 12)
         .padding(.trailing, 8)
         .frame(height: 38)
+        .sheet(item: $renamingTab) { tab in
+            RenameDocumentSheet(
+                currentTitle: tab.document?.title ?? "",
+                fallbackName: TabBarView.fallbackName(for: tab),
+                commit: { newTitle in
+                    Task { await appStore.renameDocument(tabId: tab.id, title: newTitle) }
+                })
+        }
         .background(.bar)
         // Dropping a tab onto this strip moves it into this pane's group. When
         // it empties the source pane, that pane collapses — this is how you undo
@@ -135,6 +146,25 @@ struct TabBarView: View {
     }
 }
 
+/// The name a tab shows with no title override: the filename without its `.pdf`
+/// extension. Shared with the rename sheet, which offers it as the placeholder
+/// so that clearing the field visibly means "go back to this" rather than
+/// "leave it blank".
+extension TabBarView {
+    static func fallbackName(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "New Tab" }
+        let fallback = document.pdfPath
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .last
+            .map(String.init) ?? ""
+        if fallback.lowercased().hasSuffix(".pdf") {
+            return String(fallback.dropLast(4))
+        }
+        return fallback.isEmpty ? "Untitled" : fallback
+    }
+}
+
 private struct TabItem: View {
     let tab: PdfTab
     let paneId: String
@@ -145,6 +175,8 @@ private struct TabItem: View {
     let onCloseRight: () -> Void
     let onDuplicate: () -> Void
     let onMoveToNewPane: () -> Void
+    /// Nil for the "New Tab" placeholder, which has no document to rename.
+    let onRename: (() -> Void)?
 
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
@@ -216,6 +248,16 @@ private struct TabItem: View {
         .help(tab.document?.pdfPath ?? "New Tab")
         .overlay {
             MiddleClickView(action: onClose)
+        }
+        // Rename lives here rather than on the toolbar's title field: that
+        // field shows the FILENAME for a PDF and the URL for a page, so
+        // editing it would read as renaming the file or navigating. The tab is
+        // the one place the document's title is actually rendered.
+        .contextMenu {
+            if let onRename {
+                Button("Rename…", action: onRename)
+            }
+            Button("Close Tab", role: .destructive, action: onClose)
         }
         .onDrag {
             let payload = TabDragPayload(paneId: paneId, tabId: tab.id)
@@ -388,15 +430,7 @@ enum TabPresentation {
            !title.isEmpty {
             return title
         }
-        let fallback = document.pdfPath
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? ""
-        if fallback.lowercased().hasSuffix(".pdf") {
-            return String(fallback.dropLast(4))
-        }
-        return fallback.isEmpty ? "Untitled" : fallback
+        return TabBarView.fallbackName(for: tab)
     }
 
     static func typeLabel(for tab: PdfTab) -> String {

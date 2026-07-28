@@ -1,0 +1,181 @@
+import SwiftUI
+
+enum InspectorLayout {
+    // The one definition of the inspector's resize envelope. `ContentView`
+    // hands these straight to `.inspectorColumnWidth(min:ideal:max:)` and
+    // `WorkspaceStore.rememberSidebarWidth` clamps to the same numbers, so a
+    // second copy would either reject widths AppKit can legitimately produce or
+    // remember ones it immediately overrides.
+    //
+    // Owned here rather than on `WorkspaceStore` for isolation reasons: the
+    // store is `@MainActor`, so its statics are main-actor-isolated and cannot
+    // seed a nonisolated type's stored defaults. This enum is nonisolated, and
+    // the store can read it freely from the main actor.
+    //
+    // The floor is 280 because below that the AI composer and the annotation
+    // rows are too cramped to use.
+    static let minimumWidth: CGFloat = 280
+    static let idealWidth: CGFloat = 360
+    static let maximumWidth: CGFloat = 700
+
+    /// Full titles fit comfortably at the default inspector width. At the
+    /// minimum width, icons keep every destination visible without truncation.
+    static let fullLabelsMinimumWidth: CGFloat = 320
+    static let iconsMinimumWidth: CGFloat = 170
+
+    /// Inset applied to the switcher inside the inspector column.
+    static let switcherHorizontalPadding: CGFloat = 12
+
+    /// The narrowest width the switcher can actually be handed: the column
+    /// cannot go below `minimumWidth`, and the switcher is inset inside it.
+    /// `presentation(for:)` must still keep all three destinations laid out
+    /// side by side here — see `InspectorTabSwitcherTests`. The `.menu`
+    /// fallback below therefore should not be reachable in a normal window; it
+    /// is kept only for the case where AppKit squeezes the column past its own
+    /// stated minimum, so that a stranded user still has a way to switch.
+    static var narrowestContentWidth: CGFloat {
+        minimumWidth - switcherHorizontalPadding * 2
+    }
+
+    enum Presentation: Equatable {
+        case fullLabels
+        case icons
+        case menu
+    }
+
+    static func presentation(for width: CGFloat) -> Presentation {
+        if width >= fullLabelsMinimumWidth { return .fullLabels }
+        if width >= iconsMinimumWidth { return .icons }
+        return .menu
+    }
+}
+
+extension WorkspaceStore.SidebarTab: Identifiable {
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .annotations: "Annotations"
+        case .ai: "AI"
+        case .scratchpad: "Scratchpad"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .annotations: "highlighter"
+        case .ai: "sparkles"
+        case .scratchpad: "note.text"
+        }
+    }
+
+    /// Stem of the `sidebarTab.*` automation identifier. The case name, NOT
+    /// `title`: `UITests/ScratchpadSnapshotUITests` looks up
+    /// `sidebarTab.scratchpad`, and lowercase is the convention
+    /// `GlassSegmentedPicker` documented — but that control interpolated the
+    /// display label, so it actually emitted `sidebarTab.Scratchpad` and the
+    /// existing lookup could never match. Deriving the identifier from the case
+    /// rather than the visible title also means renaming a panel cannot
+    /// silently break automation.
+    var accessibilityIdentifierStem: String {
+        switch self {
+        case .annotations: "annotations"
+        case .ai: "ai"
+        case .scratchpad: "scratchpad"
+        }
+    }
+
+    /// The full identifier each destination control carries, in every layout.
+    var accessibilityIdentifier: String { "sidebarTab.\(accessibilityIdentifierStem)" }
+}
+
+/// Responsive navigation for the inspector's three persistent panels.
+///
+/// This intentionally lives inside the inspector instead of its window toolbar:
+/// AppKit may collapse toolbar items into an overflow menu at narrow window
+/// widths, and the synthesized overflow previously exposed only one section.
+/// Keeping the control here guarantees that all destinations remain reachable.
+struct InspectorTabSwitcher: View {
+    @Binding var selection: WorkspaceStore.SidebarTab
+
+    var body: some View {
+        GeometryReader { proxy in
+            switch InspectorLayout.presentation(for: proxy.size.width) {
+            case .fullLabels:
+                segmentedControl(showTitles: true)
+            case .icons:
+                segmentedControl(showTitles: false)
+            case .menu:
+                compactMenu
+            }
+        }
+        .frame(height: 30)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func segmentedControl(showTitles: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
+                let isSelected = selection == tab
+                Button {
+                    withAnimation(.snappy) {
+                        selection = tab
+                    }
+                } label: {
+                    if showTitles {
+                        Label(tab.title, systemImage: tab.systemImage)
+                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    } else {
+                        Label(tab.title, systemImage: tab.systemImage)
+                            .labelStyle(.iconOnly)
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .background {
+                    if isSelected {
+                        Capsule()
+                            .fill(.quaternary)
+                            .overlay {
+                                Capsule().strokeBorder(.separator, lineWidth: 1)
+                            }
+                    }
+                }
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier(tab.accessibilityIdentifier)
+            }
+        }
+        .font(.callout)
+        .padding(2)
+        .background(.quaternary.opacity(0.35), in: Capsule())
+    }
+
+    private var compactMenu: some View {
+        Menu {
+            ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    Label {
+                        Text(tab.title)
+                    } icon: {
+                        Image(systemName: selection == tab ? "checkmark" : tab.systemImage)
+                    }
+                }
+                .accessibilityIdentifier(tab.accessibilityIdentifier)
+            }
+        } label: {
+            Label(selection.title, systemImage: selection.systemImage)
+                .frame(maxWidth: .infinity)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel("Inspector section")
+        .accessibilityValue(selection.title)
+        .accessibilityIdentifier("sidebarTab.menu")
+    }
+}
