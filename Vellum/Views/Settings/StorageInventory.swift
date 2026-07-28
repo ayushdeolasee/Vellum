@@ -42,11 +42,13 @@ enum StorageInventory {
     enum SortOrder: String, CaseIterable, Sendable {
         case size
         case lastOpened
+        case type
 
         var label: String {
             switch self {
             case .size: return "Size"
             case .lastOpened: return "Last opened"
+            case .type: return "Type"
             }
         }
     }
@@ -135,7 +137,21 @@ enum StorageInventory {
                 case (let x?, let y?): return x > y
                 }
             }
+        case .type:
+            return rows.sorted {
+                if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
+                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
         }
+    }
+
+    static func matches(_ row: DocumentRow, searchText: String) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        let kind = row.kind == .web ? "web page" : "pdf"
+        return row.title.localizedCaseInsensitiveContains(query)
+            || row.sourcePath?.localizedCaseInsensitiveContains(query) == true
+            || kind.localizedCaseInsensitiveContains(query)
     }
 
     // MARK: - Field resolution
