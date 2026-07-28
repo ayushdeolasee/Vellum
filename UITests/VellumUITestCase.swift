@@ -8,23 +8,32 @@ class VellumUITestCase: XCTestCase {
     private(set) var storageRoot: URL!
     private var applications: [XCUIApplication] = []
 
+    // XCTest declares `setUpWithError`/`tearDownWithError` as nonisolated, so an
+    // override cannot carry this class's `@MainActor`. XCTest does run them on
+    // the main thread for a synchronous test case (that is what lets XCUITest
+    // and AppKit work at all), so recover the isolation explicitly rather than
+    // scattering `nonisolated(unsafe)` over the fixture state.
     override func setUpWithError() throws {
-        continueAfterFailure = false
-        storageRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VellumUITests", isDirectory: true)
-            .appendingPathComponent(
-                "\(String(describing: type(of: self))).\(name)", isDirectory: true)
-        try? FileManager.default.removeItem(at: storageRoot)
-        try FileManager.default.createDirectory(
-            at: storageRoot, withIntermediateDirectories: true)
+        try MainActor.assumeIsolated {
+            continueAfterFailure = false
+            storageRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("VellumUITests", isDirectory: true)
+                .appendingPathComponent(
+                    "\(String(describing: type(of: self))).\(name)", isDirectory: true)
+            try? FileManager.default.removeItem(at: storageRoot)
+            try FileManager.default.createDirectory(
+                at: storageRoot, withIntermediateDirectories: true)
+        }
     }
 
     override func tearDownWithError() throws {
-        for application in applications {
-            application.terminate()
+        MainActor.assumeIsolated {
+            for application in applications {
+                application.terminate()
+            }
+            applications.removeAll()
+            try? FileManager.default.removeItem(at: storageRoot)
         }
-        applications.removeAll()
-        try? FileManager.default.removeItem(at: storageRoot)
     }
 
     func makeApp(

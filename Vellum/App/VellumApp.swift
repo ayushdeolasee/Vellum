@@ -151,6 +151,11 @@ struct VellumApp: App {
                     }
                 }
                 .task {
+                    // A UI-test launch skips this: it is a real network request
+                    // whose outcome adds an "install update" affordance to
+                    // Home's chrome, which is the opposite of deterministic
+                    // (and rate-limits the release API across a test run).
+                    guard !UITestLaunchConfiguration.isEnabled else { return }
                     await workspace.checkForUpdatesAutomatically()
                 }
                 .sheet(
