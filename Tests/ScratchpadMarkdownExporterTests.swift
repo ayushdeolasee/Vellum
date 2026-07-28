@@ -296,7 +296,7 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
                 return XCTFail("Expected destination conflict, got \(error)")
             }
         }
-        XCTAssertEqual(try String(contentsOf: destination), "existing markdown")
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "existing markdown")
 
         try FileManager.default.removeItem(at: destination)
         let assets = temporaryDirectory.appendingPathComponent("Notes Assets", isDirectory: true)
@@ -317,7 +317,7 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
                 return XCTFail("Expected assets conflict, got \(error)")
             }
         }
-        XCTAssertEqual(try String(contentsOf: sentinel), "keep")
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "keep")
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 

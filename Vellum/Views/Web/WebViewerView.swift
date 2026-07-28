@@ -1526,6 +1526,20 @@ extension WebViewerController: WKScriptMessageHandler {
 }
 
 extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
+    /// Scrolls the current page to `literal` (an already JSON-encoded "#frag")
+    /// without waiting for the result.
+    ///
+    /// Deliberately the completion-handler form, and deliberately called from a
+    /// non-async function so the compiler doesn't suggest the `async` one: the
+    /// only caller is inside `decidePolicyFor`, and awaiting a round trip to the
+    /// web content process while WebKit is still waiting on our navigation
+    /// decision is a hang waiting to happen. Fire and forget is the behaviour we
+    /// want here — the scroll is best-effort and its result is never read.
+    @MainActor
+    private static func setLocationHash(_ literal: String, in webView: WKWebView) {
+        webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction
@@ -1576,7 +1590,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
             // the JS string.
             if let data = try? JSONEncoder().encode("#" + fragment),
                let literal = String(data: data, encoding: .utf8) {
-                _ = try? await webView.evaluateJavaScript("location.hash = \(literal)")
+                Self.setLocationHash(literal, in: webView)
             }
             return .cancel
         }

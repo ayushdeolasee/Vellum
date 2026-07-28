@@ -145,7 +145,7 @@ struct MarkdownMessage: View {
         for piece in InlineMarkdown.pieces(in: source) {
             switch piece {
             case .prose(let attributed):
-                result = result + Text(attributed)
+                result = Text("\(result)\(Text(attributed))")
             case .math(let latex):
                 if let rendered = MathRenderer.render(
                     latex: latex, fontSize: baseSize, color: NSColor(textColor), display: false
@@ -154,10 +154,12 @@ struct MarkdownMessage: View {
                     // no text, and it's interpolated into a Text run so a SwiftUI
                     // .accessibilityLabel can't reach it.
                     rendered.image.accessibilityDescription = latex
-                    result = result + Text(Image(nsImage: rendered.image))
+                    let math = Text(Image(nsImage: rendered.image))
                         .baselineOffset(-rendered.descent)
+                    result = Text("\(result)\(math)")
                 } else {
-                    result = result + Text("$\(latex)$").italic()
+                    let fallback = Text("$\(latex)$").italic()
+                    result = Text("\(result)\(fallback)")
                 }
             }
         }
