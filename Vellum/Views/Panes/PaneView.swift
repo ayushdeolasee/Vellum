@@ -110,17 +110,28 @@ struct PaneView: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.document == nil {
-            // The home screen grabs first responder for its search field on
-            // appear, so it needs to know whether this pane is the focused one —
-            // two side-by-side welcome screens must not fight over the keyboard.
+        if app.tabs.isEmpty {
+            // No tab at all: closing the last tab in a lone pane leaves the pane
+            // open on the home screen (`AppStore.closeTab` → `paneDidEmpty`).
+            // The `ForEach` below would render an empty ZStack here, so this
+            // case has to be spelled out — there is no tab to host it.
             WelcomeScreen(isPaneFocused: isFocused)
-        } else if app.document?.kind == .web {
-            WebViewerView()
-                .id(app.activeTabId)
         } else {
-            PdfViewerView()
-                .id(app.activeTabId)
+            ZStack {
+                ForEach(app.tabs) { tab in
+                    LiveTabHost(
+                        tabId: tab.id,
+                        document: tab.document,
+                        isActive: tab.id == app.activeTabId,
+                        isPaneFocused: isFocused,
+                        runtime: workspace.liveTabRuntime(for: tab.id)
+                    )
+                    .opacity(tab.id == app.activeTabId ? 1 : 0)
+                    .allowsHitTesting(tab.id == app.activeTabId)
+                    .accessibilityHidden(tab.id != app.activeTabId)
+                    .zIndex(tab.id == app.activeTabId ? 1 : 0)
+                }
+            }
         }
     }
 
@@ -140,6 +151,10 @@ struct PaneView: View {
             forKey: DocumentIdentity.storageKey(for: document))
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
+        if let tabId = app.activeTabId,
+           let runtime = workspace.existingLiveTabRuntime(for: tabId) {
+            pane.ai.restorePageTexts(runtime.pageTexts)
+        }
         pane.scratchpad.loadForDocument(app.document)
     }
 
@@ -165,6 +180,95 @@ struct PaneView: View {
     private var autosaveIdentity: PaneAutosaveIdentity? {
         guard let tabId = app.activeTabId, app.document != nil else { return nil }
         return PaneAutosaveIdentity(tabId: tabId, path: app.document?.pdfPath)
+    }
+}
+
+/// Stable identity for one tab's expensive native viewer. Inactive hosts stay
+/// mounted (and therefore keep PDFKit/WKWebView/Home transient state) while
+/// becoming visually and interactively inert. The document value may change
+/// in-place when a start tab adopts an opened file; keying by tab id preserves
+/// the tab identity across that transition.
+private struct LiveTabHost: View {
+    let tabId: String
+    let document: DocumentInfo?
+    let isActive: Bool
+    /// Whether the *pane* is the focused one. Only ever passed on to the home
+    /// screen, ANDed with `isActive` — see the start-tab branch in `body`.
+    let isPaneFocused: Bool
+    let runtime: LiveTabRuntime
+    @Environment(WorkspaceStore.self) private var workspace
+
+    /// The active tab always renders, whatever the policy currently thinks —
+    /// `body` runs before the `.task` below has had a chance to promote it, and
+    /// the tab the user just clicked must never be the one we decline to draw.
+    private var shouldRender: Bool { isActive || runtime.isRendered }
+
+    var body: some View {
+        Group {
+            // `document != nil` matters: a start tab's runtime can be evicted
+            // like any other, but it has nothing to restore, and flashing
+            // "Restoring tab…" over the home screen for the frame before the
+            // `.task` below reactivates it would read as a bug.
+            if runtime.isEvicted, document != nil {
+                if isActive {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Restoring tab…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Color.clear
+                }
+            } else if !shouldRender {
+                // WARM. The tab's `PDFView`/`WKWebView` are alive on its runtime,
+                // but nothing here holds them, so they leave the window's layout
+                // and display cycle entirely — no draw, no tile work, no
+                // relayout on a window resize. Coming back re-parents the same
+                // native view (`PdfKitView.makeNSView` returns the retained
+                // `PDFView`; `WebViewerController.attach` takes its
+                // already-attached branch and never reloads), so the restore is
+                // a re-parent rather than a parse or a network fetch.
+                //
+                // This host itself stays mounted so the `.task` below still runs
+                // and can promote the tab back to hot the moment it is selected.
+                Color.clear
+            } else if let document {
+                if document.kind == .web {
+                    WebViewerView(
+                        tabId: tabId, document: document, isActive: isActive,
+                        runtime: runtime)
+                } else {
+                    PdfViewerView(
+                        tabId: tabId, documentInfo: document, isActive: isActive,
+                        runtime: runtime)
+                }
+            } else {
+                // A start tab. `isPaneFocused` is what stops an *invisible* home
+                // screen from taking the keyboard: hosts stay mounted here, so a
+                // pane can have several start tabs alive at once, and the home
+                // screen both grabs first responder on appear and registers ⌘F.
+                // Opacity and hit-testing do not suppress either of those, so the
+                // claim has to be gated on being the selected tab as well as
+                // being in the focused pane — one claimant per window, exactly as
+                // the two-pane case already required.
+                WelcomeScreen(isPaneFocused: isPaneFocused && isActive)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: isActive) {
+            guard isActive else { return }
+            // Hand the runtime to the residency policy. Reclaiming it later is
+            // entirely that policy's job (Services/TabResidency.swift): a single
+            // shared sweeper applies the hot/warm/cold windows and the ceilings,
+            // and a memory-pressure source can pull the trigger early.
+            //
+            // Deliberately NOT a per-tab `Task.sleep` here. A view-owned timer is
+            // one wakeup per inactive tab, it dies silently whenever the host
+            // unmounts (a tab dragged to another pane would never be reclaimed at
+            // all), it has no ceiling and no pressure valve, and there is no way
+            // to test a 30-minute boundary without waiting 30 minutes.
+            workspace.activateLiveTabRuntime(runtime)
+        }
     }
 }
 

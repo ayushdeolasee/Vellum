@@ -155,9 +155,27 @@ final class WorkspaceStore {
     @ObservationIgnored private var isRestoring = false
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
+    // MARK: - Workspace-owned live tab runtimes
+    //
+    // Every open tab gets a `LiveTabRuntime` that owns its PDFView/WKWebView, so
+    // `PaneView` can keep a host mounted per tab and a switch costs nothing
+    // (issue #52). How long that native state is allowed to live is entirely the
+    // residency policy's business — see Services/TabResidency.swift. This store
+    // owns the runtime *objects* (cheap: a tab id and a page-text dict); the
+    // policy owns their expensive contents.
+
+    /// The window's retention policy. Not a singleton: owning it here means a
+    /// discarded workspace (one per unit test) takes its sweeper and its
+    /// memory-pressure source down with it, and a test can inject a hand-driven
+    /// clock. Vellum ships a single `Window`, so in production there is exactly
+    /// one of these.
+    @ObservationIgnored let residency: TabResidencyManager
+    @ObservationIgnored private var liveTabRuntimes: [String: LiveTabRuntime] = [:]
+
     // MARK: - Init
 
-    init(sessions: SessionService) {
+    init(sessions: SessionService, residency: TabResidencyManager = TabResidencyManager()) {
+        self.residency = residency
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()
@@ -172,6 +190,56 @@ final class WorkspaceStore {
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
         pane.app.workspace = self
+    }
+
+    /// The runtime for a tab, created on first ask. Deliberately does *not*
+    /// touch the residency policy: `PaneView` calls this during layout for every
+    /// open tab, and a tab that has never been looked at owns no PDFView and no
+    /// WKWebView, so it must not count against a ceiling or start a sweeper.
+    func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
+        liveTabRuntimes[tabId] ?? {
+            let created = LiveTabRuntime(tabId: tabId)
+            liveTabRuntimes[tabId] = created
+            return created
+        }()
+    }
+
+    /// The tab is being shown: undo any previous eviction and hand the runtime
+    /// to the residency policy, which is the moment it starts counting against
+    /// the ceilings and the idle window.
+    func activateLiveTabRuntime(_ runtime: LiveTabRuntime) {
+        runtime.reactivate()
+        residency.store(runtime, tabId: runtime.tabId)
+    }
+
+    func existingLiveTabRuntime(for tabId: String) -> LiveTabRuntime? {
+        liveTabRuntimes[tabId]
+    }
+
+    /// The tab is gone for good (closed, or its pane was discarded): hand the
+    /// memory back now rather than letting the retention window run.
+    func removeLiveTabRuntime(for tabId: String) {
+        residency.release(tabId: tabId)
+        liveTabRuntimes.removeValue(forKey: tabId)?.releaseResidency()
+    }
+
+    func flushLivePageTextCaches() async {
+        for runtime in liveTabRuntimes.values {
+            await runtime.flushPdfText()
+        }
+    }
+
+    /// Report a pane's current tab to the residency policy, which pins it. Keyed
+    /// on the pane's `AppStore` identity so a split window pins one tab *per
+    /// pane* and neither visible document can be evicted.
+    func paneDidActivateTab(_ app: AppStore, tabId: String?) {
+        residency.markActive(tabId: tabId, owner: ObjectIdentifier(app))
+    }
+
+    /// A pane is being discarded (split collapsed / panes merged). Drop its pin
+    /// so whatever it last showed stops being exempt from eviction.
+    private func forgetPanePin(_ app: AppStore) {
+        residency.forgetOwner(ObjectIdentifier(app))
     }
 
     // MARK: - Focus
@@ -259,7 +327,17 @@ final class WorkspaceStore {
     /// Collapse a pane; its sibling reclaims the space. Closing the last pane
     /// resets the window to a single empty pane.
     func closePane(_ paneId: String) {
-        guard root.leaf(id: paneId) != nil else { return }
+        guard let closingPane = root.leaf(id: paneId) else { return }
+        // The pane is going away, so its "this tab is on screen" pin must go with
+        // it — otherwise whatever it last showed stays exempt from eviction for
+        // the life of the process — and any tab it still holds is unreachable
+        // from here on, so its native state is released now rather than in two
+        // hours. (In the common case — a pane emptied by a tab drag — `tabs` is
+        // already empty and only the pin matters.)
+        forgetPanePin(closingPane.app)
+        for tab in closingPane.app.tabs {
+            removeLiveTabRuntime(for: tab.id)
+        }
         if root.isLeaf {
             let pane = makePane(startTab: false)
             root = .leaf(pane)
@@ -298,6 +376,11 @@ final class WorkspaceStore {
             for tab in leaf.app.tabs {
                 keep.app.attachTab(tab)
             }
+            // Same reasoning as closePane: the absorbed pane is discarded, so
+            // drop its residency pin. Its tabs are now pinned (or not) by `keep`.
+            // Their runtimes are workspace-owned and keyed by tab id, so they
+            // migrate with the tabs untouched.
+            forgetPanePin(leaf.app)
         }
         if let keepActiveTabId {
             keep.app.activateTab(keepActiveTabId)
