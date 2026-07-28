@@ -8,14 +8,14 @@ final class InspectorTabSwitcherTests: XCTestCase {
         XCTAssertLessThan(InspectorLayout.idealWidth, InspectorLayout.maximumWidth)
     }
 
-    /// The envelope has exactly one owner. `WorkspaceStore.rememberSidebarWidth`
-    /// clamps remembered widths to these numbers, so a second hardcoded copy in
-    /// the view layer would silently either reject widths AppKit can produce or
-    /// remember ones it immediately overrides.
-    func testLayoutEnvelopeIsTheStoresEnvelope() {
-        XCTAssertEqual(InspectorLayout.minimumWidth, WorkspaceStore.minSidebarWidth)
-        XCTAssertEqual(InspectorLayout.idealWidth, WorkspaceStore.defaultSidebarWidth)
-        XCTAssertEqual(InspectorLayout.maximumWidth, WorkspaceStore.maxSidebarWidth)
+    /// Pins the widened envelope with literals. `InspectorLayout` is its single
+    /// owner — `.inspectorColumnWidth` and `WorkspaceStore.rememberSidebarWidth`
+    /// both read it, so silently restoring the old 240pt floor here would let the
+    /// column shrink back below usable width for the AI composer.
+    func testEnvelopeIsTheWidenedOne() {
+        XCTAssertEqual(InspectorLayout.minimumWidth, 280)
+        XCTAssertEqual(InspectorLayout.idealWidth, 360)
+        XCTAssertEqual(InspectorLayout.maximumWidth, 700)
     }
 
     /// The invariant that actually protects the user: at the narrowest width the

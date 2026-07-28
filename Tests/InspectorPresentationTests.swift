@@ -138,28 +138,28 @@ struct InspectorPresentationTests {
     func rememberSidebarWidthRejectsUnusableMeasurements() async throws {
         let workspace = WorkspaceStore(sessions: InspectorSessionService())
         let app = workspace.focusedPane.app
-        #expect(workspace.sidebarWidth == WorkspaceStore.defaultSidebarWidth)
+        #expect(workspace.sidebarWidth == InspectorLayout.idealWidth)
 
         await app.openFile(path: "/tmp/inspector-test.pdf")
         workspace.sidebarOpen = true
 
         // The resize envelope is inclusive at both ends.
-        workspace.rememberSidebarWidth(WorkspaceStore.minSidebarWidth)
-        #expect(workspace.sidebarWidth == WorkspaceStore.minSidebarWidth)
-        workspace.rememberSidebarWidth(WorkspaceStore.maxSidebarWidth)
-        #expect(workspace.sidebarWidth == WorkspaceStore.maxSidebarWidth)
+        workspace.rememberSidebarWidth(InspectorLayout.minimumWidth)
+        #expect(workspace.sidebarWidth == InspectorLayout.minimumWidth)
+        workspace.rememberSidebarWidth(InspectorLayout.maximumWidth)
+        #expect(workspace.sidebarWidth == InspectorLayout.maximumWidth)
 
         // Anything outside it is AppKit mid-transition, not a user choice.
-        workspace.rememberSidebarWidth(WorkspaceStore.minSidebarWidth - 1)
-        workspace.rememberSidebarWidth(WorkspaceStore.maxSidebarWidth + 1)
-        #expect(workspace.sidebarWidth == WorkspaceStore.maxSidebarWidth)
+        workspace.rememberSidebarWidth(InspectorLayout.minimumWidth - 1)
+        workspace.rememberSidebarWidth(InspectorLayout.maximumWidth + 1)
+        #expect(workspace.sidebarWidth == InspectorLayout.maximumWidth)
 
         // In-range, but measured while a start tab suppresses the inspector —
         // the collapse must not overwrite the user's width.
         workspace.rememberSidebarWidth(400)
         #expect(workspace.sidebarWidth == 400)
         app.newStartTab()
-        workspace.rememberSidebarWidth(WorkspaceStore.minSidebarWidth)
+        workspace.rememberSidebarWidth(InspectorLayout.minimumWidth)
         #expect(workspace.sidebarWidth == 400)
     }
 

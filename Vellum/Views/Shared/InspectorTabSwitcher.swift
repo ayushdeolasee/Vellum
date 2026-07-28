@@ -1,12 +1,22 @@
 import SwiftUI
 
 enum InspectorLayout {
-    // The resize envelope itself is owned by `WorkspaceStore`, which has to
-    // clamp remembered widths to the same numbers `.inspectorColumnWidth` is
-    // given. Re-exported rather than restated so the two can never drift.
-    static let minimumWidth = WorkspaceStore.minSidebarWidth
-    static let idealWidth = WorkspaceStore.defaultSidebarWidth
-    static let maximumWidth = WorkspaceStore.maxSidebarWidth
+    // The one definition of the inspector's resize envelope. `ContentView`
+    // hands these straight to `.inspectorColumnWidth(min:ideal:max:)` and
+    // `WorkspaceStore.rememberSidebarWidth` clamps to the same numbers, so a
+    // second copy would either reject widths AppKit can legitimately produce or
+    // remember ones it immediately overrides.
+    //
+    // Owned here rather than on `WorkspaceStore` for isolation reasons: the
+    // store is `@MainActor`, so its statics are main-actor-isolated and cannot
+    // seed a nonisolated type's stored defaults. This enum is nonisolated, and
+    // the store can read it freely from the main actor.
+    //
+    // The floor is 280 because below that the AI composer and the annotation
+    // rows are too cramped to use.
+    static let minimumWidth: CGFloat = 280
+    static let idealWidth: CGFloat = 360
+    static let maximumWidth: CGFloat = 700
 
     /// Full titles fit comfortably at the default inspector width. At the
     /// minimum width, icons keep every destination visible without truncation.

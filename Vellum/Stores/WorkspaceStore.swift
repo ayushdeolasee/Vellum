@@ -34,19 +34,10 @@ final class WorkspaceStore {
 
     // MARK: Inspector column width
 
-    // The one definition of the inspector's resize envelope. `ContentView`
-    // hands these straight to `.inspectorColumnWidth(min:ideal:max:)`, and
-    // `rememberSidebarWidth` clamps to the same numbers — keeping them here
-    // stops the modifier and the guard from silently drifting apart, which
-    // would either reject widths AppKit can legitimately produce or remember
-    // ones it will immediately override. `InspectorLayout` re-exports them so
-    // the view layer reads its breakpoints and its envelope from one place.
-    //
-    // The floor is 280 rather than 240 because below that the AI composer and
-    // the annotation rows are too cramped to use.
-    static let minSidebarWidth: CGFloat = 280
-    static let defaultSidebarWidth: CGFloat = 360
-    static let maxSidebarWidth: CGFloat = 700
+    // The resize envelope has a single owner: `InspectorLayout`, next to the
+    // responsive breakpoints that share its numbers. It lives there rather than
+    // here because this store is `@MainActor` and that enum is not — a
+    // main-actor-isolated static cannot seed a nonisolated type's defaults.
 
     /// The width to reopen the inspector at, tracking the user's last drag.
     ///
@@ -61,7 +52,7 @@ final class WorkspaceStore {
     /// has to change for that to happen, so the body re-runs and re-reads this
     /// value at exactly the moment it is used.
     @ObservationIgnored
-    private(set) var sidebarWidth: CGFloat = WorkspaceStore.defaultSidebarWidth
+    private(set) var sidebarWidth: CGFloat = InspectorLayout.idealWidth
 
     /// The destination selected when an in-app action opens the global Settings
     /// scene. Keeping this at workspace scope lets Home and document panels route
@@ -93,7 +84,7 @@ final class WorkspaceStore {
     /// the user's prior width.
     func rememberSidebarWidth(_ width: CGFloat) {
         guard inspectorPresented,
-              (Self.minSidebarWidth...Self.maxSidebarWidth).contains(width)
+              (InspectorLayout.minimumWidth...InspectorLayout.maximumWidth).contains(width)
         else { return }
         sidebarWidth = width
     }
