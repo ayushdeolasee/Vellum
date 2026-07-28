@@ -102,6 +102,39 @@ struct TextButton<Content: View>: View {
     }
 }
 
+/// A keyboard shortcut rendered as a physical key — monospaced glyphs on a
+/// faint slab with a hairline edge. Used wherever the UI teaches a shortcut
+/// (the welcome screen's ⌘O hint, the walkthrough's bullets) so a shortcut
+/// always reads as a key rather than as more prose.
+struct Keycap: View {
+    let keys: String
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Text(keys)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            // Palette fill and edge rather than `.quaternary` / `.separator`.
+            // Those resolve from the color scheme, not from our palette, and
+            // against the light parchment chrome they washed out almost to
+            // nothing — the same defect that made the walkthrough's page dots
+            // invisible in light mode. `muted` and `borderStrong` are defined
+            // for both schemes, so a keycap reads as a physical key in each.
+            .background(palette.muted, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(palette.borderStrong)
+            }
+            // Announced as one shortcut; VoiceOver spelling out "⌘⌥S" as three
+            // symbols is noise, and the surrounding sentence already has the verb.
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard shortcut \(keys)")
+    }
+}
+
 /// The Vellum wordmark. Set in the serif display face — the one place the
 /// "parchment" identity is allowed to speak loudly. Render at the real point
 /// size: scaling it up with scaleEffect rasterizes the small glyphs and

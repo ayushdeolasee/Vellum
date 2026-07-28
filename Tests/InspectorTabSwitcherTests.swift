@@ -8,6 +8,47 @@ final class InspectorTabSwitcherTests: XCTestCase {
         XCTAssertLessThan(InspectorLayout.idealWidth, InspectorLayout.maximumWidth)
     }
 
+    /// The envelope has exactly one owner. `WorkspaceStore.rememberSidebarWidth`
+    /// clamps remembered widths to these numbers, so a second hardcoded copy in
+    /// the view layer would silently either reject widths AppKit can produce or
+    /// remember ones it immediately overrides.
+    func testLayoutEnvelopeIsTheStoresEnvelope() {
+        XCTAssertEqual(InspectorLayout.minimumWidth, WorkspaceStore.minSidebarWidth)
+        XCTAssertEqual(InspectorLayout.idealWidth, WorkspaceStore.defaultSidebarWidth)
+        XCTAssertEqual(InspectorLayout.maximumWidth, WorkspaceStore.maxSidebarWidth)
+    }
+
+    /// The invariant that actually protects the user: at the narrowest width the
+    /// switcher can really be handed — the column's own minimum, less its inset —
+    /// all three destinations must still be laid out side by side. If a future
+    /// change raises `iconsMinimumWidth` past that floor, every window would
+    /// collapse the switcher into a menu, and this fails.
+    func testNarrowestRealInspectorStillShowsEveryDestinationInline() {
+        XCTAssertLessThan(InspectorLayout.narrowestContentWidth, InspectorLayout.minimumWidth)
+        XCTAssertEqual(
+            InspectorLayout.presentation(for: InspectorLayout.narrowestContentWidth),
+            .icons)
+    }
+
+    /// Pins the `sidebarTab.*` automation contract with hardcoded literals.
+    /// `UITests/ScratchpadSnapshotUITests` looks up `sidebarTab.scratchpad`; the
+    /// previous control interpolated the display label and emitted
+    /// `sidebarTab.Scratchpad`, so that lookup could never match. Written out
+    /// rather than derived so a change to `title` cannot quietly move them.
+    func testAccessibilityIdentifiersMatchTheAutomationConvention() {
+        XCTAssertEqual(
+            WorkspaceStore.SidebarTab.allCases.map(\.accessibilityIdentifier),
+            ["sidebarTab.annotations", "sidebarTab.ai", "sidebarTab.scratchpad"])
+        for tab in WorkspaceStore.SidebarTab.allCases {
+            XCTAssertEqual(
+                tab.accessibilityIdentifier,
+                "sidebarTab.\(tab.accessibilityIdentifierStem)")
+            XCTAssertEqual(
+                tab.accessibilityIdentifierStem,
+                tab.accessibilityIdentifierStem.lowercased())
+        }
+    }
+
     func testPresentationRespondsAtEachWidthClass() {
         XCTAssertEqual(
             InspectorLayout.presentation(for: InspectorLayout.idealWidth),

@@ -31,7 +31,11 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            // Commands belong to the main window, not whichever nested
+            // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
+            // A scene-focused value remains available throughout this window
+            // and automatically disappears when Settings becomes key.
+            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
@@ -200,26 +204,41 @@ private struct WindowChrome: View {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
             VStack(spacing: 0) {
                 InspectorTabSwitcher(selection: sidebarTabBinding)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
                     .padding(.vertical, 8)
                 Divider()
                 sidebar
             }
             .inspectorColumnWidth(
                 min: InspectorLayout.minimumWidth,
-                ideal: InspectorLayout.idealWidth,
+                ideal: workspace.sidebarWidth,
                 max: InspectorLayout.maximumWidth)
+            // Feeds the user's splitter drag back to the store so the next
+            // document reopens the column where they left it. The store
+            // rejects the collapsed measurements a start tab produces.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                workspace.rememberSidebarWidth(width)
+            }
         }
     }
 
     /// Inspector only makes sense with a document in the focused pane; the open
-    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    /// state itself is window-global (WorkspaceStore) so it survives focus and
+    /// start-tab changes.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { focused.app.document != nil && workspace.sidebarOpen },
-            set: { workspace.sidebarOpen = $0 }
+            get: { workspace.inspectorPresented },
+            set: { workspace.setInspectorPresented($0) }
         )
     }
 

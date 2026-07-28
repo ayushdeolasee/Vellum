@@ -1,16 +1,31 @@
 import SwiftUI
 
 enum InspectorLayout {
-    /// Below this width the inspector content becomes cramped enough to make the
-    /// AI composer and annotation rows difficult to use.
-    static let minimumWidth: CGFloat = 280
-    static let idealWidth: CGFloat = 360
-    static let maximumWidth: CGFloat = 700
+    // The resize envelope itself is owned by `WorkspaceStore`, which has to
+    // clamp remembered widths to the same numbers `.inspectorColumnWidth` is
+    // given. Re-exported rather than restated so the two can never drift.
+    static let minimumWidth = WorkspaceStore.minSidebarWidth
+    static let idealWidth = WorkspaceStore.defaultSidebarWidth
+    static let maximumWidth = WorkspaceStore.maxSidebarWidth
 
     /// Full titles fit comfortably at the default inspector width. At the
     /// minimum width, icons keep every destination visible without truncation.
     static let fullLabelsMinimumWidth: CGFloat = 320
     static let iconsMinimumWidth: CGFloat = 170
+
+    /// Inset applied to the switcher inside the inspector column.
+    static let switcherHorizontalPadding: CGFloat = 12
+
+    /// The narrowest width the switcher can actually be handed: the column
+    /// cannot go below `minimumWidth`, and the switcher is inset inside it.
+    /// `presentation(for:)` must still keep all three destinations laid out
+    /// side by side here — see `InspectorTabSwitcherTests`. The `.menu`
+    /// fallback below therefore should not be reachable in a normal window; it
+    /// is kept only for the case where AppKit squeezes the column past its own
+    /// stated minimum, so that a stranded user still has a way to switch.
+    static var narrowestContentWidth: CGFloat {
+        minimumWidth - switcherHorizontalPadding * 2
+    }
 
     enum Presentation: Equatable {
         case fullLabels
@@ -43,6 +58,25 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .scratchpad: "note.text"
         }
     }
+
+    /// Stem of the `sidebarTab.*` automation identifier. The case name, NOT
+    /// `title`: `UITests/ScratchpadSnapshotUITests` looks up
+    /// `sidebarTab.scratchpad`, and lowercase is the convention
+    /// `GlassSegmentedPicker` documented — but that control interpolated the
+    /// display label, so it actually emitted `sidebarTab.Scratchpad` and the
+    /// existing lookup could never match. Deriving the identifier from the case
+    /// rather than the visible title also means renaming a panel cannot
+    /// silently break automation.
+    var accessibilityIdentifierStem: String {
+        switch self {
+        case .annotations: "annotations"
+        case .ai: "ai"
+        case .scratchpad: "scratchpad"
+        }
+    }
+
+    /// The full identifier each destination control carries, in every layout.
+    var accessibilityIdentifier: String { "sidebarTab.\(accessibilityIdentifierStem)" }
 }
 
 /// Responsive navigation for the inspector's three persistent panels.
@@ -103,7 +137,7 @@ struct InspectorTabSwitcher: View {
                 }
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-                .accessibilityIdentifier("sidebarTab.\(tab.title)")
+                .accessibilityIdentifier(tab.accessibilityIdentifier)
             }
         }
         .font(.callout)
@@ -123,7 +157,7 @@ struct InspectorTabSwitcher: View {
                         Image(systemName: selection == tab ? "checkmark" : tab.systemImage)
                     }
                 }
-                .accessibilityIdentifier("sidebarTab.\(tab.title)")
+                .accessibilityIdentifier(tab.accessibilityIdentifier)
             }
         } label: {
             Label(selection.title, systemImage: selection.systemImage)

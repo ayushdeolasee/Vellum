@@ -16,36 +16,15 @@ final class AppStore {
 
     let sessions: SessionService
 
-    // MARK: - Prepared-PDF cache
+    // MARK: - Prepared PDFs
     //
-    // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
-    // without a cache every switch re-reads + re-parses + re-strips the whole PDF
-    // (now off-main, but still a visible delay for large docs). Cache the display-
-    // ready PDFDocument per tab so switching back is instant. A stripped display
-    // doc stays valid across annotation edits (annotations render from overlays,
-    // page content is unchanged), so no invalidation is needed beyond close/LRU.
-    private static let maxPreparedCache = 3
-    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
-
-    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
-        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
-        // Touch: move to most-recently-used.
-        let entry = preparedPdfCache.remove(at: index)
-        preparedPdfCache.append(entry)
-        return entry.doc
-    }
-
-    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-        preparedPdfCache.append((tabId, doc))
-        if preparedPdfCache.count > Self.maxPreparedCache {
-            preparedPdfCache.removeFirst()
-        }
-    }
-
-    func evictPreparedPdf(tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-    }
+    // There used to be a three-entry LRU of parsed `PDFDocument`s here, because
+    // switching tabs tore down and rebuilt the viewer. Tabs now keep their whole
+    // viewer mounted, and the parsed document lives on the tab's
+    // `LiveTabRuntime` (issue #52). Keeping a second copy here would be actively
+    // harmful: evicting a runtime under memory pressure would free the view but
+    // leave the document alive in the LRU, so the memory the eviction existed to
+    // reclaim would not actually come back. One owner, one lifetime.
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -77,6 +56,7 @@ final class AppStore {
     // Find bar (⌘F). `findVisible` drives the slim bar under the toolbar; the
     // counts are reported back by whichever viewer is active.
     var findVisible = false
+    private(set) var findQuery = ""
     private(set) var findMatchCount = 0
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
@@ -210,6 +190,44 @@ final class AppStore {
         }
     }
 
+    /// Rename the open document from the tab bar.
+    ///
+    /// Distinct from `updateDocumentTitle` above, which exists for the webpage
+    /// content script reporting the DOM `<title>` and is deliberately
+    /// in-memory-only and non-empty-only: a page reporting its own title should
+    /// not permanently overwrite a name the user chose, and a page reporting an
+    /// empty one should be ignored. A user rename is the opposite on both
+    /// counts — it must persist, and clearing it must be allowed to mean
+    /// "go back to the filename".
+    ///
+    /// The file on disk is untouched; see `DocumentRenameService` for why.
+    func renameDocument(tabId: String, title: String) async {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
+            return
+        }
+        let normalized = DocumentRenameService.normalized(title)
+        let target = DocumentRenameService.Target(
+            kind: document.kind,
+            locator: document.pdfPath,
+            recordedPath: document.pdfPath,
+            storageKey: DocumentIdentity.storageKey(for: document))
+
+        await Task.detached(priority: .userInitiated) {
+            DocumentRenameService.apply(target, title: normalized)
+        }.value
+
+        var updated = document
+        updated.title = normalized
+        updateTab(tabId) { $0.document = updated }
+        if activeTabId == tabId { document_setActive(updated) }
+    }
+
+    /// Split out so `renameDocument` reads as one thought; assigning
+    /// `self.document` inline shadows the local `document` binding above it.
+    private func document_setActive(_ info: DocumentInfo) {
+        document = info
+    }
+
     /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
     /// resolved id up into the in-memory DocumentInfo so class-B stores can key
     /// off it this session. The stamp itself already happened during the write —
@@ -242,14 +260,18 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        evictPreparedPdf(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
             try? await sessions.setDocumentMetadata(
                 sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
+            // Metadata rewrites the PDF and therefore its validation hash.
+            // Flush extraction after that rewrite and before dropping the
+            // runtime so the cache is keyed to the bytes that will reopen.
+            await workspace?.existingLiveTabRuntime(for: tabId)?.flushPdfText()
             try? await sessions.closeFile(sessionId: closingTab.id)
         }
+        workspace?.removeLiveTabRuntime(for: tabId)
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
@@ -430,12 +452,18 @@ final class AppStore {
     func showFind() {
         guard document != nil else { return }
         findVisible = true
+        updateActiveTab { $0.findVisible = true }
     }
 
     /// Dismiss the find bar (Escape / close), clearing the viewer highlights.
     func hideFind() {
         guard findVisible else { return }
         findVisible = false
+        updateActiveTab {
+            $0.findVisible = false
+            $0.findMatchCount = 0
+            $0.findCurrentMatch = 0
+        }
         findMatchCount = 0
         findCurrentMatch = 0
         findClearHandler?()
@@ -444,6 +472,8 @@ final class AppStore {
     /// Run a query. An empty query clears highlights but keeps the bar open.
     func performFind(_ query: String) {
         guard document != nil else { return }
+        findQuery = query
+        updateActiveTab { $0.findQuery = query }
         if query.isEmpty {
             findMatchCount = 0
             findCurrentMatch = 0
@@ -460,6 +490,10 @@ final class AppStore {
     func setFindResults(count: Int, current: Int) {
         findMatchCount = count
         findCurrentMatch = current
+        updateActiveTab {
+            $0.findMatchCount = count
+            $0.findCurrentMatch = current
+        }
     }
 
     // MARK: - Print
@@ -472,8 +506,20 @@ final class AppStore {
 
     private func resetFindState() {
         findVisible = false
+        findQuery = ""
         findMatchCount = 0
         findCurrentMatch = 0
+    }
+
+    /// Read-only tab lookup used by persistent viewer hosts. A host may finish
+    /// preparing while another tab is active, so it must validate its own tab
+    /// identity without consulting the window-global active projection.
+    func tab(id: String) -> PdfTab? {
+        tabs.first { $0.id == id }
+    }
+
+    func containsTab(id: String) -> Bool {
+        tabs.contains { $0.id == id }
     }
 
     func setVisiblePages(_ pages: [Int]) {
@@ -714,8 +760,6 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         RecentFilesService.record(doc)
-        // Reveal the side panel by default whenever a document is opened.
-        workspace?.sidebarOpen = true
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it
         // by id, not index — `tabs` can be mutated by other main-actor work
@@ -733,6 +777,10 @@ final class AppStore {
             activateTab(existing.id)
             return
         }
+        // Reveal the side panel for a genuinely new document. Reopening a
+        // document that is already tabbed above is navigation, not a fresh
+        // open, and must preserve an explicit user choice to hide the panel.
+        workspace?.sidebarOpen = true
         let tab = PdfTab(
             id: sessionId,
             document: doc,
@@ -754,10 +802,11 @@ final class AppStore {
     }
 
     private func applyActiveState(from tab: PdfTab) {
-        // The find bar belongs to the outgoing viewer; the incoming one
-        // registers its own handlers on mount.
-        resetFindState()
         pendingNoteContent = nil
+        // Pin the incoming tab (never evictable while it is on screen) and
+        // restart the outgoing tab's idle countdown from now — it was in use
+        // until this instant, so its idle clock starts here, not at activation.
+        workspace?.paneDidActivateTab(self, tabId: tab.id)
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -767,11 +816,17 @@ final class AppStore {
         webVisibleRange = tab.webVisibleRange
         webVisibleBookmarks = tab.webVisibleBookmarks
         mode = tab.mode
+        findVisible = tab.findVisible
+        findQuery = tab.findQuery
+        findMatchCount = tab.findMatchCount
+        findCurrentMatch = tab.findCurrentMatch
     }
 
     private func applyEmptyActiveState() {
         resetFindState()
         pendingNoteContent = nil
+        // No tab on screen here, so this pane pins nothing.
+        workspace?.paneDidActivateTab(self, tabId: nil)
         activeTabId = nil
         document = nil
         currentPage = 1
