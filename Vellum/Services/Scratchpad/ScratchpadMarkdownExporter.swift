@@ -467,8 +467,8 @@ enum ScratchpadMarkdownExporter {
         while index < markdown.endIndex {
             let lineEnd = markdown[index...].firstIndex(of: "\n") ?? markdown.endIndex
             let line = markdown[index..<lineEnd]
-            if let openFence {
-                if isClosingFence(line, for: openFence) {
+            if let currentFence = openFence {
+                if isClosingFence(line, for: currentFence) {
                     openFence = nil
                 }
             } else if let fence = openingFence(in: line) {

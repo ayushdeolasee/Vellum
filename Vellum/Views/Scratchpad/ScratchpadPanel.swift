@@ -349,6 +349,7 @@ private struct ScratchpadExportOptionsSheet: View {
         .frame(width: 480)
         .accessibilityIdentifier("scratchpad.export.options")
     }
+}
 
 @MainActor
 private func registerScratchpadUndo(
