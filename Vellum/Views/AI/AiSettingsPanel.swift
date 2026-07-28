@@ -121,88 +121,7 @@ enum AiModelCatalog {
     }
 }
 
-struct AiSettingsPanel: View {
-    @Environment(AiStore.self) private var aiStore
-    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
-    @Environment(\.palette) private var palette
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            field("Provider") {
-                Picker("", selection: aiStore.providerBinding) {
-                    ForEach(AiProviderOption.all) { option in
-                        Text(option.label).tag(option.provider)
-                    }
-                }
-                .labelsHidden()
-            }
-
-            if aiStore.settings.provider == .chatgpt {
-                field("Account") { ChatGPTSignInControl() }
-            } else {
-                field(aiStore.keyFieldLabel) {
-                    RevealableSecureField(
-                        accessibilityLabel: aiStore.keyFieldLabel,
-                        placeholder: aiStore.keyFieldPlaceholder,
-                        text: aiStore.apiKeyBinding
-                    )
-                        .id(aiStore.settings.provider)
-                }
-            }
-
-            field("Model") {
-                AiModelSelectorField()
-                capabilityWarnings
-            }
-
-            field("Thinking") {
-                Picker("", selection: aiStore.reasoningBinding) {
-                    ForEach(AiThinkingMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .labelsHidden()
-            }
-        }
-        .font(.system(size: 12))
-        .padding(12)
-        .background(palette.surfaceMuted)
-        .overlay(alignment: .bottom) { Rectangle().fill(palette.border).frame(height: 1) }
-    }
-
-    private func field<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).foregroundStyle(palette.mutedForeground)
-            content().frame(maxWidth: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private var capabilityWarnings: some View {
-        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
-            if !option.supportsVision {
-                warning(AiCapabilityWarning.noVision)
-            }
-            if !option.supportsTools {
-                warning(AiCapabilityWarning.noTools)
-            }
-        }
-    }
-
-    private func warning(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 4) {
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
-            Text(text)
-        }
-        .font(.system(size: 10))
-        .foregroundStyle(palette.gold)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Shared model-row content embedded by both AI settings hosts (the in-panel
-/// `AiSettingsPanel` and the Settings window's `AiSettingsTab`). Each host wraps
-/// it in its own label container so the surrounding layout stays distinct.
+/// Model-row content used by the global Settings window's AI tab.
 struct AiModelSelectorField: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
@@ -218,15 +137,13 @@ struct AiModelSelectorField: View {
     }
 }
 
-/// Capability-warning strings shared by both hosts so the copy never drifts.
-/// Each host renders them with its own styling (custom HStack vs `Label`).
+/// Capability-warning strings used by the global AI settings tab.
 enum AiCapabilityWarning {
     static let noVision = "This model can't see the page image — answers about page contents may be less accurate."
     static let noTools = "This model can't run navigation, highlight, or note actions."
 }
 
-/// The provider list shared by both AI settings hosts so the picker never
-/// drifts between the in-panel view and the Settings window.
+/// Provider options used by the global AI settings tab.
 struct AiProviderOption: Identifiable {
     let provider: AiProvider
     let label: String
@@ -243,8 +160,7 @@ struct AiProviderOption: Identifiable {
 }
 
 /// Sign-in / signed-in / sign-out control for the ChatGPT-subscription OAuth
-/// provider, shared by both AI settings hosts. Replaces the API-key field, since
-/// this provider authenticates via the browser rather than a pasted key.
+/// provider in global Settings.
 struct ChatGPTSignInControl: View {
     @Environment(ChatGPTAuth.self) private var auth
     @Environment(\.palette) private var palette

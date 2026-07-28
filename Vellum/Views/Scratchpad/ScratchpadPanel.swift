@@ -18,6 +18,7 @@ struct ScratchpadPanel: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.undoManager) private var undoManager
 
     /// True only while a capture *this* panel armed is in flight — the AI panel
     /// arms the same `.snapshotRegion` mode, and its crop must not light up the
@@ -101,7 +102,11 @@ struct ScratchpadPanel: View {
                 .accessibilityIdentifier("scratchpad.snapshotRegion")
                 .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
             }
-            IconButton(help: "Clear scratchpad", action: clear) {
+            IconButton(
+                help: "Clear scratchpad note",
+                disabled: scratchpadStore.text.isEmpty,
+                action: clear
+            ) {
                 Image(systemName: "trash").font(.system(size: 15))
             }
             .accessibilityIdentifier("scratchpad.clear")
@@ -120,10 +125,41 @@ struct ScratchpadPanel: View {
         }
     }
 
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
     private func clear() {
-        scratchpadStore.text = ""
+        guard let transaction = scratchpadStore.clearText() else { return }
+        guard let undoManager else { return }
+        registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
     }
+}
 
+@MainActor
+private func registerScratchpadUndo(
+    _ transaction: ScratchpadClearTransaction,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard let restoration = target.undoClear(transaction) else { return }
+        registerScratchpadRedo(restoration, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
+}
+
+@MainActor
+private func registerScratchpadRedo(
+    _ restoration: ScratchpadClearRestoration,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(restoration) else { return }
+        registerScratchpadUndo(restoration.transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
 }
 
 /// Normalize dropped image bytes into a `ScratchpadImageCapture`: keep small
