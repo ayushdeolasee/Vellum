@@ -79,6 +79,7 @@ private struct ReadingSettingsTab: View {
     @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
     @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
     @AppStorage(InkController_iOS.autoHideSidebarKey) private var autoHideSidebarWhileInking = true
+    @AppStorage(InkController_iOS.scratchOutToEraseKey) private var scratchOutToErase = true
     #endif
 
     var body: some View {
@@ -127,10 +128,11 @@ private struct ReadingSettingsTab: View {
                 }
                 .pickerStyle(.segmented)
                 Toggle("Auto-hide sidebar while inking", isOn: $autoHideSidebarWhileInking)
+                Toggle("Scribble to erase", isOn: $scratchOutToErase)
             } header: {
                 Text("Apple Pencil")
             } footer: {
-                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool. Auto-hiding the sidebar collapses the annotation panel so the ink tools get the full page width.")
+                Text("What double-tapping a supported Apple Pencil does while inking — toggle the eraser, or switch back to your last tool. Auto-hiding the sidebar collapses the annotation panel so the ink tools get the full page width. Scribbling back and forth over your own handwriting with the pen deletes it, without switching to the eraser.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
