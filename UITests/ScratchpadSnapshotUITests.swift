@@ -21,9 +21,11 @@ final class ScratchpadSnapshotUITests: VellumUITestCase {
         app.launch()
         waitForDocument(in: app)
 
-        // Open the inspector and switch to the Scratchpad tab. The segmented
-        // picker exposes ids via accessibilityIdentifierPrefix "sidebarTab".
-        let scratchpadTab = app.descendants(matching: .any)["sidebarTab.Scratchpad"]
+        // Open the inspector and switch to the Scratchpad tab. #73's
+        // `InspectorTabSwitcher` derives each id from the case name, so the
+        // stem is lowercase (`sidebarTab.scratchpad`) in every layout it can
+        // reach at the inspector's 280pt minimum width.
+        let scratchpadTab = app.descendants(matching: .any)["sidebarTab.scratchpad"].firstMatch
         if !scratchpadTab.waitForExistence(timeout: 5) {
             // Inspector may be closed; toggle it from the toolbar, then retry.
             app.buttons["toolbar.sidebarToggle"].tap()

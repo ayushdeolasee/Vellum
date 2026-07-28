@@ -21,6 +21,10 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     DEAD_CODE_STRIPPING: "YES"
 schemes:
+  # The default scheme's test action stays exactly what it was: the hosted unit
+  # suite, in Debug. XCUITests launch and drive the real app, which is far too
+  # slow (and far too intrusive on a developer's desktop) to run on every
+  # `xcodebuild test -scheme Vellum`, so they live in their own scheme below.
   Vellum:
     build:
       targets:
@@ -28,9 +32,19 @@ schemes:
     run:
       config: Debug
     test:
-      config: UITesting
+      config: Debug
       targets:
         - VellumTests
+  VellumUITests:
+    build:
+      targets:
+        Vellum: all
+        VellumUITests: [test]
+    run:
+      config: UITesting
+    test:
+      config: UITesting
+      targets:
         - VellumUITests
 targets:
   VellumUITests:

@@ -470,6 +470,26 @@ enum WebLibrary {
         removeLocalSnapshots(forKey: key)
     }
 
+    /// Retitle a saved page that is not currently open in a session.
+    ///
+    /// `WebSessionBackend.setMetadata(key: "title", …)` already does this, but
+    /// only for a page with a live session behind it. Renaming from the home
+    /// screen has no session — the whole point of that screen is reaching
+    /// documents that are not open — so this is the session-less door to the
+    /// same record, through the same `withRecord` lock the session path uses so
+    /// the two cannot interleave and lose each other's writes.
+    ///
+    /// A blank title clears the override, so the page falls back to its host
+    /// and path rather than rendering as an empty row.
+    static func setTitle(rawUrl: String, title: String?) throws {
+        let url = try WebUrl.normalize(rawUrl)
+        let key = pageKey(url)
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        try withRecord(url: url, recordPath: recordPath(forKey: key)) { record in
+            record.title = trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
     // MARK: - Snapshot storage management (Settings ▸ Storage)
 
     /// One page's on-disk snapshot footprint. Sizes cover only the derived

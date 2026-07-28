@@ -1,29 +1,55 @@
 import Foundation
 import Security
+import os
 
 /// Thin wrapper over the macOS Keychain for storing AI provider API keys as
 /// generic passwords. All keys live under one service; the account string is
 /// the provider identifier (e.g. "gemini", "openai", "openrouter").
 enum KeychainStore {
-    /// The production service remains stable for existing credentials. UI tests
-    /// reserve a separate name and use the inert backend below, so a test launch
-    /// cannot read, migrate, overwrite, or delete a real user's credentials.
-    static let productionService = "com.vellum.ai"
-    static let uiTestService = "com.vellum.ai.uitesting"
-    static var service: String {
-        UITestLaunchConfiguration.isEnabled ? uiTestService : productionService
-    }
+    static let service = "com.vellum.ai"
 
-    private static let backend: any Backend = {
-        if UITestLaunchConfiguration.isEnabled {
-            return InertBackend()
-        }
-        return SecurityBackend(service: service)
+    /// Test runs must never touch the real login keychain: the test host is an
+    /// ad-hoc-signed Debug build whose signature changes on every rebuild, so
+    /// each `xcodebuild test` launch would re-trigger the keychain password
+    /// prompt — and tests have no business reading the user's real API keys.
+    /// Detected via the XCTest environment (set from process start, before the
+    /// test bundle is injected) with the class lookup as a fallback.
+    ///
+    /// A UI test is a second process boundary: `XCUIApplication().launch()`
+    /// starts the app fresh, and that process inherits NONE of the XCTest
+    /// environment markers or the XCTestCase class. The `--ui-testing` launch
+    /// argument the harness always passes is the only signal available there,
+    /// so it counts as "under test" too — otherwise every UI-test launch of an
+    /// ad-hoc-signed build would re-prompt for the login keychain password.
+    private static let isRunningTests: Bool = {
+        if UITestLaunchConfiguration.isEnabled { return true }
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestSessionIdentifier"] != nil
+            || env["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
     }()
+
+    /// In-memory stand-in used instead of the keychain while under test, so
+    /// set/get/delete still round-trip within a test process.
+    private static let testStore = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
     /// Returns the stored secret for an account, or nil if absent/unreadable.
     static func get(_ account: String) -> String? {
-        backend.get(account)
+        if isRunningTests { return testStore.withLock { $0[account] } }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        return value
     }
 
     /// Stores (or updates) the secret for an account. An empty value deletes it.
@@ -31,81 +57,44 @@ enum KeychainStore {
     /// callers can avoid dropping the plaintext copy before the write lands.
     @discardableResult
     static func set(_ account: String, _ value: String) -> Bool {
-        backend.set(account, value)
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return delete(account)
+        }
+        if isRunningTests {
+            testStore.withLock { $0[account] = trimmed }
+            return true
+        }
+        let data = Data(trimmed.utf8)
+        let baseQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = baseQuery
+            addQuery[kSecValueData as String] = data
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        }
+        return status == errSecSuccess
     }
 
     /// Removes the secret for an account. Returns `true` when the account is
     /// absent afterwards (either deleted now or already missing).
     @discardableResult
     static func delete(_ account: String) -> Bool {
-        backend.delete(account)
-    }
-
-    private protocol Backend: Sendable {
-        func get(_ account: String) -> String?
-        func set(_ account: String, _ value: String) -> Bool
-        func delete(_ account: String) -> Bool
-    }
-
-    /// Production backend. Keep all Security calls here so the UI-test backend
-    /// cannot accidentally reach the production service through a new path.
-    private struct SecurityBackend: Backend {
-        let service: String
-
-        func get(_ account: String) -> String? {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account,
-                kSecReturnData as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne,
-            ]
-            var result: AnyObject?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            guard status == errSecSuccess,
-                  let data = result as? Data,
-                  let value = String(data: data, encoding: .utf8) else { return nil }
-            return value
+        if isRunningTests {
+            testStore.withLock { $0[account] = nil }
+            return true
         }
-
-        func set(_ account: String, _ value: String) -> Bool {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return delete(account)
-            }
-            let data = Data(trimmed.utf8)
-            let baseQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account,
-            ]
-            let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-            if status == errSecItemNotFound {
-                var addQuery = baseQuery
-                addQuery[kSecValueData as String] = data
-                return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
-            }
-            return status == errSecSuccess
-        }
-
-        func delete(_ account: String) -> Bool {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account,
-            ]
-            let status = SecItemDelete(query as CFDictionary)
-            return status == errSecSuccess || status == errSecItemNotFound
-        }
-    }
-
-    /// UI tests exercise the app's configuration flow, not Keychain services.
-    /// Treat writes/deletes as successful while retaining no data, which leaves
-    /// every test launch credential-free and performs no Security operation.
-    private struct InertBackend: Backend {
-        func get(_ account: String) -> String? { nil }
-        func set(_ account: String, _ value: String) -> Bool { true }
-        func delete(_ account: String) -> Bool { true }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // Account identifiers, one per provider with a stored secret.
