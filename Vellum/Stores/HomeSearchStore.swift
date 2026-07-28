@@ -235,7 +235,10 @@ final class HomeSearchStore {
     func rename(_ item: HomeSearchItem, to newTitle: String) async {
         let target = DocumentRenameService.Target(item: item)
         let title = DocumentRenameService.normalized(newTitle)
-        await Task.detached(priority: .userInitiated) {
+        // `apply` reports whether any store accepted the write. Discarded on
+        // purpose: the reload below shows whatever actually landed, so there is
+        // nothing to tell the user that the refreshed row doesn't already say.
+        _ = await Task.detached(priority: .userInitiated) {
             DocumentRenameService.apply(target, title: title)
         }.value
         await load()
