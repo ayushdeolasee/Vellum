@@ -152,16 +152,7 @@ struct TabBarView: View {
 /// "leave it blank".
 extension TabBarView {
     static func fallbackName(for tab: PdfTab) -> String {
-        guard let document = tab.document else { return "New Tab" }
-        let fallback = document.pdfPath
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? ""
-        if fallback.lowercased().hasSuffix(".pdf") {
-            return String(fallback.dropLast(4))
-        }
-        return fallback.isEmpty ? "Untitled" : fallback
+        TabPresentation.fallbackName(for: tab)
     }
 }
 
@@ -253,12 +244,6 @@ private struct TabItem: View {
         // field shows the FILENAME for a PDF and the URL for a page, so
         // editing it would read as renaming the file or navigating. The tab is
         // the one place the document's title is actually rendered.
-        .contextMenu {
-            if let onRename {
-                Button("Rename…", action: onRename)
-            }
-            Button("Close Tab", role: .destructive, action: onClose)
-        }
         .onDrag {
             let payload = TabDragPayload(paneId: paneId, tabId: tab.id)
             workspace.beginTabDrag(payload)
@@ -273,7 +258,17 @@ private struct TabItem: View {
             }
             return provider
         }
+        // ONE context menu. Two `.contextMenu` modifiers on the same view do
+        // not compose — the outer one replaces the inner — so rename and the
+        // tab-management actions have to be built together here.
         .contextMenu {
+            // Rename lives here rather than on the toolbar's title field: that
+            // field shows the FILENAME for a PDF and the URL for a page, so
+            // editing it would read as renaming the file or navigating. The tab
+            // is the one place the document's title is actually rendered.
+            if let onRename {
+                Button("Rename…", action: onRename)
+            }
             Button("Duplicate") { onDuplicate() }
                 .disabled(tab.document?.kind == .pdf)
             Button("Move to New Pane") { onMoveToNewPane() }
@@ -289,7 +284,7 @@ private struct TabItem: View {
 
             Divider()
 
-            Button("Close") { onClose() }
+            Button("Close Tab", role: .destructive, action: onClose)
             Button("Close Others") { onCloseOthers() }
                 .disabled(appStore.tabs.count < 2)
             Button("Close Tabs to Right") { onCloseRight() }
@@ -430,7 +425,24 @@ enum TabPresentation {
            !title.isEmpty {
             return title
         }
-        return TabBarView.fallbackName(for: tab)
+        return fallbackName(for: tab)
+    }
+
+    /// The name to show when a document carries no title of its own: its file
+    /// name, minus a `.pdf` extension. Lives here — nonisolated, beside the
+    /// other presentation helpers — so both the strip and the overview can use
+    /// it without hopping actors.
+    static func fallbackName(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "New Tab" }
+        let fallback = document.pdfPath
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .last
+            .map(String.init) ?? ""
+        if fallback.lowercased().hasSuffix(".pdf") {
+            return String(fallback.dropLast(4))
+        }
+        return fallback.isEmpty ? "Untitled" : fallback
     }
 
     static func typeLabel(for tab: PdfTab) -> String {

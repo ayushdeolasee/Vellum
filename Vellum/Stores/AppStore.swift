@@ -335,14 +335,9 @@ final class AppStore {
         error = nil
         let sessionId = UUID().uuidString.lowercased()
         do {
-            var opened: DocumentInfo
-            if sourceDocument.kind == .web {
-                opened = try await sessions.openWebDocument(
-                    url: sourceDocument.pdfPath, sessionId: sessionId)
-            } else {
-                opened = try await sessions.openFile(
-                    path: sourceDocument.pdfPath, sessionId: sessionId)
-            }
+            // Web only, per the guard above.
+            var opened = try await sessions.openWebDocument(
+                url: sourceDocument.pdfPath, sessionId: sessionId)
             // Keep the title currently visible in the source tab. Web titles in
             // particular may have been learned after the initial open.
             opened.title = sourceDocument.title ?? opened.title

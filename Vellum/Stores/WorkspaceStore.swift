@@ -609,11 +609,19 @@ final class WorkspaceStore {
     /// collapse them after restore while preserving one Welcome pane if every
     /// saved document was unavailable.
     func pruneAbandonedEmptyPanes() {
-        let fallback = root.allLeaves().first
+        let before = root.allLeaves()
+        let fallback = before.first
         if let pruned = pruningEmptyLeaves(root) {
             root = pruned
         } else if let fallback {
             root = .leaf(fallback)
+        }
+        // Same contract as `closePane` and `mergeAll`: a pane that stops
+        // existing must drop its residency pin, or whatever it last showed
+        // stays exempt from eviction for the life of the process (issue #52).
+        let survivors = Set(root.allLeaves().map(\.id))
+        for pane in before where !survivors.contains(pane.id) {
+            forgetPanePin(pane.app)
         }
         if root.leaf(id: focusedPaneId) == nil {
             focusedPaneId = root.firstLeafId

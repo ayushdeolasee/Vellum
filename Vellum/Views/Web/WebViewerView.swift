@@ -1130,7 +1130,13 @@ final class WebViewerController: NSObject {
             if let editor = highlightEditor, clickOutside(editor.openedAt) { highlightEditor = nil }
 
         case "note-placed":
-            guard let anchor = parseNoteAnchor(data), let sessionId = mountTabId else { break }
+            // The whole branch is gated on this tab still being the active one,
+            // not just the mode reset at the end: `consumePendingNoteContent`
+            // below reads the *active* tab's queued AI reply, so a late message
+            // from a tab the user has already left would otherwise steal the
+            // reply queued for the tab now on screen.
+            guard let anchor = parseNoteAnchor(data), let sessionId = mountTabId,
+                  app.activeTabId == sessionId else { break }
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             hideContextMenu()
