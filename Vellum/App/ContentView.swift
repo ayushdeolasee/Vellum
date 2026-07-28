@@ -205,7 +205,18 @@ private struct WindowChrome: View {
         }
         .inspector(isPresented: inspectorPresented) {
             sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
+                .inspectorColumnWidth(
+                    min: WorkspaceStore.minSidebarWidth,
+                    ideal: workspace.sidebarWidth,
+                    max: WorkspaceStore.maxSidebarWidth)
+                // Feeds the user's splitter drag back to the store so the next
+                // document reopens the column where they left it. The store
+                // rejects the collapsed measurements a start tab produces.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { width in
+                    workspace.rememberSidebarWidth(width)
+                }
                 .toolbar {
                     if inspectorPresented.wrappedValue {
                         ToolbarSpacer(.flexible)
@@ -227,11 +238,12 @@ private struct WindowChrome: View {
     }
 
     /// Inspector only makes sense with a document in the focused pane; the open
-    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    /// state itself is window-global (WorkspaceStore) so it survives focus and
+    /// start-tab changes.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { focused.app.document != nil && workspace.sidebarOpen },
-            set: { workspace.sidebarOpen = $0 }
+            get: { workspace.inspectorPresented },
+            set: { workspace.setInspectorPresented($0) }
         )
     }
 

@@ -32,10 +32,67 @@ final class WorkspaceStore {
     var sidebarTab: SidebarTab = .annotations
     enum SidebarTab: Sendable { case annotations, ai, scratchpad }
 
+    // MARK: Inspector column width
+
+    // The one definition of the inspector's resize envelope. `ContentView`
+    // hands these straight to `.inspectorColumnWidth(min:ideal:max:)`, and
+    // `rememberSidebarWidth` clamps to the same numbers — keeping them here
+    // stops the modifier and the guard from silently drifting apart, which
+    // would either reject widths AppKit can legitimately produce or remember
+    // ones it will immediately override.
+    static let minSidebarWidth: CGFloat = 240
+    static let defaultSidebarWidth: CGFloat = 340
+    static let maxSidebarWidth: CGFloat = 700
+
+    /// The width to reopen the inspector at, tracking the user's last drag.
+    ///
+    /// Deliberately NOT observed. It is read in `WindowChrome.body` as the
+    /// `ideal:` of `.inspectorColumnWidth`, and written from that same view's
+    /// `.onGeometryChange` — once per frame while the splitter is being dragged.
+    /// Were it observed, each of those writes would invalidate the whole window
+    /// chrome (pane tree and toolbar included) mid-drag, and feed a fresh
+    /// `ideal:` back into the very layout pass that produced the measurement.
+    /// A stale read is impossible where it matters: `ideal:` is only consulted
+    /// when the column appears, and `inspectorPresented` — which *is* observed —
+    /// has to change for that to happen, so the body re-runs and re-reads this
+    /// value at exactly the moment it is used.
+    @ObservationIgnored
+    private(set) var sidebarWidth: CGFloat = WorkspaceStore.defaultSidebarWidth
+
     /// The destination selected when an in-app action opens the global Settings
     /// scene. Keeping this at workspace scope lets Home and document panels route
     /// to the same native window without embedding duplicate settings controls.
     var settingsSection: SettingsSection = .general
+
+    /// Whether SwiftUI should currently present the document inspector.
+    ///
+    /// `sidebarOpen` is the user's window-level preference. A start tab has no
+    /// document, so it temporarily suppresses the inspector without changing
+    /// that preference. Keeping these concepts separate preserves the selected
+    /// panel and AppKit-managed column width when the user returns to a document.
+    var inspectorPresented: Bool {
+        focusedPane.app.document != nil && sidebarOpen
+    }
+
+    /// Applies a presentation change originating from SwiftUI's inspector host.
+    /// When focus moves to a start tab SwiftUI writes `false` because the
+    /// inspector is conditionally unavailable; that is not a user request to
+    /// close it, so ignore the write until a document is focused.
+    func setInspectorPresented(_ isPresented: Bool) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarOpen = isPresented
+    }
+
+    /// Remembers user resizing while the inspector is genuinely visible.
+    /// Geometry briefly collapses when a start tab suppresses the inspector;
+    /// rejecting that transient measurement lets the next document reopen at
+    /// the user's prior width.
+    func rememberSidebarWidth(_ width: CGFloat) {
+        guard inspectorPresented,
+              (Self.minSidebarWidth...Self.maxSidebarWidth).contains(width)
+        else { return }
+        sidebarWidth = width
+    }
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
@@ -281,7 +338,6 @@ final class WorkspaceStore {
             sizes: [50, 50])
         root = replacingLeaf(root, id: target.id, with: split)
         focusedPaneId = newPane.id
-        sidebarOpen = true
         scheduleSave()
     }
 

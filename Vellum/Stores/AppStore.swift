@@ -760,8 +760,6 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         RecentFilesService.record(doc)
-        // Reveal the side panel by default whenever a document is opened.
-        workspace?.sidebarOpen = true
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it
         // by id, not index — `tabs` can be mutated by other main-actor work
@@ -779,6 +777,10 @@ final class AppStore {
             activateTab(existing.id)
             return
         }
+        // Reveal the side panel for a genuinely new document. Reopening a
+        // document that is already tabbed above is navigation, not a fresh
+        // open, and must preserve an explicit user choice to hide the panel.
+        workspace?.sidebarOpen = true
         let tab = PdfTab(
             id: sessionId,
             document: doc,
