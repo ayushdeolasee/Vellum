@@ -97,6 +97,7 @@ struct WelcomeScreen: View {
                 openControls
                 urlControls
                 errorBanner
+                walkthroughLink
             }
             .frame(maxWidth: 672)
             .padding(.horizontal, 24)
@@ -167,6 +168,14 @@ struct WelcomeScreen: View {
                 .accessibilityIdentifier("welcome.openUrl")
 
                 Spacer(minLength: 12)
+
+                // Returning users get the compact icon form — the library
+                // header is already dense, and they've seen the offer before.
+                IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 14))
+                }
+                .accessibilityIdentifier("welcome.walkthrough")
 
                 sortMenu
             }
@@ -281,20 +290,31 @@ struct WelcomeScreen: View {
 
             HStack(spacing: 4) {
                 Text("or press")
-                Text("⌘O")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.sm))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Radius.sm)
-                            .strokeBorder(.separator)
-                    }
+                Keycap(keys: "⌘O")
             }
             .font(.system(size: 12))
             .foregroundStyle(palette.mutedForeground)
         }
+        .padding(.top, 28)
+    }
+
+    /// First-run readers land on this screen with nothing open, so the empty
+    /// layout gets the walkthrough as a full text link rather than an icon —
+    /// it's the one moment the offer is worth spelling out.
+    private var walkthroughLink: some View {
+        Button(action: openWalkthrough) {
+            HStack(spacing: 5) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12))
+                Text("How Vellum works")
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(palette.mutedForeground)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("A short walkthrough of Vellum's features")
+        .accessibilityIdentifier("welcome.walkthrough")
         .padding(.top, 28)
     }
 
@@ -372,6 +392,13 @@ struct WelcomeScreen: View {
 
     private var trimmedUrl: String {
         urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Routed through the window rather than presented here: the walkthrough
+    /// outlives this screen (it stays reachable once a document is open), so
+    /// the window owns its presentation state.
+    private func openWalkthrough() {
+        NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
     }
 
     private func openUrl() {
