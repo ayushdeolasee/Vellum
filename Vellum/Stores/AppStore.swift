@@ -240,7 +240,10 @@ final class AppStore {
             recordedPath: document.pdfPath,
             storageKey: DocumentIdentity.storageKey(for: document))
 
-        await Task.detached(priority: .userInitiated) {
+        // `apply` reports whether it wrote anything. The in-memory update below
+        // is what the UI reads either way, so the result is intentionally
+        // discarded — named here so it isn't an unused-expression warning.
+        _ = await Task.detached(priority: .userInitiated) {
             DocumentRenameService.apply(target, title: normalized)
         }.value
 

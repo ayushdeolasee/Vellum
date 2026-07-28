@@ -145,8 +145,7 @@ struct Wordmark: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        (Text("Vellum").foregroundStyle(palette.foreground)
-            + Text(".").foregroundStyle(palette.primary))
+        Text("\(Text("Vellum").foregroundStyle(palette.foreground))\(Text(".").foregroundStyle(palette.primary))")
             .font(.custom("Iowan Old Style", size: size).weight(.semibold))
             .kerning(-0.2 * size / 15)
     }

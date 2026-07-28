@@ -54,7 +54,8 @@ enum PdfDocumentLoader {
             let message = String(cString: strerror(code))
             throw SessionServiceError.io("Failed to resolve PDF path \(path): \(message) (os error \(code))")
         }
-        return String(cString: buffer)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     static func readFile(_ path: String) throws -> Data {

@@ -1034,7 +1034,7 @@ final class AiStore {
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
-        var context = context
+        let context = context
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let app,

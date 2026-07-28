@@ -441,7 +441,7 @@ enum WebFetch {
     /// Shared client: exact UA, 30 s timeout, redirects followed, no cookies,
     /// no cache (reqwest always hits the network; a cached hit here would
     /// defeat the offline-snapshot fallback chain).
-    nonisolated(unsafe) static let session: URLSession = {
+    static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpAdditionalHeaders = ["User-Agent": userAgent]
         config.timeoutIntervalForRequest = 30
@@ -640,12 +640,12 @@ enum WebFetch {
 // MARK: - HTML preparation (Rust `prepare_html` / `error_page`)
 
 enum WebHtml {
-    nonisolated(unsafe) private static let cspMetaRegex = regex(
+    private static let cspMetaRegex = regex(
         #"<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>"#)
-    nonisolated(unsafe) private static let refreshMetaRegex = regex(
+    private static let refreshMetaRegex = regex(
         #"<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*>"#)
-    nonisolated(unsafe) private static let headOpenRegex = regex(#"<head[^>]*>"#)
-    nonisolated(unsafe) private static let htmlOpenRegex = regex(#"<html[^>]*>"#)
+    private static let headOpenRegex = regex(#"<head[^>]*>"#)
+    private static let htmlOpenRegex = regex(#"<html[^>]*>"#)
 
     private static func regex(_ pattern: String) -> NSRegularExpression {
         // Patterns are compile-time constants; force-try is safe.
