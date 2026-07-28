@@ -142,6 +142,7 @@
 		C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */; };
 		C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
+		C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */; };
 		C82D9FC05EC46B7D699B8B0F /* KaTeX_Size1-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */; };
 		CA6BCC8D048C1E43CBC52E99 /* KaTeX_SansSerif-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */; };
 		CB58CF712FE221F08C846934 /* InspectorPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B2FF4EC7260E5A86C069B /* InspectorPresentationTests.swift */; };
@@ -176,6 +177,7 @@
 		F33467F1BF882C20214E4EB4 /* editor.html in Resources */ = {isa = PBXBuildFile; fileRef = C024B0FD91AE2990C4277000 /* editor.html */; };
 		F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */; };
 		F4ED32A7851D641FB6F47CA4 /* AiReferencePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9674A1105A70C761C2EC40AB /* AiReferencePersistenceTests.swift */; };
+		F588EF4EEF4D4DA1E50F5D85 /* ScratchpadMarkdownExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F7B1CD3853E8F7239B9191 /* ScratchpadMarkdownExporterTests.swift */; };
 		F5C06F91CFD5CF5D40BC0365 /* HomeSearchEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F26F0ACC6F7B4DFEA39EB78 /* HomeSearchEngineTests.swift */; };
 		F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8909CC21C72AF947D20B4B6C /* AppStore.swift */; };
 		F9DA8014506FBB48C440F718 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
@@ -225,6 +227,7 @@
 		327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiConversationStoreTests.swift; sourceTree = "<group>"; };
 		35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPersistence.swift; sourceTree = "<group>"; };
 		372DC33960E8DFA9E3444D41 /* AiTranscriptFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiTranscriptFollowTests.swift; sourceTree = "<group>"; };
+		37F7B1CD3853E8F7239B9191 /* ScratchpadMarkdownExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownExporterTests.swift; sourceTree = "<group>"; };
 		3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManagementTests.swift; sourceTree = "<group>"; };
 		3E8AC4A486031931558B1541 /* HelpCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpCenterView.swift; sourceTree = "<group>"; };
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
@@ -275,6 +278,7 @@
 		7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField.swift; sourceTree = "<group>"; };
 		7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
 		7F74ED028819A0D803E89E25 /* DocumentRenameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRenameTests.swift; sourceTree = "<group>"; };
+		814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownExporter.swift; sourceTree = "<group>"; };
 		81F1F3B1E8E330471651991F /* KaTeX_SansSerif-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Italic.woff2"; sourceTree = "<group>"; };
 		8352DF5C4A0A69EF4D19687D /* WalkthroughLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughLayoutTests.swift; sourceTree = "<group>"; };
 		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
@@ -485,6 +489,7 @@
 				CC1F783F50CC2705F7C3733D /* SafeClearTests.swift */,
 				B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */,
 				2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */,
+				37F7B1CD3853E8F7239B9191 /* ScratchpadMarkdownExporterTests.swift */,
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
 				583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */,
 				BF3E4F80AF4A2707D432AF73 /* SidebarDropRoutingTests.swift */,
@@ -762,6 +767,7 @@
 		F271A96845AFED2A54F2E5E3 /* Scratchpad */ = {
 			isa = PBXGroup;
 			children = (
+				814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */,
 				287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */,
 			);
 			path = Scratchpad;
@@ -991,6 +997,7 @@
 				1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */,
 				EED4D60FF3F3E7DD9BDE3342 /* RenameDocumentSheet.swift in Sources */,
 				AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */,
+				C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */,
 				016BFAA281D7CA51CCED4B92 /* ScratchpadPanel.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,
 				74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */,
@@ -1061,6 +1068,7 @@
 				2708447E7B0AB5779FD79A5B /* SafeClearTests.swift in Sources */,
 				C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */,
 				36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */,
+				F588EF4EEF4D4DA1E50F5D85 /* ScratchpadMarkdownExporterTests.swift in Sources */,
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
 				6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */,
 				5236947317CC86594F165BD2 /* SidebarDropRoutingTests.swift in Sources */,
