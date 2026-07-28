@@ -210,7 +210,11 @@ struct HomeLinkActionRow: View {
 
                 Spacer(minLength: 12)
 
-                KeyCapsule(label: "↩")
+                // Hidden from VoiceOver: this row is a single button whose
+                // label already says what ↩ does, and `Keycap` would otherwise
+                // add a second "Keyboard shortcut" element inside it.
+                Keycap(keys: "↩")
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, HomeLayout.rowInset)
             .padding(.vertical, 8)
@@ -291,20 +295,10 @@ struct HomeFilterChip: View {
     }
 }
 
-/// A keycap, matching the "or press ⌘O" hint the welcome hero has always used.
-struct KeyCapsule: View {
-    let label: String
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.sm))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.sm).strokeBorder(.separator)
-            }
-            .accessibilityHidden(true)
-    }
-}
+// `KeyCapsule` used to live here. It is gone in favour of `Keycap`
+// (Views/Shared/Controls.swift), which #70 landed on main: this version styled
+// itself with `.quaternary` / `.separator`, and those resolve from the color
+// scheme rather than from our palette, so against the light parchment chrome
+// they washed out to nearly nothing — the same defect that made the
+// walkthrough's page dots invisible in light mode. `Keycap` uses
+// `palette.muted` / `palette.borderStrong`, which are defined for both schemes.

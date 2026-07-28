@@ -26,7 +26,9 @@ struct WelcomeScreen: View {
     var isPaneFocused = true
 
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.openSettings) private var openSettings
 
     @State private var store = HomeSearchStore()
     /// First-run hero only. The library layout uses the search field itself for
@@ -36,19 +38,33 @@ struct WelcomeScreen: View {
     @State private var renamingItem: HomeSearchItem?
     @FocusState private var searchFocused: Bool
 
+    private var updateChecker: UpdateChecker { workspace.updateChecker }
+
     /// The calm first-run hero, shown only once we KNOW there is nothing to
     /// browse — never while the first load is still in flight, or the screen
     /// would flash "welcome" at someone with a full library.
+    ///
+    /// This replaces main's `hasLibrary` (which read `recentDocuments` /
+    /// `savedPages` directly): the corpus now comes from `HomeSearchStore`,
+    /// which knows about library documents too, not just recents and saved
+    /// pages, and which can distinguish "empty" from "not loaded yet".
     private var showsFirstRun: Bool {
         !store.isLoading && store.libraryIsEmpty && !store.isSearching
     }
 
     var body: some View {
-        Group {
-            if showsFirstRun {
-                firstRunLayout
-            } else {
-                libraryLayout
+        // #70's Home chrome — title, update affordances, settings gear — stays
+        // above BOTH layouts exactly as it did on main. The search revamp
+        // replaces only what used to live below this divider.
+        VStack(spacing: 0) {
+            homeHeader
+            Divider()
+            Group {
+                if showsFirstRun {
+                    firstRunLayout
+                } else {
+                    libraryLayout
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -166,6 +182,17 @@ struct WelcomeScreen: View {
             }
             .help("Open a webpage by URL (⌘L)")
             .accessibilityIdentifier("welcome.addWebpage")
+
+            // #65's walkthrough entry point. Returning users get the compact
+            // icon form — this header is already dense, and they've seen the
+            // offer before; the first-run hero spells it out as a text link
+            // instead. The two layouts are mutually exclusive, so exactly one
+            // `welcome.walkthrough` is ever on screen.
+            IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 14))
+            }
+            .accessibilityIdentifier("welcome.walkthrough")
         }
     }
 
@@ -200,7 +227,7 @@ struct WelcomeScreen: View {
                 }
 
             if store.query.isEmpty {
-                KeyCapsule(label: "⌘F")
+                Keycap(keys: "⌘F")
             } else {
                 IconButton(help: "Clear search") {
                     store.clearQuery()
@@ -270,6 +297,56 @@ struct WelcomeScreen: View {
         .foregroundStyle(palette.mutedForeground)
         .help("Change how the library is sorted")
         .accessibilityIdentifier("welcome.sort")
+    }
+
+    // MARK: - Home chrome (from #70)
+
+    /// The window's Home bar. Carried over from #70 unchanged: it is the app's
+    /// only settings entry point outside ⌘, so it has to survive the revamp.
+    private var homeHeader: some View {
+        HStack(spacing: 8) {
+            Text("Home")
+                .font(.headline)
+                .foregroundStyle(palette.foreground)
+            Spacer()
+            if updateChecker.state == .available,
+               let version = updateChecker.availableVersion {
+                Button {
+                    updateChecker.install()
+                } label: {
+                    Label("Install Update \(version)", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderless)
+                .help(updateChecker.tooltip)
+                .accessibilityIdentifier("welcome.installUpdate")
+            }
+            Button {
+                Task { await updateChecker.check() }
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.clockwise")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .disabled(updateChecker.state == .checking)
+            .help(updateChecker.tooltip)
+            .accessibilityIdentifier("welcome.checkForUpdates")
+
+            Button(action: showSettings) {
+                Label("Settings", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Settings… (⌘,)")
+            .accessibilityIdentifier("welcome.settings")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .background(palette.background)
+    }
+
+    private func showSettings() {
+        workspace.settingsSection = .general
+        openSettings()
     }
 
     // MARK: - Results
@@ -393,6 +470,7 @@ struct WelcomeScreen: View {
                 openControls
                 urlControls
                 errorBanner
+                walkthroughLink
             }
             .frame(maxWidth: 672)
             .padding(.horizontal, 24)
@@ -430,11 +508,31 @@ struct WelcomeScreen: View {
 
             HStack(spacing: 4) {
                 Text("or press")
-                KeyCapsule(label: "⌘O")
+                Keycap(keys: "⌘O")
             }
             .font(.system(size: 12))
             .foregroundStyle(palette.mutedForeground)
         }
+        .padding(.top, 28)
+    }
+
+    /// First-run readers land on this screen with nothing open, so the empty
+    /// layout gets the walkthrough as a full text link rather than an icon —
+    /// it's the one moment the offer is worth spelling out.
+    private var walkthroughLink: some View {
+        Button(action: openWalkthrough) {
+            HStack(spacing: 5) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12))
+                Text("How Vellum works")
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(palette.mutedForeground)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("A short walkthrough of Vellum's features")
+        .accessibilityIdentifier("welcome.walkthrough")
         .padding(.top, 28)
     }
 
@@ -492,6 +590,13 @@ struct WelcomeScreen: View {
 
     private var trimmedUrlInput: String {
         urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Routed through the window rather than presented here: the walkthrough
+    /// outlives this screen (it stays reachable once a document is open), so
+    /// the window owns its presentation state.
+    private func openWalkthrough() {
+        NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
     }
 
     private func focusSearchField() {
