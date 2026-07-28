@@ -65,8 +65,13 @@ final class ChatGPTClient {
             ]
             // Reasoning effort on the gpt-5 family. `.auto` omits the field so
             // the Codex backend applies its own default (the removed codex-CLI
-            // path sent none); explicit modes set it.
-            if model.lowercased().hasPrefix("gpt-5"), let effort = thinkingMode.openAIEffort {
+            // path sent none); explicit modes set it — resolved through the same
+            // per-family table the direct client uses. The Codex slugs name the
+            // same models, so passing the raw value through meant Instant sent
+            // "minimal" to gpt-5.5 (the default here), which is the value #94 is
+            // about: the family rejects it outright.
+            if let effort = OpenAIClient.supportedReasoningEffort(
+                model: model, requested: thinkingMode.openAIEffort) {
                 body["reasoning"] = ["effort": effort]
             }
             let request = try await makeRequest(url: url, body: body)
