@@ -31,11 +31,14 @@ jobs:
             "https://github.com/yonaskolb/XcodeGen/releases/download/$xcodegen_version/xcodegen.zip" \
             --output "$RUNNER_TEMP/xcodegen.zip"
           echo "$xcodegen_zip_sha256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check -
-          mkdir -p "$xcodegen_root/bin"
+          # The release zip unpacks to a self-contained xcodegen/ tree:
+          # bin/xcodegen next to the share/xcodegen/SettingPresets it resolves
+          # relative to its own path. Put that bin on PATH rather than copying
+          # the binary out on its own, which strands it from those presets.
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$xcodegen_root"
-          install -m 755 "$xcodegen_root/xcodegen" "$xcodegen_root/bin/xcodegen"
-          "$xcodegen_root/bin/xcodegen" version | grep --fixed-strings "Version: $xcodegen_version"
-          echo "$xcodegen_root/bin" >> "$GITHUB_PATH"
+          chmod +x "$xcodegen_root/xcodegen/bin/xcodegen"
+          "$xcodegen_root/xcodegen/bin/xcodegen" version | grep --fixed-strings "Version: $xcodegen_version"
+          echo "$xcodegen_root/xcodegen/bin" >> "$GITHUB_PATH"
 
       - name: Verify generated project
         run: |
@@ -44,6 +47,9 @@ jobs:
 
       - name: Build and test
         run: |
+          # Recorded because the targets build with warnings-as-errors, so a
+          # runner-image Xcode bump is the likeliest cause of a sudden red main.
+          xcodebuild -version
           xcodebuild test \
             -project Vellum.xcodeproj \
             -scheme Vellum \
