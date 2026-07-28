@@ -7,6 +7,7 @@ struct AiPanel: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.openSettings) private var openSettings
 
     /// The sidebar keeps every panel mounted (ContentView's ZStack), so this
     /// one exists — with live AppKit text views (the composer + transcript
@@ -25,7 +26,6 @@ struct AiPanel: View {
     private var isVisibleTab: Bool { workspace.sidebarTab == .ai }
 
     @State private var input = ""
-    @State private var settingsOpen = false
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
@@ -53,8 +53,8 @@ struct AiPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if settingsOpen {
-                AiSettingsPanel()
+            if !aiStore.settings.isConfigured(chatGPTSignedIn: workspace.chatgptAuth.isSignedIn) {
+                configureAiBanner
             }
             messages
             composer
@@ -97,15 +97,6 @@ struct AiPanel: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
-                IconButton(
-                    variant: settingsOpen ? .active : .ghost,
-                    help: "AI settings",
-                    action: { settingsOpen.toggle() }
-                ) {
-                    Image(systemName: "gearshape").font(.system(size: 15))
-                }
-                .accessibilityIdentifier("aiPanel.settings")
-                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
                 IconButton(help: "Clear conversation", action: aiStore.clearConversation) {
                     Image(systemName: "trash").font(.system(size: 15))
                 }
@@ -116,6 +107,29 @@ struct AiPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var configureAiBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "key")
+                .foregroundStyle(palette.mutedForeground)
+            Text("Configure AI to start chatting.")
+                .font(.system(size: 12))
+                .foregroundStyle(palette.mutedForeground)
+            Spacer(minLength: 4)
+            Button("Configure AI in Settings", action: showAiSettings)
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("aiPanel.configureAi")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(palette.surfaceMuted)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func showAiSettings() {
+        workspace.settingsSection = .ai
+        openSettings()
     }
 
     private var messages: some View {

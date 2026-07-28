@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 
 struct WelcomeScreen: View {
     @Environment(AppStore.self) private var appStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.openSettings) private var openSettings
 
     @State private var recentDocuments = RecentFilesService.getRecent()
     @State private var savedPages: [WebLibraryEntry] = []
@@ -12,16 +14,22 @@ struct WelcomeScreen: View {
     @State private var selection: LibraryItem.ID?
     @State private var sort: LibrarySort = .recent
 
+    private var updateChecker: UpdateChecker { workspace.updateChecker }
+
     private var hasLibrary: Bool {
         !recentDocuments.isEmpty || !savedPages.isEmpty
     }
 
     var body: some View {
-        Group {
-            if hasLibrary {
-                libraryLayout
-            } else {
-                emptyLayout
+        VStack(spacing: 0) {
+            homeHeader
+            Divider()
+            Group {
+                if hasLibrary {
+                    libraryLayout
+                } else {
+                    emptyLayout
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -32,6 +40,52 @@ struct WelcomeScreen: View {
                 savedPages = pages
             }
         }
+    }
+
+    private var homeHeader: some View {
+        HStack(spacing: 8) {
+            Text("Home")
+                .font(.headline)
+                .foregroundStyle(palette.foreground)
+            Spacer()
+            if updateChecker.state == .available,
+               let version = updateChecker.availableVersion {
+                Button {
+                    updateChecker.install()
+                } label: {
+                    Label("Install Update \(version)", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderless)
+                .help(updateChecker.tooltip)
+                .accessibilityIdentifier("welcome.installUpdate")
+            }
+            Button {
+                Task { await updateChecker.check() }
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.clockwise")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .disabled(updateChecker.state == .checking)
+            .help(updateChecker.tooltip)
+            .accessibilityIdentifier("welcome.checkForUpdates")
+
+            Button(action: showSettings) {
+                Label("Settings", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Settings… (⌘,)")
+            .accessibilityIdentifier("welcome.settings")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .background(palette.background)
+    }
+
+    private func showSettings() {
+        workspace.settingsSection = .general
+        openSettings()
     }
 
     // MARK: - Empty / first-run layout (the calm hero)

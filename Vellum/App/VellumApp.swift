@@ -128,6 +128,9 @@ struct VellumApp: App {
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                 }
+                .task {
+                    await workspace.checkForUpdatesAutomatically()
+                }
                 .sheet(isPresented: $showStorageChoice) {
                     StorageLocationChoiceSheet()
                         .environment(\.palette, themeStore.palette)

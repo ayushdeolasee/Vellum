@@ -75,6 +75,7 @@
 		6AF2B59C76A57D0A112B2015 /* KaTeX_Caligraphic-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */; };
 		6BA39956BEE5A9BB036F74E7 /* TabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30CD609AEA2C0A662890153 /* TabBarView.swift */; };
 		6D737237057DD944A4616889 /* ModelSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */; };
+		6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */; };
 		73A1100267EF4F5415AC7147 /* KaTeX_Caligraphic-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9F7F3D4199D08A3DEE3D8641 /* KaTeX_Caligraphic-Bold.woff2 */; };
 		742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C50948404B30999979C84A /* VellumBundleTests.swift */; };
 		74F87D19B20B4A7A23919B5F /* PaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD01D08235008A4E602D0373 /* PaneTreeView.swift */; };
@@ -206,6 +207,7 @@
 		529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Script-Regular.woff2"; sourceTree = "<group>"; };
 		54417DBF142FD33E6B2F6672 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5513F929B10D107AED515D1E /* PageTextCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCache.swift; sourceTree = "<group>"; };
+		583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNavigationTests.swift; sourceTree = "<group>"; };
 		5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsRelocationTests.swift; sourceTree = "<group>"; };
 		5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDrop.swift; sourceTree = "<group>"; };
 		5FC3857FDCFA8B1D42B01B73 /* HighlightLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightLayer.swift; sourceTree = "<group>"; };
@@ -405,6 +407,7 @@
 				B1F8F1A0CB094398C5390128 /* ScratchpadDropRegistrationTests.swift */,
 				2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */,
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
+				583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */,
 				BF3E4F80AF4A2707D432AF73 /* SidebarDropRoutingTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
 				90C50948404B30999979C84A /* VellumBundleTests.swift */,
@@ -914,6 +917,7 @@
 				C6A3A0FCEB6C19A3CA8DEE10 /* ScratchpadDropRegistrationTests.swift in Sources */,
 				36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */,
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
+				6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */,
 				5236947317CC86594F165BD2 /* SidebarDropRoutingTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */,
