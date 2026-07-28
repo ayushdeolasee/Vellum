@@ -76,6 +76,56 @@ final class StorageManagementTests: XCTestCase {
             message: "The move was interrupted. Your original data remains safe.")))
     }
 
+    /// The status-code mapping is the only part of validation the user reads, so
+    /// pin every branch through the injectable session instead of the network.
+    func testConnectionValidationMapsTransportOutcomesToUserFacingStates() async {
+        var settings = AiSettings()
+        settings.provider = .openai
+        settings.openaiApiKey = "sk-test"
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { StubURLProtocol.reset() }
+
+        func state() async -> AiConnectionValidationState {
+            await AiConnectionValidator.validate(
+                settings: settings, chatGPTSignedIn: false, session: session)
+        }
+
+        StubURLProtocol.statusCode = 200
+        XCTAssertEqual(await state(), .valid)
+        StubURLProtocol.statusCode = 204
+        XCTAssertEqual(await state(), .valid)
+        StubURLProtocol.statusCode = 401
+        XCTAssertEqual(await state(), .invalid("Credential was rejected"))
+        StubURLProtocol.statusCode = 403
+        XCTAssertEqual(await state(), .invalid("Credential was rejected"))
+        StubURLProtocol.statusCode = 429
+        XCTAssertEqual(await state(), .invalid("Provider is reachable but rate limited"))
+        StubURLProtocol.statusCode = 500
+        XCTAssertEqual(await state(), .invalid("Provider returned HTTP 500"))
+
+        StubURLProtocol.transportError = URLError(.notConnectedToInternet)
+        XCTAssertEqual(await state(), .invalid("Couldn’t reach the provider"))
+        StubURLProtocol.reset()
+
+        // An empty credential must never reach the transport at all.
+        settings.openaiApiKey = ""
+        XCTAssertEqual(await state(), .invalid("Credential is missing"))
+
+        // ChatGPT authenticates by sign-in, so it short-circuits before any request.
+        settings.provider = .chatgpt
+        XCTAssertEqual(
+            await AiConnectionValidator.validate(
+                settings: settings, chatGPTSignedIn: true, session: session),
+            .valid)
+        XCTAssertEqual(
+            await AiConnectionValidator.validate(
+                settings: settings, chatGPTSignedIn: false, session: session),
+            .invalid("ChatGPT is not signed in"))
+    }
+
     func testConnectionValidationRequestsNeverPutCredentialsInURLs() throws {
         var settings = AiSettings()
         settings.provider = .gemini
@@ -366,4 +416,39 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertNil(StorageHousekeeping.retentionMonths)
         XCTAssertNil(StorageHousekeeping.evictionCutoff())
     }
+}
+
+/// Canned-response transport for `AiConnectionValidator`. Lets the validation
+/// tests exercise every status-code branch without a network call — and without
+/// ever sending a credential anywhere.
+private final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var statusCode = 200
+    nonisolated(unsafe) static var transportError: Error?
+
+    static func reset() {
+        statusCode = 200
+        transportError = nil
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        if let error = Self.transportError {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url, statusCode: Self.statusCode, httpVersion: "HTTP/1.1", headerFields: nil)
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

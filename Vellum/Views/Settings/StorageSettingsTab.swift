@@ -613,6 +613,9 @@ struct StorageSettingsTab: View {
 
     private func clearCaches() {
         let before = cacheBytes
+        // Drop the previous run's number so the label can't report a stale
+        // reclaimed total while this one is still working.
+        dataRemovalResult = nil
         cacheEntries = []
         Task {
             await PageTextCache.shared.deleteAll()
@@ -623,6 +626,7 @@ struct StorageSettingsTab: View {
 
     private func removeAllWeb() {
         let before = webArchiveBytes
+        dataRemovalResult = nil
         webEntries = []
         Task {
             await Task.detached { WebLibrary.removeAllSnapshotArtifacts() }.value
@@ -633,10 +637,12 @@ struct StorageSettingsTab: View {
 
     private func runCleanupNow() {
         isCleaningUp = true
+        cleanupResult = nil
         let pdfKeys = openPdfKeys
         let webUrls = openWebUrls
         Task {
-            let reclaimed = await StorageHousekeeping.runCleanup(openPdfKeys: pdfKeys, openWebUrls: webUrls)
+            let reclaimed = await StorageHousekeeping.runCleanup(
+                openPdfKeys: pdfKeys, openWebUrls: webUrls, measuringReclaimedBytes: true)
             await reload()
             cleanupResult = reclaimedMessage(reclaimed)
             isCleaningUp = false
