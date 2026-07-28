@@ -246,6 +246,48 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertTrue(DocumentDataStore.scratchpadExists(forKey: key))
     }
 
+    /// An imported bundle is not a file we wrote: `read` accepts up to
+    /// `maxConversationsBytes` (32 MB) of conversations.json from it, and the
+    /// merge writes the result straight to documents/<key>/conversations.json.
+    /// So the import path has to apply the same per-reference caps
+    /// `AiPersistence.limit` does — otherwise a reference that still carries its
+    /// base64 pixels, or a whole-page excerpt, lands on disk verbatim and is
+    /// re-encoded and rewritten in full on every subsequent AI turn.
+    func testImportedConversationReferencesAreCappedLikeAPersistedOne() throws {
+        let key = "convo-ref-cap-key"
+        let hugeExcerpt = String(repeating: "x", count: AiPersistence.maxReferenceCharacters + 500)
+        var incoming = message(
+            id: "imp-ref-1", role: .user, content: "what is this",
+            createdAt: "2026-02-01T00:00:00Z")
+        incoming.references = [
+            AiReference(kind: .selection(text: hugeExcerpt, page: 3)),
+            AiReference(kind: .pageSnapshot(
+                image: AiPageImageSnapshot(
+                    pageNumber: 4, base64Data: String(repeating: "A", count: 4_096),
+                    mediaType: "image/jpeg", width: 640, height: 480),
+                page: 4)),
+        ]
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [],
+            conversations: try JSONEncoder().encode([incoming]))
+
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        let data = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+        let stored = try JSONDecoder().decode([AiMessage].self, from: data)
+        let references = try XCTUnwrap(stored.first).references
+        XCTAssertEqual(references.count, 2)
+        // The cap plus the one-character ellipsis marker, as on the save path.
+        XCTAssertEqual(references.first?.text?.count, AiPersistence.maxReferenceCharacters + 1)
+        // Pixels dropped, descriptor kept — the reference still renders as a chip.
+        XCTAssertEqual(references.last?.image?.base64Data, "")
+        XCTAssertEqual(references.last?.image?.width, 640)
+        XCTAssertEqual(references.last?.page, 4)
+    }
+
     // MARK: - Version rejection
 
     func testVersionTwoRejected() throws {
@@ -284,6 +326,51 @@ final class VellumBundleTests: XCTestCase {
             attachments: [], conversations: nil)
         try VellumBundle.installSidecar(imported, forKey: key) { _ in .useImported }
         XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "the imported note")
+    }
+
+    func testImportedConversationCapsNestedToolSummaries() throws {
+        let huge = String(repeating: "oversized ", count: 2_000)
+        var hostile = message(
+            id: "hostile",
+            role: .assistant,
+            content: "answer",
+            createdAt: "2026-01-01T00:00:00Z"
+        )
+        hostile.toolSummaries = (0..<(AiPersistence.maxToolSummariesPerMessage + 4)).map { index in
+            AiToolSummary(
+                id: huge,
+                title: "\(index)-\(huge)",
+                detail: huge,
+                sources: (0..<(AiPersistence.maxToolSourcesPerSummary + 4)).map {
+                    .init(id: huge, page: $0 == 0 ? Int.max : $0 + 1, excerpt: huge)
+                },
+                destinationPage: Int.max
+            )
+        }
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [],
+            conversations: try JSONEncoder().encode([hostile])
+        )
+        let key = "hostile-conversation"
+
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        let data = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+        let stored = try XCTUnwrap(JSONDecoder().decode([AiMessage].self, from: data).first)
+        let summaries = try XCTUnwrap(stored.toolSummaries)
+        let first = try XCTUnwrap(summaries.first)
+        XCTAssertEqual(summaries.count, AiPersistence.maxToolSummariesPerMessage)
+        XCTAssertLessThanOrEqual(first.title.count, AiPersistence.maxToolSummaryTitleCharacters)
+        XCTAssertEqual(first.sources.count, AiPersistence.maxToolSourcesPerSummary)
+        XCTAssertLessThanOrEqual(
+            first.sources.first?.excerpt.count ?? 0,
+            AiPersistence.maxToolSourceExcerptCharacters
+        )
+        XCTAssertNil(first.destinationPage)
+        XCTAssertNil(first.sources.first?.page)
     }
 
     func testAttachmentNeverOverwritesExistingId() throws {

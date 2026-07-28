@@ -2,10 +2,11 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Bundle of the stores the menu commands act on, published as a focused value
-/// by the main window's `ContentView`. Routing through `@FocusedValue` gives us
-/// free menu validation: when the Settings window (or any scene that does not
-/// publish this value) is key, the value is nil and every command disables.
+/// Bundle of the stores the menu commands act on, published as a scene-focused
+/// value by the main window's `ContentView`. `@FocusedValue` reads the value
+/// from the key scene, so nested PDFKit/WebKit responders cannot make the menu
+/// lose its target. When Settings (which does not publish the value) is key,
+/// the value is nil and document commands disable.
 struct VellumFocus: Equatable {
     var workspace: WorkspaceStore
 
@@ -34,12 +35,14 @@ extension FocusedValues {
 /// (bare N for note mode, Escape, and the pointer-contextual sidebar font size).
 struct VellumCommands: Commands {
     @FocusedValue(\.vellumFocus) private var focus
-    /// The update command is app-global rather than focused-document scoped.
-    private let appWorkspace: WorkspaceStore
-
-    init(workspace: WorkspaceStore) {
-        appWorkspace = workspace
-    }
+    /// Only used by the Help menu. The Help centre is a scene of its own rather
+    /// than a sheet, so it is opened by id instead of by a presentation flag.
+    @Environment(\.openWindow) private var openWindow
+    /// The update commands are app-global rather than focused-document scoped:
+    /// the app owns exactly one window and one `WorkspaceStore`, so they are
+    /// injected directly instead of read from `vellumFocus`, which would make
+    /// them go dead whenever Settings or the Help centre is key.
+    let appWorkspace: WorkspaceStore
 
     // MARK: Availability (drives menu validation)
 
@@ -221,6 +224,31 @@ struct VellumCommands: Commands {
                     .keyboardShortcut(
                         KeyEquivalent(Character("\(number)")), modifiers: .command)
                     .disabled(!tabExists(index: number - 1))
+            }
+        }
+
+        // MARK: Help
+        // Replaces the stock "Vellum Help" item, which opens Help Viewer and
+        // reports that no help book is installed — Vellum ships none (there is
+        // no CFBundleHelpBookName in Info.plist and nothing calls
+        // NSHelpManager, so nothing depended on the item being there).
+        //
+        // Two items, because they answer two different questions. "Vellum Help"
+        // is the searchable reference and keeps the stock item's name and its
+        // ⌘? key equivalent, so muscle memory lands somewhere sensible rather
+        // than on a tour a returning user has already seen. "Vellum
+        // Walkthrough" is the first-run tour, replayable but unbound — it is
+        // the rarer of the two once you have used the app once.
+        //
+        // Neither is gated on `hasFocus`: unlike every command above, these
+        // target no document, and someone who has just closed their last tab is
+        // exactly who wants them.
+        CommandGroup(replacing: .help) {
+            Button("Vellum Help") { openWindow(id: HelpScene.windowId) }
+                .keyboardShortcut("?", modifiers: .command)
+
+            Button("Vellum Walkthrough") {
+                NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
             }
         }
 

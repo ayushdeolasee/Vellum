@@ -8,7 +8,6 @@ struct FindBar: View {
     @Environment(AppStore.self) private var app
     @Environment(\.palette) private var palette
 
-    @State private var query = ""
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -17,13 +16,15 @@ struct FindBar: View {
                 .font(.system(size: 12))
                 .foregroundStyle(palette.mutedForeground)
 
-            TextField("Find", text: $query)
+            TextField("Find", text: Binding(
+                get: { app.findQuery },
+                set: { app.performFind($0) }
+            ))
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($fieldFocused)
                 .frame(minWidth: 160, maxWidth: 240)
                 .onSubmit { app.findNext() }
-                .onChange(of: query) { _, value in app.performFind(value) }
 
             Text(matchLabel)
                 .font(.system(size: 11))
@@ -61,7 +62,7 @@ struct FindBar: View {
         }
         .onAppear {
             fieldFocused = true
-            if !query.isEmpty { app.performFind(query) }
+            if !app.findQuery.isEmpty { app.performFind(app.findQuery) }
         }
         // Escape while the bar (or its field) holds focus dismisses it; the
         // window-level key monitor covers the other focus cases.
@@ -69,7 +70,7 @@ struct FindBar: View {
     }
 
     private var matchLabel: String {
-        if query.isEmpty { return "" }
+        if app.findQuery.isEmpty { return "" }
         if app.findMatchCount == 0 { return "No results" }
         return "\(app.findCurrentMatch) of \(app.findMatchCount)"
     }

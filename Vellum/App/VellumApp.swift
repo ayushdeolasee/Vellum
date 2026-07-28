@@ -49,17 +49,19 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     for tab in leaf.app.tabs {
                         try? await workspace.sessions.setDocumentMetadata(
                             sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                    }
+                }
+                // Metadata rewrites PDFs and changes their validation hashes.
+                // Flush every runtime after those writes (not only the focused
+                // pane's shared handler), then close the backend sessions.
+                await workspace.flushLivePageTextCaches()
+                for leaf in leaves {
+                    for tab in leaf.app.tabs {
                         try? await workspace.sessions.closeFile(sessionId: tab.id)
                     }
                 }
-                // Persist the active document's in-flight page text after the
-                // last_page writes (each refreshed the cache's validation hash),
-                // so a reopen still hits (issue #37 PR B). Then drain detached
-                // flushes from persisters dropped by a recent tab switch, whose
-                // controller no longer exists to be flushed via the handler.
-                for leaf in leaves {
-                    await leaf.app.flushPageTextCacheHandler?()
-                }
+                // Also drain detached flushes from controllers dropped by a
+                // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
                 await AiPersistence.awaitPendingFlush()
                 sender.reply(toApplicationShouldTerminate: true)
@@ -75,6 +77,7 @@ struct VellumApp: App {
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var showStorageChoice = false
+    @State private var showWalkthrough = false
 
     init() {
         let theme = ThemeStore()
@@ -127,15 +130,35 @@ struct VellumApp: App {
                             openPdfKeys: openKeys, openWebUrls: openWebUrls)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+                    // Only one sheet at a time. On a true first launch the
+                    // storage choice goes first — it decides where everything
+                    // the walkthrough describes gets written — and hands off to
+                    // the walkthrough when it closes.
+                    if !showStorageChoice {
+                        showWalkthrough = WalkthroughSettings.needsFirstRun
+                    }
                 }
                 .task {
                     // The checker belongs to the workspace, not the Home
                     // toolbar, so this continues to represent the same check
                     // while documents are opened or Home is revisited.
-                    await workspace.updateChecker.check(silent: true)
+                    await workspace.checkForUpdatesAutomatically()
                 }
-                .sheet(isPresented: $showStorageChoice) {
+                .sheet(
+                    isPresented: $showStorageChoice,
+                    onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
+                ) {
                     StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
+                }
+                // Help ▸ Vellum Walkthrough and the welcome screen's help button
+                // both route here, since the sheet's presentation state lives
+                // with the window rather than with either caller.
+                .onReceive(NotificationCenter.default.publisher(for: .vellumShowWalkthrough)) { _ in
+                    showWalkthrough = true
+                }
+                .sheet(isPresented: $showWalkthrough) {
+                    WalkthroughSheet()
                         .environment(\.palette, themeStore.palette)
                 }
                 .environment(themeStore)
@@ -151,7 +174,7 @@ struct VellumApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
-            VellumCommands(workspace: workspace)
+            VellumCommands(appWorkspace: workspace)
         }
 
         // Adds "Settings…" (⌘,) to the app menu automatically.
@@ -166,5 +189,24 @@ struct VellumApp: App {
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
         }
+
+        // The searchable Help centre (Help ▸ Vellum Help, ⌘?). A scene rather
+        // than a sheet on the main window: a reference is only useful if you
+        // can leave it open next to the document it describes, which a modal
+        // sheet cannot do. It publishes no `vellumFocus`, so every
+        // document-scoped menu command correctly greys out while it is key.
+        //
+        // It gets the theme environment but deliberately not the workspace —
+        // it reads nothing from the app's state, which is what keeps it safe to
+        // open with no document at all.
+        Window(HelpScene.title, id: HelpScene.windowId) {
+            HelpCenterView()
+                .environment(themeStore)
+                .environment(\.palette, themeStore.palette)
+                .preferredColorScheme(themeStore.colorScheme)
+                .background(themeStore.palette.background)
+                .tint(themeStore.palette.primary)
+        }
+        .defaultSize(width: 640, height: 660)
     }
 }
