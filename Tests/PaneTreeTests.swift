@@ -343,6 +343,63 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(sizes, [75, 25])
     }
 
+    func testPruneAbandonedEmptyPanesCollapsesSplit() {
+        let ws = makeWorkspace()
+        let original = ws.focusedPane
+        // A pane only gets its start tab from the view that mounts it, so the
+        // root pane starts empty here — give it one, or the prune below has two
+        // empty leaves to choose from and proves nothing.
+        original.app.newStartTab()
+        ws.splitFocused(.horizontal)
+        let temporary = ws.focusedPane
+
+        // `detachTab` mirrors an interrupted move: it leaves a live but empty
+        // split leaf, exactly what a restore can produce when a saved document
+        // no longer opens.
+        _ = temporary.app.detachTab(temporary.app.tabs[0].id)
+        ws.pruneAbandonedEmptyPanes()
+
+        XCTAssertFalse(ws.isSplit)
+        XCTAssertEqual(ws.root.leaf(id: original.id)?.id, original.id)
+        XCTAssertNil(ws.root.leaf(id: temporary.id))
+    }
+
+    func testAllTabsIncludesEveryPaneAndActivationFocusesOwningPane() {
+        let ws = makeWorkspace()
+        let firstPane = ws.focusedPane
+        firstPane.app.newStartTab()
+        firstPane.app.newStartTab()
+        let firstPaneTabId = firstPane.app.tabs[1].id
+        ws.splitFocused(.vertical)
+        let secondPane = ws.focusedPane
+        let secondPaneTabId = secondPane.app.tabs[0].id
+
+        XCTAssertEqual(ws.allTabs.map(\.tab.id).sorted(), [
+            firstPane.app.tabs[0].id, firstPaneTabId, secondPaneTabId,
+        ].sorted())
+        XCTAssertEqual(
+            ws.allTabs.first(where: { $0.tab.id == secondPaneTabId })?.paneId,
+            secondPane.id)
+
+        ws.activateWorkspaceTab(paneId: firstPane.id, tabId: firstPaneTabId)
+        XCTAssertEqual(ws.focusedPaneId, firstPane.id)
+        XCTAssertEqual(firstPane.app.activeTabId, firstPaneTabId)
+    }
+
+    func testWorkspaceCloseRoutesToTheOwningPane() async {
+        let ws = makeWorkspace()
+        let firstPane = ws.focusedPane
+        firstPane.app.newStartTab()
+        let firstPaneTabId = firstPane.app.tabs[0].id
+        ws.splitFocused(.horizontal)
+        let survivor = ws.focusedPane
+
+        await ws.closeWorkspaceTab(paneId: firstPane.id, tabId: firstPaneTabId)
+
+        XCTAssertNil(ws.root.leaf(id: firstPane.id))
+        XCTAssertEqual(ws.root.leaf(id: survivor.id)?.id, survivor.id)
+    }
+
     // MARK: - Persistence round-trip
 
     func testWorkspaceStateRoundTrips() throws {
@@ -377,5 +434,218 @@ final class PaneTreeTests: XCTestCase {
         }
         XCTAssertEqual(dir, .vertical)
         XCTAssertEqual(children.count, 2)
+    }
+
+    func testSerializeDropsTransientNewTabsAndReindexesSelection() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let first = makeTab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+                pageCount: 10, lastPage: 3))
+        let second = makeTab(
+            id: "web-b",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://example.com", title: "Example",
+                pageCount: 1, lastPage: 1))
+        app.attachTab(first)
+        app.newStartTab()
+        app.attachTab(second)
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.map(\.document?.title), ["A", "Example"])
+        XCTAssertEqual(activeIndex, 1)
+    }
+
+    func testSerializeDoesNotRestoreAbandonedActiveNewTab() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        app.attachTab(makeTab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A",
+                pageCount: 10, lastPage: 3)))
+        app.newStartTab()
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.count, 1)
+        XCTAssertNil(activeIndex)
+    }
+
+    func testSerializePreservesDuplicateWebTabsAndTheirSelection() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let document = DocumentInfo(
+            kind: .web, pdfPath: "https://example.com/article", title: "Article",
+            pageCount: 1, lastPage: 1)
+        app.attachTab(makeTab(id: "web-a", document: document))
+        app.attachTab(makeTab(id: "web-b", document: document))
+
+        guard case .leaf(let tabs, let activeIndex) = ws.serialize().root else {
+            return XCTFail("expected a leaf")
+        }
+        XCTAssertEqual(tabs.map(\.document?.pdfPath), [
+            "https://example.com/article", "https://example.com/article",
+        ])
+        XCTAssertEqual(activeIndex, 1)
+    }
+
+    func testPendingNoteAndRegionCaptureBelongToTheirTabAcrossSwitches() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        app.newStartTab()
+        let noteTabId = app.activeTabId!
+
+        app.beginNoteWithContent("Queued AI reply")
+        app.newStartTab()
+        XCTAssertNil(app.pendingNoteContent)
+        XCTAssertEqual(app.tabs.first(where: { $0.id == noteTabId })?.pendingNoteContent, "Queued AI reply")
+
+        app.activateTab(noteTabId)
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "Queued AI reply")
+
+        app.beginRegionCapture(target: .scratchpad)
+        app.newStartTab()
+        app.activateTab(noteTabId)
+        XCTAssertEqual(app.mode, .snapshotRegion)
+        XCTAssertEqual(app.regionCaptureTarget, .scratchpad)
+        XCTAssertEqual(app.tabs.first(where: { $0.id == noteTabId })?.regionCaptureTarget, .scratchpad)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
+    func testInteractionCompletionKeepsTheTargetThatWasArmedBeforeReset() {
+        let app = makeWorkspace().focusedPane.app
+        app.newStartTab()
+
+        app.beginRegionCapture(target: .scratchpad)
+        XCTAssertEqual(app.finishRegionCapture(), .scratchpad)
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.tabs.first(where: { $0.id == app.activeTabId })?.regionCaptureTarget)
+    }
+
+    func testDelayedNoteCompletionNeverClearsAnotherTabMode() {
+        let app = makeWorkspace().focusedPane.app
+        app.newStartTab()
+        let originSessionId = app.activeTabId!
+        app.beginNoteWithContent("Note for A")
+
+        app.newStartTab()
+        let otherSessionId = app.activeTabId!
+        app.beginNoteWithContent("Note for B")
+
+        app.finishNotePlacement(forSessionId: originSessionId)
+
+        XCTAssertEqual(app.activeTabId, otherSessionId)
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "Note for B")
+
+        app.activateTab(originSessionId)
+        app.finishNotePlacement(forSessionId: originSessionId)
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
+    func testNotePlacementConsumesItsQueuedContentBeforeModeReset() {
+        let app = makeWorkspace().focusedPane.app
+        app.newStartTab()
+        app.beginNoteWithContent("AI response")
+
+        XCTAssertEqual(app.consumePendingNoteContent(), "AI response")
+        app.finishNotePlacement(forSessionId: app.activeTabId!)
+
+        XCTAssertEqual(app.mode, .view)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
+    func testCloseOthersAndCloseRightPreserveExpectedTabs() async {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        app.newStartTab()
+        app.newStartTab()
+        app.newStartTab()
+        app.newStartTab()
+        let ids = app.tabs.map(\.id)
+
+        await app.closeTabsToRight(of: ids[1])
+        XCTAssertEqual(app.tabs.map(\.id), Array(ids.prefix(2)))
+
+        app.newStartTab()
+        await app.closeOtherTabs(keeping: ids[1])
+        XCTAssertEqual(app.tabs.map(\.id), [ids[1]])
+        XCTAssertEqual(app.activeTabId, ids[1])
+    }
+
+    func testTabPresentationUsesFullTitleAndType() {
+        let pdf = makeTab(
+            id: "pdf",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/Fallback.pdf",
+                title: "A long, fully searchable document title",
+                pageCount: 10, lastPage: 1))
+        let web = makeTab(
+            id: "web",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://example.com",
+                title: "Example", pageCount: 1, lastPage: 1))
+        let start = makeTab(id: "start", document: nil)
+
+        XCTAssertEqual(TabPresentation.title(for: pdf), "A long, fully searchable document title")
+        XCTAssertEqual(TabPresentation.typeLabel(for: pdf), "PDF")
+        XCTAssertEqual(TabPresentation.typeLabel(for: web), "Webpage")
+        XCTAssertEqual(TabPresentation.title(for: start), "New Tab")
+    }
+
+    /// A tab switch has to carry three separate pieces of state, and they were
+    /// added by three different changes that all land in `applyActiveState`:
+    /// the incoming tab's find query (window chrome that became document work),
+    /// its queued "Add as note" reply and capture target, and its residency pin
+    /// — without which the policy could evict the document now on screen.
+    func testTabSwitchRestoresFindAndNoteStateAndPinsTheIncomingTab() {
+        let ws = makeWorkspace()
+        let app = ws.focusedPane.app
+        let first = makeTab(
+            id: "pdf-a",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/a.pdf", title: "A", pageCount: 10, lastPage: 1))
+        let second = makeTab(
+            id: "pdf-b",
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: "/tmp/b.pdf", title: "B", pageCount: 4, lastPage: 1))
+
+        app.attachTab(first)
+        app.showFind()
+        app.performFind("chapter")
+        app.beginNoteWithContent("Queued AI reply")
+
+        app.attachTab(second)
+        XCTAssertFalse(app.findVisible)
+        XCTAssertNil(app.pendingNoteContent)
+        XCTAssertEqual(ws.residency.hotTabIds, ["pdf-b"])
+
+        app.activateTab("pdf-a")
+        XCTAssertTrue(app.findVisible)
+        XCTAssertEqual(app.findQuery, "chapter")
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "Queued AI reply")
+        XCTAssertEqual(ws.residency.hotTabIds, ["pdf-a"])
+    }
+
+    private func makeTab(id: String, document: DocumentInfo?) -> PdfTab {
+        PdfTab(
+            id: id,
+            document: document,
+            currentPage: 1,
+            numPages: document?.pageCount ?? 0,
+            zoom: 1,
+            visiblePages: [],
+            webVisibleRange: nil,
+            webVisibleBookmarks: [],
+            mode: .view)
     }
 }

@@ -90,8 +90,8 @@ struct WebViewerView: View {
                 // the marquee itself can never end up inside the crop.
                 if appStore.mode == .snapshotRegion {
                     RegionCaptureOverlay { rect in
-                        appStore.setMode(.view)
-                        captureRegion(rect)
+                        let target = appStore.finishRegionCapture()
+                        captureRegion(rect, target: target)
                     } onCancel: {
                         // Plain click or tiny wobble: back out of capture mode
                         // without a warning — the user changed their mind.
@@ -272,8 +272,8 @@ struct WebViewerView: View {
     /// PdfOverlayStack.captureRegion). The AI path stays silent on a miss — a
     /// failed takeSnapshot mid-scroll is not worth a banner; the scratchpad path
     /// warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect) {
-        switch appStore.regionCaptureTarget {
+    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
+        switch target {
         case .ai:
             // Pin the tab + document the crop was drawn on before the await; a
             // capture that lands after the user navigated or switched tabs must
@@ -1130,15 +1130,21 @@ final class WebViewerController: NSObject {
             if let editor = highlightEditor, clickOutside(editor.openedAt) { highlightEditor = nil }
 
         case "note-placed":
-            guard let anchor = parseNoteAnchor(data) else { break }
+            // The whole branch is gated on this tab still being the active one,
+            // not just the mode reset at the end: `consumePendingNoteContent`
+            // below reads the *active* tab's queued AI reply, so a late message
+            // from a tab the user has already left would otherwise steal the
+            // reply queued for the tab now on screen.
+            guard let anchor = parseNoteAnchor(data), let sessionId = mountTabId,
+                  app.activeTabId == sessionId else { break }
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             hideContextMenu()
             noteViewer = nil
             // An AI "Add as note" click carries the reply text; a plain note
             // tool click leaves it nil so the composer opens empty for typing.
-            // This MUST happen before `setMode(.view)` below, which drops any
-            // unconsumed payload. Skipping it was the whole bug behind issue
+            // This MUST happen before returning to view mode below, which drops
+            // any unconsumed payload. Skipping it was the whole bug behind issue
             // #57's "Add as note just offers a new empty note": the PDF viewer
             // consumed the reply in `PdfSelectionBridge.placeNote`, the web
             // viewer never did, so the text was silently thrown away here.
@@ -1149,8 +1155,10 @@ final class WebViewerController: NSObject {
                 openedAt: Date(),
                 initialContent: pendingContent ?? ""
             )
-            // Mirror the PDF viewer: placing a note returns to view mode.
-            app.setMode(.view)
+            // Mirror the PDF viewer: placing a note returns to view mode — but
+            // only when this message belongs to the tab that is still armed, so
+            // a late message cannot reset a different session's mode.
+            app.finishNotePlacement(forSessionId: sessionId)
 
         case "context-menu":
             let point = frameToParent(
