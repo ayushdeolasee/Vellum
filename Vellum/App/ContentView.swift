@@ -205,7 +205,13 @@ private struct WindowChrome: View {
         }
         .inspector(isPresented: inspectorPresented) {
             sidebar
-                .inspectorColumnWidth(min: 240, ideal: workspace.sidebarWidth, max: 700)
+                .inspectorColumnWidth(
+                    min: WorkspaceStore.minSidebarWidth,
+                    ideal: workspace.sidebarWidth,
+                    max: WorkspaceStore.maxSidebarWidth)
+                // Feeds the user's splitter drag back to the store so the next
+                // document reopens the column where they left it. The store
+                // rejects the collapsed measurements a start tab produces.
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.width
                 } action: { width in

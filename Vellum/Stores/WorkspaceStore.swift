@@ -30,8 +30,34 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
-    private(set) var sidebarWidth: CGFloat = 340
     enum SidebarTab: Sendable { case annotations, ai, scratchpad }
+
+    // MARK: Inspector column width
+
+    // The one definition of the inspector's resize envelope. `ContentView`
+    // hands these straight to `.inspectorColumnWidth(min:ideal:max:)`, and
+    // `rememberSidebarWidth` clamps to the same numbers — keeping them here
+    // stops the modifier and the guard from silently drifting apart, which
+    // would either reject widths AppKit can legitimately produce or remember
+    // ones it will immediately override.
+    static let minSidebarWidth: CGFloat = 240
+    static let defaultSidebarWidth: CGFloat = 340
+    static let maxSidebarWidth: CGFloat = 700
+
+    /// The width to reopen the inspector at, tracking the user's last drag.
+    ///
+    /// Deliberately NOT observed. It is read in `WindowChrome.body` as the
+    /// `ideal:` of `.inspectorColumnWidth`, and written from that same view's
+    /// `.onGeometryChange` — once per frame while the splitter is being dragged.
+    /// Were it observed, each of those writes would invalidate the whole window
+    /// chrome (pane tree and toolbar included) mid-drag, and feed a fresh
+    /// `ideal:` back into the very layout pass that produced the measurement.
+    /// A stale read is impossible where it matters: `ideal:` is only consulted
+    /// when the column appears, and `inspectorPresented` — which *is* observed —
+    /// has to change for that to happen, so the body re-runs and re-reads this
+    /// value at exactly the moment it is used.
+    @ObservationIgnored
+    private(set) var sidebarWidth: CGFloat = WorkspaceStore.defaultSidebarWidth
 
     /// The destination selected when an in-app action opens the global Settings
     /// scene. Keeping this at workspace scope lets Home and document panels route
@@ -62,7 +88,9 @@ final class WorkspaceStore {
     /// rejecting that transient measurement lets the next document reopen at
     /// the user's prior width.
     func rememberSidebarWidth(_ width: CGFloat) {
-        guard inspectorPresented, (240...700).contains(width) else { return }
+        guard inspectorPresented,
+              (Self.minSidebarWidth...Self.maxSidebarWidth).contains(width)
+        else { return }
         sidebarWidth = width
     }
 
