@@ -60,6 +60,26 @@ final class LiveTabRuntime {
     /// for ranking.
     @ObservationIgnored private var pdfByteCount = 0
 
+    /// Bumped when the tab keeps its identity while the file underneath it
+    /// changes — PDF Save As retargets a *live* tab to a new location instead of
+    /// closing and reopening it. The mounted viewer keys its load task on this,
+    /// because neither `isActive` nor the view's structural identity changes
+    /// across a retarget, so nothing else would make it re-read the file.
+    private(set) var documentGeneration = 0
+
+    /// Drop the document parsed from the tab's previous location and ask the
+    /// mounted viewer to load again. Unlike `releaseResidency` the tab stays
+    /// resident: only the parsed document is discarded, and the persister is
+    /// flushed first so page text extracted from the old location is written
+    /// under the key it was gathered with.
+    func invalidateLoadedPdf() {
+        pdfController.flushAndDropPersister()
+        preparedDocument = nil
+        pdfByteCount = 0
+        pdfLoadState = .idle
+        documentGeneration += 1
+    }
+
     init(tabId: String) {
         self.tabId = tabId
     }

@@ -68,13 +68,13 @@ struct VellumToolbar: ToolbarContent {
             }
         }
 
+        // Home has no current document, so it shows no document-action menu at
+        // all. Updates are not put here as a substitute: Home's own header
+        // already carries Check for Updates / Install Update (#70), and the app
+        // menu carries them for when a document is open.
         if hasDocument {
             ToolbarItem {
                 OverflowMenu()
-            }
-        } else {
-            ToolbarItem {
-                HomeUpdateMenu()
             }
         }
     }
@@ -642,38 +642,6 @@ private struct OverflowMenu: View {
             while slug.hasSuffix("-") { slug.removeLast() }
         }
         return slug.isEmpty ? "article" : slug
-    }
-}
-
-/// Home has no current document, so it must not show the empty document-overflow
-/// control. Updates remain reachable here as the one genuinely global action.
-private struct HomeUpdateMenu: View {
-    @Environment(WorkspaceStore.self) private var workspace
-
-    private var updateChecker: UpdateChecker { workspace.updateChecker }
-
-    var body: some View {
-        Menu {
-            if updateChecker.state == .available,
-               let version = updateChecker.availableVersion {
-                Button(action: updateChecker.install) {
-                    Label("Install Update \(version)", systemImage: "arrow.down.circle")
-                }
-            }
-            Button {
-                Task { await updateChecker.check() }
-            } label: {
-                Label("Check for Updates…", systemImage: "arrow.clockwise")
-            }
-            .disabled(updateChecker.state == .checking)
-        } label: {
-            Label("Updates", systemImage: "arrow.clockwise")
-                .labelStyle(.iconOnly)
-        }
-        .menuIndicator(.hidden)
-        .help(updateChecker.tooltip)
-        .accessibilityLabel("Updates")
-        .accessibilityIdentifier("toolbar.homeUpdates")
     }
 }
 

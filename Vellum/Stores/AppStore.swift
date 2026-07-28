@@ -378,7 +378,13 @@ final class AppStore {
             throw reopenError
         }
 
-        evictPreparedPdf(tabId: tabId)
+        // Retargeting keeps the tab live (issue #52 residency): its host stays
+        // mounted and `isActive` never changes, so the viewer would go on
+        // showing the document it parsed from the old location — and the copy's
+        // bytes differ from the source's anyway once /VellumDocId is stamped
+        // into it. Invalidate the runtime's parsed document so the mounted
+        // viewer re-reads the new file.
+        workspace?.existingLiveTabRuntime(for: tabId)?.invalidateLoadedPdf()
         updateTab(tabId) { $0.document = rebound }
         if activeTabId == tabId {
             document = rebound

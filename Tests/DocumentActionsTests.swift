@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreText
+import PDFKit
 import XCTest
 @testable import Vellum
 
@@ -69,6 +70,37 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(rebound.docId, sourceId)
     }
 
+    /// Retargeting keeps the tab live (issue #52 residency): the host stays
+    /// mounted and `isActive` never changes, so the tab's runtime has to drop
+    /// the document it parsed from the old location and bump the generation the
+    /// viewer's load task keys on. Without this the viewer goes on rendering the
+    /// file the user just saved *away* from.
+    func testSaveAsInvalidatesLiveTabRuntimeSoTheMountedViewerReloads() async throws {
+        let source = tempDirectory.appendingPathComponent("Live.pdf")
+        makePDF(at: source, pages: 2)
+        let destination = tempDirectory.appendingPathComponent("Live Copy.pdf")
+
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let pane = workspace.focusedPane
+        await pane.app.openFile(path: source.path)
+        let tabId = try XCTUnwrap(pane.app.activeTabId)
+
+        // Stand in for the mounted viewer having parsed the old location.
+        let runtime = workspace.liveTabRuntime(for: tabId)
+        let parsed = try XCTUnwrap(PDFDocument(url: source))
+        runtime.adoptPreparedPdf(parsed, byteCount: 4096)
+        runtime.pdfLoadState = .loaded(parsed)
+        let generationBefore = runtime.documentGeneration
+
+        _ = try await pane.app.savePdfAs(tabId: tabId, destination: destination)
+
+        XCTAssertNil(runtime.preparedDocument)
+        XCTAssertGreaterThan(runtime.documentGeneration, generationBefore)
+        guard case .idle = runtime.pdfLoadState else {
+            return XCTFail("a retargeted tab must reload instead of keeping the old document")
+        }
+    }
+
     func testSaveAsToSamePathIsANoOp() async throws {
         let source = tempDirectory.appendingPathComponent("Same.pdf")
         makePDF(at: source, pages: 1)
@@ -127,8 +159,10 @@ final class DocumentActionsTests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("already open"))
         }
-        XCTAssertEqual(sourcePane.app.document?.pdfPath, source.path)
-        XCTAssertEqual(workspace.focusedPane.app.document?.pdfPath, destination.path)
+        XCTAssertEqual(Self.normalized(sourcePane.app.document?.pdfPath), Self.normalized(source.path))
+        XCTAssertEqual(
+            Self.normalized(workspace.focusedPane.app.document?.pdfPath),
+            Self.normalized(destination.path))
     }
 
     func testSaveAsRollbackFailureClosesLastTabAndRetainsHomeError() async throws {
@@ -190,6 +224,16 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(app.activeTabId, identity.sessionId)
         XCTAssertEqual(app.document?.pdfPath, secondURL)
         XCTAssertFalse(app.isCurrentWebDocument(identity))
+    }
+
+    /// The session backend reports the filesystem's own path (/private/var/…)
+    /// while `FileManager.temporaryDirectory` hands back the /var symlink form,
+    /// and Foundation's standardization maps the former onto the latter. Compare
+    /// both ends the same way so these assertions test retargeting rather than
+    /// which spelling of the temp directory the OS happened to return.
+    private static func normalized(_ path: String?) -> String? {
+        guard let path else { return nil }
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     private func makePDF(at url: URL, pages: Int) {
