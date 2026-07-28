@@ -407,8 +407,15 @@ final class ScratchpadStore {
         if text.isEmpty, let key = currentKey,
            DocumentDataStore.scratchpadExists(forKey: key) { return }
         let referenced = ScratchpadAttachmentStore.referencedIds(in: text)
+        // The sweep runs on a background task while this actor keeps going, so
+        // an attachment saved right after this line (a drop or region snapshot
+        // landing on a freshly opened note) would not be in `referenced` and
+        // would be deleted out from under the note. Collect only against files
+        // that already existed when the snapshot was taken.
+        let referencedAsOf = Date()
         Task.detached(priority: .utility) {
-            ScratchpadAttachmentStore.collectGarbage(in: dir, referencedIds: referenced)
+            ScratchpadAttachmentStore.collectGarbage(
+                in: dir, referencedIds: referenced, referencedAsOf: referencedAsOf)
         }
     }
 
