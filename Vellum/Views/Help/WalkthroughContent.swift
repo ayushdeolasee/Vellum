@@ -145,10 +145,14 @@ extension WalkthroughPage {
             // model picker fires a keyless GET to its public model catalog
             // (OpenRouterCatalog.refresh) before any account exists. No user
             // content is in that request, so the scoped claim is the true one.
+            // One location, not two. The in-inspector settings panel was
+            // removed when global settings moved to the Settings window
+            // (AiSettingsPanel is gone); the inspector's AI tab now shows a
+            // "Configure AI in Settings" banner that opens this same place, so
+            // naming Settings ▸ AI is both true and where the banner lands.
             summary:
                 "Vellum ships no model of its own — you bring your own account, and nothing from "
-                + "your documents leaves this Mac until you do. Set it up in the inspector's AI "
-                + "tab, or in Settings ▸ AI.",
+                + "your documents leaves this Mac until you do. Set it up in Settings ▸ AI.",
             points: [
                 // Leads with "optional" on purpose. This is the page most
                 // likely to make a new reader think they have hit a paywall or

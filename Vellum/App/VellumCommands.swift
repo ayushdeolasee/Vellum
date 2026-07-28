@@ -2,10 +2,11 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Bundle of the stores the menu commands act on, published as a focused value
-/// by the main window's `ContentView`. Routing through `@FocusedValue` gives us
-/// free menu validation: when the Settings window (or any scene that does not
-/// publish this value) is key, the value is nil and every command disables.
+/// Bundle of the stores the menu commands act on, published as a scene-focused
+/// value by the main window's `ContentView`. `@FocusedValue` reads the value
+/// from the key scene, so nested PDFKit/WebKit responders cannot make the menu
+/// lose its target. When Settings (which does not publish the value) is key,
+/// the value is nil and document commands disable.
 struct VellumFocus: Equatable {
     var workspace: WorkspaceStore
 

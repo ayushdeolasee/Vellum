@@ -136,6 +136,9 @@ struct VellumApp: App {
                         showWalkthrough = WalkthroughSettings.needsFirstRun
                     }
                 }
+                .task {
+                    await workspace.checkForUpdatesAutomatically()
+                }
                 .sheet(
                     isPresented: $showStorageChoice,
                     onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
