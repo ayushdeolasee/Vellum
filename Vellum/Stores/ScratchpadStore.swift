@@ -103,13 +103,12 @@ final class ScratchpadStore {
     private var isRestoring = false
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
-    /// The in-flight background attachment sweep, if any (see
-    /// `pruneOrphanedAttachments`). Production never waits on it — the sweep is
-    /// best-effort and must not delay a document open — but keeping the handle
-    /// instead of dropping it makes the sweep awaitable, so a test can join it
-    /// rather than race it. A fire-and-forget sweep is what made the rekey
-    /// coverage flake (#100): it deleted the very attachment the test was about
-    /// to assert on, whenever the background task won.
+    /// The tail of this store's chain of background attachment sweeps (see
+    /// `pruneOrphanedAttachments`). Kept rather than dropped so the sweep is
+    /// joinable: production never waits on it — it is best-effort and must not
+    /// delay a document open — but a test can join it instead of racing it
+    /// (#100). Each sweep awaits its predecessor, so this one handle covers
+    /// every sweep the store has armed.
     @ObservationIgnored private(set) var attachmentSweepTask: Task<Void, Never>?
 
     /// Capture the note and every referenced attachment before clearing. If any
@@ -421,7 +420,13 @@ final class ScratchpadStore {
         // would be deleted out from under the note. Collect only against files
         // that already existed when the snapshot was taken.
         let referencedAsOf = Date()
+        // Chain onto the previous sweep rather than running alongside it: two
+        // sweeps interleaving over one directory is pointless work, and it keeps
+        // `attachmentSweepTask` a handle on ALL of this store's sweeps, not just
+        // the latest — a document can be loaded more than once.
+        let previous = attachmentSweepTask
         attachmentSweepTask = Task.detached(priority: .utility) {
+            await previous?.value
             ScratchpadAttachmentStore.collectGarbage(
                 in: dir, referencedIds: referenced, referencedAsOf: referencedAsOf)
         }

@@ -12,7 +12,9 @@ final class DocumentDataStoreTests: XCTestCase {
     private var legacyPool: URL!
     /// Every `ScratchpadStore` a test built, so teardown can join the background
     /// attachment sweeps they started before the scratch tree is torn down — no
-    /// sweep may outlive the test that armed it (#100).
+    /// sweep may outlive the test that armed it (#100). Sweeps chain per store,
+    /// so joining each store's latest covers every sweep it armed, including on
+    /// the tests that load a document more than once.
     private var stores: [ScratchpadStore] = []
 
     override func setUp() async throws {
@@ -297,13 +299,18 @@ final class DocumentDataStoreTests: XCTestCase {
         // carried one across a rekey actually looks like: an attachment no note
         // points at is an orphan, and the sweep every load ends in is right to
         // collect it, so requiring it to survive would pin a value that only
-        // holds until that sweep lands (#100).
-        let note = "carried note ![x](attachments/ab.jpg)"
+        // holds until that sweep lands (#100). The id has to be a real one —
+        // both ref rewrites only recognise `[0-9a-fA-F-]+`, so a prose filename
+        // would silently stop counting as a reference and the sweep would reap
+        // the file again.
+        let attachmentId = "00000000-0000-0000-0000-0000000000ab"
+        let attachmentFile = "\(attachmentId).jpg"
+        let note = "carried note ![x](attachments/\(attachmentFile))"
         try DocumentDataStore.saveScratchpad(forKey: pathKey, text: note)
         let fallbackAttachments = DocumentDataStore.attachmentsDir(forKey: pathKey)
         try FileManager.default.createDirectory(
             at: fallbackAttachments, withIntermediateDirectories: true)
-        try Data([1]).write(to: fallbackAttachments.appendingPathComponent("ab.jpg"))
+        try Data([1]).write(to: fallbackAttachments.appendingPathComponent(attachmentFile))
 
         let store = makeStore()
         store.loadForDocument(pdfDocument(path: path, docId: docId))
@@ -316,9 +323,9 @@ final class DocumentDataStoreTests: XCTestCase {
         XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), note)
         XCTAssertTrue(
             exists(DocumentDataStore.attachmentsDir(forKey: docId)
-                .appendingPathComponent("ab.jpg")),
+                .appendingPathComponent(attachmentFile)),
             "the rekey carried the referenced attachment across and the sweep spared it")
-        XCTAssertEqual(store.text, "carried note ![x](vellum-scratchpad://ab)")
+        XCTAssertEqual(store.text, "carried note ![x](vellum-scratchpad://\(attachmentId))")
     }
 
     func testRekeyMergesNewestWinsOnCollision() throws {
