@@ -220,7 +220,15 @@ struct WebNoteComposerView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(palette.mutedForeground)
                 }
-                NoteTextEditor(text: $text, onSubmit: submit, onClose: onClose)
+                // Written through on set rather than observed with
+                // `.onChange`: that fires during a later update pass, so a
+                // dismissal landing in the same pass could hand back a mirror
+                // one keystroke stale. The write costs nothing — it lands on an
+                // observation-ignored field and invalidates no view.
+                NoteTextEditor(
+                    text: Binding(get: { text }, set: { text = $0; onDraftChange($0) }),
+                    onSubmit: submit,
+                    onClose: onClose)
                 HStack(spacing: 6) {
                     Spacer()
                     SmallGhostButton(title: "Cancel", action: onClose)
@@ -233,7 +241,6 @@ struct WebNoteComposerView: View {
             .padding(8)
             .frame(width: 288)
         }
-        .onChange(of: text) { _, newValue in onDraftChange(newValue) }
     }
 
     private func submit() {
