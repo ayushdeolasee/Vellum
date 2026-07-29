@@ -261,51 +261,73 @@ final class GeminiClient {
         return nil
     }
 
-    /// Whether omitting thinkingConfig still leaves the model thinking at a
-    /// level the server picks. True for the whole Gemini 3 line (its default
-    /// `thinkingLevel` is `high` on the Pro and 3-flash rows, `medium` on
-    /// 3.5-flash, `minimal` on 3.1-flash-lite) and for 2.5, whose default is
-    /// dynamic thinking. The 2.0 flash models and the retired 1.5 line don't
-    /// think at all, so an omitted config really does mean no reasoning tokens —
-    /// which matters, because those two families cap output at 8192 total and
-    /// must not be handed a larger budget.
-    static func thinksWhenUnconfigured(model: String) -> Bool {
+    /// The thinking the server does on its own when no thinkingConfig is sent,
+    /// expressed as the config it is equivalent to — or nil for a family that
+    /// does no thinking, where an omitted config really does mean zero reasoning
+    /// tokens.
+    ///
+    /// A *positive* list, and deliberately so. The rows below are the families
+    /// whose thinking defaults are documented and whose output limit is 65536,
+    /// which is what makes it safe to reserve room. Everything else — the 2.0
+    /// flash models, the retired 1.5 line, `gemma-*`, and any id this table has
+    /// never heard of — returns nil and keeps the flat base. A permissive
+    /// fallback here would be worse than the bug it guards: several ids this
+    /// endpoint serves cap output at 8192 total, and Gemini rejects a
+    /// `maxOutputTokens` above a model's limit, so guessing generously would
+    /// turn a truncated answer into a request that fails outright. As with
+    /// `OpenAIClient.supportedEfforts`, a family the picker ships needs a row.
+    ///
+    /// Levels come from the Gemini 3 thinking-levels table: the default is
+    /// `high` on `gemini-3-pro`, `gemini-3.1-pro` and `gemini-3-flash`,
+    /// `medium` on `gemini-3.5-flash`, and `minimal` on the flash-lite rows.
+    /// 2.5's default is dynamic thinking, which is the `-1` budget.
+    static func unconfiguredThinking(model: String) -> [String: Any]? {
         let lowered = model.lowercased()
-        if lowered.contains("1.5") { return false }
-        if lowered.contains("2.0") { return lowered.contains("thinking") }
-        return true
+        if lowered.contains("gemini-3") {
+            if lowered.contains("flash-lite") { return ["thinkingLevel": "minimal"] }
+            if lowered.contains("gemini-3.5-flash") { return ["thinkingLevel": "medium"] }
+            return ["thinkingLevel": "high"]
+        }
+        // Check the retired lines explicitly so a future "2.5"-shaped id can't
+        // slip past on a substring.
+        if lowered.contains("1.5") || lowered.contains("2.0") { return nil }
+        if lowered.contains("2.5") { return ["thinkingBudget": -1] }
+        return nil
     }
 
     /// Output-token cap for a turn, sized so thinking can't starve the answer.
     ///
-    /// The `.auto` hole this closes (#96): Auto sends no thinkingConfig on every
-    /// family except 2.5 flash, so the *server* picks the thinking level — and
-    /// the level it picks is not a low one. Google documents the default
-    /// `thinkingLevel` as `high` for `gemini-3-pro-preview`,
+    /// The hole this closes (#96): on every family except 2.5 flash, Auto sends
+    /// no thinkingConfig, so the *server* picks the thinking level — and on the
+    /// rows that dominate usage it does not pick a cheap one. Google documents
+    /// the default `thinkingLevel` as `high` for `gemini-3-pro-preview`,
     /// `gemini-3.1-pro-preview` and `gemini-3-flash-preview`, and 2.5's default
     /// as dynamic thinking. The cap nonetheless stayed at the flat 8192 base, so
-    /// on the app's default provider the default thinking mode reserved room for
-    /// *no* reasoning while the server did its most expensive kind. That is the
-    /// same trade #95 removed from the OpenAI path, and the same truncation.
+    /// the mode reserved room for *no* reasoning while the server did its most
+    /// expensive kind. Same trade #95 removed from the OpenAI path, same
+    /// truncation.
     ///
-    /// So Auto is budgeted at the top of the ladder rather than #95's mid-range:
-    /// the mid-range assumption there matched OpenAI's documented default effort
-    /// of `medium`, and the equivalent evidence-led answer for Gemini is `high`.
-    /// Over-reserving is free — `maxOutputTokens` is a ceiling, not a spend —
-    /// while under-reserving truncates a finished answer. The resulting caps stay
-    /// well inside the 65536 output limit every 2.5 and 3.x model documents.
+    /// The reserve is therefore sized off `unconfiguredThinking` — what the
+    /// server will actually do — rather than a blanket assumption. That is the
+    /// same evidence-led move #95 made by budgeting Auto at OpenAI's documented
+    /// default effort of `medium`; Gemini simply documents a different default
+    /// per family, so the number differs per family too. Note this leaves the
+    /// flash-lite rows at the base: their documented default really is
+    /// `minimal`, so there is nothing there to reserve for, and inflating them
+    /// would only widen a cost guard that isn't the bug — on, as it happens, the
+    /// app's own default model.
+    ///
+    /// Gated on the config being absent rather than on `mode == .auto`: what
+    /// makes the reserve necessary is that nothing is being sent while the model
+    /// thinks anyway, which is a property of the request, not of the mode. No
+    /// shipped pair differs between the two spellings — the 3.x and 2.5 rows
+    /// return a config for every explicit mode — but keying on the mode would
+    /// leave a future family's High budgeted below its Auto.
     static func maxOutputTokens(for mode: AiThinkingMode, model: String) -> Int {
-        let config = resolvedThinkingConfig(for: mode, model: model)
-        guard mode == .auto, config == nil, thinksWhenUnconfigured(model: model) else {
+        if let config = resolvedThinkingConfig(for: mode, model: model) {
             return maxOutputTokens(thinkingConfig: config)
         }
-        // Budget the server's own choice as if High had been asked for. A family
-        // with no row (a future release) has no level to resolve, so fall back to
-        // the same reserve the level ladder's top rung gets.
-        guard let topOfLadder = thinkingConfig(for: .high, model: model) else {
-            return highThinkingReserve + baseMaxOutputTokens
-        }
-        return maxOutputTokens(thinkingConfig: topOfLadder)
+        return maxOutputTokens(thinkingConfig: unconfiguredThinking(model: model))
     }
 
     /// Output-token cap sized so thinking can't starve the visible answer.
@@ -350,29 +372,38 @@ final class GeminiClient {
     /// "which one id is special", the same inversion `OpenAIClient
     /// .supportedEfforts` made for #94. The previous form asked
     /// `contains("gemini-3-pro")` and treated everything else on the 3 line as
-    /// supporting the full ladder. `gemini-3.1-pro` does not contain that
-    /// substring, so it landed in the permissive branch and Instant sent it
-    /// `minimal` — a level the 3.1 Pro row does not have, so the request 400s
-    /// before streaming. That is #94's failure mode reappearing on a point
-    /// release, which is why the shape and not just the string is what changes
-    /// here.
+    /// supporting the full ladder — so a Pro id that doesn't contain that exact
+    /// substring would land in the permissive branch and be sent `minimal` on
+    /// Instant, a level no Pro row has, which 400s before streaming.
+    ///
+    /// `gemini-3.1-pro` is the id that shows the shape is wrong: it ships in
+    /// `AiModelCatalog.opencode` today. It cannot reach *this* function — the
+    /// OpenCode gateways are OpenAI-shaped and send `reasoning_effort` through
+    /// `OpenCodeZenClient` — so nothing is live-broken. But it is exactly the
+    /// name a future `AiModelCatalog.gemini` entry would carry, and #94 was the
+    /// same story: a point release nobody re-checked taking the wrong branch.
+    /// So the fix is the shape, not the string.
     ///
     /// Rows come from the Gemini 3 developer guide plus each model's page under
     /// `ai.google.dev/gemini-api/docs/models`:
-    /// - `gemini-3-pro-preview` is the narrow one: `low`/`high` only.
-    /// - `gemini-3.1-pro-preview` added `medium` but still has no `minimal`.
-    /// - The flash line (`3-flash`, `3.1-flash`/`-flash-lite`, `3.5-flash`)
-    ///   takes the full ladder.
+    /// - `gemini-3-pro` is the narrow one: `low`/`high` only.
+    /// - `gemini-3.1-pro` added `medium` but still has no `minimal`.
+    /// - The text flash line (`3-flash`, `3.1-flash`/`-flash-lite`,
+    ///   `3.5-flash`) takes the full ladder.
+    /// - The `-image` variants are the exception to that: the thinking-levels
+    ///   table gives `gemini-3.1-flash-lite-image` `minimal`/`high` only, so
+    ///   they are matched before the flash rows rather than inheriting them.
     ///
-    /// An unrecognized id on the 3 line falls to `low`/`high`: that is the
-    /// intersection of every row above, so it can't send a level some future
-    /// Pro release rejects. Note the safe branch here is a *narrower set*, not
-    /// the empty set `supportedEfforts` uses — omitting the field on Gemini
-    /// means the server default, which on this line is `high`, so an omit would
-    /// silently turn Instant into the slowest and priciest setting.
+    /// An unrecognized id on the 3 line falls to `low`/`high`: the intersection
+    /// of the text rows above, so it can't send a level some future Pro release
+    /// rejects. Note the safe branch here is a *narrower set*, not the empty set
+    /// `supportedEfforts` uses — omitting the field on Gemini means the server
+    /// default, which on most of this line is `high`, so an omit would silently
+    /// turn Instant into the slowest and priciest setting.
     static func supportedThinkingLevels(model: String) -> Set<String> {
         let lowered = model.lowercased()
         guard lowered.contains("gemini-3") else { return [] }
+        if lowered.contains("-image") { return ["minimal", "high"] }
         if lowered.contains("gemini-3-flash")
             || lowered.contains("gemini-3.1-flash")
             || lowered.contains("gemini-3.5-flash") {

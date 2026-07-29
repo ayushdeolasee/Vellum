@@ -121,6 +121,10 @@ final class ChatGPTClient {
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
     }
 
+    /// The cap this client sent for every mode before #96, kept as the floor so
+    /// the fix can only ever raise a budget.
+    static let previousFlatOutputCap = 8192
+
     /// Request body for one tool-loop turn.
     ///
     /// Reasoning effort on the gpt-5 family: `.auto` omits the field so the
@@ -140,6 +144,15 @@ final class ChatGPTClient {
     /// this client ships is a gpt-5 variant, so `isReasoningModel` is true for
     /// all of them today; it is still passed rather than assumed so a future
     /// non-reasoning slug keeps the flat cap.
+    ///
+    /// Floored at `previousFlatOutputCap`, so the fix only ever raises a cap.
+    /// Without the floor, Instant would *fall* to 4096 on the four slugs whose
+    /// `minimal` resolves to effort `none`: `none` spends no reasoning tokens at
+    /// all, so that reduction would come entirely out of visible answer length —
+    /// reintroducing this issue's own symptom on the one mode it wasn't reported
+    /// for. The direct `OpenAIClient` keeps the unfloored table because 4096 has
+    /// been its shipped Instant budget since #95; here 8192 is the shipped value
+    /// and lowering it isn't this fix's job.
     static func requestBody(
         model: String,
         systemPrompt: String,
@@ -166,8 +179,10 @@ final class ChatGPTClient {
             // Cost guard: cap the output, scaled to the thinking mode. Hitting
             // it is surfaced via `response.incomplete` instead of clipping
             // silently.
-            "max_output_tokens": OpenAIClient.maxOutputTokens(
-                forEffort: effort, reasoning: OpenAIClient.isReasoningModel(model)),
+            "max_output_tokens": max(
+                previousFlatOutputCap,
+                OpenAIClient.maxOutputTokens(
+                    forEffort: effort, reasoning: OpenAIClient.isReasoningModel(model))),
         ]
         if let effort {
             body["reasoning"] = ["effort": effort]
