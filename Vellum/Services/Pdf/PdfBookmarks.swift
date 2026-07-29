@@ -51,6 +51,7 @@ enum PdfBookmarks {
                     // The user title lives in /VellumContent; /Title mirrors it
                     // for external viewers and holds the default when untitled.
                     let content = CgPdf.string(current, "VellumContent")
+                    let isPinned = CgPdf.integer(current, "VellumPinned") == 1 ? true : nil
                     bookmarks.append(Annotation(
                         id: id,
                         type: .bookmark,
@@ -59,7 +60,8 @@ enum PdfBookmarks {
                         content: content?.isEmpty == false ? content : nil,
                         positionData: nil,
                         createdAt: CgPdf.string(current, "VellumCreatedAt") ?? now,
-                        updatedAt: CgPdf.string(current, "VellumUpdatedAt") ?? now))
+                        updatedAt: CgPdf.string(current, "VellumUpdatedAt") ?? now,
+                        isPinned: isPinned))
                 }
                 walk(CgPdf.dictionary(current, "First"))
                 item = CgPdf.dictionary(current, "Next")
@@ -195,6 +197,17 @@ enum PdfBookmarks {
 
     // MARK: - Update (incremental update)
 
+    /// Walk catalog → /Outlines → outline tree for the Vellum bookmark
+    /// carrying this id, returning its object number. nil when the document
+    /// has no outline or no item matches.
+    private static func findBookmarkNumber(in file: ClassicPdfFile, id: String) -> Int? {
+        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
+              let outlinesNumber = catalog.reference(forKey: "Outlines"),
+              let root = file.objectSource(outlinesNumber)
+        else { return nil }
+        return findBookmarkObject(in: file, rootNumber: outlinesNumber, root: root, id: id)
+    }
+
     /// Retitle a bookmark: set /VellumContent and mirror it into /Title, or —
     /// when `content` is empty — clear the title back to `defaultTitle`.
     /// /VellumUpdatedAt always refreshes. Returns nil when no Vellum bookmark
@@ -207,14 +220,8 @@ enum PdfBookmarks {
         now: String
     ) throws -> Data? {
         let file = try ClassicPdfFile(data: normalizedData)
-        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
-              let outlinesNumber = catalog.reference(forKey: "Outlines"),
-              let root = file.objectSource(outlinesNumber)
-        else { return nil }
-
-        guard let bookmarkNumber = findBookmarkObject(
-            in: file, rootNumber: outlinesNumber, root: root, id: id),
-            var bookmark = file.objectSource(bookmarkNumber)
+        guard let bookmarkNumber = findBookmarkNumber(in: file, id: id),
+              var bookmark = file.objectSource(bookmarkNumber)
         else { return nil }
 
         if content.isEmpty {
@@ -231,6 +238,28 @@ enum PdfBookmarks {
         return increment.appended()
     }
 
+    /// Patch pin state on an outline bookmark. Returns nil when no Vellum
+    /// bookmark carries the id. PDFKit cannot write custom keys on outline
+    /// items, so this rewrites the outline object in place.
+    static func updateBookmarkIncrement(
+        normalizedData: Data,
+        id: String,
+        isPinned: Bool,
+        now: String
+    ) throws -> Data? {
+        let file = try ClassicPdfFile(data: normalizedData)
+        guard let bookmarkNumber = findBookmarkNumber(in: file, id: id),
+              var bookmark = file.objectSource(bookmarkNumber)
+        else { return nil }
+
+        bookmark.setInteger(forKey: "VellumPinned", to: isPinned ? 1 : 0)
+        bookmark.setValue(forKey: "VellumUpdatedAt", raw: PdfTextString.encode(now))
+
+        var increment = PdfIncrement(file: file)
+        increment.setObject(bookmarkNumber, source: bookmark.sourceBytes)
+        return increment.appended()
+    }
+
     // MARK: - Deletion (incremental update)
 
     /// delete_bookmark: unlink the item from its sibling chain, fix parent
@@ -238,14 +267,7 @@ enum PdfBookmarks {
     /// Vellum bookmark carries the id.
     static func deleteBookmarkIncrement(normalizedData: Data, id: String) throws -> Data? {
         let file = try ClassicPdfFile(data: normalizedData)
-        guard let catalogNumber = file.rootNumber, let catalog = file.objectSource(catalogNumber),
-              let outlinesNumber = catalog.reference(forKey: "Outlines"),
-              let root = file.objectSource(outlinesNumber)
-        else { return nil }
-
-        guard let bookmarkNumber = findBookmarkObject(
-            in: file, rootNumber: outlinesNumber, root: root, id: id)
-        else { return nil }
+        guard let bookmarkNumber = findBookmarkNumber(in: file, id: id) else { return nil }
 
         guard let bookmark = file.objectSource(bookmarkNumber) else {
             throw SessionServiceError.invalidDocument("Failed to read PDF bookmark: missing object")

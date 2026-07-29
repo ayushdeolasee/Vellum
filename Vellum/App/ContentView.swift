@@ -19,7 +19,9 @@ struct ContentView: View {
         // is hosted separately and only inherits ancestor environment — injecting
         // inside WindowChrome's own body would leave the toolbar without an
         // AppStore. Each pane's subtree re-injects its own triple, overriding this.
-        WindowChrome(sidebarHovering: $sidebarHovering)
+        WindowChrome(
+            sidebarHovering: $sidebarHovering,
+            initialColumnWidth: workspace.sidebarWidth)
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
@@ -31,7 +33,11 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
-            .focusedValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            // Commands belong to the main window, not whichever nested
+            // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
+            // A scene-focused value remains available throughout this window
+            // and automatically disappears when Settings becomes key.
+            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
@@ -184,6 +190,35 @@ private struct WindowChrome: View {
     @Environment(\.palette) private var palette
     @Binding var sidebarHovering: Bool
 
+    /// The `ideal:` handed to `.inspectorColumnWidth`, held FROZEN for as long as
+    /// the column is on screen.
+    ///
+    /// This is belt-and-braces, not the resize bug itself — that was the
+    /// modifier ORDER, documented at the call site. But it becomes load-bearing
+    /// the moment the envelope actually reaches the inspector host, so it lands
+    /// with it: `ideal:` must not be `workspace.sidebarWidth` read live.
+    /// SwiftUI re-applies `ideal:` to the column whenever that argument changes
+    /// between updates, and `.onGeometryChange` below writes every width it
+    /// measures back into the store — so a live read closes a loop through
+    /// AppKit's layout, and a body re-run landing mid-drag re-applies a stale
+    /// width over the one the user is dragging to.
+    ///
+    /// `sidebarWidth` being `@ObservationIgnored` does not cover this on its
+    /// own: it only stops the *store write* from invalidating the view.
+    /// Anything else that re-runs this body — hovering the panel, a toolbar
+    /// change, a tab switch — still re-reads the property and hands SwiftUI a
+    /// new `ideal:`.
+    ///
+    /// Re-seeded from the store in `.onChange` below only when the column is
+    /// (re)presented, which is the one moment `ideal:` is legitimately
+    /// consulted — so reopening a document still restores the user's width.
+    @State private var idealColumnWidth: CGFloat
+
+    init(sidebarHovering: Binding<Bool>, initialColumnWidth: CGFloat) {
+        _sidebarHovering = sidebarHovering
+        _idealColumnWidth = State(initialValue: initialColumnWidth)
+    }
+
     private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
@@ -196,38 +231,77 @@ private struct WindowChrome: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
+        // Only over a document. Home renders the same `app.error` in its own
+        // banner (#68), so an unconditional overlay would show every error
+        // twice — including the terminal Save As rollback, which is precisely
+        // the case that ends up back on Home.
+        .overlay(alignment: .top) {
+            if focused.app.document != nil, let error = focused.app.error {
+                DocumentErrorNotice(message: error) {
+                    focused.app.error = nil
+                }
+                .padding(.top, 12)
+            }
+        }
         .toolbar {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            sidebar
-                .inspectorColumnWidth(min: 240, ideal: 340, max: 700)
-                .toolbar {
-                    if inspectorPresented.wrappedValue {
-                        ToolbarSpacer(.flexible)
-                        ToolbarItem {
-                            GlassSegmentedPicker(
-                                options: [
-                                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                                ],
-                                selection: sidebarTabBinding,
-                                accessibilityIdentifierPrefix: "sidebarTab"
-                            )
-                        }
-                        ToolbarSpacer(.flexible)
-                    }
-                }
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
+            VStack(spacing: 0) {
+                InspectorTabSwitcher(selection: sidebarTabBinding)
+                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+                    .padding(.vertical, 8)
+                Divider()
+                sidebar
+            }
+            // Feeds the user's splitter drag back to the store so the next
+            // document reopens the column where they left it. The store
+            // rejects the collapsed measurements a start tab produces. Safe to
+            // write from here only because `ideal:` below is frozen — see
+            // `idealColumnWidth`.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                workspace.rememberSidebarWidth(width)
+            }
+            // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
+            // This is not a style preference: the column-width envelope is a
+            // view trait the inspector host reads off the ROOT of this closure,
+            // and it does not survive being wrapped. With `.onGeometryChange`
+            // applied after it (as it was), the trait was invisible to the
+            // host, which then fell back to its built-in 270pt column and — far
+            // worse — registered NO min/max envelope, so AppKit gave the
+            // divider nothing to drag between and the side panel could not be
+            // resized at all. Measured: identical 270pt column whether this
+            // said 280/360/700 or 450/500/700; moved out here, the column
+            // lands on exactly the width asked for.
+            .inspectorColumnWidth(
+                min: InspectorLayout.minimumWidth,
+                ideal: idealColumnWidth,
+                max: InspectorLayout.maximumWidth)
+        }
+        // The column is inserted (and `ideal:` consulted) when this flips true,
+        // so this is the one safe moment to adopt the width the user last left.
+        // Reading the store anywhere else would re-open the loop described on
+        // `idealColumnWidth`.
+        .onChange(of: workspace.inspectorPresented) { _, isPresented in
+            if isPresented { idealColumnWidth = workspace.sidebarWidth }
         }
     }
 
     /// Inspector only makes sense with a document in the focused pane; the open
-    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    /// state itself is window-global (WorkspaceStore) so it survives focus and
+    /// start-tab changes.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { focused.app.document != nil && workspace.sidebarOpen },
-            set: { workspace.sidebarOpen = $0 }
+            get: { workspace.inspectorPresented },
+            set: { workspace.setInspectorPresented($0) }
         )
     }
 
@@ -241,6 +315,38 @@ private struct WindowChrome: View {
     private var sidebar: some View {
         SidebarPanelStack()
             .onHover { sidebarHovering = $0 }
+    }
+}
+
+/// Document-action failures stay visible in whichever surface remains after
+/// the action. In particular, a terminal Save As rollback can close the last
+/// tab and leave this pane on Home.
+private struct DocumentErrorNotice: View {
+    @Environment(\.palette) private var palette
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message)
+                .lineLimit(3)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss error")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(palette.destructive)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(palette.destructive.opacity(0.12), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(palette.destructive.opacity(0.3))
+        }
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier("document.errorNotice")
     }
 }
 

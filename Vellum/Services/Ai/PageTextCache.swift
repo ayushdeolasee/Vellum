@@ -99,6 +99,9 @@ actor PageTextCache {
     /// Class-C home (design §2): ~/Library/Caches/com.vellum.app/text — evictable
     /// without loss, never synced, guilt-free TTL cleanup.
     static var defaultDirectory: URL {
+        if let root = UITestLaunchConfiguration.storageRoot {
+            return root.appendingPathComponent("Caches/text", isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"

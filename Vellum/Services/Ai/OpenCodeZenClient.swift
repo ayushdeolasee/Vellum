@@ -125,11 +125,20 @@ final class OpenCodeClient {
             // chat-completions field name. `.auto` sends nothing, preserving the
             // prior behavior. Applies to both the Zen and Go gateways.
             if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
-                // "minimal" is an OpenAI-only effort value; the gateways' other
-                // model families accept only low/medium/high, so Instant
-                // downgrades to "low" for non-GPT models.
-                let isOpenAIModel = model.lowercased().hasPrefix("gpt")
-                body["reasoning_effort"] = effort == "minimal" && !isOpenAIModel ? "low" : effort
+                // GPT models have per-family effort vocabularies, and getting one
+                // wrong 400s the request before streaming — gpt-5.5 rejects
+                // "minimal" (#94). Passing the value straight through was only
+                // safe while every GPT model took "minimal", so resolve it
+                // against the same table the direct client uses. The gateways'
+                // other model families accept only low/medium/high, so Instant
+                // downgrades to "low" for them.
+                if model.lowercased().hasPrefix("gpt") {
+                    if let resolved = OpenAIClient.supportedReasoningEffort(model: model, requested: effort) {
+                        body["reasoning_effort"] = resolved
+                    }
+                } else {
+                    body["reasoning_effort"] = effort == "minimal" ? "low" : effort
+                }
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"

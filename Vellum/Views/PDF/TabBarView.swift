@@ -11,6 +11,9 @@ struct TabBarView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @State private var joinTargeted = false
+    @State private var showingOverview = false
+    /// The tab whose rename sheet is open, if any.
+    @State private var renamingTab: PdfTab?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -25,13 +28,47 @@ struct TabBarView: View {
                             paneId: paneId,
                             isActive: tab.id == appStore.activeTabId,
                             onActivate: { appStore.activateTab(tab.id) },
-                            onClose: { Task { await appStore.closeTab(tab.id) } }
+                            onClose: { Task { await appStore.closeTab(tab.id) } },
+                            onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
+                            onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
+                            onDuplicate: { Task { await appStore.duplicateTab(tab.id) } },
+                            onMoveToNewPane: {
+                                workspace.splitWithTab(
+                                    tabId: tab.id, from: paneId, target: paneId,
+                                    direction: .horizontal, before: false)
+                            },
+                            onRename: tab.document == nil ? nil : { renamingTab = tab }
                         )
                     }
                 }
                 .padding(.vertical, 5)
             }
             .frame(maxWidth: .infinity)
+
+            Button {
+                showingOverview.toggle()
+            } label: {
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.accessoryBar)
+            .help("Show all tabs")
+            .accessibilityLabel("Show all tabs")
+            .accessibilityIdentifier("tabBar.overview")
+            .popover(isPresented: $showingOverview, arrowEdge: .bottom) {
+                TabOverview(
+                    tabs: workspace.allTabs,
+                    onActivate: {
+                        workspace.activateWorkspaceTab(paneId: $0.paneId, tabId: $0.tab.id)
+                        showingOverview = false
+                    },
+                    onClose: { tab in
+                        Task { await workspace.closeWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id) }
+                    }
+                )
+            }
 
             Menu {
                 Button("Open PDF…", action: openPdf)
@@ -57,6 +94,14 @@ struct TabBarView: View {
         .padding(.leading, 12)
         .padding(.trailing, 8)
         .frame(height: 38)
+        .sheet(item: $renamingTab) { tab in
+            RenameDocumentSheet(
+                currentTitle: tab.document?.title ?? "",
+                fallbackName: TabBarView.fallbackName(for: tab),
+                commit: { newTitle in
+                    Task { await appStore.renameDocument(tabId: tab.id, title: newTitle) }
+                })
+        }
         .background(.bar)
         // Dropping a tab onto this strip moves it into this pane's group. When
         // it empties the source pane, that pane collapses — this is how you undo
@@ -101,39 +146,44 @@ struct TabBarView: View {
     }
 }
 
+/// The name a tab shows with no title override: the filename without its `.pdf`
+/// extension. Shared with the rename sheet, which offers it as the placeholder
+/// so that clearing the field visibly means "go back to this" rather than
+/// "leave it blank".
+extension TabBarView {
+    static func fallbackName(for tab: PdfTab) -> String {
+        TabPresentation.fallbackName(for: tab)
+    }
+}
+
 private struct TabItem: View {
     let tab: PdfTab
     let paneId: String
     let isActive: Bool
     let onActivate: () -> Void
     let onClose: () -> Void
+    let onCloseOthers: () -> Void
+    let onCloseRight: () -> Void
+    let onDuplicate: () -> Void
+    let onMoveToNewPane: () -> Void
+    /// Nil for the "New Tab" placeholder, which has no document to rename.
+    let onRename: (() -> Void)?
 
+    @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @State private var hovering = false
 
-    private var isStart: Bool { tab.document == nil }
+    private var hasPendingAction: Bool {
+        tab.mode != .view || tab.pendingNoteContent != nil || tab.regionCaptureTarget != nil
+    }
 
     private var iconName: String {
-        guard let document = tab.document else { return "plus.square" }
-        return document.kind == .web ? "globe" : "doc.text"
+        TabPresentation.iconName(for: tab)
     }
 
     private var label: String {
-        guard let document = tab.document else { return "New Tab" }
-        if let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty {
-            return title
-        }
-        let fallback = document.pdfPath
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? ""
-        if fallback.lowercased().hasSuffix(".pdf") {
-            return String(fallback.dropLast(4))
-        }
-        return fallback.isEmpty ? "Untitled" : fallback
+        TabPresentation.title(for: tab)
     }
 
     var body: some View {
@@ -147,6 +197,12 @@ private struct TabItem: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if hasPendingAction {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .padding(.leading, 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -165,7 +221,7 @@ private struct TabItem: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .opacity(hovering ? 1 : 0)
+            .opacity(hovering || isActive ? 1 : 0)
             .padding(.trailing, 4)
             .help("Close \(label)")
             .accessibilityLabel("Close \(label)")
@@ -184,6 +240,10 @@ private struct TabItem: View {
         .overlay {
             MiddleClickView(action: onClose)
         }
+        // Rename lives here rather than on the toolbar's title field: that
+        // field shows the FILENAME for a PDF and the URL for a page, so
+        // editing it would read as renaming the file or navigating. The tab is
+        // the one place the document's title is actually rendered.
         .onDrag {
             let payload = TabDragPayload(paneId: paneId, tabId: tab.id)
             workspace.beginTabDrag(payload)
@@ -198,6 +258,201 @@ private struct TabItem: View {
             }
             return provider
         }
+        // ONE context menu. Two `.contextMenu` modifiers on the same view do
+        // not compose — the outer one replaces the inner — so rename and the
+        // tab-management actions have to be built together here.
+        .contextMenu {
+            // Rename lives here rather than on the toolbar's title field: that
+            // field shows the FILENAME for a PDF and the URL for a page, so
+            // editing it would read as renaming the file or navigating. The tab
+            // is the one place the document's title is actually rendered.
+            if let onRename {
+                Button("Rename…", action: onRename)
+            }
+            Button("Duplicate") { onDuplicate() }
+                .disabled(tab.document?.kind == .pdf)
+            Button("Move to New Pane") { onMoveToNewPane() }
+                .disabled(appStore.tabs.count < 2)
+
+            Divider()
+
+            if tab.document?.kind == .web {
+                Button("Copy Link") { copyLink() }
+            } else if tab.document?.kind == .pdf {
+                Button("Reveal in Finder") { revealPdf() }
+            }
+
+            Divider()
+
+            Button("Close Tab", role: .destructive, action: onClose)
+            Button("Close Others") { onCloseOthers() }
+                .disabled(appStore.tabs.count < 2)
+            Button("Close Tabs to Right") { onCloseRight() }
+                .disabled(isLastTab)
+        }
+        .accessibilityValue(hasPendingAction ? "Action pending" : "")
+    }
+
+    private var isLastTab: Bool {
+        appStore.tabs.last?.id == tab.id
+    }
+
+    private func copyLink() {
+        guard let value = tab.document?.pdfPath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func revealPdf() {
+        guard let path = tab.document?.pdfPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+}
+
+private struct TabOverview: View {
+    let tabs: [WorkspaceTab]
+    let onActivate: (WorkspaceTab) -> Void
+    let onClose: (WorkspaceTab) -> Void
+
+    @Environment(WorkspaceStore.self) private var workspace
+    @State private var query = ""
+
+    private var filteredTabs: [WorkspaceTab] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return tabs }
+        return tabs.filter {
+            TabPresentation.title(for: $0.tab)
+                .localizedStandardContains(needle)
+                || TabPresentation.typeLabel(for: $0.tab)
+                .localizedStandardContains(needle)
+                || $0.paneLabel.localizedStandardContains(needle)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("All Tabs")
+                .font(.headline)
+
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("tabOverview.search")
+
+            if filteredTabs.isEmpty {
+                ContentUnavailableView.search(text: query)
+                    .frame(minHeight: 120)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredTabs) { tab in
+                            HStack(spacing: 8) {
+                                Button {
+                                    onActivate(tab)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: TabPresentation.iconName(for: tab.tab))
+                                            .foregroundStyle(.secondary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(TabPresentation.title(for: tab.tab))
+                                                .lineLimit(2)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Text("\(tab.paneLabel) · \(TabPresentation.typeLabel(for: tab.tab))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        if isFocusedActive(tab) {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(.tint)
+                                                .accessibilityLabel("Current tab")
+                                        }
+                                        if isPending(tab) {
+                                            Circle()
+                                                .fill(.orange)
+                                                .frame(width: 6, height: 6)
+                                                .accessibilityHidden(true)
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    "\(TabPresentation.title(for: tab.tab)), "
+                                        + "\(tab.paneLabel), \(TabPresentation.typeLabel(for: tab.tab))"
+                                        + (isPending(tab) ? ", action pending" : ""))
+                                .accessibilityIdentifier("tabOverview.tab.\(tab.id)")
+
+                                Button {
+                                    onClose(tab)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .frame(width: 22, height: 22)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Close \(TabPresentation.title(for: tab.tab))")
+                                .accessibilityLabel("Close \(TabPresentation.title(for: tab.tab))")
+                                .accessibilityIdentifier("tabOverview.close.\(tab.id)")
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(
+                                isFocusedActive(tab)
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: Radius.md))
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+            }
+        }
+        .padding(14)
+        .frame(width: 360)
+    }
+
+    private func isPending(_ tab: WorkspaceTab) -> Bool {
+        tab.tab.mode != .view || tab.tab.pendingNoteContent != nil || tab.tab.regionCaptureTarget != nil
+    }
+
+    private func isFocusedActive(_ tab: WorkspaceTab) -> Bool {
+        tab.paneId == workspace.focusedPaneId && tab.tab.id == workspace.focusedPane.app.activeTabId
+    }
+}
+
+enum TabPresentation {
+    static func title(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "New Tab" }
+        if let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        return fallbackName(for: tab)
+    }
+
+    /// The name to show when a document carries no title of its own: its file
+    /// name, minus a `.pdf` extension. Lives here — nonisolated, beside the
+    /// other presentation helpers — so both the strip and the overview can use
+    /// it without hopping actors.
+    static func fallbackName(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "New Tab" }
+        let fallback = document.pdfPath
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .last
+            .map(String.init) ?? ""
+        if fallback.lowercased().hasSuffix(".pdf") {
+            return String(fallback.dropLast(4))
+        }
+        return fallback.isEmpty ? "Untitled" : fallback
+    }
+
+    static func typeLabel(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "New Tab" }
+        return document.kind == .web ? "Webpage" : "PDF"
+    }
+
+    static func iconName(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "plus.square" }
+        return document.kind == .web ? "globe" : "doc.text"
     }
 }
 

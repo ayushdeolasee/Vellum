@@ -16,36 +16,15 @@ final class AppStore {
 
     let sessions: SessionService
 
-    // MARK: - Prepared-PDF cache
+    // MARK: - Prepared PDFs
     //
-    // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
-    // without a cache every switch re-reads + re-parses + re-strips the whole PDF
-    // (now off-main, but still a visible delay for large docs). Cache the display-
-    // ready PDFDocument per tab so switching back is instant. A stripped display
-    // doc stays valid across annotation edits (annotations render from overlays,
-    // page content is unchanged), so no invalidation is needed beyond close/LRU.
-    private static let maxPreparedCache = 3
-    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
-
-    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
-        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
-        // Touch: move to most-recently-used.
-        let entry = preparedPdfCache.remove(at: index)
-        preparedPdfCache.append(entry)
-        return entry.doc
-    }
-
-    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-        preparedPdfCache.append((tabId, doc))
-        if preparedPdfCache.count > Self.maxPreparedCache {
-            preparedPdfCache.removeFirst()
-        }
-    }
-
-    func evictPreparedPdf(tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-    }
+    // There used to be a three-entry LRU of parsed `PDFDocument`s here, because
+    // switching tabs tore down and rebuilt the viewer. Tabs now keep their whole
+    // viewer mounted, and the parsed document lives on the tab's
+    // `LiveTabRuntime` (issue #52). Keeping a second copy here would be actively
+    // harmful: evicting a runtime under memory pressure would free the view but
+    // leave the document alive in the LRU, so the memory the eviction existed to
+    // reclaim would not actually come back. One owner, one lifetime.
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -70,21 +49,22 @@ final class AppStore {
     // Active interaction mode
     private(set) var mode: InteractionMode = .view
 
-    /// AI reply queued for the next note placement (see `beginNoteWithContent`).
-    /// Not per-tab: it is short-lived and consumed on the very next click.
+    /// AI reply queued for the active tab's next note placement (see
+    /// `beginNoteWithContent`). The source of truth lives on `PdfTab`, so this
+    /// mirror changes whenever the active tab does.
     private(set) var pendingNoteContent: String?
 
     // Find bar (⌘F). `findVisible` drives the slim bar under the toolbar; the
     // counts are reported back by whichever viewer is active.
     var findVisible = false
+    private(set) var findQuery = ""
     private(set) var findMatchCount = 0
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
-    /// Where a `.snapshotRegion` drag sends its crop. Both the AI panel and the
-    /// scratchpad panel arm the same capture mode, so the viewer overlays read
-    /// this to know which store to hand the snapshot to.
-    enum RegionCaptureTarget { case ai, scratchpad }
+    /// Where the active tab's `.snapshotRegion` drag sends its crop. Both the
+    /// AI panel and scratchpad arm the same capture mode; `PdfTab` retains the
+    /// value when the user changes tabs mid-gesture.
     private(set) var regionCaptureTarget: RegionCaptureTarget = .ai
 
     /// The window's workspace. One AppStore now backs one *pane*; app-global
@@ -92,6 +72,14 @@ final class AppStore {
     /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
     /// workspace owns the pane which owns this store.
     weak var workspace: WorkspaceStore?
+
+    /// The full identity for an asynchronous webpage action. A tab id by
+    /// itself is not enough: in-page navigation deliberately reuses it while
+    /// rebinding the tab to a different URL.
+    struct WebDocumentActionIdentity: Equatable, Sendable {
+        let sessionId: String
+        let url: String
+    }
 
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
@@ -196,6 +184,26 @@ final class AppStore {
         }
     }
 
+    /// Captures the active webpage before an asynchronous action begins.
+    /// Callers must validate this identity again after every suspension before
+    /// changing visible state or performing a compensating mutation.
+    func activeWebDocumentActionIdentity() -> WebDocumentActionIdentity? {
+        guard let sessionId = activeTabId,
+              let document,
+              document.kind == .web else { return nil }
+        return WebDocumentActionIdentity(sessionId: sessionId, url: document.pdfPath)
+    }
+
+    /// True only while the active tab still represents the exact webpage that
+    /// began the action. This rejects a same-tab URL rebind after an `await`.
+    func isCurrentWebDocument(_ identity: WebDocumentActionIdentity) -> Bool {
+        guard activeTabId == identity.sessionId,
+              let tab = tabs.first(where: { $0.id == identity.sessionId }),
+              let document = tab.document,
+              document.kind == .web else { return false }
+        return document.pdfPath == identity.url
+    }
+
     /// Update a tab's document title (reported by the webpage content script).
     func updateDocumentTitle(tabId: String, title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -208,6 +216,47 @@ final class AppStore {
         if activeTabId == tabId {
             document = doc
         }
+    }
+
+    /// Rename the open document from the tab bar.
+    ///
+    /// Distinct from `updateDocumentTitle` above, which exists for the webpage
+    /// content script reporting the DOM `<title>` and is deliberately
+    /// in-memory-only and non-empty-only: a page reporting its own title should
+    /// not permanently overwrite a name the user chose, and a page reporting an
+    /// empty one should be ignored. A user rename is the opposite on both
+    /// counts — it must persist, and clearing it must be allowed to mean
+    /// "go back to the filename".
+    ///
+    /// The file on disk is untouched; see `DocumentRenameService` for why.
+    func renameDocument(tabId: String, title: String) async {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
+            return
+        }
+        let normalized = DocumentRenameService.normalized(title)
+        let target = DocumentRenameService.Target(
+            kind: document.kind,
+            locator: document.pdfPath,
+            recordedPath: document.pdfPath,
+            storageKey: DocumentIdentity.storageKey(for: document))
+
+        // `apply` reports whether it wrote anything. The in-memory update below
+        // is what the UI reads either way, so the result is intentionally
+        // discarded — named here so it isn't an unused-expression warning.
+        _ = await Task.detached(priority: .userInitiated) {
+            DocumentRenameService.apply(target, title: normalized)
+        }.value
+
+        var updated = document
+        updated.title = normalized
+        updateTab(tabId) { $0.document = updated }
+        if activeTabId == tabId { document_setActive(updated) }
+    }
+
+    /// Split out so `renameDocument` reads as one thought; assigning
+    /// `self.document` inline shadows the local `document` binding above it.
+    private func document_setActive(_ info: DocumentInfo) {
+        document = info
     }
 
     /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
@@ -231,6 +280,138 @@ final class AppStore {
         }
     }
 
+    /// Save the PDF in `tabId` to a new location while keeping the existing tab
+    /// and backend session identity. Keeping the id stable is important: it is
+    /// also the identity used by the viewer, AI conversation, inspector, and
+    /// split-pane placement.
+    ///
+    /// The destination is written before the session is rebound. If reopening
+    /// the new location fails, the original session is restored so Save As
+    /// cannot strand the live tab.
+    @discardableResult
+    func savePdfAs(tabId: String, destination: URL) async throws -> DocumentInfo {
+        guard let tab = tabs.first(where: { $0.id == tabId }),
+              let source = tab.document,
+              source.kind == .pdf else {
+            throw SessionServiceError.invalidDocument("Save As requires an open PDF")
+        }
+
+        let sourceURL = URL(fileURLWithPath: source.pdfPath).standardizedFileURL
+        let destinationURL = destination.standardizedFileURL
+        if sourceURL == destinationURL {
+            return source
+        }
+        // `/var` and `/private/var` can name the same file on macOS without
+        // URL standardization making the strings equal. Compare filesystem
+        // identities when the destination already exists so choosing the
+        // current file in NSSavePanel remains a true no-op.
+        let sourceIdentifier = try? sourceURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destinationURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        if let sourceIdentifier = sourceIdentifier as? NSObject,
+           let destinationIdentifier = destinationIdentifier as? NSObject,
+           sourceIdentifier.isEqual(destinationIdentifier) {
+            return source
+        }
+
+        // Retargeting this tab to a file another tab already owns would leave
+        // two independent backend sessions writing the same PDF. That is
+        // particularly unsafe across panes, where neither tab is necessarily
+        // visible while the other saves. A Save As target must therefore be a
+        // genuinely new document location.
+        let openTabs = workspace?.root.allLeaves().flatMap { $0.app.tabs } ?? tabs
+        if openTabs.contains(where: { other in
+            guard other.id != tabId,
+                  let otherDocument = other.document,
+                  otherDocument.kind == .pdf else { return false }
+            return Self.sameFile(sourceURL: URL(fileURLWithPath: otherDocument.pdfPath), destinationURL: destinationURL)
+        }) {
+            throw SessionServiceError.invalidDocument(
+                "That PDF is already open in another tab. Close it before using Save As."
+            )
+        }
+
+        // Stamp a durable id before copying so document-scoped notes and
+        // conversations follow the PDF to its new location.
+        let preservedDocumentId = try await sessions.ensureDocumentId(sessionId: tabId)
+        await syncDocumentId(sessionId: tabId)
+        try await sessions.saveFile(sessionId: tabId)
+        let bytes = try await sessions.readPdfBytes(sessionId: tabId)
+        try await Task.detached {
+            try bytes.write(to: destinationURL, options: .atomic)
+        }.value
+
+        // A read-only, unstamped source resolves to a stable byte-hash fallback
+        // rather than a persisted /VellumDocId. Its Save As copy *is* writable,
+        // so stamp that fallback into the destination before reopening it. This
+        // keeps its conversation/scratchpad identity continuous instead of
+        // assigning a fresh id after the source becomes writable by copying.
+        if PdfMetadata.documentId(atPath: destinationURL.path) == nil {
+            try PdfMetadata.stampDocumentId(atPath: destinationURL.path, id: preservedDocumentId)
+        }
+
+        try await sessions.closeFile(sessionId: tabId)
+        let rebound: DocumentInfo
+        do {
+            rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
+        } catch let reopenError {
+            do {
+                // The original file is untouched, and a successful rollback
+                // restores the exact live tab rather than stranding it.
+                let restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                updateTab(tabId) { $0.document = restored }
+                if activeTabId == tabId {
+                    document = restored
+                }
+            } catch let rollbackError {
+                // There is no longer a backend for this tab. Remove it rather
+                // than showing a document whose actions will all fail; the
+                // untouched original remains available to reopen from Recents.
+                await closeTab(tabId)
+                let terminalError = SessionServiceError.io(
+                    "Save As wrote the copy but could not reopen it (\(reopenError.localizedDescription)) or restore the original (\(rollbackError.localizedDescription)). The tab was closed; reopen the original file to continue."
+                )
+                // `closeTab` may leave this pane on Home. Keep the terminal
+                // action error on the store so WindowChrome can present it
+                // there as well as above an open document.
+                error = terminalError.localizedDescription
+                throw terminalError
+            }
+            throw reopenError
+        }
+
+        // Retargeting keeps the tab live (issue #52 residency): its host stays
+        // mounted and `isActive` never changes, so the viewer would go on
+        // showing the document it parsed from the old location — and the copy's
+        // bytes differ from the source's anyway once /VellumDocId is stamped
+        // into it. Invalidate the runtime's parsed document so the mounted
+        // viewer re-reads the new file.
+        workspace?.existingLiveTabRuntime(for: tabId)?.invalidateLoadedPdf()
+        updateTab(tabId) { $0.document = rebound }
+        if activeTabId == tabId {
+            document = rebound
+        }
+        RecentFilesService.record(rebound)
+        workspace?.scheduleSave()
+        return rebound
+    }
+
+    private static func sameFile(sourceURL: URL, destinationURL: URL) -> Bool {
+        let source = sourceURL.standardizedFileURL
+        let destination = destinationURL.standardizedFileURL
+        guard source != destination else { return true }
+        let sourceIdentifier = try? source.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        let destinationIdentifier = try? destination.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        guard let sourceIdentifier = sourceIdentifier as? NSObject,
+              let destinationIdentifier = destinationIdentifier as? NSObject else {
+            return false
+        }
+        return sourceIdentifier.isEqual(destinationIdentifier)
+    }
+
     // MARK: - Closing / switching tabs
 
     func closeFile() async {
@@ -242,14 +423,18 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        evictPreparedPdf(tabId: tabId)
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
             try? await sessions.setDocumentMetadata(
                 sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
+            // Metadata rewrites the PDF and therefore its validation hash.
+            // Flush extraction after that rewrite and before dropping the
+            // runtime so the cache is keyed to the bytes that will reopen.
+            await workspace?.existingLiveTabRuntime(for: tabId)?.flushPdfText()
             try? await sessions.closeFile(sessionId: closingTab.id)
         }
+        workspace?.removeLiveTabRuntime(for: tabId)
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
@@ -269,6 +454,83 @@ final class AppStore {
             applyActiveState(from: next)
         }
         workspace?.scheduleSave()
+    }
+
+    /// Close every tab except `tabId`. Keeping this operation in the store makes
+    /// the tab-strip context menu and any future native command share the same
+    /// backend-session cleanup semantics as an ordinary close.
+    func closeOtherTabs(keeping tabId: String) async {
+        guard tabs.contains(where: { $0.id == tabId }) else { return }
+        let ids = tabs.map(\.id).filter { $0 != tabId }
+        for id in ids {
+            await closeTab(id)
+        }
+        activateTab(tabId)
+    }
+
+    /// Close tabs after `tabId` in visual order.
+    func closeTabsToRight(of tabId: String) async {
+        guard let index = tabs.firstIndex(where: { $0.id == tabId }),
+              index + 1 < tabs.count else { return }
+        let ids = tabs[(index + 1)...].map(\.id)
+        for id in ids.reversed() {
+            await closeTab(id)
+        }
+    }
+
+    /// Open a second live session for a tab, preserving its stable viewport.
+    /// Unlike the normal open path this deliberately does not deduplicate by
+    /// location: Duplicate means two independently navigable workspaces.
+    func duplicateTab(_ tabId: String) async {
+        guard let sourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let source = tabs[sourceIndex]
+        guard let sourceDocument = source.document else {
+            newStartTab()
+            return
+        }
+        // PDF mutations are serialized by a per-session IO actor, not a
+        // per-path actor. Two live sessions for the same file could therefore
+        // overwrite each other's annotation writes. Web sidecar mutations have
+        // a per-path lock, so duplicate live webpage sessions are safe.
+        guard sourceDocument.kind == .web else { return }
+
+        isLoading = true
+        error = nil
+        let sessionId = UUID().uuidString.lowercased()
+        do {
+            // Web only, per the guard above.
+            var opened = try await sessions.openWebDocument(
+                url: sourceDocument.pdfPath, sessionId: sessionId)
+            // Keep the title currently visible in the source tab. Web titles in
+            // particular may have been learned after the initial open.
+            opened.title = sourceDocument.title ?? opened.title
+            // Opening suspends this main-actor method. If the user closed the
+            // source tab while its duplicate was loading, do not resurrect it
+            // as an unexpected new tab; release the just-opened session.
+            guard let currentSourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else {
+                try? await sessions.closeFile(sessionId: sessionId)
+                isLoading = false
+                return
+            }
+            let duplicate = PdfTab(
+                id: sessionId,
+                document: opened,
+                currentPage: source.currentPage,
+                numPages: source.numPages,
+                zoom: source.zoom,
+                visiblePages: [],
+                webVisibleRange: nil,
+                webVisibleBookmarks: [],
+                mode: .view
+            )
+            let insertion = min(currentSourceIndex + 1, tabs.count)
+            tabs.insert(duplicate, at: insertion)
+            applyActiveState(from: duplicate)
+            workspace?.scheduleSave()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
     }
 
     func activateTab(_ tabId: String) {
@@ -335,29 +597,59 @@ final class AppStore {
     }
 
     /// Rebuild this pane's tabs from persisted descriptors (launch restore).
-    /// Opens each document with a fresh session; missing files are skipped.
-    /// Applies each tab's saved page/zoom/mode, then activates the saved tab.
+    /// This deliberately bypasses the regular open path's location
+    /// deduplication: two saved web tabs at the same URL are independent live
+    /// sessions and must both survive a relaunch. Missing files are skipped;
+    /// the saved active index is mapped to its successfully restored tab rather
+    /// than used against the compacted `tabs` array.
     func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
-        for descriptor in descriptors {
-            guard let doc = descriptor.document else {
-                newStartTab()
+        var restoredTabIds: [Int: String] = [:]
+
+        for (descriptorIndex, descriptor) in descriptors.enumerated() {
+            guard let savedDocument = descriptor.document else { continue }
+            let sessionId = UUID().uuidString.lowercased()
+            do {
+                var opened: DocumentInfo
+                if savedDocument.kind == .web {
+                    if savedDocument.pdfPath.lowercased().hasSuffix(".vellumweb") {
+                        opened = try await sessions.openVellumwebFile(
+                            path: savedDocument.pdfPath, sessionId: sessionId)
+                    } else {
+                        opened = try await sessions.openWebDocument(
+                            url: savedDocument.pdfPath, sessionId: sessionId)
+                    }
+                } else {
+                    opened = try await sessions.openFile(path: savedDocument.pdfPath, sessionId: sessionId)
+                }
+                // Preserve a title learned by the prior web session until the
+                // re-opened page reports a newer document title.
+                opened.title = savedDocument.title ?? opened.title
+                RecentFilesService.record(opened)
+                let restoredMode: InteractionMode = descriptor.mode == .snapshotRegion ? .view : descriptor.mode
+                let tab = PdfTab(
+                    id: sessionId,
+                    document: opened,
+                    currentPage: descriptor.currentPage,
+                    numPages: opened.pageCount ?? 0,
+                    zoom: descriptor.zoom,
+                    visiblePages: [],
+                    webVisibleRange: nil,
+                    webVisibleBookmarks: [],
+                    mode: restoredMode)
+                tabs.append(tab)
+                restoredTabIds[descriptorIndex] = sessionId
+            } catch {
+                // One unavailable document must not prevent the rest of the
+                // workspace from restoring. The reconciled tree is saved by
+                // WorkspaceStore after all panes have finished.
                 continue
             }
-            let before = tabs.count
-            if doc.kind == .web {
-                await openUrl(doc.pdfPath)
-            } else {
-                await openFiles(paths: [doc.pdfPath])
-            }
-            // Apply the saved viewport only if a new tab actually opened.
-            if tabs.count > before {
-                setZoom(descriptor.zoom)
-                setCurrentPage(descriptor.currentPage)
-                setMode(descriptor.mode)
-            }
         }
-        if let activeIndex, tabs.indices.contains(activeIndex) {
-            activateTab(tabs[activeIndex].id)
+
+        if let activeTabId = activeIndex.flatMap({ restoredTabIds[$0] })
+            ?? tabs.last?.id,
+           let activeTab = tabs.first(where: { $0.id == activeTabId }) {
+            applyActiveState(from: activeTab)
         }
     }
 
@@ -430,12 +722,18 @@ final class AppStore {
     func showFind() {
         guard document != nil else { return }
         findVisible = true
+        updateActiveTab { $0.findVisible = true }
     }
 
     /// Dismiss the find bar (Escape / close), clearing the viewer highlights.
     func hideFind() {
         guard findVisible else { return }
         findVisible = false
+        updateActiveTab {
+            $0.findVisible = false
+            $0.findMatchCount = 0
+            $0.findCurrentMatch = 0
+        }
         findMatchCount = 0
         findCurrentMatch = 0
         findClearHandler?()
@@ -444,6 +742,8 @@ final class AppStore {
     /// Run a query. An empty query clears highlights but keeps the bar open.
     func performFind(_ query: String) {
         guard document != nil else { return }
+        findQuery = query
+        updateActiveTab { $0.findQuery = query }
         if query.isEmpty {
             findMatchCount = 0
             findCurrentMatch = 0
@@ -460,6 +760,10 @@ final class AppStore {
     func setFindResults(count: Int, current: Int) {
         findMatchCount = count
         findCurrentMatch = current
+        updateActiveTab {
+            $0.findMatchCount = count
+            $0.findCurrentMatch = current
+        }
     }
 
     // MARK: - Print
@@ -472,8 +776,20 @@ final class AppStore {
 
     private func resetFindState() {
         findVisible = false
+        findQuery = ""
         findMatchCount = 0
         findCurrentMatch = 0
+    }
+
+    /// Read-only tab lookup used by persistent viewer hosts. A host may finish
+    /// preparing while another tab is active, so it must validate its own tab
+    /// identity without consulting the window-global active projection.
+    func tab(id: String) -> PdfTab? {
+        tabs.first { $0.id == id }
+    }
+
+    func containsTab(id: String) -> Bool {
+        tabs.contains { $0.id == id }
     }
 
     func setVisiblePages(_ pages: [Int]) {
@@ -505,33 +821,74 @@ final class AppStore {
 
     func setMode(_ mode: InteractionMode) {
         self.mode = mode
-        // Leaving note placement (or entering the plain note tool) drops any
-        // AI-reply payload queued for the next placement.
-        if mode != .note { pendingNoteContent = nil }
-        // `snapshotRegion` is a transient capture gesture — never persist it to
-        // the tab, or restoring the tab would reopen the marquee overlay.
-        if mode != .snapshotRegion { updateActiveTab { $0.mode = mode } }
+        switch mode {
+        case .snapshotRegion:
+            // `beginRegionCapture(target:)` records the destination first. Do
+            // not persist this transient interaction across relaunch.
+            break
+        case .note:
+            regionCaptureTarget = .ai
+            updateActiveTab {
+                $0.mode = .note
+                $0.regionCaptureTarget = nil
+            }
+        case .view:
+            pendingNoteContent = nil
+            regionCaptureTarget = .ai
+            updateActiveTab {
+                $0.mode = .view
+                $0.pendingNoteContent = nil
+                $0.regionCaptureTarget = nil
+            }
+        }
     }
 
     /// Arm drag-to-crop region capture, recording which panel asked for it so
     /// the viewer overlay routes the resulting snapshot to the right store.
     func beginRegionCapture(target: RegionCaptureTarget) {
         regionCaptureTarget = target
-        setMode(.snapshotRegion)
+        pendingNoteContent = nil
+        mode = .snapshotRegion
+        updateActiveTab {
+            // A region capture replaces an armed note placement. Both pieces
+            // of state belong to the tab, so its indicator remains accurate
+            // while another tab is foregrounded.
+            $0.mode = .view
+            $0.pendingNoteContent = nil
+            $0.regionCaptureTarget = target
+        }
     }
 
     /// Enter note-placement mode carrying an AI reply: the next click on the
     /// page drops a pre-filled sticky note instead of an empty one. Used by the
     /// AI panel's "Add as note" action.
     func beginNoteWithContent(_ content: String) {
-        pendingNoteContent = content
         setMode(.note)
+        pendingNoteContent = content
+        updateActiveTab { $0.pendingNoteContent = content }
+    }
+
+    /// Complete a note placement only when its originating session remains the
+    /// active note interaction. A delayed save from tab A must never dismiss a
+    /// note interaction the user started after switching to tab B.
+    func finishNotePlacement(forSessionId sessionId: String) {
+        guard activeTabId == sessionId, mode == .note else { return }
+        setMode(.view)
+    }
+
+    /// Capture the active tab's crop destination before returning it to view
+    /// mode, which deliberately clears the transient destination.
+    func finishRegionCapture() -> RegionCaptureTarget {
+        let target = regionCaptureTarget
+        setMode(.view)
+        return target
     }
 
     /// Consumed by the viewer when it places a note; nil once used.
     func consumePendingNoteContent() -> String? {
         let content = pendingNoteContent
         pendingNoteContent = nil
+        updateActiveTab { $0.pendingNoteContent = nil }
         return content
     }
 
@@ -714,8 +1071,6 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         RecentFilesService.record(doc)
-        // Reveal the side panel by default whenever a document is opened.
-        workspace?.sidebarOpen = true
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it
         // by id, not index — `tabs` can be mutated by other main-actor work
@@ -733,6 +1088,10 @@ final class AppStore {
             activateTab(existing.id)
             return
         }
+        // Reveal the side panel for a genuinely new document. Reopening a
+        // document that is already tabbed above is navigation, not a fresh
+        // open, and must preserve an explicit user choice to hide the panel.
+        workspace?.sidebarOpen = true
         let tab = PdfTab(
             id: sessionId,
             document: doc,
@@ -754,10 +1113,14 @@ final class AppStore {
     }
 
     private func applyActiveState(from tab: PdfTab) {
-        // The find bar belongs to the outgoing viewer; the incoming one
-        // registers its own handlers on mount.
-        resetFindState()
-        pendingNoteContent = nil
+        // Note-placement state travels with the tab. Find state does too now
+        // (#71 era), so the incoming tab's query is restored below rather than
+        // reset here.
+        pendingNoteContent = tab.pendingNoteContent
+        // Pin the incoming tab (never evictable while it is on screen) and
+        // restart the outgoing tab's idle countdown from now — it was in use
+        // until this instant, so its idle clock starts here, not at activation.
+        workspace?.paneDidActivateTab(self, tabId: tab.id)
         activeTabId = tab.id
         document = tab.document
         currentPage = tab.currentPage
@@ -766,12 +1129,19 @@ final class AppStore {
         visiblePages = tab.visiblePages
         webVisibleRange = tab.webVisibleRange
         webVisibleBookmarks = tab.webVisibleBookmarks
-        mode = tab.mode
+        regionCaptureTarget = tab.regionCaptureTarget ?? .ai
+        mode = tab.regionCaptureTarget == nil ? tab.mode : .snapshotRegion
+        findVisible = tab.findVisible
+        findQuery = tab.findQuery
+        findMatchCount = tab.findMatchCount
+        findCurrentMatch = tab.findCurrentMatch
     }
 
     private func applyEmptyActiveState() {
         resetFindState()
         pendingNoteContent = nil
+        // No tab on screen here, so this pane pins nothing.
+        workspace?.paneDidActivateTab(self, tabId: nil)
         activeTabId = nil
         document = nil
         currentPage = 1
@@ -780,6 +1150,7 @@ final class AppStore {
         visiblePages = []
         webVisibleRange = nil
         webVisibleBookmarks = []
+        regionCaptureTarget = .ai
         mode = .view
     }
 

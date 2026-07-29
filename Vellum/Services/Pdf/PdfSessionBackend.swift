@@ -54,7 +54,8 @@ enum PdfDocumentLoader {
             let message = String(cString: strerror(code))
             throw SessionServiceError.io("Failed to resolve PDF path \(path): \(message) (os error \(code))")
         }
-        return String(cString: buffer)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     static func readFile(_ path: String) throws -> Data {
@@ -264,18 +265,8 @@ actor PdfDocumentIO {
         }
         annotations.append(contentsOf: PdfBookmarks.readBookmarks(document: document, pageNumber: pageNumber))
 
-        // Stable sort: page_number asc, then created_at as a plain string.
-        return annotations.enumerated()
-            .sorted { left, right in
-                if left.element.pageNumber != right.element.pageNumber {
-                    return left.element.pageNumber < right.element.pageNumber
-                }
-                if left.element.createdAt != right.element.createdAt {
-                    return left.element.createdAt < right.element.createdAt
-                }
-                return left.offset < right.offset
-            }
-            .map(\.element)
+        // Pinned first, then page_number asc, then created_at as a plain string.
+        return Annotation.sortedForDisplay(annotations)
     }
 
     /// create_annotation: embed a /Highlight or /Text annotation, or divert
@@ -332,64 +323,88 @@ actor PdfDocumentIO {
             updatedAt: now)
     }
 
-    /// update_annotation: outline bookmarks first (only their title/content is
-    /// mutable), then page annotations matched by /NM or derived ids
-    /// (third-party annotations included; un-NM'd ones get stamped with their
-    /// derived id). Only provided fields change; /M and /VellumUpdatedAt
-    /// always refresh.
+    /// update_annotation: matches /NM or derived ids (third-party annotations
+    /// included; un-NM'd ones get stamped with their derived id). Outline
+    /// bookmarks are updated via a separate incremental path (PDFKit cannot
+    /// write custom keys on outline items). Only provided fields change; /M
+    /// and /VellumUpdatedAt always refresh on page annotations.
     func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
         let (document, raw) = try PdfDocumentLoader.loadForMutation(path: path)
 
-        if PdfBookmarks.containsBookmark(document: raw, id: input.id) {
-            // Color and position don't apply to outline items; an update
-            // carrying neither field is a no-op on an existing record.
-            guard let content = input.content else { return true }
-            let pageNumber = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
-                .first { $0.id == input.id }?.pageNumber ?? 1
-            let normalized = try serialize(document)
-            guard let patched = try PdfBookmarks.updateBookmarkIncrement(
-                normalizedData: normalized,
-                id: input.id,
-                content: content,
-                defaultTitle: PdfBookmarks.defaultTitle(pageNumber: pageNumber),
-                now: PdfDates.rfc3339Now())
-            else {
-                return false
+        if let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) {
+            PdfAnnotationWriter.setText(annotation, "NM", input.id)
+            PdfAnnotationWriter.setText(annotation, "M", PdfDates.pdfDateNow())
+            PdfAnnotationWriter.setText(annotation, "VellumUpdatedAt", PdfDates.rfc3339Now())
+
+            if let color = input.color {
+                annotation.color = PdfColor.annotationColor(fromHex: color)
             }
-            try await saveThroughPdfKit(patched)
+            if let content = input.content {
+                annotation.contents = content
+            }
+            if let isPinned = input.isPinned {
+                PdfAnnotationWriter.setValue(annotation, "VellumPinned", (isPinned ? 1 : 0) as NSNumber)
+            }
+            if let position = input.positionData {
+                guard let pageDictionary = raw.page(at: pageIndex + 1)?.dictionary else {
+                    throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
+                }
+                let geometry = try PageGeometry(pageDictionary: pageDictionary)
+                let isHighlight = annotation.type == "Highlight"
+                try PdfAnnotationWriter.applyPosition(
+                    annotation, geometry: geometry, position: position, isHighlight: isHighlight)
+                if let selectedText = position.selectedText {
+                    PdfAnnotationWriter.setText(annotation, "VellumSelectedText", selectedText)
+                }
+            }
+
+            let data = try serialize(document)
+            try await writeAndRefreshCache(data)
             return true
         }
 
-        guard let (pageIndex, annotation) = Self.findAnnotation(id: input.id, in: document, raw: raw) else {
-            return false
-        }
+        // Outline bookmarks: title (content) and pin state only — color and
+        // position don't apply here. PDFKit can't mutate outline custom keys,
+        // so these are incremental byte rewrites of the outline item; an
+        // update carrying neither field is a no-op on an existing record.
+        if PdfBookmarks.containsBookmark(document: raw, id: input.id) {
+            var retitled = false
 
-        PdfAnnotationWriter.setText(annotation, "NM", input.id)
-        PdfAnnotationWriter.setText(annotation, "M", PdfDates.pdfDateNow())
-        PdfAnnotationWriter.setText(annotation, "VellumUpdatedAt", PdfDates.rfc3339Now())
-
-        if let color = input.color {
-            annotation.color = PdfColor.annotationColor(fromHex: color)
-        }
-        if let content = input.content {
-            annotation.contents = content
-        }
-        if let position = input.positionData {
-            guard let pageDictionary = raw.page(at: pageIndex + 1)?.dictionary else {
-                throw SessionServiceError.invalidDocument("Failed to read PDF page: missing page dictionary")
+            if let content = input.content {
+                let pageNumber = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
+                    .first { $0.id == input.id }?.pageNumber ?? 1
+                let normalized = try serialize(document)
+                guard let patched = try PdfBookmarks.updateBookmarkIncrement(
+                    normalizedData: normalized,
+                    id: input.id,
+                    content: content,
+                    defaultTitle: PdfBookmarks.defaultTitle(pageNumber: pageNumber),
+                    now: PdfDates.rfc3339Now())
+                else { return false }
+                try await saveThroughPdfKit(patched)
+                retitled = true
             }
-            let geometry = try PageGeometry(pageDictionary: pageDictionary)
-            let isHighlight = annotation.type == "Highlight"
-            try PdfAnnotationWriter.applyPosition(
-                annotation, geometry: geometry, position: position, isHighlight: isHighlight)
-            if let selectedText = position.selectedText {
-                PdfAnnotationWriter.setText(annotation, "VellumSelectedText", selectedText)
+
+            if let isPinned = input.isPinned {
+                // The title save above rewrote the file; reload so the pin
+                // increment patches PDFKit-normalized data.
+                let (current, _) = try retitled
+                    ? PdfDocumentLoader.loadForMutation(path: path)
+                    : (document, raw)
+                let normalized = try serialize(current)
+                guard let patched = try PdfBookmarks.updateBookmarkIncrement(
+                    normalizedData: normalized,
+                    id: input.id,
+                    isPinned: isPinned,
+                    now: PdfDates.rfc3339Now())
+                else { return false }
+                try await saveThroughPdfKit(patched)
             }
+
+            return true
         }
 
-        let data = try serialize(document)
-        try await writeAndRefreshCache(data)
-        return true
+        return false
     }
 
     /// delete_annotation: outline bookmarks first, then page annotations;

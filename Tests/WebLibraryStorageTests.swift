@@ -110,6 +110,64 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertEqual(WebLibrary.loadRecord(at: recordPath)?.savedAt, originalSavedAt)
     }
 
+    func testKeepOfflineStatusRequiresAnActualSnapshot() async throws {
+        let url = "https://example.com/offline-status"
+        let key = try makeRecord(url: url, saved: true, openedMonthsAgo: 1)
+        let session = WebDocumentSession(
+            url: url,
+            record: try XCTUnwrap(WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))))
+
+        let initiallyOffline = try await session.isSaved()
+        XCTAssertFalse(initiallyOffline, "a Saved record without bytes is not offline")
+
+        try makeArtifacts(forKey: key)
+        let archivedOffline = try await session.isSaved()
+        XCTAssertTrue(archivedOffline, "a Saved record with snapshot bytes is offline")
+
+        try await session.setSaved(false)
+        let removedOffline = try await session.isSaved()
+        XCTAssertFalse(removedOffline, "removing the copy clears both membership and artifacts")
+    }
+
+    /// Pinning a web annotation writes `is_pinned` into the JSON sidecar and
+    /// floats it to the front of getAnnotations order.
+    func testPinAnnotationPersistsAndSortsFirst() async throws {
+        let url = "https://example.com/pin-me"
+        let key = WebLibrary.pageKey(url)
+        try WebLibrary.saveRecord(WebPageRecord(url: url), at: WebLibrary.recordPath(forKey: key))
+        let io = WebDocumentIO(url: url, key: key)
+
+        let first = try await io.createAnnotation(
+            CreateAnnotationInput(type: .highlight, pageNumber: 1, content: "a"),
+            storedHighlightColor: "#fde68a")
+        let second = try await io.createAnnotation(
+            CreateAnnotationInput(type: .note, pageNumber: 2, content: "b"),
+            storedHighlightColor: "#fde68a")
+
+        var list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [first.id, second.id])
+
+        let updated = try await io.updateAnnotation(UpdateAnnotationInput(
+            id: second.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(updated)
+
+        list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [second.id, first.id])
+        XCTAssertTrue(try XCTUnwrap(list.first).pinned)
+
+        let record = try XCTUnwrap(WebLibrary.loadRecord(forKey: key))
+        let stored = try XCTUnwrap(record.annotations.first { $0.id == second.id })
+        XCTAssertEqual(stored.isPinned, true)
+
+        // The decoded model round-trips through the same coding keys, so pin
+        // the literal snake_case name other clients read.
+        let data = try Data(contentsOf: WebLibrary.recordPath(forKey: key))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rawAnnotations = try XCTUnwrap(json["annotations"] as? [[String: Any]])
+        let raw = try XCTUnwrap(rawAnnotations.first { ($0["id"] as? String) == second.id })
+        XCTAssertEqual(raw["is_pinned"] as? Bool, true)
+    }
+
     // MARK: - TTL eviction
 
     func testEvictionRemovesOnlyStaleUnsavedArtifacts() throws {

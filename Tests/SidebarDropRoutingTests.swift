@@ -200,6 +200,70 @@ final class SidebarDropRoutingTests: XCTestCase {
             "steal and refuse the drag exactly like the original bug")
     }
 
+    /// "Add to AI Chat" must not leave a keyboard user stranded in the document.
+    /// The same state change that reveals the AI panel has to hand first
+    /// responder to the REAL AppKit composer, so typing or Return works with no
+    /// intervening click.
+    ///
+    /// Worth doing in this harness rather than as a store-level unit test: the
+    /// focus hop lives in `ComposerTextViewRep.updateNSView`, and only a real
+    /// mounted hierarchy in a real window exercises it. Mount on annotations
+    /// (the launch default) and let `addReference` do the flip, exactly as the
+    /// selection popover does.
+    func testAddingReferenceFocusesTheRealComposer() throws {
+        let (host, workspace, pane) = hostSidebar(initialTab: .annotations)
+        let composer = try XCTUnwrap(firstSubview(of: SubmitTextView.self, in: host))
+        XCTAssertFalse(window?.firstResponder === composer, "not focused before the attach")
+
+        pane.ai.addReference(AiReference(kind: .selection(text: "Focus this passage", page: 3)))
+        host.layoutSubtreeIfNeeded()
+        pump(until: window?.firstResponder === composer)
+
+        XCTAssertEqual(workspace.sidebarTab, .ai)
+        XCTAssertTrue(workspace.sidebarOpen)
+        XCTAssertTrue(window?.firstResponder === composer)
+        XCTAssertEqual(pane.ai.composerReferences.count, 1)
+        // The token was spent by the composer actually taking focus, which is
+        // what stops it replaying on a later remount.
+        XCTAssertNil(pane.ai.composerFocusRequest)
+    }
+
+    /// A spent focus request must not be re-fulfilled. Move first responder away
+    /// and pump: with a one-shot token there is nothing left to act on, so focus
+    /// stays where the user put it. (A monotonic counter would fail here the
+    /// moment the coordinator was rebuilt.)
+    func testFulfilledFocusRequestDoesNotStealFocusAgain() throws {
+        let (host, _, pane) = hostSidebar(initialTab: .annotations)
+        let composer = try XCTUnwrap(firstSubview(of: SubmitTextView.self, in: host))
+        pane.ai.addReference(AiReference(kind: .selection(text: "Focus this", page: 1)))
+        host.layoutSubtreeIfNeeded()
+        pump(until: window?.firstResponder === composer)
+        XCTAssertNil(pane.ai.composerFocusRequest, "precondition: the token was consumed")
+
+        let sentinel = NSButton(title: "Sentinel", target: nil, action: nil)
+        sentinel.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        window?.contentView?.addSubview(sentinel)
+        XCTAssertTrue(window?.makeFirstResponder(sentinel) ?? false)
+        // Force further update passes through the representable.
+        pane.ai.removeReference(id: try XCTUnwrap(pane.ai.composerReferences.first).id)
+        host.layoutSubtreeIfNeeded()
+        pump(0.4)
+
+        XCTAssertTrue(window?.firstResponder === sentinel,
+                      "a consumed focus request replayed and stole first responder")
+        sentinel.removeFromSuperview()
+    }
+
+    /// Depth-first search for the first view of a given AppKit class in a
+    /// mounted SwiftUI hierarchy.
+    private func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
+        if let match = root as? T { return match }
+        for child in root.subviews {
+            if let match = firstSubview(of: type, in: child) { return match }
+        }
+        return nil
+    }
+
     /// THE end-to-end test: a Finder image drop over the AI panel must be accepted
     /// (.copy) and attached as an image reference. Mount on annotations, flip to
     /// AI, then drop — the real lifecycle.

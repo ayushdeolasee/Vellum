@@ -23,6 +23,7 @@ struct StorageSettingsTab: View {
     @State private var isLoading = true
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
+    @State private var searchText = ""
     @State private var expandedKeys: Set<String> = []
 
     // Storage-location + housekeeping controls.
@@ -30,6 +31,11 @@ struct StorageSettingsTab: View {
     @State private var autoSavePages = false
     @State private var retentionMonths: Int? = StorageHousekeeping.defaultMonths
     @State private var isCleaningUp = false
+    @State private var cleanupResult: String?
+    @State private var dataRemovalResult: String?
+    @State private var relocationStatus = WebStorageRelocator.status
+    @State private var relocationReloadTask: Task<Void, Never>?
+    @State private var pendingLocation: PendingLocation?
 
     // Pending destructive confirmations (user data confirms with the title).
     @State private var pendingDeleteAll: StorageInventory.DocumentRow?
@@ -46,7 +52,9 @@ struct StorageSettingsTab: View {
             webEntries: webEntries, sort: sortOrder)
     }
 
-    private var linkedRows: [StorageInventory.DocumentRow] { rows.filter(\.sourceExists) }
+    private var linkedRows: [StorageInventory.DocumentRow] {
+        rows.filter(\.sourceExists).filter { StorageInventory.matches($0, searchText: searchText) }
+    }
     private var orphanRows: [StorageInventory.DocumentRow] { rows.filter { !$0.sourceExists } }
     private var hasOrphanSection: Bool {
         !orphanRows.isEmpty || !legacyScratchpad.isEmpty || !legacyAi.isEmpty
@@ -63,12 +71,19 @@ struct StorageSettingsTab: View {
             documentsSection
             if hasOrphanSection { orphansSection }
             housekeepingSection
+            removeStoredDataSection
         }
         .formStyle(.grouped)
         .frame(height: 520)
         .task {
             refreshSettings()
             await reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumStorageRelocationChanged)) { _ in
+            handleRelocationStatusChange()
+        }
+        .onDisappear {
+            relocationReloadTask?.cancel()
         }
     }
 
@@ -89,15 +104,9 @@ struct StorageSettingsTab: View {
             tile(
                 "Web archives", bytes: webArchiveBytes,
                 caption: "Offline copies of pages you've opened. Re-downloaded when you reopen a page.")
-            Button("Remove all…", role: .destructive) { confirmingWebRemoveAll = true }
-                .disabled(webEntries.isEmpty)
-                .accessibilityIdentifier("storage.webRemoveAll")
             tile(
                 "Caches", bytes: cacheBytes,
                 caption: "Extracted text that makes AI and search start instantly. Rebuilt the next time you open a document.")
-            Button("Clear all caches") { clearCaches() }
-                .disabled(cacheEntries.isEmpty)
-                .accessibilityIdentifier("storage.eraseAll")
         } header: {
             Text("Overview")
         }
@@ -125,6 +134,10 @@ struct StorageSettingsTab: View {
     @ViewBuilder
     private var documentsSection: some View {
         Section {
+            TextField("Search documents", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Search stored documents")
+                .accessibilityIdentifier("storage.search")
             Picker("Sort by", selection: $sortOrder) {
                 ForEach(StorageInventory.SortOrder.allCases, id: \.self) { order in
                     Text(order.label).tag(order)
@@ -135,7 +148,7 @@ struct StorageSettingsTab: View {
             if isLoading {
                 ProgressView().frame(maxWidth: .infinity, alignment: .center)
             } else if linkedRows.isEmpty {
-                Text("No stored documents")
+                Text(searchText.isEmpty ? "No stored documents" : "No matching documents")
                     .foregroundStyle(.secondary)
                     .id("storage.empty")
             } else {
@@ -145,6 +158,33 @@ struct StorageSettingsTab: View {
             }
         } header: {
             Text("Documents")
+        }
+    }
+
+    @ViewBuilder
+    private var removeStoredDataSection: some View {
+        Section {
+            Button("Remove All Offline Copies…", role: .destructive) {
+                confirmingWebRemoveAll = true
+            }
+            .disabled(webEntries.isEmpty)
+            .accessibilityIdentifier("storage.webRemoveAll")
+            Button("Clear All Extracted-Text Caches", role: .destructive) {
+                clearCaches()
+            }
+            .disabled(cacheEntries.isEmpty)
+            .accessibilityIdentifier("storage.eraseAll")
+            if let dataRemovalResult {
+                Label(dataRemovalResult, systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("storage.reclaimed")
+            }
+        } header: {
+            Text("Remove stored data")
+        } footer: {
+            Text("These actions remove only downloadable or rebuildable data. Document notes, highlights, reading positions, and AI conversations are never removed here.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -243,6 +283,12 @@ struct StorageSettingsTab: View {
             }
             .disabled(isCleaningUp || StorageHousekeeping.evictionCutoff() == nil)
             .accessibilityIdentifier("storage.runCleanup")
+            if let cleanupResult {
+                Text(cleanupResult)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("storage.cleanupResult")
+            }
         } header: {
             Text("Housekeeping")
         } footer: {
@@ -264,6 +310,17 @@ struct StorageSettingsTab: View {
             }
             .accessibilityIdentifier("storage.locationPicker")
 
+            if relocationStatus.isInProgress {
+                ProgressView(relocationStatus.message)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("storage.migrationProgress")
+            } else if !relocationStatus.message.isEmpty {
+                Label(relocationStatus.message, systemImage: relocationStatus.needsRecovery ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(relocationStatus.needsRecovery ? .orange : .secondary)
+                    .accessibilityIdentifier("storage.migrationStatus")
+            }
+
             if storageMode != .local, let path = currentLocationPath {
                 LabeledContent("Folder") {
                     Text(path)
@@ -280,8 +337,7 @@ struct StorageSettingsTab: View {
             if storageMode == .custom {
                 Button("Change Folder…") {
                     guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                    WebStorageRelocator.apply(mode: .custom, customPath: path)
-                    refreshSettings()
+                    pendingLocation = PendingLocation(mode: .custom, customPath: path)
                 }
                 .accessibilityIdentifier("storage.changeFolder")
             }
@@ -333,17 +389,12 @@ struct StorageSettingsTab: View {
                 switch newMode {
                 case .custom:
                     guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                    WebStorageRelocator.apply(mode: .custom, customPath: path)
+                    pendingLocation = PendingLocation(mode: .custom, customPath: path)
                 case .icloud:
                     guard WebStorageSettings.icloudVellumRoot != nil else { return }
-                    WebStorageRelocator.apply(mode: .icloud)
+                    pendingLocation = PendingLocation(mode: .icloud, customPath: nil)
                 case .local:
-                    WebStorageRelocator.apply(mode: .local)
-                }
-                refreshSettings()
-                Task {
-                    try? await Task.sleep(for: .seconds(1))
-                    await reload()
+                    pendingLocation = PendingLocation(mode: .local, customPath: nil)
                 }
             }
         )
@@ -382,6 +433,30 @@ struct StorageSettingsTab: View {
         storageMode = WebStorageSettings.chosenMode ?? .local
         autoSavePages = WebStorageSettings.autoSavePages
         retentionMonths = StorageHousekeeping.retentionMonths
+    }
+
+    /// A relocation notification is also used for progress, so only its
+    /// terminal states may refresh the inventory. The terminal notification is
+    /// posted after a successful move, an interrupted move, or an unavailable
+    /// source has settled on its recovery state.
+    private func handleRelocationStatusChange() {
+        relocationStatus = WebStorageRelocator.status
+        guard StorageRelocationInventoryReloadPolicy.shouldReload(for: relocationStatus) else {
+            relocationReloadTask?.cancel()
+            relocationReloadTask = nil
+            return
+        }
+
+        // Several state changes can arrive in one main-loop turn (for example,
+        // a recovered launch move followed by a location change). Yield once so
+        // they collapse to one inventory read, and cancel any superseded read
+        // before it starts.
+        relocationReloadTask?.cancel()
+        relocationReloadTask = Task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            await reload()
+        }
     }
 
     // MARK: - Open-document exclusion
@@ -537,30 +612,66 @@ struct StorageSettingsTab: View {
     }
 
     private func clearCaches() {
+        let before = cacheBytes
+        // Drop the previous run's number so the label can't report a stale
+        // reclaimed total while this one is still working.
+        dataRemovalResult = nil
         cacheEntries = []
         Task {
             await PageTextCache.shared.deleteAll()
             await reload()
+            dataRemovalResult = reclaimedMessage(max(0, before - cacheBytes))
         }
     }
 
     private func removeAllWeb() {
+        let before = webArchiveBytes
+        dataRemovalResult = nil
         webEntries = []
         Task {
             await Task.detached { WebLibrary.removeAllSnapshotArtifacts() }.value
             await reload()
+            dataRemovalResult = reclaimedMessage(max(0, before - webArchiveBytes))
         }
     }
 
     private func runCleanupNow() {
         isCleaningUp = true
+        cleanupResult = nil
         let pdfKeys = openPdfKeys
         let webUrls = openWebUrls
         Task {
-            await StorageHousekeeping.runCleanup(openPdfKeys: pdfKeys, openWebUrls: webUrls)
+            let reclaimed = await StorageHousekeeping.runCleanup(
+                openPdfKeys: pdfKeys, openWebUrls: webUrls, measuringReclaimedBytes: true)
             await reload()
+            cleanupResult = reclaimedMessage(reclaimed)
             isCleaningUp = false
         }
+    }
+
+    private func reclaimedMessage(_ bytes: Int64) -> String {
+        bytes == 0
+            ? "No space needed reclaiming."
+            : "Reclaimed \(bytes.formatted(.byteCount(style: .file)))."
+    }
+
+    private struct PendingLocation: Identifiable {
+        let mode: WebStorageMode
+        let customPath: String?
+        var id: String { "\(mode.rawValue):\(customPath ?? "")" }
+        var label: String {
+            switch mode {
+            case .icloud: "iCloud Drive"
+            case .custom: "the selected folder"
+            case .local: "this Mac"
+            }
+        }
+    }
+
+    private func applyPendingLocation(_ choice: PendingLocation) {
+        WebStorageRelocator.apply(mode: choice.mode, customPath: choice.customPath)
+        refreshSettings()
+        relocationStatus = WebStorageRelocator.status
     }
 
     private func relink(_ row: StorageInventory.DocumentRow) {
@@ -654,6 +765,17 @@ struct StorageSettingsTab: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This removes the downloaded copy of every web page. Your saved-pages list, highlights, and notes are not affected — pages just load from the network (and re-download) the next time you open them.")
+            }
+            .confirmationDialog(
+                pendingLocation.map { "Move Vellum storage to \($0.label)?" } ?? "",
+                isPresented: bindingFor($pendingLocation),
+                presenting: pendingLocation
+            ) { choice in
+                Button("Move Storage") { applyPendingLocation(choice) }
+                    .accessibilityIdentifier("storage.confirmMigration")
+                Button("Cancel", role: .cancel) { refreshSettings() }
+            } message: { _ in
+                Text("Vellum will move offline pages, notes, highlights, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes the move when that location returns.")
             }
             .alert(
                 "Couldn't relink",

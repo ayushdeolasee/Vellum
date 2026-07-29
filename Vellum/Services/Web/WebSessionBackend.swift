@@ -190,7 +190,12 @@ final class WebDocumentSession: DocumentSession {
     }
 
     func isSaved() async throws -> Bool {
-        await io.isSaved()
+        // The toolbar's promise is "Keep Offline", not merely that the page
+        // has a Saved-library record. Settings can remove snapshots while
+        // retaining that record, so expose offline availability only when a
+        // real local/managed snapshot remains.
+        let saved = await io.isSaved()
+        return saved && WebLibrary.hasLocalSnapshot(forKey: key)
     }
 
     // MARK: - Archiving
@@ -346,8 +351,13 @@ actor WebDocumentIO {
 
     func annotations(pageNumber: Int?) -> [Annotation] {
         let record = WebLibrary.loadRecord(forKey: key) ?? WebPageRecord(url: url)
-        guard let pageNumber else { return record.annotations }
-        return record.annotations.filter { $0.pageNumber == pageNumber }
+        let list: [Annotation]
+        if let pageNumber {
+            list = record.annotations.filter { $0.pageNumber == pageNumber }
+        } else {
+            list = record.annotations
+        }
+        return Annotation.sortedForDisplay(list)
     }
 
     func createAnnotation(_ input: CreateAnnotationInput, storedHighlightColor: String) throws -> Annotation {
@@ -393,6 +403,12 @@ actor WebDocumentIO {
             }
             if let positionData = input.positionData {
                 record.annotations[index].positionData = positionData
+            }
+            if let pageNumber = input.pageNumber {
+                record.annotations[index].pageNumber = pageNumber
+            }
+            if let isPinned = input.isPinned {
+                record.annotations[index].isPinned = isPinned
             }
             record.annotations[index].updatedAt = WebLibrary.rfc3339Now()
             return true

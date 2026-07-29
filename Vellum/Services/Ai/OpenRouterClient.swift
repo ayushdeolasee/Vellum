@@ -209,11 +209,22 @@ final class OpenRouterClient {
             "session_id": "vellum-\(sessionId)",
         ]
         if thinkingMode != .auto, let effort = thinkingMode.openAIEffort {
-            // "minimal" is an OpenAI-only effort value; other providers behind
-            // the gateway accept only low/medium/high, so Instant downgrades
-            // to "low" for non-OpenAI models.
-            let isOpenAIModel = model.lowercased().hasPrefix("openai/")
-            body["reasoning"] = ["effort": effort == "minimal" && !isOpenAIModel ? "low" : effort]
+            // OpenAI models have per-family effort vocabularies, and getting one
+            // wrong 400s the request before streaming — gpt-5.5 rejects
+            // "minimal" (#94). Passing the value straight through was only safe
+            // while every OpenAI model took "minimal", so resolve it against the
+            // same table the direct client uses, on the bare id behind the
+            // `openai/` prefix. Other providers here accept only low/medium/high,
+            // so Instant downgrades to "low" for them.
+            let prefix = "openai/"
+            if model.lowercased().hasPrefix(prefix) {
+                let bare = String(model.dropFirst(prefix.count))
+                if let resolved = OpenAIClient.supportedReasoningEffort(model: bare, requested: effort) {
+                    body["reasoning"] = ["effort": resolved]
+                }
+            } else {
+                body["reasoning"] = ["effort": effort == "minimal" ? "low" : effort]
+            }
         }
         if allowTools {
             body["tools"] = Self.functionTools
