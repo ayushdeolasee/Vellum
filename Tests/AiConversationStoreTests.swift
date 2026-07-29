@@ -158,6 +158,123 @@ final class AiConversationStoreTests: XCTestCase {
                        "retry against a writable root persists the retained data")
     }
 
+    // MARK: - One bad message must not cost the whole conversation (#90)
+
+    /// A transcript in the shape written before `references`/`toolSummaries`
+    /// existed still loads through the per-element decode. Guards against the
+    /// lossy wrapper quietly swallowing every old record.
+    func testOldFormatConversationStillLoads() throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        let legacy = """
+        [
+          {"id":"a1","role":"user","content":"older question",
+           "createdAt":"2025-01-01T00:00:00.000Z"},
+          {"id":"a2","role":"assistant","content":"older answer",
+           "createdAt":"2025-01-01T00:00:01.000Z",
+           "usage":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteTokens":0,
+                    "reasoningTokens":0,"outputTokens":3}}
+        ]
+        """
+        try DocumentDataStore.saveConversationsData(
+            forKey: key, data: XCTUnwrap(legacy.data(using: .utf8)))
+
+        let loaded = AiPersistence.loadConversation(for: doc)
+        XCTAssertEqual(loaded.map(\.content), ["older question", "older answer"])
+        XCTAssertEqual(loaded.last?.usage?.inputTokens, 10)
+        XCTAssertEqual(loaded.map(\.references), [[], []])
+    }
+
+    /// The core regression: one undecodable message in the middle of a
+    /// conversation costs the user that message and nothing else. The survivors
+    /// must come back whole — references and toolSummaries included — because a
+    /// wrapper that fell back to some looser per-field decode would "pass" this
+    /// test while silently dropping their structured payloads.
+    func testOneCorruptMessageDropsOnlyItself() throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+
+        var user = AiPersistence.makeMessage(
+            role: .user, content: "explain figure 2",
+            references: [AiReference(kind: .selection(text: "the mitochondrion", page: 2))])
+        user.id = "keep-user"
+        var assistant = AiPersistence.makeMessage(role: .assistant, content: "it is the powerhouse")
+        assistant.id = "keep-assistant"
+        assistant.toolSummaries = [
+            AiToolSummary(
+                id: "summary-a", title: "Read pages 2-3", detail: "2 pages",
+                sources: [AiToolSummary.Source(id: "src-a", page: 2, excerpt: "…mitochondrion…")],
+                destinationPage: 2)
+        ]
+
+        // Encode the two good messages for real, then splice a record that this
+        // build cannot decode (no `content`, and `role` is not an AiRole) between
+        // them — the shape a truncated write or a future schema would leave.
+        let goodData = try JSONEncoder().encode([user, assistant])
+        var array = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: goodData) as? [Any])
+        array.insert(["id": "corrupt", "role": "system", "createdAt": "2025-01-01T00:00:00.000Z"],
+                     at: 1)
+        try DocumentDataStore.saveConversationsData(
+            forKey: key, data: JSONSerialization.data(withJSONObject: array))
+
+        let loaded = AiPersistence.loadConversation(for: doc)
+
+        XCTAssertEqual(loaded.map(\.id), ["keep-user", "keep-assistant"],
+                       "only the undecodable message may be dropped")
+        XCTAssertEqual(loaded.first?.references.first?.text, "the mitochondrion")
+        XCTAssertEqual(loaded.first?.references.first?.page, 2)
+        XCTAssertEqual(loaded.last?.toolSummaries?.map(\.title), ["Read pages 2-3"])
+        XCTAssertEqual(loaded.last?.toolSummaries?.first?.sources.map(\.page), [2])
+        XCTAssertEqual(loaded.last?.toolSummaries?.first?.destinationPage, 2)
+    }
+
+    /// The second guard: when NOTHING in the file decodes, the resulting empty
+    /// conversation is our failure to read, not the user's chat — so the next
+    /// empty save must leave the bytes alone instead of hard-deleting them. A
+    /// build that can decode the file must still find it there.
+    func testFullyCorruptFileIsNotOverwrittenByTheNextSave() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        // Well-formed JSON array, but not one message in it is decodable.
+        let corrupt = Data(#"[{"id":"x","role":"user"},{"nope":true}]"#.utf8)
+        try DocumentDataStore.saveConversationsData(forKey: key, data: corrupt)
+
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty,
+                      "nothing decodes, so nothing is shown")
+
+        // The empty in-memory transcript is saved back (the path that used to
+        // delete the file).
+        AiPersistence.saveConversation(for: doc, messages: [])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: key),
+                      "an unreadable conversation must not be deleted by an empty save")
+        XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: key), corrupt,
+                       "the original bytes must survive byte-for-byte")
+    }
+
+    /// The guard is scoped to the empty write: once the user actually says
+    /// something, that real conversation is persisted normally rather than being
+    /// suppressed forever by the earlier failed read.
+    func testSaveWithRealMessagesStillWritesOverAnUnreadableFile() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        try DocumentDataStore.saveConversationsData(
+            forKey: key, data: Data(#"[{"id":"x","role":"user"}]"#.utf8))
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty)
+
+        AiPersistence.saveConversation(
+            for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "starting over")])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertEqual(try fileMessages(forKey: key).map(\.content), ["starting over"])
+        // And the key is no longer protected: a later clear deletes as usual.
+        AiPersistence.saveConversation(for: doc, messages: [])
+        await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
+    }
+
     // MARK: - Cache invalidation on import merge
 
     /// After a `.vellum` import merges a fresh conversation into the folder file,
