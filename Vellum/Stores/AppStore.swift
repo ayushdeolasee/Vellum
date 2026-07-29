@@ -890,8 +890,9 @@ final class AppStore {
     /// Issue #92: the web viewer's placement click only opens a composer — the
     /// note is not written until the user submits — so between those two steps
     /// the composer holds the *only* copy of a queued AI reply
-    /// (`consumePendingNoteContent` already cleared the store). A stray click
-    /// or a page scroll unmounts that composer, and the reply went with it. The
+    /// (`consumePendingNoteContent` already cleared the store). A stray click,
+    /// a page scroll, a misclicked link, or a tab switch all unmount that
+    /// composer, and the reply used to go with it. The
     /// PDF viewer has no such window: `PdfSelectionBridge` writes the note on
     /// the placement click itself. Handing the draft back here closes the gap —
     /// a misclick now costs one more click instead of the whole reply.
