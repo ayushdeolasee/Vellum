@@ -6,6 +6,9 @@ struct ContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
 
     @State private var keyMonitor: Any?
+    /// Whether this window is currently showing a sheet, so the focus value
+    /// below can go away while one is up (issue #98).
+    @State private var sheets = SheetPresenceMonitor()
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
     @State private var hostWindow: NSWindow?
@@ -31,11 +34,35 @@ struct ContentView: View {
             .sheet(isPresented: $addWebpagePresented) {
                 AddWebpageSheet()
             }
+            // Every sheet on this window, whoever presents it — the two
+            // first-run sheets in `VellumApp`, this one, the rename and export
+            // sheets deeper in the tree, and the ones Vellum does not own at
+            // all (`.fileImporter`'s open panel, PDFKit's print panel).
+            // `SheetPresenceMonitor` explains why this asks AppKit rather than
+            // watching presentation flags.
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.willBeginSheetNotification)
+            ) { notification in
+                sheets.noteSheetBegan(on: notification.object as? NSWindow, host: hostWindow)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.didEndSheetNotification)
+            ) { notification in
+                sheets.noteSheetEnded(on: notification.object as? NSWindow, host: hostWindow)
+            }
             // Commands belong to the main window, not whichever nested
             // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
             // A scene-focused value remains available throughout this window
             // and automatically disappears when Settings becomes key.
-            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            //
+            // ...and while a sheet is up, because a sheet belongs to the scene
+            // that presents it and so does NOT displace a scene value the way
+            // it displaced the old view-focused one. Publishing nil disables
+            // every document command for as long as the sheet is attached; a
+            // disabled item does not claim its key equivalent, so ⌘W stops
+            // closing the tab behind the sheet (issue #98).
+            .focusedSceneValue(
+                \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
