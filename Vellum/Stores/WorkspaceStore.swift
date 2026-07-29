@@ -41,16 +41,18 @@ final class WorkspaceStore {
 
     /// The width to reopen the inspector at, tracking the user's last drag.
     ///
-    /// Deliberately NOT observed. It is read in `WindowChrome.body` as the
-    /// `ideal:` of `.inspectorColumnWidth`, and written from that same view's
+    /// Deliberately NOT observed. It seeds the `ideal:` of
+    /// `.inspectorColumnWidth`, and is written from `WindowChrome`'s
     /// `.onGeometryChange` — once per frame while the splitter is being dragged.
     /// Were it observed, each of those writes would invalidate the whole window
     /// chrome (pane tree and toolbar included) mid-drag, and feed a fresh
     /// `ideal:` back into the very layout pass that produced the measurement.
-    /// A stale read is impossible where it matters: `ideal:` is only consulted
-    /// when the column appears, and `inspectorPresented` — which *is* observed —
-    /// has to change for that to happen, so the body re-runs and re-reads this
-    /// value at exactly the moment it is used.
+    ///
+    /// Not observing it is necessary but NOT sufficient, so `WindowChrome` does
+    /// not read it live either: it copies this value into `@State` and holds
+    /// that frozen while the column is on screen, re-seeding only when the
+    /// inspector is (re)presented — the one moment `ideal:` is consulted. See
+    /// `WindowChrome.idealColumnWidth` for why a live read reopens the loop.
     @ObservationIgnored
     private(set) var sidebarWidth: CGFloat = InspectorLayout.idealWidth
 
