@@ -28,12 +28,23 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("Unsupported file type: .\(ext)")
         }
 
-        let canonical = try PdfDocumentLoader.canonicalize(path)
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
-        guard exists, !isDirectory.boolValue else {
-            throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
-        }
+        // realpath(2) and stat(2) are BLOCKING syscalls. Running them here — on
+        // @MainActor, before the first `await` — put them on the main thread, so
+        // a slow, unmounted, or not-yet-materialized (iCloud placeholder) volume
+        // froze the entire UI for as long as the kernel took to answer. Every
+        // open funnels through this method (Open…, Recents, Save As, launch tab
+        // restore), which is exactly why a stalled volume made the whole home
+        // screen — filter chips included — stop responding. Resolve off the main
+        // actor, like the parse that follows.
+        let canonical = try await Task.detached(priority: .userInitiated) {
+            let canonical = try PdfDocumentLoader.canonicalize(path)
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
+            guard exists, !isDirectory.boolValue else {
+                throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
+            }
+            return canonical
+        }.value
 
         let io = PdfDocumentIO(path: canonical)
         let info = try await io.open()

@@ -108,23 +108,69 @@ final class AppStore {
     }
 
     // MARK: - Opening documents
+    //
+    // `isLoading` disables EVERY open affordance on the home screen (Open a
+    // PDF…, search results, recents, the URL field). An open that never
+    // finished therefore used to lock the user out of opening anything at all,
+    // for the rest of the session, with nothing on screen explaining why. The
+    // helpers below make that impossible: an attempt owns the flag for a
+    // bounded time, and whatever happens the flag comes back.
 
-    func openFile(path: String) async {
+    /// How long an open may hold the home screen's loading state before the UI
+    /// is released and the delay surfaced. The work itself is NOT cancelled —
+    /// a slow volume that answers late still opens its document normally.
+    private static let openLoadingCeiling: Duration = .seconds(20)
+
+    /// Identifies the open attempt that currently owns `isLoading`, so a stale
+    /// attempt finishing late cannot clear a newer one's loading state.
+    private var openGeneration = 0
+    private var openWatchdog: Task<Void, Never>?
+
+    /// Take ownership of the loading state for one open attempt.
+    private func beginOpen() -> Int {
+        openGeneration += 1
+        let generation = openGeneration
         isLoading = true
         error = nil
+        openWatchdog?.cancel()
+        openWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: Self.openLoadingCeiling)
+            guard !Task.isCancelled else { return }
+            self?.endOpen(
+                generation,
+                error: "Opening is taking longer than expected — the file may be on a slow or "
+                    + "disconnected volume. It will open if it becomes available.")
+        }
+        return generation
+    }
+
+    /// Release the loading state, if this attempt still owns it. Safe to call
+    /// more than once and from either the work or the watchdog.
+    private func endOpen(_ generation: Int, error message: String? = nil) {
+        guard generation == openGeneration, isLoading else { return }
+        isLoading = false
+        openWatchdog?.cancel()
+        openWatchdog = nil
+        if let message { error = message }
+    }
+
+    func openFile(path: String) async {
+        let generation = beginOpen()
+        defer { endOpen(generation) }
         do {
             try await openOneFile(path: path)
-            isLoading = false
+            // The watchdog may have already reported a delay; the open landed,
+            // so retract it rather than leaving a stale warning on screen.
+            if generation == openGeneration { error = nil }
         } catch {
-            isLoading = false
             self.error = String(describing: error.localizedDescription)
         }
     }
 
     func openFiles(paths: [String]) async {
         guard !paths.isEmpty else { return }
-        isLoading = true
-        error = nil
+        let generation = beginOpen()
+        defer { endOpen(generation) }
         var errors: [String] = []
         for path in paths {
             do {
@@ -133,20 +179,22 @@ final class AppStore {
                 errors.append("\(path): \(error.localizedDescription)")
             }
         }
-        isLoading = false
-        self.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+        if !errors.isEmpty {
+            self.error = errors.joined(separator: "\n")
+        } else if generation == openGeneration {
+            error = nil
+        }
     }
 
     func openUrl(_ url: String) async {
-        isLoading = true
-        error = nil
+        let generation = beginOpen()
+        defer { endOpen(generation) }
         do {
             let sessionId = UUID().uuidString.lowercased()
             let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
             await adoptOpenedDocument(doc, sessionId: sessionId)
-            isLoading = false
+            if generation == openGeneration { error = nil }
         } catch {
-            isLoading = false
             self.error = error.localizedDescription
         }
     }
@@ -347,9 +395,16 @@ final class AppStore {
         // so stamp that fallback into the destination before reopening it. This
         // keeps its conversation/scratchpad identity continuous instead of
         // assigning a fresh id after the source becomes writable by copying.
-        if PdfMetadata.documentId(atPath: destinationURL.path) == nil {
-            try PdfMetadata.stampDocumentId(atPath: destinationURL.path, id: preservedDocumentId)
-        }
+        //
+        // Both calls are a full synchronous read + parse (+ atomic rewrite) of
+        // the copy, so they run off the main actor — on it they blocked the UI
+        // for the whole cost of the file, which is seconds on a large PDF.
+        let destinationPath = destinationURL.path
+        try await Task.detached(priority: .userInitiated) {
+            if PdfMetadata.documentId(atPath: destinationPath) == nil {
+                try PdfMetadata.stampDocumentId(atPath: destinationPath, id: preservedDocumentId)
+            }
+        }.value
 
         try await sessions.closeFile(sessionId: tabId)
         let rebound: DocumentInfo
@@ -414,27 +469,64 @@ final class AppStore {
 
     // MARK: - Closing / switching tabs
 
+    /// Teardown work for tabs that have already left `tabs`, keyed by the closed
+    /// tab id. Each task removes its own entry when it finishes.
+    private var tabTeardowns: [String: Task<Void, Never>] = [:]
+
+    /// Await every close still finishing its metadata write, text flush, and
+    /// session close. `applicationShouldTerminate` drains this so quitting right
+    /// after closing a tab still persists that tab's reading position.
+    func awaitPendingTabTeardowns() async {
+        for task in Array(tabTeardowns.values) {
+            await task.value
+        }
+    }
+
     func closeFile() async {
         if let activeTabId {
             await closeTab(activeTabId)
         }
     }
 
+    /// Close a tab and tear its backend session down.
+    ///
+    /// The tab leaves `tabs` — and therefore the tab strip — BEFORE any of the
+    /// teardown work runs. That work is a `last_page` metadata write, which is a
+    /// full read + parse + serialize + atomic rewrite of the PDF on the IO actor
+    /// (~15s on a large document), plus a page-text flush. Awaiting it first
+    /// meant the tab sat visibly in the strip for that whole time after the user
+    /// clicked ×, so closing looked broken. Ordering WITHIN the teardown is
+    /// unchanged and still matters: metadata (which changes the file's
+    /// validation hash) → text flush (re-keys the cache to the bytes that will
+    /// reopen) → session close → drop the runtime.
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
         if closingTab.document != nil {
-            try? await sessions.setDocumentMetadata(
-                sessionId: closingTab.id, key: "last_page", value: String(closingTab.currentPage))
-            // Metadata rewrites the PDF and therefore its validation hash.
-            // Flush extraction after that rewrite and before dropping the
-            // runtime so the cache is keyed to the bytes that will reopen.
-            await workspace?.existingLiveTabRuntime(for: tabId)?.flushPdfText()
-            try? await sessions.closeFile(sessionId: closingTab.id)
+            let lastPage = String(closingTab.currentPage)
+            // Resolved now: the runtime is dropped from the workspace at the end
+            // of the teardown, and holding it here keeps it alive until its
+            // pending text has been flushed.
+            let runtime = workspace?.existingLiveTabRuntime(for: tabId)
+            let sessions = self.sessions
+            let workspace = self.workspace
+            // ⌘Q immediately after a close must not lose the reading position:
+            // the tab is already gone from `tabs`, so the quit path's per-tab
+            // metadata loop no longer covers it. The task registers itself for
+            // `awaitPendingTabTeardowns`, which quit drains.
+            tabTeardowns[tabId] = Task { [weak self, weak workspace] in
+                try? await sessions.setDocumentMetadata(
+                    sessionId: tabId, key: "last_page", value: lastPage)
+                await runtime?.flushPdfText()
+                try? await sessions.closeFile(sessionId: tabId)
+                workspace?.removeLiveTabRuntime(for: tabId)
+                self?.tabTeardowns[tabId] = nil
+            }
+        } else {
+            workspace?.removeLiveTabRuntime(for: tabId)
         }
-        workspace?.removeLiveTabRuntime(for: tabId)
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
@@ -494,8 +586,8 @@ final class AppStore {
         // a per-path lock, so duplicate live webpage sessions are safe.
         guard sourceDocument.kind == .web else { return }
 
-        isLoading = true
-        error = nil
+        let generation = beginOpen()
+        defer { endOpen(generation) }
         let sessionId = UUID().uuidString.lowercased()
         do {
             // Web only, per the guard above.
@@ -509,7 +601,6 @@ final class AppStore {
             // as an unexpected new tab; release the just-opened session.
             guard let currentSourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else {
                 try? await sessions.closeFile(sessionId: sessionId)
-                isLoading = false
                 return
             }
             let duplicate = PdfTab(
@@ -530,7 +621,6 @@ final class AppStore {
         } catch {
             self.error = error.localizedDescription
         }
-        isLoading = false
     }
 
     func activateTab(_ tabId: String) {
@@ -951,7 +1041,7 @@ final class AppStore {
         }
         guard panel.runModal() == .OK, let destination = panel.url else { return nil }
 
-        let result = try Self.importVellumBundleCore(imported, to: destination) { title in
+        let result = try await Self.importVellumBundleCore(imported, to: destination) { title in
             let alert = NSAlert()
             alert.messageText = "Notes already exist for \(title)"
             alert.informativeText =
@@ -992,7 +1082,7 @@ final class AppStore {
         _ imported: VellumBundle.Imported,
         to destination: URL,
         resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
-    ) throws -> (path: String, failedAttachments: [String]) {
+    ) async throws -> (path: String, failedAttachments: [String]) {
         let manifest = imported.manifest
         let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
 
@@ -1029,19 +1119,30 @@ final class AppStore {
         // writable). Best-effort: a stamp failure falls back to the prior
         // behavior — installing under manifest.docId — never failing the import.
         // Web bundles are never stamped (their identity is the URL hash).
-        if kind == .pdf, PdfMetadata.documentId(atPath: destination.path) == nil {
-            try? PdfMetadata.stampDocumentId(atPath: destination.path, id: manifest.docId)
-        }
-
-        // Resolve the install key. For a PDF, prefer the written file's own
-        // /VellumDocId stamp when it differs from the manifest (the file is
-        // authoritative). For web, the identity is the URL hash carried in the
-        // manifest.
+        //
+        // The stamp and the key resolution below are each a full synchronous
+        // read + parse of the just-written PDF (the stamp also rewrites it), so
+        // they share ONE hop off the main actor: on it they blocked the UI for
+        // the file's whole cost right after the save panel closed. Nothing here
+        // touches main-actor state, and no PDFKit/CGPDF value escapes the hop.
+        //
+        // Key resolution: for a PDF, prefer the written file's own /VellumDocId
+        // stamp when it differs from the manifest (the file is authoritative).
+        // For web, the identity is the URL hash carried in the manifest.
         let key: String
-        if kind == .pdf,
-           let raw = try? PdfDocumentLoader.loadRaw(path: destination.path),
-           let stamped = PdfMetadata.documentId(raw) {
-            key = stamped
+        if kind == .pdf {
+            let destinationPath = destination.path
+            let manifestId = manifest.docId
+            key = await Task.detached(priority: .userInitiated) {
+                if PdfMetadata.documentId(atPath: destinationPath) == nil {
+                    try? PdfMetadata.stampDocumentId(atPath: destinationPath, id: manifestId)
+                }
+                if let raw = try? PdfDocumentLoader.loadRaw(path: destinationPath),
+                   let stamped = PdfMetadata.documentId(raw) {
+                    return stamped
+                }
+                return manifestId
+            }.value
         } else {
             key = manifest.docId
         }
