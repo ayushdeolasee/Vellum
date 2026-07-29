@@ -147,6 +147,67 @@ final class MarkdownParserTests: XCTestCase {
             [.paragraph("before"), .math("x"), .paragraph("after")])
     }
 
+    // MARK: - Segments: code spans vs the math splitter (#99)
+
+    /// Repro 1. `segments` runs before any markdown parse, so a code span
+    /// containing `$` was cut apart before anything knew it was code: the `$`
+    /// alternative matched from the first `$` to the second (the span ends on a
+    /// non-space, non-`$`, so the lookarounds are satisfied), capturing
+    /// ``1` and `` and eating both backticks.
+    func testSegmentsCodeSpanWithBackrefsIsNotMath() {
+        let line = "Use `$1` and `$2` backrefs"
+        XCTAssertEqual(MathRenderer.segments(in: line), [.text(line)])
+    }
+
+    /// Repro 2. A POSIX BRE group is very plausible in an answer about sed or
+    /// regex, and it matched the `\(…\)` alternative verbatim.
+    func testSegmentsCodeSpanWithPosixGroupIsNotMath() {
+        let line = "matches `\\(a\\|b\\)` here"
+        XCTAssertEqual(MathRenderer.segments(in: line), [.text(line)])
+    }
+
+    /// The issue's negative: a lone code span holding a `$` stays literal code.
+    func testSegmentsLoneCodeSpanWithDollarStaysText() {
+        XCTAssertEqual(MathRenderer.segments(in: "`a$b`"), [.text("`a$b`")])
+    }
+
+    /// Display-math delimiters inside a code span are just characters. The `$`
+    /// alternative can still find "$x$" within "$$x$$", so this only stays put
+    /// because the code span is carved out first.
+    func testSegmentsCodeSpanWithDisplayMathDelimitersStaysText() {
+        XCTAssertEqual(MathRenderer.segments(in: "write `$$x$$` for display"),
+                       [.text("write `$$x$$` for display")])
+    }
+
+    /// The guard is code spans, not backticks: real math on the same line as an
+    /// unrelated code span must still typeset.
+    func testSegmentsMathOutsideACodeSpanStillTypesets() {
+        let segments = MathRenderer.segments(in: "`grep` finds $x^2$ fast")
+        XCTAssertEqual(segments, [.text("`grep` finds "), .math("x^2"), .text(" fast")])
+    }
+
+    /// CommonMark closes a span on a run of *exactly* the opening length, and an
+    /// unmatched run is literal text — so a stray backtick must not hide the
+    /// math that follows it behind a span that never closes.
+    func testSegmentsUnmatchedBacktickDoesNotSwallowLaterMath() {
+        let segments = MathRenderer.segments(in: "a ` stray tick then $x$")
+        XCTAssertTrue(segments.contains(.math("x")), "got \(segments)")
+    }
+
+    /// A double-backtick span can contain a single backtick, and its contents
+    /// are still off-limits to the math scanner.
+    func testSegmentsDoubleBacktickSpanIsProtected() {
+        XCTAssertEqual(MathRenderer.segments(in: "`` `$1` ``"), [.text("`` `$1` ``")])
+    }
+
+    /// The `\(…\)` branch had no escape handling at all — only the `$` branch
+    /// checked backslash parity — so an escaped delimiter opened a span.
+    func testSegmentsEscapedParenOpenerIsLiteral() {
+        // "\\(not math\\)" — the backslash before "(" is itself escaped.
+        let line = "a \\\\(not math\\\\) b"
+        XCTAssertEqual(MathRenderer.segments(in: line), [.text(line)])
+    }
+
     // MARK: - Segments: MathRenderer.segments(in:)
 
     func testSegmentsCurrencyIsNotMath() {
