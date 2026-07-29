@@ -450,13 +450,35 @@ final class WorkspaceStore {
         // the last migrated tab instead of the user's current document.
         let keepActiveTabId = keep.app.activeTabId
         for leaf in leaves where leaf.id != keep.id {
-            for tab in leaf.app.tabs {
+            // Ownership is *transferred*, exactly as in `moveTab` — detach from
+            // the donor before attaching to `keep`. Copying instead would leave
+            // two AppStores claiming the same tab id, and anything keyed on
+            // tab-to-pane ownership (the web controller's mount guard, find and
+            // note-placement state, the residency pin) would still resolve the
+            // tab to the pane it just left (issue #91). Ids are snapshotted
+            // first because `detachTab` mutates the array being walked.
+            for tabId in leaf.app.tabs.map(\.id) {
+                guard let tab = leaf.app.detachTab(tabId) else {
+                    // Unreachable: the ids came from this pane a line ago and
+                    // nothing between here and there can remove one. Losing a
+                    // tab silently is the worst outcome available, so say so.
+                    assertionFailure("mergeAll: \(tabId) vanished from its own pane mid-merge")
+                    continue
+                }
                 keep.app.attachTab(tab)
             }
             // Same reasoning as closePane: the absorbed pane is discarded, so
             // drop its residency pin. Its tabs are now pinned (or not) by `keep`.
             // Their runtimes are workspace-owned and keyed by tab id, so they
             // migrate with the tabs untouched.
+            //
+            // Emptying the pane above has in fact already dropped the pin —
+            // the last `detachTab` re-points the pane at nothing, which reports
+            // `markActive(nil)` — so this is normally a no-op. It stays because
+            // the one case it isn't is a donor whose `activeTabId` disagrees
+            // with its `tabs`: the pin would then outlive the pane, and a stale
+            // `ObjectIdentifier` key aliases whatever AppStore is allocated at
+            // that address next.
             forgetPanePin(leaf.app)
         }
         if let keepActiveTabId {
