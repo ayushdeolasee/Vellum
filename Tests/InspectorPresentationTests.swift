@@ -4,9 +4,10 @@ import Testing
 
 /// `.scratchDefaults` gives each test its own domain for the recents write that
 /// `AppStore.adoptOpenedDocument` performs — opening a document is unavoidable
-/// here, it is the whole subject of these tests. `.serialized` remains only
-/// because every test drives a real `WorkspaceStore`; the recents redirect is
-/// no longer process-global, so it is not a reason to serialize (#102).
+/// here, it is the whole subject of these tests. The recents redirect is no
+/// longer process-global, so it is no longer a reason to serialize (#102);
+/// `.serialized` stays because opening a document also reaches the storage
+/// seams, which ARE still process-global.
 @MainActor
 @Suite(.serialized, .scratchDefaults)
 struct InspectorPresentationTests {

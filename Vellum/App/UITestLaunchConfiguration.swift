@@ -55,7 +55,12 @@ enum UITestLaunchConfiguration {
         }
 
         if ProcessInfo.processInfo.arguments.contains("--ui-test-corrupt-restoration") {
-            defaults.set("{not valid workspace json", forKey: "vellum.workspace")
+            // Through `AppDefaults`, the same door `WorkspaceService.load` reads
+            // from. Seeding `.standard` directly would only be equivalent as
+            // long as this process resolves to `.standard`, and if that ever
+            // stopped holding the restoration test would not fail — it would
+            // find no workspace at all and still reach a usable Home screen.
+            AppDefaults.current.set("{not valid workspace json", forKey: "vellum.workspace")
         }
 
         if let root = storageRoot {

@@ -86,6 +86,7 @@
 		5ECD33C8989F2BEF18A108A4 /* AiAddAsNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC6D7A36009931F223DB9C2 /* AiAddAsNoteTests.swift */; };
 		5FF82C62FE4C7CC82FD160FD /* AiConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */; };
 		610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */; };
+		64B391AA816FE70BC4C51874 /* TestEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27D5C4D285C243BF0A68572 /* TestEnvironment.swift */; };
 		65858805EE10C9DAA53531F5 /* KaTeX_Script-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */; };
 		67B320CA1556DCBF8C2A8507 /* PdfGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */; };
 		6A2252DEAA424409E0A605FC /* AppDefaultsGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20A1D1FEFF7CFD752BF6D390 /* AppDefaultsGuardTests.swift */; };
@@ -395,6 +396,7 @@
 		E064C75923B5E7D98E256470 /* WebArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebArchive.swift; sourceTree = "<group>"; };
 		E201F2530645C6348ECC59AA /* AiStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiStreaming.swift; sourceTree = "<group>"; };
 		E2042B70E9B14894B30A1877 /* WalkthroughTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughTests.swift; sourceTree = "<group>"; };
+		E27D5C4D285C243BF0A68572 /* TestEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestEnvironment.swift; sourceTree = "<group>"; };
 		E30CD609AEA2C0A662890153 /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
 		E70BA19480CF71B6E14A7984 /* HomeSearchProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchProvider.swift; sourceTree = "<group>"; };
 		E8C9F22335B2DEA99AF5ABF5 /* KaTeX_Typewriter-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Typewriter-Regular.woff2"; sourceTree = "<group>"; };
@@ -587,6 +589,7 @@
 				7280818785023514C87C04C9 /* SessionService.swift */,
 				4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */,
 				4E69330A4F460353FBCB25AB /* TabResidency.swift */,
+				E27D5C4D285C243BF0A68572 /* TestEnvironment.swift */,
 				95809D33AB6DF0D9BCF1BE88 /* VellumBundle.swift */,
 				C6A0F0FCE599D735A694D605 /* WalkthroughSettings.swift */,
 				7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */,
@@ -1098,6 +1101,7 @@
 				6BA39956BEE5A9BB036F74E7 /* TabBarView.swift in Sources */,
 				07AE67F8DC12B0AAD737C3FD /* TabDrag.swift in Sources */,
 				D8FB17ACCD415EFD9623E48B /* TabResidency.swift in Sources */,
+				64B391AA816FE70BC4C51874 /* TestEnvironment.swift in Sources */,
 				1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */,
 				9E139713CC03274E03B94E92 /* ToolbarView.swift in Sources */,
 				A5E81D63CD3B19716028FF80 /* UITestLaunchConfiguration.swift in Sources */,

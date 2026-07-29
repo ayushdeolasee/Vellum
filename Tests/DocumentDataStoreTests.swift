@@ -27,7 +27,7 @@ final class DocumentDataStoreTests: XCTestCase {
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.activeDirectory = nil
-        UserDefaults.standard.removeObject(forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.removeObject(forKey: ScratchpadPersistence.notesKey)
         // Restore write perms in case a test left a folder read-only, so the
         // scratch tree can be torn down cleanly.
         if let root {
@@ -123,11 +123,11 @@ final class DocumentDataStoreTests: XCTestCase {
 
     private func seedLegacyBlob(_ entries: [BlobEntry]) throws {
         let data = try JSONEncoder().encode(entries)
-        UserDefaults.standard.set(data, forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.set(data, forKey: ScratchpadPersistence.notesKey)
     }
 
     private func legacyBlobEntries() throws -> [BlobEntry] {
-        guard let data = UserDefaults.standard.data(forKey: ScratchpadPersistence.notesKey)
+        guard let data = AppDefaults.current.data(forKey: ScratchpadPersistence.notesKey)
         else { return [] }
         return try JSONDecoder().decode([BlobEntry].self, from: data)
     }

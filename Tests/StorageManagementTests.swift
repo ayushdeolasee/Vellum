@@ -20,7 +20,7 @@ final class StorageManagementTests: XCTestCase {
 
     override func tearDown() async throws {
         DocumentDataStore.rootDirectoryOverride = nil
-        UserDefaults.standard.removeObject(forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.removeObject(forKey: ScratchpadPersistence.notesKey)
         UserDefaults.standard.removeObject(forKey: AiPersistence.conversationsKey)
         UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
         if let base { try? FileManager.default.removeItem(at: base) }
@@ -366,7 +366,7 @@ final class StorageManagementTests: XCTestCase {
             BlobEntry(key: "/tmp/a.pdf", text: "note a"),
             BlobEntry(key: "/tmp/b.pdf", text: "longer note b"),
         ]
-        UserDefaults.standard.set(try JSONEncoder().encode(entries), forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.set(try JSONEncoder().encode(entries), forKey: ScratchpadPersistence.notesKey)
 
         let listed = ScratchpadPersistence.listLegacyEntries()
         XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])

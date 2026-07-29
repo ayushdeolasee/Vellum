@@ -121,8 +121,12 @@ struct DocumentRenameTargetTests {
     }
 }
 
-/// `.serialized` for `ScratchStores`' remaining process-global directory
-/// overrides; the recents domain is per-test via `.scratchDefaults`.
+/// The recents domain is per-test via `.scratchDefaults`. `.serialized` stays
+/// for `ScratchStores`' remaining process-global DIRECTORY overrides — note it
+/// is not sufficient for those, since nine suites set
+/// `DocumentDataStore.rootDirectoryOverride` and `.serialized` only orders
+/// tests within one suite. That is the same bug as #102 in the storage seams;
+/// this branch fixes the defaults half.
 @Suite("Rename: persistence", .serialized, .scratchDefaults)
 struct DocumentRenamePersistenceTests {
     private let stores = ScratchStores()

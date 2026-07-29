@@ -165,8 +165,13 @@ enum ScratchpadPersistence {
         writeEntries(entries)
     }
 
+    // The legacy blob goes through `AppDefaults` for the same reason the
+    // recents list and the workspace do: two suites seed and DELETE this key to
+    // drive migration coverage, and on `.standard` that is the real user's
+    // pre-folder notes — and a shared domain any other test process can wipe
+    // mid-test (#102).
     private static func readEntries() -> [Entry] {
-        guard let data = UserDefaults.standard.data(forKey: notesKey),
+        guard let data = AppDefaults.current.data(forKey: notesKey),
               let entries = try? JSONDecoder().decode([Entry].self, from: data)
         else { return [] }
         return entries
@@ -174,7 +179,7 @@ enum ScratchpadPersistence {
 
     private static func writeEntries(_ entries: [Entry]) {
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: notesKey)
+        AppDefaults.current.set(data, forKey: notesKey)
     }
 }
 
