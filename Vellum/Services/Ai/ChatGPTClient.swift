@@ -77,26 +77,28 @@ final class ChatGPTClient {
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
-            var text = ""
-            var calls: [[String: Any]] = []
-            var hitTokenLimit = false
+            // Kept as its own loop rather than reusing `OpenAIClient.consumeTurn`:
+            // the Codex backend's `response.incomplete` carries reasons this
+            // client deliberately does not turn into errors, and its stream
+            // failure text names ChatGPT.
+            var turn = OpenAIClient.StreamedTurn()
             for try await payload in SSE.dataPayloads(bytes) {
                 guard let object = Self.jsonObjectOrNil(payload),
                       let type = object["type"] as? String else { continue }
                 switch type {
                 case "response.output_text.delta":
                     if let delta = object["delta"] as? String, !delta.isEmpty {
-                        text += delta
+                        turn.text += delta
                         onEvent(.textDelta(delta))
                     }
                 case "response.output_item.done":
                     if let item = object["item"] as? [String: Any],
                        item["type"] as? String == "function_call" {
-                        calls.append(item)
+                        turn.calls.append(item)
                     }
                 case "response.incomplete":
                     let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    if reason == "max_output_tokens" { hitTokenLimit = true }
+                    if reason == "max_output_tokens" { turn.hitTokenLimit = true }
                 case "response.failed", "error":
                     let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                         ?? (object["message"] as? String)
@@ -106,38 +108,34 @@ final class ChatGPTClient {
                 }
             }
 
-            if calls.isEmpty {
-                var reply = text
-                if hitTokenLimit {
-                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        throw AiClientError.message("ChatGPT hit the output-token limit before producing any text. Try a lower thinking mode.")
-                    }
-                    reply += "\n\n_(reply truncated at the output-token limit)_"
-                }
+            // Same gate as the direct client: a turn cut off at the token limit
+            // never runs its queued calls or starts another turn (#107).
+            switch try OpenAIClient.turnOutcome(turn, provider: "ChatGPT") {
+            case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
-            }
-
-            for call in calls {
-                guard let name = call["name"] as? String,
-                      let callId = call["call_id"] as? String else { continue }
-                let argumentsText = call["arguments"] as? String ?? "{}"
-                let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
-                let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
-                input.append([
-                    "type": "function_call",
-                    "call_id": callId,
-                    "name": name,
-                    "arguments": argumentsText,
-                ])
-                onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
-                let result = await toolEngine.run(
-                    action,
-                    sessionIdAtStart: sessionIdAtStart,
-                    actionCount: actionResults.count
-                )
-                actionResults.append(result)
-                onEvent(.toolFinished(result: result))
-                input.append(["type": "function_call_output", "call_id": callId, "output": result])
+            case .runTools(let queued):
+                for call in queued {
+                    guard let name = call["name"] as? String,
+                          let callId = call["call_id"] as? String else { continue }
+                    let argumentsText = call["arguments"] as? String ?? "{}"
+                    let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
+                    let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
+                    input.append([
+                        "type": "function_call",
+                        "call_id": callId,
+                        "name": name,
+                        "arguments": argumentsText,
+                    ])
+                    onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
+                    let result = await toolEngine.run(
+                        action,
+                        sessionIdAtStart: sessionIdAtStart,
+                        actionCount: actionResults.count
+                    )
+                    actionResults.append(result)
+                    onEvent(.toolFinished(result: result))
+                    input.append(["type": "function_call_output", "call_id": callId, "output": result])
+                }
             }
             onEvent(.status("Thinking"))
         }

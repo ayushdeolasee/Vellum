@@ -492,6 +492,81 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(payloads[1].contains("lo"))
     }
 
+    // MARK: - Tool loop vs. the output-token limit (#107)
+
+    /// An OpenAI Responses stream that completes a `function_call` item and THEN
+    /// reports a `max_output_tokens` cutoff — the exact ordering issue #107 is
+    /// about. `incomplete` is omitted when `truncated` is false.
+    private func truncatedToolCallFixture(truncated: Bool) -> FixtureBytes {
+        var lines = """
+        data: {"type":"response.output_text.delta","delta":"Let me check page 4"}
+
+        data: {"type":"response.output_item.done","item":{"type":"function_call","name":"goToPage","call_id":"call_1","arguments":"{\\"pageNumber\\":4}"}}
+
+        """
+        if truncated {
+            lines += """
+
+            data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+
+            """
+        }
+        lines += "\ndata: [DONE]"
+        return FixtureBytes(bytes: Array(lines.utf8))
+    }
+
+    /// The regression: a response cut off at its token budget must NOT run the
+    /// function call it had already queued, and must not start another turn.
+    /// Before the gate, a non-empty `calls` sent the loop straight into
+    /// `toolEngine.run` — spending more tokens right after the budget said stop.
+    func testTokenLimitDropsQueuedFunctionCallsInsteadOfRunningThem() async throws {
+        let turn = try await OpenAIClient.consumeTurn(
+            truncatedToolCallFixture(truncated: true), onEvent: { _ in })
+        // Fixture sanity: the model really did queue a call before the cutoff.
+        XCTAssertEqual(turn.calls.count, 1)
+        XCTAssertTrue(turn.hitTokenLimit)
+
+        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI") {
+        case .runTools:
+            XCTFail("a truncated response must not run its queued function calls")
+        case .finish(let reply):
+            // The truncation still surfaces exactly as it does with no calls.
+            XCTAssertTrue(reply.hasPrefix("Let me check page 4"))
+            XCTAssertTrue(reply.hasSuffix("_(reply truncated at the output-token limit)_"))
+        }
+    }
+
+    /// The gate must be scoped to the cutoff: an ordinary response that queued
+    /// the same call still runs it, so the tool loop keeps working.
+    func testQueuedFunctionCallsStillRunWhenTheResponseWasNotTruncated() async throws {
+        let turn = try await OpenAIClient.consumeTurn(
+            truncatedToolCallFixture(truncated: false), onEvent: { _ in })
+        XCTAssertFalse(turn.hitTokenLimit)
+
+        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI") {
+        case .finish:
+            XCTFail("a completed response must still run its queued function calls")
+        case .runTools(let queued):
+            XCTAssertEqual(queued.count, 1)
+            XCTAssertEqual(queued.first?["name"] as? String, "goToPage")
+        }
+    }
+
+    /// A cutoff that queued a call but streamed no text reaches the same error
+    /// the no-calls path has always produced, named for the calling provider.
+    func testTokenLimitWithNoTextErrorsRatherThanRunningTools() throws {
+        var turn = OpenAIClient.StreamedTurn()
+        turn.calls = [["type": "function_call", "name": "goToPage", "call_id": "call_1"]]
+        turn.hitTokenLimit = true
+
+        XCTAssertThrowsError(try OpenAIClient.turnOutcome(turn, provider: "ChatGPT")) { error in
+            guard case AiClientError.message(let message) = error else {
+                return XCTFail("expected an AiClientError.message, got \(error)")
+            }
+            XCTAssertTrue(message.hasPrefix("ChatGPT hit the output-token limit"))
+        }
+    }
+
     // MARK: - §4 Usage parsing
 
     func testUsageParsingAcrossProviderShapes() {
