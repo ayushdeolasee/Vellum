@@ -800,6 +800,52 @@ final class PdfViewerController {
 
     // MARK: - AI page-text feed (getTextContent pass)
 
+    /// Outcome of one gated page extraction.
+    private enum PageExtractionOutcome {
+        case extracted
+        /// Someone else (the other loop, or the cache restore) already has it.
+        case alreadyCached
+        /// The document or the active tab changed under us, or we were
+        /// cancelled: the caller must stop walking.
+        case stale
+    }
+
+    /// Extract one page's text and publish it to the AI store, the tab runtime
+    /// and the persistent cache.
+    ///
+    /// The single choke point for `page.string` on this controller: it holds
+    /// `PageTextExtractionGate` for the call, so the background walk, the AI
+    /// context fill and the tool paths can never hand PDFKit two Live Text OCR
+    /// requests at once (see PageTextExtractionGate for why that crashes). The
+    /// cache re-check happens *inside* the gate, so a page that the other loop
+    /// filled while this request sat in the queue is skipped, not re-extracted.
+    private func extractPage(
+        _ pageNumber: Int, from document: PDFDocument, tabId: String?,
+        priority: PageTextExtractionGate.Priority
+    ) async -> PageExtractionOutcome {
+        // Starts at `.stale` so a caller cancelled while queued — the gate never
+        // runs the body then — stops walking, same as a document change.
+        var outcome = PageExtractionOutcome.stale
+        _ = await PageTextExtractionGate.shared.extractText(priority: priority) { () -> String? in
+            guard self.document === document, self.app?.activeTabId == tabId,
+                  let ai = self.ai, let page = document.page(at: pageNumber - 1) else { return nil }
+            guard ai.pageTexts[pageNumber] == nil else {
+                outcome = .alreadyCached
+                return nil
+            }
+            let text = page.string ?? ""
+            guard let normalized = ai.setPageText(page: pageNumber, text: text) else {
+                outcome = .alreadyCached
+                return text
+            }
+            self.runtime?.pageTexts[pageNumber] = normalized
+            self.persister?.noteExtracted(page: pageNumber, text: normalized)
+            outcome = .extracted
+            return text
+        }
+        return outcome
+    }
+
     func startTextExtraction() {
         extractionTask?.cancel()
         guard let document else { return }
@@ -816,16 +862,14 @@ final class PdfViewerController {
                 // Idle pacing stand-in for requestIdleCallback's 16 ms fallback.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
-                guard let self, self.document === document,
-                      self.app?.activeTabId == tabId,
-                      let page = document.page(at: pageNumber - 1) else { return }
-                // Skip pages already restored from the cache: don't even read
-                // page.string (the expensive part) — true resume of a partial walk.
-                if self.ai?.pageTexts[pageNumber] == nil,
-                   let normalized = self.ai?.setPageText(page: pageNumber, text: page.string ?? "") {
-                    self.runtime?.pageTexts[pageNumber] = normalized
-                    self.persister?.noteExtracted(page: pageNumber, text: normalized)
-                }
+                guard let self else { return }
+                // Skip pages already restored from the cache: don't even queue
+                // for the gate, let alone read page.string (the expensive part)
+                // — true resume of a partial walk.
+                if self.ai?.pageTexts[pageNumber] != nil { continue }
+                let outcome = await self.extractPage(
+                    pageNumber, from: document, tabId: tabId, priority: .background)
+                if case .stale = outcome { return }
             }
             // Whole document walked: flush with complete = true.
             await self?.persister?.flush()
@@ -833,13 +877,24 @@ final class PdfViewerController {
     }
 
     /// On-demand text extraction for the AI request path: fill `pageTexts` for
-    /// the requested 1-indexed pages (or the whole document when `pages` is nil)
-    /// with no idle pacing, so a search/read never misses a page the background
-    /// 1→N walk hasn't reached yet. `AiStore.setPageText`'s dedupe keeps this
-    /// idempotent with that walk. Returns how many pages it newly populated
-    /// (drives the `.indexing` indicator). A cooperative yield every so often
-    /// keeps the run loop responsive during a big whole-document pass without
-    /// reintroducing the walk's 16 ms sleep.
+    /// the requested 1-indexed pages (or the whole document when `pages` is nil),
+    /// so a search/read never misses a page the background 1→N walk hasn't
+    /// reached yet. Returns how many pages it newly populated (drives the
+    /// `.indexing` indicator).
+    ///
+    /// Pages go one at a time through `PageTextExtractionGate` at `.onDemand`
+    /// priority: it both serializes this pass against the background walk (and
+    /// against a second split pane's walk) and jumps it ahead of that walk's
+    /// queued pages, so an AI turn waits for at most the one page in flight
+    /// rather than for a whole-document crawl. The gate also inserts its idle
+    /// gap after any page that came back without text — the scanned pages that
+    /// reach Live Text — which is what stops `searchDocument`'s whole-document
+    /// pass from firing bursts of recognition requests. Pages with a real text
+    /// layer are not paced at all, so ordinary PDFs index as fast as before.
+    ///
+    /// `AiStore.setPageText`'s dedupe plus the gate's in-lock cache re-check keep
+    /// this idempotent with the walk. A cooperative yield every so often keeps
+    /// the run loop responsive when the gate is uncontended and never suspends.
     @discardableResult
     func ensureExtracted(pages: Set<Int>?) async -> Int {
         guard let document, let ai else { return 0 }
@@ -855,21 +910,22 @@ final class PdfViewerController {
         var sinceYield = 0
         // Same generation guard as the walk: bail if the active tab changes
         // mid-pass (this handler slot may still be draining for an old tab).
+        // Re-evaluated per iteration inside `extractPage`, since this loop now
+        // suspends on the gate between pages.
         let tabId = app?.activeTabId
         for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
-            guard self.document === document, app?.activeTabId == tabId,
-                  let page = document.page(at: pageNumber - 1) else { break }
-            if let normalized = ai.setPageText(page: pageNumber, text: page.string ?? "") {
-                runtime?.pageTexts[pageNumber] = normalized
-                persister?.noteExtracted(page: pageNumber, text: normalized)
+            switch await extractPage(
+                pageNumber, from: document, tabId: tabId, priority: .onDemand)
+            {
+            case .stale: return extracted
+            case .alreadyCached: continue
+            case .extracted: extracted += 1
             }
-            extracted += 1
             sinceYield += 1
             // PDFKit text extraction on a displayed document intentionally stays
             // on the main actor (thread-safety), so this yield cadence is the only
-            // responsiveness lever — smaller bursts keep the UI more responsive at
-            // the cost of more hops. A persistent text cache (PR B) will make
-            // whole-document on-demand extraction rare.
+            // responsiveness lever when the gate hands the slot straight back
+            // without suspending (every page of an ordinary text PDF).
             if sinceYield >= 8 {
                 sinceYield = 0
                 await Task.yield()
@@ -888,7 +944,14 @@ final class PdfViewerController {
         let needle = query
             .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
             .lowercased()
-        guard !needle.isEmpty, let pageString = page.string else { return nil }
+        guard !needle.isEmpty else { return nil }
+        // Same Live Text hazard as the extraction loops: on a scanned page this
+        // `page.string` runs OCR, so it takes the gate rather than racing a walk
+        // that is mid-compile (see PageTextExtractionGate).
+        let extractedPage = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
+            page.string ?? ""
+        }
+        guard let pageString = extractedPage, !pageString.isEmpty else { return nil }
 
         // Whitespace-free lowercase haystack; every character remembers the
         // UTF-16 range of the source character that produced it.
