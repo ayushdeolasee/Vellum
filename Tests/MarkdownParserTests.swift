@@ -208,6 +208,35 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(MathRenderer.segments(in: line), [.text(line)])
     }
 
+    /// …and the closer half of that check: "\(y\\)" never closes as math,
+    /// because the backslash before ")" is itself escaped.
+    func testSegmentsEscapedParenCloserIsLiteral() {
+        XCTAssertEqual(MathRenderer.segments(in: "\\(y\\\\)"), [.text("\\(y\\\\)")])
+    }
+
+    /// The scanner indexes UTF-16 code units, the same units the math regex
+    /// reports its ranges in, so an astral-plane character ahead of a span must
+    /// not shift the two out of agreement. An emoji is two code units, which is
+    /// exactly the offset that would corrupt the overlap test if either side
+    /// counted Characters instead.
+    func testSegmentsCodeSpanOffsetsSurviveAstralCharacters() {
+        XCTAssertEqual(MathRenderer.codeSpanRanges(in: "😀 `$1` and `$2` tail"),
+                       [NSRange(location: 3, length: 4), NSRange(location: 12, length: 4)])
+        let line = "😀 `$1` and `$2` tail"
+        XCTAssertEqual(MathRenderer.segments(in: line), [.text(line)])
+        // …and real math after an emoji still typesets.
+        XCTAssertTrue(MathRenderer.segments(in: "😀 costs $x^2$ ok").contains(.math("x^2")))
+    }
+
+    /// Backtick runs of differing lengths never pair off, so nothing is a code
+    /// span and the math after them is still found. The failure this guards is
+    /// a scanner that treats any later backtick as a closer and swallows the
+    /// rest of the line.
+    func testSegmentsMismatchedBacktickRunsDoNotHideMath() {
+        XCTAssertTrue(MathRenderer.segments(in: "``a` $x$").contains(.math("x")))
+        XCTAssertTrue(MathRenderer.codeSpanRanges(in: "``a` $x$").isEmpty)
+    }
+
     // MARK: - Segments: MathRenderer.segments(in:)
 
     func testSegmentsCurrencyIsNotMath() {

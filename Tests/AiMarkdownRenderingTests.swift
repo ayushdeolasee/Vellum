@@ -501,6 +501,22 @@ final class AiMarkdownRenderingTests: XCTestCase {
                        "matches \\(a\\|b\\) here")
     }
 
+    /// Known residual, pinned so it stays a decision rather than a surprise:
+    /// `plainPreview` unwraps `$$…$$` and strips math delimiters with its own
+    /// regexes, which run before `segments` and have no notion of code spans —
+    /// so a `$$` inside a code span still loses its delimiters in the pill.
+    ///
+    /// Out of scope for #99 and materially different from it: no text is eaten
+    /// and nothing is reordered (the "x" survives), which is the same lossy
+    /// contract this one-line preview already applies to `**`, backticks and
+    /// every other delimiter. The bug #99 is about — the splitter consuming the
+    /// backticks and the prose between two spans — is fixed here, as the test
+    /// above shows.
+    func testPlainPreviewStillStripsDisplayDelimitersInsideCodeSpans() {
+        XCTAssertEqual(MarkdownParser.plainPreview("write `$$x$$` for display"),
+                       "write x for display")
+    }
+
     /// The code spans inside those sub-items must still style as code.
     func testCodeSpansInsideNestedItemsAreMonospaced() {
         guard case .list(let items) = MarkdownParser.parse("- a\n  - `int\\b` for the `int` keyword").first else {
