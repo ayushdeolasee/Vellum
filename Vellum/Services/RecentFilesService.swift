@@ -45,6 +45,26 @@ enum RecentFilesService {
         return next
     }
 
+    /// Put a removed entry back where it was — the Undo of `remove(path:)`.
+    ///
+    /// Deliberately NOT `record(_:)`: that prepends and re-stamps `openedAt`,
+    /// so undoing a removal through it would claim the document had just been
+    /// opened and move it to the top. An undo restores the list, it does not
+    /// invent a visit.
+    ///
+    /// Returns false when the path is already listed — the user re-opened the
+    /// document after removing it, so the removal has been overtaken and the
+    /// undo has nothing to do. The caller uses this to stop the undo/redo
+    /// chain rather than duplicating the row.
+    @discardableResult
+    static func restore(_ entry: RecentDocument, at index: Int) -> Bool {
+        var next = getRecent()
+        guard !next.contains(where: { $0.pdfPath == entry.pdfPath }) else { return false }
+        next.insert(entry, at: min(max(0, index), next.count))
+        write(Array(next.prefix(maxRecent)))
+        return true
+    }
+
     /// Retitle a recents entry in place.
     ///
     /// Deliberately NOT `record(_:)`, which is the only other way to change a
