@@ -275,6 +275,75 @@ final class AiConversationStoreTests: XCTestCase {
         XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
     }
 
+    /// The protection must be scoped to a FAILED read: a file that legitimately
+    /// stores `[]` decodes fine, so clearing it still deletes as before. Pins the
+    /// "had elements but none decoded" half of the classification — without it,
+    /// treating every empty decode as unreadable would pass the tests above and
+    /// quietly break the hard-delete contract.
+    func testLegitimatelyEmptyFileIsStillDeletableByAnEmptySave() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        try DocumentDataStore.saveConversationsData(forKey: key, data: Data("[]".utf8))
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty)
+
+        AiPersistence.saveConversation(for: doc, messages: [])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key),
+                       "an empty-but-readable file is the user's empty chat, not ours")
+    }
+
+    /// Invalidation (a `.vellum` import replacing the file, a Storage-pane
+    /// delete) drops the undecodable verdict too — it was about bytes that are
+    /// no longer there, and keeping it would swallow later empty saves forever.
+    func testInvalidateClearsTheUndecodableProtection() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        try DocumentDataStore.saveConversationsData(
+            forKey: key, data: Data(#"[{"id":"x","role":"user"}]"#.utf8))
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty)
+
+        // The file is replaced with something readable, exactly as an import does.
+        try DocumentDataStore.saveConversationsData(
+            forKey: key,
+            data: try JSONEncoder().encode(
+                [AiPersistence.makeMessage(role: .user, content: "readable now")]))
+        AiPersistence.invalidateCachedConversation(forKey: key)
+
+        XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["readable now"])
+        AiPersistence.saveConversation(for: doc, messages: [])
+        await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key),
+                       "a stale verdict must not block a real clear")
+    }
+
+    /// A PDF can acquire its /VellumDocId between the read and the write. The
+    /// undecodable verdict is recorded against the path-hash key and must ride
+    /// along to the stamped key with the folder, or the very next empty save
+    /// would delete the file the read had just refused to trust.
+    func testUndecodableProtectionFollowsTheRekeyToTheStampedKey() async throws {
+        let path = "/tmp/ai-conv-\(UUID().uuidString).pdf"
+        func document(docId: String?) -> DocumentInfo {
+            DocumentInfo(kind: .pdf, pdfPath: path, title: "Doc",
+                         pageCount: 1, lastPage: 1, docId: docId)
+        }
+        let stamped = document(docId: "99999999-8888-7777-6666-555555555555")
+        let docId = try XCTUnwrap(stamped.docId)
+        let pathKey = DocumentIdentity.sha256Hex(path)
+        let corrupt = Data(#"[{"id":"x","role":"user"}]"#.utf8)
+        try DocumentDataStore.saveConversationsData(forKey: pathKey, data: corrupt)
+
+        // Read before the stamp: the verdict lands on the path-hash key.
+        XCTAssertTrue(AiPersistence.loadConversation(for: document(docId: nil)).isEmpty)
+
+        // Write after the stamp: folder and verdict both move to the docId key.
+        AiPersistence.saveConversation(for: stamped, messages: [])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: docId), corrupt,
+                       "the rekeyed file must keep its protection")
+    }
+
     // MARK: - Cache invalidation on import merge
 
     /// After a `.vellum` import merges a fresh conversation into the folder file,
