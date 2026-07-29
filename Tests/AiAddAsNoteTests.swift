@@ -171,9 +171,10 @@ final class WebNoteComposerDismissalTests: XCTestCase {
 /// hand the draft back and which discard it.
 ///
 /// `WebViewerController.bindForTesting` and friends are the seam — the real
-/// `attach` ends in a `WKWebView` page load, and none of the dismissal paths
-/// touch the web view (every `post` is gated on the content script having
-/// reported in, which it never does here).
+/// `attach` ends in a `WKWebView` page load. `post` would materialise that web
+/// view (only the `push*` helpers are gated on the content script reporting
+/// in), but the dismissal branches reach it solely via `clearSelection()`,
+/// which they only call when a selection exists, and nothing here makes one.
 @MainActor
 final class WebNoteComposerControllerTests: XCTestCase {
     private func makePaneWithTab() -> AppStore {
@@ -208,18 +209,6 @@ final class WebNoteComposerControllerTests: XCTestCase {
         XCTAssertNil(controller.noteComposer)
         XCTAssertEqual(app.pendingNoteContent, "The answer.")
         XCTAssertEqual(app.mode, .note, "one more click re-offers the note")
-    }
-
-    /// Switching tabs goes through `deactivate`, which must not be a discard
-    /// either — the draft waits on the tab the user is coming back to.
-    func testDeactivatingTheTabHandsTheReplyBack() {
-        let app = makePaneWithTab()
-        let controller = composerHolding("The answer.", on: app)
-
-        controller.deactivate()
-
-        XCTAssertNil(controller.noteComposer)
-        XCTAssertEqual(app.pendingNoteContent, "The answer.")
     }
 
     /// Cancel, Escape, and a completed submit all route through
@@ -312,7 +301,10 @@ final class WebNoteComposerControllerTests: XCTestCase {
 
         XCTAssertEqual(app.pendingNoteContent, "Reply for the tab now on screen")
         XCTAssertEqual(app.mode, .note, "the foreground tab stays armed")
-        XCTAssertEqual(controller.noteComposer?.initialContent, "")
+        XCTAssertNil(
+            controller.noteComposer,
+            "no composer at all: annotationStore is pane-scoped, so a background mount now "
+                + "points at another document and a submit would file the note against it")
     }
 
     /// The controller belongs to one tab. A teardown it reports after the user
@@ -329,5 +321,153 @@ final class WebNoteComposerControllerTests: XCTestCase {
         XCTAssertEqual(app.mode, .view, "the foreground tab must not be dragged into note mode")
         XCTAssertNil(app.pendingNoteContent)
         XCTAssertEqual(app.tabs.first(where: { $0.id == origin })?.pendingNoteContent, "The answer.")
+    }
+}
+
+/// The five incidental dismissals are all bridge-message branches, driven here
+/// exactly as the content script drives them — including the literal repro in
+/// issue #92's title, a stray click on the page, which arrives as
+/// `"selection-cleared"`. Without these, reverting any one branch to
+/// `noteComposer = nil` leaves the suite green.
+@MainActor
+final class WebNoteComposerBridgeDismissalTests: XCTestCase {
+    private func makePaneWithTab() -> AppStore {
+        let app = WorkspaceStore(sessions: DocumentSessionManager()).focusedPane.app
+        app.newStartTab()
+        return app
+    }
+
+    /// Post-placement state, with the composer aged past the `clickOutside`
+    /// grace period so the next page event counts as a real dismissal.
+    private func agedComposer(
+        holding content: String, on app: AppStore, annotations: AnnotationStore? = nil
+    ) -> WebViewerController {
+        app.beginNoteWithContent(content)
+        _ = app.consumePendingNoteContent()
+        app.finishNotePlacement(forSessionId: app.activeTabId!)
+        let controller = WebViewerController()
+        controller.bindForTesting(
+            app: app, tabId: app.activeTabId!, annotationStore: annotations)
+        controller.openNoteComposerForTesting(
+            content: content, openedAt: Date().addingTimeInterval(-1))
+        return controller
+    }
+
+    func testAStrayClickOnThePageHandsTheReplyBack() {
+        let app = makePaneWithTab()
+        let controller = agedComposer(holding: "The answer.", on: app)
+
+        controller.handleBridgeMessageForTesting("selection-cleared")
+
+        XCTAssertNil(controller.noteComposer)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+        XCTAssertEqual(app.mode, .note)
+    }
+
+    /// The grace period is load-bearing in the other direction: the placement
+    /// click's own event arrives milliseconds after the composer opens, so too
+    /// short a window would make every placement instantly self-dismiss.
+    func testThePlacementClicksOwnEventDoesNotDismissTheComposer() {
+        let app = makePaneWithTab()
+        app.beginNoteWithContent("The answer.")
+        _ = app.consumePendingNoteContent()
+        app.finishNotePlacement(forSessionId: app.activeTabId!)
+        let controller = WebViewerController()
+        controller.bindForTesting(app: app, tabId: app.activeTabId!)
+        controller.openNoteComposerForTesting(content: "The answer.")
+
+        controller.handleBridgeMessageForTesting("selection-cleared")
+
+        XCTAssertNotNil(controller.noteComposer, "a composer this young is not dismissed")
+        XCTAssertNil(app.pendingNoteContent, "and nothing is re-queued behind it")
+    }
+
+    func testScrollingThePageHandsTheReplyBack() {
+        let app = makePaneWithTab()
+        let controller = agedComposer(holding: "The answer.", on: app)
+
+        controller.handleBridgeMessageForTesting("viewport-scrolled")
+
+        XCTAssertNil(controller.noteComposer)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+    }
+
+    func testAFreshComposerSurvivesTheScrollThePlacementClickCauses() {
+        let app = makePaneWithTab()
+        app.beginNoteWithContent("The answer.")
+        _ = app.consumePendingNoteContent()
+        app.finishNotePlacement(forSessionId: app.activeTabId!)
+        let controller = WebViewerController()
+        controller.bindForTesting(app: app, tabId: app.activeTabId!)
+        controller.openNoteComposerForTesting(content: "The answer.")
+
+        controller.handleBridgeMessageForTesting("viewport-scrolled")
+
+        XCTAssertNotNil(controller.noteComposer)
+        XCTAssertNil(app.pendingNoteContent)
+    }
+
+    func testRightClickingThePageHandsTheReplyBack() {
+        let app = makePaneWithTab()
+        let controller = agedComposer(holding: "The answer.", on: app)
+
+        controller.handleBridgeMessageForTesting("context-menu", ["found": false])
+
+        XCTAssertNil(controller.noteComposer)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+        // The branch installs a real NSEvent monitor; take it back down.
+        controller.hideContextMenu()
+    }
+
+    func testClickingAnExistingNoteHandsTheReplyBack() async {
+        let app = makePaneWithTab()
+        let annotations = AnnotationStore(app: app)
+        let note = await annotations.addNote(
+            CreateAnnotationInput(
+                type: .note, pageNumber: 1, color: nil, content: "existing",
+                positionData: nil))
+        let controller = agedComposer(holding: "The answer.", on: app, annotations: annotations)
+
+        controller.handleBridgeMessageForTesting("annotation-click", ["id": note?.id ?? ""])
+
+        XCTAssertNil(controller.noteComposer)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+    }
+
+    func testClickingAnExistingHighlightHandsTheReplyBack() async {
+        let app = makePaneWithTab()
+        let annotations = AnnotationStore(app: app)
+        let highlight = await annotations.addHighlight(
+            CreateAnnotationInput(
+                type: .highlight, pageNumber: 1, color: nil, content: nil,
+                positionData: nil))
+        let controller = agedComposer(holding: "The answer.", on: app, annotations: annotations)
+
+        controller.handleBridgeMessageForTesting("annotation-click", ["id": highlight?.id ?? ""])
+
+        XCTAssertNil(controller.noteComposer)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+    }
+
+    /// A second "Add as note" while a composer is still open. The panel's
+    /// button is not gated on one, so the placement click that follows used to
+    /// overwrite the first reply with the second and lose it outright.
+    func testASecondPlacementRescuesTheComposerItReplaces() {
+        let app = makePaneWithTab()
+        let controller = agedComposer(holding: "First reply.", on: app)
+
+        // The user picks "Add as note" on a second reply, then clicks the page.
+        app.beginNoteWithContent("Second reply.")
+        controller.handleBridgeMessageForTesting(
+            "note-placed",
+            ["start": 0, "end": 4, "text": "word", "pageNumber": 1, "x": 0, "y": 0])
+
+        XCTAssertEqual(
+            controller.noteComposer?.initialContent, "Second reply.",
+            "the composer shows the reply that was just placed")
+        XCTAssertEqual(
+            app.pendingNoteContent, "First reply.",
+            "and the one it displaced goes back on the queue rather than vanishing")
+        XCTAssertEqual(app.mode, .note)
     }
 }

@@ -759,11 +759,18 @@ final class WebViewerController: NSObject {
     }
 
     func contextMenuAddNote() {
-        guard let menu = contextMenu, let anchor = menu.anchor else { return }
+        guard let menu = contextMenu else { return }
+        // Unconditionally, and before the anchor check: the menu is going away
+        // either way, and leaving an anchorless one on screen strands it.
         hideContextMenu()
-        // Same payload hand-off as the note-mode placement click, and as
-        // `PdfSelectionBridge.addNoteFromContextMenu`: a queued AI reply
-        // pre-fills this composer rather than being left stranded.
+        guard let anchor = menu.anchor else { return }
+        // Same payload hand-off as the note-mode placement click: a queued AI
+        // reply pre-fills this composer rather than being left stranded.
+        // (`PdfSelectionBridge.addNoteFromContextMenu` consumes the reply too,
+        // but has neither of the guards below — with a reply queued it writes
+        // the note and leaves note mode armed over an emptied queue, so the
+        // next click drops a second, empty note. That is a separate PDF-side
+        // bug, not parity to copy.)
         //
         // Gated on the active tab for the same reason the `"note-placed"`
         // branch is: `consumePendingNoteContent` reads the *active* tab's
@@ -771,14 +778,18 @@ final class WebViewerController: NSObject {
         // otherwise steal the reply armed for the tab now on screen. This is a
         // button action rather than a bridge message, so it does not inherit
         // `handleMessage`'s identical guard.
-        guard let app, let sessionId = mountTabId, app.activeTabId == sessionId else {
-            noteComposer = WebNoteComposerState(point: menu.point, anchor: anchor, openedAt: Date())
-            return
-        }
-        noteComposer = WebNoteComposerState(
-            point: menu.point, anchor: anchor, openedAt: Date(),
-            initialContent: app.consumePendingNoteContent() ?? "")
-        app.finishNotePlacement(forSessionId: sessionId)
+        // No composer at all on the failing branch, rather than an empty one:
+        // `annotationStore` is pane-scoped, so a mount left on a background tab
+        // now points at whatever document the pane moved on to, and submitting
+        // there would file the note against the wrong document.
+        guard let app, let sessionId = mountTabId, app.activeTabId == sessionId else { return }
+        let pendingContent = app.consumePendingNoteContent()
+        presentNoteComposer(
+            WebNoteComposerState(
+                point: menu.point, anchor: anchor, openedAt: Date(),
+                initialContent: pendingContent ?? ""),
+            app: app,
+            sessionId: sessionId)
     }
 
     /// Record the composer's edits as they happen. Only the mirror moves, so a
@@ -792,6 +803,29 @@ final class WebViewerController: NSObject {
     /// Explicit dismissal — Cancel, Escape, or a completed submit. The draft is
     /// discarded, which is what the user asked for.
     func closeNoteComposer() { noteComposer = nil }
+
+    /// Swap in a new composer, rescuing whatever the outgoing one held.
+    ///
+    /// A second "Add as note" can be pressed while a composer is still open —
+    /// the panel's button is not gated on one — and the placement click that
+    /// follows would otherwise overwrite the first reply with the second. This
+    /// is the one dismissal path that cannot simply call
+    /// `returnNoteComposerDraft` first: the incoming reply has already been
+    /// consumed off the queue by the caller, so re-queueing the old draft
+    /// before that read would hand the caller back the WRONG text.
+    ///
+    /// So the order here is load-bearing in both directions: read the stranded
+    /// draft before the assignment (whose `didSet` blanks the mirror), and
+    /// re-queue it after `finishNotePlacement`, which routes through
+    /// `setMode(.view)` and would otherwise drop it again.
+    private func presentNoteComposer(
+        _ state: WebNoteComposerState, app: AppStore, sessionId: String
+    ) {
+        let stranded = noteComposer != nil ? noteComposerDraft : nil
+        noteComposer = state
+        app.finishNotePlacement(forSessionId: sessionId)
+        if let stranded { app.restorePendingNote(stranded, forSessionId: sessionId) }
+    }
 
     /// Dismissal the user did not ask for: a stray click on the page, a scroll
     /// that invalidates the anchor, or another popover taking over. The draft
@@ -808,30 +842,51 @@ final class WebViewerController: NSObject {
         app.restorePendingNote(draft, forSessionId: sessionId)
     }
 
-    /// Test seams (same idiom as `WebLibrary.storeDirOverride`). `attach` ends
-    /// in a real `WKWebView` page load, but none of the popover paths above
-    /// touch the web view — every `post` is gated on the content script having
-    /// reported in — so binding the stores by hand is enough to exercise the
-    /// dismissal rules headlessly.
-    func bindForTesting(app: AppStore, tabId: String) {
+    #if DEBUG
+    /// Test seams (same idiom as `WebLibrary.storeDirOverride`), because
+    /// `attach` ends in a real `WKWebView` page load.
+    ///
+    /// Careful: `post` is NOT gated on the content script having reported in —
+    /// only the `push*` helpers are — so it materialises the lazy web view.
+    /// The dismissal paths reach it solely through `clearSelection()`, which
+    /// the message branches below only call when a selection exists, and these
+    /// seams never create one. Anything driven from here that could take a
+    /// selection path needs re-checking against that.
+    func bindForTesting(app: AppStore, tabId: String, annotationStore: AnnotationStore? = nil) {
         self.app = app
         mountTabId = tabId
+        self.annotationStore = annotationStore
     }
 
-    /// Opens a composer the way a placement click does.
-    func openNoteComposerForTesting(content: String) {
+    /// Opens a composer the way a placement click does. `openedAt` is settable
+    /// so a test can age one past the `clickOutside` grace period without
+    /// sleeping.
+    func openNoteComposerForTesting(content: String, openedAt: Date = Date()) {
         noteComposer = WebNoteComposerState(
-            point: .zero, anchor: Self.testAnchor, openedAt: Date(), initialContent: content)
+            point: .zero, anchor: Self.testAnchor, openedAt: openedAt, initialContent: content)
     }
 
     /// Arms the page context menu, minus the event monitor `showContextMenu`
     /// installs (there is no window to monitor here).
-    func openContextMenuForTesting() {
-        contextMenu = WebContextMenuState(point: .zero, anchor: Self.testAnchor, openedAt: Date())
+    func openContextMenuForTesting(anchored: Bool = true) {
+        contextMenu = WebContextMenuState(
+            point: .zero, anchor: anchored ? Self.testAnchor : nil, openedAt: Date())
+    }
+
+    /// Delivers a bridge message exactly as the content script would. The five
+    /// incidental dismissals are all message branches, including the literal
+    /// stray page click from issue #92, so without this seam none of them can
+    /// be regression-tested.
+    func handleBridgeMessageForTesting(_ type: String, _ payload: [String: Any] = [:]) {
+        var body = payload
+        body["vellum"] = true
+        body["type"] = type
+        handleMessage(body)
     }
 
     private static let testAnchor = WebNoteAnchor(
         start: 0, end: 0, text: "", prefix: nil, suffix: nil, pageNumber: 1)
+    #endif
 
     func closeNoteViewer() { noteViewer = nil }
     func closeHighlightEditor() { highlightEditor = nil }
@@ -1233,16 +1288,18 @@ final class WebViewerController: NSObject {
             // consumed the reply in `PdfSelectionBridge.placeNote`, the web
             // viewer never did, so the text was silently thrown away here.
             let pendingContent = app.consumePendingNoteContent()
-            noteComposer = WebNoteComposerState(
-                point: point,
-                anchor: anchor,
-                openedAt: Date(),
-                initialContent: pendingContent ?? ""
-            )
             // Mirror the PDF viewer: placing a note returns to view mode — but
             // only when this message belongs to the tab that is still armed, so
-            // a late message cannot reset a different session's mode.
-            app.finishNotePlacement(forSessionId: sessionId)
+            // a late message cannot reset a different session's mode. The
+            // helper also rescues whatever the outgoing composer was holding.
+            presentNoteComposer(
+                WebNoteComposerState(
+                    point: point,
+                    anchor: anchor,
+                    openedAt: Date(),
+                    initialContent: pendingContent ?? ""),
+                app: app,
+                sessionId: sessionId)
 
         case "context-menu":
             let point = frameToParent(
