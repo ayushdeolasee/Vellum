@@ -2,18 +2,14 @@ import Foundation
 import Testing
 @testable import Vellum
 
-/// `.serialized` because `RecentFilesService.defaultsOverride` (installed by
-/// `ScratchRecents` below) is process-global mutable state, and because every
-/// test here drives a real `WorkspaceStore`.
+/// `.scratchDefaults` gives each test its own domain for the recents write that
+/// `AppStore.adoptOpenedDocument` performs — opening a document is unavoidable
+/// here, it is the whole subject of these tests. `.serialized` remains only
+/// because every test drives a real `WorkspaceStore`; the recents redirect is
+/// no longer process-global, so it is not a reason to serialize (#102).
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .scratchDefaults)
 struct InspectorPresentationTests {
-    /// Redirects the recents write that `AppStore.adoptOpenedDocument` performs
-    /// into a throwaway domain. Opening a document is unavoidable here — it is
-    /// the whole subject of these tests — and the test bundle is hosted, so
-    /// without this the suite would rewrite the real app's recent-documents
-    /// list with `/tmp` paths (exactly what `defaultsOverride` was added for).
-    private let recents = ScratchRecents()
 
     @Test("PDF to New Tab to PDF preserves inspector state")
     func pdfNewTabPdf() async throws {
@@ -181,25 +177,6 @@ struct InspectorPresentationTests {
         #expect(workspace.sidebarOpen == false)
         #expect(workspace.inspectorPresented == false)
         #expect(workspace.sidebarTab == .ai)
-    }
-}
-
-/// Scratch UserDefaults domain for the recents write, restored when the test
-/// instance dies. A `class` with a `deinit` because Swift Testing has no
-/// `tearDown` — mirrors `ScratchStores` in `DocumentRenameTests`.
-private final class ScratchRecents {
-    private let defaults: UserDefaults
-    private let suiteName: String
-
-    init() {
-        suiteName = "vellum.inspector.tests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-        RecentFilesService.defaultsOverride = defaults
-    }
-
-    deinit {
-        RecentFilesService.defaultsOverride = nil
-        defaults.removePersistentDomain(forName: suiteName)
     }
 }
 
