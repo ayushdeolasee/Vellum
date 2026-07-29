@@ -10,6 +10,10 @@ import XCTest
 final class DocumentDataStoreTests: XCTestCase {
     private var root: URL!
     private var legacyPool: URL!
+    /// Every `ScratchpadStore` a test built, so teardown can join the background
+    /// attachment sweeps they started before the scratch tree is torn down — no
+    /// sweep may outlive the test that armed it (#100).
+    private var stores: [ScratchpadStore] = []
 
     override func setUp() async throws {
         let base = FileManager.default.temporaryDirectory
@@ -24,6 +28,8 @@ final class DocumentDataStoreTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        await drainAttachmentSweeps()
+        stores.removeAll()
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.activeDirectory = nil
@@ -35,6 +41,23 @@ final class DocumentDataStoreTests: XCTestCase {
                 [.posixPermissions: 0o755], ofItemAtPath: root.path)
             try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
         }
+    }
+
+    /// A store whose background attachment sweeps this suite owns. Loading a
+    /// document ends in a sweep dispatched to a background task; tracking the
+    /// store lets teardown join it. A test that ASSERTS on attachment files must
+    /// also `await drainAttachmentSweeps()` first — joining at teardown bounds
+    /// the leak, it does not order the sweep against in-test assertions.
+    private func makeStore() -> ScratchpadStore {
+        let store = ScratchpadStore()
+        stores.append(store)
+        return store
+    }
+
+    /// Join every attachment sweep started by this test's stores, so the
+    /// assertions that follow describe the settled state on disk.
+    private func drainAttachmentSweeps() async {
+        for store in stores { await store.attachmentSweepTask?.value }
     }
 
     private func pdfDocument(path: String, docId: String? = nil) -> DocumentInfo {
@@ -140,7 +163,7 @@ final class DocumentDataStoreTests: XCTestCase {
         let note = "Legacy ![img](vellum-scratchpad://\(id)) note"
         try seedLegacyBlob([BlobEntry(key: path, text: note)])
 
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(pdfDocument(path: path))
 
         let key = DocumentIdentity.sha256Hex(path)
@@ -255,7 +278,7 @@ final class DocumentDataStoreTests: XCTestCase {
         try DocumentDataStore.saveScratchpad(forKey: key, text: "folder note")
         try seedLegacyBlob([BlobEntry(key: path, text: "blob note")])
 
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(pdfDocument(path: path))
 
         // Folder note wins; blob is left intact for its own (unmigrated) doc.
@@ -265,26 +288,37 @@ final class DocumentDataStoreTests: XCTestCase {
 
     // MARK: - Rekey
 
-    func testRekeyMovesFallbackFolderToStampedKey() throws {
+    func testRekeyMovesFallbackFolderToStampedKey() async throws {
         let path = "/tmp/stamp-\(UUID().uuidString).pdf"
         let pathKey = DocumentIdentity.sha256Hex(path)
         let docId = "11111111-2222-3333-4444-555555555555"
         // Seed data in the path-hash fallback folder (as if written pre-stamp).
-        try DocumentDataStore.saveScratchpad(forKey: pathKey, text: "carried note")
+        // The note REFERENCES the attachment, which is what a document that
+        // carried one across a rekey actually looks like: an attachment no note
+        // points at is an orphan, and the sweep every load ends in is right to
+        // collect it, so requiring it to survive would pin a value that only
+        // holds until that sweep lands (#100).
+        let note = "carried note ![x](attachments/ab.jpg)"
+        try DocumentDataStore.saveScratchpad(forKey: pathKey, text: note)
         let fallbackAttachments = DocumentDataStore.attachmentsDir(forKey: pathKey)
         try FileManager.default.createDirectory(
             at: fallbackAttachments, withIntermediateDirectories: true)
         try Data([1]).write(to: fallbackAttachments.appendingPathComponent("ab.jpg"))
 
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(pdfDocument(path: path, docId: docId))
+        // Join the load's attachment sweep, so what follows is the settled state
+        // rather than a window that closes when the sweep lands.
+        await drainAttachmentSweeps()
 
         XCTAssertFalse(exists(DocumentDataStore.documentDir(forKey: pathKey)),
                        "old fallback folder must be gone")
-        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), "carried note")
-        XCTAssertTrue(exists(
-            DocumentDataStore.attachmentsDir(forKey: docId).appendingPathComponent("ab.jpg")))
-        XCTAssertEqual(store.text, "carried note")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: docId), note)
+        XCTAssertTrue(
+            exists(DocumentDataStore.attachmentsDir(forKey: docId)
+                .appendingPathComponent("ab.jpg")),
+            "the rekey carried the referenced attachment across and the sweep spared it")
+        XCTAssertEqual(store.text, "carried note ![x](vellum-scratchpad://ab)")
     }
 
     func testRekeyMergesNewestWinsOnCollision() throws {
@@ -481,7 +515,7 @@ final class DocumentDataStoreTests: XCTestCase {
         let placeholder = WebICloud.placeholderURL(for: DocumentDataStore.scratchpadPath(forKey: key))
         try Data("stub".utf8).write(to: placeholder)
 
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(doc)
         XCTAssertTrue(store.isPersistencePaused, "an evicted note pauses persistence")
         XCTAssertNotNil(store.dropWarning, "a banner explains why editing is paused")
@@ -510,7 +544,7 @@ final class DocumentDataStoreTests: XCTestCase {
         let doc = pdfDocument(path: "/tmp/del-\(UUID().uuidString).pdf")
         let key = DocumentIdentity.storageKey(for: doc)
 
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(doc)
         store.text = "important note"
         store.flush()  // persist synchronously
@@ -554,7 +588,7 @@ final class DocumentDataStoreTests: XCTestCase {
 
         // The pane holds an unsaved edit with a debounced save ARMED (didSet
         // schedules a 400 ms write). This is the pre-import in-memory state.
-        let store = ScratchpadStore()
+        let store = makeStore()
         store.loadForDocument(doc)
         store.text = "stale"   // schedules a save targeting `key`
 

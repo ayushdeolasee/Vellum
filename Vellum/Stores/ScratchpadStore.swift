@@ -103,6 +103,14 @@ final class ScratchpadStore {
     private var isRestoring = false
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
+    /// The in-flight background attachment sweep, if any (see
+    /// `pruneOrphanedAttachments`). Production never waits on it — the sweep is
+    /// best-effort and must not delay a document open — but keeping the handle
+    /// instead of dropping it makes the sweep awaitable, so a test can join it
+    /// rather than race it. A fire-and-forget sweep is what made the rekey
+    /// coverage flake (#100): it deleted the very attachment the test was about
+    /// to assert on, whenever the background task won.
+    @ObservationIgnored private(set) var attachmentSweepTask: Task<Void, Never>?
 
     /// Capture the note and every referenced attachment before clearing. If any
     /// referenced byte cannot be read, fail closed: leaving the note untouched
@@ -413,7 +421,7 @@ final class ScratchpadStore {
         // would be deleted out from under the note. Collect only against files
         // that already existed when the snapshot was taken.
         let referencedAsOf = Date()
-        Task.detached(priority: .utility) {
+        attachmentSweepTask = Task.detached(priority: .utility) {
             ScratchpadAttachmentStore.collectGarbage(
                 in: dir, referencedIds: referenced, referencedAsOf: referencedAsOf)
         }
