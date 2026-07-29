@@ -44,6 +44,11 @@ struct VellumCommands: Commands {
     /// them go dead whenever Settings or the Help centre is key.
     let appWorkspace: WorkspaceStore
 
+    /// Modifier for the ⌘1…⌘9 tab-switching commands in the Navigate menu.
+    /// Named so the inspector panel commands, which reuse the digits, can be
+    /// checked against it rather than against a remembered value.
+    static let tabShortcutModifiers: EventModifiers = .command
+
     // MARK: Availability (drives menu validation)
 
     private var hasFocus: Bool { focus != nil }
@@ -153,6 +158,35 @@ struct VellumCommands: Commands {
             .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(!hasDocument)
 
+            // One command per inspector panel, so the switcher is reachable
+            // from the keyboard (issue #101). Each reveals its panel, opening
+            // the inspector if it is closed — see `revealSidebarTab`. Gated on
+            // a document for the same reason the toggle above is: without one
+            // there is no inspector to put a panel in.
+            //
+            // The icon slot carries a checkmark for the current panel, the way
+            // the switcher's own compact menu marks it: these three are a
+            // mutually exclusive choice, and a menu that offers one without
+            // showing which is already taken makes the user open the inspector
+            // to find out.
+            ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
+                Button {
+                    workspace?.revealSidebarTab(tab)
+                } label: {
+                    Label {
+                        Text("Show \(tab.title)")
+                    } icon: {
+                        Image(
+                            systemName: workspace?.sidebarTab == tab
+                                ? "checkmark" : tab.systemImage)
+                    }
+                }
+                .keyboardShortcut(
+                    KeyEquivalent(tab.shortcutDigit),
+                    modifiers: WorkspaceStore.SidebarTab.shortcutModifiers)
+                .disabled(!hasDocument)
+            }
+
             Divider()
 
             // Split shortcuts avoid the arrow keys, which ⌘⌥↑/↓ already use for
@@ -218,11 +252,14 @@ struct VellumCommands: Commands {
 
             Divider()
 
-            // Tab switching ⌘1…⌘9.
+            // Tab switching ⌘1…⌘9. The modifier is named because the inspector
+            // panel commands (View menu) use the same digits and must not
+            // collide with it — `InspectorTabSwitcherTests` compares the two.
             ForEach(1...9, id: \.self) { number in
                 Button(tabTitle(index: number - 1)) { activateTab(index: number - 1) }
                     .keyboardShortcut(
-                        KeyEquivalent(Character("\(number)")), modifiers: .command)
+                        KeyEquivalent(Character("\(number)")),
+                        modifiers: VellumCommands.tabShortcutModifiers)
                     .disabled(!tabExists(index: number - 1))
             }
         }
