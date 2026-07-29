@@ -68,11 +68,13 @@ final class OpenAIClient {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
             let bytes = try await openStream(request)
-            let turn = try await Self.consumeTurn(bytes, onEvent: onEvent)
+            let turn = try await Self.consumeTurn(
+                bytes, provider: "OpenAI", throwsOnUnexpectedIncomplete: true, onEvent: onEvent)
 
             // The gate is the only route from a streamed turn into the tool
             // loop, so a truncated response cannot reach `toolEngine.run` (#107).
-            switch try Self.turnOutcome(turn, provider: "OpenAI") {
+            switch try Self.turnOutcome(
+                turn, provider: "OpenAI", hasPriorActions: !actionResults.isEmpty) {
             case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             case .runTools(let queued):
@@ -117,8 +119,21 @@ final class OpenAIClient {
     /// Consume one Responses SSE stream into a `StreamedTurn`, forwarding text
     /// deltas live. Generic over the byte source so the loop can be driven from
     /// an SSE fixture in tests instead of a network response.
+    ///
+    /// Shared by both Responses-API clients rather than copied into each. #107
+    /// existed because this logic lived in two places and one copy was wrong, so
+    /// the two remaining differences are parameters — a visible argument at the
+    /// call site — instead of a divergent second copy that can drift again.
+    ///
+    /// `throwsOnUnexpectedIncomplete` is the ChatGPT/Codex difference: that
+    /// backend's `response.incomplete` reasons are left to finalize silently,
+    /// which is the behaviour that client has always had. Preserved as-is here,
+    /// not endorsed — whether Codex should surface a content-filter cutoff the
+    /// way the direct client does is its own question, not this change's.
     static func consumeTurn<Bytes: AsyncSequence>(
         _ bytes: Bytes,
+        provider: String,
+        throwsOnUnexpectedIncomplete: Bool,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> StreamedTurn where Bytes.Element == UInt8 {
         var turn = StreamedTurn()
@@ -152,13 +167,13 @@ final class OpenAIClient {
                 let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
                 if reason == "max_output_tokens" {
                     turn.hitTokenLimit = true
-                } else {
+                } else if throwsOnUnexpectedIncomplete {
                     throw AiClientError.message(incompleteMessage(reason: reason ?? "unknown"))
                 }
             case "response.failed", "error":
                 let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                     ?? (object["message"] as? String)
-                throw AiClientError.message(message ?? "OpenAI streaming failed.")
+                throw AiClientError.message(message ?? "\(provider) streaming failed.")
             default:
                 break
             }
@@ -182,20 +197,35 @@ final class OpenAIClient {
     /// fire a whole further request off the back of a response the budget
     /// already stopped — spending more tokens at exactly the moment the cap said
     /// to stop (#107). So once the limit is hit the queue is dropped unrun and
-    /// the turn ends through the same truncation surface the no-calls path has
-    /// always used: partial text plus a visible note, or — when nothing streamed
-    /// at all — the "try a lower thinking mode" error. That error now also
-    /// reaches a truncated turn that queued calls, which is deliberate: the
-    /// alternative is silently spending the budget the user just exceeded.
-    static func turnOutcome(_ turn: StreamedTurn, provider: String) throws -> TurnOutcome {
+    /// the turn ends through the truncation surface the no-calls path has always
+    /// used: the partial text plus a visible note.
+    ///
+    /// `hasPriorActions` is what keeps stopping from becoming erasing. When the
+    /// cutoff leaves no text at all there is nothing to show, and the no-calls
+    /// path has always thrown — but throwing discards `actionResults` from
+    /// EARLIER turns of the same request, and the store's failure path drops the
+    /// tool trace with them. Tools that already navigated the document or added
+    /// a note would keep their effects while vanishing from the transcript. A
+    /// reasoning model that spends its whole budget thinking and emits one
+    /// function call is exactly this shape, so it is not an edge case. When
+    /// earlier turns did real work the request therefore ends with a note naming
+    /// the cutoff and keeps their results; only a request that produced nothing
+    /// at all is worth failing outright, where "try a lower thinking mode" is
+    /// the actionable thing to say.
+    static func turnOutcome(
+        _ turn: StreamedTurn, provider: String, hasPriorActions: Bool
+    ) throws -> TurnOutcome {
         guard turn.hitTokenLimit else {
             return turn.calls.isEmpty ? .finish(reply: turn.text) : .runTools(turn.calls)
         }
-        guard !turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AiClientError.message(
-                "\(provider) hit the output-token limit before producing any text. Try a lower thinking mode.")
+        guard turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .finish(reply: turn.text + "\n\n_(reply truncated at the output-token limit)_")
         }
-        return .finish(reply: turn.text + "\n\n_(reply truncated at the output-token limit)_")
+        guard !hasPriorActions else {
+            return .finish(reply: "_(stopped at the output-token limit before answering — try a lower thinking mode)_")
+        }
+        throw AiClientError.message(
+            "\(provider) hit the output-token limit before producing any text. Try a lower thinking mode.")
     }
 
     /// Whether `model` takes a `reasoning` field at all. Everything else rejects

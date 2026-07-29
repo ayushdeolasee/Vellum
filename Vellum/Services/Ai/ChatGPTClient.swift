@@ -77,40 +77,17 @@ final class ChatGPTClient {
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
-            // Kept as its own loop rather than reusing `OpenAIClient.consumeTurn`:
-            // the Codex backend's `response.incomplete` carries reasons this
-            // client deliberately does not turn into errors, and its stream
-            // failure text names ChatGPT.
-            var turn = OpenAIClient.StreamedTurn()
-            for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload),
-                      let type = object["type"] as? String else { continue }
-                switch type {
-                case "response.output_text.delta":
-                    if let delta = object["delta"] as? String, !delta.isEmpty {
-                        turn.text += delta
-                        onEvent(.textDelta(delta))
-                    }
-                case "response.output_item.done":
-                    if let item = object["item"] as? [String: Any],
-                       item["type"] as? String == "function_call" {
-                        turn.calls.append(item)
-                    }
-                case "response.incomplete":
-                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    if reason == "max_output_tokens" { turn.hitTokenLimit = true }
-                case "response.failed", "error":
-                    let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
-                        ?? (object["message"] as? String)
-                    throw AiClientError.message(message ?? "ChatGPT streaming failed.")
-                default:
-                    break
-                }
-            }
+            // Same parse AND same gate as the direct client. This loop used to be
+            // a second copy of both, which is how #107 came to be fixed in one
+            // client and not the other; the one remaining behavioural difference
+            // is now the `throwsOnUnexpectedIncomplete` argument rather than a
+            // divergent body. A turn cut off at the token limit never runs its
+            // queued calls or starts another turn.
+            let turn = try await OpenAIClient.consumeTurn(
+                bytes, provider: "ChatGPT", throwsOnUnexpectedIncomplete: false, onEvent: onEvent)
 
-            // Same gate as the direct client: a turn cut off at the token limit
-            // never runs its queued calls or starts another turn (#107).
-            switch try OpenAIClient.turnOutcome(turn, provider: "ChatGPT") {
+            switch try OpenAIClient.turnOutcome(
+                turn, provider: "ChatGPT", hasPriorActions: !actionResults.isEmpty) {
             case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             case .runTools(let queued):
