@@ -44,36 +44,13 @@ final class ChatGPTClient {
         onEvent(.status("Thinking"))
 
         for _ in 0..<8 {
-            var body: [String: Any] = [
-                "model": model,
-                "instructions": systemPrompt,
-                "input": input,
-                "tools": Self.functionTools,
-                "tool_choice": "auto",
-                "parallel_tool_calls": true,
-                "store": false,
-                // Prompt caching (PR A.5): a per-session key so the stable prompt
-                // prefix is reused across tool-loop iterations and follow-ups.
-                // NOTE: acceptance by the ChatGPT OAuth (Codex) backend is pending
-                // live verification; drop from this client only if the backend 400s.
-                "prompt_cache_key": "vellum-\(sessionIdAtStart)",
-                "stream": true,
-                // Cost guard: cap the output. Reasoning tokens count against
-                // this budget too, so it stays generous; hitting it is surfaced
-                // via `response.incomplete` below instead of clipping silently.
-                "max_output_tokens": 8192,
-            ]
-            // Reasoning effort on the gpt-5 family. `.auto` omits the field so
-            // the Codex backend applies its own default (the removed codex-CLI
-            // path sent none); explicit modes set it — resolved through the same
-            // per-family table the direct client uses. The Codex slugs name the
-            // same models, so passing the raw value through meant Instant sent
-            // "minimal" to gpt-5.5 (the default here), which is the value #94 is
-            // about: the family rejects it outright.
-            if let effort = OpenAIClient.supportedReasoningEffort(
-                model: model, requested: thinkingMode.openAIEffort) {
-                body["reasoning"] = ["effort": effort]
-            }
+            let body = Self.requestBody(
+                model: model,
+                systemPrompt: systemPrompt,
+                input: input,
+                thinkingMode: thinkingMode,
+                sessionIdAtStart: sessionIdAtStart
+            )
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
@@ -142,6 +119,60 @@ final class ChatGPTClient {
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// Request body for one tool-loop turn.
+    ///
+    /// Reasoning effort on the gpt-5 family: `.auto` omits the field so the
+    /// Codex backend applies its own default (the removed codex-CLI path sent
+    /// none); explicit modes set it — resolved through the same per-family table
+    /// the direct client uses. The Codex slugs name the same models, so passing
+    /// the raw value through meant Instant sent "minimal" to gpt-5.5 (the
+    /// default here), which is the value #94 is about: the family rejects it
+    /// outright.
+    ///
+    /// The output cap is scaled by that same resolved effort through
+    /// `OpenAIClient.maxOutputTokens`. It used to be a flat 8192 for every mode,
+    /// which is the #96 bug: reasoning tokens are billed against
+    /// `max_output_tokens` on the Responses API, so High spent most of one
+    /// shared budget thinking and got the same room for the answer as Instant —
+    /// which is exactly how a long High answer ends up truncated. Every slug
+    /// this client ships is a gpt-5 variant, so `isReasoningModel` is true for
+    /// all of them today; it is still passed rather than assumed so a future
+    /// non-reasoning slug keeps the flat cap.
+    static func requestBody(
+        model: String,
+        systemPrompt: String,
+        input: [[String: Any]],
+        thinkingMode: AiThinkingMode,
+        sessionIdAtStart: String
+    ) -> [String: Any] {
+        let effort = OpenAIClient.supportedReasoningEffort(
+            model: model, requested: thinkingMode.openAIEffort)
+        var body: [String: Any] = [
+            "model": model,
+            "instructions": systemPrompt,
+            "input": input,
+            "tools": Self.functionTools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "store": false,
+            // Prompt caching (PR A.5): a per-session key so the stable prompt
+            // prefix is reused across tool-loop iterations and follow-ups.
+            // NOTE: acceptance by the ChatGPT OAuth (Codex) backend is pending
+            // live verification; drop from this client only if the backend 400s.
+            "prompt_cache_key": "vellum-\(sessionIdAtStart)",
+            "stream": true,
+            // Cost guard: cap the output, scaled to the thinking mode. Hitting
+            // it is surfaced via `response.incomplete` instead of clipping
+            // silently.
+            "max_output_tokens": OpenAIClient.maxOutputTokens(
+                forEffort: effort, reasoning: OpenAIClient.isReasoningModel(model)),
+        ]
+        if let effort {
+            body["reasoning"] = ["effort": effort]
+        }
+        return body
     }
 
     /// Builds a Responses request with fresh OAuth credentials and the CLI's

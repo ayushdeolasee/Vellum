@@ -821,6 +821,224 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .openrouter, model: "vendor/unknown", catalog: nil))
     }
 
+    // MARK: - §5 Gemini thinking levels & output budget (#96)
+
+    /// `maxOutputTokens` for the mode/model, read off the body that actually
+    /// ships rather than the helper, so a wiring mistake in `generationConfig`
+    /// fails these too.
+    private static func geminiBody(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        GeminiClient.requestBody(
+            systemPrompt: "system",
+            contents: [["role": "user", "parts": [["text": "hi"]]]],
+            generationConfig: GeminiClient.generationConfig(for: mode, model: model)
+        )
+    }
+
+    private static func geminiConfig(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        (geminiBody(mode, model)["generation_config"] as? [String: Any]) ?? [:]
+    }
+
+    private static func geminiCap(_ mode: AiThinkingMode, _ model: String) -> Int? {
+        geminiConfig(mode, model)["maxOutputTokens"] as? Int
+    }
+
+    private static func geminiLevel(_ mode: AiThinkingMode, _ model: String) -> String? {
+        (geminiConfig(mode, model)["thinkingConfig"] as? [String: Any])?["thinkingLevel"] as? String
+    }
+
+    private static func geminiBudget(_ mode: AiThinkingMode, _ model: String) -> Int? {
+        (geminiConfig(mode, model)["thinkingConfig"] as? [String: Any])?["thinkingBudget"] as? Int
+    }
+
+    /// The #96 regression: `.auto` sends no thinkingConfig on every family but
+    /// 2.5 flash, so the server picks the level — and it documents that pick as
+    /// `high` across the Gemini 3 line and dynamic on 2.5. The cap stayed at the
+    /// flat 8192 base anyway, leaving zero headroom for reasoning the model was
+    /// going to do regardless, on the app's default provider at its default
+    /// thinking mode.
+    func testGeminiAutoBudgetsForTheThinkingTheServerWillDo() {
+        for model in ["gemini-3.1-flash-lite-preview", "gemini-3-pro-preview",
+                      "gemini-3-flash-preview", "gemini-2.5-pro"] {
+            XCTAssertNil(
+                Self.geminiConfig(.auto, model)["thinkingConfig"],
+                "Auto must leave the level to the server on \(model)")
+            XCTAssertEqual(
+                Self.geminiCap(.auto, model), 32768,
+                "Auto must budget for server-chosen thinking on \(model)")
+        }
+        // A family with no row still gets the reserve: unknown ids are the case
+        // that produced #94, and a ceiling costs nothing until it is spent.
+        XCTAssertEqual(Self.geminiCap(.auto, "gemini-9-ultra"), 32768)
+    }
+
+    /// Auto on 2.5 flash still disables thinking outright, so its budget stays
+    /// at the base — the mode sends `thinkingBudget: 0` and there is nothing to
+    /// reserve for. Unchanged by #96, and pinned so the new Auto branch can't
+    /// quietly widen it.
+    func testGeminiAutoKeepsTheBaseBudgetWhereThinkingIsDisabled() {
+        for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"] {
+            XCTAssertEqual(Self.geminiBudget(.auto, model), 0)
+            XCTAssertEqual(Self.geminiCap(.auto, model), 8192)
+        }
+    }
+
+    /// The 2.0 flash models and the 1.5 line don't think at all *and* cap output
+    /// at 8192 tokens total, so handing them a reasoning reserve would ask for
+    /// more than the model can return. Every mode stays at the base.
+    func testGeminiNonThinkingFamiliesNeverExceedTheirOutputLimit() {
+        for model in ["gemini-2.0-flash", "gemini-2.0-flash-lite",
+                      "gemini-1.5-pro", "gemini-1.5-flash"] {
+            for mode in AiThinkingMode.allCases {
+                XCTAssertNil(Self.geminiConfig(mode, model)["thinkingConfig"], "\(model)/\(mode)")
+                XCTAssertEqual(Self.geminiCap(mode, model), 8192, "\(model)/\(mode)")
+            }
+        }
+    }
+
+    /// The `contains("gemini-3-pro")` bug: `gemini-3.1-pro` does not contain
+    /// that substring, so it fell into the branch that sends `minimal` — a level
+    /// the 3.1 Pro row doesn't have, which 400s the request the way #94 did.
+    /// Google's rows: 3-pro is low/high, 3.1-pro adds medium but still has no
+    /// minimal, and the flash line takes the full ladder.
+    func testGeminiThinkingLevelRowsMatchTheDocumentedFamilies() {
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3-pro-preview"),
+                       ["low", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.1-pro-preview"),
+                       ["low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3-flash-preview"),
+                       ["minimal", "low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.1-flash-lite-preview"),
+                       ["minimal", "low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.5-flash"),
+                       ["minimal", "low", "medium", "high"])
+        // Off the 3 line there is no level vocabulary at all.
+        XCTAssertTrue(GeminiClient.supportedThinkingLevels(model: "gemini-2.5-pro").isEmpty)
+        // An unrecognized 3.x id gets the intersection of every row above, so it
+        // can never be sent a level some future Pro release rejects.
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.9-ultra"),
+                       ["low", "high"])
+    }
+
+    /// The end-to-end shape of the bug above, asserted on the request body: no
+    /// shipped Gemini id may ever be sent a level outside its own row.
+    func testNoShippedGeminiModelIsSentAnUnsupportedLevel() {
+        for model in AiModelCatalog.gemini {
+            let supported = GeminiClient.supportedThinkingLevels(model: model)
+            for mode in AiThinkingMode.allCases {
+                guard let level = Self.geminiLevel(mode, model) else { continue }
+                XCTAssertTrue(
+                    supported.contains(level),
+                    "\(model) must not be sent thinkingLevel \(level) for \(mode)")
+            }
+        }
+        // Specifically: Instant on a Pro row rounds to `low` instead of sending
+        // the `minimal` that row doesn't have.
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3.1-pro-preview"), "low")
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3-pro-preview"), "low")
+        // …while a flash row, which does have it, still gets `minimal`.
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3.1-flash-lite-preview"), "minimal")
+    }
+
+    /// Ties round up on the Gemini ladder: 3-pro offers only low/high, and
+    /// Medium sits equidistant between them. Rounding down would demote a
+    /// Medium request to the weakest setting the model has.
+    func testGeminiLevelTiesRoundUp() {
+        XCTAssertEqual(Self.geminiLevel(.medium, "gemini-3-pro-preview"), "high")
+        // 3.1-pro has a real `medium`, so nothing to round.
+        XCTAssertEqual(Self.geminiLevel(.medium, "gemini-3.1-pro-preview"), "medium")
+    }
+
+    /// Explicit modes budget off the level actually sent, so the cap tracks the
+    /// resolved level rather than the requested one.
+    func testGeminiExplicitModeBudgetsTrackTheResolvedLevel() {
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-3.1-flash-lite-preview"), 8192)
+        XCTAssertEqual(Self.geminiCap(.low, "gemini-3.1-flash-lite-preview"), 16384)
+        XCTAssertEqual(Self.geminiCap(.medium, "gemini-3.1-flash-lite-preview"), 24576)
+        XCTAssertEqual(Self.geminiCap(.high, "gemini-3.1-flash-lite-preview"), 32768)
+        // Instant on 3-pro resolves up to `low`, and the cap follows it up too.
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-3-pro-preview"), 16384)
+        // 2.5 Pro cannot disable thinking; its floor is the documented 128.
+        XCTAssertEqual(Self.geminiBudget(.instant, "gemini-2.5-pro"), 128)
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-2.5-pro"), 8320)
+    }
+
+    /// Every cap the shipped catalog can produce stays inside the model's own
+    /// output limit: 65536 on 2.5 and 3.x, 8192 on the 2.0 and 1.5 families.
+    func testGeminiCapsStayInsideDocumentedOutputLimits() {
+        for model in AiModelCatalog.gemini {
+            let limit = GeminiClient.thinksWhenUnconfigured(model: model) ? 65536 : 8192
+            for mode in AiThinkingMode.allCases {
+                let cap = Self.geminiCap(mode, model) ?? 0
+                XCTAssertLessThanOrEqual(cap, limit, "\(model)/\(mode) asks for more than it can return")
+                XCTAssertGreaterThan(cap, 0, "\(model)/\(mode)")
+            }
+        }
+    }
+
+    /// The body still carries everything the turn needs; `generation_config` is
+    /// the only part #96 reshapes.
+    func testGeminiRequestBodyKeepsItsTurnPayload() throws {
+        let body = Self.geminiBody(.high, "gemini-3-flash-preview")
+        let instruction = try XCTUnwrap(body["system_instruction"] as? [String: Any])
+        XCTAssertEqual(((instruction["parts"] as? [[String: Any]])?.first?["text"]) as? String, "system")
+        XCTAssertNotNil(body["contents"])
+        XCTAssertNotNil(body["tools"])
+        XCTAssertEqual(Self.geminiConfig(.high, "gemini-3-flash-preview")["temperature"] as? Double, 0.2)
+    }
+
+    // MARK: - §5 ChatGPT output budget (#96)
+
+    private static func chatGPTBody(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        ChatGPTClient.requestBody(
+            model: model, systemPrompt: "system", input: [], thinkingMode: mode,
+            sessionIdAtStart: "tab-1")
+    }
+
+    /// The #96 regression: every mode got a flat 8192, so High spent most of one
+    /// shared budget on reasoning tokens and had no more room left for the
+    /// answer than Instant did. The cap now scales through the same table the
+    /// direct OpenAI client uses.
+    func testChatGPTOutputBudgetScalesWithThinkingMode() {
+        XCTAssertEqual(Self.chatGPTBody(.instant, "gpt-5.5")["max_output_tokens"] as? Int, 4096)
+        XCTAssertEqual(Self.chatGPTBody(.low, "gpt-5.5")["max_output_tokens"] as? Int, 8192)
+        XCTAssertEqual(Self.chatGPTBody(.medium, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
+        XCTAssertEqual(Self.chatGPTBody(.high, "gpt-5.5")["max_output_tokens"] as? Int, 32768)
+        // Auto omits the effort, so the server picks; budget it mid-range for
+        // the same reason #95 did on the direct client.
+        XCTAssertEqual(Self.chatGPTBody(.auto, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
+        XCTAssertNil(Self.chatGPTBody(.auto, "gpt-5.5")["reasoning"])
+    }
+
+    /// The cap is budgeted off the effort *resolved* for the model, not the one
+    /// requested: gpt-5.5 has no "minimal", so Instant becomes "none"; the codex
+    /// slug has neither "none" nor "minimal", so Instant becomes "low" — and
+    /// each cap follows the effort that is actually sent.
+    func testChatGPTBudgetFollowsTheResolvedEffort() {
+        for model in AiModelCatalog.chatgpt {
+            let body = Self.chatGPTBody(.instant, model)
+            let effort = (body["reasoning"] as? [String: Any])?["effort"] as? String
+            XCTAssertEqual(
+                body["max_output_tokens"] as? Int,
+                OpenAIClient.maxOutputTokens(forEffort: effort, reasoning: true),
+                "\(model) budget must match the effort it sends")
+        }
+        XCTAssertEqual(
+            (Self.chatGPTBody(.instant, "gpt-5.3-codex")["reasoning"] as? [String: Any])?["effort"] as? String,
+            "low")
+        XCTAssertEqual(Self.chatGPTBody(.instant, "gpt-5.3-codex")["max_output_tokens"] as? Int, 8192)
+        XCTAssertEqual(Self.chatGPTBody(.instant, "gpt-5.5")["max_output_tokens"] as? Int, 4096)
+    }
+
+    /// The rest of the ChatGPT turn payload is untouched by #96.
+    func testChatGPTRequestBodyKeepsItsTurnPayload() {
+        let body = Self.chatGPTBody(.medium, "gpt-5.5")
+        XCTAssertEqual(body["prompt_cache_key"] as? String, "vellum-tab-1")
+        XCTAssertEqual(body["stream"] as? Bool, true)
+        XCTAssertEqual(body["store"] as? Bool, false)
+        XCTAssertEqual(body["instructions"] as? String, "system")
+        XCTAssertNotNil(body["tools"])
+    }
+
     /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file.
     private static func bitmap(width: Int, height: Int, alpha: Bool) -> Data {
         let rep = NSBitmapImageRep(
