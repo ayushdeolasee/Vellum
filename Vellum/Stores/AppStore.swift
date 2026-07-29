@@ -884,6 +884,42 @@ final class AppStore {
         return target
     }
 
+    /// Put an unplaced note draft back on the queue and re-arm placement, so
+    /// the next click on the page offers the same text again.
+    ///
+    /// Issue #92: the web viewer's placement click only opens a composer — the
+    /// note is not written until the user submits — so between those two steps
+    /// the composer holds the *only* copy of a queued AI reply
+    /// (`consumePendingNoteContent` already cleared the store). A stray click
+    /// or a page scroll unmounts that composer, and the reply went with it. The
+    /// PDF viewer has no such window: `PdfSelectionBridge` writes the note on
+    /// the placement click itself. Handing the draft back here closes the gap —
+    /// a misclick now costs one more click instead of the whole reply.
+    ///
+    /// Scoped to the originating tab rather than the active one: the dismissal
+    /// may be the *reason* the tab is going away (switching tabs unmounts the
+    /// composer), and note-placement state travels with the tab anyway, so the
+    /// draft is waiting when the user comes back. A late message from a tab
+    /// that has since been closed lands nowhere.
+    ///
+    /// Empty (or whitespace-only) drafts are dropped — a plain note-tool
+    /// placement the user clicked away from has nothing worth preserving, and
+    /// re-arming note mode for it would be friction with no payoff.
+    func restorePendingNote(_ content: String, forSessionId sessionId: String) {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        updateTab(sessionId) {
+            $0.mode = .note
+            $0.pendingNoteContent = content
+            $0.regionCaptureTarget = nil
+        }
+        // Mirror onto the pane's own state only while this tab is the one on
+        // screen; otherwise `applyActiveState` picks it up on the way back in.
+        guard activeTabId == sessionId else { return }
+        mode = .note
+        pendingNoteContent = content
+        regionCaptureTarget = .ai
+    }
+
     /// Consumed by the viewer when it places a note; nil once used.
     func consumePendingNoteContent() -> String? {
         let content = pendingNoteContent
