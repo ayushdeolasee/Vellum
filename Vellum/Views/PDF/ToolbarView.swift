@@ -22,15 +22,20 @@ struct VellumToolbar: ToolbarContent {
     // Low-use actions no longer each claim a glass circle, which is what
     // produced the "pill soup".
     var body: some ToolbarContent {
-        // LEADING — navigation. ControlGroup merges related buttons into one
-        // shared glass capsule; bare buttons in a group render as zero-gap
-        // squished circles on macOS 26.
+        // LEADING — navigation. Buttons placed directly in the group share one
+        // glass pod on macOS 26.
+        //
+        // Do NOT reach for ControlGroup to merge them: inside toolbar content
+        // its children escape `.navigation` altogether and reflow into the
+        // trailing region, which is what stacked the page and zoom buttons on
+        // top of the bookmark/note/inspector run as overlapping circles.
+        // ToolbarSpacer is likewise a no-op in this region (it does separate
+        // pods in the trailing region below), so the exact pod boundaries here
+        // are the system's to pick.
         ToolbarItemGroup(placement: .navigation) {
             if hasDocument {
                 if isWeb {
-                    ControlGroup {
-                        WebHistoryButtons()
-                    }
+                    WebHistoryButtons()
                 } else {
                     PageControls()
                 }
@@ -41,9 +46,7 @@ struct VellumToolbar: ToolbarContent {
         // title and the trailing pod never move between modes.
         if hasDocument, !isWeb {
             ToolbarItemGroup(placement: .navigation) {
-                ControlGroup {
-                    ZoomControls()
-                }
+                ZoomControls()
             }
         }
 
@@ -168,25 +171,23 @@ private struct PageControls: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        ControlGroup {
-            Button {
-                appStore.goToPage(appStore.currentPage - 1)
-            } label: {
-                Label("Previous page", systemImage: "chevron.left")
-            }
-            .disabled(appStore.currentPage <= 1)
-            .help("Previous page — or type a page number in the field")
-            .accessibilityIdentifier("toolbar.previousPage")
-
-            Button {
-                appStore.goToPage(appStore.currentPage + 1)
-            } label: {
-                Label("Next page", systemImage: "chevron.right")
-            }
-            .disabled(appStore.currentPage >= appStore.numPages)
-            .help("Next page — or type a page number in the field")
-            .accessibilityIdentifier("toolbar.nextPage")
+        Button {
+            appStore.goToPage(appStore.currentPage - 1)
+        } label: {
+            Label("Previous page", systemImage: "chevron.left")
         }
+        .disabled(appStore.currentPage <= 1)
+        .help("Previous page — or type a page number in the field")
+        .accessibilityIdentifier("toolbar.previousPage")
+
+        Button {
+            appStore.goToPage(appStore.currentPage + 1)
+        } label: {
+            Label("Next page", systemImage: "chevron.right")
+        }
+        .disabled(appStore.currentPage >= appStore.numPages)
+        .help("Next page — or type a page number in the field")
+        .accessibilityIdentifier("toolbar.nextPage")
 
         HStack(spacing: 5) {
             TextField("", text: $pageInput)
