@@ -46,7 +46,14 @@ enum HomeSearchRemoval: Hashable, Sendable {
         }
     }
 
-    /// Confirm-button wording. Repeating the menu label keeps the dialog's
+    /// Context-menu wording. The trailing ellipsis on a gated action is the
+    /// platform's one signal that this item stops to ask while the item next
+    /// to it does not — the same distinction Finder draws between "Move to
+    /// Trash" and "Delete Immediately…".
+    var menuLabel: String { requiresConfirmation ? "\(label)…" : label }
+
+    /// Confirm-button wording. Repeating the menu label (without the ellipsis,
+    /// which belongs only to the item that opens a dialog) keeps the dialog's
     /// consequence identical to the action the user reached for.
     var confirmLabel: String { label }
 
@@ -66,8 +73,13 @@ enum HomeSearchRemoval: Hashable, Sendable {
         switch self {
         case .recent: nil
         case .saved:
-            "The offline copy is deleted from this Mac. Highlights and notes are kept, "
-                + "and the page can be saved again next time it is opened."
+            // Not "from this Mac": `WebLibrary.removeLocalSnapshots` deletes
+            // through `WebICloud.removeItem`, and the web store can live in
+            // iCloud Drive — in which case the offline copy leaves every
+            // device. A confirmation is the one place that must not understate
+            // what it is about to do.
+            "The offline copy is deleted here, and from iCloud if your library syncs there. "
+                + "Highlights and notes are kept, but saving the page again needs a connection."
         }
     }
 }
@@ -75,13 +87,12 @@ enum HomeSearchRemoval: Hashable, Sendable {
 /// A "Remove from Recent" that can be put back, for session-scoped Undo — the
 /// pattern PR #79 introduced for clear-conversation and clear-scratchpad.
 ///
-/// Recents are an ordered `UserDefaults` list, so undo is exact: the entry goes
-/// back at the index it held, with the `openedAt` it had. `.saved` has no
-/// counterpart here on purpose — its removal destroys files, which is why it
-/// carries a confirmation instead.
+/// Recents are a `UserDefaults` list sorted newest-first, so undo is exact: the
+/// entry goes back with the `openedAt` it had, which is also what decides where
+/// it lands. `.saved` has no counterpart here on purpose — its removal destroys
+/// files, which is why it carries a confirmation instead.
 struct HomeRecentRemovalTransaction: Equatable, Sendable {
     var entry: RecentDocument
-    var index: Int
 }
 
 @MainActor
@@ -256,64 +267,64 @@ final class HomeSearchStore {
 
     // MARK: - Mutating the library
 
-    /// Forget a result. Recents drop out of the recents list; saved webpages
-    /// are un-saved (their annotations survive, exactly as the old welcome
-    /// screen's "Remove from Saved" did). Library documents are not removable
-    /// here — deleting a document's notes belongs to Settings ▸ Storage.
-    /// Returns the transaction needed to undo a `.recent` removal, or nil when
-    /// there is nothing to offer Undo for (a `.saved` removal, or a recents
-    /// entry that was already gone). The caller registers it with the window's
-    /// `UndoManager`; see `WelcomeScreen.registerRecentRemovalUndo`.
-    @discardableResult
-    func remove(
-        _ item: HomeSearchItem, from target: HomeSearchRemoval
-    ) async -> HomeRecentRemovalTransaction? {
-        var transaction: HomeRecentRemovalTransaction?
-        switch target {
-        case .recent:
-            let path: String
-            if case .file(_, let recordedPath) = item.target {
-                path = recordedPath
-            } else {
-                path = item.target.openKey
-            }
-            // Read the entry and its position BEFORE the write — that pair is
-            // the whole of what Undo needs to put the row back untouched.
-            if let index = RecentFilesService.getRecent().firstIndex(where: { $0.pdfPath == path }) {
-                transaction = HomeRecentRemovalTransaction(
-                    entry: RecentFilesService.getRecent()[index], index: index)
-            }
-            _ = RecentFilesService.remove(path: path)
-        case .saved:
-            let url = item.target.openKey
-            // Blocking disk work — same off-main hop `WebSessionBackend` uses.
-            await Task.detached(priority: .userInitiated) {
-                try? WebLibrary.removeSaved(rawUrl: url)
-            }.value
+    /// Drop a result from the recents list. The document, its notes and its
+    /// saved copy are all untouched.
+    ///
+    /// Synchronous, and deliberately does NOT reload: the caller needs the
+    /// transaction in hand to register Undo *before* the corpus rebuild, which
+    /// is a recents read plus a stat per saved page plus a documents-directory
+    /// walk. Registering after it would leave a window in which ⌘Z popped
+    /// whatever was on the window's undo stack beforehand. Callers follow up
+    /// with `load()`.
+    ///
+    /// Returns the transaction needed to undo this, or nil when the entry was
+    /// already gone and there is nothing to offer Undo for.
+    func removeFromRecent(_ item: HomeSearchItem) -> HomeRecentRemovalTransaction? {
+        let path: String
+        if case .file(_, let recordedPath) = item.target {
+            path = recordedPath
+        } else {
+            path = item.target.openKey
         }
+        // Read the entry BEFORE the write — it is the whole of what Undo needs
+        // to put the row back untouched.
+        let entry = RecentFilesService.getRecent().first { $0.pdfPath == path }
+        _ = RecentFilesService.remove(path: path)
         if selectedId == item.id { selectedId = nil }
-        await load()
-        return transaction
+        return entry.map(HomeRecentRemovalTransaction.init)
     }
 
-    /// Put a removed recent back at its original position. Returns false when
-    /// the removal has been overtaken — the user re-opened the document, so it
-    /// is in the list again and there is nothing to restore. The caller uses
-    /// that to stop the undo/redo chain instead of duplicating the row.
+    /// Un-save a webpage: the record and its annotations survive, the offline
+    /// snapshot does not. There is no undo for that, which is why the caller
+    /// confirms first — see `HomeSearchRemoval.requiresConfirmation`.
+    func removeFromSaved(_ item: HomeSearchItem) async {
+        let url = item.target.openKey
+        // Blocking disk work — same off-main hop `WebSessionBackend` uses.
+        await Task.detached(priority: .userInitiated) {
+            try? WebLibrary.removeSaved(rawUrl: url)
+        }.value
+        if selectedId == item.id { selectedId = nil }
+        await load()
+    }
+
+    /// Put a removed recent back. Returns false when the removal has been
+    /// overtaken — the user re-opened the document, so it is in the list again
+    /// and there is nothing to restore. The caller uses that to stop the
+    /// undo/redo chain instead of duplicating the row.
     @discardableResult
     func undoRecentRemoval(_ transaction: HomeRecentRemovalTransaction) -> Bool {
-        guard RecentFilesService.restore(transaction.entry, at: transaction.index) else {
-            return false
-        }
+        guard RecentFilesService.restore(transaction.entry) else { return false }
         Task { await load() }
         return true
     }
 
-    /// Re-apply the removal. Always succeeds against the list as it stands:
-    /// filtering by path is a no-op when the row is already gone.
+    /// Re-apply the removal, but only against the row this transaction
+    /// actually removed — see `RecentFilesService.removeIfUnchanged`. Returns
+    /// false when the row has since been re-opened, which ends the chain
+    /// rather than deleting a document the user has just read.
     @discardableResult
     func redoRecentRemoval(_ transaction: HomeRecentRemovalTransaction) -> Bool {
-        _ = RecentFilesService.remove(path: transaction.entry.pdfPath)
+        guard RecentFilesService.removeIfUnchanged(transaction.entry) else { return false }
         Task { await load() }
         return true
     }
