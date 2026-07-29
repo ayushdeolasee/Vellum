@@ -56,6 +56,28 @@ final class VellumConsistencyUITests: VellumUITestCase {
         XCTAssertEqual(tabs.count, initialTabCount + 1)
     }
 
+    /// `AddWebpageSheet` reads `@Environment(AppStore.self)`, and the `.sheet`
+    /// presenting it was chained AFTER ContentView's `.environment(focused.app)`
+    /// write. Modifiers compose outside-in, so the presentation sat above that
+    /// write, resolved no `AppStore`, and SwiftUI trapped the instant the sheet
+    /// appeared — clicking "Add Webpage" killed the app. Only presenting the
+    /// sheet catches this: it is view-tree wiring with no non-UI seam.
+    func testAddWebpageFromHomePresentsUrlSheet() {
+        let app = makeApp()
+        app.launch()
+
+        let addWebpage = app.buttons["welcome.addWebpage"].firstMatch
+        XCTAssertTrue(addWebpage.waitForExistence(timeout: 8))
+        addWebpage.tap()
+
+        XCTAssertTrue(
+            app.textFields["addWebpage.urlField"].waitForExistence(timeout: 5),
+            "Add Webpage must present its URL sheet, not trap on a missing AppStore")
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "The app must survive presenting the Add Webpage sheet")
+    }
+
     func testCorruptedRestorationRecoversToUsableHome() {
         let app = makeApp(corruptRestoration: true)
         app.launch()

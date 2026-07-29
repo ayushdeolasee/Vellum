@@ -20,6 +20,15 @@ struct ContentView: View {
         // inside WindowChrome's own body would leave the toolbar without an
         // AppStore. Each pane's subtree re-injects its own triple, overriding this.
         WindowChrome(sidebarHovering: $sidebarHovering)
+            // BEFORE the `.environment` writes below, so those writes are applied
+            // OUTSIDE this presentation and the sheet's content inherits them.
+            // Modifiers compose outside-in: a `.sheet` chained *after* an
+            // `.environment` sits above it, so `AddWebpageSheet`'s
+            // `@Environment(AppStore.self)` would find nothing and SwiftUI would
+            // trap the moment the sheet is presented.
+            .sheet(isPresented: $addWebpagePresented) {
+                AddWebpageSheet()
+            }
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
@@ -27,9 +36,6 @@ struct ContentView: View {
             .task { await workspace.restoreFromDisk() }
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
-            }
-            .sheet(isPresented: $addWebpagePresented) {
-                AddWebpageSheet()
             }
             // Commands belong to the main window, not whichever nested
             // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
