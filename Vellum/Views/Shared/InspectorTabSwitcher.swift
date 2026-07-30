@@ -122,20 +122,29 @@ struct InspectorTabSwitcher: View {
                         selection = tab
                     }
                 } label: {
-                    if showTitles {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .labelStyle(.titleAndIcon)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                    } else {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .labelStyle(.iconOnly)
+                    Group {
+                        if showTitles {
+                            Label(tab.title, systemImage: tab.systemImage)
+                                .labelStyle(.titleAndIcon)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                        } else {
+                            Label(tab.title, systemImage: tab.systemImage)
+                                .labelStyle(.iconOnly)
+                        }
                     }
+                    // `.buttonStyle(.plain)` hit-tests a macOS button against
+                    // its label's own rendered content, not against any
+                    // frame/contentShape chained onto the Button itself —
+                    // that outer chain (the previous placement) only affects
+                    // layout. Expanding and shaping the hit target here,
+                    // inside the label, is what actually grows the clickable
+                    // region to the full pill instead of just the glyph.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isSelected ? .primary : .secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
                 .background {
                     if isSelected {
                         Capsule()

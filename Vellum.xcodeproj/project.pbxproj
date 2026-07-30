@@ -43,6 +43,7 @@
 		290AF491B1EFDE622262DCD7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1784468C7F465AAEB5C63E9 /* Models.swift */; };
 		29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E282C555B1B420914134C74 /* WelcomeScreen.swift */; };
 		295053CF2F22E8765D18B315 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */; };
+		29757DBD2CB38B5DF2FA8DE3 /* SecurityScopedBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */; };
 		2A30A8B49C2A710A8CBB0008 /* index.html in Resources */ = {isa = PBXBuildFile; fileRef = 73294273D1991135AD0F100E /* index.html */; };
 		2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */; };
 		2F52BBA445E0EE94526EC6E5 /* editor.bundle.js in Resources */ = {isa = PBXBuildFile; fileRef = 88261ED7614D2528C41ED0E5 /* editor.bundle.js */; };
@@ -248,6 +249,7 @@
 		3E8AC4A486031931558B1541 /* HelpCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpCenterView.swift; sourceTree = "<group>"; };
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
 		3F26F0ACC6F7B4DFEA39EB78 /* HomeSearchEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchEngineTests.swift; sourceTree = "<group>"; };
+		4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScopedBookmark.swift; sourceTree = "<group>"; };
 		43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReferences.swift; sourceTree = "<group>"; };
 		43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageInventory.swift; sourceTree = "<group>"; };
 		460DC0522689EC17EC0D233B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -575,6 +577,7 @@
 				D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */,
 				D82487970E20F6628200C4BE /* KeychainStore.swift */,
 				7E4C07C56943274B9E062A70 /* RecentFilesService.swift */,
+				4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */,
 				7280818785023514C87C04C9 /* SessionService.swift */,
 				4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */,
 				4E69330A4F460353FBCB25AB /* TabResidency.swift */,
@@ -915,7 +918,17 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					15BDAAE9AA57BC95F9AD6FBB = {
+						DevelopmentTeam = 9DCG97VASG;
+						ProvisioningStyle = Automatic;
+					};
+					65E775B7223FE8550067535A = {
+						DevelopmentTeam = 9DCG97VASG;
+						ProvisioningStyle = Automatic;
+					};
 					F0B1727997018498FA5D9430 = {
+						DevelopmentTeam = 9DCG97VASG;
+						ProvisioningStyle = Automatic;
 						TestTargetID = 15BDAAE9AA57BC95F9AD6FBB;
 					};
 				};
@@ -1073,6 +1086,7 @@
 				016BFAA281D7CA51CCED4B92 /* ScratchpadPanel.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,
 				74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */,
+				29757DBD2CB38B5DF2FA8DE3 /* SecurityScopedBookmark.swift in Sources */,
 				9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */,
 				CCD31E1E8A71BB0E987EC90B /* SelectionPopover.swift in Sources */,
 				47362B3C5DF753594BDEC3E9 /* SentReferenceChips.swift in Sources */,
@@ -1218,11 +1232,12 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 9DCG97VASG;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -1401,11 +1416,12 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 9DCG97VASG;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -1484,11 +1500,12 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 9DCG97VASG;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
