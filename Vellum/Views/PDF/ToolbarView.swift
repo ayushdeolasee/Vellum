@@ -107,6 +107,7 @@ struct AddWebpageSheet: View {
                 .font(.system(size: 13))
                 .focused($fieldFocused)
                 .onSubmit(submit)
+                .accessibilityIdentifier("addWebpage.urlField")
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
