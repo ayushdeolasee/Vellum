@@ -320,6 +320,19 @@ final class ScratchpadStore {
             showWarning("Couldn't save that image to the scratchpad. Please try again.")
             return
         }
+        // The bytes exist now, but the reference below only reaches the note
+        // after a round trip through the editor's WebView. A debounced save
+        // firing inside that window sees a note that genuinely does not mention
+        // this attachment and would collect it (issue #105). Claim it before
+        // opening the window, not after (`insertMarkdownHandler` can hand the
+        // markdown straight to a ready editor, so "after" can already be late).
+        //
+        // The bytes land one line above this claim rather than atomically with
+        // it. Nothing can sweep in between: this is main-actor code with no
+        // suspension point, and the only concurrent sweeper —
+        // `pruneOrphanedAttachments` — always passes `referencedAsOf`, whose
+        // cutoff (#104) covers exactly that gap.
+        ScratchpadAttachmentStore.markPending(id)
         // Keep the alt text single-line and free of the `]` that would close it.
         let safeLabel = label
             .replacingOccurrences(of: "\n", with: " ")
