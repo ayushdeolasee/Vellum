@@ -58,6 +58,7 @@ struct ThemePalette: Sendable {
     let accentForeground: Color
     let destructive: Color
     let destructiveForeground: Color
+    let success: Color
     let gold: Color
     let highlightYellow: Color
     let highlightGreen: Color
@@ -82,6 +83,7 @@ struct ThemePalette: Sendable {
         accentForeground: Color(hex: "#211d18"),
         destructive: Color(hex: "#b23a30"),
         destructiveForeground: Color(hex: "#ffffff"),
+        success: Color(hex: "#2f7d46"),
         gold: Color(hex: "#a9791b"),
         highlightYellow: Color(hex: "#fde68a"),
         highlightGreen: Color(hex: "#b9efc8"),
@@ -107,6 +109,7 @@ struct ThemePalette: Sendable {
         accentForeground: Color(hex: "#ece6da"),
         destructive: Color(hex: "#e5645c"),
         destructiveForeground: Color(hex: "#15140f"),
+        success: Color(hex: "#5bbf77"),
         gold: Color(hex: "#d6a93b"),
         highlightYellow: Color(hex: "#7a5a0e80"),
         highlightGreen: Color(hex: "#14583080"),

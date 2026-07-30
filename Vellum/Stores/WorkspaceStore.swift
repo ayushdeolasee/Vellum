@@ -17,9 +17,11 @@ final class WorkspaceStore {
         case annotations
         case ai
         case storage
+        case integrations
     }
 
     let sessions: SessionService
+    let integrations: IntegrationsStore
 
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
     /// reopen or Save As in one pane waits out a close started in another —
@@ -254,7 +256,10 @@ final class WorkspaceStore {
 
     // MARK: - Init
 
-    init(sessions: SessionService, residency: TabResidencyManager = TabResidencyManager()) {
+    init(
+        sessions: SessionService, integrations: IntegrationsStore,
+        residency: TabResidencyManager = TabResidencyManager()
+    ) {
         self.residency = residency
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
@@ -262,6 +267,7 @@ final class WorkspaceStore {
         settingsAi.openRouterCatalog = catalog
         settingsAi.chatgptAuth = auth
         self.sessions = sessions
+        self.integrations = integrations
         self.openRouterCatalog = catalog
         self.chatgptAuth = auth
         self.settingsAi = settingsAi
@@ -322,6 +328,10 @@ final class WorkspaceStore {
     /// so whatever it last showed stops being exempt from eviction.
     private func forgetPanePin(_ app: AppStore) {
         residency.forgetOwner(ObjectIdentifier(app))
+    }
+
+    convenience init(sessions: SessionService) {
+        self.init(sessions: sessions, integrations: IntegrationsStore())
     }
 
     // MARK: - Focus
