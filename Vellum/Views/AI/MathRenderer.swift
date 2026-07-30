@@ -132,23 +132,98 @@ enum MathRenderer {
         return count
     }
 
+    /// Ranges of CommonMark inline code spans, backticks included.
+    ///
+    /// CommonMark's rule: a run of N backticks opens a span that closes on the
+    /// next run of *exactly* N. A run with no matching closer is literal text,
+    /// so scanning resumes just past it rather than swallowing the rest of the
+    /// line — that is what keeps a stray backtick from hiding real math behind
+    /// it.
+    ///
+    /// Reported as ranges rather than extracted substrings because the callers
+    /// need the code spans left in place: `InlineMarkdown` hands the whole line
+    /// to Foundation afterwards and wants the backticks still there to style,
+    /// and `plainPreview` strips them itself. All this has to do is tell the
+    /// math scanner which regions to keep its hands off.
+    nonisolated static func codeSpanRanges(in source: String) -> [NSRange] {
+        let backtick = UInt16(UnicodeScalar("`").value)
+        let ns = source as NSString
+        var ranges: [NSRange] = []
+        var index = 0
+        while index < ns.length {
+            guard ns.character(at: index) == backtick else { index += 1; continue }
+            var openLength = 0
+            while index + openLength < ns.length,
+                  ns.character(at: index + openLength) == backtick { openLength += 1 }
+            var search = index + openLength
+            var closer = -1
+            while search < ns.length {
+                guard ns.character(at: search) == backtick else { search += 1; continue }
+                var closeLength = 0
+                while search + closeLength < ns.length,
+                      ns.character(at: search + closeLength) == backtick { closeLength += 1 }
+                if closeLength == openLength { closer = search; break }
+                search += closeLength
+            }
+            guard closer >= 0 else { index += openLength; continue }
+            ranges.append(NSRange(location: index, length: closer + openLength - index))
+            index = closer + openLength
+        }
+        return ranges
+    }
+
     /// Split inline text into prose and math spans. Recognizes `\(...\)` and
     /// single-`$` spans; a `$` span must not butt against whitespace on the
-    /// inside ("$5 and $10" stays currency, "$x^2$" is math). A `$` escaped by
-    /// an odd number of backslashes ("literal \$x$") is left as prose.
+    /// inside ("$5 and $10" stays currency, "$x^2$" is math). A `$` or a `\(`
+    /// escaped by an odd number of backslashes ("literal \$x$") is left as prose.
+    ///
+    /// Code spans are carved out first (#99). This runs *before* any markdown
+    /// parse — `InlineMarkdown.pieces` splits here and only then hands the
+    /// result to Foundation — so without this step a backtick span containing a
+    /// math delimiter was already cut apart by the time anything knew it was
+    /// code. ``Use `$1` and `$2` backrefs`` matched from the first `$` to the
+    /// second and typeset ``1` and `` as an equation, eating both backticks;
+    /// `` `\(a\|b\)` ``, a perfectly ordinary POSIX group, was read as LaTeX.
+    ///
+    /// Fixed here rather than in `InlineMarkdown.pieces` (where #99 suggested
+    /// hanging it off the existing U+FFFC placeholder machinery) because
+    /// `MarkdownParser.plainPreview` calls `segments` directly for the sidebar
+    /// pill, quoting and accessibility text, and carries the identical hazard.
+    /// One owner for "regions the math scanner must not touch" fixes both
+    /// renderers and the plain-text path together; a fix one level up would
+    /// have left the third caller broken.
     nonisolated static func segments(in source: String) -> [MathSegment] {
         guard source.contains("$") || source.contains("\\(") else { return [.text(source)] }
         guard let regex = inlineMathRegex else { return [.text(source)] }
         let ns = source as NSString
+        // Only pay for the code-span scan when a backtick is actually present.
+        let codeSpans = source.contains("`") ? codeSpanRanges(in: source) : []
         var segments: [MathSegment] = []
         var cursor = 0
         for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            // A match that touches a code span at either end is not math: it
+            // either lives inside one or straddles two, which is how the `$1`/
+            // `$2` backref case swallowed the text between them.
+            if codeSpans.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) {
+                continue
+            }
             let isDollar = match.range(at: 1).location == NSNotFound
+            // Skip when the opening or closing delimiter is escaped; the region
+            // stays unconsumed and folds into the surrounding prose.
             if isDollar {
-                // Skip when the opening or closing `$` is escaped; the region
-                // stays unconsumed and folds into the surrounding prose.
                 let opener = match.range.location
                 let closer = match.range.location + match.range.length - 1
+                if backslashRun(before: opener, in: ns) % 2 == 1
+                    || backslashRun(before: closer, in: ns) % 2 == 1 {
+                    continue
+                }
+            } else {
+                // The `\(…\)` branch had no escape handling at all, so a literal
+                // backslash before the delimiter ("\\(not math\\)") opened a
+                // span. Both delimiters are two characters, so the backslash to
+                // test is the first of the pair and the second-to-last overall.
+                let opener = match.range.location
+                let closer = match.range.location + match.range.length - 2
                 if backslashRun(before: opener, in: ns) % 2 == 1
                     || backslashRun(before: closer, in: ns) % 2 == 1 {
                     continue
