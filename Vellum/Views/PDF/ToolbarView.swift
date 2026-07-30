@@ -185,9 +185,10 @@ private struct PdfLeadingControls: View {
             // applied inside it never surface — the group then inherits its
             // first child's description ("Previous page" on every cluster,
             // measured).
-            HStack(spacing: 0) {
+            HStack(spacing: 2) {
                 PageStepButtons()
             }
+            .padding(.horizontal, 6)
             .glassEffect()
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Page navigation")
@@ -199,9 +200,10 @@ private struct PdfLeadingControls: View {
                 // otherwise leaks in as this container's AXHelp (measured).
                 .help("Current page — type a page number and press Return")
 
-            HStack(spacing: 0) {
+            HStack(spacing: 2) {
                 ZoomControls()
             }
+            .padding(.horizontal, 6)
             .glassEffect()
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Zoom controls")
@@ -280,9 +282,9 @@ private struct PageIndicator: View {
             TextField("", text: $pageInput)
                 // Stay on .roundedBorder even though its chrome does not
                 // render inside the glass capsule (measured: the field zone
-                // was bit-identical to bare background) — the explicit box
-                // below supplies the affordance. .plain is NOT equivalent:
-                // it renders the digits at half the luminance of neighboring
+                // was bit-identical to bare background — the seamless look is
+                // wanted; PR #115 review). .plain is NOT equivalent: it
+                // renders the digits at half the luminance of neighboring
                 // glyphs (measured 110 vs 203/234), and neither
                 // .foregroundStyle(.primary) nor an explicit labelColor
                 // reaches its text renderer.
@@ -296,10 +298,6 @@ private struct PageIndicator: View {
                     if !focused { commitPageInput() }
                 }
                 .frame(width: 36, height: 21)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(.quaternary.opacity(0.6))
-                )
                 .accessibilityLabel("Page number, of \(appStore.numPages) pages")
                 .accessibilityIdentifier("toolbar.pageField")
             Text("/ \(appStore.numPages)")
