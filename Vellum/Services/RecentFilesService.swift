@@ -7,14 +7,12 @@ enum RecentFilesService {
     static let storageKey = "vellum.recent-pdfs"
     static let maxRecent = 8
 
-    /// Test seam, mirroring `DocumentDataStore.rootDirectoryOverride` and
-    /// `WebLibrary.storeDirOverride`. Without it any test that exercises a
-    /// recents WRITE would edit the real app's recents list, because a hosted
-    /// test bundle shares the app's `UserDefaults` domain — so before this
-    /// existed the only testable parts of this service were the pure ones.
-    nonisolated(unsafe) static var defaultsOverride: UserDefaults?
-
-    private static var defaults: UserDefaults { defaultsOverride ?? .standard }
+    /// A hosted test bundle shares the app's `UserDefaults` domain, so a recents
+    /// WRITE from a test would edit the real app's recents list. `AppDefaults`
+    /// owns that problem for every app-state service: under test it resolves to
+    /// a scratch domain rather than `.standard`, and a suite can scope its own
+    /// domain without a process-global another suite could clobber (#102).
+    private static var defaults: UserDefaults { AppDefaults.current }
 
     static func getRecent() -> [RecentDocument] {
         guard let raw = defaults.string(forKey: storageKey),

@@ -17,6 +17,15 @@ final class SafeClearTests: XCTestCase {
         // as well as releasing them on the way out — this suite must not inherit
         // an attachment directory from whatever ran before it.
         ScratchpadAttachmentStore.activeDirectory = nil
+        // The pending-attachment registry and its grace period are process-global
+        // for the same reason. The grace period is the one that matters — a test
+        // here sets it to 0, and leaving it there would stop every later suite's
+        // freshly written attachment from being exempt — so capture the real
+        // value rather than asserting a literal. Clearing the registry is defence
+        // in depth: its keys are UUIDs, so a leftover entry cannot match anything
+        // another test creates.
+        savedGracePeriod = ScratchpadAttachmentStore.pendingGracePeriod
+        ScratchpadAttachmentStore.resetPending()
         sessions = SafeClearSessionService()
         app = AppStore(sessions: sessions)
     }
@@ -26,8 +35,12 @@ final class SafeClearTests: XCTestCase {
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.activeDirectory = nil
+        ScratchpadAttachmentStore.resetPending()
+        ScratchpadAttachmentStore.pendingGracePeriod = savedGracePeriod
         try? FileManager.default.removeItem(at: root)
     }
+
+    private var savedGracePeriod: TimeInterval = 60
 
     private func open(_ path: String) async -> DocumentInfo {
         await app.openFile(path: path)
@@ -193,6 +206,99 @@ final class SafeClearTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stampedAttachment.path))
         XCTAssertFalse(DocumentDataStore.scratchpadExists(forKey: oldKey))
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldAttachment.path))
+    }
+
+    // MARK: - Attachment GC vs. an in-flight markdown reference (#105)
+
+    /// Drop an image and hold its markdown in flight — exactly what the editor's
+    /// WebView round trip does — then return the store, the captured markdown,
+    /// and the file the bytes landed in.
+    private func dropImageHoldingItsReference(
+        _ store: ScratchpadStore
+    ) throws -> (markdown: String, id: String, attachment: URL) {
+        var inFlight: String?
+        store.insertMarkdownHandler = { inFlight = $0 }
+        store.addImage(
+            ScratchpadImageCapture(
+                data: Data([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]), fileExtension: "png",
+                mediaType: "image/png", width: 1, height: 1, pageNumber: nil),
+            label: "Image")
+        let markdown = try XCTUnwrap(inFlight, "addImage must produce a reference to insert")
+        let id = try XCTUnwrap(ScratchpadAttachmentStore.referencedIds(in: markdown).first)
+        let attachment = try XCTUnwrap(ScratchpadAttachmentStore.fileURL(for: id))
+        XCTAssertTrue(
+            store.text.isEmpty,
+            "precondition: the reference has not reached the note yet")
+        return (markdown, id, attachment)
+    }
+
+    private func exists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// The bytes are written before the markdown reference exists. A debounced
+    /// save landing in that window computes a reference set that is genuinely
+    /// current and genuinely does not mention the new attachment, so #104's
+    /// snapshot cutoff cannot tell it from an orphan — the file is older than
+    /// the sweep, not newer. Marking it pending at write time is what keeps it.
+    func testAttachmentSurvivesASaveFiredBeforeItsReferenceLands() async throws {
+        let store = ScratchpadStore()
+        store.app = app
+        store.loadForDocument(await open("/tmp/pending-gc-\(UUID().uuidString).pdf"))
+        let dropped = try dropImageHoldingItsReference(store)
+
+        // The debounced save fires inside the window.
+        store.flush()
+        XCTAssertTrue(
+            exists(dropped.attachment),
+            "an attachment whose reference is still in flight must not be collected")
+
+        // The round trip completes; the note now points at it.
+        store.text = dropped.markdown
+        store.flush()
+        XCTAssertTrue(exists(dropped.attachment))
+    }
+
+    /// The exemption is not permanent. Once the reference has been observed in
+    /// saved text the attachment is settled, and from then on ordinary
+    /// reachability governs it: deleting the reference collects the bytes.
+    func testSettledAttachmentIsCollectedOnceItsReferenceIsRemoved() async throws {
+        let store = ScratchpadStore()
+        store.app = app
+        store.loadForDocument(await open("/tmp/pending-settle-\(UUID().uuidString).pdf"))
+        let dropped = try dropImageHoldingItsReference(store)
+
+        // Reference lands and is saved — this is what settles it.
+        store.text = dropped.markdown
+        store.flush()
+        XCTAssertTrue(exists(dropped.attachment))
+
+        // The user deletes the image from the note.
+        store.text = "no image here"
+        store.flush()
+        XCTAssertFalse(
+            exists(dropped.attachment),
+            "a settled attachment the note no longer references is ordinary garbage")
+    }
+
+    /// If the reference never arrives, the exemption lapses and the next sweep
+    /// collects the bytes. The window is deliberately generous (a minute against
+    /// a round trip of a couple of frames) because the two failure modes are not
+    /// symmetric: an exemption held too long only delays a collection that will
+    /// still happen, while one released too early deletes bytes the note is
+    /// about to point at and leaves a broken image.
+    func testPendingExemptionLapsesSoAnAbandonedAttachmentIsStillCollected() async throws {
+        ScratchpadAttachmentStore.pendingGracePeriod = 0
+        let store = ScratchpadStore()
+        store.app = app
+        store.loadForDocument(await open("/tmp/pending-lapse-\(UUID().uuidString).pdf"))
+        let dropped = try dropImageHoldingItsReference(store)
+
+        // The reference never lands — the editor went away mid-round-trip.
+        store.flush()
+        XCTAssertFalse(
+            exists(dropped.attachment),
+            "an attachment past its grace period is collectable like any orphan")
     }
 
     func testEmptyClearsAreNoOps() {
