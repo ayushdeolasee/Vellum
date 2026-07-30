@@ -95,9 +95,12 @@ extension AiMessage {
     /// `references` is absent from every conversation persisted before this
     /// field existed (handled by `decodeIfPresent` + the `[]` default), and a
     /// reference whose `kind` tag this build doesn't recognise would otherwise
-    /// throw. `AiPersistence` decodes the whole file as `[AiMessage]`, which is
-    /// all-or-nothing — one unreadable reference would silently discard the
-    /// user's entire conversation. Unreadable entries are dropped instead.
+    /// throw — and failing here fails the whole message. Unreadable entries are
+    /// dropped instead, so an unknown reference costs the user one chip rather
+    /// than the message carrying it. `AiPersistence.decodeMessages` applies the
+    /// same idea one level up (`LossyAiMessage`), so a message this initializer
+    /// cannot salvage at all costs them that message rather than the whole
+    /// conversation.
     ///
     /// Declared in an extension so the memberwise initializer survives (several
     /// call sites build `AiMessage` field-by-field).

@@ -19,7 +19,9 @@ struct ContentView: View {
         // is hosted separately and only inherits ancestor environment — injecting
         // inside WindowChrome's own body would leave the toolbar without an
         // AppStore. Each pane's subtree re-injects its own triple, overriding this.
-        WindowChrome(sidebarHovering: $sidebarHovering)
+        WindowChrome(
+            sidebarHovering: $sidebarHovering,
+            initialColumnWidth: workspace.sidebarWidth)
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
@@ -188,6 +190,35 @@ private struct WindowChrome: View {
     @Environment(\.palette) private var palette
     @Binding var sidebarHovering: Bool
 
+    /// The `ideal:` handed to `.inspectorColumnWidth`, held FROZEN for as long as
+    /// the column is on screen.
+    ///
+    /// This is belt-and-braces, not the resize bug itself — that was the
+    /// modifier ORDER, documented at the call site. But it becomes load-bearing
+    /// the moment the envelope actually reaches the inspector host, so it lands
+    /// with it: `ideal:` must not be `workspace.sidebarWidth` read live.
+    /// SwiftUI re-applies `ideal:` to the column whenever that argument changes
+    /// between updates, and `.onGeometryChange` below writes every width it
+    /// measures back into the store — so a live read closes a loop through
+    /// AppKit's layout, and a body re-run landing mid-drag re-applies a stale
+    /// width over the one the user is dragging to.
+    ///
+    /// `sidebarWidth` being `@ObservationIgnored` does not cover this on its
+    /// own: it only stops the *store write* from invalidating the view.
+    /// Anything else that re-runs this body — hovering the panel, a toolbar
+    /// change, a tab switch — still re-reads the property and hands SwiftUI a
+    /// new `ideal:`.
+    ///
+    /// Re-seeded from the store in `.onChange` below only when the column is
+    /// (re)presented, which is the one moment `ideal:` is legitimately
+    /// consulted — so reopening a document still restores the user's width.
+    @State private var idealColumnWidth: CGFloat
+
+    init(sidebarHovering: Binding<Bool>, initialColumnWidth: CGFloat) {
+        _sidebarHovering = sidebarHovering
+        _idealColumnWidth = State(initialValue: initialColumnWidth)
+    }
+
     private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
@@ -229,18 +260,38 @@ private struct WindowChrome: View {
                 Divider()
                 sidebar
             }
-            .inspectorColumnWidth(
-                min: InspectorLayout.minimumWidth,
-                ideal: workspace.sidebarWidth,
-                max: InspectorLayout.maximumWidth)
             // Feeds the user's splitter drag back to the store so the next
             // document reopens the column where they left it. The store
-            // rejects the collapsed measurements a start tab produces.
+            // rejects the collapsed measurements a start tab produces. Safe to
+            // write from here only because `ideal:` below is frozen — see
+            // `idealColumnWidth`.
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.width
             } action: { width in
                 workspace.rememberSidebarWidth(width)
             }
+            // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
+            // This is not a style preference: the column-width envelope is a
+            // view trait the inspector host reads off the ROOT of this closure,
+            // and it does not survive being wrapped. With `.onGeometryChange`
+            // applied after it (as it was), the trait was invisible to the
+            // host, which then fell back to its built-in 270pt column and — far
+            // worse — registered NO min/max envelope, so AppKit gave the
+            // divider nothing to drag between and the side panel could not be
+            // resized at all. Measured: identical 270pt column whether this
+            // said 280/360/700 or 450/500/700; moved out here, the column
+            // lands on exactly the width asked for.
+            .inspectorColumnWidth(
+                min: InspectorLayout.minimumWidth,
+                ideal: idealColumnWidth,
+                max: InspectorLayout.maximumWidth)
+        }
+        // The column is inserted (and `ideal:` consulted) when this flips true,
+        // so this is the one safe moment to adopt the width the user last left.
+        // Reading the store anywhere else would re-open the loop described on
+        // `idealColumnWidth`.
+        .onChange(of: workspace.inspectorPresented) { _, isPresented in
+            if isPresented { idealColumnWidth = workspace.sidebarWidth }
         }
     }
 
