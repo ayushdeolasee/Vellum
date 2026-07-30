@@ -496,7 +496,7 @@ final class VellumBundleTests: XCTestCase {
 
     /// The core writes the document, stamps + resolves the key, and installs the
     /// sidecar — the whole import minus the NSSavePanel.
-    func testImportCoreWritesDocumentAndInstallsSidecar() throws {
+    func testImportCoreWritesDocumentAndInstallsSidecar() async throws {
         let real = makeRealPdfData()
         let docId = DocumentIdentity.byteHash(real)
         let content = VellumBundle.Content(
@@ -508,7 +508,7 @@ final class VellumBundleTests: XCTestCase {
         let imported = try VellumBundle.read(at: bundleURL)
 
         let dest = scratch.appendingPathComponent("core-written.pdf")
-        let result = try AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
+        let result = try await AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
 
         XCTAssertEqual(result.path, dest.path)
         XCTAssertTrue(result.failedAttachments.isEmpty)
@@ -522,7 +522,7 @@ final class VellumBundleTests: XCTestCase {
 
     /// Importing over an existing file replaces it atomically (temp + rename, no
     /// pre-delete) and leaves no temp sibling behind.
-    func testImportCoreAtomicallyReplacesExistingDestination() throws {
+    func testImportCoreAtomicallyReplacesExistingDestination() async throws {
         let dest = scratch.appendingPathComponent("existing.pdf")
         let oldBytes = Data("OLD CONTENT that must be replaced".utf8)
         try oldBytes.write(to: dest)
@@ -535,7 +535,7 @@ final class VellumBundleTests: XCTestCase {
         try VellumBundle.write(content, to: bundleURL)
         let imported = try VellumBundle.read(at: bundleURL)
 
-        _ = try AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
+        _ = try await AppStore.importVellumBundleCore(imported, to: dest) { _ in .keepLocal }
 
         XCTAssertNotNil(PdfMetadata.documentId(atPath: dest.path), "destination holds the imported PDF")
         XCTAssertNotEqual(try Data(contentsOf: dest), oldBytes)

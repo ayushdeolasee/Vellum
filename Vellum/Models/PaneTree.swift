@@ -26,11 +26,12 @@ final class PaneModel: Identifiable {
     init(
         id: String = "pane-" + UUID().uuidString.lowercased(),
         sessions: SessionService,
+        teardowns: TabTeardownRegistry = TabTeardownRegistry(),
         openRouterCatalog: OpenRouterCatalog,
         chatgptAuth: ChatGPTAuth
     ) {
         self.id = id
-        let app = AppStore(sessions: sessions)
+        let app = AppStore(sessions: sessions, teardowns: teardowns)
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
         ai.app = app
