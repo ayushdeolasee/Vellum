@@ -6,6 +6,9 @@ struct ContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
 
     @State private var keyMonitor: Any?
+    /// Whether this window is currently showing a sheet, so the focus value
+    /// below can go away while one is up (issue #98).
+    @State private var sheets = SheetPresenceMonitor()
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
     @State private var hostWindow: NSWindow?
@@ -19,7 +22,18 @@ struct ContentView: View {
         // is hosted separately and only inherits ancestor environment — injecting
         // inside WindowChrome's own body would leave the toolbar without an
         // AppStore. Each pane's subtree re-injects its own triple, overriding this.
-        WindowChrome(sidebarHovering: $sidebarHovering)
+        WindowChrome(
+            sidebarHovering: $sidebarHovering,
+            initialColumnWidth: workspace.sidebarWidth)
+            // BEFORE the `.environment` writes below, so those writes are applied
+            // OUTSIDE this presentation and the sheet's content inherits them.
+            // Modifiers compose outside-in: a `.sheet` chained *after* an
+            // `.environment` sits above it, so `AddWebpageSheet`'s
+            // `@Environment(AppStore.self)` would find nothing and SwiftUI would
+            // trap the moment the sheet is presented.
+            .sheet(isPresented: $addWebpagePresented) {
+                AddWebpageSheet()
+            }
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
@@ -28,14 +42,35 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
             }
-            .sheet(isPresented: $addWebpagePresented) {
-                AddWebpageSheet()
+            // Every sheet on this window, whoever presents it — the two
+            // first-run sheets in `VellumApp`, this one, the rename and export
+            // sheets deeper in the tree, and the ones Vellum does not own at
+            // all (`.fileImporter`'s open panel, PDFKit's print panel).
+            // `SheetPresenceMonitor` explains why this asks AppKit rather than
+            // watching presentation flags.
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.willBeginSheetNotification)
+            ) { notification in
+                sheets.noteSheetBegan(on: notification.object as? NSWindow, host: hostWindow)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.didEndSheetNotification)
+            ) { notification in
+                sheets.noteSheetEnded(on: notification.object as? NSWindow, host: hostWindow)
             }
             // Commands belong to the main window, not whichever nested
             // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
             // A scene-focused value remains available throughout this window
             // and automatically disappears when Settings becomes key.
-            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            //
+            // ...and while a sheet is up, because a sheet belongs to the scene
+            // that presents it and so does NOT displace a scene value the way
+            // it displaced the old view-focused one. Publishing nil disables
+            // every document command for as long as the sheet is attached; a
+            // disabled item does not claim its key equivalent, so ⌘W stops
+            // closing the tab behind the sheet (issue #98).
+            .focusedSceneValue(
+                \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
@@ -188,6 +223,35 @@ private struct WindowChrome: View {
     @Environment(\.palette) private var palette
     @Binding var sidebarHovering: Bool
 
+    /// The `ideal:` handed to `.inspectorColumnWidth`, held FROZEN for as long as
+    /// the column is on screen.
+    ///
+    /// This is belt-and-braces, not the resize bug itself — that was the
+    /// modifier ORDER, documented at the call site. But it becomes load-bearing
+    /// the moment the envelope actually reaches the inspector host, so it lands
+    /// with it: `ideal:` must not be `workspace.sidebarWidth` read live.
+    /// SwiftUI re-applies `ideal:` to the column whenever that argument changes
+    /// between updates, and `.onGeometryChange` below writes every width it
+    /// measures back into the store — so a live read closes a loop through
+    /// AppKit's layout, and a body re-run landing mid-drag re-applies a stale
+    /// width over the one the user is dragging to.
+    ///
+    /// `sidebarWidth` being `@ObservationIgnored` does not cover this on its
+    /// own: it only stops the *store write* from invalidating the view.
+    /// Anything else that re-runs this body — hovering the panel, a toolbar
+    /// change, a tab switch — still re-reads the property and hands SwiftUI a
+    /// new `ideal:`.
+    ///
+    /// Re-seeded from the store in `.onChange` below only when the column is
+    /// (re)presented, which is the one moment `ideal:` is legitimately
+    /// consulted — so reopening a document still restores the user's width.
+    @State private var idealColumnWidth: CGFloat
+
+    init(sidebarHovering: Binding<Bool>, initialColumnWidth: CGFloat) {
+        _sidebarHovering = sidebarHovering
+        _idealColumnWidth = State(initialValue: initialColumnWidth)
+    }
+
     private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
@@ -216,31 +280,46 @@ private struct WindowChrome: View {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            // The tab switcher lives INSIDE the inspector, not in its window
-            // toolbar: AppKit collapses toolbar items into an overflow menu at
-            // narrow window widths, and that synthesized overflow exposed only
-            // one of the three sections — so a narrow window could strand the
-            // user on whichever panel was already selected. Here every
-            // destination stays reachable at every width.
-            VStack(spacing: 0) {
-                InspectorTabSwitcher(selection: sidebarTabBinding)
-                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-                    .padding(.vertical, 8)
-                Divider()
-                sidebar
-            }
-            .inspectorColumnWidth(
-                min: InspectorLayout.minimumWidth,
-                ideal: workspace.sidebarWidth,
-                max: InspectorLayout.maximumWidth)
-            // Feeds the user's splitter drag back to the store so the next
-            // document reopens the column where they left it. The store
-            // rejects the collapsed measurements a start tab produces.
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { width in
-                workspace.rememberSidebarWidth(width)
-            }
+            // The whole column, switcher header included, is one view: the
+            // header used to be assembled here, above `SidebarPanelStack`, which
+            // left it outside the stack's AppKit drop catcher and so made the
+            // inspector's top ~46pt the one strip of the sidebar that refused
+            // drags (issue #101). `SidebarPanelStack` now owns the switcher and
+            // documents why it lives inside the inspector at all.
+            sidebar
+                // Feeds the user's splitter drag back to the store so the next
+                // document reopens the column where they left it. The store
+                // rejects the collapsed measurements a start tab produces. Safe
+                // to write from here only because `ideal:` below is frozen —
+                // see `idealColumnWidth`.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { width in
+                    workspace.rememberSidebarWidth(width)
+                }
+                // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
+                // This is not a style preference: the column-width envelope is a
+                // view trait the inspector host reads off the ROOT of this
+                // closure, and it does not survive being wrapped. With
+                // `.onGeometryChange` applied after it (as it was), the trait
+                // was invisible to the host, which then fell back to its
+                // built-in 270pt column and — far worse — registered NO min/max
+                // envelope, so AppKit gave the divider nothing to drag between
+                // and the side panel could not be resized at all. Measured:
+                // identical 270pt column whether this said 280/360/700 or
+                // 450/500/700; moved out here, the column lands on exactly the
+                // width asked for.
+                .inspectorColumnWidth(
+                    min: InspectorLayout.minimumWidth,
+                    ideal: idealColumnWidth,
+                    max: InspectorLayout.maximumWidth)
+        }
+        // The column is inserted (and `ideal:` consulted) when this flips true,
+        // so this is the one safe moment to adopt the width the user last left.
+        // Reading the store anywhere else would re-open the loop described on
+        // `idealColumnWidth`.
+        .onChange(of: workspace.inspectorPresented) { _, isPresented in
+            if isPresented { idealColumnWidth = workspace.sidebarWidth }
         }
     }
 
@@ -251,13 +330,6 @@ private struct WindowChrome: View {
         Binding(
             get: { workspace.inspectorPresented },
             set: { workspace.setInspectorPresented($0) }
-        )
-    }
-
-    private var sidebarTabBinding: Binding<WorkspaceStore.SidebarTab> {
-        Binding(
-            get: { workspace.sidebarTab },
-            set: { workspace.sidebarTab = $0 }
         )
     }
 
@@ -299,7 +371,8 @@ private struct DocumentErrorNotice: View {
     }
 }
 
-/// The three sidebar panels, stacked. All three stay mounted in a ZStack; only
+/// The whole inspector column: the tab switcher header, then the three sidebar
+/// panels. All three panels stay mounted in a ZStack; only their
 /// visibility toggles as the tab changes. Keeping them alive (rather than
 /// switching, which destroys the inactive ones) preserves each panel's transient
 /// state across tab flips — the AI panel's scroll position and half-typed
@@ -324,6 +397,17 @@ private struct DocumentErrorNotice: View {
 /// code (composer text views, the scratchpad WebView) stays as belt-and-braces
 /// but is unreachable by design while the frontmost catcher is present.
 ///
+/// The header is assembled HERE rather than by the caller so that it sits under
+/// the same catcher overlay as the panels. Built above it — as it was until
+/// #101 — the switcher row was the one strip of the inspector that would not
+/// take a drop, because the catcher's NSView only ever covered the panels.
+///
+/// Two deliberate consequences of that move: the drop outline now traces the
+/// whole column rather than stopping under the header, and the caller's
+/// `.onHover` (which arms the ⌘+/⌘− sidebar text sizing) now covers the header
+/// too — right, since the header is part of the sidebar, but it does mean ⌘+
+/// over the switcher resizes sidebar text instead of zooming the document.
+///
 /// Internal (not `private`) so `SidebarDropRoutingTests` can drive the real
 /// stacked hierarchy headlessly.
 struct SidebarPanelStack: View {
@@ -342,13 +426,26 @@ struct SidebarPanelStack: View {
     @State private var dropTargeted = false
 
     var body: some View {
-        ZStack {
-            panel(.annotations) { AnnotationSidebar() }
-            panel(.ai) { AiPanel() }
-            panel(.scratchpad) { ScratchpadPanel() }
+        VStack(spacing: 0) {
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
+            InspectorTabSwitcher(selection: sidebarTabBinding)
+                .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+                .padding(.vertical, InspectorLayout.switcherVerticalPadding)
+            Divider()
+            ZStack {
+                panel(.annotations) { AnnotationSidebar() }
+                panel(.ai) { AiPanel() }
+                panel(.scratchpad) { ScratchpadPanel() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: Radius.md)
@@ -363,12 +460,23 @@ struct SidebarPanelStack: View {
         // target); AI and scratchpad accept an attachment-carrying drag and route
         // the payload to their store. A non-image dropped on the scratchpad still
         // reaches its handler and is explained.
+        //
+        // Overlaid on the VStack, so it spans the switcher header too. The
+        // catcher's `hitTest` returns nil for every point, so the header's
+        // buttons keep receiving clicks exactly as the panels' controls do.
         .overlay {
             SidebarDropCatcher(
                 resolveOperation: resolveDropOperation,
                 onTargeted: { dropTargeted = $0 },
                 onDrop: routeDrop)
         }
+    }
+
+    private var sidebarTabBinding: Binding<WorkspaceStore.SidebarTab> {
+        Binding(
+            get: { workspace.sidebarTab },
+            set: { workspace.sidebarTab = $0 }
+        )
     }
 
     /// The drag operation to report for the current tab, evaluated live when
