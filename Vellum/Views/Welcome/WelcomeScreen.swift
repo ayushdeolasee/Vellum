@@ -29,6 +29,9 @@ struct WelcomeScreen: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @Environment(\.openSettings) private var openSettings
+    /// Session-scoped Undo for "Remove from Recent" (issue #103), registered
+    /// the same way PR #79 registers clear-conversation and clear-scratchpad.
+    @Environment(\.undoManager) private var undoManager
 
     @State private var store = HomeSearchStore()
     /// First-run hero only. The library layout uses the search field itself for
@@ -36,7 +39,24 @@ struct WelcomeScreen: View {
     @State private var urlInput = ""
     /// The row whose rename sheet is open, if any.
     @State private var renamingItem: HomeSearchItem?
+    /// The removal waiting on its confirmation dialog, if any.
+    @State private var confirmingRemoval: PendingRemoval?
     @FocusState private var searchFocused: Bool
+
+    /// Title for the confirmation, held separately and never cleared on
+    /// dismissal: `confirmingRemoval` goes nil the instant the dialog starts
+    /// closing, and reading it for the title (which is evaluated outside
+    /// `presenting:`) would blank the heading mid-animation while the buttons
+    /// and message still render.
+    @State private var confirmingTitle = ""
+
+    /// A destructive removal held back until the user confirms it. Carries the
+    /// row as well as the action so the dialog can name what it is about to
+    /// un-save.
+    private struct PendingRemoval {
+        let item: HomeSearchItem
+        let removal: HomeSearchRemoval
+    }
 
     private var updateChecker: UpdateChecker { workspace.updateChecker }
 
@@ -80,6 +100,16 @@ struct WelcomeScreen: View {
             // would fight over first responder.
             if isPaneFocused { searchFocused = true }
         }
+        .onDisappear {
+            // `registerUndo(withTarget:)` does NOT retain its target, and this
+            // screen owns `store` as `@State` — opening a document swaps the
+            // whole view out and deallocates it. Leaving the registration in
+            // place would leave a dead target on the window-wide undo stack,
+            // and "Undo Remove from Recent" sitting in the Edit menu of a
+            // reader that has no recents list on screen. The undo's session is
+            // this screen's lifetime, so it leaves with it.
+            undoManager?.removeAllActions(withTarget: store)
+        }
         // Re-index when the app comes back to the front. The corpus is a
         // snapshot of three on-disk sources, and all three can change while
         // Vellum is in the background — the other pane opens a document, the
@@ -103,6 +133,23 @@ struct WelcomeScreen: View {
                 commit: { newTitle in
                     Task { await store.rename(item, to: newTitle) }
                 })
+        }
+        .confirmationDialog(
+            Text(confirmingTitle),
+            isPresented: Binding(
+                get: { confirmingRemoval != nil },
+                set: { if !$0 { confirmingRemoval = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmingRemoval
+        ) { pending in
+            Button(pending.removal.confirmLabel, role: .destructive) {
+                performRemoval(pending.item, from: pending.removal)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            if let message = pending.removal.confirmationMessage {
+                Text(message)
+            }
         }
         .background {
             // ⌘F focuses the search field here. The menu's Find… command and the
@@ -666,11 +713,41 @@ struct WelcomeScreen: View {
         for item: HomeSearchItem
     ) -> [(removal: HomeSearchRemoval, action: () -> Void)] {
         store.removalOptions(for: item).map { removal in
-            // The closure is annotated rather than inferred: a bare
-            // `{ Task { … } }` reads as returning the Task, which makes the
-            // `Task.init` overload set ambiguous.
-            let action: () -> Void = { Task { await store.remove(item, from: removal) } }
+            // The closure is annotated rather than inferred so the type checker
+            // resolves its body independently of the surrounding `map`.
+            let action: () -> Void = {
+                // Issue #103: neither removal used to stop for anything. The
+                // irreversible one now asks; the reversible one still fires on
+                // the click and offers ⌘Z (see `performRemoval`).
+                if removal.requiresConfirmation {
+                    confirmingTitle = removal.confirmationTitle(for: item.title)
+                    confirmingRemoval = PendingRemoval(item: item, removal: removal)
+                } else {
+                    performRemoval(item, from: removal)
+                }
+            }
             return (removal, action)
+        }
+    }
+
+    /// Do the removal and, when it produced something undoable, put it on the
+    /// window's undo stack.
+    private func performRemoval(_ item: HomeSearchItem, from removal: HomeSearchRemoval) {
+        switch removal {
+        case .recent:
+            // Registered synchronously, before the reload: `load()` rebuilds the
+            // whole corpus, and a ⌘Z landing during it would pop whatever was on
+            // the window's stack beforehand instead of this removal.
+            let transaction = store.removeFromRecent(item)
+            // SwiftUI only supplies `\.undoManager` where the environment
+            // supports it; without one the removal simply stands, exactly as it
+            // did before. Same fallback as the AI panel and scratchpad.
+            if let transaction, let undoManager {
+                registerRecentRemovalUndo(transaction, store: store, undoManager: undoManager)
+            }
+            Task { await store.load() }
+        case .saved:
+            Task { await store.removeFromSaved(item) }
         }
     }
 
@@ -691,6 +768,38 @@ struct WelcomeScreen: View {
         let paths = panel.urls.map(\.path)
         Task { await appStore.openFiles(paths: paths) }
     }
+}
+
+/// Undo/redo registration for "Remove from Recent", mirroring
+/// `registerConversationUndo` / `registerScratchpadUndo` from PR #79: each step
+/// registers its counterpart, so ⌘Z and ⇧⌘Z alternate for as long as the window
+/// lives. A step that reports `false` — the document was re-opened, so the
+/// removal has been overtaken — registers nothing and ends the chain rather
+/// than duplicating the row.
+@MainActor
+private func registerRecentRemovalUndo(
+    _ transaction: HomeRecentRemovalTransaction,
+    store: HomeSearchStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.undoRecentRemoval(transaction) else { return }
+        registerRecentRemovalRedo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Remove from Recent")
+}
+
+@MainActor
+private func registerRecentRemovalRedo(
+    _ transaction: HomeRecentRemovalTransaction,
+    store: HomeSearchStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoRecentRemoval(transaction) else { return }
+        registerRecentRemovalUndo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Remove from Recent")
 }
 
 #Preview("Hero wordmark") {
