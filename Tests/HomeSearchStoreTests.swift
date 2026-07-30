@@ -184,43 +184,21 @@ struct HomeSearchStoreSelectionTests {
 
 // MARK: - Destructive-removal guards (issue #103)
 
-/// Gives every test its own throwaway recents domain, installed and removed
-/// around the test body rather than on `deinit`. Deterministic teardown matters
-/// here: `RecentFilesService.defaultsOverride` is process-global, and a
-/// `deinit` that runs late can strip the override out from under a test that is
-/// still writing — which would send `record`/`restore` at the developer's real
-/// recents list, exactly what the seam exists to prevent.
-private struct ScratchRecentsScope: SuiteTrait, TestTrait, TestScoping {
-    var isRecursive: Bool { true }
-
-    func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? { self }
-
-    func provideScope(
-        for test: Test, testCase: Test.Case?, performing function: () async throws -> Void
-    ) async throws {
-        let suiteName = "vellum.home-removal.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        // Restore the PREVIOUS override, not nil: suites run concurrently, and
-        // unconditionally clearing would drop whichever other suite is midway
-        // through its own writes into `UserDefaults.standard` — which, in a
-        // hosted test bundle, is the developer's real recents list.
-        let previous = RecentFilesService.defaultsOverride
-        RecentFilesService.defaultsOverride = defaults
-        defer {
-            RecentFilesService.defaultsOverride = previous
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        try await function()
-    }
-}
-
 /// Issue #103: both home-screen removals used to fire on a single click of a
 /// context-menu item, with no confirmation and no undo. They are not equally
 /// recoverable, so they no longer carry the same guard — un-saving deletes the
 /// offline snapshot from disk and asks first; dropping a recent edits a list
 /// and is undoable.
+///
+/// `.scratchDefaults` gives each test its own recents domain. These tests assert
+/// on exactly what a write left behind — the order of `getRecent()` after a
+/// remove/undo/redo — so they need a domain of their own rather than the shared
+/// scratch suite every unseamed suite writes into. Nothing here is serialized:
+/// the redirect is a task-local that unwinds with the test body (#102), the
+/// store is built with no providers, and `RecentFilesService` reads no other
+/// process-global.
 @MainActor
-@Suite("Home removal guards", .serialized, ScratchRecentsScope())
+@Suite("Home removal guards", .scratchDefaults)
 struct HomeRemovalGuardTests {
     /// Seeds newest-first with well-separated timestamps.
     ///
@@ -415,7 +393,7 @@ struct HomeRemovalGuardTests {
 /// Cap behaviour that the `restore` early-out exists for. Split out of the main
 /// suite only to keep its longer setup out of the way.
 @MainActor
-@Suite("Home removal cap behaviour", .serialized, ScratchRecentsScope())
+@Suite("Home removal cap behaviour", .scratchDefaults)
 struct HomeRemovalCapTests {
     /// An undo the cap would swallow must report failure, or ⌘Z appears to do
     /// nothing while the Edit menu goes on to offer "Redo Remove from Recent".
