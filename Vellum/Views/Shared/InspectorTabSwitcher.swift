@@ -156,15 +156,26 @@ struct InspectorTabSwitcher: View {
                         selection = tab
                     }
                 } label: {
-                    if showTitles {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .labelStyle(.titleAndIcon)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                    } else {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .labelStyle(.iconOnly)
+                    Group {
+                        if showTitles {
+                            Label(tab.title, systemImage: tab.systemImage)
+                                .labelStyle(.titleAndIcon)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                        } else {
+                            Label(tab.title, systemImage: tab.systemImage)
+                                .labelStyle(.iconOnly)
+                        }
                     }
+                    // `.buttonStyle(.plain)` hit-tests a macOS button against
+                    // its label's own rendered content, not against any
+                    // frame/contentShape chained onto the Button itself —
+                    // that outer chain (the previous placement) only affects
+                    // layout. Expanding and shaping the hit target here,
+                    // inside the label, is what actually grows the clickable
+                    // region to the full pill instead of just the glyph.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 // All three parts of the shared selection language — tinted
@@ -187,8 +198,11 @@ struct InspectorTabSwitcher: View {
                 // different shade of the surrounding grey.
                 .foregroundStyle(
                     SelectionStyle.foreground(palette, selected: isSelected, hovering: isHovering))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+                // The expanding `frame`/`contentShape` pair that used to sit
+                // here now lives inside the label (see above), which is the
+                // only placement that actually widens the hit target. The
+                // Button still fills its segment because of it, so the
+                // selection surface below covers the whole pill.
                 .selectionSurface(
                     selected: isSelected, hovering: isHovering, in: Capsule(), palette: palette)
                 .onHover { hovering = $0 ? tab : nil }

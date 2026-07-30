@@ -6,6 +6,9 @@ struct ContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
 
     @State private var keyMonitor: Any?
+    /// Whether this window is currently showing a sheet, so the focus value
+    /// below can go away while one is up (issue #98).
+    @State private var sheets = SheetPresenceMonitor()
     @State private var sidebarHovering = false
     @State private var addWebpagePresented = false
     @State private var hostWindow: NSWindow?
@@ -19,7 +22,18 @@ struct ContentView: View {
         // is hosted separately and only inherits ancestor environment — injecting
         // inside WindowChrome's own body would leave the toolbar without an
         // AppStore. Each pane's subtree re-injects its own triple, overriding this.
-        WindowChrome(sidebarHovering: $sidebarHovering)
+        WindowChrome(
+            sidebarHovering: $sidebarHovering,
+            initialColumnWidth: workspace.sidebarWidth)
+            // BEFORE the `.environment` writes below, so those writes are applied
+            // OUTSIDE this presentation and the sheet's content inherits them.
+            // Modifiers compose outside-in: a `.sheet` chained *after* an
+            // `.environment` sits above it, so `AddWebpageSheet`'s
+            // `@Environment(AppStore.self)` would find nothing and SwiftUI would
+            // trap the moment the sheet is presented.
+            .sheet(isPresented: $addWebpagePresented) {
+                AddWebpageSheet()
+            }
             .environment(focused.app)
             .environment(focused.annotations)
             .environment(focused.ai)
@@ -28,14 +42,35 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
             }
-            .sheet(isPresented: $addWebpagePresented) {
-                AddWebpageSheet()
+            // Every sheet on this window, whoever presents it — the two
+            // first-run sheets in `VellumApp`, this one, the rename and export
+            // sheets deeper in the tree, and the ones Vellum does not own at
+            // all (`.fileImporter`'s open panel, PDFKit's print panel).
+            // `SheetPresenceMonitor` explains why this asks AppKit rather than
+            // watching presentation flags.
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.willBeginSheetNotification)
+            ) { notification in
+                sheets.noteSheetBegan(on: notification.object as? NSWindow, host: hostWindow)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSWindow.didEndSheetNotification)
+            ) { notification in
+                sheets.noteSheetEnded(on: notification.object as? NSWindow, host: hostWindow)
             }
             // Commands belong to the main window, not whichever nested
             // PDFKit/WebKit/AppKit responder happens to own keyboard focus.
             // A scene-focused value remains available throughout this window
             // and automatically disappears when Settings becomes key.
-            .focusedSceneValue(\.vellumFocus, VellumFocus(workspace: workspace))
+            //
+            // ...and while a sheet is up, because a sheet belongs to the scene
+            // that presents it and so does NOT displace a scene value the way
+            // it displaced the old view-focused one. Publishing nil disables
+            // every document command for as long as the sheet is attached; a
+            // disabled item does not claim its key equivalent, so ⌘W stops
+            // closing the tab behind the sheet (issue #98).
+            .focusedSceneValue(
+                \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
@@ -188,6 +223,35 @@ private struct WindowChrome: View {
     @Environment(\.palette) private var palette
     @Binding var sidebarHovering: Bool
 
+    /// The `ideal:` handed to `.inspectorColumnWidth`, held FROZEN for as long as
+    /// the column is on screen.
+    ///
+    /// This is belt-and-braces, not the resize bug itself — that was the
+    /// modifier ORDER, documented at the call site. But it becomes load-bearing
+    /// the moment the envelope actually reaches the inspector host, so it lands
+    /// with it: `ideal:` must not be `workspace.sidebarWidth` read live.
+    /// SwiftUI re-applies `ideal:` to the column whenever that argument changes
+    /// between updates, and `.onGeometryChange` below writes every width it
+    /// measures back into the store — so a live read closes a loop through
+    /// AppKit's layout, and a body re-run landing mid-drag re-applies a stale
+    /// width over the one the user is dragging to.
+    ///
+    /// `sidebarWidth` being `@ObservationIgnored` does not cover this on its
+    /// own: it only stops the *store write* from invalidating the view.
+    /// Anything else that re-runs this body — hovering the panel, a toolbar
+    /// change, a tab switch — still re-reads the property and hands SwiftUI a
+    /// new `ideal:`.
+    ///
+    /// Re-seeded from the store in `.onChange` below only when the column is
+    /// (re)presented, which is the one moment `ideal:` is legitimately
+    /// consulted — so reopening a document still restores the user's width.
+    @State private var idealColumnWidth: CGFloat
+
+    init(sidebarHovering: Binding<Bool>, initialColumnWidth: CGFloat) {
+        _sidebarHovering = sidebarHovering
+        _idealColumnWidth = State(initialValue: initialColumnWidth)
+    }
+
     private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
@@ -220,20 +284,42 @@ private struct WindowChrome: View {
             // header used to be assembled here, above `SidebarPanelStack`, which
             // left it outside the stack's AppKit drop catcher and so made the
             // inspector's top ~46pt the one strip of the sidebar that refused
-            // drags (issue #101).
+            // drags (issue #101). `SidebarPanelStack` now owns the switcher and
+            // documents why it lives inside the inspector at all.
             sidebar
-                .inspectorColumnWidth(
-                    min: InspectorLayout.minimumWidth,
-                    ideal: workspace.sidebarWidth,
-                    max: InspectorLayout.maximumWidth)
                 // Feeds the user's splitter drag back to the store so the next
                 // document reopens the column where they left it. The store
-                // rejects the collapsed measurements a start tab produces.
+                // rejects the collapsed measurements a start tab produces. Safe
+                // to write from here only because `ideal:` below is frozen —
+                // see `idealColumnWidth`.
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.width
                 } action: { width in
                     workspace.rememberSidebarWidth(width)
                 }
+                // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
+                // This is not a style preference: the column-width envelope is a
+                // view trait the inspector host reads off the ROOT of this
+                // closure, and it does not survive being wrapped. With
+                // `.onGeometryChange` applied after it (as it was), the trait
+                // was invisible to the host, which then fell back to its
+                // built-in 270pt column and — far worse — registered NO min/max
+                // envelope, so AppKit gave the divider nothing to drag between
+                // and the side panel could not be resized at all. Measured:
+                // identical 270pt column whether this said 280/360/700 or
+                // 450/500/700; moved out here, the column lands on exactly the
+                // width asked for.
+                .inspectorColumnWidth(
+                    min: InspectorLayout.minimumWidth,
+                    ideal: idealColumnWidth,
+                    max: InspectorLayout.maximumWidth)
+        }
+        // The column is inserted (and `ideal:` consulted) when this flips true,
+        // so this is the one safe moment to adopt the width the user last left.
+        // Reading the store anywhere else would re-open the loop described on
+        // `idealColumnWidth`.
+        .onChange(of: workspace.inspectorPresented) { _, isPresented in
+            if isPresented { idealColumnWidth = workspace.sidebarWidth }
         }
     }
 

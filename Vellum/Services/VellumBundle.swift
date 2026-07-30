@@ -427,10 +427,26 @@ enum VellumBundle {
     /// Union the imported conversation with any local one by message id, sort by
     /// created_at, then apply the per-document caps (AiPersistence contract).
     private static func mergeConversations(_ incomingData: Data, forKey key: String) throws {
-        let decoder = JSONDecoder()
-        let incoming = (try? decoder.decode([AiMessage].self, from: incomingData)) ?? []
-        let local = DocumentDataStore.loadConversationsData(forKey: key)
-            .flatMap { try? decoder.decode([AiMessage].self, from: $0) } ?? []
+        // Both sides go through the same lossy decode the live loader uses, so
+        // one unreadable message costs that message rather than a conversation
+        // (#90). Without it, a single bad record in the LOCAL file collapsed it
+        // to `[]` and the merge — which rewrites the file in one shot, with no
+        // write-behind cache to fall back on — destroyed every good local
+        // message on the spot.
+        let incoming = AiPersistence.decodeMessages(incomingData)?.messages ?? []
+        var local: [AiMessage] = []
+        if let localData = DocumentDataStore.loadConversationsData(forKey: key), !localData.isEmpty {
+            guard let decoded = AiPersistence.decodeMessages(localData) else {
+                // Nothing in the local file decoded. Merging would write the
+                // imported messages over bytes we simply failed to read, which is
+                // exactly the loss `AiPersistence`'s write guard refuses — and an
+                // import must not be the way around it. Leave the file alone and
+                // say so, like the evicted-iCloud guard on the write itself.
+                throw SessionServiceError.io(
+                    "This document's existing AI conversation couldn't be read, so the imported chat was not merged into it. The existing file was left untouched.")
+            }
+            local = decoded.messages
+        }
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
         // Local kept on an id collision (first occurrence wins).
