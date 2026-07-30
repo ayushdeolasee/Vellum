@@ -175,6 +175,31 @@ final class SidebarDropRoutingTests: XCTestCase {
         host.convert(NSPoint(x: host.bounds.midX, y: host.bounds.midY), to: nil)
     }
 
+    /// The window point at the middle of the inspector's switcher header — the
+    /// strip that used to sit above the catcher and take no drops (issue #101).
+    /// `NSHostingView` is flipped, so the header is at LOW y.
+    private func headerPoint(of host: NSView) -> NSPoint {
+        XCTAssertTrue(host.isFlipped, "an unflipped host would put the header at the other end")
+        return host.convert(
+            NSPoint(x: host.bounds.midX, y: host.bounds.minY + InspectorLayout.headerHeight / 2),
+            to: nil)
+    }
+
+    /// How far down the column the visible panel's own content begins, measured
+    /// off a real AppKit view the panel owns (the scratchpad's editor WebView).
+    /// The header, if this stack builds it, is what pushes it down.
+    ///
+    /// Measured values, so the next reader knows the margin this discriminates
+    /// on: 44pt with the header built by the caller (the panel's own inset
+    /// alone), 91pt with the header inside the stack (44 + the 46pt header and
+    /// its 1pt divider). The `>= headerHeight` assertion sits between them.
+    private func panelContentTop(in host: NSView) throws -> CGFloat {
+        let editor = try XCTUnwrap(
+            firstSubview(of: ScratchpadWebView.self, in: host),
+            "the scratchpad editor is not mounted, so the panels' top cannot be measured")
+        return editor.convert(editor.bounds, to: host).minY
+    }
+
     // MARK: - Tests
 
     /// The destination AppKit would pick over the AI panel must be our AppKit
@@ -198,6 +223,77 @@ final class SidebarDropRoutingTests: XCTestCase {
             String(describing: type(of: dest)).contains("PlatformDraggingDestination"),
             "a SwiftUI _PlatformDraggingDestinationView is frontmost again — it will " +
             "steal and refuse the drag exactly like the original bug")
+    }
+
+    /// The switcher header is part of the drop target (issue #101). Until the
+    /// header moved inside `SidebarPanelStack`, the catcher's NSView started
+    /// below it, so the inspector's top ~46pt silently refused every drag — the
+    /// user aims at the panel they can see, hits the header, and nothing
+    /// happens. Same destination, same routing, same attachment as the middle
+    /// of the panel.
+    ///
+    /// The limit of the harness: it mounts `SidebarPanelStack`, so it proves the
+    /// catcher covers the header THAT STACK BUILDS. That the header is built
+    /// there at all — rather than by the caller, above the stack, as it was
+    /// before #101 — is structural and is the reason this test's coordinate
+    /// means anything.
+    func testSwitcherHeaderIsPartOfTheSidebarDropTarget() throws {
+        let file = try writeFixture("header-drop.png", try pngFixtureData())
+        let (host, workspace, pane) = hostSidebar(initialTab: .annotations)
+        flip(workspace, to: .ai, host: host)
+
+        // The structural half, and the one that fails on the old arrangement:
+        // the panels start BELOW the header, which is only true when the stack
+        // builds the header itself. Built by the caller above the stack, as it
+        // was before #101, the panel content starts at the top of the stack and
+        // the drop point below lands on the panel rather than on the header —
+        // which is exactly how the header could look covered while the live app
+        // refused drags there.
+        let panelTop = try panelContentTop(in: host)
+        XCTAssertGreaterThanOrEqual(
+            panelTop, InspectorLayout.headerHeight,
+            "the sidebar's panel content starts \(panelTop)pt down; the " +
+            "\(InspectorLayout.headerHeight)pt switcher header is not above it, so this " +
+            "stack is not the one that owns the header")
+
+        let point = headerPoint(of: host)
+        let dest = try XCTUnwrap(
+            dragDestination(in: host, windowPoint: point),
+            "no registered drag destination over the switcher header")
+        XCTAssertTrue(
+            dest is SidebarDropView,
+            "the frontmost drag destination over the header is \(type(of: dest)), " +
+            "not the AppKit SidebarDropView — the header is outside the catcher again")
+
+        let drag = finderDrag(of: [file], at: point)
+        XCTAssertEqual(
+            dest.draggingEntered(drag), .copy,
+            "a drag over the header did not light up while the AI panel was visible")
+        XCTAssertTrue(dest.performDragOperation(drag), "the header drop was not accepted")
+
+        pump(until: !pane.ai.composerReferences.isEmpty)
+        XCTAssertEqual(
+            pane.ai.composerReferences.count, 1,
+            "a drop on the header did not route to the visible panel's store")
+    }
+
+    /// The header follows the visible tab like the rest of the sidebar: over
+    /// annotations there is nothing to attach to, so the same point refuses.
+    /// Without this, a catcher that blanket-accepted everything would pass the
+    /// test above.
+    func testSwitcherHeaderRefusesWhileAnnotationsIsVisible() throws {
+        let file = try writeFixture("header-refused.png", try pngFixtureData())
+        let (host, _, _) = hostSidebar(initialTab: .annotations)
+
+        let point = headerPoint(of: host)
+        let dest = try XCTUnwrap(
+            dragDestination(in: host, windowPoint: point),
+            "no registered drag destination over the switcher header")
+
+        let drag = finderDrag(of: [file], at: point)
+        XCTAssertEqual(
+            dest.draggingEntered(drag), [],
+            "the header accepted a drag while the annotations panel was visible")
     }
 
     /// "Add to AI Chat" must not leave a keyboard user stranded in the document.

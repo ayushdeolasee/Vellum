@@ -280,44 +280,39 @@ private struct WindowChrome: View {
             VellumToolbar()
         }
         .inspector(isPresented: inspectorPresented) {
-            // The tab switcher lives INSIDE the inspector, not in its window
-            // toolbar: AppKit collapses toolbar items into an overflow menu at
-            // narrow window widths, and that synthesized overflow exposed only
-            // one of the three sections — so a narrow window could strand the
-            // user on whichever panel was already selected. Here every
-            // destination stays reachable at every width.
-            VStack(spacing: 0) {
-                InspectorTabSwitcher(selection: sidebarTabBinding)
-                    .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-                    .padding(.vertical, 8)
-                Divider()
-                sidebar
-            }
-            // Feeds the user's splitter drag back to the store so the next
-            // document reopens the column where they left it. The store
-            // rejects the collapsed measurements a start tab produces. Safe to
-            // write from here only because `ideal:` below is frozen — see
-            // `idealColumnWidth`.
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { width in
-                workspace.rememberSidebarWidth(width)
-            }
-            // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
-            // This is not a style preference: the column-width envelope is a
-            // view trait the inspector host reads off the ROOT of this closure,
-            // and it does not survive being wrapped. With `.onGeometryChange`
-            // applied after it (as it was), the trait was invisible to the
-            // host, which then fell back to its built-in 270pt column and — far
-            // worse — registered NO min/max envelope, so AppKit gave the
-            // divider nothing to drag between and the side panel could not be
-            // resized at all. Measured: identical 270pt column whether this
-            // said 280/360/700 or 450/500/700; moved out here, the column
-            // lands on exactly the width asked for.
-            .inspectorColumnWidth(
-                min: InspectorLayout.minimumWidth,
-                ideal: idealColumnWidth,
-                max: InspectorLayout.maximumWidth)
+            // The whole column, switcher header included, is one view: the
+            // header used to be assembled here, above `SidebarPanelStack`, which
+            // left it outside the stack's AppKit drop catcher and so made the
+            // inspector's top ~46pt the one strip of the sidebar that refused
+            // drags (issue #101). `SidebarPanelStack` now owns the switcher and
+            // documents why it lives inside the inspector at all.
+            sidebar
+                // Feeds the user's splitter drag back to the store so the next
+                // document reopens the column where they left it. The store
+                // rejects the collapsed measurements a start tab produces. Safe
+                // to write from here only because `ideal:` below is frozen —
+                // see `idealColumnWidth`.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { width in
+                    workspace.rememberSidebarWidth(width)
+                }
+                // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT.
+                // This is not a style preference: the column-width envelope is a
+                // view trait the inspector host reads off the ROOT of this
+                // closure, and it does not survive being wrapped. With
+                // `.onGeometryChange` applied after it (as it was), the trait
+                // was invisible to the host, which then fell back to its
+                // built-in 270pt column and — far worse — registered NO min/max
+                // envelope, so AppKit gave the divider nothing to drag between
+                // and the side panel could not be resized at all. Measured:
+                // identical 270pt column whether this said 280/360/700 or
+                // 450/500/700; moved out here, the column lands on exactly the
+                // width asked for.
+                .inspectorColumnWidth(
+                    min: InspectorLayout.minimumWidth,
+                    ideal: idealColumnWidth,
+                    max: InspectorLayout.maximumWidth)
         }
         // The column is inserted (and `ideal:` consulted) when this flips true,
         // so this is the one safe moment to adopt the width the user last left.
@@ -335,13 +330,6 @@ private struct WindowChrome: View {
         Binding(
             get: { workspace.inspectorPresented },
             set: { workspace.setInspectorPresented($0) }
-        )
-    }
-
-    private var sidebarTabBinding: Binding<WorkspaceStore.SidebarTab> {
-        Binding(
-            get: { workspace.sidebarTab },
-            set: { workspace.sidebarTab = $0 }
         )
     }
 
@@ -383,7 +371,8 @@ private struct DocumentErrorNotice: View {
     }
 }
 
-/// The three sidebar panels, stacked. All three stay mounted in a ZStack; only
+/// The whole inspector column: the tab switcher header, then the three sidebar
+/// panels. All three panels stay mounted in a ZStack; only their
 /// visibility toggles as the tab changes. Keeping them alive (rather than
 /// switching, which destroys the inactive ones) preserves each panel's transient
 /// state across tab flips — the AI panel's scroll position and half-typed
@@ -408,6 +397,17 @@ private struct DocumentErrorNotice: View {
 /// code (composer text views, the scratchpad WebView) stays as belt-and-braces
 /// but is unreachable by design while the frontmost catcher is present.
 ///
+/// The header is assembled HERE rather than by the caller so that it sits under
+/// the same catcher overlay as the panels. Built above it — as it was until
+/// #101 — the switcher row was the one strip of the inspector that would not
+/// take a drop, because the catcher's NSView only ever covered the panels.
+///
+/// Two deliberate consequences of that move: the drop outline now traces the
+/// whole column rather than stopping under the header, and the caller's
+/// `.onHover` (which arms the ⌘+/⌘− sidebar text sizing) now covers the header
+/// too — right, since the header is part of the sidebar, but it does mean ⌘+
+/// over the switcher resizes sidebar text instead of zooming the document.
+///
 /// Internal (not `private`) so `SidebarDropRoutingTests` can drive the real
 /// stacked hierarchy headlessly.
 struct SidebarPanelStack: View {
@@ -426,13 +426,26 @@ struct SidebarPanelStack: View {
     @State private var dropTargeted = false
 
     var body: some View {
-        ZStack {
-            panel(.annotations) { AnnotationSidebar() }
-            panel(.ai) { AiPanel() }
-            panel(.scratchpad) { ScratchpadPanel() }
+        VStack(spacing: 0) {
+            // The tab switcher lives INSIDE the inspector, not in its window
+            // toolbar: AppKit collapses toolbar items into an overflow menu at
+            // narrow window widths, and that synthesized overflow exposed only
+            // one of the three sections — so a narrow window could strand the
+            // user on whichever panel was already selected. Here every
+            // destination stays reachable at every width.
+            InspectorTabSwitcher(selection: sidebarTabBinding)
+                .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+                .padding(.vertical, InspectorLayout.switcherVerticalPadding)
+            Divider()
+            ZStack {
+                panel(.annotations) { AnnotationSidebar() }
+                panel(.ai) { AiPanel() }
+                panel(.scratchpad) { ScratchpadPanel() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: Radius.md)
@@ -447,12 +460,23 @@ struct SidebarPanelStack: View {
         // target); AI and scratchpad accept an attachment-carrying drag and route
         // the payload to their store. A non-image dropped on the scratchpad still
         // reaches its handler and is explained.
+        //
+        // Overlaid on the VStack, so it spans the switcher header too. The
+        // catcher's `hitTest` returns nil for every point, so the header's
+        // buttons keep receiving clicks exactly as the panels' controls do.
         .overlay {
             SidebarDropCatcher(
                 resolveOperation: resolveDropOperation,
                 onTargeted: { dropTargeted = $0 },
                 onDrop: routeDrop)
         }
+    }
+
+    private var sidebarTabBinding: Binding<WorkspaceStore.SidebarTab> {
+        Binding(
+            get: { workspace.sidebarTab },
+            set: { workspace.sidebarTab = $0 }
+        )
     }
 
     /// The drag operation to report for the current tab, evaluated live when

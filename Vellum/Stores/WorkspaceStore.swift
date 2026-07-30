@@ -80,6 +80,27 @@ final class WorkspaceStore {
         sidebarOpen = isPresented
     }
 
+    /// Selects an inspector panel and makes sure it is actually on screen.
+    ///
+    /// The ⌥⌘1/2/3 menu commands route here rather than assigning `sidebarTab`
+    /// directly: selecting a panel in a closed inspector would change nothing
+    /// the user can see, so choosing one from the menu has to open the column
+    /// too. Reveal only — it never closes an inspector that is already open,
+    /// because ⌥⌘S is the toggle and a panel command that sometimes hid the
+    /// panel would be a trap.
+    ///
+    /// Nothing is done without a document: the inspector cannot be presented
+    /// then (`inspectorPresented`), so opening it would silently flip the user's
+    /// preference for whenever they next open one. The menu items are already
+    /// disabled in that state, so this guard is belt-and-braces — note it is
+    /// stricter than the ⌥⌘S toggle beside them, which writes `sidebarOpen`
+    /// directly and leans entirely on `.disabled`.
+    func revealSidebarTab(_ tab: SidebarTab) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarTab = tab
+        sidebarOpen = true
+    }
+
     /// Remembers user resizing while the inspector is genuinely visible.
     /// Geometry briefly collapses when a start tab suppresses the inspector;
     /// rejecting that transient measurement lets the next document reopen at
