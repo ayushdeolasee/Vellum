@@ -386,6 +386,9 @@ final class AppStore {
         await syncDocumentId(sessionId: tabId)
         try await sessions.saveFile(sessionId: tabId)
         let bytes = try await sessions.readPdfBytes(sessionId: tabId)
+        // Saving over a file whose tab was just closed: that close's teardown
+        // still holds the old bytes and would rename them over this write.
+        await awaitTeardowns(ofDocumentAt: destinationURL.path)
         try await Task.detached {
             try bytes.write(to: destinationURL, options: .atomic)
         }.value
@@ -469,16 +472,55 @@ final class AppStore {
 
     // MARK: - Closing / switching tabs
 
+    /// One closed tab's in-flight teardown: the document path it will rewrite
+    /// (the backend stores canonical paths, so this one is canonical too) and
+    /// the task doing the rewriting. The path is recorded so the open and save
+    /// paths can wait out a teardown that still holds the same file.
+    private struct TabTeardown {
+        let documentPath: String
+        let task: Task<Void, Never>
+    }
+
     /// Teardown work for tabs that have already left `tabs`, keyed by the closed
     /// tab id. Each task removes its own entry when it finishes.
-    private var tabTeardowns: [String: Task<Void, Never>] = [:]
+    private var tabTeardowns: [String: TabTeardown] = [:]
 
     /// Await every close still finishing its metadata write, text flush, and
     /// session close. `applicationShouldTerminate` drains this so quitting right
     /// after closing a tab still persists that tab's reading position.
     func awaitPendingTabTeardowns() async {
-        for task in Array(tabTeardowns.values) {
-            await task.value
+        for teardown in Array(tabTeardowns.values) {
+            await teardown.task.value
+        }
+    }
+
+    /// Await any pending teardown that still holds the file at `path`.
+    ///
+    /// A close's teardown keeps rewriting its document long after the tab left
+    /// the strip: the `last_page` metadata write is a read + parse + serialize +
+    /// atomic rename of the whole PDF (~15s on a large document). Opening or
+    /// writing that same file before the rename lands races it — the reopen
+    /// reads stale bytes (wrong reading position), and the rename silently
+    /// replaces anything written in the window (lost annotations, a clobbered
+    /// Save As). So every path that opens or writes a document file calls this
+    /// first. The wait is bounded by the teardown itself and only bites when
+    /// the same file is reused immediately; every other open stays instant.
+    private func awaitTeardowns(ofDocumentAt path: String) async {
+        guard !tabTeardowns.isEmpty else { return }
+        // Teardowns record canonical paths, so resolve the incoming path the
+        // same way for the comparison. realpath(2) is a blocking syscall —
+        // this whole PR exists to keep those off the main actor — so it runs
+        // detached. A path that fails to resolve (e.g. a Save As destination
+        // that does not exist yet, which also cannot collide with a file a
+        // teardown holds) is compared as given.
+        let canonical = await Task.detached(priority: .userInitiated) {
+            (try? PdfDocumentLoader.canonicalize(path)) ?? path
+        }.value
+        // Snapshot before awaiting: finished teardowns remove themselves from
+        // the dictionary, and new ones can register across suspension points.
+        let pending = tabTeardowns.values.filter { $0.documentPath == canonical }
+        for teardown in pending {
+            await teardown.task.value
         }
     }
 
@@ -504,7 +546,7 @@ final class AppStore {
         let closingTab = tabs[closingIndex]
         // Start tabs carry no backend session — skip the metadata/close round
         // trips that would otherwise fire against a nonexistent session id.
-        if closingTab.document != nil {
+        if let closingDocument = closingTab.document {
             let lastPage = String(closingTab.currentPage)
             // Resolved now: the runtime is dropped from the workspace at the end
             // of the teardown, and holding it here keeps it alive until its
@@ -515,15 +557,19 @@ final class AppStore {
             // ⌘Q immediately after a close must not lose the reading position:
             // the tab is already gone from `tabs`, so the quit path's per-tab
             // metadata loop no longer covers it. The task registers itself for
-            // `awaitPendingTabTeardowns`, which quit drains.
-            tabTeardowns[tabId] = Task { [weak self, weak workspace] in
-                try? await sessions.setDocumentMetadata(
-                    sessionId: tabId, key: "last_page", value: lastPage)
-                await runtime?.flushPdfText()
-                try? await sessions.closeFile(sessionId: tabId)
-                workspace?.removeLiveTabRuntime(for: tabId)
-                self?.tabTeardowns[tabId] = nil
-            }
+            // `awaitPendingTabTeardowns`, which quit drains, and records its
+            // document path so an immediate reopen or overwrite of the same
+            // file waits for it (see `awaitTeardowns(ofDocumentAt:)`).
+            tabTeardowns[tabId] = TabTeardown(
+                documentPath: closingDocument.pdfPath,
+                task: Task { [weak self, weak workspace] in
+                    try? await sessions.setDocumentMetadata(
+                        sessionId: tabId, key: "last_page", value: lastPage)
+                    await runtime?.flushPdfText()
+                    try? await sessions.closeFile(sessionId: tabId)
+                    workspace?.removeLiveTabRuntime(for: tabId)
+                    self?.tabTeardowns[tabId] = nil
+                })
         } else {
             workspace?.removeLiveTabRuntime(for: tabId)
         }
@@ -997,6 +1043,11 @@ final class AppStore {
     }
 
     private func openDocumentFile(path: String) async throws {
+        // Close-then-immediately-reopen: a teardown from a preceding close may
+        // still be rewriting this exact file. Opening before it lands would
+        // restore a stale reading position and lose any write the new session
+        // makes before the teardown's atomic rename.
+        await awaitTeardowns(ofDocumentAt: path)
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
@@ -1040,6 +1091,12 @@ final class AppStore {
             panel.allowedContentTypes = [.pdf]
         }
         guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+
+        // The core writes the bundle's document bytes to `destination` before
+        // `openDocumentFile` (and its own teardown guard) ever runs. If the
+        // user picked a file whose tab was just closed, wait out that close's
+        // teardown here so its rename cannot clobber the imported bytes.
+        await awaitTeardowns(ofDocumentAt: destination.path)
 
         let result = try await Self.importVellumBundleCore(imported, to: destination) { title in
             let alert = NSAlert()
