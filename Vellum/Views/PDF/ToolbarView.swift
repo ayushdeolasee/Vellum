@@ -22,22 +22,28 @@ struct VellumToolbar: ToolbarContent {
     // Low-use actions no longer each claim a glass circle, which is what
     // produced the "pill soup".
     var body: some ToolbarContent {
-        // LEADING — navigation. Buttons placed directly in the group share one
-        // glass pod on macOS 26.
+        // LEADING — navigation. Buttons placed directly in a group share one
+        // glass pod on macOS 26, and ADJACENT `.navigation` items merge into
+        // that same pod, with the system picking arbitrary sub-boundaries
+        // (it once lumped the page counter with zoom-out but not zoom-in —
+        // PR #115 review). The fixed spacers below are what keep page
+        // stepping, the page counter, and zoom as three separate pods. They
+        // must carry an explicit `placement: .navigation`: a bare
+        // ToolbarSpacer defaults to `.automatic`, which lands in the trailing
+        // region — that default is why spacers previously looked like a
+        // no-op in this region.
         //
-        // Do NOT reach for ControlGroup to merge them: inside toolbar content
-        // its children escape `.navigation` altogether and reflow into the
-        // trailing region, which is what stacked the page and zoom buttons on
-        // top of the bookmark/note/inspector run as overlapping circles.
-        // ToolbarSpacer is likewise a no-op in this region (it does separate
-        // pods in the trailing region below), so the exact pod boundaries here
-        // are the system's to pick.
+        // Do NOT reach for ControlGroup to merge buttons: inside toolbar
+        // content its children escape `.navigation` altogether and reflow
+        // into the trailing region, which is what stacked the page and zoom
+        // buttons on top of the bookmark/note/inspector run as overlapping
+        // circles.
         ToolbarItemGroup(placement: .navigation) {
             if hasDocument {
                 if isWeb {
                     WebHistoryButtons()
                 } else {
-                    PageControls()
+                    PageStepButtons()
                 }
             }
         }
@@ -45,6 +51,11 @@ struct VellumToolbar: ToolbarContent {
         // PDF-only reading controls stay in the leading region so the centered
         // title and the trailing pod never move between modes.
         if hasDocument, !isWeb {
+            ToolbarSpacer(.fixed, placement: .navigation)
+            ToolbarItem(placement: .navigation) {
+                PageIndicator()
+            }
+            ToolbarSpacer(.fixed, placement: .navigation)
             ToolbarItemGroup(placement: .navigation) {
                 ZoomControls()
             }
@@ -164,11 +175,10 @@ private struct WebHistoryButtons: View {
 
 // MARK: - Page navigation
 
-private struct PageControls: View {
+/// The previous/next steppers, one pod — the "< >" entity, separate from the
+/// page counter next to it (PR #115 review).
+private struct PageStepButtons: View {
     @Environment(AppStore.self) private var appStore
-
-    @State private var pageInput = "1"
-    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Button {
@@ -188,7 +198,17 @@ private struct PageControls: View {
         .disabled(appStore.currentPage >= appStore.numPages)
         .help("Next page — or type a page number in the field")
         .accessibilityIdentifier("toolbar.nextPage")
+    }
+}
 
+/// The "page x of N" counter, its own pod between the steppers and zoom.
+private struct PageIndicator: View {
+    @Environment(AppStore.self) private var appStore
+
+    @State private var pageInput = "1"
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
         HStack(spacing: 5) {
             TextField("", text: $pageInput)
                 .textFieldStyle(.roundedBorder)

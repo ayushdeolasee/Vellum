@@ -229,6 +229,19 @@ private struct WindowChrome: View {
                 Divider()
                 sidebar
             }
+            // The inspector must own SOME toolbar content: while its toolbar
+            // section is empty, macOS 26 draws no tracking separator and the
+            // window's trailing items (bookmark, note, sidebar toggle,
+            // overflow) flush against the window edge — reading as part of
+            // the sidebar instead of the document's toolbar (PR #115 review).
+            // A flexible spacer renders nothing above the sidebar but forces
+            // the separator into existence, so those items stay over the
+            // document. Real items deliberately don't live here: at narrow
+            // widths AppKit collapses them into an overflow that strands
+            // functionality (same reason the tab switcher sits below).
+            .toolbar {
+                ToolbarSpacer(.flexible)
+            }
             .inspectorColumnWidth(
                 min: InspectorLayout.minimumWidth,
                 ideal: workspace.sidebarWidth,
