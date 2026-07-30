@@ -288,6 +288,63 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertEqual(references.last?.page, 4)
     }
 
+    // MARK: - Import must not destroy a local conversation it can't read (#90)
+
+    /// The merge rewrites conversations.json in one shot, with no write-behind
+    /// cache to fall back on. It used to decode the LOCAL file all-or-nothing, so
+    /// one bad record collapsed it to `[]` and the import destroyed every good
+    /// local message on the spot. Only the unreadable record may be lost.
+    func testImportKeepsLocalMessagesAroundAnUndecodableOne() throws {
+        let key = "convo-lossy-merge-key"
+        let good = message(id: "local-1", role: .user, content: "local question",
+                           createdAt: "2026-01-01T00:00:00Z")
+        var array = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try JSONEncoder().encode([good])) as? [Any])
+        array.append(["id": "local-bad", "role": "system"])
+        try DocumentDataStore.saveConversationsData(
+            forKey: key, data: try JSONSerialization.data(withJSONObject: array))
+
+        let incoming = message(id: "imp-1", role: .assistant, content: "imported answer",
+                               createdAt: "2026-01-02T00:00:00Z")
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [],
+            conversations: try JSONEncoder().encode([incoming]))
+        try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal }
+
+        let data = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+        let stored = try JSONDecoder().decode([AiMessage].self, from: data)
+        XCTAssertEqual(stored.map(\.id), ["local-1", "imp-1"],
+                       "the readable local message must survive the merge")
+    }
+
+    /// When NOTHING in the local file decodes, the merge would write the
+    /// imported messages over bytes we merely failed to read — the same loss
+    /// `AiPersistence`'s write guard refuses. The import must not be a way
+    /// around it: the file is left byte-for-byte intact and the failure is
+    /// surfaced rather than swallowed.
+    func testImportRefusesToOverwriteAnUndecodableLocalConversation() throws {
+        let key = "convo-undecodable-merge-key"
+        let corrupt = Data(#"[{"id":"local-bad","role":"system"}]"#.utf8)
+        try DocumentDataStore.saveConversationsData(forKey: key, data: corrupt)
+
+        let incoming = message(id: "imp-1", role: .assistant, content: "imported answer",
+                               createdAt: "2026-01-02T00:00:00Z")
+        let imported = VellumBundle.Imported(
+            manifest: validPdfManifest(documentBytes: Data("d".utf8)),
+            documentData: Data("d".utf8),
+            scratchpad: nil,
+            attachments: [],
+            conversations: try JSONEncoder().encode([incoming]))
+
+        XCTAssertThrowsError(
+            try VellumBundle.installSidecar(imported, forKey: key) { _ in .keepLocal })
+        XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: key), corrupt,
+                       "the unreadable local conversation must be left untouched")
+    }
+
     // MARK: - Version rejection
 
     func testVersionTwoRejected() throws {

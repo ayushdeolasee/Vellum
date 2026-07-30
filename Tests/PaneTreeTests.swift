@@ -83,6 +83,99 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(ws.focusedPane.app.activeTabId, firstActiveTabId)
     }
 
+    /// Merging must *transfer* tabs, not copy them (issue #91). A `PdfTab` is a
+    /// value type, so appending it to the surviving pane while leaving it in the
+    /// donor's array left two AppStores claiming the same tab id — and the donor
+    /// still reporting it as its active tab. Everything keyed on tab-to-pane
+    /// ownership then resolved the tab to the pane it had just left; the web
+    /// controller's `activateSharedHandlers` guard (`app.activeTabId ==
+    /// mountTabId`) is the one that bit, binding find / scroll-to-page /
+    /// AI-capture hooks to the discarded pane's stores.
+    func testMergeAllTransfersTabOwnershipInsteadOfCopying() {
+        let ws = makeWorkspace()
+        let keep = ws.focusedPane
+        keep.app.attachTab(makeTab(id: "keep-a", document: pdfDocument(path: "/tmp/keep-a.pdf")))
+        keep.app.attachTab(makeTab(id: "keep-b", document: pdfDocument(path: "/tmp/keep-b.pdf")))
+        keep.app.activateTab("keep-a")
+
+        ws.splitFocused(.horizontal)
+        let donor = ws.focusedPane
+        // `donor-a` is a WEB tab: the migrating web view is the case the issue is
+        // actually about, and the only tab kind whose native state is bound to a
+        // pane's stores rather than rebuilt per host.
+        donor.app.attachTab(makeTab(
+            id: "donor-a",
+            document: DocumentInfo(
+                kind: .web, pdfPath: "https://example.com", title: "Example",
+                pageCount: 1, lastPage: 1)))
+        donor.app.attachTab(makeTab(id: "donor-b", document: pdfDocument(path: "/tmp/donor-b.pdf")))
+        let donorRuntime = ws.liveTabRuntime(for: "donor-a")
+
+        ws.focus(keep.id)
+        ws.mergeAll()
+
+        // The donor gave the tabs up: no lingering claim on any of them. The
+        // middle assertion is the one the web controller's mount guard reads.
+        XCTAssertTrue(donor.app.tabs.isEmpty)
+        XCTAssertNil(donor.app.activeTabId)
+        XCTAssertNil(donor.app.document)
+
+        // …and the survivor holds each exactly once, in visual order, with the
+        // tabs it already had still ahead of the migrated ones. (The split's
+        // own start tab rides along between them, hence the filter.)
+        XCTAssertEqual(
+            keep.app.tabs.map(\.id).filter { !$0.hasPrefix("start-") },
+            ["keep-a", "keep-b", "donor-a", "donor-b"])
+        XCTAssertEqual(keep.app.tabs.count, 5)
+        XCTAssertEqual(Set(keep.app.tabs.map(\.id)).count, keep.app.tabs.count)
+        // Migrating a tab must not disturb its live runtime — it is workspace
+        // owned and keyed by tab id, so it follows the tab across the move.
+        XCTAssertTrue(ws.liveTabRuntime(for: "donor-a") === donorRuntime)
+        // The user's current document still wins over each attach's activation.
+        XCTAssertEqual(keep.app.activeTabId, "keep-a")
+    }
+
+    /// Detaching mutates the array the merge is walking, so the ids are
+    /// snapshotted first. With three panes and two tabs each, a merge that lost
+    /// its place would drop every other tab.
+    func testMergeAllMigratesEveryTabAcrossNestedSplits() {
+        let ws = makeWorkspace()
+        let keep = ws.focusedPane
+        keep.app.attachTab(makeTab(id: "keep-a", document: pdfDocument(path: "/tmp/keep-a.pdf")))
+        keep.app.attachTab(makeTab(id: "keep-b", document: pdfDocument(path: "/tmp/keep-b.pdf")))
+
+        var donors: [PaneModel] = []
+        for index in 0..<2 {
+            ws.focus(keep.id)
+            ws.splitFocused(index == 0 ? .horizontal : .vertical)
+            let donor = ws.focusedPane
+            donor.app.attachTab(
+                makeTab(id: "donor-\(index)-a", document: pdfDocument(path: "/tmp/d\(index)a.pdf")))
+            donor.app.attachTab(
+                makeTab(id: "donor-\(index)-b", document: pdfDocument(path: "/tmp/d\(index)b.pdf")))
+            donors.append(donor)
+        }
+        XCTAssertEqual(ws.root.allLeaves().count, 3)
+
+        ws.focus(keep.id)
+        ws.mergeAll()
+
+        XCTAssertEqual(ws.root.allLeaves().count, 1)
+        // 2 kept + 4 migrated + 1 start tab from each of the two splits.
+        XCTAssertEqual(keep.app.tabs.count, 8)
+        for id in ["donor-0-a", "donor-0-b", "donor-1-a", "donor-1-b"] {
+            XCTAssertTrue(keep.app.tabs.contains { $0.id == id }, "lost \(id)")
+        }
+        for donor in donors {
+            XCTAssertTrue(donor.app.tabs.isEmpty)
+            XCTAssertNil(donor.app.activeTabId)
+        }
+    }
+
+    private func pdfDocument(path: String) -> DocumentInfo {
+        DocumentInfo(kind: .pdf, pdfPath: path, title: path, pageCount: 4, lastPage: 1)
+    }
+
     func testMoveTabBetweenPanes() {
         let ws = makeWorkspace()
         let source = ws.focusedPane
