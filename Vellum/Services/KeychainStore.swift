@@ -21,14 +21,11 @@ enum KeychainStore {
     /// argument the harness always passes is the only signal available there,
     /// so it counts as "under test" too — otherwise every UI-test launch of an
     /// ad-hoc-signed build would re-prompt for the login keychain password.
-    private static let isRunningTests: Bool = {
-        if UITestLaunchConfiguration.isEnabled { return true }
-        let env = ProcessInfo.processInfo.environment
-        return env["XCTestConfigurationFilePath"] != nil
-            || env["XCTestSessionIdentifier"] != nil
-            || env["XCTestBundlePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-    }()
+    /// That extra term is the only difference from `AppDefaults`' guard, which
+    /// shares the hosted-process half of the detection so the two cannot drift.
+    private static var isRunningTests: Bool {
+        UITestLaunchConfiguration.isEnabled || TestEnvironment.isHostedTestProcess
+    }
 
     /// In-memory stand-in used instead of the keychain while under test, so
     /// set/get/delete still round-trip within a test process.

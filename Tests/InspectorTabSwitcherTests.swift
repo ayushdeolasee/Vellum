@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Vellum
 
@@ -49,6 +50,16 @@ final class InspectorTabSwitcherTests: XCTestCase {
         }
     }
 
+    /// The header's height is a drop-routing fact as much as a layout one: it
+    /// is the strip issue #101 found was not a drag target, and
+    /// `SidebarDropRoutingTests` aims at its midpoint. Pinned with a literal so
+    /// the drop test cannot start aiming somewhere else by accident.
+    func testHeaderHeightIsTheStripTheCatcherMustCover() {
+        XCTAssertEqual(InspectorLayout.switcherHeight, 30)
+        XCTAssertEqual(InspectorLayout.switcherVerticalPadding, 8)
+        XCTAssertEqual(InspectorLayout.headerHeight, 46)
+    }
+
     func testPresentationRespondsAtEachWidthClass() {
         XCTAssertEqual(
             InspectorLayout.presentation(for: InspectorLayout.idealWidth),
@@ -69,6 +80,44 @@ final class InspectorTabSwitcherTests: XCTestCase {
         XCTAssertEqual(
             Set(WorkspaceStore.SidebarTab.allCases.map(\.systemImage)).count,
             WorkspaceStore.SidebarTab.allCases.count)
+    }
+
+    /// The panel shortcuts follow the switcher's own left-to-right order, so
+    /// ⌥⌘2 always means "the middle one". Written out rather than derived from
+    /// `allCases` so reordering the panels has to be a deliberate decision here.
+    func testPanelShortcutDigitsFollowTheSwitcherOrder() {
+        XCTAssertEqual(
+            WorkspaceStore.SidebarTab.allCases.map(\.shortcutDigit),
+            ["1", "2", "3"])
+        XCTAssertEqual(WorkspaceStore.SidebarTab.annotations.shortcutDigit, "1")
+        XCTAssertEqual(WorkspaceStore.SidebarTab.ai.shortcutDigit, "2")
+        XCTAssertEqual(WorkspaceStore.SidebarTab.scratchpad.shortcutDigit, "3")
+    }
+
+    /// The collision guard, comparing the two real constants rather than a
+    /// remembered value. Plain ⌘1…⌘9 already activate TABS (`VellumCommands`
+    /// ▸ Navigate, from #83); binding the panels to the same chord would give
+    /// two enabled menu items one key equivalent, and AppKit would hand it to
+    /// whichever menu it walked first. The digits deliberately DO overlap —
+    /// that is what the different modifier is for — so the modifier is the
+    /// entire separation, and changing EITHER side to match the other fails
+    /// here.
+    func testPanelShortcutsDoNotCollideWithTabSwitching() {
+        let panel = WorkspaceStore.SidebarTab.shortcutModifiers
+        let tabs = VellumCommands.tabShortcutModifiers
+        XCTAssertNotEqual(
+            panel, tabs,
+            "the inspector panels and the tab switcher claim the same chord for ⌘1/2/3")
+        XCTAssertEqual(panel, [.command, .option])
+        XCTAssertEqual(tabs, .command)
+
+        // Every panel digit is inside the range the Navigate menu claims, which
+        // is exactly why the modifiers have to differ.
+        for tab in WorkspaceStore.SidebarTab.allCases {
+            XCTAssertTrue(
+                ("1"..."9").contains(tab.shortcutDigit),
+                "\(tab.shortcutDigit) is not a digit the switcher can reach")
+        }
     }
 
     func testCollapsedControlValueReflectsEverySelection() {

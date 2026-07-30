@@ -138,6 +138,14 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     /// open. Class-B/C stores resolve their storage key from this via
     /// DocumentIdentity.
     var docId: String? = nil
+    /// Security-scoped bookmark for `pdfPath` (PDFs only), minted the moment the
+    /// document is opened while read access is guaranteed. Defense-in-depth
+    /// alongside stable code signing: durably grants access to files outside
+    /// the app's own container so a relaunch can regain access to a restored
+    /// tab without depending solely on TCC's per-identity grant. Optional so
+    /// data written before this field existed (or web docs, which never carry
+    /// one) decodes cleanly; readers must fall back to `pdfPath` when nil.
+    var bookmarkData: Data? = nil
 
     enum CodingKeys: String, CodingKey {
         case kind
@@ -146,6 +154,7 @@ struct DocumentInfo: Codable, Equatable, Sendable {
         case pageCount = "page_count"
         case lastPage = "last_page"
         case docId = "doc_id"
+        case bookmarkData = "bookmark_data"
     }
 }
 

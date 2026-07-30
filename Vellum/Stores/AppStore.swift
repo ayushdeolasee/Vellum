@@ -352,14 +352,18 @@ final class AppStore {
         }
 
         try await sessions.closeFile(sessionId: tabId)
-        let rebound: DocumentInfo
+        var rebound: DocumentInfo
         do {
             rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
+            // Fresh bookmark for the new location — the old one (if any) still
+            // points at sourceURL.
+            rebound.bookmarkData = SecurityScopedBookmark.make(for: destinationURL)
         } catch let reopenError {
             do {
                 // The original file is untouched, and a successful rollback
                 // restores the exact live tab rather than stranding it.
-                let restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                var restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                restored.bookmarkData = SecurityScopedBookmark.make(for: sourceURL)
                 updateTab(tabId) { $0.document = restored }
                 if activeTabId == tabId {
                     document = restored
@@ -619,7 +623,26 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    opened = try await sessions.openFile(path: savedDocument.pdfPath, sessionId: sessionId)
+                    // Resolve a stored bookmark before falling back to the raw
+                    // path — see SecurityScopedBookmark. Access only needs to
+                    // stay open for the duration of the read that opens the
+                    // file; PDFKit/CGPDF have finished parsing what they need
+                    // by the time `openFile` returns.
+                    var resolvedPath = savedDocument.pdfPath
+                    var resolvedURL: URL?
+                    var bookmarkNeedsRefresh = false
+                    if let bookmarkData = savedDocument.bookmarkData,
+                       let resolved = SecurityScopedBookmark.resolve(bookmarkData) {
+                        resolvedPath = resolved.url.path
+                        resolvedURL = resolved.url
+                        bookmarkNeedsRefresh = resolved.isStale
+                    }
+                    let accessStarted = resolvedURL?.startAccessingSecurityScopedResource() ?? false
+                    defer { if accessStarted { resolvedURL?.stopAccessingSecurityScopedResource() } }
+                    opened = try await sessions.openFile(path: resolvedPath, sessionId: sessionId)
+                    opened.bookmarkData = bookmarkNeedsRefresh || savedDocument.bookmarkData == nil
+                        ? SecurityScopedBookmark.make(forPath: resolvedPath)
+                        : savedDocument.bookmarkData
                 }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
@@ -1107,6 +1130,13 @@ final class AppStore {
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+        var doc = doc
+        // Mint a security-scoped bookmark right now, while the just-completed
+        // open guarantees read access — see SecurityScopedBookmark. Web docs
+        // have no filesystem path to bookmark.
+        if doc.kind == .pdf {
+            doc.bookmarkData = SecurityScopedBookmark.make(forPath: doc.pdfPath)
+        }
         RecentFilesService.record(doc)
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it

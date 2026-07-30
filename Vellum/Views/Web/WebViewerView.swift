@@ -325,11 +325,11 @@ private struct WebViewRepresentable: NSViewRepresentable {
         // The web view now outlives any single host: it belongs to the tab's
         // `LiveTabRuntime`, and the host is remounted whenever the tab is
         // dragged to another pane or its runtime comes back from eviction. An
-        // NSView may only have one superview, and `WorkspaceStore.mergeAll`
-        // copies tabs into the surviving pane before the donor pane's subtree
-        // is torn down — a window in which two hosts can briefly claim the same
-        // tab. Detaching first means the new host always adopts a parentless
-        // view, exactly as it would a freshly created one.
+        // NSView may only have one superview, and a tab that migrates panes is
+        // mounted at its destination before the donor pane's subtree is torn
+        // down — a window in which two hosts can briefly claim the same tab.
+        // Detaching first means the new host always adopts a parentless view,
+        // exactly as it would a freshly created one.
         let webView = controller.webView
         webView.removeFromSuperview()
         return webView
