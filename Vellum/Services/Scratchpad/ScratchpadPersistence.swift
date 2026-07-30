@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Per-document scratchpad notes, persisted to `documents/<key>/scratchpad.md`
 /// via `DocumentDataStore` (class-B user data — see plans/storage-design.html
@@ -223,6 +224,70 @@ enum ScratchpadAttachmentStore {
         }
     }
 
+    // MARK: - Pending attachments (written, reference not landed yet)
+
+    /// Ids written but not yet seen in any saved note text, mapped to the moment
+    /// their exemption lapses.
+    ///
+    /// A lock rather than main-actor isolation because the readers are not all
+    /// on the main actor: `pruneOrphanedAttachments` dispatches `collectGarbage`
+    /// to a detached task. The state is a plain Sendable dictionary, so this
+    /// stays a lock around a value — no actor hop on the drop path.
+    private static let pendingAttachments = OSAllocatedUnfairLock<[String: Date]>(
+        initialState: [:])
+
+    /// How long a written attachment stays exempt from collection while its
+    /// reference is in flight.
+    ///
+    /// The window it has to cover is the editor delivering the snippet, posting
+    /// its "change" message back, and the 400 ms save debounce — a fraction of a
+    /// second. It deliberately does NOT have to cover the editor's WebView still
+    /// loading: an insert requested before the bundle is ready is buffered, and
+    /// the mark is re-armed when it is finally delivered (see
+    /// `ScratchpadLiveEditor.Coordinator.flush`), so a slow cold start cannot eat
+    /// the budget. A minute against a sub-second window is generous on purpose,
+    /// because the failure modes are not symmetric: an exemption held too long
+    /// only delays a sweep that will collect the file anyway, while one released
+    /// too early deletes bytes the note is about to point at. Settable so a test
+    /// can exercise the lapse without waiting a minute.
+    nonisolated(unsafe) static var pendingGracePeriod: TimeInterval = 60
+
+    /// Declare that `id`'s bytes are on disk and its markdown reference is on
+    /// its way. Until that reference lands in saved text (or `pendingGracePeriod`
+    /// elapses), `collectGarbage` will not reap the file.
+    ///
+    /// Called by the code that is *about to* insert a reference, not by `save`
+    /// itself: writing bytes does not on its own imply a reference is coming
+    /// (imports and tests write attachments whose text already exists, or none).
+    static func markPending(_ id: String) {
+        let deadline = Date().addingTimeInterval(pendingGracePeriod)
+        pendingAttachments.withLock { $0[id.lowercased()] = deadline }
+    }
+
+    /// Drop every pending id that has now been observed in saved text — its
+    /// reference landed, so ordinary reachability governs it from here — along
+    /// with any whose grace period has lapsed. Returns what is still exempt.
+    ///
+    /// Keyed by id alone, so this registry spans documents while a sweep is
+    /// scoped to one. That asymmetry is safe in the direction that matters: an
+    /// entry can only ever spare a file, and a sweep only deletes from its own
+    /// directory, so a document can neither reap another's pending attachment
+    /// nor be made to keep a file it has no entry for. Ids are fresh UUIDs, so
+    /// two documents sharing one is not reachable from the write path.
+    private static func settlePending(observing referencedIds: Set<String>) -> Set<String> {
+        let now = Date()
+        return pendingAttachments.withLock { pending in
+            pending = pending.filter { !referencedIds.contains($0.key) && $0.value > now }
+            return Set(pending.keys)
+        }
+    }
+
+    /// Test seam: the registry is process-global (#102), so a suite touching it
+    /// must not inherit or leak entries.
+    static func resetPending() {
+        pendingAttachments.withLock { $0.removeAll() }
+    }
+
     /// Extensions a saved attachment can carry, probed directly so a lookup is
     /// O(1) rather than scanning a directory.
     private static let knownExtensions = [
@@ -261,10 +326,11 @@ enum ScratchpadAttachmentStore {
         return ids
     }
 
-    /// Delete files in `directory` whose id isn't in `referencedIds`. Scoped to
-    /// one document's attachments dir, so it can never touch another document's
-    /// still-referenced images.
-    /// Delete files in `directory` whose id isn't in `referencedIds`.
+    /// Delete files in `directory` whose id isn't in `referencedIds`. Deletion is
+    /// scoped to one document's attachments dir, so it can never touch another
+    /// document's images. (The pending registry consulted below is *not* so
+    /// scoped — see `settlePending` — but it can only ever spare a file, never
+    /// select one for deletion.)
     ///
     /// `referencedIds` is a snapshot of the note as it read at some moment, and
     /// this sweep can run later — `pruneOrphanedAttachments` dispatches it to a
@@ -278,9 +344,21 @@ enum ScratchpadAttachmentStore {
     ///
     /// A file spared this way is not leaked: if it really is an orphan, the next
     /// sweep sees it as older than that snapshot and collects it.
+    ///
+    /// The cutoff cannot cover the *other* half of the race (issue #105). When an
+    /// image is dropped, the bytes are written first and the markdown reference
+    /// arrives afterwards, through the editor's WebView round trip. A debounced
+    /// save landing in between computes a reference set that is genuinely current
+    /// and genuinely does not mention the new attachment — nothing about the
+    /// timestamps distinguishes it from an orphan. `markPending` closes that
+    /// window instead, by naming the attachment before its reference exists; this
+    /// sweep also settles pending ids it can now see referenced, so the exemption
+    /// lasts until the first save that observes the reference rather than for a
+    /// fixed span.
     static func collectGarbage(
         in directory: URL, referencedIds: Set<String>, referencedAsOf: Date? = nil
     ) {
+        let stillPending = settlePending(observing: referencedIds)
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [
                 .creationDateKey, .contentModificationDateKey,
@@ -288,6 +366,7 @@ enum ScratchpadAttachmentStore {
         for url in entries {
             let id = url.deletingPathExtension().lastPathComponent.lowercased()
             guard !referencedIds.contains(id) else { continue }
+            guard !stillPending.contains(id) else { continue }
             if let referencedAsOf, isNewerThan(referencedAsOf, url: url) { continue }
             try? FileManager.default.removeItem(at: url)
         }
