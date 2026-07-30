@@ -68,88 +68,164 @@ final class OpenAIClient {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
             let bytes = try await openStream(request)
+            let turn = try await Self.consumeTurn(
+                bytes, provider: "OpenAI", throwsOnUnexpectedIncomplete: true, onEvent: onEvent)
 
-            var text = ""
-            var calls: [[String: Any]] = []
-            var hitTokenLimit = false
-            for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload),
-                      let type = object["type"] as? String else { continue }
-                switch type {
-                case "response.output_text.delta":
-                    if let delta = object["delta"] as? String, !delta.isEmpty {
-                        text += delta
-                        onEvent(.textDelta(delta))
-                    }
-                case "response.output_item.done":
-                    if let item = object["item"] as? [String: Any],
-                       item["type"] as? String == "function_call" {
-                        calls.append(item)
-                    }
-                // Terminal event when the response was cut off. There were two
-                // identical `case "response.incomplete"` arms here, so the second
-                // was dead — which is why `incompleteMessage(reason:)` could
-                // never actually reach a user despite being covered by a test,
-                // and why a cutoff for any reason other than the token limit
-                // finalized silently as if the reply had completed normally.
-                //
-                // Merged into one arm that keeps the better behaviour for each
-                // case: a token-limit cutoff returns the partial text with a
-                // truncation note (throwing away a long, nearly-complete answer
-                // is worse than flagging it), while anything else — a content
-                // filter, say — surfaces the reason.
-                case "response.incomplete":
-                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    if reason == "max_output_tokens" {
-                        hitTokenLimit = true
-                    } else {
-                        throw AiClientError.message(Self.incompleteMessage(reason: reason ?? "unknown"))
-                    }
-                case "response.failed", "error":
-                    let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
-                        ?? (object["message"] as? String)
-                    throw AiClientError.message(message ?? "OpenAI streaming failed.")
-                default:
-                    break
-                }
-            }
-
-            if calls.isEmpty {
-                var reply = text
-                if hitTokenLimit {
-                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        throw AiClientError.message("OpenAI hit the output-token limit before producing any text. Try a lower thinking mode.")
-                    }
-                    reply += "\n\n_(reply truncated at the output-token limit)_"
-                }
+            // The gate is the only route from a streamed turn into the tool
+            // loop, so a truncated response cannot reach `toolEngine.run` (#107).
+            switch try Self.turnOutcome(
+                turn, provider: "OpenAI", hasPriorActions: !actionResults.isEmpty) {
+            case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
-            }
-
-            for call in calls {
-                guard let name = call["name"] as? String,
-                      let callId = call["call_id"] as? String else { continue }
-                let argumentsText = call["arguments"] as? String ?? "{}"
-                let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
-                let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
-                input.append([
-                    "type": "function_call",
-                    "call_id": callId,
-                    "name": name,
-                    "arguments": argumentsText,
-                ])
-                onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
-                let result = await toolEngine.run(
-                    action,
-                    sessionIdAtStart: sessionIdAtStart,
-                    actionCount: actionResults.count
-                )
-                actionResults.append(result)
-                onEvent(.toolFinished(result: result))
-                input.append(["type": "function_call_output", "call_id": callId, "output": result])
+            case .runTools(let queued):
+                for call in queued {
+                    guard let name = call["name"] as? String,
+                          let callId = call["call_id"] as? String else { continue }
+                    let argumentsText = call["arguments"] as? String ?? "{}"
+                    let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
+                    let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
+                    input.append([
+                        "type": "function_call",
+                        "call_id": callId,
+                        "name": name,
+                        "arguments": argumentsText,
+                    ])
+                    onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
+                    let result = await toolEngine.run(
+                        action,
+                        sessionIdAtStart: sessionIdAtStart,
+                        actionCount: actionResults.count
+                    )
+                    actionResults.append(result)
+                    onEvent(.toolFinished(result: result))
+                    input.append(["type": "function_call_output", "call_id": callId, "output": result])
+                }
             }
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// One streamed Responses turn: the visible text, the function calls the
+    /// model queued, and whether the response was cut off at its output-token
+    /// budget. Those three are decided together — `hitTokenLimit` says nothing
+    /// about whether `calls` is empty, which is the whole point of #107.
+    struct StreamedTurn {
+        var text = ""
+        var calls: [[String: Any]] = []
+        var hitTokenLimit = false
+    }
+
+    /// Consume one Responses SSE stream into a `StreamedTurn`, forwarding text
+    /// deltas live. Generic over the byte source so the loop can be driven from
+    /// an SSE fixture in tests instead of a network response.
+    ///
+    /// Shared by both Responses-API clients rather than copied into each. #107
+    /// existed because this logic lived in two places and one copy was wrong, so
+    /// the two remaining differences are parameters — a visible argument at the
+    /// call site — instead of a divergent second copy that can drift again.
+    ///
+    /// `throwsOnUnexpectedIncomplete` is the ChatGPT/Codex difference: that
+    /// backend's `response.incomplete` reasons are left to finalize silently,
+    /// which is the behaviour that client has always had. Preserved as-is here,
+    /// not endorsed — whether Codex should surface a content-filter cutoff the
+    /// way the direct client does is its own question, not this change's.
+    static func consumeTurn<Bytes: AsyncSequence>(
+        _ bytes: Bytes,
+        provider: String,
+        throwsOnUnexpectedIncomplete: Bool,
+        onEvent: @escaping @MainActor (AiStreamEvent) -> Void
+    ) async throws -> StreamedTurn where Bytes.Element == UInt8 {
+        var turn = StreamedTurn()
+        for try await payload in SSE.dataPayloads(bytes) {
+            guard let object = jsonObjectOrNil(payload),
+                  let type = object["type"] as? String else { continue }
+            switch type {
+            case "response.output_text.delta":
+                if let delta = object["delta"] as? String, !delta.isEmpty {
+                    turn.text += delta
+                    onEvent(.textDelta(delta))
+                }
+            case "response.output_item.done":
+                if let item = object["item"] as? [String: Any],
+                   item["type"] as? String == "function_call" {
+                    turn.calls.append(item)
+                }
+            // Terminal event when the response was cut off. There were two
+            // identical `case "response.incomplete"` arms here, so the second
+            // was dead — which is why `incompleteMessage(reason:)` could
+            // never actually reach a user despite being covered by a test,
+            // and why a cutoff for any reason other than the token limit
+            // finalized silently as if the reply had completed normally.
+            //
+            // Merged into one arm that keeps the better behaviour for each
+            // case: a token-limit cutoff returns the partial text with a
+            // truncation note (throwing away a long, nearly-complete answer
+            // is worse than flagging it), while anything else — a content
+            // filter, say — surfaces the reason.
+            case "response.incomplete":
+                let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
+                if reason == "max_output_tokens" {
+                    turn.hitTokenLimit = true
+                } else if throwsOnUnexpectedIncomplete {
+                    throw AiClientError.message(incompleteMessage(reason: reason ?? "unknown"))
+                }
+            case "response.failed", "error":
+                let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
+                    ?? (object["message"] as? String)
+                throw AiClientError.message(message ?? "\(provider) streaming failed.")
+            default:
+                break
+            }
+        }
+        return turn
+    }
+
+    /// What a streamed turn leads to: end the request with this reply, or run
+    /// these queued calls and take another turn.
+    enum TurnOutcome {
+        case finish(reply: String)
+        case runTools([[String: Any]])
+    }
+
+    /// The one decision point between a streamed turn and the tool loop, shared
+    /// by the two Responses-API clients (OpenAI-direct and ChatGPT OAuth).
+    ///
+    /// A `max_output_tokens` cutoff can arrive *after* a `function_call` item
+    /// completed in the same response, so a non-empty `calls` does NOT mean the
+    /// model was allowed to finish. Running that queue would execute a tool and
+    /// fire a whole further request off the back of a response the budget
+    /// already stopped — spending more tokens at exactly the moment the cap said
+    /// to stop (#107). So once the limit is hit the queue is dropped unrun and
+    /// the turn ends through the truncation surface the no-calls path has always
+    /// used: the partial text plus a visible note.
+    ///
+    /// `hasPriorActions` is what keeps stopping from becoming erasing. When the
+    /// cutoff leaves no text at all there is nothing to show, and the no-calls
+    /// path has always thrown — but throwing discards `actionResults` from
+    /// EARLIER turns of the same request, and the store's failure path drops the
+    /// tool trace with them. Tools that already navigated the document or added
+    /// a note would keep their effects while vanishing from the transcript. A
+    /// reasoning model that spends its whole budget thinking and emits one
+    /// function call is exactly this shape, so it is not an edge case. When
+    /// earlier turns did real work the request therefore ends with a note naming
+    /// the cutoff and keeps their results; only a request that produced nothing
+    /// at all is worth failing outright, where "try a lower thinking mode" is
+    /// the actionable thing to say.
+    static func turnOutcome(
+        _ turn: StreamedTurn, provider: String, hasPriorActions: Bool
+    ) throws -> TurnOutcome {
+        guard turn.hitTokenLimit else {
+            return turn.calls.isEmpty ? .finish(reply: turn.text) : .runTools(turn.calls)
+        }
+        guard turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .finish(reply: turn.text + "\n\n_(reply truncated at the output-token limit)_")
+        }
+        guard !hasPriorActions else {
+            return .finish(reply: "_(stopped at the output-token limit before answering — try a lower thinking mode)_")
+        }
+        throw AiClientError.message(
+            "\(provider) hit the output-token limit before producing any text. Try a lower thinking mode.")
     }
 
     /// Whether `model` takes a `reasoning` field at all. Everything else rejects

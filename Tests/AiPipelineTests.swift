@@ -492,6 +492,161 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(payloads[1].contains("lo"))
     }
 
+    // MARK: - Tool loop vs. the output-token limit (#107)
+
+    /// An OpenAI Responses stream that completes a `function_call` item and THEN
+    /// reports a `max_output_tokens` cutoff — the exact ordering issue #107 is
+    /// about. When `truncated` is false the stream ends the way a real completed
+    /// one does, with `response.completed`. The intermediate
+    /// `function_call_arguments.delta` is there because the real API sends it and
+    /// the client must ignore it (the completed item is the source of truth).
+    private func toolCallFixture(truncated: Bool, text: String = "Let me check page 4") -> FixtureBytes {
+        var lines = ""
+        if !text.isEmpty {
+            lines += """
+            event: response.output_text.delta
+            data: {"type":"response.output_text.delta","delta":"\(text)"}
+
+
+            """
+        }
+        lines += """
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"pageNu"}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"type":"function_call","name":"goToPage","call_id":"call_1","arguments":"{\\"pageNumber\\":4}"}}
+
+        """
+        if truncated {
+            lines += """
+
+            event: response.incomplete
+            data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+            """
+        } else {
+            lines += """
+
+            event: response.completed
+            data: {"type":"response.completed","response":{"status":"completed"}}
+            """
+        }
+        return FixtureBytes(bytes: Array(lines.utf8))
+    }
+
+    /// The regression: a response cut off at its token budget must NOT run the
+    /// function call it had already queued, and must not start another turn.
+    /// Before the gate, a non-empty `calls` sent the loop straight into
+    /// `toolEngine.run` — spending more tokens right after the budget said stop.
+    func testTokenLimitDropsQueuedFunctionCallsInsteadOfRunningThem() async throws {
+        var deltas: [String] = []
+        let turn = try await OpenAIClient.consumeTurn(
+            toolCallFixture(truncated: true), provider: "OpenAI",
+            throwsOnUnexpectedIncomplete: true,
+            onEvent: { if case .textDelta(let delta) = $0 { deltas.append(delta) } })
+        // Fixture sanity: the model really did queue a call before the cutoff,
+        // and the text it streamed was forwarded live on the way through.
+        XCTAssertEqual(turn.calls.count, 1)
+        XCTAssertTrue(turn.hitTokenLimit)
+        XCTAssertEqual(deltas, ["Let me check page 4"])
+
+        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: false) {
+        case .runTools:
+            XCTFail("a truncated response must not run its queued function calls")
+        case .finish(let reply):
+            // The truncation still surfaces exactly as it does with no calls.
+            XCTAssertTrue(reply.hasPrefix("Let me check page 4"))
+            XCTAssertTrue(reply.hasSuffix("_(reply truncated at the output-token limit)_"))
+        }
+    }
+
+    /// The gate must be scoped to the cutoff: an ordinary response that queued
+    /// the same call still runs it, so the tool loop keeps working.
+    func testQueuedFunctionCallsStillRunWhenTheResponseWasNotTruncated() async throws {
+        let turn = try await OpenAIClient.consumeTurn(
+            toolCallFixture(truncated: false), provider: "OpenAI",
+            throwsOnUnexpectedIncomplete: true, onEvent: { _ in })
+        XCTAssertFalse(turn.hitTokenLimit)
+
+        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: false) {
+        case .finish:
+            XCTFail("a completed response must still run its queued function calls")
+        case .runTools(let queued):
+            XCTAssertEqual(queued.count, 1)
+            XCTAssertEqual(queued.first?["name"] as? String, "goToPage")
+            // The streamed argument fragment must not be mistaken for a call.
+            XCTAssertEqual(queued.first?["arguments"] as? String, #"{"pageNumber":4}"#)
+        }
+    }
+
+    /// A cutoff that streamed no text at all, on the FIRST turn, still reaches
+    /// the error the no-calls path has always produced — named for the calling
+    /// provider, since the two Responses clients share this decision.
+    func testTokenLimitWithNoTextAndNoPriorWorkErrorsRatherThanRunningTools() async throws {
+        let turn = try await OpenAIClient.consumeTurn(
+            toolCallFixture(truncated: true, text: ""), provider: "ChatGPT",
+            throwsOnUnexpectedIncomplete: false, onEvent: { _ in })
+        XCTAssertEqual(turn.calls.count, 1)
+        XCTAssertTrue(turn.text.isEmpty)
+
+        XCTAssertThrowsError(
+            try OpenAIClient.turnOutcome(turn, provider: "ChatGPT", hasPriorActions: false)
+        ) { error in
+            guard case AiClientError.message(let message) = error else {
+                return XCTFail("expected an AiClientError.message, got \(error)")
+            }
+            XCTAssertTrue(message.hasPrefix("ChatGPT hit the output-token limit"))
+        }
+    }
+
+    /// Stopping must not mean erasing. A reasoning model can spend its whole
+    /// budget thinking and emit one function call with no visible text — so when
+    /// EARLIER turns of the same request already ran tools (which have already
+    /// changed the document), the request ends with the cutoff named and their
+    /// results kept, instead of throwing them away with an error.
+    func testTokenLimitKeepsWorkDoneByEarlierTurnsInsteadOfThrowing() async throws {
+        let turn = try await OpenAIClient.consumeTurn(
+            toolCallFixture(truncated: true, text: ""), provider: "OpenAI",
+            throwsOnUnexpectedIncomplete: true, onEvent: { _ in })
+
+        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: true) {
+        case .runTools:
+            XCTFail("a truncated response must not run its queued function calls")
+        case .finish(let reply):
+            XCTAssertTrue(reply.contains("output-token limit"),
+                          "the cutoff must still be named for the user")
+        }
+    }
+
+    /// The one behavioural difference between the two Responses clients is now a
+    /// parameter, not a second copy of the loop. The direct client surfaces a
+    /// non-token cutoff (the `content_filter` path that was dead code before
+    /// #86); the Codex-backed one finalizes silently, as it always has.
+    func testNonTokenIncompleteReasonSurfacesOnlyWhereTheClientAsksForIt() async throws {
+        let filtered = """
+        event: response.incomplete
+        data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}
+        """
+        func fixture() -> FixtureBytes { FixtureBytes(bytes: Array(filtered.utf8)) }
+
+        do {
+            _ = try await OpenAIClient.consumeTurn(
+                fixture(), provider: "OpenAI", throwsOnUnexpectedIncomplete: true,
+                onEvent: { _ in })
+            XCTFail("the direct client must surface a non-token cutoff")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("content_filter"),
+                "the direct client must name the reason it stopped for")
+        }
+
+        let tolerated = try await OpenAIClient.consumeTurn(
+            fixture(), provider: "ChatGPT", throwsOnUnexpectedIncomplete: false,
+            onEvent: { _ in })
+        XCTAssertFalse(tolerated.hitTokenLimit)
+        XCTAssertTrue(tolerated.calls.isEmpty)
+    }
+
     // MARK: - §4 Usage parsing
 
     func testUsageParsingAcrossProviderShapes() {
@@ -819,6 +974,324 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .opencode, model: "claude-sonnet-5", catalog: nil))
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .gemini, model: "anything", catalog: nil))
         XCTAssertTrue(AiModelCatalog.supportsVision(provider: .openrouter, model: "vendor/unknown", catalog: nil))
+    }
+
+    // MARK: - §5 Gemini thinking levels & output budget (#96)
+
+    /// `maxOutputTokens` for the mode/model, read off the body that actually
+    /// ships rather than the helper, so a wiring mistake in `generationConfig`
+    /// fails these too.
+    private static func geminiBody(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        GeminiClient.requestBody(
+            systemPrompt: "system",
+            contents: [["role": "user", "parts": [["text": "hi"]]]],
+            generationConfig: GeminiClient.generationConfig(for: mode, model: model)
+        )
+    }
+
+    private static func geminiConfig(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        (geminiBody(mode, model)["generation_config"] as? [String: Any]) ?? [:]
+    }
+
+    private static func geminiCap(_ mode: AiThinkingMode, _ model: String) -> Int? {
+        geminiConfig(mode, model)["maxOutputTokens"] as? Int
+    }
+
+    private static func geminiLevel(_ mode: AiThinkingMode, _ model: String) -> String? {
+        (geminiConfig(mode, model)["thinkingConfig"] as? [String: Any])?["thinkingLevel"] as? String
+    }
+
+    private static func geminiBudget(_ mode: AiThinkingMode, _ model: String) -> Int? {
+        (geminiConfig(mode, model)["thinkingConfig"] as? [String: Any])?["thinkingBudget"] as? Int
+    }
+
+    /// The #96 regression: `.auto` sends no thinkingConfig on every family but
+    /// 2.5 flash, so the server picks the level — and Google documents that pick
+    /// as `high` on the Pro and 3-flash rows and dynamic on 2.5. The cap stayed
+    /// at the flat 8192 base anyway, leaving zero headroom for reasoning the
+    /// model was going to do regardless, on the app's default provider at its
+    /// default thinking mode.
+    ///
+    /// The reserve is sized off each family's *documented* default rather than a
+    /// blanket assumption, so the expected caps below differ per row.
+    func testGeminiAutoBudgetsForTheThinkingTheServerWillDo() {
+        for model in ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"] {
+            XCTAssertNil(
+                Self.geminiConfig(.auto, model)["thinkingConfig"],
+                "Auto must leave the level to the server on \(model)")
+            XCTAssertEqual(
+                Self.geminiCap(.auto, model), 32768,
+                "Auto must budget for server-chosen thinking on \(model)")
+        }
+        // 3.5-flash defaults to `medium`, so it reserves a medium's worth.
+        XCTAssertEqual(Self.geminiCap(.auto, "gemini-3.5-flash"), 24576)
+    }
+
+    /// The flash-lite rows document their default as `minimal`, so there is
+    /// nothing for Auto to reserve and the base stands — including on
+    /// `gemini-3.1-flash-lite-preview`, which is the app's default model. Pinned
+    /// because the tempting blanket fix ("Auto always budgets as High") would
+    /// quadruple the cost guard on the single most common request the app makes,
+    /// for thinking the server has documented it will not do.
+    func testGeminiAutoKeepsTheBaseWhereTheServerDefaultsToMinimal() {
+        XCTAssertNil(Self.geminiConfig(.auto, "gemini-3.1-flash-lite-preview")["thinkingConfig"])
+        XCTAssertEqual(Self.geminiCap(.auto, "gemini-3.1-flash-lite-preview"), 8192)
+    }
+
+    /// A family with no row keeps the flat base in *every* mode. The safe branch
+    /// for a budget is the conservative one, opposite to `supportedThinkingLevels`:
+    /// several ids this endpoint serves cap output at 8192, and Gemini rejects a
+    /// `maxOutputTokens` above the model's limit — so guessing generously would
+    /// turn a truncated answer into a request that fails outright.
+    func testGeminiUnknownFamiliesKeepTheBaseBudget() {
+        for model in ["gemini-9-ultra", "gemma-3-27b-it", "gemini-1.0-pro"] {
+            for mode in AiThinkingMode.allCases {
+                XCTAssertEqual(Self.geminiCap(mode, model), 8192, "\(model)/\(mode)")
+            }
+        }
+    }
+
+    /// The reserve keys off "no config is going out while the model thinks
+    /// anyway", not off the mode — so a family can never have its High budgeted
+    /// below its Auto for the very same request JSON.
+    func testGeminiAutoIsNeverBudgetedAboveAnExplicitMode() {
+        for model in AiModelCatalog.gemini + ["gemini-9-ultra", "gemini-3.9-ultra"] {
+            let auto = Self.geminiCap(.auto, model) ?? 0
+            let high = Self.geminiCap(.high, model) ?? 0
+            XCTAssertLessThanOrEqual(
+                auto, high,
+                "\(model): Auto (\(auto)) must not out-budget High (\(high))")
+        }
+    }
+
+    /// Auto on 2.5 flash still disables thinking outright, so its budget stays
+    /// at the base — the mode sends `thinkingBudget: 0` and there is nothing to
+    /// reserve for. Unchanged by #96, and pinned so the new Auto branch can't
+    /// quietly widen it.
+    func testGeminiAutoKeepsTheBaseBudgetWhereThinkingIsDisabled() {
+        for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"] {
+            XCTAssertEqual(Self.geminiBudget(.auto, model), 0)
+            XCTAssertEqual(Self.geminiCap(.auto, model), 8192)
+        }
+    }
+
+    /// The 2.0 flash models and the 1.5 line don't think at all *and* cap output
+    /// at 8192 tokens total, so handing them a reasoning reserve would ask for
+    /// more than the model can return. Every mode stays at the base.
+    func testGeminiNonThinkingFamiliesNeverExceedTheirOutputLimit() {
+        for model in ["gemini-2.0-flash", "gemini-2.0-flash-lite",
+                      "gemini-1.5-pro", "gemini-1.5-flash"] {
+            for mode in AiThinkingMode.allCases {
+                XCTAssertNil(Self.geminiConfig(mode, model)["thinkingConfig"], "\(model)/\(mode)")
+                XCTAssertEqual(Self.geminiCap(mode, model), 8192, "\(model)/\(mode)")
+            }
+        }
+    }
+
+    /// The `contains("gemini-3-pro")` bug: `gemini-3.1-pro` does not contain
+    /// that substring, so it fell into the branch that sends `minimal` — a level
+    /// the 3.1 Pro row doesn't have, which 400s the request the way #94 did.
+    /// Google's rows: 3-pro is low/high, 3.1-pro adds medium but still has no
+    /// minimal, and the flash line takes the full ladder.
+    func testGeminiThinkingLevelRowsMatchTheDocumentedFamilies() {
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3-pro-preview"),
+                       ["low", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.1-pro-preview"),
+                       ["low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3-flash-preview"),
+                       ["minimal", "low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.1-flash-lite-preview"),
+                       ["minimal", "low", "medium", "high"])
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.5-flash"),
+                       ["minimal", "low", "medium", "high"])
+        // Off the 3 line there is no level vocabulary at all.
+        XCTAssertTrue(GeminiClient.supportedThinkingLevels(model: "gemini-2.5-pro").isEmpty)
+        // The image variants are the exception to "the flash line takes the full
+        // ladder", and the substring that matches the flash rows would otherwise
+        // swallow them and send a level they reject.
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.1-flash-lite-image"),
+                       ["minimal", "high"])
+        // An unrecognized 3.x id gets the intersection of the text rows, so it
+        // can never be sent a level some future Pro release rejects.
+        XCTAssertEqual(GeminiClient.supportedThinkingLevels(model: "gemini-3.9-ultra"),
+                       ["low", "high"])
+    }
+
+    /// What the server does when the field is omitted, which is what the Auto
+    /// reserve is sized from. Written out per family because the whole point of
+    /// the #96 fix is that this is *not* uniform across the line.
+    func testGeminiDocumentedDefaultsDriveTheAutoReserve() {
+        func level(_ model: String) -> String? {
+            GeminiClient.unconfiguredThinking(model: model)?["thinkingLevel"] as? String
+        }
+        XCTAssertEqual(level("gemini-3-pro-preview"), "high")
+        XCTAssertEqual(level("gemini-3-flash-preview"), "high")
+        XCTAssertEqual(level("gemini-3.5-flash"), "medium")
+        XCTAssertEqual(level("gemini-3.1-flash-lite-preview"), "minimal")
+        // 2.5 defaults to dynamic thinking, which is the -1 budget.
+        XCTAssertEqual(
+            GeminiClient.unconfiguredThinking(model: "gemini-2.5-pro")?["thinkingBudget"] as? Int, -1)
+        // Families that do no thinking, and ids with no row at all, reserve
+        // nothing — an omitted config there really means zero reasoning tokens.
+        for model in ["gemini-2.0-flash", "gemini-1.5-pro", "gemma-3-27b-it", "gemini-9-ultra"] {
+            XCTAssertNil(GeminiClient.unconfiguredThinking(model: model), model)
+        }
+    }
+
+    /// The end-to-end shape of the bug above, asserted on the request body: no
+    /// shipped Gemini id may ever be sent a level outside its own row.
+    func testNoShippedGeminiModelIsSentAnUnsupportedLevel() {
+        for model in AiModelCatalog.gemini {
+            let supported = GeminiClient.supportedThinkingLevels(model: model)
+            for mode in AiThinkingMode.allCases {
+                guard let level = Self.geminiLevel(mode, model) else { continue }
+                XCTAssertTrue(
+                    supported.contains(level),
+                    "\(model) must not be sent thinkingLevel \(level) for \(mode)")
+            }
+        }
+        // Specifically: Instant on a Pro row rounds to `low` instead of sending
+        // the `minimal` that row doesn't have.
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3.1-pro-preview"), "low")
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3-pro-preview"), "low")
+        // …while a flash row, which does have it, still gets `minimal`.
+        XCTAssertEqual(Self.geminiLevel(.instant, "gemini-3.1-flash-lite-preview"), "minimal")
+    }
+
+    /// Ties round up on the Gemini ladder: 3-pro offers only low/high, and
+    /// Medium sits equidistant between them. Rounding down would demote a
+    /// Medium request to the weakest setting the model has.
+    func testGeminiLevelTiesRoundUp() {
+        XCTAssertEqual(Self.geminiLevel(.medium, "gemini-3-pro-preview"), "high")
+        // 3.1-pro has a real `medium`, so nothing to round.
+        XCTAssertEqual(Self.geminiLevel(.medium, "gemini-3.1-pro-preview"), "medium")
+    }
+
+    /// Explicit modes budget off the level actually sent, so the cap tracks the
+    /// resolved level rather than the requested one.
+    func testGeminiExplicitModeBudgetsTrackTheResolvedLevel() {
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-3.1-flash-lite-preview"), 8192)
+        XCTAssertEqual(Self.geminiCap(.low, "gemini-3.1-flash-lite-preview"), 16384)
+        XCTAssertEqual(Self.geminiCap(.medium, "gemini-3.1-flash-lite-preview"), 24576)
+        XCTAssertEqual(Self.geminiCap(.high, "gemini-3.1-flash-lite-preview"), 32768)
+        // Instant on 3-pro resolves up to `low`, and the cap follows it up too.
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-3-pro-preview"), 16384)
+        // 2.5 Pro cannot disable thinking; its floor is the documented 128.
+        XCTAssertEqual(Self.geminiBudget(.instant, "gemini-2.5-pro"), 128)
+        XCTAssertEqual(Self.geminiCap(.instant, "gemini-2.5-pro"), 8320)
+    }
+
+    /// Every cap the shipped catalog can produce stays inside the model's own
+    /// documented output limit. The limits are written out per id rather than
+    /// derived from the code under test: reading them back out of the
+    /// implementation would let a misclassified model raise its own allowed
+    /// limit and pass green while the app sent a cap the API rejects.
+    func testGeminiCapsStayInsideDocumentedOutputLimits() {
+        let documentedLimit = [
+            "gemini-3.1-flash-lite-preview": 65536,
+            "gemini-3-pro-preview": 65536,
+            "gemini-3-flash-preview": 65536,
+            "gemini-2.5-pro": 65536,
+            "gemini-2.5-flash": 65536,
+            "gemini-2.5-flash-lite": 65536,
+            "gemini-2.0-flash": 8192,
+            "gemini-2.0-flash-lite": 8192,
+            "gemini-1.5-pro": 8192,
+            "gemini-1.5-flash": 8192,
+        ]
+        // Fails loudly when the catalog gains a model this table doesn't cover,
+        // rather than skipping it.
+        XCTAssertEqual(Set(documentedLimit.keys), Set(AiModelCatalog.gemini))
+        for (model, limit) in documentedLimit {
+            for mode in AiThinkingMode.allCases {
+                let cap = Self.geminiCap(mode, model) ?? 0
+                XCTAssertLessThanOrEqual(cap, limit, "\(model)/\(mode) asks for more than it can return")
+                XCTAssertGreaterThan(cap, 0, "\(model)/\(mode)")
+            }
+        }
+    }
+
+    /// The body still carries everything the turn needs; `generation_config` is
+    /// the only part #96 reshapes.
+    func testGeminiRequestBodyKeepsItsTurnPayload() throws {
+        let body = Self.geminiBody(.high, "gemini-3-flash-preview")
+        let instruction = try XCTUnwrap(body["system_instruction"] as? [String: Any])
+        XCTAssertEqual(((instruction["parts"] as? [[String: Any]])?.first?["text"]) as? String, "system")
+        XCTAssertNotNil(body["contents"])
+        XCTAssertNotNil(body["tools"])
+        XCTAssertEqual(Self.geminiConfig(.high, "gemini-3-flash-preview")["temperature"] as? Double, 0.2)
+    }
+
+    // MARK: - §5 ChatGPT output budget (#96)
+
+    private static func chatGPTBody(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
+        ChatGPTClient.requestBody(
+            model: model, systemPrompt: "system", input: [], thinkingMode: mode,
+            sessionIdAtStart: "tab-1")
+    }
+
+    /// The #96 regression: every mode got a flat 8192, so High spent most of one
+    /// shared budget on reasoning tokens and had no more room left for the
+    /// answer than Instant did. The cap now scales through the same table the
+    /// direct OpenAI client uses.
+    func testChatGPTOutputBudgetScalesWithThinkingMode() {
+        XCTAssertEqual(Self.chatGPTBody(.low, "gpt-5.5")["max_output_tokens"] as? Int, 8192)
+        XCTAssertEqual(Self.chatGPTBody(.medium, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
+        XCTAssertEqual(Self.chatGPTBody(.high, "gpt-5.5")["max_output_tokens"] as? Int, 32768)
+        // Auto omits the effort, so the server picks; budget it mid-range for
+        // the same reason #95 did on the direct client.
+        XCTAssertEqual(Self.chatGPTBody(.auto, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
+        XCTAssertNil(Self.chatGPTBody(.auto, "gpt-5.5")["reasoning"])
+    }
+
+    /// The fix only ever raises a cap. Instant on the four slugs whose `minimal`
+    /// resolves to effort `none` would otherwise *drop* to the table's 4096, and
+    /// `none` spends no reasoning tokens — so that reduction would come straight
+    /// out of visible answer length, reintroducing this issue's own symptom on
+    /// the one mode nobody reported it for.
+    func testChatGPTNoModeLosesAnswerRoom() {
+        for model in AiModelCatalog.chatgpt {
+            for mode in AiThinkingMode.allCases {
+                let cap = Self.chatGPTBody(mode, model)["max_output_tokens"] as? Int ?? 0
+                XCTAssertGreaterThanOrEqual(
+                    cap, 8192, "\(model)/\(mode) budgets less than the flat cap it replaced")
+            }
+        }
+        XCTAssertEqual(
+            (Self.chatGPTBody(.instant, "gpt-5.5")["reasoning"] as? [String: Any])?["effort"] as? String,
+            "none")
+        XCTAssertEqual(Self.chatGPTBody(.instant, "gpt-5.5")["max_output_tokens"] as? Int, 8192)
+    }
+
+    /// Above the floor, the cap follows the effort *resolved* for the model
+    /// rather than the one requested — so a slug whose vocabulary bumps the
+    /// user's choice up or down gets a budget that matches what it will do.
+    func testChatGPTBudgetFollowsTheResolvedEffort() {
+        for model in AiModelCatalog.chatgpt {
+            for mode in AiThinkingMode.allCases {
+                let body = Self.chatGPTBody(mode, model)
+                let effort = (body["reasoning"] as? [String: Any])?["effort"] as? String
+                XCTAssertEqual(
+                    body["max_output_tokens"] as? Int,
+                    max(8192, OpenAIClient.maxOutputTokens(forEffort: effort, reasoning: true)),
+                    "\(model)/\(mode) budget must match the effort it sends")
+            }
+        }
+        // The codex slug has neither "none" nor "minimal", so Instant resolves
+        // up to "low" where the others resolve down to "none".
+        XCTAssertEqual(
+            (Self.chatGPTBody(.instant, "gpt-5.3-codex")["reasoning"] as? [String: Any])?["effort"] as? String,
+            "low")
+    }
+
+    /// The rest of the ChatGPT turn payload is untouched by #96.
+    func testChatGPTRequestBodyKeepsItsTurnPayload() {
+        let body = Self.chatGPTBody(.medium, "gpt-5.5")
+        XCTAssertEqual(body["prompt_cache_key"] as? String, "vellum-tab-1")
+        XCTAssertEqual(body["stream"] as? Bool, true)
+        XCTAssertEqual(body["store"] as? Bool, false)
+        XCTAssertEqual(body["instructions"] as? String, "system")
+        XCTAssertNotNil(body["tools"])
     }
 
     /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file.

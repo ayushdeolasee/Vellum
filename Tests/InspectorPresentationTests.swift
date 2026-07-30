@@ -131,6 +131,43 @@ struct InspectorPresentationTests {
         #expect(workspace.inspectorPresented)
     }
 
+    /// What ⌥⌘1/2/3 do (issue #101). The commands are disabled without a
+    /// document, so the interesting half is the reveal: selecting a panel while
+    /// the inspector is closed has to open it, or the shortcut appears to do
+    /// nothing at all.
+    @Test("Revealing a panel selects it and opens a closed inspector")
+    func revealSidebarTabOpensTheInspector() async {
+        let workspace = WorkspaceStore(sessions: InspectorSessionService())
+        await workspace.focusedPane.app.openFile(path: "/tmp/inspector-test.pdf")
+        workspace.setInspectorPresented(false)
+        #expect(workspace.inspectorPresented == false)
+
+        workspace.revealSidebarTab(.scratchpad)
+        #expect(workspace.sidebarTab == .scratchpad)
+        #expect(workspace.sidebarOpen)
+        #expect(workspace.inspectorPresented)
+
+        // Reveal, never toggle: pressing the same shortcut again must not close
+        // the panel it just opened. ⌥⌘S is the toggle.
+        workspace.revealSidebarTab(.scratchpad)
+        #expect(workspace.inspectorPresented)
+        #expect(workspace.sidebarTab == .scratchpad)
+    }
+
+    /// The belt-and-braces half of the gate. The menu items are disabled with
+    /// no document; if one ever fired anyway it must not flip `sidebarOpen`,
+    /// which is the preference the *next* document would open with.
+    @Test("Revealing a panel does nothing without a document")
+    func revealSidebarTabIsInertWithoutADocument() {
+        let workspace = WorkspaceStore(sessions: InspectorSessionService())
+        workspace.sidebarOpen = false
+        #expect(workspace.focusedPane.app.document == nil)
+
+        workspace.revealSidebarTab(.ai)
+        #expect(workspace.sidebarOpen == false)
+        #expect(workspace.sidebarTab == .annotations)
+    }
+
     @Test("Remembered inspector width ignores out-of-range and suppressed geometry")
     func rememberSidebarWidthRejectsUnusableMeasurements() async throws {
         let workspace = WorkspaceStore(sessions: InspectorSessionService())
