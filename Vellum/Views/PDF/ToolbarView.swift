@@ -22,43 +22,36 @@ struct VellumToolbar: ToolbarContent {
     // Low-use actions no longer each claim a glass circle, which is what
     // produced the "pill soup".
     var body: some ToolbarContent {
-        // LEADING — navigation. Buttons placed directly in a group share one
-        // glass pod on macOS 26, and ADJACENT `.navigation` items merge into
-        // that same pod, with the system picking arbitrary sub-boundaries
-        // (it once lumped the page counter with zoom-out but not zoom-in —
-        // PR #115 review). The fixed spacers below are what keep page
-        // stepping, the page counter, and zoom as three separate pods. They
-        // must carry an explicit `placement: .navigation`: a bare
-        // ToolbarSpacer defaults to `.automatic`, which lands in the trailing
-        // region — that default is why spacers previously looked like a
-        // no-op in this region.
-        //
-        // Do NOT reach for ControlGroup to merge buttons: inside toolbar
-        // content its children escape `.navigation` altogether and reflow
-        // into the trailing region, which is what stacked the page and zoom
-        // buttons on top of the bookmark/note/inspector run as overlapping
-        // circles.
+        // LEADING — navigation. The PDF clusters are drawn as explicit glass
+        // capsules inside ONE item (PdfLeadingControls) because, measured live
+        // on macOS 26 (PR #115), the system refuses every native route to
+        // three separate pods here:
+        //   • adjacent `.navigation` items merge into one capsule with
+        //     system-picked sub-boundaries (it glued zoom-out to the page
+        //     counter);
+        //   • `ToolbarSpacer(.fixed, placement: .navigation)` is a runtime
+        //     no-op in this region (it DOES work in the trailing region);
+        //   • empty fixed-width items get absorbed into the neighboring
+        //     capsule instead of splitting it;
+        //   • a text-labeled button (the 100% reset) never shares a capsule
+        //     with its neighbors, so the zoom trio shatters;
+        //   • ControlGroup children escape `.navigation` entirely and reflow
+        //     into the trailing region as overlapping circles.
+        // The web history pod is left native: a single two-button group
+        // renders as one clean capsule without help.
         ToolbarItemGroup(placement: .navigation) {
-            if hasDocument {
-                if isWeb {
-                    WebHistoryButtons()
-                } else {
-                    PageStepButtons()
-                }
+            if hasDocument, isWeb {
+                WebHistoryButtons()
             }
         }
 
-        // PDF-only reading controls stay in the leading region so the centered
-        // title and the trailing pod never move between modes.
         if hasDocument, !isWeb {
-            ToolbarSpacer(.fixed, placement: .navigation)
             ToolbarItem(placement: .navigation) {
-                PageIndicator()
+                PdfLeadingControls()
             }
-            ToolbarSpacer(.fixed, placement: .navigation)
-            ToolbarItemGroup(placement: .navigation) {
-                ZoomControls()
-            }
+            // Without this the system wraps the whole HStack in one more
+            // capsule and the three custom pods read as one blob again.
+            .sharedBackgroundVisibility(.hidden)
         }
 
         // CENTER — quiet title/address, genuinely centered and not pretending
@@ -175,29 +168,103 @@ private struct WebHistoryButtons: View {
 
 // MARK: - Page navigation
 
+/// The three leading clusters — [< >] [page x / N] [− 100% +] — each drawn as
+/// its own glass capsule. See the body of VellumToolbar for why these capsules
+/// are custom instead of system pods.
+private struct PdfLeadingControls: View {
+    var body: some View {
+        // 8pt spacing renders as the same ~11pt gap the system leaves between
+        // its own trailing pods (measured). The explicit
+        // `.accessibilityElement(children: .contain)` on each capsule stops
+        // the cluster from collapsing into one AX element whose first child's
+        // label ("Previous page") gets announced for every control (measured
+        // with VoiceOver's AXDescription).
+        HStack(spacing: 8) {
+            // The accessibility container + label go OUTSIDE .glassEffect():
+            // the glass wraps its content in one more AX group, and labels
+            // applied inside it never surface — the group then inherits its
+            // first child's description ("Previous page" on every cluster,
+            // measured).
+            HStack(spacing: 0) {
+                PageStepButtons()
+            }
+            .glassEffect()
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Page navigation")
+
+            PageIndicator()
+                .frame(height: 35)
+                .glassEffect()
+                // On the outermost wrapper, where the previousPage tooltip
+                // otherwise leaks in as this container's AXHelp (measured).
+                .help("Current page — type a page number and press Return")
+
+            HStack(spacing: 0) {
+                ZoomControls()
+            }
+            .glassEffect()
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Zoom controls")
+        }
+    }
+}
+
+/// Icon button sized for the custom capsules. The frame + contentShape INSIDE
+/// the label closure is what makes the whole 28×35 area clickable — borderless
+/// buttons otherwise hit-test only the glyph (#112; measured 6.5pt-wide chevron
+/// targets in the first cut of this cluster).
+private struct CapsuleIconButton: View {
+    let title: String
+    let systemImage: String
+    let identifier: String
+    let helpText: String
+    var isDisabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 35)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        // Borderless buttons tint their labels with the accent color, which
+        // made the zoom cluster read as selected/links next to the monochrome
+        // system pods.
+        .tint(.primary)
+        .disabled(isDisabled)
+        .help(helpText)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
 /// The previous/next steppers, one pod — the "< >" entity, separate from the
 /// page counter next to it (PR #115 review).
 private struct PageStepButtons: View {
     @Environment(AppStore.self) private var appStore
 
     var body: some View {
-        Button {
+        CapsuleIconButton(
+            title: "Previous page",
+            systemImage: "chevron.left",
+            identifier: "toolbar.previousPage",
+            helpText: "Previous page — or type a page number in the field",
+            isDisabled: appStore.currentPage <= 1
+        ) {
             appStore.goToPage(appStore.currentPage - 1)
-        } label: {
-            Label("Previous page", systemImage: "chevron.left")
         }
-        .disabled(appStore.currentPage <= 1)
-        .help("Previous page — or type a page number in the field")
-        .accessibilityIdentifier("toolbar.previousPage")
 
-        Button {
+        CapsuleIconButton(
+            title: "Next page",
+            systemImage: "chevron.right",
+            identifier: "toolbar.nextPage",
+            helpText: "Next page — or type a page number in the field",
+            isDisabled: appStore.currentPage >= appStore.numPages
+        ) {
             appStore.goToPage(appStore.currentPage + 1)
-        } label: {
-            Label("Next page", systemImage: "chevron.right")
         }
-        .disabled(appStore.currentPage >= appStore.numPages)
-        .help("Next page — or type a page number in the field")
-        .accessibilityIdentifier("toolbar.nextPage")
     }
 }
 
@@ -211,8 +278,15 @@ private struct PageIndicator: View {
     var body: some View {
         HStack(spacing: 5) {
             TextField("", text: $pageInput)
+                // Stay on .roundedBorder even though its chrome does not
+                // render inside the glass capsule (measured: the field zone
+                // was bit-identical to bare background) — the explicit box
+                // below supplies the affordance. .plain is NOT equivalent:
+                // it renders the digits at half the luminance of neighboring
+                // glyphs (measured 110 vs 203/234), and neither
+                // .foregroundStyle(.primary) nor an explicit labelColor
+                // reaches its text renderer.
                 .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
                 .multilineTextAlignment(.center)
                 .focused($fieldFocused)
                 // Commit directly on Return — FocusState changes are unreliable
@@ -221,17 +295,25 @@ private struct PageIndicator: View {
                 .onChange(of: fieldFocused) { _, focused in
                     if !focused { commitPageInput() }
                 }
-                .frame(width: 44)
-                .accessibilityLabel("Page number")
+                .frame(width: 36, height: 21)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(.quaternary.opacity(0.6))
+                )
+                .accessibilityLabel("Page number, of \(appStore.numPages) pages")
                 .accessibilityIdentifier("toolbar.pageField")
             Text("/ \(appStore.numPages)")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+                // The total is announced by the field's label; as its own AX
+                // element this text got the cluster's first-child description
+                // ("Previous page") and its label displaced the rendered value.
+                .accessibilityHidden(true)
         }
         .font(.system(size: 12))
         // Breathing room between the field/count and the glass pod's rounded
         // ends — flush content gets visually clipped by the capsule curvature.
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 10)
         .onChange(of: appStore.currentPage) { _, page in
             pageInput = String(page)
         }
@@ -256,31 +338,37 @@ private struct ZoomControls: View {
     @Environment(AppStore.self) private var appStore
 
     var body: some View {
-        Button {
+        CapsuleIconButton(
+            title: "Zoom out",
+            systemImage: "minus.magnifyingglass",
+            identifier: "toolbar.zoomOut",
+            helpText: "Zoom out (⌘−)"
+        ) {
             appStore.zoomOut()
-        } label: {
-            Label("Zoom out", systemImage: "minus.magnifyingglass")
         }
-        .help("Zoom out (⌘−)")
-        .accessibilityIdentifier("toolbar.zoomOut")
 
         Button(action: resetZoom) {
             Text("\(Int((appStore.zoom * 100).rounded()))%")
                 .font(.system(size: 12))
                 .monospacedDigit()
                 .frame(minWidth: 40)
+                .frame(height: 35)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .tint(.primary)
         .help("Reset zoom to 100%")
         .accessibilityLabel("Reset zoom to 100%")
         .accessibilityIdentifier("toolbar.resetZoom")
 
-        Button {
+        CapsuleIconButton(
+            title: "Zoom in",
+            systemImage: "plus.magnifyingglass",
+            identifier: "toolbar.zoomIn",
+            helpText: "Zoom in (⌘+)"
+        ) {
             appStore.zoomIn()
-        } label: {
-            Label("Zoom in", systemImage: "plus.magnifyingglass")
         }
-        .help("Zoom in (⌘+)")
-        .accessibilityIdentifier("toolbar.zoomIn")
     }
 
     private func resetZoom() {
