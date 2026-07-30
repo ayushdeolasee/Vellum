@@ -352,14 +352,18 @@ final class AppStore {
         }
 
         try await sessions.closeFile(sessionId: tabId)
-        let rebound: DocumentInfo
+        var rebound: DocumentInfo
         do {
             rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
+            // Fresh bookmark for the new location — the old one (if any) still
+            // points at sourceURL.
+            rebound.bookmarkData = SecurityScopedBookmark.make(for: destinationURL)
         } catch let reopenError {
             do {
                 // The original file is untouched, and a successful rollback
                 // restores the exact live tab rather than stranding it.
-                let restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                var restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
+                restored.bookmarkData = SecurityScopedBookmark.make(for: sourceURL)
                 updateTab(tabId) { $0.document = restored }
                 if activeTabId == tabId {
                     document = restored
@@ -619,7 +623,26 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    opened = try await sessions.openFile(path: savedDocument.pdfPath, sessionId: sessionId)
+                    // Resolve a stored bookmark before falling back to the raw
+                    // path — see SecurityScopedBookmark. Access only needs to
+                    // stay open for the duration of the read that opens the
+                    // file; PDFKit/CGPDF have finished parsing what they need
+                    // by the time `openFile` returns.
+                    var resolvedPath = savedDocument.pdfPath
+                    var resolvedURL: URL?
+                    var bookmarkNeedsRefresh = false
+                    if let bookmarkData = savedDocument.bookmarkData,
+                       let resolved = SecurityScopedBookmark.resolve(bookmarkData) {
+                        resolvedPath = resolved.url.path
+                        resolvedURL = resolved.url
+                        bookmarkNeedsRefresh = resolved.isStale
+                    }
+                    let accessStarted = resolvedURL?.startAccessingSecurityScopedResource() ?? false
+                    defer { if accessStarted { resolvedURL?.stopAccessingSecurityScopedResource() } }
+                    opened = try await sessions.openFile(path: resolvedPath, sessionId: sessionId)
+                    opened.bookmarkData = bookmarkNeedsRefresh || savedDocument.bookmarkData == nil
+                        ? SecurityScopedBookmark.make(forPath: resolvedPath)
+                        : savedDocument.bookmarkData
                 }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
@@ -884,6 +907,43 @@ final class AppStore {
         return target
     }
 
+    /// Put an unplaced note draft back on the queue and re-arm placement, so
+    /// the next click on the page offers the same text again.
+    ///
+    /// Issue #92: the web viewer's placement click only opens a composer — the
+    /// note is not written until the user submits — so between those two steps
+    /// the composer holds the *only* copy of a queued AI reply
+    /// (`consumePendingNoteContent` already cleared the store). A stray click,
+    /// a page scroll, a misclicked link, or a tab switch all unmount that
+    /// composer, and the reply used to go with it. The
+    /// PDF viewer has no such window: `PdfSelectionBridge` writes the note on
+    /// the placement click itself. Handing the draft back here closes the gap —
+    /// a misclick now costs one more click instead of the whole reply.
+    ///
+    /// Scoped to the originating tab rather than the active one: the dismissal
+    /// may be the *reason* the tab is going away (switching tabs unmounts the
+    /// composer), and note-placement state travels with the tab anyway, so the
+    /// draft is waiting when the user comes back. A late message from a tab
+    /// that has since been closed lands nowhere.
+    ///
+    /// Empty (or whitespace-only) drafts are dropped — a plain note-tool
+    /// placement the user clicked away from has nothing worth preserving, and
+    /// re-arming note mode for it would be friction with no payoff.
+    func restorePendingNote(_ content: String, forSessionId sessionId: String) {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // While the tab is the one on screen this is exactly "arm placement
+        // again", so it goes through the same door rather than restating it —
+        // anything `setMode(.note)` grows later applies to restores too.
+        guard activeTabId != sessionId else { return beginNoteWithContent(content) }
+        // Otherwise write the tab record only; `applyActiveState` picks the
+        // state up on the way back in.
+        updateTab(sessionId) {
+            $0.mode = .note
+            $0.pendingNoteContent = content
+            $0.regionCaptureTarget = nil
+        }
+    }
+
     /// Consumed by the viewer when it places a note; nil once used.
     func consumePendingNoteContent() -> String? {
         let content = pendingNoteContent
@@ -1070,6 +1130,13 @@ final class AppStore {
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+        var doc = doc
+        // Mint a security-scoped bookmark right now, while the just-completed
+        // open guarantees read access — see SecurityScopedBookmark. Web docs
+        // have no filesystem path to bookmark.
+        if doc.kind == .pdf {
+            doc.bookmarkData = SecurityScopedBookmark.make(forPath: doc.pdfPath)
+        }
         RecentFilesService.record(doc)
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it

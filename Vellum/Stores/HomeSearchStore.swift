@@ -29,6 +29,70 @@ enum HomeSearchRemoval: Hashable, Sendable {
         case .saved: "Remove from Saved"
         }
     }
+
+    /// Whether this removal stops to ask (issue #103 — both used to fire on a
+    /// single click of a context-menu item with no confirmation and no undo).
+    ///
+    /// The two are not equally recoverable, so they do not get the same guard.
+    /// Un-saving runs `WebLibrary.removeSaved`, which deletes the page's local
+    /// snapshots from disk; re-saving means re-fetching, and offline that is
+    /// simply gone. Nothing can undo it, so it asks first. Dropping a recent
+    /// only filters a `UserDefaults` list, so it takes the cheaper guard — see
+    /// `HomeRecentRemovalTransaction` — and stays a single click.
+    var requiresConfirmation: Bool {
+        switch self {
+        case .recent: false
+        case .saved: true
+        }
+    }
+
+    /// Context-menu wording. The trailing ellipsis on a gated action is the
+    /// platform's one signal that this item stops to ask while the item next
+    /// to it does not — the same distinction Finder draws between "Move to
+    /// Trash" and "Delete Immediately…".
+    var menuLabel: String { requiresConfirmation ? "\(label)…" : label }
+
+    /// Confirm-button wording. Repeating the menu label (without the ellipsis,
+    /// which belongs only to the item that opens a dialog) keeps the dialog's
+    /// consequence identical to the action the user reached for.
+    var confirmLabel: String { label }
+
+    /// Dialog title. It names the row, so a right-click that landed one row off
+    /// is caught here rather than after the offline copy is already gone.
+    func confirmationTitle(for documentTitle: String) -> String {
+        switch self {
+        case .recent: "Remove “\(documentTitle)” from Recent?"
+        case .saved: "Remove “\(documentTitle)” from Saved?"
+        }
+    }
+
+    /// What actually happens, in the terms the user cares about. The reassuring
+    /// half matters as much as the warning: annotations surviving is the reason
+    /// un-saving is a reasonable thing to do at all.
+    var confirmationMessage: String? {
+        switch self {
+        case .recent: nil
+        case .saved:
+            // Not "from this Mac": `WebLibrary.removeLocalSnapshots` deletes
+            // through `WebICloud.removeItem`, and the web store can live in
+            // iCloud Drive — in which case the offline copy leaves every
+            // device. A confirmation is the one place that must not understate
+            // what it is about to do.
+            "The offline copy is deleted here, and from iCloud if your library syncs there. "
+                + "Highlights and notes are kept, but saving the page again needs a connection."
+        }
+    }
+}
+
+/// A "Remove from Recent" that can be put back, for session-scoped Undo — the
+/// pattern PR #79 introduced for clear-conversation and clear-scratchpad.
+///
+/// Recents are a `UserDefaults` list sorted newest-first, so undo is exact: the
+/// entry goes back with the `openedAt` it had, which is also what decides where
+/// it lands. `.saved` has no counterpart here on purpose — its removal destroys
+/// files, which is why it carries a confirmation instead.
+struct HomeRecentRemovalTransaction: Equatable, Sendable {
+    var entry: RecentDocument
 }
 
 @MainActor
@@ -203,27 +267,66 @@ final class HomeSearchStore {
 
     // MARK: - Mutating the library
 
-    /// Forget a result. Recents drop out of the recents list; saved webpages
-    /// are un-saved (their annotations survive, exactly as the old welcome
-    /// screen's "Remove from Saved" did). Library documents are not removable
-    /// here — deleting a document's notes belongs to Settings ▸ Storage.
-    func remove(_ item: HomeSearchItem, from target: HomeSearchRemoval) async {
-        switch target {
-        case .recent:
-            if case .file(_, let recordedPath) = item.target {
-                _ = RecentFilesService.remove(path: recordedPath)
-            } else {
-                _ = RecentFilesService.remove(path: item.target.openKey)
-            }
-        case .saved:
-            let url = item.target.openKey
-            // Blocking disk work — same off-main hop `WebSessionBackend` uses.
-            await Task.detached(priority: .userInitiated) {
-                try? WebLibrary.removeSaved(rawUrl: url)
-            }.value
+    /// Drop a result from the recents list. The document, its notes and its
+    /// saved copy are all untouched.
+    ///
+    /// Synchronous, and deliberately does NOT reload: the caller needs the
+    /// transaction in hand to register Undo *before* the corpus rebuild, which
+    /// is a recents read plus a stat per saved page plus a documents-directory
+    /// walk. Registering after it would leave a window in which ⌘Z popped
+    /// whatever was on the window's undo stack beforehand. Callers follow up
+    /// with `load()`.
+    ///
+    /// Returns the transaction needed to undo this, or nil when the entry was
+    /// already gone and there is nothing to offer Undo for.
+    func removeFromRecent(_ item: HomeSearchItem) -> HomeRecentRemovalTransaction? {
+        let path: String
+        if case .file(_, let recordedPath) = item.target {
+            path = recordedPath
+        } else {
+            path = item.target.openKey
         }
+        // Read the entry BEFORE the write — it is the whole of what Undo needs
+        // to put the row back untouched.
+        let entry = RecentFilesService.getRecent().first { $0.pdfPath == path }
+        _ = RecentFilesService.remove(path: path)
+        if selectedId == item.id { selectedId = nil }
+        return entry.map(HomeRecentRemovalTransaction.init)
+    }
+
+    /// Un-save a webpage: the record and its annotations survive, the offline
+    /// snapshot does not. There is no undo for that, which is why the caller
+    /// confirms first — see `HomeSearchRemoval.requiresConfirmation`.
+    func removeFromSaved(_ item: HomeSearchItem) async {
+        let url = item.target.openKey
+        // Blocking disk work — same off-main hop `WebSessionBackend` uses.
+        await Task.detached(priority: .userInitiated) {
+            try? WebLibrary.removeSaved(rawUrl: url)
+        }.value
         if selectedId == item.id { selectedId = nil }
         await load()
+    }
+
+    /// Put a removed recent back. Returns false when the removal has been
+    /// overtaken — the user re-opened the document, so it is in the list again
+    /// and there is nothing to restore. The caller uses that to stop the
+    /// undo/redo chain instead of duplicating the row.
+    @discardableResult
+    func undoRecentRemoval(_ transaction: HomeRecentRemovalTransaction) -> Bool {
+        guard RecentFilesService.restore(transaction.entry) else { return false }
+        Task { await load() }
+        return true
+    }
+
+    /// Re-apply the removal, but only against the row this transaction
+    /// actually removed — see `RecentFilesService.removeIfUnchanged`. Returns
+    /// false when the row has since been re-opened, which ends the chain
+    /// rather than deleting a document the user has just read.
+    @discardableResult
+    func redoRecentRemoval(_ transaction: HomeRecentRemovalTransaction) -> Bool {
+        guard RecentFilesService.removeIfUnchanged(transaction.entry) else { return false }
+        Task { await load() }
+        return true
     }
 
     /// Retitle a result and re-index so the new name is live everywhere.

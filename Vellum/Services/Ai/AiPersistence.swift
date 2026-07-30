@@ -174,7 +174,15 @@ enum AiPersistence {
         if !DocumentDataStore.conversationsExist(forKey: key) {
             migrateLegacyIfNeeded(document: document, key: key)
         }
-        let loaded = readConversationsFile(forKey: key)
+        // Bytes on disk that yielded no readable message at all. Same reasoning
+        // as the iCloud case below: the empty is OURS, not the user's, so it
+        // never enters the cache — and `undecodableKeys` stops a later empty
+        // save from turning "we couldn't read it" into "it's deleted" (#90).
+        guard case .messages(let loaded) = readConversationsFile(forKey: key) else {
+            undecodableKeys.insert(key)
+            return []
+        }
+        undecodableKeys.remove(key)
         // A conversation stuck in iCloud (an unmaterialized placeholder that
         // couldn't download) reads as empty — but that empty is NOT authoritative.
         // Leaving the cache unset means a later load, once the bytes land, re-reads
@@ -186,10 +194,27 @@ enum AiPersistence {
         return loaded
     }
 
+    /// storageKeys whose conversations.json holds bytes this build could not
+    /// decode into a single message. The delete-on-empty write path is suppressed
+    /// for these (#90): an empty in-memory conversation for such a key can only
+    /// have come from the failed read, never from the user clearing a chat — the
+    /// Clear command is disabled while the transcript is empty. A save carrying
+    /// real messages still writes, because that is the user deliberately starting
+    /// a new conversation over a file we cannot show them.
+    @MainActor private static var undecodableKeys: Set<String> = []
+
     @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
         guard let document, let key = storageKey(for: document) else { return }
         migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         let limited = limitedMessages(messages)
+        // Refuse to let an empty result overwrite a file we simply failed to
+        // read (#90). Returning without caching or dirtying leaves the on-disk
+        // bytes intact for a build that can decode them.
+        if limited.isEmpty, undecodableKeys.contains(key) {
+            NSLog("[Vellum] Skipping empty AI conversation write for \(key): its stored chat could not be decoded, so the file is left on disk")
+            return
+        }
+        undecodableKeys.remove(key)
         cache[key] = limited
         // A non-empty conversation is real class-B data; ensure meta.json exists
         // so recents can re-resolve the document by its docId later. The actual
@@ -289,14 +314,68 @@ enum AiPersistence {
         }
     }
 
+    /// What a read of conversations.json produced. The two cases are NOT
+    /// interchangeable: `.messages([])` means "this document has no stored
+    /// chat", while `.undecodable` means "there are bytes on disk we could not
+    /// turn into a single message". Only the first is authoritative enough to
+    /// cache and later flush back (#90).
+    private enum ConversationRead {
+        case messages([AiMessage])
+        case undecodable
+    }
+
     /// Read and decode a document's conversations.json (the plain JSON array
-    /// form), applying the per-message caps defensively. Empty when absent or
-    /// unreadable.
-    private static func readConversationsFile(forKey key: String) -> [AiMessage] {
-        guard let data = DocumentDataStore.loadConversationsData(forKey: key),
-              let messages = try? JSONDecoder().decode([AiMessage].self, from: data)
-        else { return [] }
-        return limitedMessages(messages)
+    /// form), applying the per-message caps defensively.
+    ///
+    /// Decoding is per-element rather than all-or-nothing (#90): `AiMessage`'s
+    /// own `init(from:)` already degrades field-by-field, but a message that is
+    /// missing a required field, was truncated by an interrupted write, or uses
+    /// a shape this build predates would still fail — and failing one element of
+    /// `[AiMessage]` discards the user's whole conversation. `LossyAiMessage`
+    /// drops just that element, mirroring what `LossyAiReference` does one level
+    /// down for `AiMessage.references`.
+    private static func readConversationsFile(forKey key: String) -> ConversationRead {
+        guard let data = DocumentDataStore.loadConversationsData(forKey: key), !data.isEmpty else {
+            // Nothing was read. A file that IS there but wouldn't open
+            // (permissions, I/O error) is a failed read, not an absent chat —
+            // classify it as such so the write guard protects it. A genuinely
+            // absent file, and an evicted iCloud placeholder (which the caller
+            // separates out), are the real empties.
+            return DocumentDataStore.conversationsExist(forKey: key) ? .undecodable : .messages([])
+        }
+        guard let decoded = decodeMessages(data) else { return .undecodable }
+        // A partial drop is permanent — the next turn rewrites the file without
+        // the dropped record — so leave evidence for a "a message vanished"
+        // report, the way every other data-loss-adjacent path here does.
+        if decoded.dropped > 0 {
+            NSLog("[Vellum] Dropped \(decoded.dropped) undecodable message(s) while reading the AI conversation for \(key)")
+        }
+        return .messages(limitedMessages(decoded.messages))
+    }
+
+    /// The single decode boundary for a conversations.json payload, shared by
+    /// cold loads and `.vellum` imports so both degrade identically.
+    ///
+    /// Per-element rather than all-or-nothing (#90): `AiMessage`'s own
+    /// `init(from:)` already degrades field-by-field, but a message that is
+    /// missing a required field, was truncated by an interrupted write, or uses
+    /// a shape this build predates would still fail — and failing one element of
+    /// `[AiMessage]` discards the user's whole conversation. `LossyAiMessage`
+    /// drops just that element, mirroring what `LossyAiReference` does one level
+    /// down for `AiMessage.references`.
+    ///
+    /// Returns nil when the payload could not be read at all: either its top
+    /// level isn't an array of objects, or it held records and not one of them
+    /// decoded. That is OUR failure to read and must never be mistaken for the
+    /// user having no chat — a payload that legitimately stores `[]` comes back
+    /// as an empty, non-nil result.
+    static func decodeMessages(_ data: Data) -> (messages: [AiMessage], dropped: Int)? {
+        guard let entries = try? JSONDecoder().decode([LossyAiMessage].self, from: data) else {
+            return nil
+        }
+        let messages = entries.compactMap(\.value)
+        if messages.isEmpty, !entries.isEmpty { return nil }
+        return (messages, entries.count - messages.count)
     }
 
     /// Await any scheduled write — called from applicationShouldTerminate.
@@ -326,6 +405,10 @@ enum AiPersistence {
     @MainActor static func invalidateCachedConversation(forKey key: String) {
         cache.removeValue(forKey: key)
         dirtyKeys.remove(key)
+        // The file behind the key was just replaced (or deleted) out from under
+        // us, so any "couldn't decode it" verdict is about bytes that no longer
+        // exist. The next load re-reads and re-decides.
+        undecodableKeys.remove(key)
     }
 
     /// Keep the main-actor write-behind state aligned with an on-disk rekey.
@@ -338,6 +421,15 @@ enum AiPersistence {
         }
         if dirtyKeys.remove(oldKey) != nil {
             dirtyKeys.insert(newKey)
+        }
+        // The undecodable file moves with the folder, so its protection must
+        // too. When the source carried no such verdict, drop any the DESTINATION
+        // held: the rekey merge may have just replaced its conversations.json,
+        // and a stale flag there would silently swallow a later user Clear.
+        if undecodableKeys.remove(oldKey) != nil {
+            undecodableKeys.insert(newKey)
+        } else {
+            undecodableKeys.remove(newKey)
         }
     }
 
@@ -629,6 +721,24 @@ enum AiPersistence {
             if let key = try? JSONDecoder().decode(String.self, from: encoded) { keys.append(key) }
         }
         return keys
+    }
+}
+
+/// Array-element wrapper that turns a failed `AiMessage` decode into `nil`
+/// instead of failing the enclosing array — the message-level counterpart to
+/// `LossyAiReference` (see `AiStore.swift`), which does the same for a single
+/// message's `references`.
+///
+/// It wraps `AiMessage.init(from:)` rather than replacing it, so the hand-written
+/// per-field compatibility handling in that initializer (`decodeIfPresent` for
+/// `usage`/`references`/`toolSummaries`, the lossy reference array) still runs and
+/// is the FIRST line of defence. This is only the outer net for a record that
+/// initializer cannot salvage at all.
+private struct LossyAiMessage: Decodable {
+    let value: AiMessage?
+
+    init(from decoder: any Decoder) throws {
+        value = try? AiMessage(from: decoder)
     }
 }
 
