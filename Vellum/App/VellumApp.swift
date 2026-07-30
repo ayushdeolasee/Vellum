@@ -41,7 +41,9 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     // A tab closed moments ago finishes its metadata write and
                     // session close behind the UI (AppStore.closeTab); it is no
                     // longer in `tabs`, so nothing else here would await it.
-                    for leaf in leaves { await leaf.app.awaitPendingTabTeardowns() }
+                    // Drained via the workspace registry, not per pane: a close
+                    // that collapsed its pane left no leaf to ask.
+                    await workspace.tabTeardowns.awaitAll()
                     await PageTextPersister.awaitInFlightFlushes()
                     await AiPersistence.awaitPendingFlush()
                     sender.reply(toApplicationShouldTerminate: true)
@@ -51,8 +53,10 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 // Tabs closed moments ago finish their metadata write and
                 // session close behind the UI (AppStore.closeTab) and are no
-                // longer in `tabs`, so the loop below would miss them.
-                for leaf in leaves { await leaf.app.awaitPendingTabTeardowns() }
+                // longer in `tabs`, so the loop below would miss them. Drained
+                // via the workspace registry, not per pane: a close that
+                // collapsed its pane left no leaf to ask.
+                await workspace.tabTeardowns.awaitAll()
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
                         try? await workspace.sessions.setDocumentMetadata(

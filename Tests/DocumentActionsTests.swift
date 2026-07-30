@@ -226,6 +226,83 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertFalse(app.isCurrentWebDocument(identity))
     }
 
+    /// The reopen-races-teardown guard must work ACROSS panes. Teardowns are
+    /// registered workspace-wide: a close in one pane — here one that also
+    /// collapses that pane, discarding its AppStore — must still park an
+    /// immediate reopen of the same file from another pane until the close's
+    /// last_page rewrite has landed. With per-pane tracking the reopen sailed
+    /// through: it read the pre-teardown bytes (stale reading position) and
+    /// anything it wrote was clobbered by the teardown's atomic rename.
+    func testReopenInAnotherPaneWaitsOutCollapsedPanesTeardown() async throws {
+        let file = tempDirectory.appendingPathComponent("Shared.pdf")
+        makePDF(at: file, pages: 4)
+
+        let gate = GatedMetadataSessionService()
+        let workspace = WorkspaceStore(sessions: gate)
+        let paneA = workspace.focusedPane
+        await paneA.app.openFile(path: file.path)
+        let tabId = try XCTUnwrap(paneA.app.activeTabId)
+        paneA.app.setCurrentPage(3)
+
+        workspace.splitFocused(.horizontal)
+        let paneB = workspace.focusedPane
+        XCTAssertNotEqual(paneA.id, paneB.id)
+
+        // Park the teardown's last_page write at the gate, then close pane A's
+        // only tab. The pane collapses, so only the workspace registry still
+        // knows a teardown holds this file.
+        gate.holdNextMetadataWrite()
+        await paneA.app.closeTab(tabId)
+        XCTAssertNil(workspace.root.leaf(id: paneA.id))
+        await gate.waitUntilHeld()
+
+        let reopen = Task { await paneB.app.openFile(path: file.path) }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertNil(paneB.app.document, "the reopen must wait for the pending teardown")
+
+        gate.release()
+        await reopen.value
+        XCTAssertEqual(Self.normalized(paneB.app.document?.pdfPath), Self.normalized(file.path))
+        XCTAssertEqual(
+            paneB.app.currentPage, 3,
+            "the reopen must observe the teardown's last_page write, not pre-teardown bytes")
+    }
+
+    /// ⌘Q right after a close that collapsed its pane: the quit path used to
+    /// drain teardowns per leaf, and a collapsed pane has no leaf left to ask —
+    /// its pending write was silently abandoned. The registry outlives the pane
+    /// and the quit path drains it directly.
+    func testQuitDrainCoversTeardownWhosePaneCollapsed() async throws {
+        let file = tempDirectory.appendingPathComponent("Collapsing.pdf")
+        makePDF(at: file, pages: 5)
+
+        let gate = GatedMetadataSessionService()
+        let workspace = WorkspaceStore(sessions: gate)
+        let paneA = workspace.focusedPane
+        await paneA.app.openFile(path: file.path)
+        let tabId = try XCTUnwrap(paneA.app.activeTabId)
+        paneA.app.setCurrentPage(4)
+        workspace.splitFocused(.horizontal)
+
+        gate.holdNextMetadataWrite()
+        await paneA.app.closeTab(tabId)
+        XCTAssertNil(workspace.root.leaf(id: paneA.id))
+        await gate.waitUntilHeld()
+
+        // The orphaned teardown must remain reachable workspace-wide.
+        XCTAssertFalse(workspace.tabTeardowns.isEmpty)
+
+        gate.release()
+        await workspace.tabTeardowns.awaitAll()
+        XCTAssertTrue(workspace.tabTeardowns.isEmpty)
+
+        // The drain returned only after the write landed on disk.
+        let verified = try await gate.inner.openFile(
+            path: file.path, sessionId: "verify-last-page")
+        XCTAssertEqual(verified.lastPage, 4)
+        try await gate.inner.closeFile(sessionId: "verify-last-page")
+    }
+
     /// The session backend reports the filesystem's own path (/private/var/…)
     /// while `FileManager.temporaryDirectory` hands back the /var symlink form,
     /// and Foundation's standardization maps the former onto the latter. Compare
@@ -309,4 +386,102 @@ private final class StubSessionService: SessionService {
     func deleteAnnotation(sessionId: String, id: String) async throws -> Bool { false }
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {}
     func ensureDocumentId(sessionId: String) async throws -> String { documentId }
+}
+
+/// The real session manager with one seam: `holdNextMetadataWrite()` parks the
+/// next `setDocumentMetadata` until `release()`, standing in for the ~15s
+/// last_page rewrite of a large PDF so the teardown-race tests can hold a
+/// close's teardown open deterministically.
+@MainActor
+private final class GatedMetadataSessionService: SessionService {
+    let inner = DocumentSessionManager()
+
+    private var holdNextWrite = false
+    private var heldWrites: [CheckedContinuation<Void, Never>] = []
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func holdNextMetadataWrite() { holdNextWrite = true }
+
+    /// Suspends until a gated metadata write has arrived and is parked.
+    func waitUntilHeld() async {
+        if !heldWrites.isEmpty { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        holdNextWrite = false
+        let held = heldWrites
+        heldWrites = []
+        for continuation in held { continuation.resume() }
+    }
+
+    func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {
+        if holdNextWrite {
+            holdNextWrite = false
+            await withCheckedContinuation { continuation in
+                heldWrites.append(continuation)
+                let waiters = arrivalWaiters
+                arrivalWaiters = []
+                for waiter in waiters { waiter.resume() }
+            }
+        }
+        try await inner.setDocumentMetadata(sessionId: sessionId, key: key, value: value)
+    }
+
+    func openFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        try await inner.openFile(path: path, sessionId: sessionId)
+    }
+    func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo {
+        try await inner.openWebDocument(url: url, sessionId: sessionId)
+    }
+    func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        try await inner.openVellumwebFile(path: path, sessionId: sessionId)
+    }
+    func saveFile(sessionId: String) async throws {
+        try await inner.saveFile(sessionId: sessionId)
+    }
+    func closeFile(sessionId: String) async throws {
+        try await inner.closeFile(sessionId: sessionId)
+    }
+    func readPdfBytes(sessionId: String) async throws -> Data {
+        try await inner.readPdfBytes(sessionId: sessionId)
+    }
+    func setWebpageSaved(sessionId: String, saved: Bool) async throws {
+        try await inner.setWebpageSaved(sessionId: sessionId, saved: saved)
+    }
+    func getWebpageSaved(sessionId: String) async throws -> Bool {
+        try await inner.getWebpageSaved(sessionId: sessionId)
+    }
+    func listSavedWebpages() async throws -> [WebLibraryEntry] {
+        try await inner.listSavedWebpages()
+    }
+    func removeSavedWebpage(url: String) async throws {
+        try await inner.removeSavedWebpage(url: url)
+    }
+    func exportVellumweb(
+        sessionId: String, destPath: String, pages: [WebPageText]
+    ) async throws -> VellumwebExportSummary {
+        try await inner.exportVellumweb(sessionId: sessionId, destPath: destPath, pages: pages)
+    }
+    func archiveWebpageDefault(
+        sessionId: String, pages: [WebPageText], expectedUrl: String
+    ) async throws -> Bool {
+        try await inner.archiveWebpageDefault(
+            sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
+    }
+    func getAnnotations(sessionId: String, pageNumber: Int?) async throws -> [Annotation] {
+        try await inner.getAnnotations(sessionId: sessionId, pageNumber: pageNumber)
+    }
+    func createAnnotation(sessionId: String, input: CreateAnnotationInput) async throws -> Annotation {
+        try await inner.createAnnotation(sessionId: sessionId, input: input)
+    }
+    func updateAnnotation(sessionId: String, input: UpdateAnnotationInput) async throws -> Bool {
+        try await inner.updateAnnotation(sessionId: sessionId, input: input)
+    }
+    func deleteAnnotation(sessionId: String, id: String) async throws -> Bool {
+        try await inner.deleteAnnotation(sessionId: sessionId, id: id)
+    }
+    func ensureDocumentId(sessionId: String) async throws -> String {
+        try await inner.ensureDocumentId(sessionId: sessionId)
+    }
 }
