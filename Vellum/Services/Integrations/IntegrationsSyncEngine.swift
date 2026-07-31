@@ -262,7 +262,18 @@ actor IntegrationsSyncEngine {
                 if provider == .raindrop { pageNumber = Int(next) ?? (pageNumber + 1) }
             }
         } catch {
-            try? await checkpoint(&tentative, &committed, fetched: fetched, provider: provider, generation: metadata.generation, fingerprint: fingerprint)
+            if case IntegrationError.paginationDidNotAdvance = error {
+                // A walk that failed because the service stopped making
+                // progress must NOT persist its position — a resumed walk
+                // refetches the exact page that tripped the guard and fails
+                // identically, forever, with no user action that recovers it.
+                // Dropping the walk makes the next sync start fresh (its items
+                // are refetched; ids merge, so nothing is lost).
+                committed.tentativePagination = nil
+                if (try? ensureCurrent(provider, metadata.generation, fingerprint)) != nil { try? await cache.save(committed) }
+            } else {
+                try? await checkpoint(&tentative, &committed, fetched: fetched, provider: provider, generation: metadata.generation, fingerprint: fingerprint)
+            }
             throw error
         }
         try ensureCurrent(provider, metadata.generation, fingerprint)

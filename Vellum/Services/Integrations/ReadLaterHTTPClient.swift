@@ -27,7 +27,13 @@ actor ReadLaterHTTPClient {
                 try Task.checkCancellation()
                 guard let response = response as? HTTPURLResponse else { throw IntegrationError.invalidResponse }
                 if acceptedStatus.contains(response.statusCode) { return .init(data: data, response: response) }
-                if response.statusCode == 401 || response.statusCode == 403 { throw IntegrationError.tokenRejected }
+                // Only 401 means the token is bad. 403 is authenticated-but-
+                // unauthorized (Raindrop plan-gated endpoints, another
+                // account's collection) — mapping it to `tokenRejected` shows
+                // "reconnect in Settings" for a valid token and stops
+                // auto-refresh for the whole provider.
+                if response.statusCode == 401 { throw IntegrationError.tokenRejected }
+                if response.statusCode == 403 { throw IntegrationError.server(status: 403) }
                 let retryable = response.statusCode == 408 || response.statusCode == 429 || (500...599).contains(response.statusCode)
                 guard retryable, idempotent, attempt < 3 else {
                     if response.statusCode == 429 { throw IntegrationError.rateLimited }

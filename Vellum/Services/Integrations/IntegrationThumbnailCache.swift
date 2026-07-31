@@ -5,35 +5,35 @@ import ImageIO
 
 actor IntegrationThumbnailCache {
     private let root: URL
-    private let session: URLSession
+    private let downloader: IntegrationDownloading
     private let fileManager: FileManager
     private let maximumBytes: Int
     private let maximumPixelCount: Int
 
     init(root: URL = WebLibrary.appDataDir.appendingPathComponent("integrations", isDirectory: true).appendingPathComponent("thumbnails", isDirectory: true), session: URLSession = .shared, fileManager: FileManager = .default, maximumBytes: Int = 8 * 1024 * 1024, maximumPixelCount: Int = 40_000_000) {
-        self.root = root; self.session = session; self.fileManager = fileManager; self.maximumBytes = maximumBytes; self.maximumPixelCount = maximumPixelCount
+        self.root = root; self.downloader = IntegrationDownloadClient(session: session); self.fileManager = fileManager; self.maximumBytes = maximumBytes; self.maximumPixelCount = maximumPixelCount
     }
 
     func imageURL(for candidate: URL?) async -> URL? {
         guard let source = candidate.flatMap(ReadLaterItem.validHTTPURL) else { return nil }
         let destination = root.appendingPathComponent(Self.key(source) + ".image")
         if validImage(at: destination) { return destination }
+        let staging = root.appendingPathComponent(Self.key(source) + ".partial")
         do {
             try Task.checkCancellation()
-            // One buffered response, not a per-byte `AsyncBytes` walk: thumbnails
-            // are small, and iterating (plus checking cancellation) a byte at a
-            // time cost far more than the download. Content-Length rejects an
-            // oversized body up front; servers that omit or understate it are
-            // caught by the same cap after the fact, so the limit still holds.
-            let (data, response) = try await session.data(for: URLRequest(url: source))
-            try Task.checkCancellation()
-            guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { return nil }
-            guard response.expectedContentLength <= Int64(maximumBytes) else { return nil }
-            guard !data.isEmpty, data.count <= maximumBytes, validImageData(data) else { return nil }
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            // Streamed to disk in the chunks the loading system delivers, with
+            // the byte cap enforced mid-flight — the same client the PDF path
+            // uses. Buffering the whole response (`session.data(for:)`) would
+            // materialize the body in memory BEFORE any check ran, so a
+            // chunked response with no Content-Length could grow unbounded.
+            _ = try await downloader.download(URLRequest(url: source), to: staging, maximumBytes: maximumBytes) { _ in }
+            defer { try? fileManager.removeItem(at: staging) }
+            try Task.checkCancellation()
+            guard let data = try? Data(contentsOf: staging, options: .mappedIfSafe), !data.isEmpty, validImageData(data) else { return nil }
             try data.write(to: destination, options: .atomic)
             return destination
-        } catch { return nil }
+        } catch { try? fileManager.removeItem(at: staging); return nil }
     }
 
     /// A decoded, row-sized image. Callers on the main actor must use this

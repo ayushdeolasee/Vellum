@@ -158,8 +158,13 @@ struct WelcomeScreen: View {
         // changes (connect, sync page, move, disconnect). The revision only
         // moves alongside an observable `providers` write, so this re-fires
         // exactly as often as the items can differ — and runs once on arrival,
-        // covering the corpus a previous screen already synced.
+        // covering the corpus a previous screen already synced. Debounced,
+        // because a sync ticks the revision once per network page and a corpus
+        // rebuild is three disk walks: `.task(id:)` cancels the sleeping pass
+        // on the next tick, so a paging burst costs one rebuild, not forty.
         .task(id: integrations.searchRevision) {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
             await store.updateReadLater(integrations.searchableItems)
         }
         .onAppear {

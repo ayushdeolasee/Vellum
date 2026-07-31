@@ -45,6 +45,10 @@ final class IntegrationsStore {
     /// deleted (or re-filed) server-side can never satisfy its patch, so the
     /// patch has to expire rather than mask provider state for the session.
     private static let pendingMoveTTL: TimeInterval = 15 * 60
+    /// True while `awaitQuiescence` drains for quit. Gates new syncs (including
+    /// a move's follow-up sweep) so the drain converges on in-flight work
+    /// instead of chasing work it can no longer cancel.
+    @ObservationIgnored private var isQuiescing = false
     /// Monotonic counter ordering all notices (downloads and moves).
     @ObservationIgnored private var noticeSequence = 0
     /// Fade-out timers for success toasts, keyed by item and stamped with the
@@ -119,9 +123,9 @@ final class IntegrationsStore {
     }
 
     func sync(_ provider: IntegrationProvider, forceFull: Bool = false) async {
+        guard !isQuiescing else { return }
         if let current = operationTasks[provider] {
             await current.task.value
-            if operationTasks[provider]?.id == current.id { operationTasks[provider] = nil }
             if forceFull { await sync(provider, forceFull: true) }
             return
         }
@@ -130,10 +134,15 @@ final class IntegrationsStore {
             await Task.yield()
             guard let self else { return }
             await self.performSync(provider, forceFull: forceFull, operationID: id)
+            // The task clears its own slot (identity-guarded). An awaiter doing
+            // it instead leaves a window where `awaitQuiescence` re-observes a
+            // completed task in a loop that never suspends — awaiting an
+            // already-finished task returns synchronously, so the awaiter's
+            // continuation never gets scheduled and ⌘Q spins the main actor.
+            if self.operationTasks[provider]?.id == id { self.operationTasks[provider] = nil }
         }
         operationTasks[provider] = (id: id, task: task)
         await task.value
-        if operationTasks[provider]?.id == id { operationTasks[provider] = nil }
     }
     func providerSelected(_ provider: IntegrationProvider) async { guard let date = providers[provider]?.lastSuccessfulSync, now().timeIntervalSince(date) <= 300 else { await sync(provider); return } }
 
@@ -165,12 +174,18 @@ final class IntegrationsStore {
     /// may start one more (a move's follow-up sync), and each round strictly
     /// follows the previous one's completion, so this terminates.
     func awaitQuiescence() async {
+        isQuiescing = true
+        defer { isQuiescing = false }
         autoRefreshTask?.cancel(); autoRefreshTask = nil
         while true {
             for entry in operationTasks.values { entry.task.cancel() }
             let pending = Array(backgroundTasks.values) + operationTasks.values.map(\.task)
             guard !pending.isEmpty else { return }
             for task in pending { await task.value }
+            // Let continuations those completions resumed run before
+            // re-sampling, so bookkeeping done by awaiters has landed and the
+            // next round observes the real remainder instead of ghosts.
+            await Task.yield()
         }
     }
 
@@ -248,7 +263,11 @@ final class IntegrationsStore {
             moveNotices[item.id] = .init(progress: nil, message: "Couldn't move to \(collection.title) — \(error.localizedDescription)", isActive: false, sequence: nextSequence())
         }
         inFlightMoves.remove(item.id)
-        if followUpSync { await sync(item.provider, forceFull: true) }
+        // Not during quit: the drain waits for this move (deliberate — it's a
+        // write the user asked for), but a follow-up FULL sweep is minutes of
+        // cancellable-in-name-only network work the next launch's stale-check
+        // performs anyway.
+        if followUpSync, !isQuiescing { await sync(item.provider, forceFull: true) }
     }
 
     /// Maps an open document back to the read-later item it came from, so the

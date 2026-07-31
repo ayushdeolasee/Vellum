@@ -144,8 +144,15 @@ actor IntegrationsCache {
         guard let data = try? Data(contentsOf: url) else { return .absent }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        // Probe the version FIRST, alone. Decoding the whole envelope in one
+        // shot means a payload from any future schema fails decoding before the
+        // version comparison runs — reported as corruption ("cache is damaged")
+        // instead of the silent re-sync `.wrongVersion` exists to provide.
+        struct VersionProbe: Decodable { let version: Int }
+        guard let probe = try? decoder.decode(VersionProbe.self, from: data) else { return .unreadable }
+        guard probe.version == SnapshotEnvelope.currentVersion else { return .wrongVersion }
         guard let envelope = try? decoder.decode(SnapshotEnvelope.self, from: data) else { return .unreadable }
-        return envelope.version == SnapshotEnvelope.currentVersion ? .snapshot(envelope.snapshot) : .wrongVersion
+        return .snapshot(envelope.snapshot)
     }
     private func providerDirectory(_ provider: IntegrationProvider) -> URL { root.appendingPathComponent(provider.rawValue, isDirectory: true) }
     private func snapshotURL(_ provider: IntegrationProvider) -> URL { providerDirectory(provider).appendingPathComponent("snapshot.json") }

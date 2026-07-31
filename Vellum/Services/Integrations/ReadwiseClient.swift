@@ -35,6 +35,11 @@ struct ReadwiseClient: ReadwiseServing, Sendable {
         if let cursor { query.append(.init(name: "pageCursor", value: cursor)) }
         if let updatedAfter { query.append(.init(name: "updatedAfter", value: ISO8601DateFormatter.integrationString(from: updatedAfter))) }
         components.queryItems = query
+        // `URLComponents` leaves "+" bare in query values; Readwise (Django)
+        // decodes bare "+" as a space, so an opaque cursor containing one comes
+        // back mangled, the service re-serves page 1, and the engine's
+        // no-progress guard fails a perfectly healthy sync.
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = components.url else { throw IntegrationError.invalidResponse }
         var request = URLRequest(url: url); request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         return try Self.mapPage((try await http.perform(request, provider: .readwise, idempotent: true)).data)
