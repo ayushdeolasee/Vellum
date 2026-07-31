@@ -287,6 +287,20 @@ private struct WindowChrome: View {
             // drags (issue #101). `SidebarPanelStack` now owns the switcher and
             // documents why it lives inside the inspector at all.
             sidebar
+                // The inspector must own SOME toolbar content: while its
+                // toolbar section is empty, macOS 26 draws no tracking
+                // separator and the window's trailing items (bookmark, note,
+                // sidebar toggle, overflow) flush against the window edge —
+                // reading as part of the sidebar instead of the document's
+                // toolbar (PR #115 review). A flexible spacer renders nothing
+                // above the sidebar but forces the separator into existence,
+                // so those items stay over the document. Real items
+                // deliberately don't live here: at narrow widths AppKit
+                // collapses them into an overflow that strands functionality
+                // (the same reason the tab switcher sits inside the column).
+                .toolbar {
+                    ToolbarSpacer(.flexible)
+                }
                 // Feeds the user's splitter drag back to the store so the next
                 // document reopens the column where they left it. The store
                 // rejects the collapsed measurements a start tab produces. Safe
