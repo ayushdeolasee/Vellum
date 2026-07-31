@@ -62,27 +62,42 @@ struct VellumToolbar: ToolbarContent {
             }
         }
 
-        // TRAILING — stable pod. These items sit in the same order for PDF and
-        // web tabs.
+        // TRAILING — same custom-capsule construct as the leading cluster.
+        // These were native pods until the hover pass: with the buttons
+        // switched to .borderless (for the shared hover backdrop), the system
+        // pod sized itself differently from the leading capsules — 36pt tall
+        // vs 35, an 18.5pt inter-pod gap vs 10.5 (measured) — so the trailing
+        // side draws its own capsules too, guaranteeing identical geometry.
+        // Item order is the same for PDF and web tabs.
+        //
+        // Home has no current document, so it shows none of this — including
+        // no document-action menu. Updates are not put here as a substitute:
+        // Home's own header already carries Check for Updates / Install
+        // Update (#70), and the app menu carries them for when a document is
+        // open.
         if hasDocument {
-            ToolbarItemGroup {
-                BookmarkButton()
-                NoteToolToggle()
-            }
-            ToolbarSpacer(.fixed)
             ToolbarItem {
-                SidebarToggleButton()
-            }
-        }
+                HStack(spacing: 8) {
+                    HStack(spacing: 2) {
+                        BookmarkButton()
+                        NoteToolToggle()
+                    }
+                    .padding(.horizontal, 6)
+                    .glassEffect()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Annotation tools")
 
-        // Home has no current document, so it shows no document-action menu at
-        // all. Updates are not put here as a substitute: Home's own header
-        // already carries Check for Updates / Install Update (#70), and the app
-        // menu carries them for when a document is open.
-        if hasDocument {
-            ToolbarItem {
-                OverflowMenu()
+                    HStack(spacing: 2) {
+                        SidebarToggleButton()
+                        OverflowMenu()
+                    }
+                    .padding(.horizontal, 6)
+                    .glassEffect()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Panel and document actions")
+                }
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 }
@@ -211,8 +226,30 @@ private struct PdfLeadingControls: View {
     }
 }
 
+/// The shared hover/active backdrop for toolbar buttons: a pill (32×26 on
+/// icon buttons, label-width on text buttons) centered in the button's slot
+/// with an even inset from the capsule edges. One shape everywhere —
+/// PR #115 review asked for oval/pill, consistent, and fitting the capsule;
+/// the system's own hover stretches to the button's full bounds and reads as
+/// squished.
+private struct ToolbarHoverBackdrop: View {
+    let visible: Bool
+    var strength: Double = 0.12
+    var width: CGFloat? = 32
+
+    var body: some View {
+        Capsule()
+            // Concrete Color.primary, NOT the hierarchical .primary: the
+            // hierarchical style resolves against the button label's
+            // foregroundStyle, which rendered the bookmark's pill at ~40%
+            // strength through its gold style (measured +7 vs +20).
+            .fill(Color.primary.opacity(visible ? strength : 0))
+            .frame(width: width, height: 26)
+    }
+}
+
 /// Icon button sized for the custom capsules. The frame + contentShape INSIDE
-/// the label closure is what makes the whole 28×35 area clickable — borderless
+/// the label closure is what makes the whole 32×35 area clickable — borderless
 /// buttons otherwise hit-test only the glyph (#112; measured 6.5pt-wide chevron
 /// targets in the first cut of this cluster).
 private struct CapsuleIconButton: View {
@@ -223,11 +260,16 @@ private struct CapsuleIconButton: View {
     var isDisabled = false
     let action: () -> Void
 
+    @State private var hovering = false
+
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .frame(width: 28, height: 35)
+                .frame(width: 32, height: 35)
+                .background {
+                    ToolbarHoverBackdrop(visible: hovering && !isDisabled)
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -236,6 +278,7 @@ private struct CapsuleIconButton: View {
         // system pods.
         .tint(.primary)
         .disabled(isDisabled)
+        .onHover { hovering = $0 }
         .help(helpText)
         .accessibilityLabel(title)
         .accessibilityIdentifier(identifier)
@@ -275,31 +318,16 @@ private struct PageIndicator: View {
     @Environment(AppStore.self) private var appStore
 
     @State private var pageInput = "1"
-    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 5) {
-            TextField("", text: $pageInput)
-                // Stay on .roundedBorder even though its chrome does not
-                // render inside the glass capsule (measured: the field zone
-                // was bit-identical to bare background — the seamless look is
-                // wanted; PR #115 review). .plain is NOT equivalent: it
-                // renders the digits at half the luminance of neighboring
-                // glyphs (measured 110 vs 203/234), and neither
-                // .foregroundStyle(.primary) nor an explicit labelColor
-                // reaches its text renderer.
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.center)
-                .focused($fieldFocused)
-                // Commit directly on Return — FocusState changes are unreliable
-                // inside NSToolbar-hosted fields, so blur alone can't be trusted.
-                .onSubmit { commitPageInput(); fieldFocused = false }
-                .onChange(of: fieldFocused) { _, focused in
-                    if !focused { commitPageInput() }
-                }
-                .frame(width: 36, height: 21)
-                .accessibilityLabel("Page number, of \(appStore.numPages) pages")
-                .accessibilityIdentifier("toolbar.pageField")
+            PageNumberField(
+                text: $pageInput,
+                totalPages: appStore.numPages,
+                onCommit: commitPageInput,
+                onCancel: { pageInput = String(appStore.currentPage) }
+            )
+            .frame(width: 36, height: 21)
             Text("/ \(appStore.numPages)")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -330,10 +358,123 @@ private struct PageIndicator: View {
     }
 }
 
+/// AppKit-backed page field. SwiftUI's TextField cannot produce the wanted
+/// rendering inside the glass capsule: .roundedBorder draws the focus ring
+/// (a blue oval overflowing the capsule — PR #115 review) which
+/// .focusEffectDisabled() does not remove, and .plain renders the digits at
+/// half brightness with no modifier reaching its text color. NSTextField
+/// exposes both as direct property sets.
+private struct PageNumberField: NSViewRepresentable {
+    @Binding var text: String
+    let totalPages: Int
+    let onCommit: () -> Void
+    let onCancel: () -> Void
+
+    /// Clicking into an NSTextField places a caret; SwiftUI's TextField
+    /// selected the content, so typing replaced it. Without this, a click +
+    /// "4" on page 1 yields "14" — appended, invalid, silently reverted
+    /// (measured). Select-all after every click restores replace-on-type.
+    final class SelectAllTextField: NSTextField {
+        override func mouseDown(with event: NSEvent) {
+            super.mouseDown(with: event)
+            if let editor = currentEditor(), editor.selectedRange.length == 0 {
+                editor.selectAll(nil)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onCommit: onCommit, onCancel: onCancel)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = SelectAllTextField(string: text)
+        field.focusRingType = .none
+        field.isBordered = false
+        field.drawsBackground = false
+        field.alignment = .center
+        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        field.textColor = .labelColor
+        field.delegate = context.coordinator
+        field.setAccessibilityIdentifier("toolbar.pageField")
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.onCommit = onCommit
+        // Never clobber what the user is mid-typing.
+        if field.currentEditor() == nil, field.stringValue != text {
+            field.stringValue = text
+        }
+        field.setAccessibilityLabel("Page number, of \(totalPages) pages")
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var onCommit: () -> Void
+        var onCancel: () -> Void
+
+        init(
+            text: Binding<String>,
+            onCommit: @escaping () -> Void,
+            onCancel: @escaping () -> Void
+        ) {
+            self.text = text
+            self.onCommit = onCommit
+            self.onCancel = onCancel
+        }
+
+        // Return commits AND drops focus; Escape abandons the edit (the
+        // binding holds live keystrokes, so the caller supplies the restore
+        // value). Both must blur: while the field stays first responder,
+        // clicks go to the field editor and never reach the select-all
+        // mouseDown override, so a second entry appends (measured: "41").
+        func control(
+            _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
+        ) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                onCommit()
+            case #selector(NSResponder.cancelOperation(_:)):
+                onCancel()
+            default:
+                return false
+            }
+            control.stringValue = text.wrappedValue
+            control.window?.makeFirstResponder(nil)
+            return true
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        // Fires on both Return and focus loss — the two commit paths the
+        // SwiftUI version needed onSubmit + FocusState tracking for.
+        func controlTextDidEndEditing(_ notification: Notification) {
+            onCommit()
+            // Show the committed (possibly reverted) value even while the
+            // field keeps focus — updateNSView deliberately skips syncing
+            // whenever an editor is active, so an out-of-range entry would
+            // otherwise sit in the field forever (measured: "141" in a
+            // 12-page document survived Return).
+            if let field = notification.object as? NSTextField,
+               field.stringValue != text.wrappedValue {
+                field.stringValue = text.wrappedValue
+            }
+        }
+    }
+}
+
 // MARK: - Zoom
 
 private struct ZoomControls: View {
     @Environment(AppStore.self) private var appStore
+
+    @State private var hoveringReset = false
 
     var body: some View {
         CapsuleIconButton(
@@ -351,10 +492,16 @@ private struct ZoomControls: View {
                 .monospacedDigit()
                 .frame(minWidth: 40)
                 .frame(height: 35)
+                .background {
+                    // nil width: track the label, which grows past 40 at
+                    // three-digit zoom levels.
+                    ToolbarHoverBackdrop(visible: hoveringReset, width: nil)
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .tint(.primary)
+        .onHover { hoveringReset = $0 }
         .help("Reset zoom to 100%")
         .accessibilityLabel("Reset zoom to 100%")
         .accessibilityIdentifier("toolbar.resetZoom")
@@ -395,6 +542,8 @@ private struct BookmarkButton: View {
         ) != nil
     }
 
+    @State private var hovering = false
+
     var body: some View {
         Button {
             Task { await annotationStore.toggleBookmark() }
@@ -404,7 +553,15 @@ private struct BookmarkButton: View {
                 systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
             )
             .foregroundStyle(isBookmarked ? AnyShapeStyle(palette.gold) : AnyShapeStyle(.primary))
+            .labelStyle(.iconOnly)
+            .frame(width: 32, height: 35)
+            .background {
+                ToolbarHoverBackdrop(visible: hovering)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .onHover { hovering = $0 }
         .help(
             isBookmarked
                 ? "Remove Bookmark Position (⌘D)"
@@ -419,23 +576,37 @@ private struct BookmarkButton: View {
 private struct NoteToolToggle: View {
     @Environment(AppStore.self) private var appStore
 
-    private var isWeb: Bool { appStore.document?.kind == .web }
+    @State private var hovering = false
 
+    private var isWeb: Bool { appStore.document?.kind == .web }
+    private var isActive: Bool { appStore.mode == .note }
+
+    // A Button with an explicit active fill instead of a .button-styled
+    // Toggle: the toggle's system chrome brings back the squished hover/press
+    // shape this pass removes, and its selected state cannot be drawn through
+    // the shared backdrop.
     var body: some View {
-        Toggle(
-            isOn: Binding(
-                get: { appStore.mode == .note },
-                set: { appStore.setMode($0 ? .note : .view) }
-            )
-        ) {
+        Button {
+            appStore.setMode(isActive ? .view : .note)
+        } label: {
             Label("Sticky note tool", systemImage: "note.text")
+                .labelStyle(.iconOnly)
+                .frame(width: 32, height: 35)
+                .background {
+                    ToolbarHoverBackdrop(
+                        visible: isActive || hovering,
+                        strength: isActive ? 0.22 : 0.12)
+                }
+                .contentShape(Rectangle())
         }
-        .toggleStyle(.button)
+        .buttonStyle(.borderless)
+        .tint(.primary)
+        .onHover { hovering = $0 }
         .help(
             isWeb
                 ? "Sticky note tool (N) — click in the page to attach a note to the text there"
                 : "Sticky note tool (N) — click on the page to place a note")
-        .accessibilityAddTraits(appStore.mode == .note ? .isSelected : [])
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("toolbar.noteTool")
     }
 }
@@ -448,6 +619,7 @@ private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
 
+    @State private var hovering = false
     @State private var pageSaved = false
     @State private var exporting = false
     /// Separate guard for the Vellum bundle flow so it can't double-fire or
@@ -463,7 +635,7 @@ private struct OverflowMenu: View {
     private var isWeb: Bool { appStore.document?.kind == .web }
     private var hasDocument: Bool { appStore.document != nil }
 
-    var body: some View {
+    private var menuControl: some View {
         Menu {
             if hasDocument, !isWeb {
                 Section {
@@ -502,16 +674,38 @@ private struct OverflowMenu: View {
             }
 
         } label: {
-            Label("More", systemImage: "ellipsis")
-                // Icon-only keeps the pod the same circle as the neighboring
-                // buttons; a text-bearing Menu label can outgrow the toolbar
-                // height and clip against its bottom edge.
-                .labelStyle(.iconOnly)
+            // A transparent click target: the menu control draws its own
+            // system hover under any backdrop attached to it — measured as a
+            // double-strength 28pt blob that survived both .borderless and
+            // .plain — so the visible glyph and pill render as ZStack
+            // siblings below, and the whole Menu sits at 2% opacity (not 0:
+            // fully transparent views stop hit-testing). The dropdown itself
+            // is a separate window, unaffected by this opacity.
+            Color.clear
+                .frame(width: 32, height: 35)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
+        .opacity(0.02)
         .help("More actions for this document")
         .accessibilityLabel("Document actions")
         .accessibilityIdentifier("toolbar.overflowMenu")
+    }
+
+    var body: some View {
+        ZStack {
+            ToolbarHoverBackdrop(visible: hovering)
+            Label("More", systemImage: "ellipsis")
+                // Icon-only keeps the glyph the same size as the neighboring
+                // buttons; a text-bearing label can outgrow the toolbar
+                // height and clip against its bottom edge.
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.primary)
+            menuControl
+        }
+        .frame(width: 32, height: 35)
+        .onHover { hovering = $0 }
         .task(id: DocumentKey(appStore)) {
             await loadSavedState(for: DocumentKey(appStore))
         }
@@ -889,6 +1083,8 @@ private enum DocumentActionPresenter {
 private struct SidebarToggleButton: View {
     @Environment(WorkspaceStore.self) private var workspace
 
+    @State private var hovering = false
+
     var body: some View {
         Button {
             workspace.sidebarOpen.toggle()
@@ -896,7 +1092,16 @@ private struct SidebarToggleButton: View {
             Label(
                 workspace.sidebarOpen ? "Hide side panel" : "Show side panel",
                 systemImage: "sidebar.trailing")
+                .labelStyle(.iconOnly)
+                .frame(width: 32, height: 35)
+                .background {
+                    ToolbarHoverBackdrop(visible: hovering)
+                }
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .tint(.primary)
+        .onHover { hovering = $0 }
         .help(
             workspace.sidebarOpen
                 ? "Hide side panel (⌘⌥S)"
