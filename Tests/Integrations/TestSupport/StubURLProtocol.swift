@@ -1,4 +1,12 @@
 import Foundation
+import Testing
+
+/// Parent for every suite that installs the process-global `StubURLProtocol`
+/// handler. `.serialized` on a suite only orders its OWN tests — two annotated
+/// suites still run in parallel with each other, interleaving `install`/`reset`
+/// on the shared handler. A serialized parent applies recursively to its
+/// children, which is what actually keeps the stub's users off each other.
+@Suite(.serialized) enum StubbedTransportSuites {}
 
 /// A chunk of a streamed stub response body. `delay` (if present) is awaited
 /// before the chunk is delivered to the client, letting tests exercise

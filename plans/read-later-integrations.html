@@ -1,3 +1,11 @@
+<!doctype html>
+<!-- HISTORICAL PLANNING ARTIFACT. This is the pre-implementation plan; the
+     shipped code diverges in places: move-to-collection IS supported (v1 is
+     not strictly read-only), Raindrop syncs are always full walks (no
+     early-stop delta), there is no fixed 3s Readwise pacing (429s are handled
+     by Retry-After-aware retries), and several component names/filenames
+     changed during implementation. The code and its tests are authoritative;
+     this document records intent, constraints, and API research. -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vellum — Read-Later Integrations Plan (Readwise · Raindrop)</title>
@@ -82,7 +90,6 @@
   "status": "draft",
   "repo": "github.com/ayushdeolasee/Vellum",
   "branch": "read-later-application-integration",
-  "workdir_hint": "/Users/ayushdeolasee/Developer/Vellum-worktree-cc/read-later-application-integration",
   "phases": [
     { "id": 1, "title": "Scaffolding + Readwise end-to-end", "status": "pending",
       "accept": "Connect Readwise with a real token in Settings → Integrations; Welcome screen shows Readwise segment with Location filter + search; opening an article opens it as a web tab; opening a PDF downloads via withRawSourceUrl and opens in the PDF viewer; unit tests for decoding, mapping, watermark, and 429 retry pass" },

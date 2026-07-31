@@ -3,8 +3,7 @@ import Synchronization
 import Testing
 @testable import Vellum
 
-@Suite(.serialized)
-struct ReadLaterHTTPClientTests {
+extension StubbedTransportSuites { @Suite(.serialized) struct ReadLaterHTTPClientTests {
     @Test func retries408AndStopsAfterSuccess() async throws {
         let attempts = Mutex(0)
         StubURLProtocol.install { request in
@@ -209,4 +208,5 @@ struct ReadLaterHTTPClientTests {
         }
         #expect(attempts.withLock { $0 } == 1)
     }
+}
 }

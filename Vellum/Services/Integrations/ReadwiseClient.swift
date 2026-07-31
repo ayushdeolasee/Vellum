@@ -89,7 +89,7 @@ private struct ReadwiseItemDTO: Decodable {
     enum CodingKeys: String, CodingKey { case id, title, author, summary, category, location, tags; case sourceURL = "source_url"; case imageURL = "image_url"; case updatedAt = "updated_at"; case savedAt = "saved_at"; case createdAt = "created_at" }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self); id = try c.decode(String.self, forKey: .id); sourceURL = try c.decodeIfPresent(String.self, forKey: .sourceURL); title = try c.decodeIfPresent(String.self, forKey: .title); author = try c.decodeIfPresent(String.self, forKey: .author); summary = try c.decodeIfPresent(String.self, forKey: .summary); category = try c.decodeIfPresent(String.self, forKey: .category); imageURL = try c.decodeIfPresent(String.self, forKey: .imageURL); location = try c.decodeIfPresent(String.self, forKey: .location); updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt); savedAt = try c.decodeIfPresent(String.self, forKey: .savedAt); createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-        if let object = try? c.decode([String: JSONValue].self, forKey: .tags) { tags = Array(object.keys) } else { tags = (try? c.decode([String].self, forKey: .tags)) ?? [] }
+        if let object = try? c.decode([String: JSONValue].self, forKey: .tags) { tags = object.keys.sorted() } else { tags = (try? c.decode([String].self, forKey: .tags)) ?? [] }
     }
     var item: ReadLaterItem? {
         let kind = ReadLaterKind(rawValue: category?.lowercased() ?? "") ?? .other; let source = sourceURL.flatMap(URL.init(string:)); let locationID = location.map { ReadLaterCollection.id(provider: .readwise, vendorID: $0.lowercased()) }

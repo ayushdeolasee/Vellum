@@ -148,8 +148,12 @@ actor IntegrationsSyncEngine {
         // syncs, and falling out of it simply runs this caller's own.
         for _ in 0..<Self.maximumSyncJoins {
             guard let current = inFlight[provider] else { break }
-            let result = try await current.task.value
-            guard requested == .full, current.mode == .incremental else { return result }
+            // Join via `result`, not `value`: a full request that joined a
+            // FAILING incremental sync must still escalate to its own sweep —
+            // rethrowing here would hand this caller the incremental failure
+            // instead of the full sync it asked for.
+            let result = await current.task.result
+            guard requested == .full, current.mode == .incremental else { return try result.get() }
         }
         let id = UUID()
         let task = Task { try await self.runSync(provider: provider, mode: requested, id: id, progress: progress) }

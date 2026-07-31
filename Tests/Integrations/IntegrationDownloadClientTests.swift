@@ -3,8 +3,7 @@ import Foundation
 import Testing
 @testable import Vellum
 
-@Suite(.serialized)
-struct IntegrationDownloadClientTests {
+extension StubbedTransportSuites { @Suite(.serialized) struct IntegrationDownloadClientTests {
     @Test func hashDerivedTemporaryDestinationCannotTraverse() async throws {
         let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
         let cache = IntegrationsCache(root: root)
@@ -141,4 +140,5 @@ private final class OversizedThumbnailURLProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
 }

@@ -3,8 +3,7 @@ import Testing
 @testable import Vellum
 
 // .serialized: the move test installs the process-global StubURLProtocol handler.
-@Suite(.serialized)
-struct ReadwiseClientTests {
+extension StubbedTransportSuites { @Suite(.serialized) struct ReadwiseClientTests {
     @Test func mapsSourceURLTagObjectLocationDatesAndCursor() throws {
         let page = try ReadwiseClient.mapPage(FixtureLoader.data("Readwise", "items-page-1"))
         let item = try #require(page.items.first)
@@ -92,4 +91,5 @@ struct ReadwiseClientTests {
         }
         #expect(recorder.requests().isEmpty)
     }
+}
 }

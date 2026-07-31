@@ -5,8 +5,7 @@ import Testing
 // .serialized because the move tests install the process-global StubURLProtocol
 // handler; suites run in parallel with each other, so every stub-using suite
 // must serialize its own tests and tolerate none elsewhere running concurrently.
-@Suite(.serialized)
-struct RaindropClientTests {
+extension StubbedTransportSuites { @Suite(.serialized) struct RaindropClientTests {
     @Test func mapsLosslessIDsTagsDatesPDFAndCollection() throws {
         let page = try RaindropClient.mapPage(FixtureLoader.data("Raindrop", "items-page-0"), page: 0, perPage: 50)
         let item = try #require(page.items.first)
@@ -138,4 +137,5 @@ struct RaindropClientTests {
         }
         #expect(recorder.requests().isEmpty)
     }
+}
 }
