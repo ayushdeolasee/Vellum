@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -22,19 +23,33 @@ final class IntegrationsStore {
     @ObservationIgnored private let staleInterval: TimeInterval
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var operationTasks: [IntegrationProvider: (id: UUID, task: Task<Void, Never>)] = [:]
-    /// Reverse-lookup indexes (download-key → id, normalized address → id),
-    /// rebuilt lazily when a provider's items revision changes, so mapping an
-    /// open document back to its item is O(1) instead of an O(items) scan.
+    /// Store-owned background work — preference writes, the post-connect sync,
+    /// moves, disconnects, thumbnail cleanup. Every fire-and-forget task that
+    /// persists or deletes lives here so `awaitQuiescence()` can drain it on
+    /// quit instead of the work vanishing with the process.
+    @ObservationIgnored private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
+    /// Reverse-lookup indexes (id → item, download-key → id, normalized address
+    /// → id), rebuilt lazily when a provider's items revision changes, so
+    /// mapping an open document back to its item is O(1) instead of an O(items)
+    /// scan.
     @ObservationIgnored private var lookupIndexes: [IntegrationProvider: ItemLookupIndex] = [:]
-    /// Bumped on every items mutation; cheap staleness check for the indexes.
+    /// Bumped when a provider's `items` actually change — never for a cosmetic
+    /// status/connection change, which would throw away the index for nothing.
     @ObservationIgnored private var itemsRevisions: [IntegrationProvider: Int] = [:]
     /// Moves confirmed (or optimistically applied) locally but possibly not yet
     /// reflected in provider snapshots. Re-applied on top of every `apply` so a
     /// sync that raced the move can't visibly bounce the item back; cleared as
     /// soon as the provider reports the item in its new collection (or newer).
     @ObservationIgnored private var pendingMoves: [ReadLaterItem.ID: (collectionID: String, at: Date)] = [:]
+    /// How long an unconfirmed move patch may keep rewriting snapshots. An item
+    /// deleted (or re-filed) server-side can never satisfy its patch, so the
+    /// patch has to expire rather than mask provider state for the session.
+    private static let pendingMoveTTL: TimeInterval = 15 * 60
     /// Monotonic counter ordering all notices (downloads and moves).
     @ObservationIgnored private var noticeSequence = 0
+    /// Fade-out timers for success toasts, keyed by item and stamped with the
+    /// notice they belong to so a newer toast can cancel the older one's timer.
+    @ObservationIgnored private var noticeExpiries: [ReadLaterItem.ID: (sequence: Int, task: Task<Void, Never>)] = [:]
 
     init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60) {
         self.engine = engine; self.thumbnails = thumbnails; self.scheduler = scheduler; self.now = now; self.refreshInterval = refreshInterval; self.staleInterval = staleInterval
@@ -43,6 +58,13 @@ final class IntegrationsStore {
     convenience init() { self.init(engine: IntegrationsSyncEngine()) }
     var hasConnectedProvider: Bool { providers.values.contains(where: \.isConnected) }
     var connectedProviders: [IntegrationProvider] { IntegrationProvider.allCases.filter { providers[$0]?.isConnected == true } }
+    /// Every cached item across connected providers, in stable provider order —
+    /// the corpus home search indexes.
+    var searchableItems: [ReadLaterItem] { connectedProviders.flatMap { providers[$0]?.items ?? [] } }
+    /// Changes exactly when `searchableItems` can have changed (any provider's
+    /// items revision, which item mutations always bump alongside an observable
+    /// `providers` write) — the `.task(id:)` key for re-indexing search.
+    var searchRevision: Int { itemsRevisions.values.reduce(0, +) }
 
     func start() async {
         guard !didStart else { return }; didStart = true
@@ -59,20 +81,39 @@ final class IntegrationsStore {
         restartAutoRefresh(); await refreshStaleProviders()
     }
 
-    func setAutoRefresh(_ enabled: Bool) { guard enabled != autoRefreshEnabled else { return }; autoRefreshEnabled = enabled; Task { await engine.setAutoRefreshEnabled(enabled) }; restartAutoRefresh() }
+    /// The toggle applies to the UI immediately and the preference write runs
+    /// behind it — as a store-owned task, so quitting right after flipping the
+    /// switch can't silently revert it.
+    func setAutoRefresh(_ enabled: Bool) {
+        guard enabled != autoRefreshEnabled else { return }
+        autoRefreshEnabled = enabled
+        run { [engine] in await engine.setAutoRefreshEnabled(enabled) }
+        restartAutoRefresh()
+    }
+
     func connect(provider: IntegrationProvider, token: String) async throws {
         let old = providers[provider]
         let priorOperation = operationTasks[provider]
         update(provider) { $0.connection = .connecting; $0.statusMessage = "Checking token…" }
         do {
             let initial = try await engine.connect(provider: provider, candidate: token)
+            // Every sync in flight when the connection landed belongs to the old
+            // generation — the one captured before the await AND any auto-refresh
+            // that started during it. Cancel whatever holds the slot and clear
+            // it, so a stale `staleGeneration` failure can never overwrite this
+            // fresh connection (its `performSync` guards compare against the slot).
             priorOperation?.task.cancel()
-            if operationTasks[provider]?.id == priorOperation?.id { operationTasks[provider] = nil }
+            if let current = operationTasks[provider] { current.task.cancel(); operationTasks[provider] = nil }
             apply(initial, connection: .connected)
-            Task { [weak self] in await self?.sync(provider, forceFull: true) }
+            run { [weak self] in await self?.sync(provider, forceFull: true) }
         } catch {
-            let shouldRestore = priorOperation == nil || operationTasks[provider]?.id == priorOperation?.id
-            if shouldRestore, providers[provider]?.connection == .connecting, let old { providers[provider] = old }
+            // Restore only while nothing newer owns the provider: same operation
+            // in the slot as before the await (or still none at all).
+            let shouldRestore = operationTasks[provider]?.id == priorOperation?.id
+            if shouldRestore, providers[provider]?.connection == .connecting, let old {
+                providers[provider] = old
+                itemsRevisions[provider, default: 0] += 1
+            }
             throw error
         }
     }
@@ -96,6 +137,43 @@ final class IntegrationsStore {
     }
     func providerSelected(_ provider: IntegrationProvider) async { guard let date = providers[provider]?.lastSuccessfulSync, now().timeIntervalSince(date) <= 300 else { await sync(provider); return } }
 
+    // MARK: - Joinable background work
+
+    /// Runs `operation` as a store-owned task and keeps the handle, so nothing
+    /// this store starts in the background is unjoinable (root CLAUDE.md: never
+    /// drop the handle of a task that persists). The handle comes back for
+    /// callers that must also cancel it — a settings sheet that closes while its
+    /// request is still on the wire.
+    @discardableResult
+    func run(_ operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let id = UUID()
+        // The closure inherits this store's main-actor isolation, and cannot
+        // start before this function returns, so the bookkeeping can't race.
+        let task = Task { [weak self] in
+            await operation()
+            self?.backgroundTasks[id] = nil
+        }
+        backgroundTasks[id] = task
+        return task
+    }
+
+    /// Quit barrier, awaited by `applicationShouldTerminate` next to the
+    /// page-text and AI drains. Syncs are network work, so quitting cancels them
+    /// and waits only for the unwind (their cache writes commit page by page);
+    /// the store-owned tasks — preference writes, moves, disconnects, thumbnail
+    /// cleanup — are drained to completion. Rounds repeat because a drained task
+    /// may start one more (a move's follow-up sync), and each round strictly
+    /// follows the previous one's completion, so this terminates.
+    func awaitQuiescence() async {
+        autoRefreshTask?.cancel(); autoRefreshTask = nil
+        while true {
+            for entry in operationTasks.values { entry.task.cancel() }
+            let pending = Array(backgroundTasks.values) + operationTasks.values.map(\.task)
+            guard !pending.isEmpty else { return }
+            for task in pending { await task.value }
+        }
+    }
+
     func disconnect(provider: IntegrationProvider, deleteDownloads: Bool, openDocumentPaths: Set<String> = []) async throws {
         try await engine.disconnect(provider: provider, deleteDownloads: deleteDownloads, openDocumentPaths: openDocumentPaths)
         operationTasks[provider]?.task.cancel(); operationTasks[provider] = nil
@@ -116,7 +194,10 @@ final class IntegrationsStore {
         catch { downloads[item.id] = .init(progress: nil, message: error.localizedDescription, isActive: false, sequence: nextSequence()); throw error }
     }
 
-    func thumbnailURL(for item: ReadLaterItem) async -> URL? { await thumbnails.imageURL(for: item.thumbnailURL) }
+    /// A ready-to-draw thumbnail. The fetch, the file read AND the decode all
+    /// happen inside the cache actor, so a library row never blocks the main
+    /// actor on disk I/O or ImageIO.
+    func thumbnailImage(for item: ReadLaterItem) async -> NSImage? { await thumbnails.image(for: item.thumbnailURL) }
     func dismissDownloadNotice(_ id: ReadLaterItem.ID) { downloads[id] = nil }
 
     // MARK: - Moving items between collections
@@ -130,6 +211,13 @@ final class IntegrationsStore {
         case .raindrop: return [.raindropUnsorted] + collections
         case .readwise: return collections.filter { ReadwiseClient.moveTargetLocationIDs.contains($0.vendorID) }
         }
+    }
+
+    /// Entry point for menus and other UI that can't await: the move runs as a
+    /// store-owned task instead of a dropped `Task` handle, so the quit path can
+    /// drain a refile the user asked for a moment ago.
+    func beginMove(_ item: ReadLaterItem, to collection: ReadLaterCollection) {
+        run { [weak self] in await self?.move(item, to: collection) }
     }
 
     /// Optimistically refiles the item, then asks the provider. Overlapping
@@ -188,7 +276,7 @@ final class IntegrationsStore {
             } else {
                 id = index.byDownloadKey[String((path as NSString).lastPathComponent.dropLast(4))]
             }
-            if let id, let item = items.first(where: { $0.id == id }) { return item }
+            if let id, let item = index.byID[id] { return item }
         }
         return nil
     }
@@ -220,22 +308,34 @@ final class IntegrationsStore {
         update(provider) { state in
             if let index = state.items.firstIndex(where: { $0.id == id }) { state.items[index] = value }
         }
+        itemsRevisions[provider, default: 0] += 1
     }
 
     private func setTransientNotice(for id: ReadLaterItem.ID, message: String) {
         let sequence = nextSequence()
         moveNotices[id] = .init(progress: nil, message: message, isActive: false, isSuccess: true, sequence: sequence)
-        Task { [weak self, scheduler] in
+        noticeExpiries[id]?.task.cancel()
+        noticeExpiries[id] = (sequence: sequence, task: Task { [weak self, scheduler] in
             try? await scheduler.sleep(for: .seconds(3))
-            guard let self, self.moveNotices[id]?.sequence == sequence else { return }
-            self.moveNotices[id] = nil
-        }
+            guard let self, self.noticeExpiries[id]?.sequence == sequence else { return }
+            if self.moveNotices[id]?.sequence == sequence { self.moveNotices[id] = nil }
+            self.noticeExpiries[id] = nil
+        })
     }
+
+    /// Awaits the pending fade-out timer for a move notice. The timers are
+    /// joinable like everything else this store starts, but they are
+    /// deliberately NOT part of `awaitQuiescence` — a toast fading is not work
+    /// worth delaying ⌘Q for. Tests await this instead of polling the notice.
+    func awaitNoticeExpiry(for id: ReadLaterItem.ID) async { await noticeExpiries[id]?.task.value }
 
     private func nextSequence() -> Int { noticeSequence += 1; return noticeSequence }
 
     private struct ItemLookupIndex {
         var revision: Int
+        /// Resolves a matched id straight to its item — the whole point of the
+        /// index is that no lookup path falls back to a linear scan.
+        var byID: [ReadLaterItem.ID: ReadLaterItem]
         var byDownloadKey: [String: ReadLaterItem.ID]
         var byAddress: [String: ReadLaterItem.ID]
         /// Empty-string value marks an ambiguous key (several items differ only
@@ -246,8 +346,10 @@ final class IntegrationsStore {
     private func lookupIndex(for provider: IntegrationProvider, items: [ReadLaterItem]) -> ItemLookupIndex {
         let revision = itemsRevisions[provider, default: 0]
         if let cached = lookupIndexes[provider], cached.revision == revision { return cached }
-        var index = ItemLookupIndex(revision: revision, byDownloadKey: [:], byAddress: [:], byStrippedAddress: [:])
+        var index = ItemLookupIndex(revision: revision, byID: [:], byDownloadKey: [:], byAddress: [:], byStrippedAddress: [:])
+        index.byID.reserveCapacity(items.count)
         for item in items {
+            if index.byID[item.id] == nil { index.byID[item.id] = item }
             let key = IntegrationsCache.downloadKey(provider: provider, itemID: item.vendorID)
             if index.byDownloadKey[key] == nil { index.byDownloadKey[key] = item.id }
             let address = Self.comparableWebAddress(item.sourceURL.absoluteString)
@@ -331,9 +433,17 @@ final class IntegrationsStore {
         // reports the item in its new collection, or newer than the move.
         var items = snapshot.items
         for (id, patch) in pendingMoves {
-            guard let index = items.firstIndex(where: { $0.id == id }) else { continue }
+            // A patch older than the TTL is unsatisfiable — the item was deleted
+            // (or re-filed) server-side and will never come back in the shape the
+            // patch waits for — so it retires instead of rewriting snapshots for
+            // the rest of the session.
+            let isExpired = now().timeIntervalSince(patch.at) >= Self.pendingMoveTTL
+            guard let index = items.firstIndex(where: { $0.id == id }) else {
+                if isExpired { pendingMoves[id] = nil }
+                continue
+            }
             let item = items[index]
-            if item.collectionIDs == [patch.collectionID] || item.updatedAt > patch.at {
+            if item.collectionIDs == [patch.collectionID] || item.updatedAt > patch.at || isExpired {
                 pendingMoves[id] = nil
             } else {
                 items[index] = item.movingToCollection(patch.collectionID, updatedAt: item.updatedAt)
@@ -341,7 +451,18 @@ final class IntegrationsStore {
         }
         providers[snapshot.provider] = .init(provider: snapshot.provider, connection: connection, items: items, collections: snapshot.collections, lastSuccessfulSync: snapshot.lastSuccessfulSync, lastFullSweep: snapshot.lastFullSweep, skippedRecordCount: snapshot.skippedRecordCount, statusMessage: nil)
         itemsRevisions[snapshot.provider, default: 0] += 1
-        if cleanThumbnails { Task { await thumbnails.removeUnreferenced(keeping: Set(providers.values.flatMap(\.items).compactMap(\.thumbnailURL))) } }
+        if cleanThumbnails {
+            // The keep-set is computed HERE, not inside the task: a disconnect
+            // landing in between would otherwise hand the sweep a post-disconnect
+            // set and delete thumbnails the surviving providers still reference.
+            let keep = Set(providers.values.flatMap(\.items).compactMap(\.thumbnailURL))
+            run { [thumbnails] in await thumbnails.removeUnreferenced(keeping: keep) }
+        }
     }
-    private func update(_ provider: IntegrationProvider, _ mutation: (inout IntegrationProviderViewState) -> Void) { guard var value = providers[provider] else { return }; mutation(&value); providers[provider] = value; itemsRevisions[provider, default: 0] += 1 }
+    /// Non-items mutations (connection state, status message). Deliberately does
+    /// NOT bump `itemsRevisions`: invalidating the lookup index on a cosmetic
+    /// "Syncing…" message would throw away the cache this class exists to keep.
+    /// Everything that mutates `items` bumps the revision itself — `apply`,
+    /// `replace`, `disconnect`, and the connect rollback.
+    private func update(_ provider: IntegrationProvider, _ mutation: (inout IntegrationProviderViewState) -> Void) { guard var value = providers[provider] else { return }; mutation(&value); providers[provider] = value }
 }

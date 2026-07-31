@@ -98,7 +98,10 @@ private struct ExternalLibraryRow: View {
             Group { if let image { Image(nsImage: image).resizable().scaledToFill() } else { Image(systemName: item.kind == .pdf ? "doc.richtext" : "globe").foregroundStyle(.secondary) } }
                 .frame(width: 34, height: 34).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md)).clipShape(RoundedRectangle(cornerRadius: Radius.md)).overlay { RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator) }
         }
-        .task(id: item.thumbnailURL) { if let url = await integrations.thumbnailURL(for: item) { image = NSImage(contentsOf: url) } }
+        // Fetch, file read and decode all happen inside the thumbnail actor —
+        // the row only assigns the finished image, so scrolling never pays for
+        // disk I/O or ImageIO on the main actor.
+        .task(id: item.thumbnailURL) { image = await integrations.thumbnailImage(for: item) }
         .accessibilityIdentifier("welcome.external.row.\(item.id)")
     }
 }

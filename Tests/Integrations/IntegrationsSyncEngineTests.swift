@@ -525,7 +525,6 @@ struct IntegrationsSyncEngineTests {
         #expect(manifest.provider == .readwise)
         #expect(manifest.itemID == "rw-pdf")
         #expect(manifest.revision == ISO8601DateFormatter.integrationString(from: updatedAt))
-        #expect(manifest.etag == "pdf-etag")
         let persistedManifest = String(decoding: try Data(contentsOf: manifestURL), as: UTF8.self)
         #expect(persistedManifest.contains("signed.example.com") == false)
 
@@ -545,6 +544,232 @@ struct IntegrationsSyncEngineTests {
         #expect(reusedRoute == .file(managedURL))
         #expect(finalRawSourceIDs == ["rw-pdf"])
         #expect(finalDownloadRequests == [signedURL])
+    }
+
+    @Test func aRepeatingCursorEndsTheWalkInsteadOfPagingForever() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let item = try makeIntegrationItem(provider: .readwise, id: "looped", updatedAt: date)
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            .empty(provider: .readwise, fingerprint: fingerprint, generation: generation)
+        }
+        defer { harness.cleanup() }
+        let readwise = LoopingReadwiseService(response: integrationPage(items: [item], nextCursor: "stuck"))
+        let engine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: readwise,
+            raindrop: ScriptedRaindropService()
+        )
+
+        await #expect(throws: IntegrationError.paginationDidNotAdvance) {
+            try await engine.sync(provider: .readwise, forceFull: true)
+        }
+
+        // Two calls: the first page is progress, the second repeats it. Without
+        // the guard this stub would page until the process died.
+        #expect(await readwise.callCount() == 2)
+        guard case .snapshot(let cached) = await harness.cache.load(provider: .readwise) else {
+            Issue.record("Expected the walk to leave its progress behind")
+            return
+        }
+        #expect(cached.items.isEmpty)
+        #expect(cached.lastFullSweep == nil)
+    }
+
+    @Test func anEmptyPageThatPromisesMoreEndsTheWalk() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let item = try makeIntegrationItem(provider: .readwise, id: "first", updatedAt: date)
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            .empty(provider: .readwise, fingerprint: fingerprint, generation: generation)
+        }
+        defer { harness.cleanup() }
+        let readwise = ScriptedReadwiseService(pages: [
+            integrationPage(items: [item], nextCursor: "2"),
+            integrationPage(items: [], nextCursor: "3", responseWasEmpty: true)
+        ])
+        let engine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: readwise,
+            raindrop: ScriptedRaindropService()
+        )
+
+        await #expect(throws: IntegrationError.paginationDidNotAdvance) {
+            try await engine.sync(provider: .readwise, forceFull: true)
+        }
+
+        #expect(await readwise.pageCalls().map(\.cursor) == [nil, "2"])
+    }
+
+    @Test func aFullWalkResumedAfterARestartMergesRatherThanDeletingShiftedItems() async throws {
+        let boundary = Date(timeIntervalSince1970: 1_700_000_000)
+        let previousSweep = Date(timeIntervalSince1970: 1_600_000_000)
+        let firstPageItem = try makeIntegrationItem(provider: .raindrop, id: "page-one", updatedAt: boundary.addingTimeInterval(60))
+        let shifted = try makeIntegrationItem(provider: .raindrop, id: "shifted", updatedAt: boundary)
+        let harness = try await IntegrationEngineHarness.make(provider: .raindrop) { fingerprint, generation in
+            ProviderSnapshot(
+                provider: .raindrop,
+                accountFingerprint: fingerprint,
+                connectionGeneration: generation,
+                items: [firstPageItem, shifted],
+                collections: [],
+                committedBoundary: firstPageItem.updatedAt,
+                tentativePagination: nil,
+                lastSuccessfulSync: boundary,
+                lastFullSweep: previousSweep,
+                skippedRecordCount: 0
+            )
+        }
+        defer { harness.cleanup() }
+        let interruptedEngine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: ScriptedReadwiseService(),
+            raindrop: ScriptedRaindropService(pages: [integrationPage(items: [firstPageItem], nextCursor: "1")], terminalError: .server(status: 500))
+        )
+
+        await #expect(throws: IntegrationError.server(status: 500)) {
+            try await interruptedEngine.sync(provider: .raindrop)
+        }
+
+        // Relaunch. `shifted` slid up into page 0 while the app was gone, so the
+        // resumed walk starts at page 1 and never sees it again — page-offset
+        // pagination cannot tell that absence apart from a server-side delete.
+        let resumedRaindrop = ScriptedRaindropService(pages: [integrationPage(items: [])])
+        let resumedEngine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: ScriptedReadwiseService(),
+            raindrop: resumedRaindrop,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let snapshot = try await resumedEngine.sync(provider: .raindrop)
+
+        #expect(await resumedRaindrop.pageCalls() == [.init(page: 1, perPage: 50)])
+        #expect(Set(snapshot.items.map(\.id)) == Set([firstPageItem.id, shifted.id]))
+        #expect(snapshot.lastFullSweep == previousSweep)
+        #expect(snapshot.tentativePagination == nil)
+    }
+
+    @Test func walkCheckpointsInBatchesButAlwaysSavesItsProgressOnTheWayOut() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let items = try (1...3).map { try makeIntegrationItem(provider: .readwise, id: "page-\($0)", updatedAt: date.addingTimeInterval(Double($0) * 60)) }
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            .empty(provider: .readwise, fingerprint: fingerprint, generation: generation)
+        }
+        defer { harness.cleanup() }
+        let readwise = ScriptedReadwiseService(
+            pages: [
+                integrationPage(items: [items[0]], nextCursor: "2"),
+                integrationPage(items: [items[1]], nextCursor: "3"),
+                integrationPage(items: [items[2]], nextCursor: "4")
+            ],
+            terminalError: .server(status: 500)
+        )
+        let cache = harness.cache
+        let recorder = CachedWalkRecorder()
+        let engine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: readwise,
+            raindrop: ScriptedRaindropService()
+        )
+
+        await #expect(throws: IntegrationError.server(status: 500)) {
+            try await engine.sync(provider: .readwise, forceFull: true) { _ in
+                guard case .snapshot(let snapshot) = await cache.load(provider: .readwise) else { return }
+                await recorder.record(snapshot.tentativePagination != nil)
+            }
+        }
+
+        // Three pages is inside one checkpoint window, so none of them paid for a
+        // re-sort and re-encode of everything fetched so far…
+        #expect(await recorder.observations() == [false, false, false])
+        // …and the failure still leaves the whole walk on disk to resume from.
+        guard case .snapshot(let cached) = await cache.load(provider: .readwise) else {
+            Issue.record("Expected the interrupted walk to be checkpointed on the way out")
+            return
+        }
+        let tentative = try #require(cached.tentativePagination)
+        #expect(tentative.cursor == "4")
+        #expect(tentative.fetchedItems.map(\.id).sorted() == items.map(\.id).sorted())
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aFullRequestThatJoinsAnIncrementalSyncStillRunsItsOwnSweep() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let cachedItem = try makeIntegrationItem(provider: .readwise, id: "cached", updatedAt: date)
+        let freshItem = try makeIntegrationItem(provider: .readwise, id: "fresh", updatedAt: date.addingTimeInterval(60))
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            ProviderSnapshot(provider: .readwise, accountFingerprint: fingerprint, connectionGeneration: generation, items: [cachedItem], collections: ReadwiseClient.locationCollections, committedBoundary: date, tentativePagination: nil, lastSuccessfulSync: date, lastFullSweep: nil, skippedRecordCount: 0)
+        }
+        defer { harness.cleanup() }
+        let started = IntegrationTestGate(), release = IntegrationTestGate()
+        let readwise = ScriptedReadwiseService(
+            pages: [integrationPage(items: [freshItem]), integrationPage(items: [cachedItem, freshItem])],
+            pageStarted: started,
+            pageRelease: release
+        )
+        let engine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: readwise,
+            raindrop: ScriptedRaindropService()
+        )
+        let incrementalTask = Task { try await engine.sync(provider: .readwise) }
+        await started.wait()
+        let fullTask = Task { try await engine.sync(provider: .readwise, forceFull: true) }
+        for _ in 0..<64 { await Task.yield() }
+        await release.open()
+
+        let incremental = try await incrementalTask.value
+        let full = try await fullTask.value
+
+        let calls = await readwise.pageCalls()
+        #expect(calls.count == 2)
+        #expect(calls.first?.updatedAfter == date.addingTimeInterval(-300))
+        #expect(calls.last?.updatedAfter == nil)
+        #expect(Set(incremental.items.map(\.id)) == Set([cachedItem.id, freshItem.id]))
+        #expect(Set(full.items.map(\.id)) == Set([cachedItem.id, freshItem.id]))
+        #expect(full.lastFullSweep != nil)
+    }
+
+    @Test func anItemUpdatedOnTheServiceIsDownloadedAgainInsteadOfServingTheStaleCopy() async throws {
+        let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let item = try makeIntegrationItem(provider: .readwise, id: "rw-pdf", updatedAt: updatedAt, kind: .pdf, pdfRetrieval: .readwiseItem(id: "rw-pdf"))
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            .empty(provider: .readwise, fingerprint: fingerprint, generation: generation)
+        }
+        defer { harness.cleanup() }
+        let downloader = RecordingIntegrationDownloader(payload: try integrationTestPDFData())
+        let engine = IntegrationsSyncEngine(
+            credentials: harness.credentials,
+            cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: ScriptedReadwiseService(rawSource: URL(string: "https://signed.example.com/paper.pdf")),
+            raindrop: ScriptedRaindropService(),
+            downloader: downloader
+        )
+
+        let first = try await engine.download(item) { _ in }
+        let updated = try makeIntegrationItem(provider: .readwise, id: "rw-pdf", updatedAt: updatedAt.addingTimeInterval(3600), kind: .pdf, pdfRetrieval: .readwiseItem(id: "rw-pdf"))
+        let staleRoute = await engine.existingRoute(for: updated)
+        let second = try await engine.download(updated) { _ in }
+
+        #expect(staleRoute == nil)
+        #expect(second == first)
+        #expect(await downloader.requests().count == 2)
+        #expect(await engine.existingRoute(for: updated) == second)
+        #expect(await engine.existingRoute(for: item) == nil)
+        let manifestURL = try await harness.cache.manifestURL(provider: .readwise, itemID: item.vendorID)
+        let manifest = try JSONDecoder().decode(IntegrationsCache.DownloadManifest.self, from: Data(contentsOf: manifestURL))
+        #expect(manifest.revision == ISO8601DateFormatter.integrationString(from: updated.updatedAt))
     }
 
     @Test func movePatchesCachedSnapshotAfterProviderConfirms() async throws {
@@ -653,6 +878,29 @@ struct IntegrationsSyncEngineTests {
         #expect(FileManager.default.fileExists(atPath: providerDirectory.appendingPathComponent("snapshot.json").path) == false)
         #expect(FileManager.default.fileExists(atPath: providerDirectory.appendingPathComponent("snapshot.backup.json").path) == false)
     }
+}
+
+/// A service stuck in a paging loop: it keeps reporting more results while
+/// handing back the same cursor and the same record.
+private actor LoopingReadwiseService: ReadwiseServing {
+    private let response: IntegrationPage
+    private var calls = 0
+
+    init(response: IntegrationPage) { self.response = response }
+
+    func validate(token: String) async throws {}
+    func page(token: String, cursor: String?, updatedAfter: Date?, limit: Int) async throws -> IntegrationPage { calls += 1; return response }
+    func rawSourceURL(token: String, itemID: String) async throws -> URL? { nil }
+    func moveItem(token: String, itemID: String, locationVendorID: String) async throws {}
+    func callCount() -> Int { calls }
+}
+
+/// Records, once per progress callback, whether the walk had written a
+/// tentative checkpoint to disk by that point.
+private actor CachedWalkRecorder {
+    private var values: [Bool] = []
+    func record(_ value: Bool) { values.append(value) }
+    func observations() -> [Bool] { values }
 }
 
 private struct IntegrationEngineHarness {

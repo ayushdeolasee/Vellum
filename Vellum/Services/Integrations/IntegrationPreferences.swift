@@ -8,15 +8,23 @@ struct IntegrationPreferences {
         static let fingerprintPrefix = "integrations.accountFingerprint."
     }
 
-    let defaults: UserDefaults
+    /// Nil in the app, where the domain resolves through `AppDefaults.current`
+    /// on every access rather than once at init: that redirect is a task-local
+    /// (see `AppDefaults`), so a hosted test can bind and unbind it around a
+    /// value that outlives the binding, and connection state must never land in
+    /// the real user's defaults just because this type was built too early.
+    /// Tests that want their own suite inject one directly.
+    private let injectedDefaults: UserDefaults?
+    var defaults: UserDefaults { injectedDefaults ?? AppDefaults.current }
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        defaults.register(defaults: [Key.autoRefresh: true])
+    init(defaults: UserDefaults? = nil) {
+        self.injectedDefaults = defaults
     }
 
+    /// Read with an inline default instead of `register(defaults:)`, which would
+    /// pin the registration to whichever domain happened to be current at init.
     var autoRefreshEnabled: Bool {
-        get { defaults.bool(forKey: Key.autoRefresh) }
+        get { defaults.object(forKey: Key.autoRefresh) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: Key.autoRefresh) }
     }
 

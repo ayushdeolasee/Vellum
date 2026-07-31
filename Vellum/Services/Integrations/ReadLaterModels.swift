@@ -120,6 +120,9 @@ struct IntegrationPage: Sendable {
     let nextCursor: String?
     let hasMore: Bool
     let skippedRecordCount: Int
+    /// The response carried no records at all, as opposed to records this walk
+    /// dropped as malformed. Paired with `hasMore` it identifies a service that
+    /// is promising a next page it will never deliver.
     let responseWasEmpty: Bool
 }
 
@@ -132,8 +135,19 @@ struct IntegrationQueryDescriptor: Codable, Hashable, Sendable {
 
 enum IntegrationSyncMode: String, Codable, Hashable, Sendable { case incremental, full }
 
+/// A page walk that is still in progress, persisted so an interrupted sync
+/// resumes where it stopped instead of re-fetching the whole library.
+///
+/// `walkOwnerID` is the engine instance that started the walk and `startedAt`
+/// is when. Both exist for one decision: a walk picked up by a *different*
+/// engine (so, after a relaunch) or long after it began can no longer assume
+/// the service's page boundaries still line up with the ones it already walked
+/// — offset pagination over a list that shifted in the meantime silently skips
+/// items — so it sets `mergeOnly` and forfeits the authoritative-replace path
+/// that would otherwise read those absences as deletions.
 struct TentativePagination: Codable, Hashable, Sendable {
-    let generationID: UUID
+    let walkOwnerID: UUID
+    let startedAt: Date
     let connectionGeneration: Int
     let accountFingerprint: String
     let query: IntegrationQueryDescriptor
@@ -141,8 +155,11 @@ struct TentativePagination: Codable, Hashable, Sendable {
     let mode: IntegrationSyncMode
     var cursor: String?
     var fetchedItems: [ReadLaterItem]
+    /// Every item id this walk has already taken, so a page that carries only
+    /// records it has seen can be recognised as a loop rather than progress.
     var seenIDs: Set<String>
     var skippedRecordCount: Int
+    var mergeOnly: Bool
 }
 
 struct ProviderSnapshot: Codable, Hashable, Sendable {
@@ -206,7 +223,7 @@ struct IntegrationDownloadState: Hashable, Sendable {
 enum IntegrationError: LocalizedError, Equatable, Sendable {
     case invalidCredential, tokenRejected, rateLimited, invalidResponse, malformedData
     case credentialPersistenceFailed, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
-    case unsupportedDestination
+    case unsupportedDestination, paginationDidNotAdvance
     case server(status: Int)
 
     var errorDescription: String? {
@@ -225,6 +242,7 @@ enum IntegrationError: LocalizedError, Equatable, Sendable {
         case .existingDownload: "A downloaded copy already exists."
         case .downloadsAreOpen: "Close downloaded PDFs from this service before deleting them."
         case .unsupportedDestination: "This item can't be moved to that location."
+        case .paginationDidNotAdvance: "The service kept returning the same results instead of the next page."
         }
     }
 }

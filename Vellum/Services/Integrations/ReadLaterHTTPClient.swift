@@ -15,7 +15,11 @@ actor ReadLaterHTTPClient {
         self.session = session; self.sleeper = sleeper; self.now = now; self.maximumRetryDelay = maximumRetryDelay
     }
 
-    func perform(_ request: URLRequest, provider: IntegrationProvider, acceptedStatus: ClosedRange<Int> = 200...299) async throws -> ReadLaterHTTPResponse {
+    /// - Parameter idempotent: Whether `request` is safe to retry (GETs, and the semantically
+    ///   idempotent move/update endpoints Readwise and Raindrop expose). Both retry paths below
+    ///   — status-code-driven and transient-`URLError`-driven — honor this flag, so a future
+    ///   non-idempotent endpoint gets no silent retries unless it opts in explicitly.
+    func perform(_ request: URLRequest, provider: IntegrationProvider, acceptedStatus: ClosedRange<Int> = 200...299, idempotent: Bool) async throws -> ReadLaterHTTPResponse {
         for attempt in 1...3 {
             try Task.checkCancellation()
             do {
@@ -25,7 +29,7 @@ actor ReadLaterHTTPClient {
                 if acceptedStatus.contains(response.statusCode) { return .init(data: data, response: response) }
                 if response.statusCode == 401 || response.statusCode == 403 { throw IntegrationError.tokenRejected }
                 let retryable = response.statusCode == 408 || response.statusCode == 429 || (500...599).contains(response.statusCode)
-                guard retryable, attempt < 3 else {
+                guard retryable, idempotent, attempt < 3 else {
                     if response.statusCode == 429 { throw IntegrationError.rateLimited }
                     throw IntegrationError.server(status: response.statusCode)
                 }
@@ -35,7 +39,7 @@ actor ReadLaterHTTPClient {
             catch let error as IntegrationError { throw error }
             catch let error as URLError {
                 let transient: Set<URLError.Code> = [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost, .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable]
-                guard request.httpMethod == nil || request.httpMethod == "GET", transient.contains(error.code), attempt < 3 else { throw error }
+                guard idempotent, transient.contains(error.code), attempt < 3 else { throw error }
                 try await sleeper.sleep(for: .seconds(min(pow(2, Double(attempt - 1)), maximumRetryDelay)))
             }
         }
@@ -52,5 +56,5 @@ actor ReadLaterHTTPClient {
 }
 
 extension JSONEncoder {
-    static var integrations: JSONEncoder { let value = JSONEncoder(); value.dateEncodingStrategy = .iso8601; value.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return value }
+    static var integrations: JSONEncoder { let value = JSONEncoder(); value.dateEncodingStrategy = .iso8601; value.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return value }
 }

@@ -378,11 +378,10 @@ struct IntegrationsStoreTests {
         let moveTask = Task { await store.move(preMove, to: target) }
         // The success notice is set in the same MainActor slice that decides on
         // the follow-up sync, so once it appears the decision has been made.
-        for _ in 0..<10_000 {
-            if store.moveNotices[preMove.id] != nil { break }
-            await Task.yield()
-        }
-        #expect(store.moveNotices[preMove.id] != nil)
+        // This is the one wait that cannot be a handle await: `move` ends by
+        // awaiting the sync this test is deliberately holding open at its first
+        // page, so awaiting `moveTask` here would deadlock.
+        #expect(await waitForIntegrationCondition { store.moveNotices[preMove.id] != nil })
 
         await pageRelease.open()
         await syncTask.value
@@ -458,12 +457,35 @@ struct IntegrationsStoreTests {
         await store.start()
 
         await store.move(item, to: target)
+        #expect(store.moveNotices[item.id] != nil)
 
-        var cleared = false
-        for _ in 0..<10_000 {
-            if store.moveNotices[item.id] == nil { cleared = true; break }
-            await Task.yield()
-        }
-        #expect(cleared)
+        // The fade-out timer is a retained, joinable handle — await it instead
+        // of polling for the notice to disappear.
+        await store.awaitNoticeExpiry(for: item.id)
+
+        #expect(store.moveNotices[item.id] == nil)
+    }
+
+    /// The quit path (`applicationShouldTerminate`) drains the store, so a
+    /// preference the user toggled a moment before ⌘Q must be on disk when the
+    /// drain returns — it used to ride on a dropped `Task` handle and revert.
+    @Test func quitDrainLandsAPreferenceToggledMomentsEarlier() async throws {
+        let root = try IntegrationTemporaryRoot.make()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteName = "Vellum.IntegrationsStoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else { throw IntegrationTestFixtureError.couldNotCreateUserDefaults }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = IntegrationPreferences(defaults: defaults)
+        preferences.autoRefreshEnabled = false
+        let engine = IntegrationsSyncEngine(credentials: InMemoryIntegrationCredentials(), cache: IntegrationsCache(root: root), preferences: try makeIntegrationPreferences(suiteName: suiteName), readwise: ScriptedReadwiseService(), raindrop: ScriptedRaindropService())
+        let store = IntegrationsStore(engine: engine)
+        await store.start()
+        #expect(store.autoRefreshEnabled == false)
+
+        store.setAutoRefresh(true)
+        #expect(store.autoRefreshEnabled == true)
+        await store.awaitQuiescence()
+
+        #expect(preferences.autoRefreshEnabled == true)
     }
 }

@@ -14,7 +14,7 @@ struct ReadLaterHTTPClientTests {
         }
         defer { StubURLProtocol.reset() }
         let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper())
-        let response = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise)
+        let response = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: true)
         #expect(response.response.statusCode == 200)
         #expect(attempts.withLock { $0 } == 3)
     }
@@ -31,7 +31,7 @@ struct ReadLaterHTTPClientTests {
         let sleeper = RecordingIntegrationSleeper()
         let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: sleeper)
 
-        _ = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .raindrop)
+        _ = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .raindrop, idempotent: true)
 
         let durations = await sleeper.durations()
         #expect(durations == [.seconds(7)])
@@ -61,7 +61,7 @@ struct ReadLaterHTTPClientTests {
             maximumRetryDelay: 30
         )
 
-        _ = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise)
+        _ = try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: true)
 
         let durations = await sleeper.durations()
         #expect(durations == [.seconds(30)])
@@ -78,7 +78,7 @@ struct ReadLaterHTTPClientTests {
         let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: sleeper)
 
         await #expect(throws: IntegrationError.rateLimited) {
-            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise)
+            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: true)
         }
 
         let durations = await sleeper.durations()
@@ -176,7 +176,36 @@ struct ReadLaterHTTPClientTests {
         defer { StubURLProtocol.reset() }
         let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper())
         await #expect(throws: CancellationError.self) {
-            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise)
+            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: true)
+        }
+        #expect(attempts.withLock { $0 } == 1)
+    }
+
+    // Retryability is now explicit rather than method-sniffed: a non-idempotent request must
+    // not be silently retried on a transient status code, even though the status-code path
+    // used to retry regardless of HTTP method.
+    @Test func nonIdempotentRequestDoesNotRetryOnServerError() async {
+        let attempts = Mutex(0)
+        StubURLProtocol.install { request in
+            attempts.withLock { $0 += 1 }
+            return (HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { StubURLProtocol.reset() }
+        let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper())
+        await #expect(throws: IntegrationError.server(status: 503)) {
+            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: false)
+        }
+        #expect(attempts.withLock { $0 } == 1)
+    }
+
+    // Same guarantee on the transient-URLError retry path.
+    @Test func nonIdempotentRequestDoesNotRetryOnTransientURLError() async {
+        let attempts = Mutex(0)
+        StubURLProtocol.install { _ in attempts.withLock { $0 += 1 }; throw URLError(.networkConnectionLost) }
+        defer { StubURLProtocol.reset() }
+        let client = ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper())
+        await #expect(throws: URLError.self) {
+            try await client.perform(URLRequest(url: URL(string: "https://example.com")!), provider: .readwise, idempotent: false)
         }
         #expect(attempts.withLock { $0 } == 1)
     }

@@ -75,4 +75,21 @@ struct ReadwiseClientTests {
         }
         #expect(recorder.requests().count == 1)
     }
+
+    // A hostile itemID must not be able to retarget the request via
+    // `URL.appending(path:)`'s "/" handling (e.g. escaping into "../auth").
+    @Test func moveItemRejectsItemIDsOutsideTheSafeCharset() async throws {
+        let recorder = RequestRecorder()
+        StubURLProtocol.install { request in
+            recorder.record(request)
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+        let client = ReadwiseClient(http: ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper()))
+
+        await #expect(throws: IntegrationError.invalidResponse) {
+            try await client.moveItem(token: "secret", itemID: "../auth", locationVendorID: "archive")
+        }
+        #expect(recorder.requests().isEmpty)
+    }
 }

@@ -390,6 +390,50 @@ struct HomeRemovalGuardTests {
     }
 }
 
+// MARK: - Home source switcher
+
+/// The home screen's source switcher (Library | connected read-later accounts).
+/// Only the two pure rules are pinned here — which options exist, and what
+/// happens to the selection when an account goes away — because those are the
+/// parts that decide whether a reader can end up stranded in front of a list
+/// that no longer has anything behind it.
+@Suite("Home source switcher")
+struct HomeSourceTests {
+    @Test("With nothing connected the switcher has one option, so it never appears")
+    func libraryOnly() {
+        #expect(HomeSource.options(connected: []) == [.library])
+    }
+
+    @Test("Each connected account adds an entry, in provider order")
+    func oneEntryPerAccount() {
+        #expect(
+            HomeSource.options(connected: [.readwise, .raindrop])
+                == [.library, .provider(.readwise), .provider(.raindrop)])
+    }
+
+    /// Disconnecting wipes the provider's cached items, so a screen left on it
+    /// would show a permanently empty list with no way back. The local library
+    /// is the one source that always exists.
+    @Test("Disconnecting the account being browsed falls back to the library")
+    func disconnectFallsBack() {
+        #expect(
+            HomeSource.reconciled(.provider(.raindrop), connected: [.readwise]) == .library)
+        #expect(
+            HomeSource.reconciled(.provider(.raindrop), connected: [.raindrop])
+                == .provider(.raindrop))
+    }
+
+    /// Disconnecting the OTHER account must not move someone who is happily
+    /// reading this one.
+    @Test("An unaffected selection survives a change to the connected set")
+    func unaffectedSelectionSurvives() {
+        #expect(HomeSource.reconciled(.library, connected: []) == .library)
+        #expect(
+            HomeSource.reconciled(.provider(.readwise), connected: [.readwise])
+                == .provider(.readwise))
+    }
+}
+
 /// Cap behaviour that the `restore` early-out exists for. Split out of the main
 /// suite only to keep its longer setup out of the way.
 @MainActor

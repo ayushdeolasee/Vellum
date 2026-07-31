@@ -20,22 +20,46 @@ actor IntegrationThumbnailCache {
         if validImage(at: destination) { return destination }
         do {
             try Task.checkCancellation()
-            let (bytes, response) = try await session.bytes(for: URLRequest(url: source))
+            // One buffered response, not a per-byte `AsyncBytes` walk: thumbnails
+            // are small, and iterating (plus checking cancellation) a byte at a
+            // time cost far more than the download. Content-Length rejects an
+            // oversized body up front; servers that omit or understate it are
+            // caught by the same cap after the fact, so the limit still holds.
+            let (data, response) = try await session.data(for: URLRequest(url: source))
+            try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { return nil }
-            guard response.expectedContentLength <= 0 || response.expectedContentLength <= Int64(maximumBytes) else { return nil }
-            var data = Data()
-            data.reserveCapacity(min(maximumBytes, max(0, Int(response.expectedContentLength))))
-            for try await byte in bytes {
-                try Task.checkCancellation()
-                guard data.count < maximumBytes else { return nil }
-                data.append(byte)
-            }
-            guard !data.isEmpty, validImageData(data) else { return nil }
+            guard response.expectedContentLength <= Int64(maximumBytes) else { return nil }
+            guard !data.isEmpty, data.count <= maximumBytes, validImageData(data) else { return nil }
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
             try data.write(to: destination, options: .atomic)
             return destination
         } catch { return nil }
     }
+
+    /// A decoded, row-sized image. Callers on the main actor must use this
+    /// rather than `imageURL` + `NSImage(contentsOf:)`: the file read and the
+    /// ImageIO decode both happen here, inside the actor, and the result is
+    /// downsampled to `maximumThumbnailPixelSize` so a 4000px hero image doesn't
+    /// sit in memory to fill a 34pt well.
+    ///
+    /// `sending` because `NSImage` isn't Sendable — this instance is created
+    /// here, never stored, and never touched again once handed back.
+    func image(for candidate: URL?) async -> sending NSImage? {
+        guard let url = await imageURL(for: candidate) else { return nil }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.maximumThumbnailPixelSize,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    /// Enough for the 34pt library well at 3x, with headroom.
+    private static let maximumThumbnailPixelSize = 256
 
     func removeUnreferenced(keeping urls: Set<URL>) {
         let keys = Set(urls.map(Self.key))

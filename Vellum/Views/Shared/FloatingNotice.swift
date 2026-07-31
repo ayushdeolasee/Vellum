@@ -16,7 +16,16 @@ struct FloatingNotice: View {
                 Image(systemName: symbol).foregroundStyle(tint)
                 Text(message).font(.system(size: 12)).foregroundStyle(palette.foreground).lineLimit(2)
                 Spacer(minLength: 8)
-                Button("Dismiss", systemImage: "xmark", action: dismiss).labelStyle(.iconOnly).buttonStyle(.plain)
+                // The frame and contentShape must live INSIDE the label: on a
+                // .plain button, applied outside they change layout only and the
+                // hit region stays the bare glyph (root CLAUDE.md hit-target rule).
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
             }
             if isActive {
                 if let progress { ProgressView(value: progress).progressViewStyle(.linear) }

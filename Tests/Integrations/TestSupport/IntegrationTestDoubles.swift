@@ -55,6 +55,22 @@ actor IntegrationTestGate {
     }
 }
 
+/// Bounded wait for a main-actor condition the store reaches through an
+/// interleaving that has no joinable handle to await — e.g. a move that
+/// completes while a sync is parked mid-page (awaiting the move's own task
+/// would deadlock: it ends by awaiting the very sync the test is holding open).
+/// Everything else in these tests awaits a real handle instead.
+@MainActor
+func waitForIntegrationCondition(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if condition() { return true }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+    return condition()
+}
+
 actor IntegrationSnapshotRecorder {
     private var values: [ProviderSnapshot] = []
     func record(_ snapshot: ProviderSnapshot) { values.append(snapshot) }

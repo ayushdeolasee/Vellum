@@ -50,7 +50,9 @@ struct IntegrationsSettingsTab: View {
                 }
                 if state?.isConnected == true {
                     Button("Sync Now") {
-                        Task { await integrations.sync(provider, forceFull: true) }
+                        // Store-owned task: the handle outlives this row, and
+                        // the quit path cancels/drains it with the rest.
+                        integrations.run { await integrations.sync(provider, forceFull: true) }
                     }
                     .disabled(state?.connection == .syncing)
                     Menu {

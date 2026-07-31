@@ -46,34 +46,86 @@ enum KeychainStore {
 
     /// Vault contents plus the keychain item's modification date, used to
     /// detect writes from another running Vellum instance before overwriting.
-    private struct VaultState {
+    struct VaultState: Sendable, Equatable {
         var entries: [String: String]
         var modDate: Date?   // nil when no vault item exists yet
     }
 
+    /// A legacy per-secret item: its value plus the date it was last written,
+    /// which is what decides a value conflict against the vault.
+    struct LegacyItem: Sendable, Equatable {
+        var value: String
+        var modDate: Date?
+    }
+
+    /// Every Security-framework and file-lock call the vault logic makes,
+    /// behind function properties. Production always runs `.live`; the seam
+    /// exists so the read-modify-write rules that carry the real risk — legacy
+    /// migration and conflict resolution, the re-read before a write, failing
+    /// closed on an unreadable vault — can be tested against an in-memory
+    /// keychain instead of the developer's login keychain.
+    struct Backend: Sendable {
+        /// One full read of the vault item. Empty state when no item exists,
+        /// nil when an item exists but can't be read (denied prompt, corrupt).
+        var readVaultItem: @Sendable () -> VaultState?
+        /// The vault item's modification date, nil when absent. Attribute-only,
+        /// so it must never trigger an access prompt.
+        var probeModDate: @Sendable () -> Date?
+        /// Persists the whole vault. False must leave the stored item as it was.
+        var writeVault: @Sendable ([String: String]) -> Bool
+        /// Removes the vault item. True also when it was already absent.
+        var deleteVault: @Sendable () -> Bool
+        /// Account names stored under a legacy per-secret service.
+        var legacyAccounts: @Sendable (_ service: String) -> [String]
+        /// A legacy item's value and modification date, nil when unreadable.
+        var legacyRead: @Sendable (_ account: String, _ service: String) -> LegacyItem?
+        var legacyDelete: @Sendable (_ account: String, _ service: String) -> Void
+        /// Cross-process commit lock. False means it was not acquired within
+        /// the deadline, and the commit must fail rather than race.
+        var acquireCommitLock: @Sendable () -> Bool
+        var releaseCommitLock: @Sendable () -> Void
+
+        static let live = Backend(
+            readVaultItem: { KeychainStore.liveReadVaultItem() },
+            probeModDate: { KeychainStore.liveProbeModDate() },
+            writeVault: { KeychainStore.liveWriteVault($0) },
+            deleteVault: { KeychainStore.liveDeleteVault() },
+            legacyAccounts: { KeychainStore.liveLegacyAccounts(in: $0) },
+            legacyRead: { KeychainStore.liveLegacyRead(account: $0, service: $1) },
+            legacyDelete: { KeychainStore.liveLegacyDelete(account: $0, service: $1) },
+            acquireCommitLock: { KeychainStore.liveAcquireCommitLock() },
+            releaseCommitLock: { KeychainStore.liveReleaseCommitLock() })
+    }
+
     private static let lock = NSLock()
     /// In-memory copy of the vault, loaded from the Keychain at most once per
-    /// launch. Guarded by `lock`; nil until the first successful load.
+    /// launch (plus a re-read whenever the item's mod date says another
+    /// instance wrote it). Guarded by `lock`; nil until the first load.
     nonisolated(unsafe) private static var cache: VaultState?
+    /// Non-nil only while a test drives the vault logic through a fake
+    /// keychain. Guarded by `lock`.
+    nonisolated(unsafe) private static var backendOverride: Backend?
 
-    /// File descriptor used to `flock` vault commits across processes: several
-    /// Vellum instances (worktree builds share the bundle id, and so this
-    /// path and the vault item) may run at once, and an unserialized
-    /// whole-item read-modify-write would let one instance revert another's
-    /// secrets. -1 when the lock file can't be opened; commits then proceed
-    /// with in-process locking only.
-    private static let commitLockFD: Int32 = {
-        let dir = WebLibrary.appDataDir
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return open(dir.appendingPathComponent("keychain-vault.lock").path, O_CREAT | O_RDWR, 0o600)
-    }()
+    /// True while the in-memory stand-in must be used instead of the Keychain:
+    /// a test process that has NOT installed a vault backend. Installing one
+    /// (`withBackend`, tests only) opts that test into the real vault logic
+    /// against a fake keychain, which is what makes this file testable without
+    /// ever reaching the login keychain. Call with `lock` held.
+    private static var usesTestStoreLocked: Bool {
+        backendOverride == nil && isRunningTests
+    }
+
+    /// Call with `lock` held.
+    private static var backendLocked: Backend {
+        backendOverride ?? .live
+    }
 
     /// Returns the stored secret for an account, or nil if absent/unreadable.
     static func get(_ account: String, service: String = service) -> String? {
-        if isRunningTests { return testStore.withLock { $0[vaultKey(account, service)] } }
         lock.lock()
         defer { lock.unlock() }
-        return loadVaultLocked()?.entries[vaultKey(account, service)]
+        if usesTestStoreLocked { return testStore.withLock { $0[vaultKey(account, service)] } }
+        return currentVaultLocked()?.entries[vaultKey(account, service)]
     }
 
     /// Stores (or updates) the secret for an account. An empty value deletes it.
@@ -85,12 +137,12 @@ enum KeychainStore {
         guard !trimmed.isEmpty else {
             return delete(account, service: service)
         }
-        if isRunningTests {
+        lock.lock()
+        defer { lock.unlock() }
+        if usesTestStoreLocked {
             testStore.withLock { $0[vaultKey(account, service)] = trimmed }
             return true
         }
-        lock.lock()
-        defer { lock.unlock() }
         return commitLocked([vaultKey(account, service): trimmed])
     }
 
@@ -98,17 +150,53 @@ enum KeychainStore {
     /// absent afterwards (either deleted now or already missing).
     @discardableResult
     static func delete(_ account: String, service: String = service) -> Bool {
-        if isRunningTests {
+        lock.lock()
+        defer { lock.unlock() }
+        if usesTestStoreLocked {
             testStore.withLock { $0[vaultKey(account, service)] = nil }
             return true
         }
-        lock.lock()
-        defer { lock.unlock() }
         return commitLocked([vaultKey(account, service): nil])
+    }
+
+    /// Loads the vault off the main thread so later reads are cache hits.
+    ///
+    /// The first `get` of a launch does a full keychain read plus a legacy
+    /// enumeration/migration and possibly a commit — hundreds of milliseconds,
+    /// and potentially a password prompt — and it is reachable synchronously
+    /// from `@MainActor` callers (`AiPersistence.readKey`, `ChatGPTAuth`), i.e.
+    /// it can block the UI. Call this once at startup to move that work onto a
+    /// background thread. Safe to call any number of times (the load is cached
+    /// and serialized on `lock`), and a no-op under test, where the vault is
+    /// never touched at all.
+    static func prewarm() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !usesTestStoreLocked else { return }
+            _ = loadVaultLocked()
+        }
     }
 
     private static func vaultKey(_ account: String, _ service: String) -> String {
         "\(service)/\(account)"
+    }
+
+    /// The vault as it exists right now, re-reading it when another running
+    /// Vellum instance has written the item since we cached it. Without this
+    /// a token written by another instance stayed invisible until relaunch.
+    /// The mod-date probe is attribute-only, so this costs no prompt in the
+    /// common (unchanged) case. Call with `lock` held.
+    private static func currentVaultLocked() -> VaultState? {
+        guard let cached = loadVaultLocked() else { return nil }
+        let backend = backendLocked
+        guard backend.probeModDate() != cached.modDate else { return cached }
+        // A failed refresh must not downgrade a working cache to "unavailable":
+        // a stale-but-readable copy is strictly better than nil, which callers
+        // surface as a missing credential.
+        guard let fresh = backend.readVaultItem() else { return cached }
+        cache = fresh
+        return fresh
     }
 
     /// Returns the vault, reading it from the Keychain on the first call of
@@ -119,7 +207,7 @@ enum KeychainStore {
     /// Call with `lock` held.
     private static func loadVaultLocked() -> VaultState? {
         if let cache { return cache }
-        guard let state = readVaultItem() else { return nil }
+        guard let state = backendLocked.readVaultItem() else { return nil }
         cache = state
         reconcileLegacyItemsLocked()
         return cache
@@ -129,6 +217,7 @@ enum KeychainStore {
     /// vault and persists the result as the single keychain item. Call with
     /// `lock` held.
     private static func commitLocked(_ mutations: [String: String?]) -> Bool {
+        let backend = backendLocked
         // A vault that exists but can't be read must fail the write: rewriting
         // from an empty in-memory copy would destroy every other secret.
         guard var state = loadVaultLocked() else { return false }
@@ -139,18 +228,15 @@ enum KeychainStore {
         // Fail closed when the lock is unavailable: an unserialized write
         // could revert another instance's secrets, while a failed set() just
         // leaves the caller's plaintext fallback in place for a later retry.
-        guard commitLockFD >= 0 else { return false }
-        while flock(commitLockFD, LOCK_EX) != 0 {
-            guard errno == EINTR else { return false }
-        }
-        defer { flock(commitLockFD, LOCK_UN) }
+        guard backend.acquireCommitLock() else { return false }
+        defer { backend.releaseCommitLock() }
         // Another instance may have rewritten the vault since we cached it.
         // The modification date is readable without an access prompt, so
         // detect that case and re-read before mutating — a whole-item write
         // from a stale cache would revert the other instance's secrets. The
         // fresh read can prompt, but only in this rare conflict case.
-        if probeModDate() != state.modDate {
-            guard let fresh = readVaultItem() else { return false }
+        if backend.probeModDate() != state.modDate {
+            guard let fresh = backend.readVaultItem() else { return false }
             state = fresh
         }
         var entries = state.entries
@@ -165,43 +251,90 @@ enum KeychainStore {
             cache = state
             return true
         }
+        guard !entries.isEmpty else {
+            guard backend.deleteVault() else { return false }
+            cache = VaultState(entries: [:], modDate: nil)
+            return true
+        }
+        guard backend.writeVault(entries) else { return false }
+        cache = VaultState(entries: entries, modDate: backend.probeModDate())
+        return true
+    }
 
-        let baseQuery: [String: Any] = [
+    /// Folds any leftover per-secret legacy items into the vault. Runs on the
+    /// first vault load of every launch (enumeration is prompt-free), so an
+    /// item whose migration was previously denied or failed keeps being
+    /// retried until it lands. A legacy item is deleted only once its value is
+    /// provably preserved. Call with `lock` held, after `cache` is populated.
+    private static func reconcileLegacyItemsLocked() {
+        let backend = backendLocked
+        var mutations: [String: String?] = [:]
+        var resolved: [(service: String, account: String)] = []
+        let entries = cache?.entries ?? [:]
+        let vaultDate = cache?.modDate
+        for legacyService in legacyServices {
+            for account in backend.legacyAccounts(legacyService) {
+                let key = vaultKey(account, legacyService)
+                // Read before deciding anything. A pre-vault build writes only
+                // legacy items, so running one after a migration leaves an item
+                // whose value is NEWER than the vault's copy of the same key;
+                // deleting it because "the vault already has that key" threw
+                // away the token the user had just entered.
+                guard let legacy = backend.legacyRead(account, legacyService) else { continue }
+                guard !legacy.value.isEmpty else {
+                    backend.legacyDelete(account, legacyService)
+                    continue
+                }
+                guard let stored = entries[key] else {
+                    mutations[key] = legacy.value
+                    resolved.append((legacyService, account))
+                    continue
+                }
+                if stored == legacy.value {
+                    // Already in the vault; the leftover is a failed cleanup.
+                    backend.legacyDelete(account, legacyService)
+                    continue
+                }
+                // The two disagree, so the later write wins and the dates are
+                // the only evidence. The vault's date belongs to the whole item
+                // (any secret's write bumps it), so it can only be NEWER than
+                // this key's own last write: `legacy > vault` therefore proves
+                // the legacy value is the more recent one, while the reverse
+                // proves nothing.
+                guard let legacyDate = legacy.modDate, let vaultDate, legacyDate > vaultDate else {
+                    // Undecidable: keep both. Re-reading this item every launch
+                    // costs a prompt at worst; guessing costs a lost secret.
+                    continue
+                }
+                mutations[key] = legacy.value
+                resolved.append((legacyService, account))
+            }
+        }
+        guard !mutations.isEmpty else { return }
+        if commitLocked(mutations) {
+            for item in resolved {
+                backend.legacyDelete(item.account, item.service)
+            }
+        }
+    }
+
+    // MARK: - Live backend
+
+    private static func vaultBaseQuery() -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: vaultService,
             kSecAttrAccount as String: vaultAccount,
         ]
-        guard !entries.isEmpty else {
-            let status = SecItemDelete(baseQuery as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else { return false }
-            cache = VaultState(entries: [:], modDate: nil)
-            return true
-        }
-        guard let data = try? JSONEncoder().encode(entries) else { return false }
-        let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var addQuery = baseQuery
-            addQuery[kSecValueData as String] = data
-            addQuery[kSecAttrLabel as String] = "Vellum"
-            guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else { return false }
-        } else if status != errSecSuccess {
-            return false
-        }
-        cache = VaultState(entries: entries, modDate: probeModDate())
-        return true
     }
 
     /// One full read of the vault item. Returns an empty state when no item
     /// exists, or nil when an item exists but can't be read.
-    private static func readVaultItem() -> VaultState? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: vaultService,
-            kSecAttrAccount as String: vaultAccount,
-            kSecReturnData as String: true,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+    private static func liveReadVaultItem() -> VaultState? {
+        var query = vaultBaseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return VaultState(entries: [:], modDate: nil) }
@@ -215,58 +348,36 @@ enum KeychainStore {
 
     /// The vault item's current modification date (nil when absent).
     /// Attribute-only queries never trigger an access prompt.
-    private static func probeModDate() -> Date? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: vaultService,
-            kSecAttrAccount as String: vaultAccount,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+    private static func liveProbeModDate() -> Date? {
+        var query = vaultBaseQuery()
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let attributes = result as? [String: Any] else { return nil }
         return attributes[kSecAttrModificationDate as String] as? Date
     }
 
-    /// Folds any leftover per-secret legacy items into the vault. Runs on the
-    /// first vault load of every launch (enumeration is prompt-free), so an
-    /// item whose migration was previously denied or failed keeps being
-    /// retried until it lands. A legacy item is deleted only once its value
-    /// is provably in the persisted vault. Call with `lock` held, after
-    /// `cache` is populated.
-    private static func reconcileLegacyItemsLocked() {
-        var mutations: [String: String?] = [:]
-        var pending: [(service: String, account: String)] = []
-        let entries = cache?.entries ?? [:]
-        for legacyService in legacyServices {
-            for account in legacyAccounts(in: legacyService) {
-                let key = vaultKey(account, legacyService)
-                if entries[key] != nil {
-                    // Already migrated (or superseded by a newer vault write);
-                    // the leftover is a failed earlier cleanup. Retry it.
-                    legacyDelete(account: account, service: legacyService)
-                    continue
-                }
-                guard let value = legacyRead(account: account, service: legacyService) else { continue }
-                guard !value.isEmpty else {
-                    legacyDelete(account: account, service: legacyService)
-                    continue
-                }
-                mutations[key] = value
-                pending.append((legacyService, account))
-            }
+    private static func liveWriteVault(_ entries: [String: String]) -> Bool {
+        guard let data = try? JSONEncoder().encode(entries) else { return false }
+        let status = SecItemUpdate(
+            vaultBaseQuery() as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = vaultBaseQuery()
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrLabel as String] = "Vellum"
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }
-        guard !mutations.isEmpty else { return }
-        if commitLocked(mutations) {
-            for item in pending {
-                legacyDelete(account: item.account, service: item.service)
-            }
-        }
+        return status == errSecSuccess
+    }
+
+    private static func liveDeleteVault() -> Bool {
+        let status = SecItemDelete(vaultBaseQuery() as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     /// Lists the account names stored under a legacy service.
-    private static func legacyAccounts(in service: String) -> [String] {
+    private static func liveLegacyAccounts(in service: String) -> [String] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -279,21 +390,26 @@ enum KeychainStore {
         return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
-    private static func legacyRead(account: String, service: String) -> String? {
+    /// The value AND modification date of a legacy item: reconciliation needs
+    /// the date to resolve a conflict with the vault's copy of the same key.
+    private static func liveLegacyRead(account: String, service: String) -> LegacyItem? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
+            kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+              let item = result as? [String: Any],
+              let data = item[kSecValueData as String] as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        return LegacyItem(value: value, modDate: item[kSecAttrModificationDate as String] as? Date)
     }
 
-    private static func legacyDelete(account: String, service: String) {
+    private static func liveLegacyDelete(account: String, service: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -301,6 +417,70 @@ enum KeychainStore {
         ]
         SecItemDelete(query as CFDictionary)
     }
+
+    /// File descriptor used to `flock` vault commits across processes: several
+    /// Vellum instances (worktree builds share the bundle id, and so this
+    /// path and the vault item) may run at once, and an unserialized
+    /// whole-item read-modify-write would let one instance revert another's
+    /// secrets. -1 when the lock file can't be opened; commits then fail.
+    private static let commitLockFD: Int32 = {
+        let dir = WebLibrary.appDataDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return open(dir.appendingPathComponent("keychain-vault.lock").path, O_CREAT | O_RDWR, 0o600)
+    }()
+
+    /// How long a commit will wait for the cross-process lock before failing.
+    /// A blocking `LOCK_EX` was unbounded: an instance sitting on a keychain
+    /// password prompt holds the lock for as long as the user ignores it, and
+    /// every other instance's caller — often the main thread — waited behind
+    /// it with no way out. Poll with a deadline instead; a failed `set` is
+    /// already a retryable outcome by design.
+    private static let commitLockTimeout: TimeInterval = 3
+    private static let commitLockPollInterval: useconds_t = 20_000   // 20 ms
+
+    private static func liveAcquireCommitLock() -> Bool {
+        guard commitLockFD >= 0 else { return false }
+        let deadline = Date().addingTimeInterval(commitLockTimeout)
+        while true {
+            if flock(commitLockFD, LOCK_EX | LOCK_NB) == 0 { return true }
+            // EWOULDBLOCK: held elsewhere, worth retrying. EINTR: a signal cut
+            // the call short. Anything else is a broken descriptor rather than
+            // contention, so retrying would just burn the deadline.
+            guard errno == EWOULDBLOCK || errno == EINTR else { return false }
+            guard Date() < deadline else { return false }
+            usleep(commitLockPollInterval)
+        }
+    }
+
+    private static func liveReleaseCommitLock() {
+        guard commitLockFD >= 0 else { return }
+        flock(commitLockFD, LOCK_UN)
+    }
+
+    #if DEBUG
+    /// Test-only seam: runs `body` with the vault logic wired to `backend`
+    /// instead of the Keychain, starting from a cold cache and restoring the
+    /// previous state (backend and cache) afterwards. Installing a backend
+    /// also suspends the `isRunningTests` stand-in for the duration, so the
+    /// test exercises the real vault code paths — against a fake keychain, so
+    /// the login keychain is still never touched. The override is
+    /// process-global; suites that use it must be `.serialized`.
+    static func withBackend(_ backend: Backend, _ body: () throws -> Void) rethrows {
+        lock.lock()
+        let previousBackend = backendOverride
+        let previousCache = cache
+        backendOverride = backend
+        cache = nil
+        lock.unlock()
+        defer {
+            lock.lock()
+            backendOverride = previousBackend
+            cache = previousCache
+            lock.unlock()
+        }
+        try body()
+    }
+    #endif
 
     // Account identifiers, one per provider with a stored secret.
     enum Account {

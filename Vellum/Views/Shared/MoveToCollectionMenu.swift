@@ -40,7 +40,9 @@ struct MoveToCollectionMenu: View {
             get: { targets.first(where: { item.collectionIDs.contains($0.id) })?.id },
             set: { id in
                 guard let target = targets.first(where: { $0.id == id }) else { return }
-                Task { [item, integrations] in await integrations.move(item, to: target) }
+                // Store-owned task, not a bare `Task` whose handle dies with the
+                // menu: the quit path drains the refile the user just asked for.
+                integrations.beginMove(item, to: target)
             }
         )
     }

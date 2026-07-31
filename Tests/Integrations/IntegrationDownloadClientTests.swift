@@ -38,6 +38,96 @@ struct IntegrationDownloadClientTests {
 
         #expect(result == nil)
     }
+
+    // MARK: - IntegrationDownloadClient
+
+    @Test func maximumBytesEnforcedMidFlightWhenContentLengthIsAbsent() async throws {
+        let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("payload.pdf")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.installStreaming { request in
+            // No Content-Length header: the client can only learn the payload is
+            // oversized by counting bytes as chunks arrive.
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let chunks = (0..<8).map { _ in StubStreamingChunk(Data(repeating: 7, count: 4096)) }
+            return StubStreamingResponse(response: response, chunks: chunks)
+        }
+        defer { StubURLProtocol.reset() }
+        let client = IntegrationDownloadClient(session: URLSession(configuration: configuration))
+
+        await #expect(throws: IntegrationError.downloadTooLarge) {
+            try await client.download(URLRequest(url: URL(string: "https://example.com/oversized.pdf")!), to: destination, maximumBytes: 10_000) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test func cancellationDuringDownloadPropagatesAndCleansUpTheTemporaryFile() async throws {
+        let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("payload.pdf")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.installStreaming { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let chunks = [
+                StubStreamingChunk(Data(repeating: 1, count: 4096)),
+                StubStreamingChunk(Data(repeating: 2, count: 4096), delay: .seconds(60)),
+            ]
+            return StubStreamingResponse(response: response, chunks: chunks)
+        }
+        defer { StubURLProtocol.reset() }
+        let client = IntegrationDownloadClient(session: URLSession(configuration: configuration))
+        let startedDownloading = IntegrationTestGate()
+
+        let downloadTask = Task {
+            try await client.download(URLRequest(url: URL(string: "https://example.com/slow.pdf")!), to: destination, maximumBytes: 10_000_000) { _ in
+                await startedDownloading.open()
+            }
+        }
+        await startedDownloading.wait()
+        downloadTask.cancel()
+
+        await #expect(throws: CancellationError.self) { try await downloadTask.value }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test func successfulDownloadWritesExactlyTheChunkedPayloadBytes() async throws {
+        let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("payload.pdf")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let payload = [Data(repeating: 1, count: 1_000), Data(repeating: 2, count: 200_000), Data(repeating: 3, count: 500)]
+        let expected = payload.reduce(Data(), +)
+        StubURLProtocol.installStreaming { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Length": String(expected.count)])!
+            return StubStreamingResponse(response: response, chunks: payload.map { StubStreamingChunk($0) })
+        }
+        defer { StubURLProtocol.reset() }
+        let client = IntegrationDownloadClient(session: URLSession(configuration: configuration))
+
+        let result = try await client.download(URLRequest(url: URL(string: "https://example.com/file.pdf")!), to: destination, maximumBytes: 1_000_000) { _ in }
+
+        #expect(result.response.statusCode == 200)
+        #expect(try Data(contentsOf: destination) == expected)
+    }
+
+    @Test func nonSuccessStatusThrowsInvalidResponseAndCleansUpTheTemporaryFile() async throws {
+        let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("payload.pdf")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.installStreaming { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+            return StubStreamingResponse(response: response, chunks: [])
+        }
+        defer { StubURLProtocol.reset() }
+        let client = IntegrationDownloadClient(session: URLSession(configuration: configuration))
+
+        await #expect(throws: IntegrationError.invalidResponse) {
+            try await client.download(URLRequest(url: URL(string: "https://example.com/missing.pdf")!), to: destination, maximumBytes: 1_000_000) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
 }
 
 private final class OversizedThumbnailURLProtocol: URLProtocol {

@@ -121,4 +121,21 @@ struct RaindropClientTests {
             try await client.moveItem(token: "secret", itemID: "99", collectionVendorID: "not-a-number")
         }
     }
+
+    // A hostile itemID must not be able to retarget the request via
+    // `URL.appending(path:)`'s "/" handling (e.g. escaping into "../auth").
+    @Test func moveItemRejectsItemIDsOutsideTheSafeCharset() async throws {
+        let recorder = RequestRecorder()
+        StubURLProtocol.install { request in
+            recorder.record(request)
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"result":true}"#.utf8))
+        }
+        defer { StubURLProtocol.reset() }
+        let client = RaindropClient(http: ReadLaterHTTPClient(session: StubURLProtocol.session(), sleeper: NoWaitIntegrationSleeper()))
+
+        await #expect(throws: IntegrationError.invalidResponse) {
+            try await client.moveItem(token: "secret", itemID: "../auth", collectionVendorID: "11")
+        }
+        #expect(recorder.requests().isEmpty)
+    }
 }

@@ -46,6 +46,12 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     await workspace.tabTeardowns.awaitAll()
                     await PageTextPersister.awaitInFlightFlushes()
                     await AiPersistence.awaitPendingFlush()
+                    // Read-later work the user started behind the UI — the
+                    // auto-refresh preference, a move-to-collection, a
+                    // disconnect, thumbnail cleanup — is store-owned and joinable
+                    // for exactly this reason. Cancels in-flight syncs, waits for
+                    // the rest.
+                    await workspace.integrations.awaitQuiescence()
                     sender.reply(toApplicationShouldTerminate: true)
                 }
                 return .terminateLater
@@ -76,6 +82,8 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
                 await AiPersistence.awaitPendingFlush()
+                // Same for the read-later stores' background work (see above).
+                await workspace.integrations.awaitQuiescence()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
@@ -95,6 +103,12 @@ struct VellumApp: App {
 
     init() {
         uiTestDocumentPath = UITestLaunchConfiguration.prepare()
+        // The first keychain read of a launch is a full vault load plus the
+        // legacy migration — hundreds of milliseconds, reachable synchronously
+        // from @MainActor callers (AI keys, ChatGPT auth, integration tokens).
+        // Warm it on a background queue here, after the UI-test configuration
+        // has had its say, so no main-actor read ever pays for it.
+        KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
         let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())

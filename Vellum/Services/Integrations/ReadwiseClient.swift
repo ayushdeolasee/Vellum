@@ -26,7 +26,7 @@ struct ReadwiseClient: ReadwiseServing, Sendable {
 
     func validate(token: String) async throws {
         var request = URLRequest(url: baseURL.appending(path: "api/v2/auth/")); request.httpMethod = "GET"; request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
-        _ = try await http.perform(request, provider: .readwise, acceptedStatus: 204...204)
+        _ = try await http.perform(request, provider: .readwise, acceptedStatus: 204...204, idempotent: true)
     }
 
     func page(token: String, cursor: String?, updatedAfter: Date?, limit: Int = 100) async throws -> IntegrationPage {
@@ -37,26 +37,35 @@ struct ReadwiseClient: ReadwiseServing, Sendable {
         components.queryItems = query
         guard let url = components.url else { throw IntegrationError.invalidResponse }
         var request = URLRequest(url: url); request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
-        return try Self.mapPage((try await http.perform(request, provider: .readwise)).data)
+        return try Self.mapPage((try await http.perform(request, provider: .readwise, idempotent: true)).data)
     }
 
     func rawSourceURL(token: String, itemID: String) async throws -> URL? {
         var components = URLComponents(url: baseURL.appending(path: "api/v3/list/"), resolvingAgainstBaseURL: false)!
         components.queryItems = [.init(name: "id", value: itemID), .init(name: "withRawSourceUrl", value: "true"), .init(name: "limit", value: "1")]
-        var request = URLRequest(url: components.url!); request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
-        let object = try JSONSerialization.jsonObject(with: (try await http.perform(request, provider: .readwise)).data) as? [String: Any]
+        guard let url = components.url else { throw IntegrationError.invalidResponse }
+        var request = URLRequest(url: url); request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
+        let object = try JSONSerialization.jsonObject(with: (try await http.perform(request, provider: .readwise, idempotent: true)).data) as? [String: Any]
         let value = ((object?["results"] as? [[String: Any]])?.first)?["raw_source_url"] as? String
         return value.flatMap(URL.init(string:)).flatMap(ReadLaterItem.validHTTPURL)
     }
 
     func moveItem(token: String, itemID: String, locationVendorID: String) async throws {
         guard Self.moveTargetLocationIDs.contains(locationVendorID) else { throw IntegrationError.unsupportedDestination }
+        guard Self.isValidVendorID(itemID) else { throw IntegrationError.invalidResponse }
         var request = URLRequest(url: baseURL.appending(path: "api/v3/update/\(itemID)/"))
         request.httpMethod = "PATCH"
         request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["location": locationVendorID])
-        _ = try await http.perform(request, provider: .readwise)
+        _ = try await http.perform(request, provider: .readwise, idempotent: true)
+    }
+
+    /// Provider-supplied item ids are interpolated into the URL path below; reject anything
+    /// outside the charset Readwise actually emits so a hostile id (e.g. "../auth") can't
+    /// retarget the request via `URL.appending(path:)`'s "/" handling.
+    static func isValidVendorID(_ value: String) -> Bool {
+        !value.isEmpty && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
     }
 
     static func mapPage(_ data: Data) throws -> IntegrationPage {
@@ -78,7 +87,7 @@ private struct ReadwiseItemDTO: Decodable {
         if let object = try? c.decode([String: JSONValue].self, forKey: .tags) { tags = Array(object.keys) } else { tags = (try? c.decode([String].self, forKey: .tags)) ?? [] }
     }
     var item: ReadLaterItem? {
-        let kind = ReadLaterKind(rawValue: category?.lowercased() ?? "") ?? .other; let source = sourceURL.flatMap(URL.init(string:)); let locationID = location.map { "readwise:collection:\($0.lowercased())" }
+        let kind = ReadLaterKind(rawValue: category?.lowercased() ?? "") ?? .other; let source = sourceURL.flatMap(URL.init(string:)); let locationID = location.map { ReadLaterCollection.id(provider: .readwise, vendorID: $0.lowercased()) }
         return ReadLaterItem(provider: .readwise, vendorID: id, sourceURL: source, title: title, author: author, excerpt: summary, kind: kind, tags: tags, collectionIDs: locationID.map { [$0] } ?? [], thumbnailURL: imageURL.flatMap(URL.init(string:)), savedAt: IntegrationDateParser.parse(savedAt ?? createdAt), updatedAt: IntegrationDateParser.parse(updatedAt), pdfRetrieval: kind == .pdf ? .readwiseItem(id: id) : nil)
     }
 }
