@@ -19,6 +19,23 @@ import UniformTypeIdentifiers
 // which talks to `HomeSearchEngine` (an actor), which fans out to
 // `HomeSearchProvider`s. See `HomeSearchProvider.swift` for how a connected
 // read-later account will slot in.
+//
+// Connected read-later accounts (Readwise, Raindrop) reach this screen twice,
+// and the two paths are deliberately different:
+//
+//  1. BROWSING. The control bar grows a source switcher — Library plus one
+//     segment per connected account — and picking an account swaps the result
+//     area for that provider's own `ExternalLibraryList`. That list brings its
+//     own search field, collection filter and context menus, so the library's
+//     search field and filter chips step aside while it is on screen rather
+//     than sitting above a list they cannot drive.
+//  2. SEARCHING. A read-later `HomeSearchProvider` — the extension point
+//     `HomeSearchProvider.swift` describes — puts those articles in the
+//     ordinary corpus, ranked against everything else under the `.readLater`
+//     section. This screen's half of that is `open(_:)`, which routes a
+//     `.readLater` row back through `IntegrationsStore` (an article opens its
+//     page, a PDF is downloaded first) so a search hit behaves exactly like
+//     the same row clicked inside the provider's own library.
 
 struct WelcomeScreen: View {
     /// Whether the pane hosting this screen is the focused one. A split window
@@ -27,16 +44,41 @@ struct WelcomeScreen: View {
 
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
     @Environment(\.openSettings) private var openSettings
+    /// Session-scoped Undo for "Remove from Recent" (issue #103), registered
+    /// the same way PR #79 registers clear-conversation and clear-scratchpad.
+    @Environment(\.undoManager) private var undoManager
 
     @State private var store = HomeSearchStore()
+    /// Which library the screen is showing: the local one, or a connected
+    /// read-later account's. Reset to `.library` when the account being browsed
+    /// is disconnected — see the `connectedProviders` change handler.
+    @State private var source: HomeSource = .library
     /// First-run hero only. The library layout uses the search field itself for
     /// links (see `HomeSearchLinkDetector`) plus the Add Webpage button.
     @State private var urlInput = ""
     /// The row whose rename sheet is open, if any.
     @State private var renamingItem: HomeSearchItem?
+    /// The removal waiting on its confirmation dialog, if any.
+    @State private var confirmingRemoval: PendingRemoval?
     @FocusState private var searchFocused: Bool
+
+    /// Title for the confirmation, held separately and never cleared on
+    /// dismissal: `confirmingRemoval` goes nil the instant the dialog starts
+    /// closing, and reading it for the title (which is evaluated outside
+    /// `presenting:`) would blank the heading mid-animation while the buttons
+    /// and message still render.
+    @State private var confirmingTitle = ""
+
+    /// A destructive removal held back until the user confirms it. Carries the
+    /// row as well as the action so the dialog can name what it is about to
+    /// un-save.
+    private struct PendingRemoval {
+        let item: HomeSearchItem
+        let removal: HomeSearchRemoval
+    }
 
     private var updateChecker: UpdateChecker { workspace.updateChecker }
 
@@ -49,7 +91,45 @@ struct WelcomeScreen: View {
     /// which knows about library documents too, not just recents and saved
     /// pages, and which can distinguish "empty" from "not loaded yet".
     private var showsFirstRun: Bool {
-        !store.isLoading && store.libraryIsEmpty && !store.isSearching
+        // Someone who has switched to an account is browsing, whatever the
+        // local library holds — and that account's list has its own, better
+        // empty state ("Nothing saved yet — sync this service…"). Yanking them
+        // to the hero because a sync briefly emptied the list would also take
+        // the switcher away, leaving no way back.
+        guard browsedProvider == nil else { return false }
+        return !store.isLoading && store.libraryIsEmpty && !store.isSearching
+            && !hasConnectedLibrary
+    }
+
+    /// Whether a connected account is holding anything to read.
+    ///
+    /// It counts as "has a library" for the same reason recents and saved pages
+    /// do: the hero is for someone with nothing to open, and this reader has a
+    /// shelf of articles one click away. The corpus gets there on its own once
+    /// the read-later provider has been indexed — this term is what stops the
+    /// hero flashing in the window before that lands, and what keeps the source
+    /// switcher reachable for a reader whose ONLY content is a connected
+    /// account. A connected account with nothing in it is not a library, so it
+    /// still gets the hero (and its "open a PDF" affordances) rather than an
+    /// empty list.
+    private var hasConnectedLibrary: Bool {
+        integrations.connectedProviders.contains { provider in
+            !(integrations.providers[provider]?.items.isEmpty ?? true)
+        }
+    }
+
+    /// Library plus one entry per connected account, in `IntegrationProvider`
+    /// order. One entry means nothing is connected, and the switcher never
+    /// appears — a reader with no integrations sees the home screen unchanged.
+    private var sources: [HomeSource] {
+        HomeSource.options(connected: integrations.connectedProviders)
+    }
+
+    /// The account whose own library is on screen, if any. Nil is the local
+    /// library — i.e. everything main's home screen already does.
+    private var browsedProvider: IntegrationProvider? {
+        if case .provider(let provider) = source { return provider }
+        return nil
     }
 
     var body: some View {
@@ -74,11 +154,41 @@ struct WelcomeScreen: View {
         // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
         // which is exactly the debounce semantics we want while typing.
         .task(id: store.refreshKey) { await store.refresh() }
+        // Publish the read-later corpus into home search whenever it actually
+        // changes (connect, sync page, move, disconnect). The revision only
+        // moves alongside an observable `providers` write, so this re-fires
+        // exactly as often as the items can differ — and runs once on arrival,
+        // covering the corpus a previous screen already synced. Debounced,
+        // because a sync ticks the revision once per network page and a corpus
+        // rebuild is three disk walks: `.task(id:)` cancels the sleeping pass
+        // on the next tick, so a paging burst costs one rebuild, not forty.
+        .task(id: integrations.searchRevision) {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await store.updateReadLater(integrations.searchableItems)
+        }
         .onAppear {
             // Focus the field on arrival so the front door is type-ready — but
             // only in the focused pane, or two side-by-side welcome screens
             // would fight over first responder.
             if isPaneFocused { searchFocused = true }
+        }
+        .onDisappear {
+            // `registerUndo(withTarget:)` does NOT retain its target, and this
+            // screen owns `store` as `@State` — opening a document swaps the
+            // whole view out and deallocates it. Leaving the registration in
+            // place would leave a dead target on the window-wide undo stack,
+            // and "Undo Remove from Recent" sitting in the Edit menu of a
+            // reader that has no recents list on screen. The undo's session is
+            // this screen's lifetime, so it leaves with it.
+            undoManager?.removeAllActions(withTarget: store)
+        }
+        // A disconnected account has no library left to show — and its state is
+        // wiped by `IntegrationsStore.disconnect`, so leaving the screen on it
+        // would park the reader in front of a permanently empty list. The
+        // fallback is the local library, which always exists.
+        .onChange(of: integrations.connectedProviders) { _, connected in
+            source = HomeSource.reconciled(source, connected: connected)
         }
         // Re-index when the app comes back to the front. The corpus is a
         // snapshot of three on-disk sources, and all three can change while
@@ -103,6 +213,23 @@ struct WelcomeScreen: View {
                 commit: { newTitle in
                     Task { await store.rename(item, to: newTitle) }
                 })
+        }
+        .confirmationDialog(
+            Text(confirmingTitle),
+            isPresented: Binding(
+                get: { confirmingRemoval != nil },
+                set: { if !$0 { confirmingRemoval = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmingRemoval
+        ) { pending in
+            Button(pending.removal.confirmLabel, role: .destructive) {
+                performRemoval(pending.item, from: pending.removal)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            if let message = pending.removal.confirmationMessage {
+                Text(message)
+            }
         }
         .background {
             // ⌘F focuses the search field here. The menu's Find… command and the
@@ -133,7 +260,14 @@ struct WelcomeScreen: View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
                 header
-                searchField
+                // A connected account's list owns its own search field (and its
+                // own collection filter and sort), so the library's field steps
+                // aside instead of sitting above a list it cannot drive. ⌘F
+                // still means "search my library" — it comes back here first,
+                // see `focusSearchField`.
+                if browsedProvider == nil {
+                    searchField
+                }
                 controlBar
                 if appStore.error != nil {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
@@ -145,7 +279,30 @@ struct WelcomeScreen: View {
 
             Divider()
 
-            resultList
+            if let provider = browsedProvider {
+                // Deliberately NOT in `homeContentColumn()`: this list carries
+                // its own insets and full-width list chrome (it is the same view
+                // the settings pane shows), and nesting it in the capped column
+                // would double every horizontal inset it applies.
+                //
+                // `.id(provider)` so switching accounts rebuilds it: its search
+                // text and collection selection belong to one account, and
+                // carrying them across would filter Raindrop by a Readwise
+                // location that does not exist there.
+                ExternalLibraryList(provider: provider)
+                    .id(provider)
+            } else {
+                resultList
+            }
+        }
+        // Progress and failures for a read-later PDF opened from a SEARCH
+        // result. `ExternalLibraryList` floats this itself, so it is only added
+        // under the library list — without it, clicking a Readwise PDF row here
+        // would look like nothing happened for the length of the download.
+        .overlay(alignment: .bottomTrailing) {
+            if browsedProvider == nil {
+                readLaterNotice
+            }
         }
     }
 
@@ -250,29 +407,136 @@ struct WelcomeScreen: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
+    /// One row for "which library, and how am I looking at it".
+    ///
+    /// The source switcher leads it because it is the outer choice: it changes
+    /// WHICH library is on screen, where the chips only narrow the one already
+    /// there. That difference is why they are not all chips — the switcher is
+    /// the segmented control, sitting on its own track, with a hairline between
+    /// it and the filters so two adjacent groups of small pills do not read as
+    /// one seven-option row. Everything after the switcher belongs to the local
+    /// library and leaves with it; a browsed account gets its sync state there
+    /// instead.
     private var controlBar: some View {
         HStack(spacing: 8) {
-            ForEach(HomeSearchFilter.allCases, id: \.self) { option in
-                HomeFilterChip(label: option.label, isSelected: store.filter == option) {
-                    store.filter = option
-                    // Clicking a chip moves first responder to the button; hand
-                    // the keyboard straight back so typing continues to search.
-                    focusSearchField()
+            if sources.count > 1 {
+                HomeSourceSwitcher(sources: sources, selection: $source)
+
+                if browsedProvider == nil {
+                    Divider()
+                        .frame(height: 18)
+                        .padding(.horizontal, 2)
                 }
-                .accessibilityIdentifier("welcome.filter.\(option.label)")
             }
 
-            Spacer(minLength: 12)
-
-            if store.isSearching {
-                Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.mutedForeground)
-                    .accessibilityIdentifier("welcome.resultCount")
+            if let provider = browsedProvider {
+                Spacer(minLength: 12)
+                sourceStatus(for: provider)
             } else {
-                sortMenu
+                ForEach(HomeSearchFilter.allCases, id: \.self) { option in
+                    HomeFilterChip(label: option.label, isSelected: store.filter == option) {
+                        store.filter = option
+                        // Clicking a chip moves first responder to the button; hand
+                        // the keyboard straight back so typing continues to search.
+                        focusSearchField()
+                    }
+                    .accessibilityIdentifier("welcome.filter.\(option.label)")
+                }
+
+                Spacer(minLength: 12)
+
+                if store.isSearching {
+                    Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.mutedForeground)
+                        .accessibilityIdentifier("welcome.resultCount")
+                } else {
+                    sortMenu
+                }
             }
+        }
+    }
+
+    /// Where the browsed account's sync stands, plus a way to push it.
+    ///
+    /// Takes the slot the sort menu holds for the local library, because it
+    /// answers the same question that control does — "is what I'm looking at
+    /// what I think it is?". Kept to one muted line: `ExternalLibraryList`
+    /// already states the loud cases (authentication required, sync failed)
+    /// over the list itself, so repeating them at full volume here would say
+    /// the same thing twice.
+    private func sourceStatus(for provider: IntegrationProvider) -> some View {
+        let state = integrations.providers[provider]
+        let isSyncing = state?.connection == .syncing
+        return HStack(spacing: 6) {
+            if isSyncing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityHidden(true)
+            }
+            Text(syncLabel(for: state))
+                .font(.system(size: 12))
+                .foregroundStyle(palette.mutedForeground)
+                .lineLimit(1)
+                .accessibilityIdentifier("welcome.source.status")
+
+            IconButton(help: "Sync \(provider.name) now", disabled: isSyncing) {
+                // Store-owned rather than a bare `Task`: this is background work
+                // started from a view that a pane change can tear down at any
+                // moment, and the store's quit barrier drains it (root
+                // CLAUDE.md — never drop the handle).
+                integrations.run { await integrations.sync(provider) }
+            } icon: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12))
+            }
+            .accessibilityIdentifier("welcome.source.sync")
+        }
+        // The full statusMessage can be a sentence ("malformed records were
+        // skipped…"), which is more than the row has space for but exactly what
+        // someone hovering the short form is asking for.
+        .help(state?.statusMessage ?? syncLabel(for: state))
+    }
+
+    /// The short form of a provider's connection state. `nil`/`.connected`
+    /// falls through to when the account last synced, because a healthy
+    /// integration's only interesting fact is its freshness.
+    private func syncLabel(for state: IntegrationProviderViewState?) -> String {
+        switch state?.connection {
+        case .syncing: "Syncing…"
+        case .connecting: "Connecting…"
+        case .tokenRejected: "Reconnect in Settings"
+        case .offlineCache: "Offline — cached"
+        case .failed: "Sync failed"
+        default:
+            state?.lastSuccessfulSync
+                .map { "Synced \($0.formatted(.relative(presentation: .numeric)))" }
+                ?? "Not synced yet"
+        }
+    }
+
+    /// The newest download/move notice from any connected account. Picked by
+    /// the store's own monotonic sequence, so two accounts working at once
+    /// still produce one deterministic notice rather than a dictionary-order
+    /// pick.
+    @ViewBuilder
+    private var readLaterNotice: some View {
+        if let notice = integrations.connectedProviders
+            .compactMap({ integrations.newestNotice(for: $0) })
+            .max(by: { $0.state.sequence < $1.state.sequence }) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+            ) {
+                if notice.isMove {
+                    integrations.dismissMoveNotice(notice.id)
+                } else {
+                    integrations.dismissDownloadNotice(notice.id)
+                }
+            }
+            .padding(18)
         }
     }
 
@@ -599,7 +863,12 @@ struct WelcomeScreen: View {
         NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
     }
 
+    /// ⌘F (and every control that hands the keyboard back) means "search my
+    /// library", so it returns from a connected account's list first. Focusing
+    /// a field that is not on screen would otherwise make the chord look dead
+    /// in exactly the place a reader is most likely to try it.
     private func focusSearchField() {
+        source = .library
         searchFocused = true
     }
 
@@ -623,6 +892,17 @@ struct WelcomeScreen: View {
 
     private func open(_ item: HomeSearchItem) {
         guard !appStore.isLoading else { return }
+        // A read-later hit opens the way it would from the account's own list:
+        // an article opens its page, a PDF is downloaded (with progress, see
+        // `readLaterNotice`) and opened from the cache. The corpus is a
+        // snapshot, so the lookup can legitimately miss — the article was
+        // un-saved, or the account disconnected, since it was indexed — and the
+        // row's plain URL target is then still the right thing to open.
+        if item.section == .readLater,
+           let external = integrations.readLaterItem(forOpenDocumentPath: item.target.openKey) {
+            openExternal(external)
+            return
+        }
         switch item.target {
         case .url(let url):
             Task { await appStore.openUrl(url) }
@@ -633,6 +913,25 @@ struct WelcomeScreen: View {
                 _ = RecentFilesService.remove(path: recordedPath)
             }
             Task { await appStore.openFile(path: path) }
+        }
+    }
+
+    /// The same route `ExternalLibraryList` takes, so a row opened from search
+    /// and the identical row opened from the account's library cannot diverge:
+    /// `route(for:)` returns the web address for an article and downloads a PDF
+    /// (or reuses an existing download) before handing back its file URL.
+    ///
+    /// Store-owned rather than a bare `Task` — a download outlives this screen,
+    /// which a pane change can tear down mid-flight, and the store's quit
+    /// barrier drains what it started. The error is not swallowed: `route(for:)`
+    /// parks it as a notice, which `readLaterNotice` is here to show.
+    private func openExternal(_ item: ReadLaterItem) {
+        integrations.run {
+            guard let route = try? await integrations.route(for: item) else { return }
+            switch route {
+            case .web(let url): await appStore.openUrl(url.absoluteString)
+            case .file(let url): await appStore.openFile(path: url.path)
+            }
         }
     }
 
@@ -666,11 +965,41 @@ struct WelcomeScreen: View {
         for item: HomeSearchItem
     ) -> [(removal: HomeSearchRemoval, action: () -> Void)] {
         store.removalOptions(for: item).map { removal in
-            // The closure is annotated rather than inferred: a bare
-            // `{ Task { … } }` reads as returning the Task, which makes the
-            // `Task.init` overload set ambiguous.
-            let action: () -> Void = { Task { await store.remove(item, from: removal) } }
+            // The closure is annotated rather than inferred so the type checker
+            // resolves its body independently of the surrounding `map`.
+            let action: () -> Void = {
+                // Issue #103: neither removal used to stop for anything. The
+                // irreversible one now asks; the reversible one still fires on
+                // the click and offers ⌘Z (see `performRemoval`).
+                if removal.requiresConfirmation {
+                    confirmingTitle = removal.confirmationTitle(for: item.title)
+                    confirmingRemoval = PendingRemoval(item: item, removal: removal)
+                } else {
+                    performRemoval(item, from: removal)
+                }
+            }
             return (removal, action)
+        }
+    }
+
+    /// Do the removal and, when it produced something undoable, put it on the
+    /// window's undo stack.
+    private func performRemoval(_ item: HomeSearchItem, from removal: HomeSearchRemoval) {
+        switch removal {
+        case .recent:
+            // Registered synchronously, before the reload: `load()` rebuilds the
+            // whole corpus, and a ⌘Z landing during it would pop whatever was on
+            // the window's stack beforehand instead of this removal.
+            let transaction = store.removeFromRecent(item)
+            // SwiftUI only supplies `\.undoManager` where the environment
+            // supports it; without one the removal simply stands, exactly as it
+            // did before. Same fallback as the AI panel and scratchpad.
+            if let transaction, let undoManager {
+                registerRecentRemovalUndo(transaction, store: store, undoManager: undoManager)
+            }
+            Task { await store.load() }
+        case .saved:
+            Task { await store.removeFromSaved(item) }
         }
     }
 
@@ -691,6 +1020,218 @@ struct WelcomeScreen: View {
         let paths = panel.urls.map(\.path)
         Task { await appStore.openFiles(paths: paths) }
     }
+}
+
+// MARK: - Source switcher
+
+/// Which library the home screen is showing.
+///
+/// A source is a MODE, not a facet: picking an account swaps the entire result
+/// area for that provider's list, where a `HomeSearchFilter` only narrows the
+/// rows already on screen. Keeping them different controls (a segmented track
+/// versus flat chips) is what keeps that difference legible.
+enum HomeSource: Hashable {
+    case library
+    case provider(IntegrationProvider)
+
+    var title: String {
+        switch self {
+        case .library: "Library"
+        case .provider(let provider): provider.name
+        }
+    }
+
+    /// Same SF Symbols vocabulary as the result sections: the local library is
+    /// the tray everything lands in, an account keeps the glyph it already uses
+    /// in Settings.
+    var systemImage: String {
+        switch self {
+        case .library: "tray.full"
+        case .provider(let provider): provider.symbol
+        }
+    }
+
+    /// Automation identifier, derived from the CASE and never from the display
+    /// label — the convention `InspectorTabSwitcher` settled on after the old
+    /// `GlassSegmentedPicker` interpolated titles and silently emitted
+    /// identifiers no lookup could match.
+    var accessibilityIdentifier: String {
+        switch self {
+        case .library: "welcome.source.library"
+        case .provider(let provider): "welcome.source.\(provider.rawValue)"
+        }
+    }
+
+    /// The switcher's options: the local library, then one per connected
+    /// account in `IntegrationProvider.allCases` order so the row never
+    /// reshuffles between launches.
+    static func options(connected: [IntegrationProvider]) -> [HomeSource] {
+        [.library] + connected.map(HomeSource.provider)
+    }
+
+    /// Keep a selection meaningful when the connected set changes: an account
+    /// that has just been disconnected has no library to show, so the screen
+    /// falls back to the local one. Mirrors
+    /// `ExternalLibraryFilter.reconciledCollectionID`, which does the same job
+    /// for a collection that disappeared underneath its filter.
+    static func reconciled(
+        _ selection: HomeSource, connected: [IntegrationProvider]
+    ) -> HomeSource {
+        if case .provider(let provider) = selection, !connected.contains(provider) {
+            return .library
+        }
+        return selection
+    }
+}
+
+/// Library plus one segment per connected read-later account.
+///
+/// An `HStack` of plain buttons over a `palette.muted` track: the segmented
+/// idiom `InspectorTabSwitcher` landed on when `GlassSegmentedPicker` was
+/// removed, and the same three-tier degradation — full labels, then icons, then
+/// a menu — because "Readwise Reader" and "Raindrop.io" are long labels sharing
+/// a row with four filter chips and a sort menu. `ViewThatFits` decides instead
+/// of `GeometryReader` + width thresholds precisely because of that: what this
+/// control has to fit into is whatever its neighbours leave it, which is not a
+/// number it can be told in advance.
+struct HomeSourceSwitcher: View {
+    let sources: [HomeSource]
+    @Binding var selection: HomeSource
+
+    @Environment(\.palette) private var palette
+    /// Hovered segment, so an unselected one previews the selection surface the
+    /// way the filter chips beside it do.
+    @State private var hovering: HomeSource?
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            track(showTitles: true)
+            track(showTitles: false)
+            menu
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Library source")
+        .accessibilityValue(selection.title)
+    }
+
+    private func track(showTitles: Bool) -> some View {
+        HStack(spacing: 2) {
+            ForEach(sources, id: \.self) { source in
+                segment(source, showTitle: showTitles)
+            }
+        }
+        .padding(2)
+        // The recessed track, from the palette rather than a scheme-derived
+        // `.quaternary`: the latter washes out against the light parchment
+        // chrome, which is what sent `Keycap` to `palette.muted` in #70.
+        .background(palette.muted, in: Capsule())
+    }
+
+    private func segment(_ source: HomeSource, showTitle: Bool) -> some View {
+        let isSelected = selection == source
+        let isHovering = hovering == source
+        return Button {
+            withAnimation(.snappy) { selection = source }
+        } label: {
+            Group {
+                if showTitle {
+                    Label(source.title, systemImage: source.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                } else {
+                    Label(source.title, systemImage: source.systemImage)
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(
+                SelectionStyle.foreground(palette, selected: isSelected, hovering: isHovering))
+            // Padding, frame, surface and shape all INSIDE the label: a
+            // `.plain` button hit-tests against its label's rendered content,
+            // so the same chain applied to the Button would move the layout
+            // and leave the clickable region on the glyph (the trap both
+            // `InspectorTabSwitcher` and `HomeFilterChip` document).
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .selectionSurface(
+                selected: isSelected, hovering: isHovering, in: Capsule(), palette: palette)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 ? source : nil }
+        // The icons-only tier is unreadable without this, and it costs the
+        // full-label tier nothing.
+        .help(source.title)
+        .accessibilityLabel(source.title)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier(source.accessibilityIdentifier)
+    }
+
+    /// Last resort, and reachable in a narrow pane rather than only in theory —
+    /// two accounts plus the filter chips is genuinely more than a split pane's
+    /// control row can hold. Styled as the sort menu beside it.
+    private var menu: some View {
+        Menu {
+            ForEach(sources, id: \.self) { source in
+                Button {
+                    selection = source
+                } label: {
+                    Label {
+                        Text(source.title)
+                    } icon: {
+                        Image(
+                            systemName: selection == source ? "checkmark" : source.systemImage)
+                    }
+                }
+                .accessibilityIdentifier(source.accessibilityIdentifier)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: selection.systemImage)
+                    .font(.system(size: 12))
+                Text(selection.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(palette.mutedForeground)
+        .help("Choose which library to browse")
+        .accessibilityIdentifier("welcome.source.menu")
+    }
+}
+
+/// Undo/redo registration for "Remove from Recent", mirroring
+/// `registerConversationUndo` / `registerScratchpadUndo` from PR #79: each step
+/// registers its counterpart, so ⌘Z and ⇧⌘Z alternate for as long as the window
+/// lives. A step that reports `false` — the document was re-opened, so the
+/// removal has been overtaken — registers nothing and ends the chain rather
+/// than duplicating the row.
+@MainActor
+private func registerRecentRemovalUndo(
+    _ transaction: HomeRecentRemovalTransaction,
+    store: HomeSearchStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.undoRecentRemoval(transaction) else { return }
+        registerRecentRemovalRedo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Remove from Recent")
+}
+
+@MainActor
+private func registerRecentRemovalRedo(
+    _ transaction: HomeRecentRemovalTransaction,
+    store: HomeSearchStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoRecentRemoval(transaction) else { return }
+        registerRecentRemovalUndo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Remove from Recent")
 }
 
 #Preview("Hero wordmark") {

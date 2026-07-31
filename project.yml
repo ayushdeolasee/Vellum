@@ -17,8 +17,19 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     MACOSX_DEPLOYMENT_TARGET: "26.0"
-    CODE_SIGN_IDENTITY: "-"
-    CODE_SIGNING_REQUIRED: "NO"
+    # Ad-hoc signing ("-") mints a fresh, anonymous code identity on every
+    # build. macOS TCC keys its Documents/Desktop/Downloads access grants to
+    # that identity, so every rebuild looked like a brand-new app and
+    # re-prompted for folder access. Signing with a real Apple Development
+    # identity + team keeps the identity stable across rebuilds so TCC's
+    # grant sticks. Team 9DCG97VASG (ayush.deolasee@icloud.com) matches the
+    # identity already used by the other Vellum worktrees (ipad-app,
+    # apple-pencil-on-webpages) and other active local projects — swap
+    # DEVELOPMENT_TEAM to PXY5MW3W8Q (pypdeveloper@deolasee.org) if you'd
+    # rather sign with that identity instead.
+    CODE_SIGN_IDENTITY: "Apple Development"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 9DCG97VASG
     DEAD_CODE_STRIPPING: "YES"
 schemes:
   # The default scheme's test action stays exactly what it was: the hosted unit
@@ -64,6 +75,11 @@ targets:
     platform: macOS
     sources:
       - path: Tests
+        excludes:
+          - Integrations/Fixtures
+      - path: Tests/Integrations/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Vellum
     settings:

@@ -408,6 +408,115 @@ final class AiMarkdownRenderingTests: XCTestCase {
             "a marker survived into the item text: \(items.map(\.text))")
     }
 
+    // MARK: - Code spans containing math delimiters (#99)
+
+    /// Text and code-intent for every prose run of a line, as the renderers see
+    /// it. Both message renderers consume `InlineMarkdown.pieces` — the SwiftUI
+    /// `MarkdownMessage` and the AppKit `AiAttributedRenderer` — so asserting
+    /// here covers both inline paths at their shared layer.
+    private static func runs(_ line: String) -> [(String, Bool)] {
+        InlineMarkdown.pieces(in: line).flatMap { piece -> [(String, Bool)] in
+            guard case .prose(let attributed) = piece else { return [] }
+            return attributed.runs.map {
+                (String(attributed[$0.range].characters),
+                 $0.inlinePresentationIntent?.contains(.code) ?? false)
+            }
+        }
+    }
+
+    private static func hasMath(_ line: String) -> Bool {
+        InlineMarkdown.pieces(in: line).contains { piece in
+            if case .math = piece { return true }
+            return false
+        }
+    }
+
+    /// The #99 repros. `MathRenderer.segments` runs before the markdown parse,
+    /// so a code span holding a `$` or a `\(…\)` was cut apart before anything
+    /// knew it was code — the span was typeset as an equation and its backticks
+    /// were eaten.
+    func testCodeSpansHoldingMathDelimitersStayCode() {
+        let cases = [
+            ("Use `$1` and `$2` backrefs", ["$1", "$2"]),
+            ("matches `\\(a\\|b\\)` here", ["\\(a\\|b\\)"]),
+            ("write `$$x$$` for display", ["$$x$$"]),
+            ("`a$b` alone", ["a$b"]),
+        ]
+        for (line, spans) in cases {
+            XCTAssertFalse(Self.hasMath(line), "\(line) was typeset as math")
+            let runs = Self.runs(line)
+            for span in spans {
+                XCTAssertTrue(
+                    runs.contains { $0.0 == span && $0.1 },
+                    "\(line): expected code run \(span), got \(runs)")
+            }
+            XCTAssertFalse(
+                runs.contains { $0.0.contains("`") }, "\(line): backticks reached the screen: \(runs)")
+        }
+    }
+
+    /// The guard is code spans, not backticks: real inline math elsewhere on the
+    /// line must still typeset, and a `$` used as currency must still not.
+    func testMathAndCurrencyOutsideCodeSpansAreUnaffected() {
+        XCTAssertTrue(Self.hasMath("`grep` finds $x^2$ fast"))
+        XCTAssertTrue(Self.hasMath("the value $x^2$ appears here"))
+        XCTAssertFalse(Self.hasMath("it cost $5 and $10 today"))
+        XCTAssertFalse(Self.hasMath("`grep` costs $5 and $10"))
+    }
+
+    /// The AppKit renderer specifically: math becomes an `NSTextAttachment`, so
+    /// a code span that is no longer mistaken for math must produce none — and
+    /// its `$` must survive as literal text.
+    func testAppKitRendererDoesNotTypesetCodeSpanDollars() {
+        func attachmentCount(_ source: String) -> Int {
+            let attributed = AiAttributedRenderer.attributedString(
+                for: source, color: .labelColor, secondary: .secondaryLabelColor)
+            var count = 0
+            attributed.enumerateAttribute(
+                .attachment, in: NSRange(location: 0, length: attributed.length)
+            ) { value, _, _ in
+                if value is NSTextAttachment { count += 1 }
+            }
+            return count
+        }
+        let rendered = AiAttributedRenderer.attributedString(
+            for: "Use `$1` and `$2` backrefs", color: .labelColor, secondary: .secondaryLabelColor)
+        XCTAssertTrue(rendered.string.contains("$1"), "got \(rendered.string)")
+        XCTAssertTrue(rendered.string.contains("$2"), "got \(rendered.string)")
+        XCTAssertFalse(rendered.string.contains("`"), "got \(rendered.string)")
+        XCTAssertEqual(attachmentCount("Use `$1` and `$2` backrefs"), 0)
+        // Positive control: real math on the same path still typesets, so the
+        // assertion above is about the code span and not about attachments
+        // having stopped working.
+        XCTAssertGreaterThan(attachmentCount("the value $x^2$ appears"), 0)
+    }
+
+    /// The sidebar pill, quoting and accessibility text go through
+    /// `plainPreview`, which calls `segments` directly — the third caller, and
+    /// the reason #99 is fixed in `MathRenderer` rather than in `InlineMarkdown`.
+    func testPlainPreviewKeepsCodeSpanContentIntact() {
+        XCTAssertEqual(MarkdownParser.plainPreview("Use `$1` and `$2` backrefs"),
+                       "Use $1 and $2 backrefs")
+        XCTAssertEqual(MarkdownParser.plainPreview("matches `\\(a\\|b\\)` here"),
+                       "matches \\(a\\|b\\) here")
+    }
+
+    /// Known residual, pinned so it stays a decision rather than a surprise:
+    /// `plainPreview` unwraps `$$…$$` and strips math delimiters with its own
+    /// regexes, which run before `segments` and have no notion of code spans —
+    /// so a `$$` inside a code span still loses its delimiters in the pill.
+    ///
+    /// Out of scope for #99 and materially different from it: no text is eaten
+    /// and nothing is reordered (the "x" survives), which is the same lossy
+    /// contract this one-line preview already applies to `**`, backticks and
+    /// every other delimiter. The bug #99 is about — the splitter consuming the
+    /// backticks and the prose between two spans — is fixed here, as the test
+    /// above shows.
+    func testPlainPreviewStillStripsDisplayDelimitersInsideCodeSpans() {
+        XCTAssertEqual(MarkdownParser.plainPreview("write `$$x$$` for display"),
+                       "write x for display")
+    }
+
     /// The code spans inside those sub-items must still style as code.
     func testCodeSpansInsideNestedItemsAreMonospaced() {
         guard case .list(let items) = MarkdownParser.parse("- a\n  - `int\\b` for the `int` keyword").first else {

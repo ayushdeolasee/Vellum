@@ -2,18 +2,15 @@ import Foundation
 import Testing
 @testable import Vellum
 
-/// `.serialized` because `RecentFilesService.defaultsOverride` (installed by
-/// `ScratchRecents` below) is process-global mutable state, and because every
-/// test here drives a real `WorkspaceStore`.
+/// `.scratchDefaults` gives each test its own domain for the recents write that
+/// `AppStore.adoptOpenedDocument` performs — opening a document is unavoidable
+/// here, it is the whole subject of these tests. The recents redirect is no
+/// longer process-global, so it is no longer a reason to serialize (#102);
+/// `.serialized` stays because opening a document also reaches the storage
+/// seams, which ARE still process-global.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .scratchDefaults)
 struct InspectorPresentationTests {
-    /// Redirects the recents write that `AppStore.adoptOpenedDocument` performs
-    /// into a throwaway domain. Opening a document is unavoidable here — it is
-    /// the whole subject of these tests — and the test bundle is hosted, so
-    /// without this the suite would rewrite the real app's recent-documents
-    /// list with `/tmp` paths (exactly what `defaultsOverride` was added for).
-    private let recents = ScratchRecents()
 
     @Test("PDF to New Tab to PDF preserves inspector state")
     func pdfNewTabPdf() async throws {
@@ -134,6 +131,43 @@ struct InspectorPresentationTests {
         #expect(workspace.inspectorPresented)
     }
 
+    /// What ⌥⌘1/2/3 do (issue #101). The commands are disabled without a
+    /// document, so the interesting half is the reveal: selecting a panel while
+    /// the inspector is closed has to open it, or the shortcut appears to do
+    /// nothing at all.
+    @Test("Revealing a panel selects it and opens a closed inspector")
+    func revealSidebarTabOpensTheInspector() async {
+        let workspace = WorkspaceStore(sessions: InspectorSessionService())
+        await workspace.focusedPane.app.openFile(path: "/tmp/inspector-test.pdf")
+        workspace.setInspectorPresented(false)
+        #expect(workspace.inspectorPresented == false)
+
+        workspace.revealSidebarTab(.scratchpad)
+        #expect(workspace.sidebarTab == .scratchpad)
+        #expect(workspace.sidebarOpen)
+        #expect(workspace.inspectorPresented)
+
+        // Reveal, never toggle: pressing the same shortcut again must not close
+        // the panel it just opened. ⌥⌘S is the toggle.
+        workspace.revealSidebarTab(.scratchpad)
+        #expect(workspace.inspectorPresented)
+        #expect(workspace.sidebarTab == .scratchpad)
+    }
+
+    /// The belt-and-braces half of the gate. The menu items are disabled with
+    /// no document; if one ever fired anyway it must not flip `sidebarOpen`,
+    /// which is the preference the *next* document would open with.
+    @Test("Revealing a panel does nothing without a document")
+    func revealSidebarTabIsInertWithoutADocument() {
+        let workspace = WorkspaceStore(sessions: InspectorSessionService())
+        workspace.sidebarOpen = false
+        #expect(workspace.focusedPane.app.document == nil)
+
+        workspace.revealSidebarTab(.ai)
+        #expect(workspace.sidebarOpen == false)
+        #expect(workspace.sidebarTab == .annotations)
+    }
+
     @Test("Remembered inspector width ignores out-of-range and suppressed geometry")
     func rememberSidebarWidthRejectsUnusableMeasurements() async throws {
         let workspace = WorkspaceStore(sessions: InspectorSessionService())
@@ -181,25 +215,6 @@ struct InspectorPresentationTests {
         #expect(workspace.sidebarOpen == false)
         #expect(workspace.inspectorPresented == false)
         #expect(workspace.sidebarTab == .ai)
-    }
-}
-
-/// Scratch UserDefaults domain for the recents write, restored when the test
-/// instance dies. A `class` with a `deinit` because Swift Testing has no
-/// `tearDown` — mirrors `ScratchStores` in `DocumentRenameTests`.
-private final class ScratchRecents {
-    private let defaults: UserDefaults
-    private let suiteName: String
-
-    init() {
-        suiteName = "vellum.inspector.tests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-        RecentFilesService.defaultsOverride = defaults
-    }
-
-    deinit {
-        RecentFilesService.defaultsOverride = nil
-        defaults.removePersistentDomain(forName: suiteName)
     }
 }
 

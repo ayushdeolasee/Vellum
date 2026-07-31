@@ -25,6 +25,10 @@ final class ScratchpadImportTests: XCTestCase {
     override func tearDown() async throws {
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.activeDirectory = nil
+        // This suite calls `addImage`, which claims a GC exemption for each id it
+        // writes (#105). Harmless if it leaks — the keys are UUIDs — but the
+        // registry is process-global, so leave it as we found it.
+        ScratchpadAttachmentStore.resetPending()
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
 

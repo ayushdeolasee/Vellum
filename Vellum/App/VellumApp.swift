@@ -38,13 +38,31 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // conversations.json / cache write always lands. Both awaits are
                 // no-ops when nothing is pending.
                 Task { @MainActor in
+                    // A tab closed moments ago finishes its metadata write and
+                    // session close behind the UI (AppStore.closeTab); it is no
+                    // longer in `tabs`, so nothing else here would await it.
+                    // Drained via the workspace registry, not per pane: a close
+                    // that collapsed its pane left no leaf to ask.
+                    await workspace.tabTeardowns.awaitAll()
                     await PageTextPersister.awaitInFlightFlushes()
                     await AiPersistence.awaitPendingFlush()
+                    // Read-later work the user started behind the UI — the
+                    // auto-refresh preference, a move-to-collection, a
+                    // disconnect, thumbnail cleanup — is store-owned and joinable
+                    // for exactly this reason. Cancels in-flight syncs, waits for
+                    // the rest.
+                    await workspace.integrations.awaitQuiescence()
                     sender.reply(toApplicationShouldTerminate: true)
                 }
                 return .terminateLater
             }
             Task { @MainActor in
+                // Tabs closed moments ago finish their metadata write and
+                // session close behind the UI (AppStore.closeTab) and are no
+                // longer in `tabs`, so the loop below would miss them. Drained
+                // via the workspace registry, not per pane: a close that
+                // collapsed its pane left no leaf to ask.
+                await workspace.tabTeardowns.awaitAll()
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
                         try? await workspace.sessions.setDocumentMetadata(
@@ -64,6 +82,8 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
                 await AiPersistence.awaitPendingFlush()
+                // Same for the read-later stores' background work (see above).
+                await workspace.integrations.awaitQuiescence()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
@@ -83,9 +103,16 @@ struct VellumApp: App {
 
     init() {
         uiTestDocumentPath = UITestLaunchConfiguration.prepare()
+        // The first keychain read of a launch is a full vault load plus the
+        // legacy migration — hundreds of milliseconds, reachable synchronously
+        // from @MainActor callers (AI keys, ChatGPT auth, integration tokens).
+        // Warm it on a background queue here, after the UI-test configuration
+        // has had its say, so no main-actor read ever pays for it.
+        KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let workspace = WorkspaceStore(sessions: sessions)
+        let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())
+        let workspace = WorkspaceStore(sessions: sessions, integrations: integrations)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         VellumAppDelegate.workspace = workspace
@@ -98,6 +125,7 @@ struct VellumApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
+                    await workspace.integrations.start()
                     // Launch-time TTL eviction of derived data (issue #37 PR B /
                     // issue #29): the extracted-text cache, plus web-snapshot
                     // artifacts for pages the user never saved or annotated.
@@ -181,6 +209,7 @@ struct VellumApp: App {
                 }
                 .environment(themeStore)
                 .environment(workspace)
+                .environment(workspace.integrations)
                 .environment(workspace.openRouterCatalog)
                 .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
@@ -200,6 +229,7 @@ struct VellumApp: App {
             SettingsView()
                 .environment(themeStore)
                 .environment(workspace)
+                .environment(workspace.integrations)
                 .environment(workspace.settingsAi)
                 .environment(workspace.openRouterCatalog)
                 .environment(workspace.chatgptAuth)

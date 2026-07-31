@@ -20,7 +20,7 @@ final class StorageManagementTests: XCTestCase {
 
     override func tearDown() async throws {
         DocumentDataStore.rootDirectoryOverride = nil
-        UserDefaults.standard.removeObject(forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.removeObject(forKey: ScratchpadPersistence.notesKey)
         UserDefaults.standard.removeObject(forKey: AiPersistence.conversationsKey)
         UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
         if let base { try? FileManager.default.removeItem(at: base) }
@@ -84,9 +84,9 @@ final class StorageManagementTests: XCTestCase {
         settings.openaiApiKey = "sk-test"
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
+        configuration.protocolClasses = [StorageStubURLProtocol.self]
         let session = URLSession(configuration: configuration)
-        defer { StubURLProtocol.reset() }
+        defer { StorageStubURLProtocol.reset() }
 
         // `XCTAssertEqual` takes autoclosures, which can't be awaited — bind the
         // result first, then compare.
@@ -100,22 +100,22 @@ final class StorageManagementTests: XCTestCase {
             XCTAssertEqual(actual, expected, line: line)
         }
 
-        StubURLProtocol.statusCode = 200
+        StorageStubURLProtocol.statusCode = 200
         await expect(.valid)
-        StubURLProtocol.statusCode = 204
+        StorageStubURLProtocol.statusCode = 204
         await expect(.valid)
-        StubURLProtocol.statusCode = 401
+        StorageStubURLProtocol.statusCode = 401
         await expect(.invalid("Credential was rejected"))
-        StubURLProtocol.statusCode = 403
+        StorageStubURLProtocol.statusCode = 403
         await expect(.invalid("Credential was rejected"))
-        StubURLProtocol.statusCode = 429
+        StorageStubURLProtocol.statusCode = 429
         await expect(.invalid("Provider is reachable but rate limited"))
-        StubURLProtocol.statusCode = 500
+        StorageStubURLProtocol.statusCode = 500
         await expect(.invalid("Provider returned HTTP 500"))
 
-        StubURLProtocol.transportError = URLError(.notConnectedToInternet)
+        StorageStubURLProtocol.transportError = URLError(.notConnectedToInternet)
         await expect(.invalid("Couldn’t reach the provider"))
-        StubURLProtocol.reset()
+        StorageStubURLProtocol.reset()
 
         // An empty credential must never reach the transport at all.
         settings.openaiApiKey = ""
@@ -366,7 +366,7 @@ final class StorageManagementTests: XCTestCase {
             BlobEntry(key: "/tmp/a.pdf", text: "note a"),
             BlobEntry(key: "/tmp/b.pdf", text: "longer note b"),
         ]
-        UserDefaults.standard.set(try JSONEncoder().encode(entries), forKey: ScratchpadPersistence.notesKey)
+        AppDefaults.current.set(try JSONEncoder().encode(entries), forKey: ScratchpadPersistence.notesKey)
 
         let listed = ScratchpadPersistence.listLegacyEntries()
         XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])
@@ -422,7 +422,7 @@ final class StorageManagementTests: XCTestCase {
 /// Canned-response transport for `AiConnectionValidator`. Lets the validation
 /// tests exercise every status-code branch without a network call — and without
 /// ever sending a credential anywhere.
-private final class StubURLProtocol: URLProtocol {
+private final class StorageStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var statusCode = 200
     nonisolated(unsafe) static var transportError: Error?
 

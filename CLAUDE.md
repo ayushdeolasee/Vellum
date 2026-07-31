@@ -1,18 +1,12 @@
-The codex-cli computer-use is much better, since we are building a desktop application I want you to use codex-cli to verify your work. Make sure that whatever changes you've made or asked your sub-agents to make are giving the correct behaviour.   
-Additionally instead absolutely required prefer spinning up Sonnet, Opus or Codex models. I would like it if you do not spin up a bunch of Fable models since they use up a bunch of tokens. 
-I would also like that in all circumstance that computer-use be called my codex, opus or sonnet models and not by Fable models.
+# Things to look out for
 
-## Picking the right models for workflows and subagents
+## Main-thread hygiene 
+- Never run blocking work on `@MainActor` before the first `await`. Hop off first (`Task.detached` or a non-main actor), then come back for state updates. A slow or unmounted volume must never freeze the UI.
+- UI state changes the user asked for apply immediately. Slow persistence runs behind them in a background task.
+- Every fire-and-forget `Task` doing persistence must be joinable: keep the handle, register it somewhere quit paths and tests can drain (`await`) it. Never `Task.detached { ... }` and drop the handle.
+- Moving work off the critical path creates race windows. Before starting a new operation on a resource, await any pending background work on that same resource. 
+- Any `isLoading`-style flag that gates UI must be released on every exit path, and use a generation token if attempts can overlap. A wedged flag is a silent lockout.
 
-Rankings, higher = better. Cost reflects what I actually pay (OpenAI has really generous limits although I am using the 20 dollar plan so do not use it unless necessary), not list price. Intelligence is how hard a problem you can hand the model unsupervised. Taste covers UI/UX, code quality, API design, and copy.
-How to apply:
-- These are defaults, not limits. You have standing permission to override them: if a cheaper model's output doesn't meet the bar, rerun or redo the work with a smarter model without asking. Judge the output, not the price tag. Escalating costs less than shipping mediocre work.
-- Cost is a tie-breaker only; when axes conflict for anything that ships, intelligence > taste > cost.
-- Bulk/mechanical work (clear-spec implementation, data analysis, migrations): gpt-5.5 - it's effectively free.
-- Anything user-facing (UI, copy, API design) needs taste ≥ 7.
-- Reviews of plans/implementations: fable-5 or opus-4.8, optionally gpt-5.5 as an extra independent perspective.
-- Never use Haiku.
-- Mechanics: gpt-5.5 is only reachable through the Codex CLI - 'codex exec' / 'codex review' (my ~/.codex/config.toml defaults to gpt-5.5). Use the codex-implementation, codex-review, and codex-computer-use skills; for work they don't cover (investigation, data analysis), run 'codex exec -s read-only' directly with a self-contained prompt.
-- Claude models (sonnet-5, opus-4.8, fable-5) run via the Agent/Workflow model parameter.
-Using gpt-5.5 inside workflows and subagents (the model parameter only takes Claude models, so use a wrapper):
-- Spawn a thin Claude wrapper agent with 'model: 'sonnet', effort: 'low' whose prompt instructs it to write a self-contained codex prompt, run 'codex exec' via Bash, and return
+## SwiftUI hit targets and interaction 
+- To make a `.plain`-style `Button` clickable beyond its glyph, `.frame(...)` + `.contentShape(Rectangle())` must go inside the label closure (frame first). Applied outside the button they change layout only, not the hit region.
+- Same trap: `Spacer`/transparent padding inside a tappable area needs `.contentShape(Rectangle())` or clicks fall through.

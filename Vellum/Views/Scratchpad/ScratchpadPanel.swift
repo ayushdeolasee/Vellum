@@ -783,6 +783,17 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
                 let inserts = pendingInserts
                 pendingInserts = []
                 for markdown in inserts {
+                    // Restart the attachment's GC exemption from the moment the
+                    // snippet actually reaches the editor (issue #105). An insert
+                    // requested before `ready` sits in `pendingInserts` for the
+                    // whole of editor.html + the JS bundle load, which on a cold
+                    // start is not the couple of frames the window is sized for —
+                    // measuring from here means the grace period only ever has to
+                    // cover the part that is genuinely brief: this call, the
+                    // editor's "change" message back, and the save debounce.
+                    for id in ScratchpadAttachmentStore.referencedIds(in: markdown) {
+                        ScratchpadAttachmentStore.markPending(id)
+                    }
                     webView.evaluateJavaScript(
                         "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)));")
                 }

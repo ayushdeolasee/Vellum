@@ -129,6 +129,7 @@ struct AddWebpageSheet: View {
                 .font(.system(size: 13))
                 .focused($fieldFocused)
                 .onSubmit(submit)
+                .accessibilityIdentifier("addWebpage.urlField")
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -663,6 +664,16 @@ private struct OverflowMenu: View {
                 }
             }
 
+            // The open page came from a connected read-later service — offer
+            // the same refiling the welcome-screen library has, without making
+            // the reader go back home to do it. The lookup lives in a child
+            // view so this menu's body doesn't observe the integrations store
+            // (sync/download ticks would re-render — and can dismiss — an open
+            // NSToolbar menu).
+            if hasDocument {
+                MoveToCollectionSection(path: appStore.document?.pdfPath)
+            }
+
             if hasDocument {
                 Section {
                     Button(action: exportWithNotes) {
@@ -943,6 +954,23 @@ private struct OverflowMenu: View {
             while slug.hasSuffix("-") { slug.removeLast() }
         }
         return slug.isEmpty ? "article" : slug
+    }
+}
+
+/// Confines the read-later item lookup (and its observation of the
+/// integrations store) to this one menu section, so store churn re-renders
+/// only this row and not the whole overflow menu or toolbar.
+private struct MoveToCollectionSection: View {
+    let path: String?
+
+    @Environment(IntegrationsStore.self) private var integrations
+
+    var body: some View {
+        if let item = integrations.readLaterItem(forOpenDocumentPath: path) {
+            Section {
+                MoveToCollectionMenu(item: item, integrations: integrations)
+            }
+        }
     }
 }
 

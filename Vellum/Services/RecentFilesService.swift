@@ -7,14 +7,12 @@ enum RecentFilesService {
     static let storageKey = "vellum.recent-pdfs"
     static let maxRecent = 8
 
-    /// Test seam, mirroring `DocumentDataStore.rootDirectoryOverride` and
-    /// `WebLibrary.storeDirOverride`. Without it any test that exercises a
-    /// recents WRITE would edit the real app's recents list, because a hosted
-    /// test bundle shares the app's `UserDefaults` domain — so before this
-    /// existed the only testable parts of this service were the pure ones.
-    nonisolated(unsafe) static var defaultsOverride: UserDefaults?
-
-    private static var defaults: UserDefaults { defaultsOverride ?? .standard }
+    /// A hosted test bundle shares the app's `UserDefaults` domain, so a recents
+    /// WRITE from a test would edit the real app's recents list. `AppDefaults`
+    /// owns that problem for every app-state service: under test it resolves to
+    /// a scratch domain rather than `.standard`, and a suite can scope its own
+    /// domain without a process-global another suite could clobber (#102).
+    private static var defaults: UserDefaults { AppDefaults.current }
 
     static func getRecent() -> [RecentDocument] {
         guard let raw = defaults.string(forKey: storageKey),
@@ -40,9 +38,66 @@ enum RecentFilesService {
     }
 
     static func remove(path: String) -> [RecentDocument] {
-        let next = getRecent().filter { $0.pdfPath != path }
+        remove(paths: Set([path]))
+    }
+
+    @discardableResult
+    static func remove(paths: Set<String>) -> [RecentDocument] {
+        let next = getRecent().filter { !paths.contains($0.pdfPath) }
         write(next)
         return next
+    }
+
+    /// Put a removed entry back — the Undo of `remove(path:)`.
+    ///
+    /// Deliberately NOT `record(_:)`: that prepends and re-stamps `openedAt`,
+    /// so undoing a removal through it would claim the document had just been
+    /// opened and move it to the top. An undo restores the list, it does not
+    /// invent a visit.
+    ///
+    /// Reinserted by timestamp rather than at the index it was removed from.
+    /// `record` always prepends with `Date()`, so this list is always sorted
+    /// newest-first; a stale absolute index would break that invariant as soon
+    /// as the user opened anything between the removal and the undo, and
+    /// `prefix(maxRecent)` evicts by position, so an unsorted list can drop a
+    /// NEWER entry than the ones it keeps. (`openedAt` is fixed-width UTC ISO
+    /// 8601, so string order is chronological. A legacy entry written without
+    /// fractional seconds can only tie differently within the same second,
+    /// which is below the resolution anything here cares about.)
+    ///
+    /// Returns false when the path is already listed — the user re-opened the
+    /// document after removing it, so the removal has been overtaken and the
+    /// undo has nothing to do. The caller uses this to stop the undo/redo
+    /// chain rather than duplicating the row.
+    @discardableResult
+    static func restore(_ entry: RecentDocument) -> Bool {
+        var next = getRecent()
+        guard !next.contains(where: { $0.pdfPath == entry.pdfPath }) else { return false }
+        let insertion = next.firstIndex { $0.openedAt < entry.openedAt } ?? next.count
+        // The list is capped, so an entry older than a full list of survivors
+        // would be written and immediately truncated away. Report that as a
+        // failure rather than a success: otherwise ⌘Z appears to do nothing
+        // while the Edit menu goes on to offer "Redo Remove from Recent".
+        guard insertion < maxRecent else { return false }
+        next.insert(entry, at: insertion)
+        write(Array(next.prefix(maxRecent)))
+        return true
+    }
+
+    /// Re-apply a removal — the Redo of `restore(_:)`.
+    ///
+    /// Refuses unless the listed row is still byte-for-byte the one that was
+    /// removed. Without that, this sequence quietly forgets a real visit:
+    /// remove a row, undo, re-open the document (which re-stamps `openedAt`
+    /// and moves it to the head), then redo — which would delete the row the
+    /// user had just read, and a further undo would reinstate its *old*
+    /// timestamp, dropping it back down the list.
+    @discardableResult
+    static func removeIfUnchanged(_ entry: RecentDocument) -> Bool {
+        let current = getRecent()
+        guard current.contains(entry) else { return false }
+        write(current.filter { $0.pdfPath != entry.pdfPath })
+        return true
     }
 
     /// Retitle a recents entry in place.

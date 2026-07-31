@@ -103,6 +103,13 @@ final class ScratchpadStore {
     private var isRestoring = false
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
+    /// The tail of this store's chain of background attachment sweeps (see
+    /// `pruneOrphanedAttachments`). Kept rather than dropped so the sweep is
+    /// joinable: production never waits on it — it is best-effort and must not
+    /// delay a document open — but a test can join it instead of racing it
+    /// (#100). Each sweep awaits its predecessor, so this one handle covers
+    /// every sweep the store has armed.
+    @ObservationIgnored private(set) var attachmentSweepTask: Task<Void, Never>?
 
     /// Capture the note and every referenced attachment before clearing. If any
     /// referenced byte cannot be read, fail closed: leaving the note untouched
@@ -313,6 +320,19 @@ final class ScratchpadStore {
             showWarning("Couldn't save that image to the scratchpad. Please try again.")
             return
         }
+        // The bytes exist now, but the reference below only reaches the note
+        // after a round trip through the editor's WebView. A debounced save
+        // firing inside that window sees a note that genuinely does not mention
+        // this attachment and would collect it (issue #105). Claim it before
+        // opening the window, not after (`insertMarkdownHandler` can hand the
+        // markdown straight to a ready editor, so "after" can already be late).
+        //
+        // The bytes land one line above this claim rather than atomically with
+        // it. Nothing can sweep in between: this is main-actor code with no
+        // suspension point, and the only concurrent sweeper —
+        // `pruneOrphanedAttachments` — always passes `referencedAsOf`, whose
+        // cutoff (#104) covers exactly that gap.
+        ScratchpadAttachmentStore.markPending(id)
         // Keep the alt text single-line and free of the `]` that would close it.
         let safeLabel = label
             .replacingOccurrences(of: "\n", with: " ")
@@ -413,7 +433,13 @@ final class ScratchpadStore {
         // would be deleted out from under the note. Collect only against files
         // that already existed when the snapshot was taken.
         let referencedAsOf = Date()
-        Task.detached(priority: .utility) {
+        // Chain onto the previous sweep rather than running alongside it: two
+        // sweeps interleaving over one directory is pointless work, and it keeps
+        // `attachmentSweepTask` a handle on ALL of this store's sweeps, not just
+        // the latest — a document can be loaded more than once.
+        let previous = attachmentSweepTask
+        attachmentSweepTask = Task.detached(priority: .utility) {
+            await previous?.value
             ScratchpadAttachmentStore.collectGarbage(
                 in: dir, referencedIds: referenced, referencedAsOf: referencedAsOf)
         }

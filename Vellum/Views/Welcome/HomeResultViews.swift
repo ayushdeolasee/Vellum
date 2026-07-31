@@ -124,7 +124,7 @@ struct HomeResultRow: View {
             if !removals.isEmpty {
                 Divider()
                 ForEach(removals, id: \.removal) { entry in
-                    Button(entry.removal.label, role: .destructive, action: entry.action)
+                    Button(entry.removal.menuLabel, role: .destructive, action: entry.action)
                 }
             }
         }

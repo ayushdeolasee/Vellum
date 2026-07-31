@@ -9,6 +9,7 @@ import SwiftUI
 struct RevealableSecureField: View {
     let accessibilityLabel: String
     let placeholder: String
+    var credentialName = "API key"
     @Binding var text: String
 
     @Environment(\.palette) private var palette
@@ -42,8 +43,8 @@ struct RevealableSecureField: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(isRevealed ? "Hide \(accessibilityLabel)" : "Show \(accessibilityLabel)")
-            .accessibilityLabel(isRevealed ? "Hide \(accessibilityLabel)" : "Show \(accessibilityLabel)")
+            .help(isRevealed ? "Hide \(credentialName)" : "Show \(credentialName)")
+            .accessibilityLabel(isRevealed ? "Hide \(credentialName)" : "Show \(credentialName)")
         }
         .accessibilityElement(children: .contain)
     }

@@ -10,14 +10,16 @@ import Testing
 // redirected to a temp directory or a scratch `UserDefaults` suite, so nothing
 // touches the real library or the real recents list.
 
-/// Redirects `DocumentDataStore`, `WebLibrary` and `RecentFilesService` at
-/// throwaway storage for the life of one test, and puts them all back after.
-/// A `class` with a `deinit` because Swift Testing has no `tearDown` — the
-/// suite holds one and the restore happens when the test's instance dies.
+/// Redirects `DocumentDataStore` and `WebLibrary` at throwaway storage for the
+/// life of one test, and puts them back after. A `class` with a `deinit`
+/// because Swift Testing has no `tearDown` — the suite holds one and the
+/// restore happens when the test's instance dies.
+///
+/// The recents domain is NOT handled here: it comes from the `.scratchDefaults`
+/// trait, which scopes it to the test's own task instead of parking it in a
+/// process-global this class would have to remember to restore (#102).
 private final class ScratchStores {
     let root: URL
-    private let defaults: UserDefaults
-    private let suiteName: String
 
     init() {
         root = FileManager.default.temporaryDirectory
@@ -27,19 +29,13 @@ private final class ScratchStores {
         try? FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
 
-        suiteName = "vellum.rename.tests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-
         DocumentDataStore.rootDirectoryOverride = documents
         WebLibrary.storeDirOverride = web
-        RecentFilesService.defaultsOverride = defaults
     }
 
     deinit {
         DocumentDataStore.rootDirectoryOverride = nil
         WebLibrary.storeDirOverride = nil
-        RecentFilesService.defaultsOverride = nil
-        defaults.removePersistentDomain(forName: suiteName)
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -125,7 +121,13 @@ struct DocumentRenameTargetTests {
     }
 }
 
-@Suite("Rename: persistence", .serialized)
+/// The recents domain is per-test via `.scratchDefaults`. `.serialized` stays
+/// for `ScratchStores`' remaining process-global DIRECTORY overrides — note it
+/// is not sufficient for those, since nine suites set
+/// `DocumentDataStore.rootDirectoryOverride` and `.serialized` only orders
+/// tests within one suite. That is the same bug as #102 in the storage seams;
+/// this branch fixes the defaults half.
+@Suite("Rename: persistence", .serialized, .scratchDefaults)
 struct DocumentRenamePersistenceTests {
     private let stores = ScratchStores()
 

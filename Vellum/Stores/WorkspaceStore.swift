@@ -17,9 +17,16 @@ final class WorkspaceStore {
         case annotations
         case ai
         case storage
+        case integrations
     }
 
     let sessions: SessionService
+    let integrations: IntegrationsStore
+
+    /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
+    /// reopen or Save As in one pane waits out a close started in another —
+    /// including a pane that has since collapsed. Quit drains it directly.
+    let tabTeardowns = TabTeardownRegistry()
 
     /// The layout tree. Reassigned wholesale on every structural change.
     private(set) var root: PaneNode
@@ -41,16 +48,18 @@ final class WorkspaceStore {
 
     /// The width to reopen the inspector at, tracking the user's last drag.
     ///
-    /// Deliberately NOT observed. It is read in `WindowChrome.body` as the
-    /// `ideal:` of `.inspectorColumnWidth`, and written from that same view's
+    /// Deliberately NOT observed. It seeds the `ideal:` of
+    /// `.inspectorColumnWidth`, and is written from `WindowChrome`'s
     /// `.onGeometryChange` — once per frame while the splitter is being dragged.
     /// Were it observed, each of those writes would invalidate the whole window
     /// chrome (pane tree and toolbar included) mid-drag, and feed a fresh
     /// `ideal:` back into the very layout pass that produced the measurement.
-    /// A stale read is impossible where it matters: `ideal:` is only consulted
-    /// when the column appears, and `inspectorPresented` — which *is* observed —
-    /// has to change for that to happen, so the body re-runs and re-reads this
-    /// value at exactly the moment it is used.
+    ///
+    /// Not observing it is necessary but NOT sufficient, so `WindowChrome` does
+    /// not read it live either: it copies this value into `@State` and holds
+    /// that frozen while the column is on screen, re-seeding only when the
+    /// inspector is (re)presented — the one moment `ideal:` is consulted. See
+    /// `WindowChrome.idealColumnWidth` for why a live read reopens the loop.
     @ObservationIgnored
     private(set) var sidebarWidth: CGFloat = InspectorLayout.idealWidth
 
@@ -76,6 +85,27 @@ final class WorkspaceStore {
     func setInspectorPresented(_ isPresented: Bool) {
         guard focusedPane.app.document != nil else { return }
         sidebarOpen = isPresented
+    }
+
+    /// Selects an inspector panel and makes sure it is actually on screen.
+    ///
+    /// The ⌥⌘1/2/3 menu commands route here rather than assigning `sidebarTab`
+    /// directly: selecting a panel in a closed inspector would change nothing
+    /// the user can see, so choosing one from the menu has to open the column
+    /// too. Reveal only — it never closes an inspector that is already open,
+    /// because ⌥⌘S is the toggle and a panel command that sometimes hid the
+    /// panel would be a trap.
+    ///
+    /// Nothing is done without a document: the inspector cannot be presented
+    /// then (`inspectorPresented`), so opening it would silently flip the user's
+    /// preference for whenever they next open one. The menu items are already
+    /// disabled in that state, so this guard is belt-and-braces — note it is
+    /// stricter than the ⌥⌘S toggle beside them, which writes `sidebarOpen`
+    /// directly and leans entirely on `.disabled`.
+    func revealSidebarTab(_ tab: SidebarTab) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarTab = tab
+        sidebarOpen = true
     }
 
     /// Remembers user resizing while the inspector is genuinely visible.
@@ -226,7 +256,10 @@ final class WorkspaceStore {
 
     // MARK: - Init
 
-    init(sessions: SessionService, residency: TabResidencyManager = TabResidencyManager()) {
+    init(
+        sessions: SessionService, integrations: IntegrationsStore,
+        residency: TabResidencyManager = TabResidencyManager()
+    ) {
         self.residency = residency
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
@@ -234,10 +267,13 @@ final class WorkspaceStore {
         settingsAi.openRouterCatalog = catalog
         settingsAi.chatgptAuth = auth
         self.sessions = sessions
+        self.integrations = integrations
         self.openRouterCatalog = catalog
         self.chatgptAuth = auth
         self.settingsAi = settingsAi
-        let pane = PaneModel(sessions: sessions, openRouterCatalog: catalog, chatgptAuth: auth)
+        let pane = PaneModel(
+            sessions: sessions, teardowns: tabTeardowns,
+            openRouterCatalog: catalog, chatgptAuth: auth)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
@@ -294,6 +330,10 @@ final class WorkspaceStore {
         residency.forgetOwner(ObjectIdentifier(app))
     }
 
+    convenience init(sessions: SessionService) {
+        self.init(sessions: sessions, integrations: IntegrationsStore())
+    }
+
     // MARK: - Focus
 
     var focusedPane: PaneModel {
@@ -337,7 +377,8 @@ final class WorkspaceStore {
 
     private func makePane(startTab: Bool) -> PaneModel {
         let pane = PaneModel(
-            sessions: sessions, openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
+            sessions: sessions, teardowns: tabTeardowns,
+            openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
         return pane
@@ -448,13 +489,35 @@ final class WorkspaceStore {
         // the last migrated tab instead of the user's current document.
         let keepActiveTabId = keep.app.activeTabId
         for leaf in leaves where leaf.id != keep.id {
-            for tab in leaf.app.tabs {
+            // Ownership is *transferred*, exactly as in `moveTab` — detach from
+            // the donor before attaching to `keep`. Copying instead would leave
+            // two AppStores claiming the same tab id, and anything keyed on
+            // tab-to-pane ownership (the web controller's mount guard, find and
+            // note-placement state, the residency pin) would still resolve the
+            // tab to the pane it just left (issue #91). Ids are snapshotted
+            // first because `detachTab` mutates the array being walked.
+            for tabId in leaf.app.tabs.map(\.id) {
+                guard let tab = leaf.app.detachTab(tabId) else {
+                    // Unreachable: the ids came from this pane a line ago and
+                    // nothing between here and there can remove one. Losing a
+                    // tab silently is the worst outcome available, so say so.
+                    assertionFailure("mergeAll: \(tabId) vanished from its own pane mid-merge")
+                    continue
+                }
                 keep.app.attachTab(tab)
             }
             // Same reasoning as closePane: the absorbed pane is discarded, so
             // drop its residency pin. Its tabs are now pinned (or not) by `keep`.
             // Their runtimes are workspace-owned and keyed by tab id, so they
             // migrate with the tabs untouched.
+            //
+            // Emptying the pane above has in fact already dropped the pin —
+            // the last `detachTab` re-points the pane at nothing, which reports
+            // `markActive(nil)` — so this is normally a no-op. It stays because
+            // the one case it isn't is a donor whose `activeTabId` disagrees
+            // with its `tabs`: the pin would then outlive the pane, and a stale
+            // `ObjectIdentifier` key aliases whatever AppStore is allocated at
+            // that address next.
             forgetPanePin(leaf.app)
         }
         if let keepActiveTabId {

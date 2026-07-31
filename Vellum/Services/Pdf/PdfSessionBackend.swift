@@ -28,12 +28,23 @@ final class PdfSessionBackend {
             throw SessionServiceError.invalidDocument("Unsupported file type: .\(ext)")
         }
 
-        let canonical = try PdfDocumentLoader.canonicalize(path)
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
-        guard exists, !isDirectory.boolValue else {
-            throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
-        }
+        // realpath(2) and stat(2) are BLOCKING syscalls. Running them here — on
+        // @MainActor, before the first `await` — put them on the main thread, so
+        // a slow, unmounted, or not-yet-materialized (iCloud placeholder) volume
+        // froze the entire UI for as long as the kernel took to answer. Every
+        // open funnels through this method (Open…, Recents, Save As, launch tab
+        // restore), which is exactly why a stalled volume made the whole home
+        // screen — filter chips included — stop responding. Resolve off the main
+        // actor, like the parse that follows.
+        let canonical = try await Task.detached(priority: .userInitiated) {
+            let canonical = try PdfDocumentLoader.canonicalize(path)
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
+            guard exists, !isDirectory.boolValue else {
+                throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
+            }
+            return canonical
+        }.value
 
         let io = PdfDocumentIO(path: canonical)
         let info = try await io.open()
@@ -281,16 +292,18 @@ actor PdfDocumentIO {
         let now = PdfDates.rfc3339Now()
 
         if input.type == .bookmark {
+            let title = input.content?.isEmpty == false ? input.content : nil
             let normalized = try serialize(document)
             let patched = try PdfBookmarks.createBookmarkIncrement(
-                normalizedData: normalized, pageNumber: input.pageNumber, id: id, now: now)
+                normalizedData: normalized, pageNumber: input.pageNumber, id: id,
+                content: title, now: now)
             try await saveThroughPdfKit(patched)
             return Annotation(
                 id: id,
                 type: .bookmark,
                 pageNumber: input.pageNumber,
                 color: nil,
-                content: nil,
+                content: title,
                 positionData: nil,
                 createdAt: now,
                 updatedAt: now)
@@ -361,19 +374,44 @@ actor PdfDocumentIO {
             return true
         }
 
-        // Outline bookmarks: pin only — color/position/content don't apply
-        // here. PDFKit can't mutate outline custom keys, so this is an
-        // incremental byte rewrite of the outline item.
+        // Outline bookmarks: title (content) and pin state only — color and
+        // position don't apply here. PDFKit can't mutate outline custom keys,
+        // so these are incremental byte rewrites of the outline item; an
+        // update carrying neither field is a no-op on an existing record.
         if PdfBookmarks.containsBookmark(document: raw, id: input.id) {
-            guard let isPinned = input.isPinned else { return false }
-            let normalized = try serialize(document)
-            guard let patched = try PdfBookmarks.updateBookmarkIncrement(
-                normalizedData: normalized,
-                id: input.id,
-                isPinned: isPinned,
-                now: PdfDates.rfc3339Now())
-            else { return false }
-            try await saveThroughPdfKit(patched)
+            var retitled = false
+
+            if let content = input.content {
+                let pageNumber = PdfBookmarks.readBookmarks(document: raw, pageNumber: nil)
+                    .first { $0.id == input.id }?.pageNumber ?? 1
+                let normalized = try serialize(document)
+                guard let patched = try PdfBookmarks.updateBookmarkIncrement(
+                    normalizedData: normalized,
+                    id: input.id,
+                    content: content,
+                    defaultTitle: PdfBookmarks.defaultTitle(pageNumber: pageNumber),
+                    now: PdfDates.rfc3339Now())
+                else { return false }
+                try await saveThroughPdfKit(patched)
+                retitled = true
+            }
+
+            if let isPinned = input.isPinned {
+                // The title save above rewrote the file; reload so the pin
+                // increment patches PDFKit-normalized data.
+                let (current, _) = try retitled
+                    ? PdfDocumentLoader.loadForMutation(path: path)
+                    : (document, raw)
+                let normalized = try serialize(current)
+                guard let patched = try PdfBookmarks.updateBookmarkIncrement(
+                    normalizedData: normalized,
+                    id: input.id,
+                    isPinned: isPinned,
+                    now: PdfDates.rfc3339Now())
+                else { return false }
+                try await saveThroughPdfKit(patched)
+            }
+
             return true
         }
 
