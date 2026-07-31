@@ -44,9 +44,11 @@ actor HomeSearchEngine {
         self.providers = providers
     }
 
-    /// The sources that ship today. All three are local; a connected read-later
-    /// account would be appended here (last, so a local copy of an article
-    /// always wins the dedupe over the remote one).
+    /// The LOCAL sources — what an engine can index with no stores attached.
+    /// `HomeSearchStore` appends `ReadLaterSearchProvider` after these (last,
+    /// so a local copy of an article always wins the dedupe over the remote
+    /// one); it isn't listed here because its corpus arrives from
+    /// `IntegrationsStore`, not from disk.
     static func defaultProviders() -> [any HomeSearchProvider] {
         [
             RecentDocumentsSearchProvider(),

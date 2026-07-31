@@ -38,7 +38,12 @@ enum RecentFilesService {
     }
 
     static func remove(path: String) -> [RecentDocument] {
-        let next = getRecent().filter { $0.pdfPath != path }
+        remove(paths: Set([path]))
+    }
+
+    @discardableResult
+    static func remove(paths: Set<String>) -> [RecentDocument] {
+        let next = getRecent().filter { !paths.contains($0.pdfPath) }
         write(next)
         return next
     }

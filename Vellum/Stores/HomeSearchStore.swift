@@ -130,12 +130,29 @@ final class HomeSearchStore {
     private(set) var failures: [String] = []
 
     private let engine: HomeSearchEngine
+    /// The read-later corpus the engine's provider snapshots. Owned here so
+    /// the welcome screen has one seam (`updateReadLater`) between
+    /// `IntegrationsStore` and search.
+    private let readLaterSource: ReadLaterSearchSource
     /// Monotonic stamp so a slow ranking pass can never overwrite a newer one
     /// (the corpus load and a keystroke can be in flight at the same time).
     private var refreshGeneration = 0
 
-    init(engine: HomeSearchEngine = HomeSearchEngine()) {
-        self.engine = engine
+    /// Passing an engine (tests) skips the read-later provider; the default
+    /// wires it in last, so a local copy of an article wins the dedupe.
+    init(engine: HomeSearchEngine? = nil) {
+        let source = ReadLaterSearchSource()
+        readLaterSource = source
+        self.engine = engine ?? HomeSearchEngine(
+            providers: HomeSearchEngine.defaultProviders()
+                + [ReadLaterSearchProvider(source: source)])
+    }
+
+    /// Replace the read-later corpus and re-index. Driven by the welcome
+    /// screen whenever `IntegrationsStore`'s items revision changes.
+    func updateReadLater(_ items: [ReadLaterItem]) async {
+        await readLaterSource.replace(items)
+        await load()
     }
 
     // MARK: - Query shape

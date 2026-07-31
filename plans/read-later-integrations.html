@@ -1,0 +1,477 @@
+<!doctype html>
+<!-- HISTORICAL PLANNING ARTIFACT. This is the pre-implementation plan; the
+     shipped code diverges in places: move-to-collection IS supported (v1 is
+     not strictly read-only), Raindrop syncs are always full walks (no
+     early-stop delta), there is no fixed 3s Readwise pacing (429s are handled
+     by Retry-After-aware retries), and several component names/filenames
+     changed during implementation. The code and its tests are authoritative;
+     this document records intent, constraints, and API research. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vellum — Read-Later Integrations Plan (Readwise · Raindrop)</title>
+<style>
+  :root {
+    --bg: #faf9f7; --fg: #1a1a1a; --muted: #6b6b6b; --card: #ffffff;
+    --border: #e3e0da; --accent: #8b5e34; --accent-soft: #f3ece3;
+    --code-bg: #f0eee9; --good: #2e7d32; --warn: #b26a00; --bad: #c62828;
+    --callout-bg: #eef3f6; --callout-border: #b7cbd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16150f; --fg: #e8e6e1; --muted: #9a988f; --card: #201f18;
+      --border: #35332a; --accent: #d9a86c; --accent-soft: #2c2519;
+      --code-bg: #262419; --good: #81c784; --warn: #ffb74d; --bad: #ef9a9a;
+      --callout-bg: #1c2328; --callout-border: #3a4c57;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #faf9f7; --fg: #1a1a1a; --muted: #6b6b6b; --card: #ffffff;
+    --border: #e3e0da; --accent: #8b5e34; --accent-soft: #f3ece3;
+    --code-bg: #f0eee9; --good: #2e7d32; --warn: #b26a00; --bad: #c62828;
+    --callout-bg: #eef3f6; --callout-border: #b7cbd6;
+  }
+  :root[data-theme="dark"] {
+    --bg: #16150f; --fg: #e8e6e1; --muted: #9a988f; --card: #201f18;
+    --border: #35332a; --accent: #d9a86c; --accent-soft: #2c2519;
+    --code-bg: #262419; --good: #81c784; --warn: #ffb74d; --bad: #ef9a9a;
+    --callout-bg: #1c2328; --callout-border: #3a4c57;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--border); letter-spacing: -0.01em; }
+  h3 { font-size: 1.12rem; margin: 32px 0 10px; }
+  h4 { font-size: 1rem; margin: 24px 0 8px; }
+  p { margin: 0 0 14px; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 4px; }
+  .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 32px; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86em; }
+  code { background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 0.92rem; }
+  .table-scroll { overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  ul, ol { margin: 0 0 14px; padding-left: 26px; }
+  li { margin-bottom: 6px; }
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 24px; margin: 24px 0 8px; }
+  .toc ol { margin: 0; columns: 2; column-gap: 32px; }
+  @media (max-width: 640px) { .toc ol { columns: 1; } }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  a { color: var(--accent); }
+  .callout { background: var(--callout-bg); border: 1px solid var(--callout-border); border-left: 4px solid var(--callout-border); border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
+  .callout .label { display: block; font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; opacity: 0.75; }
+  .callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+  .decision { border-left-color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+  .warn-box { border-left-color: var(--warn); }
+  .phase { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .badge { display: inline-block; font-size: 0.72rem; font-weight: 700; padding: 2px 9px; border-radius: 99px; vertical-align: middle; margin-left: 8px; letter-spacing: 0.03em; }
+  .b-good { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .b-warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .b-bad  { background: color-mix(in srgb, var(--bad) 18%, transparent);  color: var(--bad); }
+  .mock { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin: 14px 0; }
+  .mock pre { background: none; border: none; padding: 0; margin: 0; }
+  .kv { color: var(--muted); }
+  .small { font-size: 0.88rem; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+</style>
+
+<script type="application/json" id="plan-meta">
+{
+  "kind": "implementation-plan",
+  "version": 1,
+  "status": "draft",
+  "repo": "github.com/ayushdeolasee/Vellum",
+  "branch": "read-later-application-integration",
+  "phases": [
+    { "id": 1, "title": "Scaffolding + Readwise end-to-end", "status": "pending",
+      "accept": "Connect Readwise with a real token in Settings → Integrations; Welcome screen shows Readwise segment with Location filter + search; opening an article opens it as a web tab; opening a PDF downloads via withRawSourceUrl and opens in the PDF viewer; unit tests for decoding, mapping, watermark, and 429 retry pass" },
+    { "id": 2, "title": "Raindrop", "status": "pending",
+      "accept": "Connect via test token; collections picker renders the nested tree; file-raindrop PDFs download and open; delta sync stops at first fully-known lastUpdate page" },
+    { "id": 3, "title": "Polish", "status": "pending",
+      "accept": "Lazy disk-cached thumbnails, deletion-sweep sync, download progress toast, empty/error states, 30-min auto-refresh toggle, Open-Original/Copy-Link context items" },
+    { "id": 4, "title": "Later: Raindrop OAuth + write-back", "status": "pending",
+      "accept": "Optional; only after explicit go-ahead — OAuth via existing loopback server, archive/progress write-back, save-to-service" }
+  ],
+  "constraints": [
+    "v1 is read-only against both services",
+    "token-paste auth for both services in v1; no OAuth, no client secret shipped",
+    "tokens live in KeychainStore only — never UserDefaults or the JSON cache",
+    "all network + cache I/O inside the IntegrationsSyncEngine actor, never on the main actor",
+    "integrations cache and downloads are local-only, outside the iCloud/custom web-library storage location",
+    "external items are browsed live, not imported; opening routes through existing appStore.openUrl/openFile",
+    "token field must use RevealableSecureField (macOS 27 autofill-popover crash)",
+    "regenerate Xcode project from project.yml via XcodeGen; never hand-edit pbxproj",
+    "UI verification via codex-cli computer-use driven by Codex/Sonnet/Opus, not Fable",
+    "never cache Readwise raw_source_url S3 links (1-hour expiry)"
+  ]
+}
+</script>
+
+<div class="wrap">
+
+<h1>Read-Later Integrations</h1>
+<p class="subtitle">Connect Readwise Reader and Raindrop.io so their saved articles &amp; PDFs open directly in Vellum</p>
+<p class="meta">Plan · 2026-07-19 · branch <code>read-later-application-integration</code> · API facts verified against live vendor docs this session</p>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#summary">Executive summary</a></li>
+  <li><a href="#apis">What each service's API gives us</a></li>
+  <li><a href="#ui">The UI</a></li>
+  <li><a href="#workflow">User workflow: connecting a service</a></li>
+  <li><a href="#backend">Backend architecture</a></li>
+  <li><a href="#sync">Sync engine details</a></li>
+  <li><a href="#phases">Implementation phases</a></li>
+  <li><a href="#risks">Risks &amp; open questions</a></li>
+  <li><a href="#verify">Verification plan</a></li>
+</ol>
+</div>
+
+<h2 id="summary">1 · Executive summary</h2>
+
+<p>Both services are integrable through <strong>official, documented APIs</strong>, with a shared read-only architecture:</p>
+
+<ul>
+  <li><strong>Readwise Reader</strong> uses a simple <em>personal access token</em>: the user copies a token from the service's website and pastes it into Vellum. No OAuth dance is required.</li>
+  <li><strong>Raindrop</strong> supports full OAuth 2, but <em>without PKCE</em> and requiring a client secret — awkward for a native app. It also offers a no-expiry "test token" the user can copy from their own Raindrop settings. <strong>v1 ships the token-paste path for both services</strong> (one uniform UX), with real OAuth for Raindrop as a later upgrade.</li>
+  <li>Every service returns the <strong>original source URL</strong> for each saved item — which is exactly what Vellum wants, because Vellum renders the original page itself in its own web viewer. An external article "opens in Vellum" by simply feeding that URL into the existing <code>appStore.openUrl(_:)</code> pipeline. Zero new rendering code.</li>
+  <li>PDFs: Readwise can hand us the <strong>original PDF binary</strong> (<code>withRawSourceUrl</code>); Raindrop file-raindrops have a direct download link. Vellum downloads those into a managed folder and opens them through the normal PDF pipeline.</li>
+</ul>
+
+<p>The integration is <strong>read-only in v1</strong>: browse your external library, search it, open items. Writing back (archiving, progress sync, save-from-Vellum) is a later phase.</p>
+
+<div class="callout decision"><span class="label">Key decision</span>
+<p>External items are <strong>browsed live, not imported</strong>. Vellum keeps a lightweight cached index of each service's library (title, URL, tags, etc. — no page content) so the list is instant and works offline, but an item only becomes a "real" Vellum document the moment you open it — at which point it flows through the exact same machinery as a pasted URL or opened PDF, gaining annotations, AI chat, scratchpad, and offline saving for free.</p>
+</div>
+
+<h2 id="apis">2 · What each service's API gives us</h2>
+
+<p>Verified against live docs (July 2026). This table drives everything downstream.</p>
+
+<div class="table-scroll">
+<table>
+<tr><th></th><th>Readwise Reader <span class="badge b-good">EASIEST</span></th><th>Raindrop.io</th></tr>
+<tr><td><strong>Auth</strong></td>
+  <td>Personal token from <code>readwise.io/access_token</code><br><code>Authorization: Token …</code></td>
+  <td>OAuth2 (no PKCE, needs client secret) <em>or</em> personal "test token" from the app-management console<br><code>Authorization: Bearer …</code></td></tr>
+<tr><td><strong>List endpoint</strong></td>
+  <td><code>GET readwise.io/api/v3/list/</code></td>
+  <td><code>GET api.raindrop.io/rest/v1/raindrops/{collection}</code> (<code>0</code> = all)</td></tr>
+<tr><td><strong>Incremental sync</strong></td>
+  <td><code>updatedAfter</code> + <code>pageCursor</code></td>
+  <td>No delta param — sort by <code>lastUpdate</code>, page until known items reappear</td></tr>
+<tr><td><strong>Page size</strong></td><td>100</td><td>50 max</td></tr>
+<tr><td><strong>Rate limit (list)</strong></td><td>20/min · 429 + <code>Retry-After</code></td><td>120/min · <code>X-RateLimit-*</code></td></tr>
+<tr><td><strong>Organization</strong></td><td>Locations (new / later / shortlist / archive / feed) + tags</td><td>Collections (nested) + tags</td></tr>
+<tr><td><strong>Original URL</strong></td><td><code>source_url</code> ✓</td><td><code>link</code> ✓</td></tr>
+<tr><td><strong>Original PDF binary</strong></td>
+  <td>✓ <code>withRawSourceUrl</code> → 1-hour S3 link</td>
+  <td>✓ for uploaded files: <code>link</code> is a permanent download URL (<code>up.raindrop.io/…</code>)</td></tr>
+<tr><td><strong>Token validation call</strong></td><td><code>GET /api/v2/auth/</code> → 204</td><td><code>GET /rest/v1/user</code></td></tr>
+</table>
+</div>
+
+<div class="callout"><span class="label">Concept — token auth vs. OAuth</span>
+<p>A <strong>personal access token</strong> is just a long random string the service generates for <em>you</em>; whoever holds it acts as your account. The user copies it once from the service's website and the app stores it. <strong>OAuth 2</strong> instead has the app redirect the user to the service's login page in a browser; after approval the service hands the app short-lived tokens. OAuth is better UX for mass-market apps (no copy-pasting), but Raindrop's flavor requires a <em>client secret</em> — a credential that identifies the <em>app</em>, which can't be kept secret inside a distributed binary. The standard fix, PKCE, isn't supported by Raindrop. Options if/when we want real OAuth: embed the secret anyway (common indie-app practice — the secret guards nothing valuable here since users only access their own data), or run a tiny token-exchange proxy (e.g. on <code>hermes</code>). Deferred to a later phase; token-paste ships first.</p>
+</div>
+
+<h2 id="ui">3 · The UI</h2>
+
+<p>Two surfaces change: <strong>Settings</strong> (connecting accounts) and the <strong>Welcome screen</strong> (browsing external libraries). Nothing changes in the document viewer — once opened, an external item is an ordinary Vellum tab.</p>
+
+<h3>3.1 Settings → new "Integrations" tab</h3>
+
+<p><code>SettingsView.swift</code> is already a 5-tab <code>TabView</code> (General · Reading · Annotations · AI · Storage). Add a sixth tab, <strong>Integrations</strong>, following the AI tab's existing provider-management pattern. One card per service:</p>
+
+<div class="mock"><pre>
+┌─ Settings ─────────────────────────────────────────────────┐
+│  General  Reading  Annotations  AI  Storage  [Integrations] │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ ◧ Readwise Reader                     ● Connected     │  │
+│  │   1,284 items · synced 2 min ago                      │  │
+│  │                        [Sync Now]  [Disconnect]       │  │
+│  └───────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ ❐ Raindrop.io                          ○ Not connected│  │
+│  │   Browse your bookmarks and files       [Connect…]    │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ☑ Refresh libraries automatically (every 30 min)           │
+└─────────────────────────────────────────────────────────────┘
+</pre></div>
+
+<p>Card states: <em>Not connected</em> → <em>Validating…</em> → <em>Connected (item count, last sync)</em> → possibly <em>Needs attention</em> (token revoked or rejected). The error state must be loud here and mirrored as a small banner in the library view while preserving access to cached items.</p>
+
+<h3>3.2 The Connect sheet</h3>
+
+<p>Clicking <em>Connect…</em> opens a per-service sheet — same skeleton for both, differing only in instructions:</p>
+
+<div class="mock"><pre>
+┌─ Connect Readwise ─────────────────────────────┐
+│                                                │
+│  1. Open your Readwise access-token page       │
+│         [Open readwise.io/access_token ↗]      │
+│  2. Copy the token shown there                 │
+│  3. Paste it below                             │
+│                                                │
+│  Token  [••••••••••••••••••••••••]             │
+│                                                │
+│  ⓘ Stored securely in your macOS Keychain.     │
+│     Vellum only reads your library — it never  │
+│     modifies your Readwise account.            │
+│                                                │
+│                     [Cancel]   [Connect]       │
+└────────────────────────────────────────────────┘
+</pre></div>
+
+<p>On <em>Connect</em>: run the service's validation call (spinner in-place) → on success save to Keychain, kick off the initial sync, dismiss; on failure show the error inline ("That token wasn't accepted — check you copied the whole thing"). Per-service wording differences are covered in §4.</p>
+
+<div class="callout warn-box"><span class="label">macOS gotcha (from project memory)</span>
+<p>The token field must use the existing <code>RevealableSecureField</code>, <strong>not</strong> a bare <code>SecureField</code> — bare secure fields plus any popover trigger the macOS 27 Passwords-autofill ViewBridge crash already documented in this repo.</p>
+</div>
+
+<h3>3.3 Welcome screen: browsing external libraries</h3>
+
+<p><code>WelcomeScreen.swift</code> is today a flat list with two sections (Recent / Saved) fed by a private <code>LibraryItem</code> model. Rather than piling two more always-visible sections into that list (a 1,000-item Readwise library would drown "Recent"), add a <strong>source switcher</strong> above the list:</p>
+
+<div class="mock"><pre>
+┌──────────────────────────────────────────────────────────────┐
+│   [ Library ]  [ Readwise ]  [ Raindrop ]                    │  ← segmented, only
+│                                                              │    connected services shown
+│   ⌕ Search Readwise…            Location: [Later ▾]          │  ← per-service filters
+│  ────────────────────────────────────────────────────────    │
+│   ▤  The Art of SwiftUI Performance          later · 12m     │
+│   ▤  Attention Is All You Need         PDF · later · 1h      │
+│   ▤  Building a Reading Habit             archive · 2d       │
+│   …                                          [Load more]     │
+└──────────────────────────────────────────────────────────────┘
+</pre></div>
+
+<ul>
+  <li><strong>Library</strong> = today's view, untouched. The switcher row only appears once at least one service is connected, so the current experience is unchanged for everyone else.</li>
+  <li><strong>Per-service filter bar</strong>: Readwise gets a Location picker (New / Later / Shortlist / Archive); Raindrop gets a Collection picker (nested collections flattened with indentation). Both get local search over the cached index (instant), since none of this needs a network call.</li>
+  <li><strong>Rows</strong> reuse <code>LibraryRow</code>'s look: favicon/cover thumbnail, title, subtitle (author · site · relative save-date), plus a small kind badge for PDFs. Add a service glyph only in the "all" contexts where origin isn't obvious.</li>
+  <li><strong>Row actions</strong>: click → open in Vellum. Context menu: <em>Open</em>, <em>Open Original in Browser</em>, <em>Copy Link</em>, and (later) <em>Archive in Readwise</em>.</li>
+  <li><strong>Empty/error states</strong>: "Connect a read-later service in Settings → Integrations" teaser when nothing is connected but the user opens the switcher via menu; a slim warning banner when a token has gone bad.</li>
+</ul>
+
+<h3>3.4 What "open in Vellum" means per item kind</h3>
+
+<div class="table-scroll">
+<table>
+<tr><th>Item</th><th>Behavior</th></tr>
+<tr><td>Article / web bookmark</td><td>Feed the original URL straight into <code>appStore.openUrl(_:)</code>. The item becomes a normal web tab — annotations, AI, offline-save all work immediately. Nothing new to build.</td></tr>
+<tr><td>PDF (Readwise upload, Raindrop file)</td><td>Download the binary (Readwise: request the item with <code>withRawSourceUrl</code>, follow the 1-hour S3 link; Raindrop: <code>link</code> is a direct permanent URL) into <code>~/Library/Application Support/com.vellum.app/integrations/downloads/&lt;service&gt;/&lt;itemid&gt;.pdf</code>, then <code>appStore.openFile(path:)</code>. Show a brief determinate progress toast for large files. Re-opening reuses the already-downloaded file.</td></tr>
+<tr><td>Video / podcast / tweet items</td><td>Open source URL as a web page. No special handling in v1.</td></tr>
+</table>
+</div>
+
+<h2 id="workflow">4 · User workflow: connecting each service</h2>
+
+<h3>Readwise Reader — ~30 seconds</h3>
+<ol>
+  <li>Settings → Integrations → <em>Connect…</em> on the Readwise card.</li>
+  <li>Sheet's button opens <code>readwise.io/access_token</code> in the browser (user may need to log in to Readwise there).</li>
+  <li>Copy token → paste in Vellum → <em>Connect</em>.</li>
+  <li>Vellum validates via <code>GET /api/v2/auth/</code> (expects 204), stores the token in Keychain, starts the initial sync. The Readwise segment appears on the Welcome screen with a progress indicator until the first page of items lands (seconds), filling in behind the scenes.</li>
+</ol>
+
+<h3>Raindrop.io — ~1 minute</h3>
+<ol>
+  <li>Settings → Integrations → <em>Connect…</em> on the Raindrop card.</li>
+  <li>Sheet explains the one extra step: open <code>app.raindrop.io/settings/integrations</code> → <em>For Developers</em> → create an app (any name) → copy its <strong>Test token</strong>. The sheet walks this with numbered steps and a screenshot-style hint, since it's the less obvious of the two.</li>
+  <li>Paste → validate via <code>GET /rest/v1/user</code> → Keychain → initial sync (collections list first, then items).</li>
+</ol>
+<p class="small">Test tokens don't expire, which is why this is viable as more than a stopgap. When the app is distributed more widely, phase 4 replaces this with true OAuth through the existing loopback-server infrastructure and this sheet becomes a single "Sign in with Raindrop" button.</p>
+
+<h3>Disconnecting</h3>
+<p>One click, with a confirm. Deletes the Keychain entry and the cached index. Downloaded PDFs are <em>kept</em> (they may have annotations) — noted in the confirm dialog with an optional "also delete downloaded files" checkbox.</p>
+
+<h2 id="backend">5 · Backend architecture</h2>
+
+<p>All new code lives in <code>Vellum/Services/Integrations/</code> plus one store and two view files. XcodeGen picks new files up automatically — regenerate the project, never hand-edit the pbxproj.</p>
+
+<pre><code>Vellum/Services/Integrations/
+├── ReadLaterModels.swift        // ReadLaterProvider, ReadLaterItem, ReadLaterCollection
+├── ReadLaterClient.swift        // protocol + shared HTTP/rate-limit/error plumbing
+├── ReadwiseClient.swift
+├── RaindropClient.swift
+├── IntegrationsSyncEngine.swift // actor — all network + disk I/O, off the main actor
+└── IntegrationsCache.swift      // JSON index persistence + PDF download management
+Vellum/Stores/
+└── IntegrationsStore.swift      // @MainActor @Observable — what the UI binds to
+Vellum/Views/Settings/
+└── IntegrationsSettingsTab.swift  (+ ConnectServiceSheet.swift)
+Vellum/Views/Welcome/
+└── ExternalLibraryList.swift    // source switcher + filtered list, embedded in WelcomeScreen
+</code></pre>
+
+<h3>5.1 The unified item model</h3>
+
+<p>Each client maps its service's response into one normalized struct, so the UI and cache never care which service an item came from:</p>
+
+<pre><code>enum ReadLaterProvider: String, Codable, CaseIterable { case readwise, raindrop }
+
+struct ReadLaterItem: Codable, Identifiable, Hashable, Sendable {
+    var id: String                  // "&lt;provider&gt;:&lt;service item id&gt;"
+    var provider: ReadLaterProvider
+    var title: String
+    var author: String?
+    var sourceURL: URL              // the original page — what Vellum opens
+    var kind: Kind                  // .article, .pdf, .epub, .video, .other
+    var excerpt: String?
+    var imageURL: URL?              // cover/thumbnail (loaded lazily in rows)
+    var tags: [String]
+    var group: String?              // Readwise location / Raindrop collection id
+    var savedAt: Date
+    var updatedAt: Date             // drives incremental sync + sorting
+    var pdfDownload: PDFSource?     // how to fetch the binary, if it's a file item
+}
+</code></pre>
+
+<p><code>group</code> is deliberately a flat string + a separate per-provider <code>ReadLaterCollection</code> list (id, title, parent) — enough to render Raindrop's nested collections and Readwise's locations without introducing a full folder taxonomy into Vellum's own library model, which currently has none.</p>
+
+<h3>5.2 The client protocol</h3>
+
+<pre><code>protocol ReadLaterClient: Sendable {
+    var provider: ReadLaterProvider { get }
+    func validate(token: String) async throws -&gt; AccountInfo   // name/email for the settings card
+    func collections(token: String) async throws -&gt; [ReadLaterCollection]
+    func items(token: String, since: Date?, cursor: String?) async throws -&gt; ItemPage
+    func pdfDownloadURL(token: String, itemID: String) async throws -&gt; URL  // Readwise: re-fetch w/ withRawSourceUrl
+}
+</code></pre>
+
+<p>Implementation style copies the existing AI clients (<code>OpenAIClient</code> et al.): plain <code>URLSession.shared.data(for:)</code>, tolerant <code>Codable</code> decoding (every field the vendor might drop is optional — Raindrop's docs explicitly warn fields appear/disappear). Shared plumbing in <code>ReadLaterClient.swift</code> handles the one behavior both vendors share: <strong>429 → read <code>Retry-After</code> → sleep → retry (max 3)</strong>, plus mapping 401/403 to a typed <code>.tokenRejected</code> error so the UI can say something useful.</p>
+
+<h3>5.3 Credentials</h3>
+
+<p>Extend the existing <code>KeychainStore</code> with account constants for <code>readwise</code> and <code>raindrop</code>. Tokens never touch UserDefaults or the JSON cache. Non-secret connection metadata (last sync date, item count, account display name) lives in UserDefaults under <code>integrations.&lt;provider&gt;.*</code>.</p>
+
+<div class="callout"><span class="label">Concept — why Keychain</span>
+<p>UserDefaults is a plaintext plist on disk, readable by anything running as your user, and it gets swept into backups. The macOS Keychain encrypts entries at rest and gates access to the app that stored them. Anything that grants account access — API tokens included — belongs there. Vellum already does this for AI keys, so this is just two more rows in an existing table.</p>
+</div>
+
+<h3>5.4 Concurrency shape</h3>
+
+<p><code>IntegrationsSyncEngine</code> is an <strong>actor</strong> — all network calls and cache-file writes happen inside it, never on the main actor. This follows the hard-won project rule from the session-backends work: main-actor file I/O caused freezes before; don't reintroduce it. The flow:</p>
+
+<pre><code>UI (@MainActor)                      Background
+──────────────                       ──────────
+IntegrationsStore  ──syncNow()──▶  IntegrationsSyncEngine (actor)
+  @Observable                         │  fetch pages, honor rate limits
+  items, states,                      │  merge into IntegrationsCache (JSON on disk)
+  filters                             ▼
+        ◀────await MainActor: store.apply(snapshot)──┘
+</code></pre>
+
+<p>The store publishes immutable snapshots (<code>[ReadLaterItem]</code> per provider); SwiftUI diffing handles the rest. Search/filtering is a pure in-memory operation over the snapshot — no database needed at these sizes (even 10k items of metadata is ~a few MB).</p>
+
+<h3>5.5 Cache on disk</h3>
+
+<pre><code>~/Library/Application Support/com.vellum.app/integrations/
+├── readwise/ index.json   syncstate.json
+├── raindrop/ index.json   syncstate.json   collections.json
+└── downloads/&lt;provider&gt;/&lt;itemid&gt;.pdf
+</code></pre>
+
+<ul>
+  <li><code>index.json</code> — the full normalized item list, written atomically (temp file + rename, same pattern as <code>WebLibrary</code>).</li>
+  <li><code>syncstate.json</code> — the incremental-sync watermark (<code>updatedAfter</code> / <code>updated_since</code> / Raindrop high-water <code>lastUpdate</code>) and any in-flight cursor so an interrupted initial sync resumes instead of restarting.</li>
+  <li><strong>Deliberately local, not in the iCloud/custom web-library storage location</strong>: this is a re-fetchable cache derived from the services, not user data — syncing it would create cross-device merge questions for zero benefit. Downloaded PDFs also stay local in v1; once opened they're ordinary file-path documents and behave like any other PDF the user has (annotations embed in the file). Revisit if it feels wrong in use — flagged as an open question in §8.</li>
+</ul>
+
+<h2 id="sync">6 · Sync engine details</h2>
+
+<h3>Triggers</h3>
+<ul>
+  <li><strong>Initial sync</strong> — on connect: fetch collections (Raindrop), then walk the full item list page-by-page, writing each page into the cache so the UI populates progressively.</li>
+  <li><strong>Delta sync</strong> — on app launch, when the user switches to a service's tab (if &gt; 5 min stale), on manual <em>Sync Now</em>, and on a 30-min timer while running (toggleable in Settings).</li>
+</ul>
+
+<h3>Per-service strategy</h3>
+<div class="table-scroll">
+<table>
+<tr><th>Service</th><th>Initial sync</th><th>Delta sync</th><th>Deletions</th></tr>
+<tr><td>Readwise</td><td><code>/v3/list/</code> pages of 100. At 20 req/min, a 5,000-item library ≈ 50 requests ≈ 2.5 min — hence progressive fill + resumable cursor, never a blocking spinner.</td><td><code>updatedAfter=&lt;watermark&gt;</code>; cheap, usually 1 request.</td><td rowspan="2">Deltas don't report deletions. Weekly (and on manual Sync Now) run a full re-walk in the background and drop cached items the walk didn't see. Cheap at these rate limits; correctness without vendor support.</td></tr>
+<tr><td>Raindrop</td><td><code>/raindrops/0</code> pages of 50, 120 req/min — even huge libraries sync in seconds. Collections tree first.</td><td>No delta param: fetch sorted by <code>-lastUpdate</code>, stop at the first page whose items are all already-known-and-unchanged.</td></tr>
+</table>
+</div>
+
+<div class="callout"><span class="label">Concept — cursor pagination &amp; watermarks</span>
+<p>These APIs don't return everything at once; each response includes a <em>cursor</em> — an opaque bookmark you pass back to get the next page. A <em>watermark</em> is the highest <code>updated_at</code> you've seen: next sync you ask only for items changed after it, turning a 50-request full walk into a 1-request check. The one subtlety: record the watermark as of <em>sync start</em>, not sync end, so items updated mid-sync aren't skipped forever.</p>
+</div>
+
+<h3>Failure behavior</h3>
+<ul>
+  <li>Network down → keep serving the cache silently; retry next trigger. The Welcome screen shows a subtle "offline — showing cached list" note only if a manual sync fails.</li>
+  <li>401/403 → flip the service to <em>Needs attention</em> (Settings card + library banner). Never auto-delete the cache on auth failure — the token might just need re-pasting.</li>
+  <li>429 → handled inside the client (sleep + retry); the sync engine additionally spaces Readwise page requests ~3s apart to stay under 20/min by construction.</li>
+</ul>
+
+<h2 id="phases">7 · Implementation phases</h2>
+
+<p>Each phase is independently shippable and PR-sized. Readwise goes first: simplest auth, best-documented API, and it exercises every subsystem (tokens, sync, browse UI, PDF download) so Raindrop becomes mostly "write a client + a mapper".</p>
+
+<div class="phase"><h3>Phase 1 — Scaffolding + Readwise end-to-end</h3>
+<ul>
+  <li>Models, client protocol, Keychain accounts, cache, sync-engine actor, <code>IntegrationsStore</code>.</li>
+  <li>Settings → Integrations tab with the Readwise card + connect sheet.</li>
+  <li>Welcome-screen source switcher + Readwise list with Location filter and search.</li>
+  <li>Open article → <code>openUrl</code>; open PDF → download via <code>withRawSourceUrl</code> → <code>openFile</code>.</li>
+  <li>Unit tests: response-fixture decoding, item mapping, watermark logic, 429 retry.</li>
+</ul></div>
+
+<div class="phase"><h3>Phase 2 — Raindrop</h3>
+<ul>
+  <li><code>RaindropClient</code> (test-token auth), collections tree fetch + picker UI, file-raindrop downloads, the sorted-by-lastUpdate delta strategy.</li>
+</ul></div>
+
+<div class="phase"><h3>Phase 3 — Polish</h3>
+<ul>
+  <li>Cover-image thumbnails (lazy, disk-cached), deletion-sweep sync, progress toast for large downloads, empty states, auto-refresh timer + toggle, "Open Original in Browser" / "Copy Link" context items.</li>
+</ul></div>
+
+<div class="phase"><h3>Phase 4 — Later / optional</h3>
+<ul>
+  <li>Real OAuth for Raindrop (loopback server + PKCE infra already exists; needs the client-secret decision — embed vs. proxy on hermes).</li>
+  <li>Write-back: archive in Readwise from the context menu; push reading progress; "Save current page to …" from Vellum's toolbar where supported.</li>
+  <li>"Import into Vellum library" bulk action (turns external items into Saved offline archives).</li>
+</ul></div>
+
+<h2 id="risks">8 · Risks &amp; open questions</h2>
+
+<div class="table-scroll">
+<table>
+<tr><th>Item</th><th>Status / mitigation</th></tr>
+<tr><td>Raindrop test-token UX is clunky for a general audience</td><td>Fine while Vellum's audience is you + early users; phase 4 OAuth fixes it. <strong>Question: is Vellum heading for public distribution soon?</strong> That decides how urgent phase 4 is and whether the client secret warrants a hermes proxy.</td></tr>
+<tr><td>Readwise 20/min list limit makes big initial syncs slow (~minutes)</td><td>Progressive fill + resumable cursor; UI never blocks on sync.</td></tr>
+<tr><td>Readwise PDF links expire after 1 hour</td><td>Never cache the S3 URL — request it fresh at each download.</td></tr>
+<tr><td>Downloaded external PDFs are local-only, outside the iCloud storage location</td><td>Deliberate v1 choice (§5.5). <strong>Question: want external PDFs to land in your chosen storage location instead so annotations roam across Macs?</strong> Easy to change — it's one path-resolution decision.</td></tr>
+<tr><td>Vendors silently changing response fields (Raindrop explicitly warns of this)</td><td>All decoding optional-tolerant; unit tests pin fixtures; a failed decode of one item skips that item, never the sync.</td></tr>
+</table>
+</div>
+
+<h2 id="verify">9 · Verification plan</h2>
+
+<ul>
+  <li><strong>Unit tests</strong> (Swift Testing, run via <code>xcodebuild</code> CLI): fixture-based decode/mapping tests per client; watermark and dedupe logic; 429 retry with a stubbed <code>URLProtocol</code>.</li>
+  <li><strong>Live API smoke tests</strong>: a small debug-only harness (or <code>curl</code> scripts in <code>tools/</code>) hitting each real API with your tokens — run once per phase, not in CI.</li>
+  <li><strong>UI verification with codex-cli computer-use</strong> (per project convention — driven by Codex/Sonnet/Opus, never Fable): connect-sheet flow with a real token, source-switcher browsing, opening an article and a PDF end-to-end, token-error banner by deliberately revoking a token.</li>
+  <li><strong>Multi-worktree hygiene</strong>: stage only integration files; regenerate the Xcode project from <code>project.yml</code> rather than committing pbxproj churn.</li>
+</ul>
+
+<hr>
+<p class="small">Sources: <a href="https://readwise.io/reader_api">Readwise Reader API</a> · <a href="https://developer.raindrop.io/">Raindrop developer docs</a> — fetched live 2026-07-19. Codebase touchpoints from <code>Vellum/Views/Welcome/WelcomeScreen.swift</code>, <code>Vellum/Views/Settings/SettingsView.swift</code>, <code>Vellum/Services/KeychainStore.swift</code>, <code>Vellum/Services/Web/WebStorage.swift</code>, <code>Vellum/Stores/AppStore.swift</code>.</p>
+
+</div>

@@ -75,6 +75,11 @@ targets:
     platform: macOS
     sources:
       - path: Tests
+        excludes:
+          - Integrations/Fixtures
+      - path: Tests/Integrations/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Vellum
     settings:

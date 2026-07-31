@@ -6,14 +6,10 @@ import Foundation
 // `DocumentDataStore` directly any more — it asks `HomeSearchEngine`, which
 // asks providers. That indirection exists for exactly one reason: issue #62
 // wants the user to be able to "search more naturally from their connected
-// read-later applications", and no such integration exists in the app yet. When
-// one lands it conforms to `HomeSearchProvider`, gets registered in
-// `HomeSearchEngine.defaultProviders()`, and the entire home-screen UI —
+// read-later applications". That source now exists —
+// `ReadLaterSearchProvider`, fed by `IntegrationsStore` and appended after the
+// local providers by `HomeSearchStore` — and the entire home-screen UI —
 // ranking, sections, keyboard navigation, empty states — works unchanged.
-//
-// NOTE: every provider shipped here is LOCAL. There is deliberately no stub
-// Readwise/Instapaper/Pocket client: a fake network source that silently
-// returns nothing would look like a working feature and isn't one.
 
 /// How the engine drives a provider.
 enum HomeSearchProviderMode: Hashable, Sendable {

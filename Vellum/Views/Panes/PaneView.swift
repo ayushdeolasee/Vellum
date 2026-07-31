@@ -25,6 +25,18 @@ struct PaneView: View {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                    // Feedback for read-later actions (move to folder, download
+                    // errors) taken from the toolbar while this document is
+                    // open — the welcome screen's own notice isn't visible then.
+                    // A child view owns the store lookup so integrations churn
+                    // (sync/download ticks) re-renders only the overlay, not
+                    // this pane's whole body.
+                    .overlay(alignment: .bottomTrailing) {
+                        if app.document != nil {
+                            PaneIntegrationNotice(path: app.document?.pdfPath)
+                                .padding(18)
+                        }
+                    }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
@@ -275,6 +287,28 @@ private struct LiveTabHost: View {
 private struct PaneDocumentIdentity: Hashable {
     var tabId: String?
     var path: String?
+}
+
+/// Floating notice for the read-later item behind the open document (move
+/// confirmations/errors, download progress). Owns the integrations-store
+/// lookup so only this small view re-renders on store churn.
+private struct PaneIntegrationNotice: View {
+    let path: String?
+
+    @Environment(IntegrationsStore.self) private var integrations
+
+    var body: some View {
+        if let item = integrations.readLaterItem(forOpenDocumentPath: path),
+           let notice = integrations.notice(forItem: item.id) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+            ) {
+                if notice.isMove { integrations.dismissMoveNotice(item.id) } else { integrations.dismissDownloadNotice(item.id) }
+            }
+        }
+    }
 }
 
 private struct PaneAutosaveIdentity: Hashable {
