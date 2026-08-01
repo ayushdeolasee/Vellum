@@ -27,7 +27,10 @@ struct VellumApp_iOS: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView_iOS()
+            // PROTOTYPE BRANCH: root branches on horizontal size class —
+            // compact (iPhone) gets PhoneShellPrototype_iOS, regular keeps the
+            // untouched iPad ContentView_iOS.
+            RootShell_iOS()
                 .task { await launchMaintenance() }
                 .sheet(isPresented: $showStorageChoice) {
                     StorageLocationChoiceSheet()
@@ -89,7 +92,10 @@ struct VellumApp_iOS: App {
             WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
         }
 
+        // PROTOTYPE BRANCH: the first-launch storage sheet would cover the phone
+        // shell on every fresh simulator install, so skip it on iPhone.
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+            && UIDevice.current.userInterfaceIdiom != .phone
     }
 
     /// Scene-background flush. macOS drains these on `applicationShouldTerminate`;
