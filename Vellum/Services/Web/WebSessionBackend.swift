@@ -23,22 +23,35 @@ final class WebSessionBackend {
     func openWebDocument(
         url: String, sessionId: String, replacing: WebDocumentSession?
     ) async throws -> WebDocumentSession {
-        let normalized = try WebUrl.normalize(url)
-        let key = WebLibrary.pageKey(normalized)
-        let recordPath = WebLibrary.recordPath(forKey: key)
+        // Normalize/hash/path-resolve INSIDE the detached task, not before it.
+        // These look like cheap value math but `WebLibrary.recordPath` walks
+        // `WebLibrary.activeLayout` -> `WebStorageSettings.effectiveMode` and,
+        // for custom-folder users, `WebStorage.customRoot` -> `resolveBookmark`,
+        // which hits UserDefaults, FileManager existence checks and
+        // `startAccessingSecurityScopedResource`. Doing that on @MainActor put
+        // disk work in the launch critical path (restoreTabs opens every
+        // persisted web tab during the first frame). All three helpers are
+        // nonisolated statics over plain String/URL values, so there is no
+        // actor-isolated state here — do NOT hoist them back to the main actor
+        // "for convenience".
+        let opened = try await Task.detached(priority: .userInitiated) {
+            let normalized = try WebUrl.normalize(url)
+            let recordPath = WebLibrary.recordPath(forKey: WebLibrary.pageKey(normalized))
 
-        // Read + touch + rewrite the sidecar off the main thread, serialized per
-        // key via withRecord so a concurrent session for the same page can't
-        // clobber this open (or vice versa).
-        let record = try await Task.detached(priority: .userInitiated) {
-            try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
+            // Read + touch + rewrite the sidecar off the main thread, serialized
+            // per key via withRecord so a concurrent session for the same page
+            // can't clobber this open (or vice versa). The lock is keyed by
+            // record path, not by calling thread, so serialization is unchanged
+            // by moving the path computation in here.
+            let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
                 record.url = normalized
                 record.openedAt = WebLibrary.rfc3339Now()
                 return record
             }
+            return (normalized: normalized, record: record)
         }.value
 
-        return WebDocumentSession(url: normalized, record: record)
+        return WebDocumentSession(url: opened.normalized, record: opened.record)
     }
 
     /// Open a `.vellumweb` archive: install its snapshot locally, merge its
@@ -50,23 +63,30 @@ final class WebSessionBackend {
             try WebArchive.readArchive(at: archiveUrl)
         }.value
 
-        let normalized = try WebUrl.normalize(imported.manifest.url)
-        let key = WebLibrary.pageKey(normalized)
-        let recordPath = WebLibrary.recordPath(forKey: key)
-
         // Install the snapshot (up to 64 MB of assets) and merge annotations
         // off the main thread — this used to block the UI on the main actor.
         // The record merge runs through withRecord (serialized per key) so it
         // can't clobber a concurrent session's write to the same sidecar; the
         // archive install writes to a separate dir so it stays outside the lock.
-        let record = try await Task.detached(priority: .userInitiated) {
+        //
+        // The normalize/pageKey/recordPath prelude lives in here too (see
+        // `openWebDocument`): `recordPath` resolves the active storage layout,
+        // which for custom-folder users means a security-scoped bookmark
+        // resolve + FileManager probes. Those are nonisolated String/URL
+        // computations, so keeping them off @MainActor is free — don't move
+        // them back out just to have `normalized` in scope for the return.
+        let opened = try await Task.detached(priority: .userInitiated) {
+            let normalized = try WebUrl.normalize(imported.manifest.url)
+            let key = WebLibrary.pageKey(normalized)
+            let recordPath = WebLibrary.recordPath(forKey: key)
+
             try WebArchive.installArchiveDir(
                 key: key,
                 snapshotHtml: imported.snapshotHtml,
                 assets: imported.assets,
                 manifest: imported.manifest)
 
-            return try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
+            let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
                 record.url = normalized
                 record.openedAt = WebLibrary.rfc3339Now()
 
@@ -90,9 +110,13 @@ final class WebSessionBackend {
                 WebArchive.mergeAnnotations(&record.annotations, incoming: imported.annotations)
                 return record
             }
+            // Carry `normalized` back out: the caller needs it for the session's
+            // document identity, and recomputing it on the main actor would undo
+            // the point of the hop.
+            return (normalized: normalized, record: record)
         }.value
 
-        return WebDocumentSession(url: normalized, record: record)
+        return WebDocumentSession(url: opened.normalized, record: opened.record)
     }
 
     func listSavedWebpages() async throws -> [WebLibraryEntry] {

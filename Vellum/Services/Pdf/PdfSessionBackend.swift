@@ -12,30 +12,53 @@ import CoreGraphics
 final class PdfSessionBackend {
     /// open_file: validate the extension, canonicalize, require a file, parse,
     /// and read (title, page_count, last_page).
+    ///
+    /// This type stays `@MainActor` because it is owned by the MainActor session
+    /// manager, but the BODY of `open` must not run there. Launch restores every
+    /// saved tab by awaiting `openFile` once per document, and the work below is
+    /// all blocking: `realpath`, `stat`, a full `Data(contentsOf:)` read, and a
+    /// `CGPDFDocument` parse of a possibly textbook-size file. `async` alone does
+    /// not move any of that off the main thread — an async method on a MainActor
+    /// type still executes on the MainActor between suspension points — so the
+    /// I/O + parse is hopped onto the cooperative pool via `offMainRead`, the
+    /// same helper `annotations()` / `readPdfBytes()` already use.
+    ///
+    /// `open` never mutates the file, so it deliberately does NOT go through
+    /// `PdfFileGate`: taking the write lock here would serialize launch-time
+    /// opens behind unrelated annotation writes for no correctness benefit
+    /// (atomic-rename writes mean a reader sees one whole file or the other).
+    ///
+    /// Only Sendable values cross the closure boundary: `path` in, and a
+    /// `(String, DocumentInfo)` tuple out. The non-Sendable `CGPDFDocument` is
+    /// created and consumed entirely inside the closure and never escapes.
+    /// Do not re-pin this to the MainActor.
     func open(path: String, sessionId: String) async throws -> PdfDocumentSession {
+        // Pure URL string parsing, no I/O — cheap enough to keep inline.
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         guard ext == "pdf" else {
             throw SessionServiceError.invalidDocument("Unsupported file type: .\(ext)")
         }
 
-        let canonical = try PdfDocumentLoader.canonicalize(path)
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
-        guard exists, !isDirectory.boolValue else {
-            throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
-        }
+        let (canonical, info) = try await offMainRead { () -> (String, DocumentInfo) in
+            let canonical = try PdfDocumentLoader.canonicalize(path)
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory)
+            guard exists, !isDirectory.boolValue else {
+                throw SessionServiceError.invalidDocument("PDF path is not a file: \(canonical)")
+            }
 
-        let document = try PdfDocumentLoader.loadRaw(path: canonical)
-        let (title, pageCount, lastPage) = PdfMetadata.documentInfo(document: document, path: canonical)
-
-        return PdfDocumentSession(
-            path: canonical,
-            info: DocumentInfo(
+            let document = try PdfDocumentLoader.loadRaw(path: canonical)
+            let (title, pageCount, lastPage) = PdfMetadata.documentInfo(
+                document: document, path: canonical)
+            return (canonical, DocumentInfo(
                 kind: .pdf,
                 pdfPath: canonical,
                 title: title,
                 pageCount: pageCount,
                 lastPage: lastPage))
+        }
+
+        return PdfDocumentSession(path: canonical, info: info)
     }
 }
 

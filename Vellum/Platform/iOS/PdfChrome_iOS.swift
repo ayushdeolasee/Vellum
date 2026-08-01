@@ -638,6 +638,29 @@ struct SidebarContent_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
 
+    // "Has this tab ever been revealed?" latches. The sidebar is open by
+    // default (WorkspaceStore.sidebarOpen == true) and restoreFromDisk reopens
+    // the last document within a few frames of launch, so this view's body ran
+    // during the app's *initial frame*. Building all three panels there charged
+    // launch for work the user couldn't even see on the default `.annotations`
+    // tab: AiPanel_iOS.body plus AiAttributedRenderer, and — the expensive one —
+    // ScratchpadLiveEditor.makeUIView -> ScratchpadWebView.init, ~56ms spent
+    // spawning a WebKit content process (measured in an Instruments App Launch
+    // trace). Gating construction on these latches defers that cost to the
+    // first time each tab is actually selected.
+    //
+    // They only ever flip false -> true, never back, so the mounted-panel
+    // behaviour documented on the ZStack below is preserved exactly: after the
+    // first reveal the panel stays in the tree and tab flips remain pure
+    // opacity toggles — no WebView reload, no lost caret or composer draft.
+    //
+    // Plain @State (not a store): this is per-view presentation bookkeeping,
+    // discarded with the view, and it's read/written only from body and
+    // onChange, which are already MainActor-isolated by View conformance.
+    // Nothing here needs its own isolation or Sendable annotation.
+    @State private var hasShownAi = false
+    @State private var hasShownScratchpad = false
+
     var body: some View {
         VStack(spacing: 0) {
             GlassSegmentedPicker(
@@ -654,14 +677,19 @@ struct SidebarContent_iOS: View {
             )
             .padding(.vertical, 10)
             Divider()
-            // All three panels stay mounted; only visibility toggles as the tab
-            // changes. Keeping them alive (rather than switching, which destroys
-            // the inactive ones) preserves each panel's transient view state
-            // across tab flips — the scratchpad editor's caret/scroll/selection
-            // in its live-preview WebView (a reload on every visit would flash
-            // and lose the caret), and the AI panel's scroll/composer draft. The
-            // persisted text itself already survives via the stores; this keeps
-            // the *view* state the stores don't hold.
+            // Once revealed, a panel stays mounted; only visibility toggles as
+            // the tab changes. Keeping them alive (rather than switching, which
+            // destroys the inactive ones) preserves each panel's transient view
+            // state across tab flips — the scratchpad editor's caret/scroll/
+            // selection in its live-preview WebView (a reload on every visit
+            // would flash and lose the caret), and the AI panel's scroll/
+            // composer draft. The persisted text itself already survives via the
+            // stores; this keeps the *view* state the stores don't hold.
+            //
+            // Annotations is unconditional: it's the default tab and costs
+            // nothing beyond plain SwiftUI rows. AI and Scratchpad are built
+            // lazily on first reveal (see the latches above) because their
+            // bodies are what dragged WebKit and the AI renderer into launch.
             ZStack {
                 panel(.annotations) {
                     VStack(spacing: 0) {
@@ -671,10 +699,30 @@ struct SidebarContent_iOS: View {
                         AnnotationSidebar()
                     }
                 }
-                panel(.ai) { AiPanel_iOS() }
-                panel(.scratchpad) { ScratchpadPanel() }
+                if hasShownAi {
+                    panel(.ai) { AiPanel_iOS() }
+                }
+                if hasShownScratchpad {
+                    panel(.scratchpad) { ScratchpadPanel() }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Observed as Bools rather than on `workspace.sidebarTab` itself so
+            // we don't need SidebarTab to be Equatable (it lives in shared
+            // Stores/ code compiled for macOS too, and this is a purely iOS
+            // concern). `initial: true` covers the case where the sidebar is
+            // revealed already sitting on .ai/.scratchpad — e.g. AiStore's
+            // "quote in AI" action, which sets sidebarTab = .ai and
+            // sidebarOpen = true in one go. SwiftUI applies the state mutation
+            // on the *next* update pass, so the panel is built one pass after
+            // the first body evaluation rather than inside it, which is exactly
+            // what keeps it off the initial frame.
+            .onChange(of: workspace.sidebarTab == .ai, initial: true) { _, isAi in
+                if isAi { hasShownAi = true }
+            }
+            .onChange(of: workspace.sidebarTab == .scratchpad, initial: true) { _, isScratchpad in
+                if isScratchpad { hasShownScratchpad = true }
+            }
         }
         .background(palette.surface)
     }
