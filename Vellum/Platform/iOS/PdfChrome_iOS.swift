@@ -26,19 +26,13 @@ struct PdfToolbar_iOS: View {
     @State private var showSettings = false
     @State private var toolbarWidth: CGFloat = 0
 
-    // Web-tab offline-copy state, mirroring the macOS OverflowMenu.
-    @State private var pageSaved = false
-    @State private var exporting = false
-    /// A separate guard from the web-only `exporting` flag, so a `.vellum`
-    /// export and a `.vellumweb` export can never disable each other's item.
-    @State private var exportingBundle = false
+    /// Web offline-copy state and both export state machines, shared verbatim
+    /// with the phone reader's More menu (`DocumentExportActions_iOS`, #153 P5).
+    /// It used to live here as five `@State` properties; the phone needs the
+    /// same three actions and a second copy of a serialized, generation-guarded
+    /// toggle is a bug waiting to be fixed on one surface only.
+    @State private var exportActions = DocumentExportActions_iOS()
     @State private var showExportBundle = false
-    /// Serializes save/remove so a rapid Remove can't finish before a slow
-    /// Save's archive write and get its deletion undone by it.
-    @State private var saveToggleTask: Task<Void, Never>?
-    /// Identifies the newest queued toggle, so a superseded one's failure can't
-    /// revert the toolbar to a state the user has already toggled away from.
-    @State private var saveToggleGeneration = 0
 
     private var isWeb: Bool { appStore.document?.kind == .web }
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
@@ -229,7 +223,8 @@ struct PdfToolbar_iOS: View {
                 title: appStore.document?.title,
                 isWeb: isWeb
             ) { includeConversations in
-                startBundleExport(includeConversations: includeConversations)
+                exportActions.startBundleExport(
+                    app: appStore, ai: aiStore, includeConversations: includeConversations)
             }
         }
     }
@@ -313,16 +308,21 @@ struct PdfToolbar_iOS: View {
                 } label: { Label("Save", systemImage: "square.and.arrow.down") }
             }
             if isWeb {
-                Button(action: toggleSavedPage) {
+                Button {
+                    exportActions.toggleSavedPage(app: appStore, ai: aiStore)
+                } label: {
                     Label(
-                        pageSaved ? "Remove Offline Copy" : "Save for Offline Use",
-                        systemImage: pageSaved ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        exportActions.pageSaved ? "Remove Offline Copy" : "Save for Offline Use",
+                        systemImage: exportActions.pageSaved
+                            ? "arrow.down.circle.fill" : "arrow.down.circle")
                 }
                 .accessibilityIdentifier("toolbar.saveForOffline")
-                Button(action: exportVellumweb) {
+                Button {
+                    exportActions.exportVellumweb(app: appStore, ai: aiStore)
+                } label: {
                     Label("Export a Copy…", systemImage: "square.and.arrow.up")
                 }
-                .disabled(exporting)
+                .disabled(exportActions.exporting)
             }
             // Offered for BOTH PDF and web documents. Shorter title than the
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
@@ -332,7 +332,7 @@ struct PdfToolbar_iOS: View {
                 Button { showExportBundle = true } label: {
                     Label("Export with Notes…", systemImage: "arrow.up.doc")
                 }
-                .disabled(exportingBundle)
+                .disabled(exportActions.exportingBundle)
                 .accessibilityIdentifier("toolbar.exportWithNotes")
             }
             if !showZoomPod {
@@ -397,7 +397,7 @@ struct PdfToolbar_iOS: View {
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
-            await loadSavedState(for: DocumentKey_iOS(appStore))
+            await exportActions.loadSavedState(app: appStore, for: DocumentKey_iOS(appStore))
         }
     }
 
@@ -413,204 +413,6 @@ struct PdfToolbar_iOS: View {
             appStore.goToPage(page)
         }
         pageFieldText = String(appStore.currentPage)
-    }
-
-    // MARK: - Web offline copy
-
-    private func loadSavedState(for identity: DocumentKey_iOS) async {
-        pageSaved = false
-        guard isWeb, let sessionId = appStore.activeTabId else { return }
-        let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
-        if DocumentKey_iOS(appStore) == identity {
-            pageSaved = saved
-        }
-    }
-
-    /// Save = mark the page kept AND make sure its offline copy exists (the
-    /// re-archive covers a copy the user deleted from Settings ▸ Storage).
-    /// Remove = un-keep and delete the offline copy; the record — highlights,
-    /// notes, reading position — always survives.
-    private func toggleSavedPage() {
-        guard let sessionId = appStore.activeTabId else { return }
-        let next = !pageSaved
-        pageSaved = next
-        let expectedUrl = appStore.document?.pdfPath ?? ""
-        let pages = aiStore.pageTexts
-            .sorted { $0.key < $1.key }
-            .map { WebPageText(number: $0.key, text: $0.value) }
-        let prior = saveToggleTask
-        saveToggleGeneration += 1
-        let generation = saveToggleGeneration
-        saveToggleTask = Task {
-            await prior?.value
-            do {
-                try await appStore.sessions.setWebpageSaved(sessionId: sessionId, saved: next)
-                if next {
-                    // Best-effort: membership is saved even if the archive
-                    // write fails (offline, no snapshot yet) — the copy is
-                    // rewritten on the next open of the page.
-                    _ = try? await appStore.sessions.archiveWebpageDefault(
-                        sessionId: sessionId, pages: pages, expectedUrl: expectedUrl)
-                }
-            } catch {
-                // Only the newest toggle owns the button: an older one failing
-                // behind a queued newer one must not resurrect its own state.
-                if appStore.activeTabId == sessionId, generation == saveToggleGeneration {
-                    pageSaved = !next
-                }
-            }
-        }
-    }
-
-    /// Export the active webpage as a .vellumweb archive. macOS uses NSSavePanel;
-    /// iOS writes the archive to a temporary file and hands it to the Files
-    /// export picker, which copies it to the destination the user chooses.
-    private func exportVellumweb() {
-        guard !exporting,
-              let sessionId = appStore.activeTabId,
-              appStore.document?.kind == .web else { return }
-
-        let slug = slugifiedTitle()
-        let pages = aiStore.pageTexts
-            .sorted { $0.key < $1.key }
-            .map { WebPageText(number: $0.key, text: $0.value) }
-        exporting = true
-        Task {
-            defer { exporting = false }
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(slug).vellumweb")
-            try? FileManager.default.removeItem(at: tmp)
-            guard (try? await appStore.sessions.exportVellumweb(
-                sessionId: sessionId, destPath: tmp.path, pages: pages)) != nil else { return }
-            DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
-        }
-    }
-
-    /// Export the active document as a `.vellum` bundle — the document plus its
-    /// scratchpad + attachments, and (opt-in, default OFF) the AI conversation.
-    /// Available for BOTH PDF and web tabs. macOS uses NSSavePanel; iOS writes
-    /// the bundle to a temporary file and hands it to the Files export picker.
-    private func startBundleExport(includeConversations: Bool) {
-        guard !exportingBundle,
-              let sessionId = appStore.activeTabId,
-              let document = appStore.document else { return }
-        let pages = aiStore.pageTexts
-            .sorted { $0.key < $1.key }
-            .map { WebPageText(number: $0.key, text: $0.value) }
-        exportingBundle = true
-        Task {
-            defer { exportingBundle = false }
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(slugifiedTitle()).vellum")
-            try? FileManager.default.removeItem(at: tmp)
-            do {
-                try await buildBundle(
-                    sessionId: sessionId, document: document, destination: tmp,
-                    includeConversations: includeConversations, pages: pages)
-            } catch { return }
-            // Not deleted afterwards: the picker copies asynchronously. Same as
-            // exportVellumweb; tmp/ is reclaimed by the system.
-            DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
-        }
-    }
-
-    /// Assemble the bundle content: durable id (lazily stamped), the document
-    /// bytes (PDF as-is / a fresh .vellumweb for web), and the class-B sidecar
-    /// pulled from DocumentDataStore by storage key.
-    private func buildBundle(
-        sessionId: String,
-        document: DocumentInfo,
-        destination: URL,
-        includeConversations: Bool,
-        pages: [WebPageText]
-    ) async throws {
-        // The sidecar currently lives under this session's storage key — resolve
-        // it BEFORE the stamp changes DocumentInfo.docId.
-        let pullKey = DocumentIdentity.storageKey(for: document)
-        // Durable id for the manifest (stamps a writable PDF; byte-hash fallback
-        // for an unwritable one; URL hash for web).
-        let durableId = (try? await appStore.sessions.ensureDocumentId(sessionId: sessionId))
-            ?? pullKey
-        await appStore.syncDocumentId(sessionId: sessionId)
-
-        let documentData: Data
-        let documentFile: String
-        if document.kind == .web {
-            // Reuse the session's .vellumweb writer rather than duplicating it.
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(UUID().uuidString.lowercased()).vellumweb")
-            _ = try await appStore.sessions.exportVellumweb(
-                sessionId: sessionId, destPath: tmp.path, pages: pages)
-            documentData = try Data(contentsOf: tmp)
-            try? FileManager.default.removeItem(at: tmp)
-            documentFile = "\(slugifiedTitle()).vellumweb"
-        } else {
-            // Read AFTER the stamp so the exported PDF carries /VellumDocId.
-            documentData = try await appStore.sessions.readPdfBytes(sessionId: sessionId)
-            let name = (document.pdfPath as NSString).lastPathComponent
-            documentFile = VellumBundle.safeName(name) ?? "document.pdf"
-        }
-
-        let scratchpad = DocumentDataStore.loadScratchpad(forKey: pullKey)
-        let attachments = loadAttachments(forKey: pullKey)
-        let conversations = includeConversations
-            ? DocumentDataStore.loadConversationsData(forKey: pullKey)
-            : nil
-
-        let content = VellumBundle.Content(
-            kind: document.kind,
-            docId: durableId,
-            documentFile: documentFile,
-            documentData: documentData,
-            title: document.title,
-            scratchpad: scratchpad.isEmpty ? nil : scratchpad,
-            attachments: attachments,
-            conversations: conversations)
-        // `VellumBundle.write` hashes and deflates synchronously, and this Task
-        // inherits the view's main-actor isolation — a multi-hundred-MB bundle
-        // would freeze the UI for the whole zip. Off-main it is.
-        try await Task.detached(priority: .userInitiated) {
-            try VellumBundle.write(content, to: destination)
-        }.value
-    }
-
-    /// Read the document's attachments as (bare filename, bytes) pairs.
-    private func loadAttachments(forKey key: String) -> [(name: String, data: Data)] {
-        let dir = DocumentDataStore.attachmentsDir(forKey: key)
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
-            return []
-        }
-        var out: [(name: String, data: Data)] = []
-        for name in names.sorted() {
-            if let data = try? Data(contentsOf: dir.appendingPathComponent(name)) {
-                out.append((name, data))
-            }
-        }
-        return out
-    }
-
-    /// Slug for the export default filename: lowercased title, non-alphanumeric
-    /// runs collapsed to "-", trimmed, max 60 chars, fallback "article".
-    private func slugifiedTitle() -> String {
-        let title = appStore.document?.title ?? ""
-        var slug = ""
-        var lastWasDash = false
-        for scalar in title.lowercased().unicodeScalars {
-            if (scalar.value >= 97 && scalar.value <= 122)
-                || (scalar.value >= 48 && scalar.value <= 57) {
-                slug.unicodeScalars.append(scalar)
-                lastWasDash = false
-            } else if !lastWasDash, !slug.isEmpty {
-                slug.append("-")
-                lastWasDash = true
-            }
-        }
-        while slug.hasSuffix("-") { slug.removeLast() }
-        if slug.count > 60 {
-            slug = String(slug.prefix(60))
-            while slug.hasSuffix("-") { slug.removeLast() }
-        }
-        return slug.isEmpty ? "article" : slug
     }
 }
 
@@ -652,19 +454,6 @@ struct ExportBundleSheet_iOS: View {
             }
         }
         .presentationDetents([.medium])
-    }
-}
-
-/// Identity of the active document — web offline-copy state resets whenever the
-/// tab or backing file changes. Mirrors ToolbarView's `DocumentKey` on macOS.
-private struct DocumentKey_iOS: Hashable {
-    var tabId: String?
-    var path: String?
-
-    @MainActor
-    init(_ appStore: AppStore) {
-        tabId = appStore.activeTabId
-        path = appStore.document?.pdfPath
     }
 }
 

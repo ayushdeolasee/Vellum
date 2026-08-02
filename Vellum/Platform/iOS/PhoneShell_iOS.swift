@@ -195,23 +195,43 @@ private struct PhoneShellRoot_iOS: View {
     /// cosmetic: presenting the inspector sheet (P6) changes the safe-area
     /// insets the hosted `PDFView` sees, and a viewer whose frame depends on
     /// them relayouts and jumps the scroll position mid-drag.
+    ///
+    /// The page itself is fit to the viewport's width — declared once by
+    /// `RootShell_iOS` as `.pdfZoomMode(.fitWidth)` (#152) and read by the
+    /// viewer, not applied here as a zoom number. There is deliberately no
+    /// zoom control in the phone chrome as a result.
+    ///
+    /// The chrome is a ZStack SIBLING of the stack rather than an `.overlay` on
+    /// it: an overlay applied after `.ignoresSafeArea()` inherits the ignoring
+    /// geometry, and the bars have to respect the safe area while the document
+    /// under them must not.
     private var readerRoute: some View {
-        LiveTabStack_iOS(app: pane.app)
-            .ignoresSafeArea()
-            .overlay(alignment: .topLeading) {
-                // PROVISIONAL. P5 replaces this with the real chrome (top and
-                // bottom capsules, the legibility scrim, tap-to-toggle
-                // immersive). It exists now for one reason: without a way back
-                // to Home, opening a document on the phone is a one-way trip.
-                GlassToolPod(label: "Navigation") {
-                    GlassToolButton(system: "chevron.left", label: "Home") {
-                        shell.showHome()
-                    }
-                }
-                .padding(.leading, 12)
-                .padding(.top, 8)
-                .accessibilityIdentifier("phone.reader.home")
+        ZStack {
+            LiveTabStack_iOS(app: pane.app)
+                .ignoresSafeArea()
+
+            // Never in the touch path (see `ChromeTapCatcher_iOS`) — it is a
+            // window-level recognizer plus a geometry probe, which is why it can
+            // sit above the viewer without taking anything from it.
+            ChromeTapCatcher_iOS(
+                isActive: !shell.switcherPresented,
+                chromeVisible: shell.chromeVisible
+            ) {
+                shell.toggleChrome()
             }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            PhoneReaderChrome_iOS(
+                shell: shell,
+                onOpenFile: { presentImporter() },
+                onAddWebpage: { addWebpagePresented = true })
+        }
+        // Immersive reading is the absence of chrome, and that has to include
+        // the system's own: the status bar and the home indicator are the two
+        // remaining pieces of furniture over a full-bleed page.
+        .statusBarHidden(!shell.chromeVisible)
+        .persistentSystemOverlays(shell.chromeVisible ? .automatic : .hidden)
     }
 
     // MARK: - Opening
