@@ -199,9 +199,13 @@ struct DeviceIdentity: Hashable, Sendable {
         #if os(macOS)
         return "macos"
         #else
-        // The iOS target ships iPad-only (TARGETED_DEVICE_FAMILY 2) and the
-        // runtime idiom check is main-actor isolated, so this resolves at
-        // compile time; `platformOverride` covers anything else.
+        // The iOS target is universal now (TARGETED_DEVICE_FAMILY 1,2) but the
+        // runtime idiom check is main-actor isolated and this is callable from
+        // any isolation, so the compile-time answer stays "ipados" and the app
+        // layer narrows it to "ios" on a phone through `platformOverride` when
+        // phone sync identity lands. Nothing reads this as a capability flag —
+        // it is a label on synced position records — so an iPhone reporting
+        // "ipados" until then is cosmetic, not a correctness bug.
         return "ipados"
         #endif
     }

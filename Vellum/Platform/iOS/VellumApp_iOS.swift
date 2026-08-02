@@ -2,7 +2,7 @@
 import SwiftUI
 import UIKit
 
-/// iPad app entry. Mirrors the macOS `VellumApp` wiring — one window-global
+/// iOS app entry (iPhone + iPad). Mirrors the macOS `VellumApp` wiring — one window-global
 /// `WorkspaceStore` owning the split-screen pane tree, each pane its own
 /// store-triple — but hosts a touch-first `WindowGroup` shell. macOS persists
 /// reading positions via an NSApplication terminate hook; iOS has no terminate
@@ -29,7 +29,11 @@ struct VellumApp_iOS: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView_iOS()
+            // `RootShell_iOS`, not `ContentView_iOS` directly: the target now
+            // builds for iPhone as well (#151), and the shell that gets picked
+            // depends on the scene's size class. Every modifier below stays at
+            // the ROOT so it applies to whichever shell is on screen.
+            RootShell_iOS()
                 .task { await launchMaintenance() }
                 .onOpenURL { url in handleIncomingFile(url) }
                 // The storage choice hands off to the walkthrough when it
