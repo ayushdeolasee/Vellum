@@ -32,6 +32,11 @@ final class PdfSessionBackend {
     /// `(String, DocumentInfo)` tuple out. The non-Sendable `CGPDFDocument` is
     /// created and consumed entirely inside the closure and never escapes.
     /// Do not re-pin this to the MainActor.
+    ///
+    /// (Main's PR #113 made the same move on macOS but stopped at
+    /// canonicalize+stat, leaving the parse to its `PdfDocumentIO` actor. This
+    /// branch keeps `PdfFileGate` and hops the whole read, so there is nothing
+    /// left to take from that PR here.)
     func open(path: String, sessionId: String) async throws -> PdfDocumentSession {
         // Pure URL string parsing, no I/O — cheap enough to keep inline.
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()

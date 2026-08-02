@@ -53,6 +53,13 @@ struct ContentView_iOS: View {
             try? await Task.sleep(for: .seconds(1))
             DocumentPickerCoordinator_iOS.shared.prewarm()
         }
+        // `AddWebpageSheet_iOS` takes its destination as a closure and reads no
+        // store from the environment — deliberately. macOS's equivalent read
+        // `@Environment(AppStore.self)` and trapped when this `.sheet` was
+        // chained after the `.environment` writes (modifiers compose
+        // outside-in, so the presentation sat above them — main PR #116). Keep
+        // the closure form, or move this `.sheet` above the `.environment`
+        // block before adding any store lookup inside the sheet.
         .sheet(isPresented: $addWebpagePresented) {
             AddWebpageSheet_iOS { url in
                 let app = workspace.focusedPane.app
@@ -183,6 +190,7 @@ struct AddWebpageSheet_iOS: View {
                     .font(.system(size: 17))
                     .focused($focused)
                     .onSubmit(submit)
+                    .accessibilityIdentifier("addWebpage.urlField")
                 Spacer()
             }
             .padding(20)
