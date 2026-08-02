@@ -30,7 +30,79 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
-    enum SidebarTab: Sendable { case annotations, ai, scratchpad }
+    enum SidebarTab: Sendable, CaseIterable, Hashable { case annotations, ai, scratchpad }
+
+    // MARK: Inspector column width
+
+    // The resize envelope has a single owner: `InspectorLayout`, next to the
+    // responsive breakpoints that share its numbers. It lives there rather than
+    // here because this store is `@MainActor` and that enum is not — a
+    // main-actor-isolated static cannot seed a nonisolated type's defaults.
+
+    /// The width to reopen the inspector at, tracking the user's last drag.
+    ///
+    /// Deliberately NOT observed. It seeds the `ideal:` of
+    /// `.inspectorColumnWidth`, and is written from `PaneShell_iOS`'s
+    /// `.onGeometryChange` — once per frame while the splitter is being dragged.
+    /// Were it observed, each of those writes would invalidate the whole window
+    /// chrome (pane tree and toolbar included) mid-drag, and feed a fresh
+    /// `ideal:` back into the very layout pass that produced the measurement.
+    ///
+    /// Not observing it is necessary but NOT sufficient, so `PaneShell_iOS` does
+    /// not read it live either: it copies this value into `@State` and holds
+    /// that frozen while the column is on screen, re-seeding only when the
+    /// inspector is (re)presented — the one moment `ideal:` is consulted. See
+    /// `PaneShell_iOS.idealColumnWidth` for why a live read reopens the loop.
+    @ObservationIgnored
+    private(set) var sidebarWidth: CGFloat = InspectorLayout.idealWidth
+
+    /// Whether SwiftUI should currently present the document inspector.
+    ///
+    /// `sidebarOpen` is the user's window-level preference. A start tab has no
+    /// document, so it temporarily suppresses the inspector without changing
+    /// that preference. Keeping these concepts separate preserves the selected
+    /// panel and the column width when the user returns to a document.
+    var inspectorPresented: Bool {
+        focusedPane.app.document != nil && sidebarOpen
+    }
+
+    /// Applies a presentation change originating from SwiftUI's inspector host.
+    /// When focus moves to a start tab SwiftUI writes `false` because the
+    /// inspector is conditionally unavailable; that is not a user request to
+    /// close it, so ignore the write until a document is focused.
+    func setInspectorPresented(_ isPresented: Bool) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarOpen = isPresented
+    }
+
+    /// Selects an inspector panel and makes sure it is actually on screen.
+    ///
+    /// The ⌥⌘1/2/3 shortcuts route here rather than assigning `sidebarTab`
+    /// directly: selecting a panel in a closed inspector would change nothing
+    /// the user can see, so choosing one from the keyboard has to open the
+    /// column too. Reveal only — it never closes an inspector that is already
+    /// open, because ⌥⌘S is the toggle and a panel command that sometimes hid
+    /// the panel would be a trap.
+    ///
+    /// Nothing is done without a document: the inspector cannot be presented
+    /// then (`inspectorPresented`), so opening it would silently flip the user's
+    /// preference for whenever they next open one.
+    func revealSidebarTab(_ tab: SidebarTab) {
+        guard focusedPane.app.document != nil else { return }
+        sidebarTab = tab
+        sidebarOpen = true
+    }
+
+    /// Remembers user resizing while the inspector is genuinely visible.
+    /// Geometry briefly collapses when a start tab suppresses the inspector;
+    /// rejecting that transient measurement lets the next document reopen at
+    /// the user's prior width.
+    func rememberSidebarWidth(_ width: CGFloat) {
+        guard inspectorPresented,
+              (InspectorLayout.minimumWidth...InspectorLayout.maximumWidth).contains(width)
+        else { return }
+        sidebarWidth = width
+    }
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
@@ -155,9 +227,83 @@ final class WorkspaceStore {
     @ObservationIgnored private var isRestoring = false
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
+    // MARK: - Workspace-owned live tab runtimes
+    //
+    // Every open tab gets a `LiveTabRuntime` that owns its PDFView/WKWebView, so
+    // `PaneView_iOS` can keep a host mounted per tab and a switch costs nothing
+    // (issue #52). How long that native state is allowed to live is entirely the
+    // residency policy's business — see Services/TabResidency.swift. This store
+    // owns the runtime *objects* (cheap: a tab id and a page-text dict); the
+    // policy owns their expensive contents.
+
+    /// The window's retention policy. Not a singleton: owning it here means a
+    /// discarded workspace (one per unit test) takes its sweeper and its
+    /// memory-warning observer down with it, and a test can inject a hand-driven
+    /// clock. Vellum ships a single scene, so in production there is exactly one
+    /// of these.
+    @ObservationIgnored let residency: TabResidencyManager
+    @ObservationIgnored private var liveTabRuntimes: [String: LiveTabRuntime] = [:]
+
+    /// The runtime for a tab, created on first ask. Deliberately does *not*
+    /// touch the residency policy: `PaneView_iOS` calls this during layout for
+    /// every open tab, and a tab that has never been looked at owns no PDFView
+    /// and no WKWebView, so it must not count against a ceiling or start a
+    /// sweeper.
+    func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
+        liveTabRuntimes[tabId] ?? {
+            let created = LiveTabRuntime(tabId: tabId)
+            liveTabRuntimes[tabId] = created
+            return created
+        }()
+    }
+
+    /// The tab is being shown: undo any previous eviction and hand the runtime
+    /// to the residency policy, which is the moment it starts counting against
+    /// the ceilings and the idle window.
+    func activateLiveTabRuntime(_ runtime: LiveTabRuntime) {
+        runtime.reactivate()
+        residency.store(runtime, tabId: runtime.tabId)
+    }
+
+    func existingLiveTabRuntime(for tabId: String) -> LiveTabRuntime? {
+        liveTabRuntimes[tabId]
+    }
+
+    /// The tab is gone for good (closed, or its pane was discarded): hand the
+    /// memory back now rather than letting the retention window run.
+    func removeLiveTabRuntime(for tabId: String) {
+        residency.release(tabId: tabId)
+        liveTabRuntimes.removeValue(forKey: tabId)?.releaseResidency()
+    }
+
+    func flushLivePageTextCaches() async {
+        for runtime in liveTabRuntimes.values {
+            await runtime.flushPdfText()
+        }
+    }
+
+    /// Report a pane's current tab to the residency policy, which pins it. Keyed
+    /// on the pane's `AppStore` identity so a split window pins one tab *per
+    /// pane* and neither visible document can be evicted.
+    func paneDidActivateTab(_ app: AppStore, tabId: String?) {
+        residency.markActive(tabId: tabId, owner: ObjectIdentifier(app))
+    }
+
+    /// A pane is being discarded (split collapsed / panes merged). Drop its pin
+    /// so whatever it last showed stops being exempt from eviction.
+    private func forgetPanePin(_ app: AppStore) {
+        residency.forgetOwner(ObjectIdentifier(app))
+    }
+
     // MARK: - Init
 
-    init(sessions: SessionService) {
+    /// `residency` is injectable rather than constructed inline so tests can
+    /// drive a hand-advanced clock. Main additionally threads an
+    /// `IntegrationsStore` through here; that belongs to another packet, so the
+    /// iPad keeps one designated initializer and every existing
+    /// `WorkspaceStore(sessions:)` call site compiles unchanged.
+    init(sessions: SessionService, residency: TabResidencyManager = TabResidencyManager()) {
+        self.residency = residency
         self.sessions = sessions
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
@@ -191,6 +337,30 @@ final class WorkspaceStore {
     /// True when the window shows more than one pane (drives focus rings etc.).
     var isSplit: Bool { !root.isLeaf }
 
+    /// Every live tab in this window, in pane-tree order. The pane id travels
+    /// with the tab so workspace-level UI never accidentally activates or
+    /// closes an identically positioned tab in the pane that opened it.
+    var allTabs: [WorkspaceTab] {
+        root.allLeaves().enumerated().flatMap { paneIndex, pane in
+            pane.app.tabs.map { tab in
+                WorkspaceTab(paneId: pane.id, paneIndex: paneIndex, tab: tab)
+            }
+        }
+    }
+
+    func activateWorkspaceTab(paneId: String, tabId: String) {
+        guard let pane = root.leaf(id: paneId),
+              pane.app.tabs.contains(where: { $0.id == tabId }) else { return }
+        focus(paneId)
+        pane.app.activateTab(tabId)
+    }
+
+    func closeWorkspaceTab(paneId: String, tabId: String) async {
+        guard let pane = root.leaf(id: paneId),
+              pane.app.tabs.contains(where: { $0.id == tabId }) else { return }
+        await pane.app.closeTab(tabId)
+    }
+
     // MARK: - Pane construction
 
     private func makePane(startTab: Bool) -> PaneModel {
@@ -216,7 +386,6 @@ final class WorkspaceStore {
             sizes: [50, 50])
         root = replacingLeaf(root, id: target.id, with: split)
         focusedPaneId = newPane.id
-        sidebarOpen = true
         scheduleSave()
     }
 
@@ -262,7 +431,17 @@ final class WorkspaceStore {
     /// Collapse a pane; its sibling reclaims the space. Closing the last pane
     /// resets the window to a single empty pane.
     func closePane(_ paneId: String) {
-        guard root.leaf(id: paneId) != nil else { return }
+        guard let closingPane = root.leaf(id: paneId) else { return }
+        // The pane is going away, so its "this tab is on screen" pin must go with
+        // it — otherwise whatever it last showed stays exempt from eviction for
+        // the life of the process — and any tab it still holds is unreachable
+        // from here on, so its native state is released now rather than in half
+        // an hour. (In the common case — a pane emptied by a tab drag — `tabs`
+        // is already empty and only the pin matters.)
+        forgetPanePin(closingPane.app)
+        for tab in closingPane.app.tabs {
+            removeLiveTabRuntime(for: tab.id)
+        }
         if root.isLeaf {
             let pane = makePane(startTab: false)
             root = .leaf(pane)
@@ -298,9 +477,37 @@ final class WorkspaceStore {
         // the last migrated tab instead of the user's current document.
         let keepActiveTabId = keep.app.activeTabId
         for leaf in leaves where leaf.id != keep.id {
-            for tab in leaf.app.tabs {
+            // Ownership is *transferred*, exactly as in `moveTab` — detach from
+            // the donor before attaching to `keep`. Copying instead would leave
+            // two AppStores claiming the same tab id, and anything keyed on
+            // tab-to-pane ownership (the web controller's mount guard, the ink
+            // registry, find and note-placement state, the residency pin) would
+            // still resolve the tab to the pane it just left (issue #91). Ids
+            // are snapshotted first because `detachTab` mutates the array being
+            // walked.
+            for tabId in leaf.app.tabs.map(\.id) {
+                guard let tab = leaf.app.detachTab(tabId) else {
+                    // Unreachable: the ids came from this pane a line ago and
+                    // nothing between here and there can remove one. Losing a
+                    // tab silently is the worst outcome available, so say so.
+                    assertionFailure("mergeAll: \(tabId) vanished from its own pane mid-merge")
+                    continue
+                }
                 keep.app.attachTab(tab)
             }
+            // Same reasoning as closePane: the absorbed pane is discarded, so
+            // drop its residency pin. Its tabs are now pinned (or not) by `keep`.
+            // Their runtimes are workspace-owned and keyed by tab id, so they
+            // migrate with the tabs untouched.
+            //
+            // Emptying the pane above has in fact already dropped the pin —
+            // the last `detachTab` re-points the pane at nothing, which reports
+            // `markActive(nil)` — so this is normally a no-op. It stays because
+            // the one case it isn't is a donor whose `activeTabId` disagrees
+            // with its `tabs`: the pin would then outlive the pane, and a stale
+            // `ObjectIdentifier` key aliases whatever AppStore is allocated at
+            // that address next.
+            forgetPanePin(leaf.app)
         }
         if let keepActiveTabId {
             keep.app.activateTab(keepActiveTabId)
@@ -384,11 +591,19 @@ final class WorkspaceStore {
     private func dto(from node: PaneNode) -> PaneNodeDTO {
         switch node {
         case .leaf(let pane):
-            let tabs = pane.app.tabs.map {
-                TabDescriptor(document: $0.document, currentPage: $0.currentPage, zoom: $0.zoom, mode: $0.mode)
+            // Start tabs are a transient navigation surface, not documents.
+            // Persisting them strands abandoned "New Tab" entries among the
+            // user's reading tabs after relaunch.
+            let liveTabs = pane.app.tabs.filter { $0.document != nil }
+            let tabs = liveTabs.map {
+                TabDescriptor(
+                    document: $0.document,
+                    currentPage: $0.currentPage,
+                    zoom: $0.zoom,
+                    mode: $0.regionCaptureTarget == nil ? $0.mode : .view)
             }
             let activeIndex = pane.app.activeTabId.flatMap { id in
-                pane.app.tabs.firstIndex { $0.id == id }
+                liveTabs.firstIndex { $0.id == id }
             }
             return .leaf(tabs: tabs, activeTabIndex: activeIndex)
         case .split(_, let direction, let children, let sizes):
@@ -429,13 +644,59 @@ final class WorkspaceStore {
         for work in leafWork {
             await work.pane.app.restoreTabs(work.tabs, activeIndex: work.activeIndex)
         }
-        let leaves = root.allLeaves()
-        if leaves.indices.contains(state.focusedLeafIndex) {
-            focusedPaneId = leaves[state.focusedLeafIndex].id
+        let restoredFocusedPaneId = root.allLeaves().indices.contains(state.focusedLeafIndex)
+            ? root.allLeaves()[state.focusedLeafIndex].id
+            : nil
+        pruneAbandonedEmptyPanes()
+        if let restoredFocusedPaneId, root.leaf(id: restoredFocusedPaneId) != nil {
+            focusedPaneId = restoredFocusedPaneId
         }
         isRestoring = false
         // Persist the reconciled state (some tabs may have failed to reopen).
         scheduleSave()
+    }
+
+    /// A persisted split can become partially empty when documents disappear
+    /// before the next launch. Empty leaves are not useful split targets, so
+    /// collapse them after restore while preserving one Welcome pane if every
+    /// saved document was unavailable.
+    func pruneAbandonedEmptyPanes() {
+        let before = root.allLeaves()
+        let fallback = before.first
+        if let pruned = pruningEmptyLeaves(root) {
+            root = pruned
+        } else if let fallback {
+            root = .leaf(fallback)
+        }
+        // Same contract as `closePane` and `mergeAll`: a pane that stops
+        // existing must drop its residency pin, or whatever it last showed
+        // stays exempt from eviction for the life of the process (issue #52).
+        let survivors = Set(root.allLeaves().map(\.id))
+        for pane in before where !survivors.contains(pane.id) {
+            forgetPanePin(pane.app)
+        }
+        if root.leaf(id: focusedPaneId) == nil {
+            focusedPaneId = root.firstLeafId
+        }
+    }
+
+    private func pruningEmptyLeaves(_ node: PaneNode) -> PaneNode? {
+        switch node {
+        case .leaf(let pane):
+            return pane.app.tabs.isEmpty ? nil : node
+        case .split(let id, let direction, let children, let sizes):
+            var keptChildren: [PaneNode] = []
+            var keptSizes: [Double] = []
+            for (index, child) in children.enumerated() {
+                if let survivor = pruningEmptyLeaves(child) {
+                    keptChildren.append(survivor)
+                    keptSizes.append(sizes.indices.contains(index) ? sizes[index] : 1)
+                }
+            }
+            if keptChildren.isEmpty { return nil }
+            if keptChildren.count == 1 { return keptChildren[0] }
+            return .split(id: id, direction: direction, children: keptChildren, sizes: normalized(keptSizes))
+        }
     }
 
     private func buildNode(
@@ -455,4 +716,13 @@ final class WorkspaceStore {
                 sizes: sizes)
         }
     }
+}
+
+struct WorkspaceTab: Identifiable, Equatable {
+    let paneId: String
+    let paneIndex: Int
+    let tab: PdfTab
+
+    var id: String { "\(paneId):\(tab.id)" }
+    var paneLabel: String { "Pane \(paneIndex + 1)" }
 }
