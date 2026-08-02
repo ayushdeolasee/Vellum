@@ -81,6 +81,13 @@ final class ScratchpadStore {
     private var isRestoring = false
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
+    /// The tail of this store's chain of background attachment sweeps (see
+    /// `pruneOrphanedAttachments`). Kept rather than dropped so the sweep is
+    /// joinable: production never waits on it — it is best-effort and must not
+    /// delay a document open — but a test can join it instead of racing it
+    /// (#100). Each sweep awaits its predecessor, so this one handle covers
+    /// every sweep the store has armed.
+    @ObservationIgnored private(set) var attachmentSweepTask: Task<Void, Never>?
 
     /// Restore the note for `document`, first flushing the previous document's
     /// text so switching tabs never drops an unsaved edit.
@@ -152,7 +159,13 @@ final class ScratchpadStore {
         // would be deleted out from under the note. Collect only against files
         // that already existed when the snapshot was taken.
         let referencedAsOf = Date()
-        Task.detached(priority: .utility) {
+        // Chain onto the previous sweep rather than running alongside it: two
+        // sweeps interleaving over one directory is pointless work, and it keeps
+        // `attachmentSweepTask` a handle on ALL of this store's sweeps, not just
+        // the latest — a document can be loaded more than once.
+        let previous = attachmentSweepTask
+        attachmentSweepTask = Task.detached(priority: .utility) {
+            await previous?.value
             var referenced = Set<String>()
             for text in texts {
                 referenced.formUnion(ScratchpadAttachmentStore.referencedIds(in: text))
