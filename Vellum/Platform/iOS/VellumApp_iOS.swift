@@ -19,9 +19,13 @@ struct VellumApp_iOS: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        // Moves the first vault read off the main thread before anything asks
+        // for a token.
+        KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let workspace = WorkspaceStore(sessions: sessions)
+        let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())
+        let workspace = WorkspaceStore(sessions: sessions, integrations: integrations)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())
@@ -30,6 +34,10 @@ struct VellumApp_iOS: App {
     var body: some Scene {
         WindowGroup {
             ContentView_iOS()
+                // Startup sync. Deliberately BEFORE the detached maintenance
+                // work: start() loads the cached snapshots, so the providers'
+                // items are on screen before the TTL sweep starts churning.
+                .task { await workspace.integrations.start() }
                 .task { await launchMaintenance() }
                 .onOpenURL { url in handleIncomingFile(url) }
                 // The storage choice hands off to the walkthrough when it
@@ -75,6 +83,7 @@ struct VellumApp_iOS: App {
                 }
                 .environment(themeStore)
                 .environment(workspace)
+                .environment(workspace.integrations)
                 .environment(inkRegistry)
                 .environment(workspace.openRouterCatalog)
                 .environment(workspace.chatgptAuth)
@@ -91,6 +100,13 @@ struct VellumApp_iOS: App {
             // macOS terminate hook.
             if phase == .background {
                 flushOnBackground()
+            }
+            // iOS suspends the process, so the store's 30-minute auto-refresh
+            // Task.sleep does not fire in the background and an iPad that has
+            // been away for a day would show stale items until someone tapped
+            // Sync Now. Returning to the foreground is the moment to re-check.
+            if phase == .active {
+                workspace.integrations.run { await workspace.integrations.foregroundRefresh() }
             }
         }
     }
@@ -217,6 +233,11 @@ struct VellumApp_iOS: App {
             await PageTextPersister.awaitInFlightFlushes()
             await ScratchpadPersistence.awaitPendingFlush()
             await AiPersistence.awaitPendingFlush()
+            // The iOS analogue of the Mac's applicationShouldTerminate barrier:
+            // cancel in-flight syncs and wait for the store-owned writes
+            // (preference flips, optimistic moves, disconnects, thumbnail
+            // cleanup). Last, so it does not hold up the per-tab saves above.
+            await workspace.integrations.awaitQuiescence()
         }
     }
 }

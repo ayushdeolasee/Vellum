@@ -35,6 +35,10 @@ final class WorkspaceStore {
     var settingsSection: SettingsSection = .general
 
     let sessions: SessionService
+    /// The read-later integrations store. Window-global like the rest of the
+    /// shell state, and injected rather than constructed inline so tests and
+    /// previews can hand in a store with stubbed clients.
+    let integrations: IntegrationsStore
 
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
     /// reopen or Save As in one pane waits out a close started in another —
@@ -318,14 +322,18 @@ final class WorkspaceStore {
 
     // MARK: - Init
 
-    /// `residency` is injectable rather than constructed inline so tests can
-    /// drive a hand-advanced clock. Main additionally threads an
-    /// `IntegrationsStore` through here; that belongs to another packet, so the
-    /// iPad keeps one designated initializer and every existing
-    /// `WorkspaceStore(sessions:)` call site compiles unchanged.
-    init(sessions: SessionService, residency: TabResidencyManager = TabResidencyManager()) {
+    /// `integrations` and `residency` are both injectable rather than
+    /// constructed inline, so tests and previews can hand in a store with
+    /// stubbed clients or drive a hand-advanced clock. Both default, which
+    /// keeps every existing `WorkspaceStore(sessions:)` and
+    /// `WorkspaceStore(sessions:residency:)` call site compiling unchanged.
+    init(
+        sessions: SessionService, integrations: IntegrationsStore = IntegrationsStore(),
+        residency: TabResidencyManager = TabResidencyManager()
+    ) {
         self.residency = residency
         self.sessions = sessions
+        self.integrations = integrations
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()

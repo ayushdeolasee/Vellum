@@ -31,6 +31,7 @@ struct PaneView_iOS: View {
     let pane: PaneModel
 
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(InkRegistry_iOS.self) private var inkRegistry
     @Environment(\.palette) private var palette
     @State private var activeZone: DropZone?
@@ -216,7 +217,29 @@ struct PaneView_iOS: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(edges: .bottom)
+                .overlay(alignment: .bottomTrailing) { readLaterNotice }
             }
+    }
+
+    /// Download/move progress for the read-later item this document came from,
+    /// shown over the reader so a sync started elsewhere is still visible while
+    /// the user is reading.
+    @ViewBuilder
+    private var readLaterNotice: some View {
+        if let path = app.document?.pdfPath,
+           let item = integrations.readLaterItem(forOpenDocumentPath: path),
+           let notice = integrations.notice(forItem: item.id) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+            ) {
+                if notice.isMove { integrations.dismissMoveNotice(item.id) } else { integrations.dismissDownloadNotice(item.id) }
+            }
+            // Inset far enough to clear the ink palette's bottom-trailing well.
+            .padding(.trailing, 18)
+            .padding(.bottom, 96)
+        }
     }
 
     /// File pickers and sheets are presented once, at the shell — focus this
