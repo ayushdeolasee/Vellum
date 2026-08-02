@@ -241,13 +241,18 @@ struct WebViewerView_iOS: View {
         let sessionId = app.activeTabId
         switch app.regionCaptureTarget {
         case .ai:
+            // Pin the destination tab AND document before the await, then let
+            // `addCapturedReference` discard the crop if the pane moved on — the
+            // active-tab id alone can't tell "same tab, different document"
+            // apart, which is a live case for a web tab that navigated.
+            guard let target = aiStore.currentReferenceTarget() else { return }
             Task {
                 // A web capture always stamps the virtual page it was taken on,
                 // so the snapshot's optional page is always populated here.
                 guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
-                      let page = snapshot.pageNumber,
-                      app.activeTabId == sessionId else { return }
-                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+                      let page = snapshot.pageNumber else { return }
+                aiStore.addCapturedReference(
+                    AiReference(kind: .region(image: snapshot, page: page)), target: target)
             }
         case .scratchpad:
             Task {

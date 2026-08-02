@@ -112,15 +112,15 @@ struct PaneView_iOS: View {
                   let document = app.document else { return }
             let key = DocumentIdentity.storageKey(for: document)
             guard keys.contains(key) else { return }
-            // TODO(parity-129 packet-1): needs
-            // AiPersistence.invalidateCachedConversation(forKey:) (packet 5) and
+            // TODO(parity-129 packet-1): still needs
             // ScratchpadStore.discardNotesForExternalDelete(matchingKey:)
-            // (packet 6). Until those land the chat reload re-reads a cache the
-            // poster could not invalidate, and the notes branch cannot discard.
-            // Do NOT call pane.scratchpad.loadForDocument here — that flushes the
-            // stale note back over the file that was just deleted, which is the
-            // exact bug the discard path exists to prevent.
+            // (packet 6) for the notes branch. Do NOT call
+            // pane.scratchpad.loadForDocument here — that flushes the stale note
+            // back over the file that was just deleted, which is the exact bug
+            // the discard path exists to prevent.
             if note.userInfo?["chat"] as? Bool == true {
+                // Cache already invalidated by the poster; reload re-reads the now
+                // empty disk without writing.
                 pane.ai.loadConversationForDocument(document)
             }
         }

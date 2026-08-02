@@ -6,9 +6,11 @@ import UniformTypeIdentifiers
 // Touch-first port of the macOS AI chat panel (Views/AI/AiPanel.swift), brought
 // to feature parity: streaming replies, an activity pill (thinking / reading /
 // indexing / tool receipts), selectable assistant text with a Quote action,
-// composer reference chips, image attachments (drop anywhere on the panel, the
-// Photos picker, or the Files importer), a usage line per response, the model
-// selector via AI settings, and cancel-in-flight on clear.
+// composer reference chips, sent-reference chips and the collapsed "sources &
+// actions" trace under each reply, image attachments (drop anywhere on the
+// panel, the Photos picker, or the Files importer), a usage line per response,
+// the model selector via AI settings, stick-to-bottom scroll follow with a
+// Jump-to-latest pill, and clear-with-undo.
 //
 // Voice/TTS was removed to mirror main. The composer is a native SwiftUI
 // TextField that auto-grows, not an NSTextView.
@@ -16,19 +18,53 @@ struct AiPanel_iOS: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.undoManager) private var undoManager
 
     @State private var input = ""
     @State private var settingsOpen = false
-    /// True while an image drag hovers the panel (drives the dashed outline).
+    /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var fileImporterOpen = false
     @State private var photosPickerOpen = false
     @State private var photoItems: [PhotosPickerItem] = []
+    /// Focus for the composer, driven by `AiStore.composerFocusRequest` so that
+    /// attaching context from elsewhere in the app also raises the keyboard.
+    @FocusState private var composerFocused: Bool
+
+    /// Live width of the transcript column. The AI panel shares a resizable
+    /// sidebar with the scratchpad and inspector, and bubbles used to be pinned
+    /// to a fixed 300pt — so widening it only grew the empty gutter beside them.
+    /// Tracking the real width lets `bubbleMaxWidth(for:)` spend the extra space.
+    @State private var transcriptWidth: CGFloat = 0
+
+    /// Whether the transcript follows the tail of a streaming reply.
+    ///
+    /// It used to follow unconditionally — every streamed token re-ran
+    /// `scrollToBottom`, so scrolling up to re-read something earlier in the
+    /// answer yanked you straight back down and reading back mid-generation was
+    /// impossible (issue #57). Now this is the usual "stick to bottom": true
+    /// while the reader is parked at the end, false the moment they scroll away,
+    /// true again when they come back (or take the Jump to latest shortcut).
+    @State private var followsTail = true
+
+    /// How close to the end still counts as "at the bottom", in points. Absorbs
+    /// sub-pixel rounding, the 1pt bottom anchor, and the few points a reader
+    /// drifts without meaning to leave the tail.
+    ///
+    /// Must stay above the transcript's 12pt bottom padding: `scrollToBottom`
+    /// aligns the 1pt `ai-bottom` anchor with the viewport's bottom edge, which
+    /// leaves that padding below it — so even a perfectly followed transcript
+    /// reports ~12pt of `distanceFromBottom`.
+    static let bottomSlack: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if !aiStore.settings.isConfigured(chatGPTSignedIn: workspace.chatgptAuth.isSignedIn) {
+                configureAiBanner
+            }
             if settingsOpen {
                 AiSettingsPanel()
             }
@@ -45,15 +81,13 @@ struct AiPanel_iOS: View {
                     .allowsHitTesting(false)
             }
         }
-        // Both types are needed: a drag out of Files advertises a file URL and
-        // NOT an image, so `.image` alone never matches it; Photos and browsers
-        // hand over the bytes, which `.image` matches. Registering no types when
-        // the model can't read images is the gate itself — the panel never
-        // highlights and the drag springs back to its source.
+        // Registered unconditionally — see `AttachmentDrop.draggedTypes`. A drop
+        // the panel can't use is declined with a notice naming the files, which
+        // is far more legible than a drag that springs back to its source.
         .onDrop(
-            of: aiStore.activeModelSupportsImages ? [.image, .fileURL] : [],
+            of: AttachmentDrop.draggedTypes,
             isTargeted: $dropTargeted,
-            perform: handleImageDrop
+            perform: handleAttachmentDrop
         )
         .fileImporter(
             isPresented: $fileImporterOpen,
@@ -61,7 +95,10 @@ struct AiPanel_iOS: View {
             allowsMultipleSelection: true
         ) { result in
             guard case let .success(urls) = result else { return }
-            attachImages(at: urls)
+            // The store owns the security-scoped read, the images-only policy,
+            // the decline notices and the tab-identity guard — the panel just
+            // hands over the URLs.
+            aiStore.attachFiles(at: urls)
         }
         .photosPicker(
             isPresented: $photosPickerOpen,
@@ -73,6 +110,13 @@ struct AiPanel_iOS: View {
             guard !items.isEmpty else { return }
             attachPhotoItems(items)
             photoItems = []
+        }
+        // Attaching context is always the prelude to typing about it, so an
+        // "Add to AI Chat" action anywhere in the app raises the keyboard here.
+        .onChange(of: aiStore.composerFocusRequest) { _, request in
+            guard let request else { return }
+            composerFocused = true
+            aiStore.consumeComposerFocusRequest(request)
         }
     }
 
@@ -98,16 +142,48 @@ struct AiPanel_iOS: View {
                 }
                 .accessibilityIdentifier("aiPanel.settings")
                 touchIconButton(
-                    system: "trash", label: "Clear conversation"
-                ) {
-                    aiStore.clearConversation()
-                }
+                    system: "trash", label: "Clear AI conversation", action: clearConversation
+                )
+                .disabled(aiStore.messages.isEmpty)
+                .opacity(aiStore.messages.isEmpty ? 0.4 : 1)
                 .accessibilityIdentifier("aiPanel.clearConversation")
             }
         }
         .foregroundStyle(palette.foreground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
+    private func clearConversation() {
+        guard let transaction = aiStore.clearConversation() else { return }
+        guard let undoManager else { return }
+        registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+    }
+
+    /// Shown until there is a usable provider credential. On iPad the button
+    /// reveals the panel's own inline `AiSettingsPanel` rather than opening a
+    /// separate Settings window — that inline panel is the iPad's only
+    /// in-context path to the provider/model pickers.
+    private var configureAiBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "key")
+                .foregroundStyle(palette.mutedForeground)
+            Text("Configure AI to start chatting.")
+                .font(.system(size: 12))
+                .foregroundStyle(palette.mutedForeground)
+            Spacer(minLength: 4)
+            Button("Configure AI in Settings") { settingsOpen = true }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("aiPanel.configureAi")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(palette.surfaceMuted)
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -148,15 +224,192 @@ struct AiPanel_iOS: View {
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
-                .padding(12)
+                .padding(transcriptPadding)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: aiStore.messages.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: aiStore.isThinking) { _, _ in scrollToBottom(proxy) }
+            // Width only — the scroll geometry below tracks the vertical side.
+            // Separate observers on purpose: this one has to fire on a sidebar
+            // drag, which does not move the scroll offset at all.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { transcriptWidth = $0 }
+            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                ScrollMetrics(
+                    offsetY: geometry.contentOffset.y,
+                    contentHeight: geometry.contentSize.height,
+                    viewportHeight: geometry.containerSize.height
+                )
+            } action: { old, new in
+                let wasFollowing = followsTail
+                followsTail = Self.follows(was: wasFollowing, from: old, to: new)
+                // A viewport that shrank under a *followed* transcript has just
+                // pushed the tail off the bottom of the screen without anyone
+                // scrolling, and nothing else will put it back: `followTail` only
+                // runs on a message/token change, which may be a long way off —
+                // or never, if the reply already finished. Close the gap here.
+                // On iPad the software keyboard appearing is exactly this case.
+                if followsTail, wasFollowing,
+                   new.viewportHeight != old.viewportHeight,
+                   new.distanceFromBottom > Self.bottomSlack {
+                    scrollToBottom(proxy)
+                }
+            }
+            .onChange(of: aiStore.messages.count) { _, _ in
+                // A cleared conversation has no tail to be away from.
+                if aiStore.messages.isEmpty { followsTail = true }
+                followTail(proxy)
+            }
+            // A tab switch swaps the whole transcript: `AiStore` reloads
+            // `messages` for the incoming document. Whatever the reader had
+            // scrolled away from no longer exists, so re-arm rather than opening
+            // an unrelated conversation stranded mid-history behind a Jump to
+            // latest pill. (The message *count* can easily match across the two
+            // conversations, so the `messages.count` handler above is not enough.)
+            .onChange(of: appStore.activeTabId) { _, _ in
+                followsTail = true
+                followTail(proxy)
+            }
+            .onChange(of: aiStore.isThinking) { _, _ in followTail(proxy) }
             // Streaming appends to a single message, so follow its growing length.
-            .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: aiStore.messages.last?.content.count ?? 0) { _, _ in followTail(proxy) }
+            // Both float over the transcript so they sit above the composer
+            // WITHOUT moving it, and never shove the transcript the way an
+            // inline banner would — which would itself shrink the viewport and
+            // unstick a reader who never scrolled. Stacked rather than overlaid
+            // on each other so a declined drop and a scrolled-up reader coexist.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 8) {
+                    if showsJumpToLatest {
+                        jumpToLatestButton(proxy)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if let notice = aiStore.attachmentNotice {
+                        attachmentNoticeBanner(notice)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .padding(12)
+            }
+            .animation(.easeInOut(duration: 0.2), value: aiStore.attachmentNotice)
+            .animation(.easeInOut(duration: 0.2), value: showsJumpToLatest)
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// Inset around the transcript's content, subtracted from the measured
+    /// scroll-view width to get the usable column.
+    private let transcriptPadding: CGFloat = 12
+
+    /// Widest a bubble of `role` may be, for the transcript width measured above.
+    private func bubbleMaxWidth(for role: AiRole) -> CGFloat {
+        Self.bubbleMaxWidth(for: role, contentWidth: transcriptWidth - transcriptPadding * 2)
+    }
+
+    /// Widest a bubble of `role` may be inside a content column of
+    /// `contentWidth` points. Assistant replies are long-form (prose, code,
+    /// typeset math) so they take the whole column; user messages stop a little
+    /// short of it, which is what keeps the trailing-aligned "You" bubbles
+    /// readable as a distinct column at any panel width.
+    ///
+    /// Before the first geometry pass — and if the measurement ever comes back
+    /// degenerate — this falls back to the pre-resize 272pt so a bubble is
+    /// never laid out at zero width. `isFinite` is checked alongside `> 0`
+    /// because this width is also the cap handed to the math rasterizers: an
+    /// infinite column wouldn't just look odd, it would switch off equation
+    /// downscaling altogether and let a wide display equation overflow.
+    ///
+    /// Static (and not private) so those degenerate inputs are testable without
+    /// mounting the panel and the four stores it reads from the environment.
+    static func bubbleMaxWidth(for role: AiRole, contentWidth: CGFloat) -> CGFloat {
+        let column = contentWidth.isFinite && contentWidth > 0 ? max(contentWidth, 160) : 272
+        guard role == .user else { return column }
+        return max(column * 0.82, min(column, 200))
+    }
+
+    /// The scroll state the stick-to-bottom rule is derived from. Equatable so
+    /// `onScrollGeometryChange` only wakes us when one of these actually moves.
+    struct ScrollMetrics: Equatable {
+        var offsetY: CGFloat
+        var contentHeight: CGFloat
+        var viewportHeight: CGFloat
+
+        /// Points of content below the viewport. Clamped at zero so rubber-band
+        /// overscroll past the end doesn't read as "far from the bottom".
+        var distanceFromBottom: CGFloat {
+            max(0, contentHeight - viewportHeight - offsetY)
+        }
+    }
+
+    /// The stick-to-bottom rule itself: given the previous scroll state and the
+    /// new one, should the transcript still follow the tail?
+    ///
+    /// Lifted out of the `onScrollGeometryChange` closure and made pure so it can
+    /// be exercised headlessly (`AiTranscriptFollowTests`). Every scenario this
+    /// has to get right — a reader scrolling up mid-stream, scrolling back down,
+    /// the panel's own chrome resizing underneath them — otherwise needs a live
+    /// streamed reply to reproduce, which is why the original went out untested.
+    ///
+    /// Being away from the end is not by itself evidence the reader moved. Three
+    /// very different things land us there and only one of them is a person:
+    ///  • the transcript grew, so a streamed token moved the end away from a
+    ///    stationary reader. That must NOT unstick them, which is exactly what a
+    ///    naive "am I at the end?" test would do.
+    ///  • the viewport shrank, which moves the end away by just as much with
+    ///    nobody touching the scroller. This panel does that constantly: opening
+    ///    the settings section, a reference chip appearing, the composer growing
+    ///    from 36pt to 120pt as the user types a multi-line question, or the
+    ///    window being resized all steal height from the transcript. Watching
+    ///    only `contentHeight` here meant typing a three-line question unstuck a
+    ///    reader who had never scrolled, froze the streaming reply in place and
+    ///    popped the Jump to latest pill.
+    ///  • the offset moved, i.e. the reader scrolled. This is the signal that
+    ///    stops us following.
+    ///
+    /// A resize is still conclusive in one direction: neither appending text nor
+    /// shrinking the viewport can move you UP, so an offset that decreased across
+    /// one is unambiguously the reader. (The viewport *growing* can clamp the
+    /// offset down, but only for a reader already at the end — who is caught by
+    /// the at-the-bottom check first.)
+    static func follows(was following: Bool, from old: ScrollMetrics, to new: ScrollMetrics) -> Bool {
+        // Parked at the end IS the followed state, however the reader got there
+        // — this is what re-arms following when they scroll back down by hand
+        // mid-generation.
+        guard new.distanceFromBottom > bottomSlack else { return true }
+        let resized = new.contentHeight != old.contentHeight
+            || new.viewportHeight != old.viewportHeight
+        guard !resized || new.offsetY < old.offsetY else { return following }
+        return false
+    }
+
+    /// Offered only while there is a tail worth returning to.
+    private var showsJumpToLatest: Bool {
+        !followsTail && !aiStore.messages.isEmpty
+    }
+
+    /// Shortcut back to the end of a reply the reader scrolled away from, which
+    /// also re-arms follow-the-tail. Uses the composer's glass treatment so it
+    /// reads as a floating control rather than transcript content.
+    private func jumpToLatestButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            followsTail = true
+            scrollToBottom(proxy)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Jump to latest")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 12)
+            // Taller than the Mac's 6pt: this is a finger target, and the pill
+            // floats over the transcript with nothing else nearby to mis-hit.
+            .padding(.vertical, 10)
+            .frame(minHeight: 36)
+            .glassEffect(.regular, in: .capsule)
+            .overlay { Capsule().strokeBorder(palette.border.opacity(0.6)) }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("aiPanel.jumpToLatest")
     }
 
     private var emptyState: some View {
@@ -197,9 +450,32 @@ struct AiPanel_iOS: View {
             .foregroundStyle(palette.mutedForeground)
             .padding(.horizontal, 4)
 
+            // What this prompt was sent with. Sits above the bubble rather than
+            // inside it because the referenced text is not part of the message
+            // body — it travelled in the prompt's context block — so folding it
+            // into the bubble would misrepresent what the user actually typed.
+            if !message.references.isEmpty {
+                SentReferenceChips(
+                    references: message.references,
+                    onGoToPage: { appStore.goToPage($0) },
+                    // Pixels for an image reference don't live on the message —
+                    // they're stripped before it is persisted — so the store
+                    // resolves them from this session's cache. nil means "not
+                    // previewable", which the popover states outright.
+                    previewData: { aiStore.referencePreviewData(for: $0) },
+                    // The same cap the bubble below gets, so the chips wrap on
+                    // the bubble's column instead of the full transcript width.
+                    maxWidth: bubbleMaxWidth(for: message.role)
+                )
+            }
+
             messageBubble(message)
 
             if message.role == .assistant, !message.content.isEmpty {
+                let summaries = message.displayToolSummaries
+                if summaries.isEmpty == false {
+                    toolSummaries(summaries)
+                }
                 messageActions(message)
             }
             if let usage = message.usage, !usage.isEmpty {
@@ -209,32 +485,75 @@ struct AiPanel_iOS: View {
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
+    /// The collapsed "what I looked at" trace under an assistant reply.
+    ///
+    /// Deliberately a SIBLING of the bubble rather than content inside it, and
+    /// so deliberately NOT wrapped in `BubbleWidthCap`. The bubble hugs its
+    /// prose because a two-word reply shouldn't paint a slab; a source list is
+    /// a stack of rows that genuinely wants the whole column, and hugging it
+    /// would make every disclosure row a different width. `.infinity` here is
+    /// therefore the right answer and does not compete with the bubble's cap —
+    /// the two never lay out the same subtree.
+    private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sources & actions")
+                .font(.caption)
+                .foregroundStyle(palette.mutedForeground)
+                .padding(.horizontal, 4)
+
+            ForEach(summaries) { summary in
+                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources and actions")
+    }
+
     @ViewBuilder
     private func messageBubble(_ message: AiMessage) -> some View {
-        Group {
+        // Text width inside the bubble: the bubble's cap minus its own padding.
+        // Handed to the renderers explicitly so they can cap typeset math images,
+        // which can't read the SwiftUI frame back out.
+        let bubbleWidth = bubbleMaxWidth(for: message.role)
+        let textWidth = max(bubbleWidth - 24, 80)
+        BubbleWidthCap(maxWidth: textWidth) {
             if message.role == .assistant {
                 SelectableMessageText(
-                    content: message.content,
+                    // `displayContent`, not `content`: a reply persisted by an
+                    // older build has its tool receipts glued onto the end of
+                    // the text. Those are now rendered as a separate collapsed
+                    // trace, so they have to come off the bubble — without
+                    // rewriting what is stored on disk.
+                    content: message.displayContent,
                     color: palette.foreground,
                     secondary: palette.mutedForeground,
+                    maxWidth: textWidth,
                     onQuote: { text in
                         aiStore.addReference(AiReference(kind: .quote(text: text, messageId: message.id)))
                     },
                     // The bubble's UITextView covers most of the transcript, and
                     // UIKit hands a drop over it to that view rather than to the
-                    // panel's `.onDrop` — so it forwards image drops here too.
-                    onImageDrop: imageDropHandler,
+                    // panel's `.onDrop` — so it forwards attachment drops here too.
+                    onAttachmentDrop: attachmentDropHandler,
                     onDropTargeted: { dropTargeted = $0 }
                 )
             } else {
-                MarkdownMessage(content: message.content, textColor: palette.primaryForeground)
-                    .font(.system(size: 14))
-                    .foregroundStyle(palette.primaryForeground)
+                MarkdownMessage(
+                    content: message.content,
+                    textColor: palette.primaryForeground,
+                    mathMaxWidth: textWidth,
+                    // Hug, so a short "You" message is a small tinted bubble
+                    // rather than a bar the width of the panel. The other
+                    // MarkdownMessage hosts keep the filling default.
+                    fillsAvailableWidth: false
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(palette.primaryForeground)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: 300, alignment: .leading)
         .background(
             message.role == .user
                 ? AnyShapeStyle(.tint)
@@ -248,20 +567,27 @@ struct AiPanel_iOS: View {
     }
 
     /// Copy / Quote / Add-as-note row under each assistant reply.
+    ///
+    /// All three act on `displayContent` — the answer as shown in the bubble.
+    /// Copying a reply must not silently drag a legacy "Actions:" receipt list
+    /// into the user's clipboard or into a note they place on the page.
     private func messageActions(_ message: AiMessage) -> some View {
         HStack(spacing: 2) {
-            messageActionButton(system: "doc.on.doc", label: "Copy") {
-                UIPasteboard.general.string = message.content
+            messageActionButton(system: "doc.on.doc", label: "Copy answer") {
+                UIPasteboard.general.string = message.displayContent
             }
             .accessibilityIdentifier("aiMessage.copy")
 
             messageActionButton(system: "quote.bubble", label: "Quote in reply") {
-                aiStore.addReference(AiReference(kind: .quote(text: message.content, messageId: message.id)))
+                aiStore.addReference(AiReference(kind: .quote(
+                    text: message.displayContent,
+                    messageId: message.id
+                )))
             }
             .accessibilityIdentifier("aiMessage.quote")
 
             messageActionButton(system: "note.text.badge.plus", label: "Add as note — tap the page to place it") {
-                appStore.beginNoteWithContent(message.content)
+                appStore.beginNoteWithContent(message.displayContent)
             }
             .accessibilityIdentifier("aiMessage.addNote")
         }
@@ -326,6 +652,47 @@ struct AiPanel_iOS: View {
         }
     }
 
+    /// The declined-attachment toast. Modeled on `ScratchpadPanel_iOS`'s drop
+    /// warning so the two sidebar panels feel consistent: a warning icon, the
+    /// wrapping message, and an × to dismiss, on a `.regularMaterial` card with
+    /// a destructive-tinted stroke.
+    private func attachmentNoticeBanner(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(palette.destructive)
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.foreground)
+                // Multi-line notices must wrap, not clip. Safe here because the
+                // trailing `.frame(maxWidth: .infinity)` constrains the width first.
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(action: aiStore.dismissAttachmentNotice) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.mutedForeground)
+                    // Frame + contentShape INSIDE the label so the whole 32pt
+                    // square is tappable, not just the glyph's bounds.
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("aiPanel.attachmentNotice.dismiss")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.md))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.md)
+                .strokeBorder(palette.destructive.opacity(0.35))
+        }
+        .accessibilityIdentifier("aiPanel.attachmentNotice")
+    }
+
     private func errorBanner(_ error: String, icon: String? = nil) -> some View {
         Group {
             if let icon {
@@ -375,15 +742,16 @@ struct AiPanel_iOS: View {
                 .lineLimit(1...5)
                 .submitLabel(.send)
                 .onSubmit(submit)
+                .focused($composerFocused)
                 .padding(.horizontal, 4)
                 .frame(minHeight: 40)
                 // A native text input can consume the UIKit drop before the
                 // panel-level destination sees it. Register the same handler
                 // directly on the composer so "drop anywhere" is literal.
                 .onDrop(
-                    of: aiStore.activeModelSupportsImages ? [.image, .fileURL] : [],
+                    of: AttachmentDrop.draggedTypes,
                     isTargeted: $dropTargeted,
-                    perform: handleImageDrop
+                    perform: handleAttachmentDrop
                 )
 
             Button(action: submit) {
@@ -422,6 +790,8 @@ struct AiPanel_iOS: View {
             }
             // An arbitrary image has nothing to do with the document, so it's
             // offered with or without one — but only to a model that can read it.
+            // Two sources rather than the Mac's single "Attach image…": the
+            // Photos picker is an iPad-only affordance worth keeping.
             if aiStore.activeModelSupportsImages {
                 Button {
                     photosPickerOpen = true
@@ -454,105 +824,69 @@ struct AiPanel_iOS: View {
 
     private func attachCurrentPage() {
         let page = appStore.currentPage
-        let sessionId = appStore.activeTabId
+        // Rendering a page to JPEG is slow enough that switching tabs in the
+        // meantime is ordinary behaviour, not a race. Pin the destination now
+        // and let `addCapturedReference` discard the bytes if the pane has moved
+        // on — otherwise page 4 of the PDF you just left shows up attached to a
+        // question about a completely different document.
+        guard let target = aiStore.currentReferenceTarget(),
+              let capturePage = aiStore.capturePageImageHandler
+        else { return }
         Task {
-            guard let image = await aiStore.capturePageImageHandler?(page) else { return }
-            guard appStore.activeTabId == sessionId else { return }
-            aiStore.addReference(AiReference(kind: .pageSnapshot(image: image, page: page)))
+            guard let image = await capturePage(page) else { return }
+            aiStore.addCapturedReference(
+                AiReference(kind: .pageSnapshot(image: image, page: page)), target: target)
         }
     }
 
-    // MARK: - Arbitrary image attachments
+    // MARK: - Arbitrary file attachments
 
-    /// Read and normalize each picked file off the main actor (a 48MP photo
-    /// spends real time in decode + resize), then attach it as a chip.
-    private func attachImages(at urls: [URL]) {
-        let sessionId = appStore.activeTabId
-        for url in urls {
-            let name = url.lastPathComponent
-            Task {
-                let snapshot = await Task.detached(priority: .userInitiated) {
-                    // Files-picked URLs are security-scoped; open access around
-                    // the read.
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    guard let data = try? Data(contentsOf: url) else { return AiPageImageSnapshot?.none }
-                    return aiImageSnapshot(from: data)
-                }.value
-                guard let snapshot else { return }
-                attachIfCurrent(
-                    AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
-            }
-        }
-    }
-
-    /// Photos-picker items: load each item's bytes, then normalize/attach off the
-    /// main actor. Re-checks the active tab before landing each chip.
+    /// Photos-picker items: load each item's bytes on the main actor (that is
+    /// where `loadTransferable` delivers), then hand them to the store, which
+    /// normalizes off the main actor and applies the image cap and the
+    /// tab-identity guard in one place. Kept in the view because PhotosPicker
+    /// yields `Data`, not a URL, so there is nothing for `attachFiles` to open.
     private func attachPhotoItems(_ items: [PhotosPickerItem]) {
-        let sessionId = appStore.activeTabId
         for (index, item) in items.enumerated() {
             Task {
                 guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let snapshot = await Task.detached(priority: .userInitiated) {
-                    aiImageSnapshot(from: data)
-                }.value
-                guard let snapshot else { return }
-                attachIfCurrent(
-                    AiReference(kind: .image(image: snapshot, name: "Photo \(index + 1)")),
-                    session: sessionId)
+                aiStore.attachImage(data: data, name: "Photo \(index + 1)")
             }
         }
     }
 
-    /// A pane's AiStore is shared by all of its tabs, and a tab switch wipes the
-    /// composer — so a decode that finishes after the switch would otherwise drop
-    /// document A's image into document B's next message.
-    private func attachIfCurrent(_ reference: AiReference, session: String?) {
-        guard appStore.activeTabId == session else { return }
-        aiStore.addReference(reference)
+    /// Handler the panel's transcript UITextViews forward their drops to. The
+    /// bubble classifies the gesture itself (it holds the `UIDropSession`), so
+    /// this takes an already-coalesced payload rather than raw providers.
+    ///
+    /// No longer gated on vision support: main stopped gating the drop, and a
+    /// stranded image is explained by `strandedImagesNotice` rather than by a
+    /// drag that springs back with no explanation. Non-nil unconditionally, so
+    /// every bubble stays a drop destination.
+    private var attachmentDropHandler: ((AttachmentDropPayload) -> Void)? {
+        { payload in _ = aiStore.handleDrop(payload) }
     }
 
-    /// Handler the panel's UITextView bubbles forward their drops to. nil when the
-    /// model can't read images, which leaves their own handling untouched and
-    /// matches the SwiftUI `.onDrop` gate above (the drag just springs back).
-    private var imageDropHandler: (([NSItemProvider]) -> Void)? {
-        guard aiStore.activeModelSupportsImages else { return nil }
-        return { providers in _ = handleImageDrop(providers) }
-    }
-
-    /// Take image drops on the panel — a file from Files, or raw bytes dragged
-    /// out of Photos / a browser. Reading, decoding, and resizing all happen off
-    /// the main actor; only the attach hops back, and re-checks the active tab.
-    private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
-        let sessionId = appStore.activeTabId
-        var handled = false
-
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                handled = true
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                    guard let url = fileURL(fromDropItem: item),
-                          let type = UTType(filenameExtension: url.pathExtension),
-                          type.conforms(to: .image) else { return }
-                    Task { @MainActor in attachImages(at: [url]) }
-                }
-                continue
-            }
-            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                handled = true
-                let name = provider.suggestedName ?? "Dropped image"
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    guard let data else { return }
-                    let snapshot = aiImageSnapshot(from: data)
-                    guard let snapshot else { return }
-                    Task { @MainActor in
-                        attachIfCurrent(
-                            AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
-                    }
-                }
+    /// Take a drop on the panel — files out of Files, or raw bytes dragged out
+    /// of Photos / a browser.
+    ///
+    /// Returns synchronously (as `.onDrop` requires) and does the classification
+    /// in a `Task`, because loading even a file URL out of an `NSItemProvider` is
+    /// async. `AttachmentDrop.payloads(for:)` coalesces the whole gesture's file
+    /// URLs into ONE payload so a mixed drop of three PDFs and a PNG attaches
+    /// the PNG and shows a single notice naming the three — not three notices.
+    /// Everything after that (security-scoped reads, the images-only policy, the
+    /// decline notices, the tab-identity guard) belongs to `AiStore`.
+    @discardableResult
+    private func handleAttachmentDrop(_ providers: [NSItemProvider]) -> Bool {
+        let accepted = providers.contains(where: AttachmentDrop.carriesAttachment)
+        guard accepted else { return false }
+        Task {
+            for payload in await AttachmentDrop.payloads(for: providers) {
+                _ = aiStore.handleDrop(payload)
             }
         }
-        return handled
+        return true
     }
 
     /// Attaching is gated on vision support, but the model can be switched
@@ -580,6 +914,9 @@ struct AiPanel_iOS: View {
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
         input = ""
         aiStore.clearComposerReferences()
+        // Sending is an explicit "show me what happens next", so it re-arms
+        // follow-the-tail even if the reader had scrolled up to compose.
+        followsTail = true
         // Capture the session and context synchronously, before any await, so a
         // tab switch during image capture can't send to the wrong tab.
         let sessionId = appStore.activeTabId
@@ -621,8 +958,81 @@ struct AiPanel_iOS: View {
         aiStore.registerSendTask(task)
     }
 
+    /// Scroll to the end only while the reader is still parked there — the
+    /// stick-to-bottom rule that lets them read back mid-generation.
+    private func followTail(_ proxy: ScrollViewProxy) {
+        guard followsTail else { return }
+        scrollToBottom(proxy)
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async { proxy.scrollTo("ai-bottom", anchor: .bottom) }
+    }
+}
+
+@MainActor
+private func registerConversationRedo(
+    _ transaction: AiConversationClearTransaction,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(transaction) else { return }
+        registerConversationUndo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
+}
+
+@MainActor
+private func registerConversationUndo(
+    _ transaction: AiConversationClearTransaction,
+    store: AiStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.undoClear(transaction) else { return }
+        registerConversationRedo(transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear AI Conversation")
+}
+
+/// A width cap that doesn't stretch: it offers its content at most `maxWidth`
+/// and then reports back whatever narrower width the content actually wanted.
+///
+/// `.frame(maxWidth:)` cannot do this. A flexible frame takes the whole clamped
+/// proposal — `Text("Hi").frame(maxWidth: 400)` measures 400pt wide, not 13 —
+/// so wrapping a bubble in one painted every message across the full column no
+/// matter how little was in it. Invisible at the old fixed cap, glaring once the
+/// cap tracks a resizable sidebar (#51).
+///
+/// Internal (not private) so `SelectableMessageTests` can measure the real
+/// layout rather than a reimplementation of it.
+struct BubbleWidthCap: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        return content.sizeThatFits(
+            ProposedViewSize(width: cap(for: proposal), height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        // Place at the bubble's own (already hugged) size, not the cap, so the
+        // text lands against the leading edge of the background it was measured
+        // for instead of floating in a wider box.
+        content.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+
+    /// A nil proposal (SwiftUI asking for the ideal size) and an infinite one
+    /// both mean "take what you like", which for a bubble means the cap.
+    private func cap(for proposal: ProposedViewSize) -> CGFloat {
+        guard let width = proposal.width, width.isFinite else { return maxWidth }
+        return min(width, maxWidth)
     }
 }
 
@@ -640,18 +1050,6 @@ private struct AnimatedDots: View {
             }
         }
         .accessibilityHidden(true)
-    }
-}
-
-/// `NSItemProvider.loadItem` for a file URL hands back whichever of these the
-/// drag source registered — a `URL`, an `NSURL`, or the URL's bytes. Nonisolated:
-/// it runs on the provider's completion queue, off the main actor.
-func fileURL(fromDropItem item: NSSecureCoding?) -> URL? {
-    switch item {
-    case let url as URL: url
-    case let url as NSURL: url as URL
-    case let data as Data: URL(dataRepresentation: data, relativeTo: nil)
-    default: nil
     }
 }
 #endif
