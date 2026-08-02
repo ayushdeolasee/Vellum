@@ -27,8 +27,8 @@ import UIKit
 // A tab moves through three tiers, and the boundaries between them come from
 // the repo owner's request on PR #67 (quoted on each constant below):
 //
-//   HOT   — the 3 most recently used tabs (iPad retune), for 10 minutes since
-//           last active.
+//   HOT   — the `hotLimit` most recently used tabs (3 on iPad, 2 on iPhone —
+//           see `TabResidencyBudget`), for 10 minutes since last active.
 //           Kept mounted and rendered, so switching to one is instant. This is
 //           the tier the whole feature exists for.
 //   WARM  — still resident (parsed `PDFDocument` and live `WKWebView` alive)
@@ -132,50 +132,47 @@ protocol TabResidentResource: AnyObject {
     func releaseResidency()
 }
 
-// MARK: - Manager
+// MARK: - Budget
 
-@MainActor
-final class TabResidencyManager {
-    // MARK: The three numbers
-    //
-    // All three come from the repo owner's request on PR #67 and were chosen
-    // deliberately. Do not "optimise" them without going back to that comment:
-    //
-    //   "Maybe we can keep rendering the previous 5 tabs opened by the user for
-    //    10 minutes let's say. So that it's instant when switching but if the
-    //    user hasn't gone back to it then we stop rendering and then after 30
-    //    minutes let say we can clean that out of the memory completely."
+/// The ceilings, as data.
+///
+/// There is one residency *policy* (`TabResidencyManager` below) and two sets of
+/// *numbers*, because one binary now serves two devices with very different
+/// footprint limits (#150). Making the numbers a value rather than a compile-time
+/// constant means the choice is made exactly once, at the shell seam
+/// (`ShellIdiom_iOS`), and can be handed to a test as an argument instead of
+/// being asserted against whatever the shipping device happens to want.
+///
+/// The two WINDOWS are the repo owner's request on PR #67 and are the same on
+/// both presets — they describe how a person uses tabs, not how much RAM the
+/// device has:
+///
+///   "Maybe we can keep rendering the previous 5 tabs opened by the user for
+///    10 minutes let's say. So that it's instant when switching but if the
+///    user hasn't gone back to it then we stop rendering and then after 30
+///    minutes let say we can clean that out of the memory completely."
+///
+/// The COUNT and BYTE ceilings are what differ. Do not retune either preset
+/// without going back to that comment and to the per-device reasoning on
+/// `.pad` / `.phone`.
+struct TabResidencyBudget: Sendable, Equatable {
+    /// **Hot set size.** The N most recently active tabs stay mounted and
+    /// rendered. Pinned tabs (whatever each pane is showing right now) are hot
+    /// *in addition* to these, not out of the same budget: a split window must
+    /// never leave a visible document unrendered just because the user has been
+    /// round three other tabs.
+    var hotLimit: Int
 
-    // RETUNED FOR iPad (parity #129). The windows below are the repo owner's request
-    // on PR #67 and are unchanged; the COUNT and BYTE ceilings are not — iPadOS
-    // enforces a hard per-app footprint and jetsams rather than swapping, so the
-    // macOS numbers (8 tabs / 768 MB) are a crash, not a guardrail, here.
-
-    /// **Hot set size** — macOS keeps "the previous 5 tabs opened by the user";
-    /// iPad keeps **3**.
-    ///
-    /// The 3 most recently active tabs stay mounted and rendered. Pinned tabs
-    /// (whatever each pane is showing right now) are hot *in addition* to these,
-    /// not out of the same budget: a split window must never leave a visible
-    /// document unrendered just because the user has been round three other tabs.
-    ///
-    /// Retuned down because every hot tab keeps a live `PDFView`/`WKWebView` in
-    /// the window's layout+display cycle, and iPad has exactly one window and at
-    /// most two visible panes: 3 = the two pinned panes plus one recent.
-    static let hotTabLimit = 3
-
-    /// **How long a tab stays rendered** — "for **10 minutes** … then we stop
-    /// rendering".
-    ///
-    /// Measured from when the tab was last active. Past it the tab drops to
-    /// warm: its resources stay, but nothing is drawn or laid out for it.
-    /// Enforced by the shared sweeper, so the real boundary is 10 minutes plus
-    /// up to one `sweepInterval` — irrelevant for a tier whose only effect is
+    /// **How long a tab stays rendered** — "for 10 minutes … then we stop
+    /// rendering". Measured from when the tab was last active. Past it the tab
+    /// drops to warm: its resources stay, but nothing is drawn or laid out for
+    /// it. Enforced by the shared sweeper, so the real boundary is this plus up
+    /// to one `sweepInterval` — irrelevant for a tier whose only effect is
     /// saving draw work.
-    static let hotWindow: Duration = .seconds(10 * 60)
+    var hotWindow: Duration
 
-    /// **The retention window** — "after **30 minutes** … we can clean that out
-    /// of the memory completely".
+    /// **The retention window** — "after 30 minutes … we can clean that out of
+    /// the memory completely".
     ///
     /// NOTE THE TENSION: issue #52 says "only remove them if inactive for more
     /// than 2 hours". The owner's later comment on PR #67 says 30 minutes. We
@@ -184,31 +181,84 @@ final class TabResidencyManager {
     /// design, dropping from 2 hours to 30 minutes would have meant a cold
     /// reload after half an hour, whereas now the tab spends minutes 10–30 warm
     /// and only genuinely reloads past 30.
-    static let retentionWindow: Duration = .seconds(30 * 60)
+    var retention: Duration
 
-    /// Ceiling on how many tabs stay resident at once, regardless of how recently
-    /// they were used. macOS allows 8; iPad allows **4** — iPadOS jetsams on a
-    /// per-app footprint limit far below what macOS tolerates, and 4 still covers
-    /// "a paper plus its references".
-    static let residentTabLimit = 4
+    /// Ceiling on how many tabs stay resident at once, regardless of how
+    /// recently they were used.
+    var tabLimit: Int
 
-    /// Approximate ceiling on total resident bytes. macOS budgets 768 MB; iPad
-    /// budgets **256 MB**. A flat-96 MB web tab plus a large scanned PDF still
-    /// fits; a shelf of them does not. The memory-warning hook below is the real
-    /// safety net, this is the guardrail against obvious runaway.
-    ///
-    /// Read it as a rough guardrail, not accounting: PDFs are costed at their
-    /// *file* size and PDFKit's live footprint is some multiple of that, and
-    /// there is no cheap way to do better.
-    static let residentByteBudget = 256 * 1024 * 1024
+    /// Approximate ceiling on total resident bytes. Read it as a rough
+    /// guardrail, not accounting: PDFs are costed at their *file* size and
+    /// PDFKit's live footprint is some multiple of that, and there is no cheap
+    /// way to do better. The memory-warning hook is the real safety net.
+    var byteBudget: Int
 
     /// Tightened ceilings applied while the system reports memory pressure. At
-    /// `.warning` we shrink hard but keep a little warmth; at `.critical` every
-    /// inactive tab goes immediately (see `handleMemoryPressure`). Retuned down
-    /// from macOS's 2 / 128 MB: under an iOS memory warning only the tab on
-    /// screen is worth keeping.
-    static let pressureTabLimit = 1
-    static let pressureByteBudget = 48 * 1024 * 1024
+    /// `.warning` we shrink to these but keep a little warmth; at `.critical`
+    /// every inactive tab goes immediately (see `handleMemoryPressure`).
+    var pressureTabLimit: Int
+    var pressureByteBudget: Int
+
+    /// iPad (parity #129). macOS ships 5 hot / 8 resident / 768 MB / 2 / 128 MB;
+    /// iPadOS enforces a hard per-app footprint and jetsams rather than
+    /// swapping, so those would be a crash, not a guardrail, here.
+    ///
+    /// `hotLimit: 3` because every hot tab keeps a live `PDFView`/`WKWebView` in
+    /// the window's layout+display cycle, and an iPad has exactly one window and
+    /// at most two visible panes: 3 = the two pinned panes plus one recent.
+    /// `tabLimit: 4` still covers "a paper plus its references". At 256 MB a
+    /// flat-96 MB web tab plus a large scanned PDF still fits; a shelf of them
+    /// does not. Under a memory warning only the tab on screen is worth keeping.
+    static let pad = TabResidencyBudget(
+        hotLimit: 3,
+        hotWindow: .seconds(10 * 60),
+        retention: .seconds(30 * 60),
+        tabLimit: 4,
+        byteBudget: 256 * 1024 * 1024,
+        pressureTabLimit: 1,
+        pressureByteBudget: 48 * 1024 * 1024)
+
+    /// iPhone (#150 / #153). An order of magnitude under the Mac's 768 MB, which
+    /// is the spec's constraint expressed as a number; `TabResidencyBudgetTests`
+    /// asserts that relation rather than trusting this comment.
+    ///
+    /// `hotLimit: 2` because the phone shell has exactly ONE pane (D4), so the
+    /// hot set is the document being read plus one recent — there is no second
+    /// visible document to keep rendered, and a third live `PDFView` buys
+    /// nothing but footprint. `tabLimit: 3` keeps that pair plus one warm tab
+    /// behind them. 64 MB is roughly one large scanned PDF plus a web tab, which
+    /// is as much as a phone can hold without inviting jetsam; under pressure it
+    /// drops to the tab on screen and 24 MB.
+    static let phone = TabResidencyBudget(
+        hotLimit: 2,
+        hotWindow: .seconds(10 * 60),
+        retention: .seconds(30 * 60),
+        tabLimit: 3,
+        byteBudget: 64 * 1024 * 1024,
+        pressureTabLimit: 1,
+        pressureByteBudget: 24 * 1024 * 1024)
+}
+
+// MARK: - Manager
+
+@MainActor
+final class TabResidencyManager {
+    // MARK: The shipped numbers
+    //
+    // These stay as statics because they are the iPad preset — the numbers this
+    // app shipped with and the ones `TabResidencyTests` pins — and because a
+    // handful of call sites and tests read them by name. They are ALIASES now,
+    // not the source of truth: the source of truth is `TabResidencyBudget.pad`,
+    // and what a given manager actually enforces is whatever budget it was
+    // handed (`budget`), which on iPhone is `.phone`.
+
+    static let hotTabLimit = TabResidencyBudget.pad.hotLimit
+    static let hotWindow = TabResidencyBudget.pad.hotWindow
+    static let retentionWindow = TabResidencyBudget.pad.retention
+    static let residentTabLimit = TabResidencyBudget.pad.tabLimit
+    static let residentByteBudget = TabResidencyBudget.pad.byteBudget
+    static let pressureTabLimit = TabResidencyBudget.pad.pressureTabLimit
+    static let pressureByteBudget = TabResidencyBudget.pad.pressureByteBudget
 
     /// How often the shared sweeper wakes. One tick per minute is ample
     /// resolution for a 10-minute demotion and a 30-minute eviction, and the
@@ -239,11 +289,20 @@ final class TabResidencyManager {
     }
 
     private let clock: ResidencyClock
-    private let retention: Duration
-    private let hotLimit: Int
-    private let hot: Duration
-    private let tabLimit: Int
-    private let byteBudget: Int
+
+    /// The ceilings this manager enforces. Injected at construction from
+    /// `ShellIdiom_iOS.current.residencyBudget`, so "phone-sized memory" is a
+    /// property of the object rather than of the build.
+    let budget: TabResidencyBudget
+
+    // Named shorthands for the budget's fields, so the policy below reads the
+    // same as it did when these were stored properties.
+    private var retention: Duration { budget.retention }
+    private var hotLimit: Int { budget.hotLimit }
+    private var hot: Duration { budget.hotWindow }
+    private var tabLimit: Int { budget.tabLimit }
+    private var byteBudget: Int { budget.byteBudget }
+
     /// False in tests: no background sweeper task, no memory-pressure source, so
     /// a test drives `sweep()` and `handleMemoryPressure(_:)` deterministically.
     private let automaticMaintenance: Bool
@@ -272,23 +331,45 @@ final class TabResidencyManager {
     /// resources are stored in it.
     private var ceilingCheckScheduled = false
 
+    /// The designated init. `.pad` by default so every call site that predates
+    /// the phone — including `WorkspaceStore`'s own default — keeps the numbers
+    /// it already had.
     init(
         clock: ResidencyClock = ContinuousResidencyClock(),
-        retention: Duration = TabResidencyManager.retentionWindow,
-        hotLimit: Int = TabResidencyManager.hotTabLimit,
-        hotWindow: Duration = TabResidencyManager.hotWindow,
-        tabLimit: Int = TabResidencyManager.residentTabLimit,
-        byteBudget: Int = TabResidencyManager.residentByteBudget,
+        budget: TabResidencyBudget = .pad,
         automaticMaintenance: Bool = true
     ) {
         self.clock = clock
-        self.retention = retention
-        self.hotLimit = hotLimit
-        self.hot = hotWindow
-        self.tabLimit = tabLimit
-        self.byteBudget = byteBudget
+        self.budget = budget
         self.automaticMaintenance = automaticMaintenance
         if automaticMaintenance { installMemoryWarningObserver() }
+    }
+
+    /// Field-by-field convenience shim, kept because the residency suite builds
+    /// managers by overriding one ceiling at a time and that is the clearest way
+    /// to write those tests. `clock` and `retention` are deliberately NOT
+    /// defaulted: an all-defaults overload would be ambiguous with the budget
+    /// init above, and every caller of this form passes both anyway.
+    convenience init(
+        clock: ResidencyClock,
+        retention: Duration,
+        hotLimit: Int = TabResidencyBudget.pad.hotLimit,
+        hotWindow: Duration = TabResidencyBudget.pad.hotWindow,
+        tabLimit: Int = TabResidencyBudget.pad.tabLimit,
+        byteBudget: Int = TabResidencyBudget.pad.byteBudget,
+        automaticMaintenance: Bool = true
+    ) {
+        self.init(
+            clock: clock,
+            budget: TabResidencyBudget(
+                hotLimit: hotLimit,
+                hotWindow: hotWindow,
+                retention: retention,
+                tabLimit: tabLimit,
+                byteBudget: byteBudget,
+                pressureTabLimit: TabResidencyBudget.pad.pressureTabLimit,
+                pressureByteBudget: TabResidencyBudget.pad.pressureByteBudget),
+            automaticMaintenance: automaticMaintenance)
     }
 
     deinit {
@@ -453,8 +534,8 @@ final class TabResidencyManager {
             // `.warning` (which iPadOS can raise routinely) would effectively delete
             // the feature on a busy machine.
             return evict(
-                tabLimit: Self.pressureTabLimit,
-                byteBudget: Self.pressureByteBudget,
+                tabLimit: budget.pressureTabLimit,
+                byteBudget: budget.pressureByteBudget,
                 expireIdle: true)
         case .critical:
             // Everything that is not on screen goes, now.

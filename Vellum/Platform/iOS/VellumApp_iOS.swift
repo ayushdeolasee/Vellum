@@ -25,7 +25,16 @@ struct VellumApp_iOS: App {
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
         let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())
-        let workspace = WorkspaceStore(sessions: sessions, integrations: integrations)
+        // One read of the idiom for the whole process (#153 D6): the shell
+        // `RootShell_iOS` renders, the memory the residency policy may hold, and
+        // whether the workspace may split are three consequences of the same
+        // fact and must not be allowed to disagree.
+        let idiom = ShellIdiom_iOS.current
+        let workspace = WorkspaceStore(
+            sessions: sessions,
+            integrations: integrations,
+            residency: TabResidencyManager(budget: idiom.residencyBudget),
+            layout: idiom.paneLayout)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())

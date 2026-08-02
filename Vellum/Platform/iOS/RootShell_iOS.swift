@@ -1,29 +1,21 @@
 #if os(iOS)
 import SwiftUI
-import UIKit
 
 /// Root gate for the now-universal iOS target (spec #150, phase 0 #151).
 ///
-/// `TARGETED_DEVICE_FAMILY` is `1,2`, so one binary has to serve two shells:
-/// the existing iPad split-screen shell (`ContentView_iOS`) and the phone shell
-/// being built out in later phases. This view is the only place that decides
-/// between them, so the choice stays in one readable spot instead of leaking
-/// idiom checks into every screen.
+/// `TARGETED_DEVICE_FAMILY` is `1,2`, so one binary has to serve two shells: the
+/// existing iPad split-screen shell (`ContentView_iOS`) and the phone shell
+/// (`PhoneShell_iOS`, #153). This view is the only place that decides between
+/// them, so the choice stays in one readable spot instead of leaking idiom
+/// checks into every screen.
 ///
-/// The test is the IDIOM, and deliberately not the horizontal size class:
-///
-///   * A phone is a phone in both orientations. Gating on `.compact` width
-///     instead would hand the Max/Plus bodies — which report REGULAR width in
-///     landscape — the iPad shell, so the same device would be "not built yet"
-///     held one way and a full two-pane reader held the other. Worse, the two
-///     branches are different view types, so every rotation would change the
-///     subtree's structural identity and SwiftUI would destroy and rebuild the
-///     whole shell: split-view column state, pane focus, presented sheets and
-///     scroll positions all reset on a turn of the wrist.
-///   * An iPad stays on `ContentView_iOS` at every width. Slide Over and a
-///     narrow Split View are compact-width too, and they have always rendered
-///     the iPad shell; keeping the idiom as the only input is what makes "the
-///     iPad path is untouched" true by construction rather than by argument.
+/// It does not decide anything itself — it asks `ShellIdiom_iOS.current`, the
+/// single oracle that also picks the residency budget and the pane-layout
+/// capability. That indirection is the point: the shell on screen and the
+/// workspace's idea of whether it may split have to be the same answer, and
+/// `ShellIdiom_iOS` documents why that answer is the idiom rather than the
+/// horizontal size class (Max/Plus phones report regular width in landscape;
+/// an iPad in Slide Over reports compact).
 ///
 /// The idiom cannot change for the life of the process, so this `if` is decided
 /// once — the branch never flips at runtime and neither shell is ever rebuilt
@@ -36,12 +28,10 @@ import UIKit
 /// here, next to the shell choice itself, is what keeps fit-width from leaking
 /// into the iPad's compact-width multitasking layouts.
 struct RootShell_iOS: View {
-    /// Cached because the idiom cannot change for the life of the process,
-    /// while `body` re-evaluates on every rotation and resize.
-    private let idiom = UIDevice.current.userInterfaceIdiom
-
     var body: some View {
-        if idiom == .phone {
+        // `ShellIdiom_iOS.current` is itself a cached `let`, so re-reading it on
+        // every rotation and resize costs nothing.
+        if ShellIdiom_iOS.current == .phone {
             PhoneShell_iOS()
                 .environment(\.pdfZoomMode, .fitWidth)
         } else {

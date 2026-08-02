@@ -10,6 +10,26 @@ import Observation
 // highlight color). The toolbar and the single Annotations/AI inspector point at
 // the *focused* pane's store-triple; each pane's own subtree injects its own.
 
+/// Whether this workspace's window is allowed to hold more than one pane.
+///
+/// The iPhone shell (#153) has exactly one pane, and that is enforced HERE
+/// rather than by leaving the split affordances out of the phone's chrome. Two
+/// reasons. First, the split paths are reachable without any chrome at all — a
+/// hardware keyboard's ⌃⌘D, a persisted split restored from a workspace the user
+/// last opened on an iPad, a tab drag — so a view-layer omission is not a
+/// guarantee. Second, "one pane" is a property of the workspace that the pane
+/// tree, the residency pins and the persisted layout all have to agree on, which
+/// makes the store the only place it can be stated once and tested without a
+/// view.
+enum PaneLayoutCapability: Sendable {
+    /// iPad / Mac: `splitFocused`, `splitWithTab` and `moveTab` all work, and a
+    /// persisted split is restored as a split.
+    case splitScreen
+    /// iPhone: every split operation is a no-op and a persisted split is
+    /// flattened into one pane on restore.
+    case singlePane
+}
+
 @MainActor
 @Observable
 final class WorkspaceStore {
@@ -35,6 +55,12 @@ final class WorkspaceStore {
     var settingsSection: SettingsSection = .general
 
     let sessions: SessionService
+
+    /// Whether this window may split. Fixed at construction from the shell
+    /// idiom (`ShellIdiom_iOS.current.paneLayout`) — the idiom cannot change for
+    /// the life of the process, so neither can this.
+    let layout: PaneLayoutCapability
+
     /// The read-later integrations store. Window-global like the rest of the
     /// shell state, and injected rather than constructed inline so tests and
     /// previews can hand in a store with stubbed clients.
@@ -322,18 +348,22 @@ final class WorkspaceStore {
 
     // MARK: - Init
 
-    /// `integrations` and `residency` are both injectable rather than
+    /// `integrations`, `residency` and `layout` are all injectable rather than
     /// constructed inline, so tests and previews can hand in a store with
-    /// stubbed clients or drive a hand-advanced clock. Both default, which
-    /// keeps every existing `WorkspaceStore(sessions:)` and
-    /// `WorkspaceStore(sessions:residency:)` call site compiling unchanged.
+    /// stubbed clients, drive a hand-advanced clock, or ask for the phone's
+    /// single-pane workspace. All three default, which keeps every existing
+    /// `WorkspaceStore(sessions:)`, `WorkspaceStore(sessions:residency:)` and
+    /// `WorkspaceStore(sessions:integrations:)` call site compiling unchanged
+    /// and on the iPad's behaviour.
     init(
         sessions: SessionService, integrations: IntegrationsStore = IntegrationsStore(),
-        residency: TabResidencyManager = TabResidencyManager()
+        residency: TabResidencyManager = TabResidencyManager(),
+        layout: PaneLayoutCapability = .splitScreen
     ) {
         self.residency = residency
         self.sessions = sessions
         self.integrations = integrations
+        self.layout = layout
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()
@@ -406,7 +436,7 @@ final class WorkspaceStore {
     /// Split the focused pane, opening a fresh new-tab page beside it and moving
     /// focus there (menu / shortcut / toolbar-button path).
     func splitFocused(_ direction: SplitDirection) {
-        guard let target = root.leaf(id: focusedPaneId) else { return }
+        guard layout == .splitScreen, let target = root.leaf(id: focusedPaneId) else { return }
         let newPane = makePane(startTab: true)
         let split = PaneNode.split(
             id: "split-" + UUID().uuidString.lowercased(),
@@ -422,7 +452,10 @@ final class WorkspaceStore {
     /// target pane along `direction` (drag-to-edge path). `before` puts the new
     /// pane ahead of the target (left/top) vs. after (right/bottom).
     func splitWithTab(tabId: String, from: String, target: String, direction: SplitDirection, before: Bool) {
-        guard let source = root.leaf(id: from),
+        // Before `detachTab`, not after: a refused split must leave the tab
+        // exactly where it was rather than stranding it in no pane at all.
+        guard layout == .splitScreen,
+              let source = root.leaf(id: from),
               let targetPane = root.leaf(id: target) else { return }
         // Dragging a pane's only tab onto its own edge is a no-op.
         if from == target && source.app.tabs.count <= 1 { return }
@@ -446,8 +479,15 @@ final class WorkspaceStore {
     }
 
     /// Move a tab into an existing pane (drag-to-center path).
+    ///
+    /// Under `.singlePane` there is no second pane to move into, so this is
+    /// unreachable through the UI; the guard is here because the capability
+    /// check belongs with the other two rather than being the one path that
+    /// relies on the tree's shape to save it — and because it runs BEFORE
+    /// `detachTab`, so a stale drag payload cannot strand a tab.
     func moveTab(tabId: String, from: String, to: String) {
-        guard from != to,
+        guard layout == .splitScreen,
+              from != to,
               let source = root.leaf(id: from),
               let dest = root.leaf(id: to),
               let tab = source.app.detachTab(tabId) else { return }
@@ -673,6 +713,7 @@ final class WorkspaceStore {
         for work in leafWork {
             await work.pane.app.restoreTabs(work.tabs, activeIndex: work.activeIndex)
         }
+        flattenRestoredSplitIfSinglePane(focusedLeafIndex: state.focusedLeafIndex)
         let restoredFocusedPaneId = root.allLeaves().indices.contains(state.focusedLeafIndex)
             ? root.allLeaves()[state.focusedLeafIndex].id
             : nil
@@ -683,6 +724,34 @@ final class WorkspaceStore {
         isRestoring = false
         // Persist the reconciled state (some tabs may have failed to reopen).
         scheduleSave()
+    }
+
+    /// Collapse a restored split into one pane when this window cannot hold two.
+    ///
+    /// The persisted layout is shared with the iPad — same defaults domain, same
+    /// blob — so a phone launching after an iPad session routinely finds a split
+    /// on disk. Restoring it and *then* refusing to draw the second pane would
+    /// leave that pane's tabs unreachable and its residency pin live forever, so
+    /// the flatten happens here, at the store, the moment the tabs are back.
+    ///
+    /// Deliberately reuses `mergeAll()` rather than rebuilding the tree by hand:
+    /// merging is the operation that already transfers tab OWNERSHIP (rather
+    /// than copying, #91) and drops each absorbed pane's residency pin. Focus is
+    /// moved to the first leaf first so `mergeAll` keeps that pane — the one at
+    /// the head of the persisted tab order — and the tab the user was actually on
+    /// is re-activated afterwards, since it may have lived in a pane that just
+    /// stopped existing.
+    private func flattenRestoredSplitIfSinglePane(focusedLeafIndex: Int) {
+        guard layout == .singlePane, !root.isLeaf else { return }
+        let leaves = root.allLeaves()
+        let persistedActiveTabId = leaves.indices.contains(focusedLeafIndex)
+            ? leaves[focusedLeafIndex].app.activeTabId
+            : nil
+        focusedPaneId = root.firstLeafId
+        mergeAll()
+        if let persistedActiveTabId {
+            focusedPane.app.activateTab(persistedActiveTabId)
+        }
     }
 
     /// A persisted split can become partially empty when documents disappear
