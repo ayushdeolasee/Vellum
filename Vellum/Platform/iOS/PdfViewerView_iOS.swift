@@ -19,6 +19,54 @@ private struct PreparedPdf: @unchecked Sendable {
 struct PdfViewerView_iOS: View {
     var ink: InkController_iOS
 
+    // MARK: - Live-tab mount contract (packet 4 §2.0) — accepted, not honoured
+    //
+    // `(tabId:documentInfo:isActive:runtime:)` is the shape packet 7's rebuilt
+    // viewer takes, so that `LiveTabHost_iOS` can mount one of these per open
+    // tab instead of one per pane. Interface only for now: nothing constructs a
+    // `LiveTabRuntime`, nothing calls that initializer, and the four values
+    // below are stored and never read. The body still resolves the document
+    // through `app.document` / `app.activeTabId` and still owns its controller
+    // in `@State`, exactly as before.
+    //
+    // Packet 7 deletes `init(ink:)`, drops the optionality, and switches the
+    // body over to these — gating every `onChange`-driven push on
+    // `isActiveMount` and taking the controller from `mountedRuntime`.
+
+    /// Tab this host is mounted for; `nil` on the pre-live-tabs path.
+    private let mountedTabId: String?
+    /// Document this host is mounted for; `nil` on the pre-live-tabs path.
+    private let mountedDocument: DocumentInfo?
+    /// Whether this mount is its pane's ACTIVE tab. Inactive mounts sit at
+    /// opacity 0 and must not push zoom/scroll/find state into the shared
+    /// stores. Defaults to `true` on the pre-live-tabs path, where the single
+    /// mounted viewer is by definition the active one — so every push that runs
+    /// today still runs.
+    private let isActiveMount: Bool
+    /// The tab's workspace-owned runtime: the controller, the retained
+    /// `PDFView`, the ink controller and the prepared document all come from
+    /// here once packet 7 lands. `nil` on the pre-live-tabs path.
+    private let mountedRuntime: LiveTabRuntime?
+
+    init(ink: InkController_iOS) {
+        self.ink = ink
+        self.mountedTabId = nil
+        self.mountedDocument = nil
+        self.isActiveMount = true
+        self.mountedRuntime = nil
+    }
+
+    /// The live-tab entry point. Declared so packet 7 has a compiler-checked
+    /// target and packet 4 §2.8 has something to call; the arguments are
+    /// accepted and ignored until packet 7 honours them.
+    init(tabId: String, documentInfo: DocumentInfo, isActive: Bool, runtime: LiveTabRuntime) {
+        self.ink = runtime.ink
+        self.mountedTabId = tabId
+        self.mountedDocument = documentInfo
+        self.isActiveMount = isActive
+        self.mountedRuntime = runtime
+    }
+
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
