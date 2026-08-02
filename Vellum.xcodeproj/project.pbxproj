@@ -58,6 +58,7 @@
 		25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */; };
 		2708447E7B0AB5779FD79A5B /* SafeClearTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1F783F50CC2705F7C3733D /* SafeClearTests.swift */; };
 		2759D19C5033A1DC130A9E15 /* AiToolEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */; };
+		2848EF175C66C597BE9530CD /* PaneDocumentState_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B633A746E91D010B8EF69B /* PaneDocumentState_iOS.swift */; };
 		290AF491B1EFDE622262DCD7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1784468C7F465AAEB5C63E9 /* Models.swift */; };
 		29224D491ACDF76C81E58473 /* WelcomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E282C555B1B420914134C74 /* WelcomeScreen.swift */; };
 		29757DBD2CB38B5DF2FA8DE3 /* SecurityScopedBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */; };
@@ -256,6 +257,7 @@
 		E76ADFB8CB195942D8A8F759 /* InkPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 887BAD6DD07D5B3101E1873B /* InkPersistenceTests.swift */; };
 		E855034C27805DA6AFF8648F /* PositionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B235546AECD135C706C679F /* PositionStore.swift */; };
 		E902AE322CF4E85CD5937369 /* VellumCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */; };
+		E94F892DB3429C8E03464F15 /* LiveTabStack_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */; };
 		E9517535BEA0BA0E00CCC1B9 /* RenameDocumentSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */; };
 		EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 89E21441131E7C57CE324E83 /* AppIcon.icns */; };
 		EAE379048674CB8DF953D09D /* ChatGPTAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BA2FED5E906C5D311882E3 /* ChatGPTAuth.swift */; };
@@ -364,6 +366,7 @@
 		47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfOverlays.swift; sourceTree = "<group>"; };
 		4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPipelineTests.swift; sourceTree = "<group>"; };
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
+		4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabStack_iOS.swift; sourceTree = "<group>"; };
 		4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiFileAttachment.swift; sourceTree = "<group>"; };
 		4E282C555B1B420914134C74 /* WelcomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeScreen.swift; sourceTree = "<group>"; };
 		4E69330A4F460353FBCB25AB /* TabResidency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabResidency.swift; sourceTree = "<group>"; };
@@ -482,6 +485,7 @@
 		B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationStore.swift; sourceTree = "<group>"; };
 		B19503ACED68A5C202EBE2E4 /* WalkthroughSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughSheet_iOS.swift; sourceTree = "<group>"; };
 		B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorTabSwitcher.swift; sourceTree = "<group>"; };
+		B2B633A746E91D010B8EF69B /* PaneDocumentState_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneDocumentState_iOS.swift; sourceTree = "<group>"; };
 		B4ABCBB671113030B9925FC5 /* PositionMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionMergeTests.swift; sourceTree = "<group>"; };
 		B4AF0117D296B571E62111BB /* AiToolSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolSummary.swift; sourceTree = "<group>"; };
 		B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetPresenceIOSTests.swift; sourceTree = "<group>"; };
@@ -616,7 +620,9 @@
 				7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */,
 				C6C4B2A34AE7B5D089B26884 /* KeyboardShortcuts_iOS.swift */,
 				656551BD8605C356B7BCA1A1 /* LibraryRowContent_iOS.swift */,
+				4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */,
 				0FDE9E4FAA9229184B3BDC7F /* LiveTabViewerContract_iOS.swift */,
+				B2B633A746E91D010B8EF69B /* PaneDocumentState_iOS.swift */,
 				8764C0B9C595EB79CC9B28F0 /* PaneView_iOS.swift */,
 				CE14F1472A7451AF57FD04ED /* PdfChrome_iOS.swift */,
 				8B1C1908D5C4C66BDFFB61EC /* PdfInk.swift */,
@@ -1338,6 +1344,7 @@
 				D33775936E6D0F9CAF3F2223 /* KeychainStore.swift in Sources */,
 				EC8E8BEBA004E5F474CB6C2A /* LibraryRowContent_iOS.swift in Sources */,
 				179624D568F6AF9C1077ECD1 /* LiveTabRuntime.swift in Sources */,
+				E94F892DB3429C8E03464F15 /* LiveTabStack_iOS.swift in Sources */,
 				ED2A3AAB419D271FB39677F6 /* LiveTabViewerContract_iOS.swift in Sources */,
 				E5F120A320C5FC13A9026B70 /* MarkdownMessage.swift in Sources */,
 				ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */,
@@ -1353,6 +1360,7 @@
 				249CCA82E8B519D78426C055 /* PageTextCache.swift in Sources */,
 				CF02D8DF508465ACECEC7436 /* PageTextExtractionGate.swift in Sources */,
 				D529B1BD4F7B9FA1E791246F /* PageTextPersister.swift in Sources */,
+				2848EF175C66C597BE9530CD /* PaneDocumentState_iOS.swift in Sources */,
 				4E8BAA1F3AEC100D4C768AFA /* PaneTree.swift in Sources */,
 				74F87D19B20B4A7A23919B5F /* PaneTreeView.swift in Sources */,
 				A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */,
