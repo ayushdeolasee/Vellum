@@ -22,6 +22,10 @@ protocol DocumentSession: AnyObject {
     func deleteAnnotation(id: String) async throws -> Bool
 
     func setMetadata(key: String, value: String) async throws
+
+    /// Resolve (stamping lazily for PDFs) the document's stable id. Web sessions
+    /// return their URL-hash key. Never surfaces stamping failure as an error.
+    func ensureDocumentId() async throws -> String
 }
 
 @MainActor
@@ -148,5 +152,9 @@ final class DocumentSessionManager: SessionService {
 
     func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {
         try await session(sessionId).setMetadata(key: key, value: value)
+    }
+
+    func ensureDocumentId(sessionId: String) async throws -> String {
+        try await session(sessionId).ensureDocumentId()
     }
 }

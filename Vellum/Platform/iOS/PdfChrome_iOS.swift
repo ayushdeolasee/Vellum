@@ -187,6 +187,12 @@ struct PdfToolbar_iOS: View {
                         }
                     }
             }
+            // A `.sheet` is a separate presentation host, so it does not
+            // reliably inherit the WindowGroup's environment across the
+            // UIHostingController boundary. Settings ▸ Storage reads the
+            // workspace directly (to exclude open documents from cleanup), so
+            // inject it explicitly rather than relying on that inheritance.
+            .environment(workspace)
             // The Settings AI tab edits the workspace's dedicated settings
             // store (not this pane's conversation), mirroring the macOS
             // Settings scene; changes broadcast to every pane's AiStore.

@@ -48,14 +48,22 @@ final class PdfSessionBackend {
             }
 
             let document = try PdfDocumentLoader.loadRaw(path: canonical)
-            let (title, pageCount, lastPage) = PdfMetadata.documentInfo(
+            let (title, pageCount, lastPage, docId) = PdfMetadata.documentInfo(
                 document: document, path: canonical)
+            // Session-stable cache key: the docId if the file ALREADY carries
+            // one, else the path hash. A docId stamped later this session must
+            // NOT change it — the lookup and persister keyed the whole session
+            // by this value.
+            let cacheKey = (docId?.isEmpty == false) ? docId! : PageTextCache.pathKey(canonical)
+            PdfSessionCacheKeys.register(path: canonical, key: cacheKey)
+            if let docId, !docId.isEmpty { PdfDocIdRegistry.recordStamp(docId, forPath: canonical) }
             return (canonical, DocumentInfo(
                 kind: .pdf,
                 pdfPath: canonical,
                 title: title,
                 pageCount: pageCount,
-                lastPage: lastPage))
+                lastPage: lastPage,
+                docId: docId))
         }
 
         return PdfDocumentSession(path: canonical, info: info)
@@ -208,6 +216,11 @@ final class PdfDocumentSession: DocumentSession {
     let path: String
     let info: DocumentInfo
 
+    /// The document's resolved /VellumDocId, once this session has seen or
+    /// written one. Set ONLY after a stamp is durably on disk — the two-phase
+    /// commit macOS gets from `PdfDocumentIO.commitStamp`.
+    private var resolvedDocId: String?
+
     init(path: String, info: DocumentInfo) {
         self.path = path
         self.info = info
@@ -269,6 +282,37 @@ final class PdfDocumentSession: DocumentSession {
         try await PdfFileGate.shared.perform {
             return try Self.performSetMetadata(path: path, key: key, value: value)
         }
+    }
+
+    // MARK: Document identity
+
+    func ensureDocumentId() async throws -> String {
+        if let resolvedDocId { return resolvedDocId }
+        if let known = info.docId, !known.isEmpty {
+            resolvedDocId = known
+            return known
+        }
+        let path = self.path
+        // Read-only probe first: an id another session already landed needs no
+        // write, and reads deliberately run off the gate. `try?` flattens the
+        // nested optional, so nil covers both "read failed" and "no id yet".
+        let probed: String? = try? await offMainRead { () -> String? in
+            guard let raw = try? PdfDocumentLoader.loadRaw(path: path) else { return nil }
+            return PdfMetadata.documentId(raw)
+        }
+        if let existing = probed {
+            PdfDocIdRegistry.recordStamp(existing, forPath: path)
+            resolvedDocId = existing
+            return existing
+        }
+        // Stamp: a full rewrite whose only change is the piggybacked doc_id,
+        // serialized against every other writer of this file by the gate.
+        let key = PdfSessionCacheKeys.key(forPath: path)
+        let id = await PdfFileGate.shared.perform {
+            Self.performEnsureDocumentId(path: path, cacheKey: key)
+        }
+        resolvedDocId = id
+        return id
     }
 
     // MARK: Off-main implementations
@@ -535,6 +579,46 @@ final class PdfDocumentSession: DocumentSession {
         try saveThroughPdfKit(patched, path: path)
     }
 
+    /// Never throws — a stamping failure degrades to a stable fallback identity
+    /// rather than failing the caller (matching macOS `ensureDocumentId`).
+    ///
+    /// Deliberately different from macOS, which goes through
+    /// `loadForMutation → serialize → writeAndRefreshCache` (a PDFKit
+    /// normalize). On iPadOS 26 that normalize drops custom Info keys, so this
+    /// stamps the file's own bytes directly — same reasoning as
+    /// `PdfMetadata.stampDocumentId`. If `ClassicPdfFile` cannot parse them,
+    /// `stampDocIdIfNeeded` returns no pending stamp and we fall into the
+    /// byte-hash fallback, which is exactly the degradation macOS documents for
+    /// an unwritable file.
+    nonisolated static func performEnsureDocumentId(path: String, cacheKey: String) -> String {
+        if let raw = try? PdfDocumentLoader.loadRaw(path: path),
+           let existing = PdfMetadata.documentId(raw) {
+            PdfDocIdRegistry.recordStamp(existing, forPath: path)
+            PdfDocIdRegistry.clear(forPath: path)
+            return existing
+        }
+        do {
+            let original = try Self.readBytes(path: path)
+            let plan = Self.stampDocIdIfNeeded(original, path: path)
+            guard let pending = plan.pendingStamp else {
+                throw SessionServiceError.io("Failed to stamp document id")
+            }
+            try PdfAtomicWriter.save(plan.data, toPath: path)
+            // COMMIT: only now is the id real.
+            PdfDocIdRegistry.recordStamp(pending, forPath: path)
+            PdfDocIdRegistry.clear(forPath: path)
+            Task { await PageTextCache.shared.refreshHash(key: cacheKey, data: plan.data) }
+            return pending
+        } catch {
+            // Read-only dir / locked file: a stable byte hash, persisting
+            // nothing (stable precisely because the file can't be rewritten).
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                return DocumentIdentity.byteHash(data)
+            }
+            return DocumentIdentity.sha256Hex(path)
+        }
+    }
+
     // MARK: Helpers
 
     /// find_annotation: iterate pages and entries comparing /NM or the derived
@@ -618,6 +702,36 @@ final class PdfDocumentSession: DocumentSession {
         return data
     }
 
+    private struct StampPlan {
+        var data: Data
+        var pendingStamp: String?
+    }
+
+    /// Lazy /VellumDocId stamp, folded into a write that was happening anyway.
+    /// BEST-EFFORT AND NON-THROWING: on macOS this sits on the IO actor and may
+    /// throw, but here it is inside the annotation/ink/metadata write path, and
+    /// a document whose xref shape defeats `ClassicPdfFile` must still save its
+    /// annotations. A failure returns the ORIGINAL bytes with no pending stamp,
+    /// leaving the registry entry so the next write reuses the same uuid.
+    nonisolated private static func stampDocIdIfNeeded(_ data: Data, path: String) -> StampPlan {
+        if PdfDocIdRegistry.knownStamp(forPath: path) != nil {
+            return StampPlan(data: data, pendingStamp: nil)
+        }
+        if let raw = PdfDocumentLoader.cgDocument(from: data),
+           let existing = PdfMetadata.documentId(raw) {
+            // Already on disk in these bytes — safe to record now (persisted).
+            PdfDocIdRegistry.recordStamp(existing, forPath: path)
+            PdfDocIdRegistry.clear(forPath: path)
+            return StampPlan(data: data, pendingStamp: nil)
+        }
+        let uuid = PdfDocIdRegistry.pendingOrAssign(forPath: path)
+        guard let stamped = try? PdfMetadata.setMetadataIncrement(
+            normalizedData: data, entries: [(key: "doc_id", value: uuid)]) else {
+            return StampPlan(data: data, pendingStamp: nil)
+        }
+        return StampPlan(data: stamped, pendingStamp: uuid)
+    }
+
     /// Atomically write already-serialized PDF data and re-key the persistent
     /// page-text cache to the rewrite. In-app writes are text-neutral
     /// (annotations render from overlays; page content is unchanged), so the
@@ -625,9 +739,27 @@ final class PdfDocumentSession: DocumentSession {
     /// full re-extraction on the next read (issue #37 PR B). Detached because
     /// the `PdfFileGate` closure is synchronous; `PageTextCache` is an actor, so
     /// concurrent refreshes serialize and the latest write's data wins.
+    ///
+    /// Also the single chokepoint where a document lazily earns its
+    /// /VellumDocId: every iPad write funnels through here, so the stamp rides
+    /// along on a write that was happening anyway. Callers in `performCreate` /
+    /// `performUpdate` / `performDelete` have already run the iPadOS-26
+    /// `restoreInfoDictionary` step by this point, so the stamp increment is
+    /// appended LAST and survives. Do not move it earlier.
     nonisolated private static func writeAndRefreshCache(_ data: Data, path: String) throws {
-        try PdfAtomicWriter.save(data, toPath: path)
-        Task { await PageTextCache.shared.refreshHash(path: path, data: data) }
+        let plan = stampDocIdIfNeeded(data, path: path)
+        try PdfAtomicWriter.save(plan.data, toPath: path)
+        // Two-phase commit: the stamp becomes "real" only after the atomic
+        // rename lands, so a failed write can never leave a phantom docId.
+        if let pending = plan.pendingStamp {
+            PdfDocIdRegistry.recordStamp(pending, forPath: path)
+            PdfDocIdRegistry.clear(forPath: path)
+        }
+        // Session-stable key: the one resolved at open, NOT a re-derivation from
+        // the (possibly just-stamped) file, so the lookup, the persister, and
+        // every in-app refresh agree for the whole session.
+        let key = PdfSessionCacheKeys.key(forPath: path)
+        Task { await PageTextCache.shared.refreshHash(key: key, data: plan.data) }
     }
 
     /// Reload increment-patched data through PDFKit and write the resulting

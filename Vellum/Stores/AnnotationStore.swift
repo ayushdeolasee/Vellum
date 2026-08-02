@@ -245,6 +245,12 @@ final class AnnotationStore {
             do {
                 let saved = try await self.sessions.createAnnotation(
                     sessionId: sessionId, input: input)
+                // The create just lazily stamped /VellumDocId (first mutation on
+                // an unstamped PDF); surface the resolved id into the in-memory
+                // document so class-B stores can key off it this session.
+                if self.app.activeTabId == sessionId {
+                    await self.app.syncDocumentId(sessionId: sessionId)
+                }
                 guard self.app.activeTabId == sessionId else { return true }
                 // Reconcile in place (same id, so the SwiftUI row/editor is
                 // preserved) with authoritative defaults, without clobbering a
