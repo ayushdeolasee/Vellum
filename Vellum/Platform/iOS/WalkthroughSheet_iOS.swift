@@ -56,8 +56,18 @@ struct WalkthroughSheet_iOS: View {
     static let titleBarHeight: CGFloat = 52
     /// Likewise for Skip / Back / Next, which are `.md` here rather than `.sm`.
     static let footerHeight: CGFloat = 60
-    /// Title bar + footer + the two 1pt dividers between them and the page.
-    static var chromeHeight: CGFloat { titleBarHeight + footerHeight + 2 }
+    /// Height of each of the two rules between the chrome and the page.
+    ///
+    /// Pinned rather than left to `Divider()`'s intrinsic size, and this is not
+    /// pedantry: on iOS a Divider is a **hairline** — 1/displayScale, so 0.5pt
+    /// on a 2x iPad and 0.33pt on a 3x phone — where macOS gives a flat 1pt. A
+    /// `+ 2` allowance therefore overstated the real chrome by a point, and the
+    /// page area came out one point short of the tallest page. That is exactly
+    /// the failure mode the explicit bar heights above exist to prevent, so the
+    /// dividers get the same treatment: pinned, named, and scale-independent.
+    static let dividerHeight: CGFloat = 1
+    /// Title bar + footer + the two dividers between them and the page.
+    static var chromeHeight: CGFloat { titleBarHeight + footerHeight + dividerHeight * 2 }
 
     private var page: WalkthroughPage { pages[index] }
     private var isFirst: Bool { index == 0 }
@@ -66,9 +76,9 @@ struct WalkthroughSheet_iOS: View {
     var body: some View {
         VStack(spacing: 0) {
             titleBar
-            Divider()
+            Divider().frame(height: Self.dividerHeight)
             pageContent
-            Divider()
+            Divider().frame(height: Self.dividerHeight)
             footer
         }
         .frame(width: Self.sheetWidth)
@@ -180,6 +190,15 @@ struct WalkthroughSheet_iOS: View {
         // No rubber-banding on pages that already fit, so the scroll only shows
         // itself when it is actually doing something.
         .scrollBounceBehavior(.basedOnSize)
+        // Take the ZStack's height instead of greedily filling whatever is
+        // offered. On macOS `NSHostingView.fittingSize` resolves a bare
+        // ScrollView to its content; UIKit's `sizeThatFits` does not — the
+        // ScrollView reports no intrinsic height at all, so without this the
+        // sheet collapses to just its two chrome bars and the "size to the
+        // tallest page" contract silently stops holding. The outer
+        // `.frame(maxHeight:)` still clamps it, which is what re-enables real
+        // scrolling once the tallest page passes the backstop.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var footer: some View {
