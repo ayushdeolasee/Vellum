@@ -1,0 +1,163 @@
+#if os(iOS)
+import Foundation
+
+/// Where the phone shell currently is. Home is a ROUTE, not a tab (#153 D1):
+/// going Home leaves the current tab active in `AppStore`, so its residency pin
+/// survives and coming back is a re-parent rather than a reopen. The pane tree
+/// therefore never grows a leaf for Home, and the phone never calls
+/// `AppStore.newStartTab()`.
+enum PhoneRoute: Sendable, Hashable {
+    case home
+    case reader
+}
+
+/// The phone shell's own state: which route is on screen, whether the tab
+/// switcher is up, whether the reader chrome is showing — plus the two
+/// phone-specific rules that sit on top of the window-global inspector state.
+///
+/// Deliberately no `import SwiftUI`. Everything here is decidable without a
+/// view, which is what makes the sheet-dismissal trap below testable at all;
+/// the shell view binds to it and adds no rules of its own.
+///
+/// ## Why the inspector state is NOT held here (D2)
+///
+/// The phone's inspector sheet binds to `WorkspaceStore.sidebarOpen` /
+/// `sidebarTab`, the same window-global state the iPad sidebar uses. That is
+/// what makes "quote this in AI", ⌥⌘1/2/3 and the ink reveal light up the phone
+/// sheet with zero new plumbing (`AiStore`, `AppStore`, `InkController_iOS` and
+/// `ShortcutRouter_iOS` all already write it), and it is what preserves the
+/// user's chosen panel across a trip through Home.
+@MainActor
+@Observable
+final class PhoneShellStore {
+    /// The window the shell is driving. Single-pane by construction on this
+    /// idiom (`ShellIdiom_iOS.phone.paneLayout == .singlePane`), so
+    /// `focusedPane` is simply "the pane".
+    private let workspace: WorkspaceStore
+
+    private(set) var route: PhoneRoute = .home
+
+    /// The full-screen tab switcher (P7). Held here rather than as view state
+    /// so route changes can close it — SwiftUI presentations that outlive the
+    /// screen underneath them are how a phone shell ends up with two things on
+    /// screen claiming to be "current".
+    var switcherPresented = false
+
+    /// Whether the reader chrome (top/bottom capsules) is showing. Immersive
+    /// reading is the absence of chrome, not a separate route, so this is plain
+    /// shell state rather than a third `PhoneRoute` case.
+    private(set) var chromeVisible = true
+
+    /// D3 — the compact default for `sidebarOpen` is `false`.
+    ///
+    /// `WorkspaceStore.sidebarOpen` defaults to `true`, which is right for an
+    /// iPad sidebar (a column beside the document) and wrong for a phone sheet
+    /// (a panel *over* it). Left alone, restoring a session at launch would put
+    /// a half-height sheet over the document before the user asked for one.
+    /// Written once, here: it is not persisted and has no side effects, so this
+    /// costs nothing on any later launch.
+    init(workspace: WorkspaceStore) {
+        self.workspace = workspace
+        workspace.sidebarOpen = false
+    }
+
+    private var app: AppStore { workspace.focusedPane.app }
+
+    // MARK: - Inspector (D2)
+
+    /// Whether the inspector sheet should be on screen.
+    ///
+    /// Two terms. `workspace.inspectorPresented` is the shared rule — a
+    /// document must be open and the user must want the panel — and
+    /// `route == .reader` is the phone's: the sheet belongs over the document,
+    /// and Home has its own full-screen surface underneath it.
+    var inspectorPresented: Bool {
+        workspace.inspectorPresented && route == .reader
+    }
+
+    /// Applies a presentation change originating from SwiftUI's sheet.
+    ///
+    /// THE DISMISSAL TRAP. When the route flips to Home, `inspectorPresented`
+    /// above goes false, SwiftUI dismisses the sheet — and writes `false` back
+    /// through the binding. `WorkspaceStore.setInspectorPresented`'s own guard
+    /// does not save us here the way it does on iPad: that guard only ignores
+    /// writes made while there is no document, and on Home the document is
+    /// still open (D1). So the write would land, flipping the user's
+    /// window-level preference off, and returning to the reader would show no
+    /// panel — the exact state loss D2 exists to prevent.
+    ///
+    /// Hence: presentation changes are only accepted while the reader is the
+    /// route that owns the sheet. Anything arriving from any other route is
+    /// SwiftUI reporting a consequence, not a user asking for one.
+    func setInspectorPresented(_ isPresented: Bool) {
+        guard route == .reader else { return }
+        workspace.setInspectorPresented(isPresented)
+    }
+
+    /// The panel the sheet shows. Window-global, so it survives Home visits and
+    /// stays in step with whatever the iPad last selected in this session.
+    var inspectorTab: WorkspaceStore.SidebarTab {
+        workspace.sidebarTab
+    }
+
+    /// Selects a panel and makes sure it is actually on screen — the phone's
+    /// entry point for every existing reveal path ("quote in AI", ⌥⌘1/2/3, the
+    /// ink reveal, `AppStore`'s note flow).
+    ///
+    /// It routes to the reader as well as opening the panel. Those callers all
+    /// mean "show me this panel *for the document*", and a reveal that quietly
+    /// did nothing because the shell happened to be on Home (a hardware ⌥⌘2 is
+    /// reachable from there) would read as a dead shortcut.
+    func revealInspector(_ tab: WorkspaceStore.SidebarTab) {
+        // The store's own guard: no document, no panel, and no silent flip of
+        // the user's preference for whenever they next open one.
+        guard app.document != nil else { return }
+        workspace.revealSidebarTab(tab)
+        showReader()
+    }
+
+    // MARK: - Routing
+
+    func showHome() {
+        // The switcher is a full-screen cover over the reader; leaving the
+        // reader with it still presented would stack it over Home.
+        switcherPresented = false
+        route = .home
+    }
+
+    /// Returns to the document. Chrome comes back visible: arriving at a
+    /// document with no chrome would leave no visible way back to Home, and the
+    /// tap-to-reveal gesture that fixes that is not discoverable.
+    func showReader() {
+        switcherPresented = false
+        chromeVisible = true
+        route = .reader
+    }
+
+    /// A document was opened (Home, the importer, a Files-app hand-off, the
+    /// switcher's "+"). Distinct from `showReader()` only in intent — both end
+    /// at the reader with chrome up and the switcher closed — so the call sites
+    /// read as what happened rather than as what to draw.
+    func didOpenDocument() {
+        showReader()
+    }
+
+    /// A tab was closed. With no tabs left there is nothing for the reader to
+    /// render (the phone never mints a start tab, D1), so the shell falls back
+    /// to Home rather than to an empty document surface.
+    func didCloseTab() {
+        guard app.tabs.isEmpty else { return }
+        showHome()
+    }
+
+    // MARK: - Chrome
+
+    func toggleChrome() {
+        chromeVisible.toggle()
+    }
+
+    func setChrome(_ visible: Bool) {
+        chromeVisible = visible
+    }
+}
+#endif

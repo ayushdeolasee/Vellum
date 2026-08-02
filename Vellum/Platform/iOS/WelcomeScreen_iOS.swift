@@ -33,7 +33,24 @@ struct WelcomeLibrary_iOS: View {
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var store = HomeSearchStore()
+    @State private var store: HomeSearchStore
+
+    /// `store` is injectable so a shell that unmounts this screen can keep the
+    /// corpus alive across visits (the phone's Home is a route, not a tab — see
+    /// `PhoneShellRoot_iOS.homeSearch`). Defaulted to nil, so both iPad call
+    /// sites keep their own screen-owned store and behave exactly as before.
+    init(
+        onOpen: @escaping () -> Void,
+        onAddWebpage: @escaping () -> Void,
+        compact: Bool = false,
+        store: HomeSearchStore? = nil
+    ) {
+        self.onOpen = onOpen
+        self.onAddWebpage = onAddWebpage
+        self.compact = compact
+        _store = State(initialValue: store ?? HomeSearchStore())
+    }
+
     /// Which library the screen is showing: the local one, or a connected
     /// read-later account's. Reset to `.library` when the account being browsed
     /// is disconnected — see the `connectedProviders` change handler.
