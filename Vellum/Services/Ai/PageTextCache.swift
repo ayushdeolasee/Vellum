@@ -6,17 +6,21 @@ import Foundation
 // getTextContent walk (issue #37 PR B). Only PDFs persist: web documents load
 // their full text up front and never route through this actor.
 //
-// Identity is by canonical source PATH (sha256-hex, like WebLibrary.pageKey),
-// NOT by content hash. Every in-app mutation — annotation writes AND the
-// last_page metadata write on every quit — atomically rewrites the whole PDF,
-// so a content-keyed file would miss on nearly every reopen. The index entry
-// carries a contentHash used only to VALIDATE (external edits invalidate); it
-// is refreshed inline by PdfDocumentIO after each in-app write so those writes
-// don't invalidate. Storage layout, sha256-hex keys and the tmp+rename atomic
-// write follow WebLibrary's conventions; corrupt/version-mismatched JSON decodes
-// as a miss and regenerates, matching AiPersistence's silent-recovery style.
+// Identity is by the session-stable STORAGE KEY the caller resolves once at
+// open (the /VellumDocId once stamped, else sha256-hex of the canonical path —
+// DocumentIdentity.storageKey), NOT by content hash. Every in-app mutation —
+// annotation writes AND the last_page metadata write on every quit — atomically
+// rewrites the whole PDF, so a content-keyed file would miss on nearly every
+// reopen. The index entry carries a contentHash used only to VALIDATE (external
+// edits invalidate); it is refreshed inline by PdfDocumentIO after each in-app
+// write so those writes don't invalidate. A `lookup` that misses under the
+// stable key adopts a legacy path-hash entry (rename + re-key), so a PDF that
+// acquired a docId doesn't rebuild its cache from scratch. The cache lives in
+// ~/Library/Caches (class C); storage layout, sha256-hex keys and the tmp+rename
+// atomic write follow WebLibrary's conventions; corrupt/version-mismatched JSON
+// decodes as a miss and regenerates, matching AiPersistence's silent-recovery style.
 
-/// One document's cached page text (`text-cache/<pathKey>.json`). Empty-string
+/// One document's cached page text (`text/<storageKey>.json`). Empty-string
 /// pages are meaningful (a scanned page with no text layer) and round-trip so
 /// completion tracking — and a future OCR pass — see them as covered, not
 /// missing.
@@ -28,7 +32,7 @@ struct PageTextCacheFile: Codable, Sendable {
     var pages: [String: String]
 }
 
-/// Sidecar index row (`text-cache/index.json` → entries[pathKey]).
+/// Sidecar index row (`text/index.json` → entries[storageKey]).
 struct PageTextIndexEntry: Codable, Sendable {
     var path: String
     var contentHash: String
@@ -73,10 +77,12 @@ actor PageTextCache {
     private let directory: URL
     private let fileVersion = 1
 
-    /// Path → most recent contentHash. Updated by `lookup` and `refreshHash` so
-    /// a hash refreshed by an in-app write BEFORE the first flush still lands in
-    /// the index entry when the flush happens (the annotate-before-first-flush
-    /// case that would otherwise stamp a stale hash and self-invalidate).
+    /// Storage key → most recent contentHash. Updated by `lookup` and
+    /// `refreshHash` so a hash refreshed by an in-app write BEFORE the first
+    /// flush still lands in the index entry when the flush happens (the
+    /// annotate-before-first-flush case that would otherwise stamp a stale hash
+    /// and self-invalidate). Keyed by the session-stable storage key, which the
+    /// caller resolves once (docId-at-open ?? pathKey) and uses consistently.
     private var latestHash: [String: String] = [:]
 
     /// Test seam: point the actor at a scratch directory.
@@ -85,13 +91,46 @@ actor PageTextCache {
     }
 
     private init() {
-        directory = WebLibrary.appDataDir.appendingPathComponent("text-cache", isDirectory: true)
+        let dir = Self.defaultDirectory
+        Self.migrateFromLegacyLocationIfNeeded(to: dir)
+        directory = dir
+    }
+
+    /// Class-C home (design §2): ~/Library/Caches/com.vellum.app/text — evictable
+    /// without loss, never synced, guilt-free TTL cleanup.
+    static var defaultDirectory: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"
+        return base
+            .appendingPathComponent(bundleId, isDirectory: true)
+            .appendingPathComponent("text", isDirectory: true)
+    }
+
+    /// One-time relocation of the pre-#29 cache from App Support/text-cache to
+    /// the Caches home. A wholesale rename (cheap on the same volume); if it
+    /// fails the cache just starts cold and rebuilds, so failures are ignored.
+    private static func migrateFromLegacyLocationIfNeeded(to newDir: URL) {
+        let fm = FileManager.default
+        let legacy = WebLibrary.appDataDir.appendingPathComponent("text-cache", isDirectory: true)
+        guard fm.fileExists(atPath: legacy.path), !fm.fileExists(atPath: newDir.path) else { return }
+        do {
+            try fm.createDirectory(
+                at: newDir.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.moveItem(at: legacy, to: newDir)
+        } catch {
+            // Best-effort: a failed move just means a cold cache that rebuilds.
+        }
     }
 
     // MARK: - Keys / hashing
 
-    /// Stable storage key for a canonical source path: lowercase hex sha256
-    /// (same style as WebLibrary.pageKey).
+    /// Legacy path-hash storage key: lowercase hex sha256 of a canonical source
+    /// path (same style as WebLibrary.pageKey, byte-identical to
+    /// DocumentIdentity.sha256Hex). Kept as the cross-session migration probe —
+    /// entries written before the docId re-key live under this key, and `lookup`
+    /// adopts them. New entries are keyed by the caller's session-stable storage
+    /// key (docId when stamped, else this).
     static func pathKey(_ path: String) -> String {
         let digest = SHA256.hash(data: Data(path.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
@@ -112,49 +151,77 @@ actor PageTextCache {
 
     // MARK: - Public API
 
-    /// Restore a document's page map, or nil (miss). Records the content hash in
-    /// `latestHash`. Match → decode the cache body, stamp `lastOpened` (index
-    /// only, never the big file), return the pages. Hash mismatch (external
-    /// edit) → drop the cache file + entry and return nil. No entry → nil.
-    func lookup(path: String, data: Data, title: String?) -> [Int: String]? {
+    /// Restore a document's page map, or nil (miss). `key` is the session-stable
+    /// storage key (docId when stamped, else pathKey); `path` is the current
+    /// source path (for the index entry's display field and the legacy probe).
+    /// Records the content hash in `latestHash`. Match → decode the cache body,
+    /// stamp `lastOpened` (index only, never the big file), return the pages.
+    /// Hash mismatch (external edit) → drop the cache file + entry and return
+    /// nil. No entry under `key` → probe the legacy pathKey entry and adopt it
+    /// (rename + re-key) before validating. No entry → nil.
+    func lookup(key: String, path: String, data: Data, title: String?) -> [Int: String]? {
         let hash = Self.contentHash(of: data)
-        latestHash[path] = hash
-        let key = Self.pathKey(path)
+        latestHash[key] = hash
         var index = readIndex()
-        guard let entry = index.entries[key] else { return nil }
+        var indexDirty = false
+
+        // Cross-session migration: an entry written before the docId re-key
+        // lives under sha256(path). On a miss under the stable key, adopt it —
+        // rename the cache body and re-key the index row — then validate as usual.
+        if index.entries[key] == nil {
+            let legacyKey = Self.pathKey(path)
+            if legacyKey != key, let legacy = index.entries[legacyKey] {
+                try? FileManager.default.removeItem(at: cacheFileURL(key: key))
+                _ = try? FileManager.default.moveItem(
+                    at: cacheFileURL(key: legacyKey), to: cacheFileURL(key: key))
+                index.entries[key] = legacy
+                index.entries[legacyKey] = nil
+                indexDirty = true
+            }
+        }
+
+        guard var entry = index.entries[key] else {
+            if indexDirty { writeIndex(index) }
+            return nil
+        }
         guard entry.contentHash == hash else {
-            try? FileManager.default.removeItem(at: cacheFileURL(pathKey: key))
+            try? FileManager.default.removeItem(at: cacheFileURL(key: key))
             index.entries[key] = nil
             writeIndex(index)
             return nil
         }
-        guard let file = readCacheFile(pathKey: key) else {
+        guard let file = readCacheFile(key: key) else {
             // Live entry but missing/corrupt body: treat as a miss and let the
             // walk regenerate; drop the dangling entry.
             index.entries[key] = nil
             writeIndex(index)
             return nil
         }
-        var stamped = entry
-        stamped.lastOpened = Self.now()
-        index.entries[key] = stamped
+        entry.lastOpened = Self.now()
+        // Keep the display path current when the same document is seen at a new
+        // path (renamed/moved but same docId).
+        if entry.path != path { entry.path = path }
+        index.entries[key] = entry
         writeIndex(index)
         return Self.decodePages(file.pages)
     }
 
-    /// Atomically write a document's cache body and upsert its index entry.
-    /// The entry's hash comes from `latestHash` (set by the `lookup` that always
-    /// precedes a walk), falling back to any hash already on the entry, else "".
-    func write(path: String, title: String?, pageCount: Int, pages: [Int: String], complete: Bool) {
-        let key = Self.pathKey(path)
+    /// Atomically write a document's cache body and upsert its index entry under
+    /// `key`. The entry's hash comes from `latestHash` (set by the `lookup` that
+    /// always precedes a walk), falling back to any hash already on the entry,
+    /// else "". `path` is stored for Settings display + sourceExists.
+    func write(
+        key: String, path: String, title: String?, pageCount: Int,
+        pages: [Int: String], complete: Bool
+    ) {
         var pageStrings: [String: String] = [:]
         for (page, text) in pages { pageStrings[String(page)] = text }
         let file = PageTextCacheFile(
             version: fileVersion, pageCount: pageCount, complete: complete, pages: pageStrings)
-        writeAtomic(file, to: cacheFileURL(pathKey: key))
+        writeAtomic(file, to: cacheFileURL(key: key))
 
         var index = readIndex()
-        let hash = latestHash[path] ?? index.entries[key]?.contentHash ?? ""
+        let hash = latestHash[key] ?? index.entries[key]?.contentHash ?? ""
         index.entries[key] = PageTextIndexEntry(
             path: path,
             contentHash: hash,
@@ -165,13 +232,14 @@ actor PageTextCache {
         writeIndex(index)
     }
 
-    /// Re-key the validation hash after an in-app rewrite. Always updates
-    /// `latestHash`; also rewrites the index entry's hash when one already
-    /// exists, so a reopen with the just-written bytes still hits.
-    func refreshHash(path: String, data: Data) {
+    /// Re-key the validation hash after an in-app rewrite. `key` is the same
+    /// session-stable storage key used at open (unchanged even after a
+    /// mid-session docId stamp). Always updates `latestHash`; also rewrites the
+    /// index entry's hash when one already exists, so a reopen with the
+    /// just-written bytes still hits.
+    func refreshHash(key: String, data: Data) {
         let hash = Self.contentHash(of: data)
-        latestHash[path] = hash
-        let key = Self.pathKey(path)
+        latestHash[key] = hash
         var index = readIndex()
         guard var entry = index.entries[key] else { return }
         entry.contentHash = hash
@@ -186,7 +254,7 @@ actor PageTextCache {
         let index = readIndex()
         var out: [PageTextCacheEntry] = []
         for (key, entry) in index.entries {
-            let attributes = try? fm.attributesOfItem(atPath: cacheFileURL(pathKey: key).path)
+            let attributes = try? fm.attributesOfItem(atPath: cacheFileURL(key: key).path)
             let byteSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
             let lastOpened = ISO8601DateFormatter.recentTimestamp.date(from: entry.lastOpened) ?? .distantPast
             out.append(PageTextCacheEntry(
@@ -207,10 +275,10 @@ actor PageTextCache {
     /// current bytes, not the cache entry. If the deleted document is open and
     /// still extracting, its persister recreates the entry — with the correct
     /// hash rather than a poisoned "" that would invalidate every reopen.
-    func delete(pathKey: String) {
-        try? FileManager.default.removeItem(at: cacheFileURL(pathKey: pathKey))
+    func delete(key: String) {
+        try? FileManager.default.removeItem(at: cacheFileURL(key: key))
         var index = readIndex()
-        index.entries[pathKey] = nil
+        index.entries[key] = nil
         writeIndex(index)
     }
 
@@ -219,16 +287,17 @@ actor PageTextCache {
     }
 
     /// Age-based eviction: drop entries whose `lastOpened` parses older than
-    /// `cutoff`, never one whose path is in `excludingPaths`, and NEVER because
-    /// the source file is missing (the cache is still worth keeping).
-    func evictStale(olderThan cutoff: Date, excludingPaths: Set<String>) {
+    /// `cutoff`, never one whose storage key is in `excludingKeys` (currently
+    /// open documents), and NEVER because the source file is missing (the cache
+    /// is still worth keeping).
+    func evictStale(olderThan cutoff: Date, excludingKeys: Set<String>) {
         var index = readIndex()
         var changed = false
         for (key, entry) in index.entries {
-            guard !excludingPaths.contains(entry.path) else { continue }
+            guard !excludingKeys.contains(key) else { continue }
             guard let opened = ISO8601DateFormatter.recentTimestamp.date(from: entry.lastOpened),
                   opened < cutoff else { continue }
-            try? FileManager.default.removeItem(at: cacheFileURL(pathKey: key))
+            try? FileManager.default.removeItem(at: cacheFileURL(key: key))
             index.entries[key] = nil
             changed = true
         }
@@ -239,8 +308,8 @@ actor PageTextCache {
 
     private var indexURL: URL { directory.appendingPathComponent("index.json") }
 
-    private func cacheFileURL(pathKey: String) -> URL {
-        directory.appendingPathComponent("\(pathKey).json")
+    private func cacheFileURL(key: String) -> URL {
+        directory.appendingPathComponent("\(key).json")
     }
 
     private func readIndex() -> PageTextIndexFile {
@@ -255,8 +324,8 @@ actor PageTextCache {
         writeAtomic(index, to: indexURL)
     }
 
-    private func readCacheFile(pathKey: String) -> PageTextCacheFile? {
-        guard let data = try? Data(contentsOf: cacheFileURL(pathKey: pathKey)),
+    private func readCacheFile(key: String) -> PageTextCacheFile? {
+        guard let data = try? Data(contentsOf: cacheFileURL(key: key)),
               let file = try? JSONDecoder().decode(PageTextCacheFile.self, from: data),
               file.version == fileVersion
         else { return nil }

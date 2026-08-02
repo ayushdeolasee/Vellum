@@ -9,6 +9,9 @@ import Foundation
 
 @MainActor
 final class PageTextPersister {
+    /// The session-stable storage key (docId when stamped, else pathKey),
+    /// resolved by the caller from the same DocumentInfo that seeded the lookup.
+    let key: String
     let path: String
     let title: String?
     let pageCount: Int
@@ -33,9 +36,10 @@ final class PageTextPersister {
     private static var inFlightFlushes: [UUID: Task<Void, Never>] = [:]
 
     init(
-        path: String, title: String?, pageCount: Int,
+        key: String, path: String, title: String?, pageCount: Int,
         seeded: [Int: String], cache: PageTextCache = .shared
     ) {
+        self.key = key
         self.path = path
         self.title = title
         self.pageCount = pageCount
@@ -97,6 +101,7 @@ final class PageTextPersister {
         dirty = false
         let complete = pageCount >= 1 && (1...pageCount).allSatisfy { pages[$0] != nil }
         await cache.write(
-            path: path, title: title, pageCount: pageCount, pages: pages, complete: complete)
+            key: key, path: path, title: title, pageCount: pageCount, pages: pages,
+            complete: complete)
     }
 }
