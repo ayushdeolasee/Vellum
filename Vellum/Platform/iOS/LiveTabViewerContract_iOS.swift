@@ -1,6 +1,7 @@
 #if os(iOS)
 import PDFKit
 import UIKit
+import WebKit
 
 // Cross-packet contract for the live-tab viewers — packet 4 §2.0, the C3 cycle
 // break.
@@ -16,7 +17,9 @@ import UIKit
 //
 //   1. `RetainedViewOwner` — `PdfKitView_iOS.makeUIView` must hand a new host
 //      the controller's EXISTING `PDFView` (parentless), instead of building a
-//      fresh one. Packet 7. Today `makeUIView` still builds a fresh view.
+//      fresh one. Packet 7 made `pdfView` strong and wired the web side;
+//      `PdfKitView_iOS.swift` itself is packet 4's file (packet 7 §1 SKIPs it),
+//      so the PDF adoption call and the matching `detach()` change land there.
 //   2. `LiveTabViewerController.documentAttached()` — declared here with a
 //      no-op default so both controllers satisfy it; the PDF controller already
 //      has a real implementation, the web controller inherits the no-op.
@@ -32,11 +35,13 @@ import UIKit
 /// an eviction, remounts the host, and rebuilding PDFKit/WebKit on every such
 /// remount is exactly what live tabs exist to avoid.
 ///
-/// - Important: **Not yet true of any conformer.**
-///   `PdfViewerControlleriOS.pdfView` is still a `weak` reference, so the view
-///   is retained by its superview and dies with the host. Flipping it to a
-///   strong reference changes object lifetimes, which is behavioural, so it is
-///   packet 7's to make — not this interface-only commit's.
+/// - Note: `PdfViewerControlleriOS.pdfView` is a strong reference as of packet
+///   7, so the controller genuinely retains the view. The remaining step is
+///   packet 4's: `PdfKitView_iOS.Coordinator.detach()` still nils it on
+///   dismantle, so nothing outlives its host in practice yet. Removing that nil
+///   is what turns `adoptRetainedView` from a formality into a real reuse, and
+///   it only means anything once `LiveTabHost_iOS` mounts one host per tab
+///   (packet 4 §2.8, which owns `PdfKitView_iOS.swift`).
 @MainActor
 protocol RetainedViewOwner: AnyObject {
     associatedtype RetainedView: UIView
@@ -92,10 +97,12 @@ extension PdfViewerControlleriOS: RetainedViewOwner, LiveTabViewerController {
     var retainedView: PDFView? { pdfView }
 }
 
-// The web controller takes the no-op `documentAttached()`. It is deliberately
-// NOT a `RetainedViewOwner` yet: its `webView` is built lazily, so a
-// `retainedView` accessor would construct a `WKWebView` — and its whole content
-// process — just by being read. Packet 7 adds the conformance together with the
-// `didCreateWebView` flag that lets it answer without side effects.
-extension WebViewerController_iOS: LiveTabViewerController {}
+// The web controller takes the no-op `documentAttached()`. Its `webView` is
+// built lazily, so `retainedView` must never touch the lazy property — reading
+// it would construct a `WKWebView` and its whole content process just to answer
+// a question. `didCreateWebView` (packet 7) records whether one exists, so
+// "none yet" is a real answer and the caller builds on its own terms.
+extension WebViewerController_iOS: RetainedViewOwner, LiveTabViewerController {
+    var retainedView: VellumWebView? { hasWebView ? webView : nil }
+}
 #endif

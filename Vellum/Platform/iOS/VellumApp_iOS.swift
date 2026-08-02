@@ -14,6 +14,8 @@ struct VellumApp_iOS: App {
     @State private var workspace: WorkspaceStore
     @State private var inkRegistry: InkRegistry_iOS
     @State private var showStorageChoice = false
+    @State private var showWalkthrough = false
+    @State private var showHelp = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -29,8 +31,44 @@ struct VellumApp_iOS: App {
         WindowGroup {
             ContentView_iOS()
                 .task { await launchMaintenance() }
-                .sheet(isPresented: $showStorageChoice) {
+                .onOpenURL { url in handleIncomingFile(url) }
+                // The storage choice hands off to the walkthrough when it
+                // closes — see `launchMaintenance` for why it goes first.
+                .sheet(
+                    isPresented: $showStorageChoice,
+                    onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
+                ) {
                     StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
+                        .preferredColorScheme(themeStore.colorScheme)
+                        .tint(themeStore.palette.primary)
+                }
+                // Presented at the ROOT, not on the Home screen: the
+                // walkthrough stays reachable with a document open, and it
+                // outlives the screen that offers it.
+                //
+                // iOS silently drops a second simultaneous presentation, so
+                // each handler guards on the other two flags. Together with the
+                // `if !showStorageChoice` gate in `launchMaintenance`, that is
+                // the "one sheet at a time" rule.
+                .onReceive(
+                    NotificationCenter.default.publisher(for: .vellumShowWalkthrough)
+                ) { _ in
+                    guard !showStorageChoice, !showHelp else { return }
+                    showWalkthrough = true
+                }
+                .sheet(isPresented: $showWalkthrough) {
+                    WalkthroughSheet_iOS()
+                        .environment(\.palette, themeStore.palette)
+                        .preferredColorScheme(themeStore.colorScheme)
+                        .tint(themeStore.palette.primary)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .vellumShowHelp)) { _ in
+                    guard !showStorageChoice, !showWalkthrough else { return }
+                    showHelp = true
+                }
+                .sheet(isPresented: $showHelp) {
+                    HelpCenterView_iOS()
                         .environment(\.palette, themeStore.palette)
                         .preferredColorScheme(themeStore.colorScheme)
                         .tint(themeStore.palette.primary)
@@ -54,6 +92,25 @@ struct VellumApp_iOS: App {
             if phase == .background {
                 flushOnBackground()
             }
+        }
+    }
+
+    /// Files-app open / share-sheet "Open in Vellum" for a registered type
+    /// (.pdf, .vellumweb, .vellum). The iOS analogue of macOS's
+    /// `NSApplicationDelegate.application(_:open:)`: it copies the
+    /// security-scoped file into the writable library (or stages a bundle in
+    /// tmp/) off the main actor, then hands the local paths to the shell
+    /// through the SAME `vellumOpenFile` channel ⌘O uses — a payload means
+    /// "open these", no payload still means "show the picker".
+    @MainActor
+    private func handleIncomingFile(_ url: URL) {
+        Task {
+            let paths = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPicked([url])
+            }.value
+            guard !paths.isEmpty else { return }
+            NotificationCenter.default.post(
+                name: .vellumOpenFile, object: nil, userInfo: ["paths": paths])
         }
     }
 
@@ -95,6 +152,15 @@ struct VellumApp_iOS: App {
         }
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+        // Only one sheet at a time. On a true first launch the storage choice
+        // goes first — it decides where everything the walkthrough describes
+        // gets written — and hands off to the walkthrough when it closes (see
+        // the sheet's `onDismiss`). This ordering is already safe here because
+        // `launchMaintenance` awaits `WebStorageSettings.resolveICloudRoot()`
+        // before reaching this line.
+        if !showStorageChoice {
+            showWalkthrough = WalkthroughSettings.needsFirstRun
+        }
     }
 
     /// Scene-background flush. macOS drains these on `applicationShouldTerminate`;
@@ -113,8 +179,22 @@ struct VellumApp_iOS: App {
 
         Task { @MainActor in
             defer { token.end() }
-            for controller in inkRegistry.controllers.values {
-                await controller.flushPendingInkAndWait()
+            // Tabs closed moments ago finish their metadata write and session
+            // close behind the UI (AppStore.closeTab) and are no longer in
+            // `tabs`, so the per-tab loop below would miss them. Drained via the
+            // workspace registry, not per pane: a close that collapsed its pane
+            // left no leaf to ask. First, because their last_page writes must
+            // land before the loop rewrites the same files.
+            await workspace.tabTeardowns.awaitAll()
+            // Every OPEN tab's ink, not just the focused pane's. The registry
+            // now holds one controller per pane (the active tab's projection
+            // the inspector reads), while ink itself is per-tab state on the
+            // runtime — so iterating the registry would silently skip the
+            // debounced strokes of every background tab.
+            for pane in workspace.root.allLeaves() {
+                for tab in pane.app.tabs {
+                    await workspace.liveTabRuntime(for: tab.id).ink.flushPendingInkAndWait()
+                }
             }
             for pane in workspace.root.allLeaves() {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
@@ -124,11 +204,13 @@ struct VellumApp_iOS: App {
                         sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
                     try? await workspace.sessions.saveFile(sessionId: tab.id)
                 }
-                // Persist the active document's in-flight page text AFTER the
-                // last_page writes (each refreshed the cache's validation
-                // hash), so a reopen still hits (issue #37 PR B).
-                await pane.app.flushPageTextCacheHandler?()
             }
+            // Every runtime, not just the focused pane's handler: the metadata
+            // writes above changed each PDF's validation hash, and with live
+            // tabs there is one extractor per TAB rather than one per pane. The
+            // old `pane.app.flushPageTextCacheHandler?()` covered only whichever
+            // viewer last claimed that slot (issue #37 PR B).
+            await workspace.flushLivePageTextCaches()
             // Drain the coalesced background flushes so a page-text cache write
             // (issue #37) or an in-flight conversation blob (do-not-reintroduce
             // #8) still lands if the app is suspended right after backgrounding.

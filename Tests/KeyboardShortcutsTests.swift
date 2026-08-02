@@ -53,6 +53,14 @@ final class KeyboardShortcutsTests: XCTestCase {
             (.splitDown, "Split Down", .character("\\"), [.command, .option], .view),
             (.mergePanes, "Merge Panes", .character("j"), [.command, .option], .view),
             (.closePane, "Close Pane", .character("\\"), [.command, .shift], .view),
+            // Inspector panel reveals (PR #120). ⌥⌘, not plain ⌘: ⌘1…⌘9 below
+            // already switch tabs, and the macOS View menu uses the same prefix
+            // for its neighbouring inspector commands.
+            (.showSidebarTab(.annotations), "Show Annotations", .character("1"),
+             [.command, .option], .view),
+            (.showSidebarTab(.ai), "Show AI", .character("2"), [.command, .option], .view),
+            (.showSidebarTab(.scratchpad), "Show Scratchpad", .character("3"),
+             [.command, .option], .view),
             // Navigate
             (.previousPage, "Previous Page", .upArrow, .command, .navigate),
             (.nextPage, "Next Page", .downArrow, .command, .navigate),
@@ -76,6 +84,12 @@ final class KeyboardShortcutsTests: XCTestCase {
             // Annotations
             (.bookmarkPage, "Bookmark Page", .character("d"), .command, .annotations),
             (.toggleNoteMode, "Toggle Note Mode", .character("n"), [], .annotations),
+            // Help. Transcribed from main's `CommandGroup(replacing: .help)`,
+            // which keeps the stock "Vellum Help" name and its ⌘? equivalent.
+            // Its sibling "Vellum Walkthrough" is deliberately absent here: main
+            // leaves the walkthrough unbound, so the iPad surfaces it as a plain
+            // Button in `VellumCommands_iOS` rather than as a catalogue row.
+            (.showHelp, "Vellum Help", .character("?"), .command, .help),
         ]
         return rows
     }
@@ -111,6 +125,26 @@ final class KeyboardShortcutsTests: XCTestCase {
             "Two rows bind the same action; the catalog lookup would drop one.")
     }
 
+    /// The iPad equivalent of main's
+    /// `InspectorTabSwitcherTests` modifier check: the panel reveals must not
+    /// collide with tab switching. `testNoChordIsBoundTwice` below proves the
+    /// whole table is collision-free; this pins the specific pair that would be
+    /// easiest to break by "simplifying" the panel chords to plain ⌘.
+    func testPanelRevealChordsAreDistinctFromTabSwitching() {
+        for tab in WorkspaceStore.SidebarTab.allCases {
+            let reveal = VellumShortcutCatalog.all.first { $0.action == .showSidebarTab(tab) }
+            XCTAssertNotNil(reveal, "no ⌥⌘ reveal for \(tab.accessibilityIdentifierStem)")
+            XCTAssertEqual(reveal?.combo.modifiers, [.command, .option])
+            XCTAssertEqual(reveal?.combo.key, .character(tab.shortcutDigit))
+        }
+        for number in 1...3 {
+            let switchTab = VellumShortcutCatalog.all.first { $0.action == .showTab(number) }
+            XCTAssertEqual(
+                switchTab?.combo.modifiers, .command,
+                "⌘\(number) must stay tab switching — the panel reveals take ⌥⌘.")
+        }
+    }
+
     func testNoChordIsBoundTwice() {
         // Primary chords AND responder-chain alternates share one keyboard, so
         // collisions are checked across both.
@@ -128,7 +162,7 @@ final class KeyboardShortcutsTests: XCTestCase {
                 shortcut.title.isEmpty, "\(shortcut.action.identifier) has no title")
         }
         let menus = Set(VellumShortcutCatalog.all.map(\.menu))
-        XCTAssertEqual(menus, [.file, .find, .view, .navigate, .annotations])
+        XCTAssertEqual(menus, [.file, .find, .view, .navigate, .annotations, .help])
     }
 
     func testIdentifiersRoundTripThroughTheCatalog() {

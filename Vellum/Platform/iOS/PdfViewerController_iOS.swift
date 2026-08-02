@@ -9,15 +9,64 @@ import UIKit
 // contextMenu, pageViewFrame) and the same store-handler surface (zoom, scroll,
 // find, locate, snapshot), but interaction is touch/gesture-driven instead of
 // NSEvent monitors, and geometry is UIKit-native (top-left origin, no flip).
+
+/// The two non-`Sendable` values the background text walk has to carry into
+/// `PageTextExtractionGate.extractText(priority:offMain:)`.
+///
+/// That body parameter is `@Sendable` on purpose — that is exactly what keeps
+/// the `page.string` read on the detached utility task instead of dragging it
+/// back onto the main actor (see `startTextExtraction(data:)`). Neither
+/// `PDFDocument` nor the controller is `Sendable`, so the capture needs a box
+/// with an explicit safety argument:
+///
+/// - `copy` is a PRIVATE `PDFDocument(data:)` parsed inside the walk. No view
+///   renders from it and nothing else ever holds a reference, so the walk is its
+///   only accessor and PDFKit's lack of thread safety cannot bite.
+/// - `controller` is only ever dereferenced inside `MainActor.run`, i.e. on the
+///   main actor, which is where every one of its members lives. It stays `weak`
+///   so a walk outliving its controller drops out instead of keeping the whole
+///   viewer alive.
+private final class PdfExtractionWalkContext: @unchecked Sendable {
+    weak var controller: PdfViewerControlleriOS?
+    let copy: PDFDocument
+
+    init(controller: PdfViewerControlleriOS?, copy: PDFDocument) {
+        self.controller = controller
+        self.copy = copy
+    }
+}
+
 @MainActor
 @Observable
 final class PdfViewerControlleriOS: HighlightResizeControlling {
-    weak var pdfView: PDFView?
+    /// The tab's `PDFView`, held STRONGLY (packet 7, the `RetainedViewOwner`
+    /// contract in `LiveTabViewerContract_iOS.swift`): under live tabs the
+    /// native view belongs to the tab, not to whichever pane happens to be
+    /// hosting it, and rebuilding PDFKit on every remount is exactly what live
+    /// tabs exist to avoid. No cycle — the view never holds the controller (the
+    /// coordinator holds the controller strongly and the view weakly).
+    ///
+    /// The reference genuinely outlives its host as of packet 4 §2.8:
+    /// `Coordinator.detach()` no longer nils it, so a remount adopts this view
+    /// through `adoptRetainedView` instead of building a new one. It is
+    /// released by `LiveTabRuntime.releaseResidency()` — which drops the whole
+    /// controller — and by nothing else.
+    var pdfView: PDFView?
     private(set) var document: PDFDocument?
 
     @ObservationIgnored weak var app: AppStore?
     @ObservationIgnored weak var annotationStore: AnnotationStore?
     @ObservationIgnored weak var ai: AiStore?
+
+    /// The tab this controller is mounted for. Live tabs mount several viewers
+    /// at once, so every generation guard below asks "is MY tab the active one"
+    /// rather than reading the pane's active projection at the moment it runs.
+    @ObservationIgnored private(set) var tabId: String?
+    /// The tab's runtime, weak because the runtime owns this controller.
+    /// Extracted page text is mirrored here as well as into the pane's shared
+    /// `AiStore`: the AiStore holds only the ACTIVE tab's pages, so a background
+    /// tab's already-extracted text would otherwise be lost on every switch.
+    @ObservationIgnored weak var runtime: LiveTabRuntime?
 
     /// Bumped whenever scroll/zoom/layout moves page geometry so the overlays
     /// recompute their positions.
@@ -50,7 +99,9 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         app: AppStore,
         annotationStore: AnnotationStore,
         ai: AiStore,
-        initialPage: Int
+        initialPage: Int,
+        tabId: String,
+        runtime: LiveTabRuntime
     ) {
         reset()
         self.document = document
@@ -58,6 +109,28 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
+        self.tabId = tabId
+        self.runtime = runtime
+    }
+
+    /// Re-point the pane-scoped stores without touching the loaded document.
+    /// A tab dragged to another pane keeps its `PDFView` and its parsed
+    /// document but must start talking to the destination pane's stores, and a
+    /// warm tab coming back re-registers against whatever pane now hosts it.
+    /// Deliberately NOT `adopt`: that resets, which would throw away the very
+    /// native state live tabs exist to keep.
+    func rebind(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        ai: AiStore,
+        tabId: String,
+        runtime: LiveTabRuntime
+    ) {
+        self.app = app
+        self.annotationStore = annotationStore
+        self.ai = ai
+        self.tabId = tabId
+        self.runtime = runtime
     }
 
     func reset() {
@@ -72,6 +145,8 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         didInitialScroll = false
         findMatches = []
         findIndex = -1
+        tabId = nil
+        runtime = nil
     }
 
     /// Called by PdfKitView_iOS once the PDFView exists with the document set.
@@ -451,6 +526,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         // this placement consumes it as the note's initial content (nil for a
         // plain, hand-placed note).
         let pendingContent = app?.consumePendingNoteContent()
+        // Recorded BEFORE the write below suspends: with live tabs the user can
+        // switch panes/tabs while `addNote` is in flight, and only the still-
+        // active origin session may leave note mode.
+        let originSessionId = app?.activeTabId
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth, pageHeight: pageHeight,
@@ -463,7 +542,9 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         if let annotation = await annotationStore?.addNote(input) {
             annotationStore?.selectAnnotation(annotation.id)
         }
-        app?.setMode(.view)
+        if let originSessionId {
+            app?.finishNotePlacement(forSessionId: originSessionId)
+        }
     }
 
     func addNoteFromContextMenu() {
@@ -528,28 +609,70 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
         // Generation guards: a stale walk must stop writing into the shared
-        // pageTexts once the pane shows another tab or another document.
-        let tabId = app?.activeTabId
+        // pageTexts once the pane shows another tab or another document. The id
+        // is THIS MOUNT's tab (live tabs mount several viewers at once), so an
+        // inactive tab's walk parks itself instead of racing the visible one.
+        let tabId = self.tabId ?? app?.activeTabId
         let docIdentity = ObjectIdentifier(document)
         let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
         let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
         guard !missingPages.isEmpty else { return }
         extractionTask = Task.detached(priority: .utility) { [weak self] in
             guard let copy = PDFDocument(data: data) else { return }
+            // The gate's `offMain:` body must be `@Sendable` (that is what keeps
+            // it off the main actor), and neither `PDFDocument` nor the
+            // controller is `Sendable`. `PdfExtractionWalkContext` carries both
+            // across that boundary with the safety argument spelled out on the
+            // type — see its doc comment.
+            let walk = PdfExtractionWalkContext(controller: self, copy: copy)
             for pageNumber in missingPages {
-                // Keep the original walk's idle pacing so a background core
-                // isn't pinned for the whole document.
+                // Idle pacing, kept from the original walk so a background core
+                // isn't pinned for the whole document. The gate's own cooldown
+                // is measured from the END of the previous page, so this sleep
+                // normally absorbs it rather than adding to it.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
-                guard pageNumber <= copy.pageCount,
-                      let page = copy.page(at: pageNumber - 1) else { continue }
-                let text = page.string ?? ""
+
+                // One page at a time, process-wide (main PR #121): `PDFPage
+                // .string` on a page with no text layer sends PDFKit to Live
+                // Text, and overlapping first-time ANE model compiles crash the
+                // process. `offMain:` keeps the read on this detached task —
+                // the whole point of walking a private document copy — while
+                // the gate's queue bookkeeping stays main-actor isolated.
+                let text = await PageTextExtractionGate.shared.extractText(
+                    priority: .background
+                ) { () async -> String? in
+                    // Cache re-check INSIDE the gate: a page the locator (or a
+                    // second pane's walk) filled while this request sat in the
+                    // queue is skipped, not re-extracted. Returning nil also
+                    // tells the gate no read happened, so nothing is paced.
+                    let stillNeeded = await MainActor.run { () -> Bool in
+                        guard let ai = walk.controller?.ai else { return false }
+                        return ai.pageTexts[pageNumber] == nil
+                    }
+                    guard stillNeeded,
+                          pageNumber <= walk.copy.pageCount,
+                          let page = walk.copy.page(at: pageNumber - 1) else { return nil }
+                    return page.string ?? ""
+                }
+                // nil means "already cached, or cancelled while queued" — not a
+                // reason to stop. Real cancellation is caught by the
+                // `Task.isCancelled` check at the top of the next iteration and
+                // staleness by the document/tab generation guard below.
+                guard let text else { continue }
+
                 let stillCurrent = await MainActor.run { [weak self] () -> Bool in
                     guard let self, let ai = self.ai,
                           self.document.map(ObjectIdentifier.init) == docIdentity,
                           self.app?.activeTabId == tabId else { return false }
                     if ai.pageTexts[pageNumber] == nil,
                        let normalized = ai.setPageText(page: pageNumber, text: text) {
+                        // Mirror onto the tab's runtime as well. `AiStore` holds
+                        // only the pane's ACTIVE document, so without this every
+                        // page this walk extracted would be discarded the moment
+                        // the user switched tabs — and the restore on the way
+                        // back would have nothing to restore.
+                        self.runtime?.pageTexts[pageNumber] = normalized
                         self.persister?.noteExtracted(page: pageNumber, text: normalized)
                     }
                     return true
@@ -561,11 +684,30 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         }
     }
 
+    /// Stop the background walk without discarding what it has already
+    /// written. The iPad walk is a detached task over a PRIVATE document copy,
+    /// so cancelling it is the whole of the pause — there is no main-actor loop
+    /// to drain, which is why this needs no `await` (main's macOS twin does).
+    func pauseTextExtraction() {
+        extractionTask?.cancel()
+        extractionTask = nil
+    }
+
     // MARK: - AI highlight locator
 
     func locateText(pageNumber: Int, query: String) async -> LocatedText? {
-        guard let document else { return nil }
-        return PdfTextLocator.locate(pageNumber: pageNumber, query: query, in: document)
+        guard let document, pageNumber >= 1, pageNumber <= document.pageCount,
+              let page = document.page(at: pageNumber - 1) else { return nil }
+        // Same Live Text hazard as the extraction walk: on a scanned page this
+        // `page.string` runs OCR, so it takes the gate rather than racing a walk
+        // that is mid-compile (see PageTextExtractionGate). Main-actor caller,
+        // main-actor body — the synchronous overload.
+        let extracted = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
+            page.string ?? ""
+        }
+        guard let pageString = extracted, !pageString.isEmpty else { return nil }
+        return PdfTextLocator.locate(
+            pageNumber: pageNumber, query: query, in: document, pageString: pageString)
     }
 
     // MARK: - AI page snapshot

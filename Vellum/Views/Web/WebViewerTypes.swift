@@ -32,6 +32,9 @@ struct WebNoteComposerState {
     var point: CGPoint
     var anchor: WebNoteAnchor
     var openedAt: Date
+    /// Text the composer opens pre-filled with — an AI reply routed here by the
+    /// panel's "Add as note". Empty for a plain note-tool placement.
+    var initialContent: String = ""
 }
 
 struct WebContextMenuState {

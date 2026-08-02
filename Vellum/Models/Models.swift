@@ -54,6 +54,9 @@ struct Annotation: Codable, Equatable, Identifiable, Sendable {
     var positionData: PositionData?
     var createdAt: String
     var updatedAt: String
+    /// Pinned annotations float to the top of the sidebar list. Optional so
+    /// records written before pinning existed decode cleanly (missing → false).
+    var isPinned: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -64,6 +67,29 @@ struct Annotation: Codable, Equatable, Identifiable, Sendable {
         case positionData = "position_data"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case isPinned = "is_pinned"
+    }
+
+    /// True when the user has pinned this annotation.
+    var pinned: Bool { isPinned == true }
+
+    /// Sidebar / backend list order: pinned first, then page, then created_at.
+    /// `enumerated` keeps relative order stable when the sort keys tie.
+    static func sortedForDisplay(_ annotations: [Annotation]) -> [Annotation] {
+        annotations.enumerated()
+            .sorted { left, right in
+                if left.element.pinned != right.element.pinned {
+                    return left.element.pinned && !right.element.pinned
+                }
+                if left.element.pageNumber != right.element.pageNumber {
+                    return left.element.pageNumber < right.element.pageNumber
+                }
+                if left.element.createdAt != right.element.createdAt {
+                    return left.element.createdAt < right.element.createdAt
+                }
+                return left.offset < right.offset
+            }
+            .map(\.element)
     }
 }
 
@@ -88,6 +114,8 @@ struct UpdateAnnotationInput: Sendable {
     /// Web highlight resizes can cross a virtual page break; PDF annotations
     /// never move pages, so the PDF backend ignores this.
     var pageNumber: Int? = nil
+    /// When set, pin or unpin the annotation in the sidebar list.
+    var isPinned: Bool? = nil
 }
 
 enum DocumentKind: String, Codable, Sendable {
@@ -175,6 +203,14 @@ enum InteractionMode: String, Codable, Sendable {
     case snapshotRegion
 }
 
+/// Which side panel receives a pending drag-to-crop capture. This is kept on
+/// the live tab rather than the pane-wide active state so changing tabs cannot
+/// silently lose, or misroute, an armed capture.
+enum RegionCaptureTarget: Sendable, Equatable {
+    case ai
+    case scratchpad
+}
+
 struct WebVisibleRange: Equatable, Sendable {
     var start: Int
     var end: Int
@@ -196,6 +232,18 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// now (web documents only; reported by the content script).
     var webVisibleBookmarks: [String]
     var mode: InteractionMode
+    /// AI text queued for the next placed note. It deliberately remains live
+    /// only: relaunching restores the note tool, never a stale AI reply.
+    var pendingNoteContent: String? = nil
+    /// An in-progress region capture is also live-only, but belongs to its tab
+    /// while the user moves around the workspace.
+    var regionCaptureTarget: RegionCaptureTarget? = nil
+    /// Find is document work, not window chrome. Keep it with the tab so
+    /// switching away does not silently dismiss the query and highlights.
+    var findVisible: Bool = false
+    var findQuery: String = ""
+    var findMatchCount: Int = 0
+    var findCurrentMatch: Int = 0
 }
 
 struct HighlightColor: Identifiable, Sendable {

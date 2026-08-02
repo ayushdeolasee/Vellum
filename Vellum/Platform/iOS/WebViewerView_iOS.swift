@@ -16,50 +16,16 @@ import WebKit
 // "viewport-scrolled", exactly as the macOS handlers already do.
 
 struct WebViewerView_iOS: View {
-    // MARK: - Live-tab mount contract (packet 4 §2.0) — accepted, not honoured
-    //
-    // `(tabId:document:isActive:runtime:)` is the shape packet 7's rebuilt
-    // viewer takes, so `LiveTabHost_iOS` can mount one per open tab instead of
-    // one per pane. Interface only for now: nothing constructs a
-    // `LiveTabRuntime`, nothing calls that initializer, and the four values
-    // below are stored and never read. The body still resolves the document
-    // through `app.document` and still owns its controller in `@State`.
-    //
-    // Packet 7 deletes `init()`, drops the optionality, and switches the body
-    // over to these — gating every `onChange`-driven push on `isActiveMount`
-    // and taking the controller from `mountedRuntime.webController`.
-
-    /// Tab this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedTabId: String?
-    /// Document this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedDocument: DocumentInfo?
+    let tabId: String
+    let document: DocumentInfo
     /// Whether this mount is its pane's ACTIVE tab. Inactive mounts sit at
-    /// opacity 0 and must not push selection/navigation state into the shared
-    /// stores. Defaults to `true` on the pre-live-tabs path, where the single
-    /// mounted viewer is by definition the active one — so every push that runs
-    /// today still runs.
-    private let isActiveMount: Bool
-    /// The tab's workspace-owned runtime: the controller and the `WKWebView` it
-    /// keeps alive come from here once packet 7 lands. `nil` on the
-    /// pre-live-tabs path.
-    private let mountedRuntime: LiveTabRuntime?
-
-    init() {
-        self.mountedTabId = nil
-        self.mountedDocument = nil
-        self.isActiveMount = true
-        self.mountedRuntime = nil
-    }
-
-    /// The live-tab entry point. Declared so packet 7 has a compiler-checked
-    /// target and packet 4 §2.8 has something to call; the arguments are
-    /// accepted and ignored until packet 7 honours them.
-    init(tabId: String, document: DocumentInfo, isActive: Bool, runtime: LiveTabRuntime) {
-        self.mountedTabId = tabId
-        self.mountedDocument = document
-        self.isActiveMount = isActive
-        self.mountedRuntime = runtime
-    }
+    /// opacity 0 inside `LiveTabHost_iOS`; every push into the pane's shared
+    /// stores below is gated on this, or a background page's scroll/selection
+    /// would overwrite the visible tab's.
+    let isActive: Bool
+    /// The tab's runtime. The `WKWebView` and its content process hang off
+    /// `runtime.webController`, so they survive this host being remounted.
+    let runtime: LiveTabRuntime
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -67,12 +33,18 @@ struct WebViewerView_iOS: View {
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
-    // The controller owns the WKWebView. Keep it alive while the pane changes
-    // tabs so switching does not synchronously tear down and rebuild WebKit.
-    @State private var controller = WebViewerController_iOS()
+    /// Sticky "this tab has been shown at least once". A warm tab promoted back
+    /// into the hot set is remounted while still INACTIVE; without this it would
+    /// render `Color.clear` and the retained web view would not be re-parented
+    /// until the tab was next selected — exactly the cost the hot tier exists to
+    /// have already paid. `controller.isAttached` covers the case where the
+    /// `@State` itself did not survive the remount.
+    @State private var hasActivated = false
+
+    private var controller: WebViewerController_iOS { runtime.webController }
 
     var body: some View {
-        if app.document?.kind == .web {
+        if hasActivated || isActive || controller.isAttached {
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
                     WebViewRepresentable_iOS(controller: controller)
@@ -84,8 +56,11 @@ struct WebViewerView_iOS: View {
                     // land inside the crop. Routes per AppStore.regionCaptureTarget.
                     if app.mode == .snapshotRegion {
                         RegionCaptureOverlay_iOS { rect in
-                            captureRegion(rect)
-                            app.setMode(.view)
+                            // See PdfViewerView_iOS: the destination has to be
+                            // read out of the tab before the mode reset clears
+                            // it, which is what `finishRegionCapture` is for.
+                            let target = app.finishRegionCapture()
+                            captureRegion(rect, target: target)
                         } onCancel: {
                             app.setMode(.view)
                         }
@@ -141,12 +116,20 @@ struct WebViewerView_iOS: View {
                             placement: .below, containerSize: proxy.size
                         ) {
                             WebNoteComposerView(
+                                initialContent: composer.initialContent,
                                 onSubmit: { content in
                                     controller.createAnchoredNote(anchor: composer.anchor, content: content)
                                     controller.closeNoteComposer()
                                 },
-                                onClose: { controller.closeNoteComposer() })
+                                onClose: { controller.closeNoteComposer() },
+                                onDraftChange: { controller.updateNoteComposerDraft($0) })
                         }
+                        // The composer seeds its editable text from
+                        // `initialContent` once, at init. Keying on the
+                        // placement timestamp gives each placement a fresh
+                        // identity, so placing a second note without closing the
+                        // first can't reuse the previous text.
+                        .id(composer.openedAt)
                         .zIndex(50)
                     }
 
@@ -187,15 +170,22 @@ struct WebViewerView_iOS: View {
             .background(palette.well)
             .clipped()
             .onAppear {
-                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+                guard isActive else { return }
+                hasActivated = true
+                attach()
             }
+            // In-tab link navigation rebinds the tab to a new URL; `attach`
+            // early-returns when neither the tab nor the URL actually moved.
             .onChange(of: documentIdentity) {
-                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+                guard isActive else { return }
+                attach()
             }
-            .onDisappear {
-                controller.detach()
-            }
+            // Deliberately NO `.onDisappear { controller.detach() }`. The
+            // controller belongs to the runtime, not to this host: a remount
+            // (tab dragged between panes, warm tab coming back) must not tear
+            // down WebKit. `LiveTabRuntime.releaseResidency()` is what detaches.
             .onChange(of: controller.initCount) {
+                guard isActive else { return }
                 controller.pushAnnotations(annotationStore.annotations)
                 controller.pushMode(app.mode)
                 controller.pushSelectedHighlight()
@@ -204,23 +194,40 @@ struct WebViewerView_iOS: View {
                     selectedId: annotationStore.selectedAnnotationId)
             }
             .onChange(of: annotationStore.annotations) {
+                guard isActive else { return }
                 controller.pushAnnotations(annotationStore.annotations)
             }
             .onChange(of: app.mode) {
+                guard isActive else { return }
                 controller.pushMode(app.mode)
             }
             // Only explicit navigation requests scroll. In-page note/highlight
             // taps update selection state without moving a viewport that already
             // contains the annotation.
             .onChange(of: annotationStore.selectionRequestCount) {
+                guard isActive else { return }
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
                     selectedId: annotationStore.selectedAnnotationId)
             }
             .onChange(of: app.zoom) { _, zoom in
+                guard isActive else { return }
                 controller.applyZoom(zoom)
             }
+            .onChange(of: isActive) { _, active in
+                guard active else {
+                    controller.deactivate()
+                    return
+                }
+                hasActivated = true
+                attach()
+                controller.pushAnnotations(annotationStore.annotations)
+                controller.pushMode(app.mode)
+                controller.pushSelectedHighlight()
+                controller.applyZoom(app.zoom)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
+                guard isActive else { return }
                 let delta = note.userInfo?["delta"] as? Int ?? 0
                 controller.goHistory(delta: delta)
             }
@@ -229,17 +236,23 @@ struct WebViewerView_iOS: View {
         }
     }
 
+    private func attach() {
+        controller.attach(
+            app: app, annotationStore: annotationStore, aiStore: aiStore,
+            tabId: tabId, document: document, runtime: runtime)
+    }
+
     private var documentIdentity: WebDocumentIdentity_iOS {
-        WebDocumentIdentity_iOS(tabId: app.activeTabId, url: app.document?.pdfPath)
+        WebDocumentIdentity_iOS(tabId: tabId, url: document.pdfPath)
     }
 
     /// Hand the finished crop to whichever panel armed the capture (mirrors
     /// PdfOverlayStack_iOS.captureRegion). The AI path stays silent on a miss —
     /// a failed takeSnapshot mid-scroll is not worth a banner; the scratchpad
     /// path warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect) {
+    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
         let sessionId = app.activeTabId
-        switch app.regionCaptureTarget {
+        switch target {
         case .ai:
             // Pin the destination tab AND document before the await, then let
             // `addCapturedReference` discard the crop if the pane moved on — the
@@ -321,7 +334,13 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
     @Environment(WorkspaceStore.self) private var workspace
 
     func makeUIView(context: Context) -> VellumWebView {
-        let webView = controller.webView
+        // The controller has owned its `WKWebView` outright since this file was
+        // written, so there is no "build a fresh one" branch to guard: whether
+        // the view already exists or is materialised here, the same instance
+        // comes back on every remount. `adoptRetainedView` is still what runs,
+        // for its `removeFromSuperview()` — `mergeAll` can transiently leave
+        // two hosts claiming one tab and a `UIView` has only one superview.
+        let webView = controller.adoptRetainedView() ?? controller.webView
         // Hardware-keyboard commands for when WebKit holds first responder. The
         // WorkspaceStore lives for the whole app session, so capturing it once
         // cannot go stale.
@@ -353,7 +372,18 @@ final class WebViewerController_iOS: NSObject {
     /// resulting "selection-cleared" would also unmount the popover (and the
     /// half-typed note) mid-compose.
     private(set) var selectionNoteDraft: WebSelection?
-    private(set) var noteComposer: WebNoteComposerState?
+    private(set) var noteComposer: WebNoteComposerState? {
+        didSet {
+            // Every placement reseeds the mirror below from its own initial
+            // content, so a composer can never inherit the previous one's text.
+            noteComposerDraft = noteComposer?.initialContent ?? ""
+        }
+    }
+    /// The composer's live text, mirrored out of the popover so a dismissal
+    /// that isn't an explicit cancel can hand the draft back to the note queue
+    /// (issue #92). Observation-ignored: nothing renders from it, and it
+    /// changes on every keystroke.
+    @ObservationIgnored private var noteComposerDraft = ""
     private(set) var contextMenu: WebContextMenuState?
     private(set) var noteViewer: WebNoteViewerState?
     private(set) var highlightEditor: WebHighlightEditorState? {
@@ -367,6 +397,10 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
     @ObservationIgnored private weak var aiStore: AiStore?
     @ObservationIgnored private var mountTabId: String?
+    /// The tab's runtime, weak because the runtime owns this controller. Page
+    /// text reported by the content script is mirrored here as well as into the
+    /// pane's shared `AiStore` — see `LiveTabRuntime.pageTexts`.
+    @ObservationIgnored private weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var loadedDocumentUrl: String?
     @ObservationIgnored private var attached = false
     // Whether the injected content script supports point anchors (declared in
@@ -394,6 +428,16 @@ final class WebViewerController_iOS: NSObject {
 
     @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
     var webView: VellumWebView { _webView }
+    /// Whether `_webView` has actually been materialised.
+    ///
+    /// `RetainedViewOwner.retainedView` must be answerable WITHOUT side
+    /// effects, and reading `webView` builds a `WKWebView` and spins up its
+    /// content process. So the conformance below reports through this flag
+    /// rather than through the lazy property: "no view yet" is a real answer,
+    /// and the caller then builds one on its own terms.
+    @ObservationIgnored private var didCreateWebView = false
+    /// Side-effect-free "does a web view exist yet?", for `RetainedViewOwner`.
+    var hasWebView: Bool { didCreateWebView }
 
     /// Isolated content world for the bridge: the content script and the
     /// "vellum" message handler live here, out of reach of page scripts (a
@@ -424,6 +468,7 @@ final class WebViewerController_iOS: NSObject {
             forMainFrameOnly: true,
             in: Self.bridgeWorld))
         let webView = VellumWebView(frame: .zero, configuration: configuration)
+        didCreateWebView = true
         webView.navigationDelegate = self
         webView.uiDelegate = self
         // Native edge-swipe back/forward bypasses the session-rebind path
@@ -435,11 +480,25 @@ final class WebViewerController_iOS: NSObject {
 
     // MARK: Lifecycle
 
-    func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
+    func attach(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        aiStore: AiStore,
+        tabId: String,
+        document: DocumentInfo,
+        runtime: LiveTabRuntime
+    ) {
+        // A tab can migrate to another pane while its native WKWebView stays
+        // alive, so the pane-scoped stores are rebound on EVERY attach, not
+        // only the first.
         attached = true
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
+        self.runtime = runtime
+        // The page text this tab already extracted lives on its runtime;
+        // `AiStore` holds only whichever document the pane last showed.
+        aiStore.restorePageTexts(runtime.pageTexts)
         applyZoom(app.zoom)
 
         // Global hooks used by the toolbar, sidebar, and AI tool execution
@@ -485,24 +544,86 @@ final class WebViewerController_iOS: NSObject {
             self?.printPage()
         }
 
-        guard let doc = app.document, doc.kind == .web,
-              let tabId = app.activeTabId else { return }
+        guard document.kind == .web else { return }
 
-        // Re-evaluation of the SwiftUI body is common during tab-strip edits.
-        // Only load when the viewer is actually being rebound to another tab or
-        // URL; reloading an unchanged page loses its live scroll/selection state.
-        guard mountTabId != tabId || loadedDocumentUrl != doc.pdfPath else {
+        // Re-evaluation of the SwiftUI body is common during tab-strip edits,
+        // and a remount is now routine (a tab dragged between panes, a warm tab
+        // coming back). Only load when the viewer is actually being rebound to
+        // another tab or URL; reloading an unchanged page loses its live
+        // scroll/selection state, which is the whole point of live tabs.
+        guard mountTabId != tabId || loadedDocumentUrl != document.pdfPath else {
             pushAnnotations(annotationStore.annotations)
             pushMode(app.mode)
             pushSelectedHighlight()
+            // An init message may have been queued and deliberately discarded
+            // while this tab was inactive; ask the preserved page for a fresh
+            // snapshot so extraction and viewport state catch up.
+            post("request-init")
             return
         }
 
         cancelPendingArchive()
         clearTransientStateForRebind()
         mountTabId = tabId
-        loadedDocumentUrl = doc.pdfPath
-        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        loadedDocumentUrl = document.pdfPath
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
+    }
+
+    /// Whether a mounted host has claimed this controller. Read by the residency
+    /// policy and by `LiveTabHost_iOS`.
+    var isAttached: Bool { attached }
+
+    /// Rough resident footprint for the residency policy's byte budget. A loaded
+    /// `WKWebView` carries its own web content process, so it is never cheap;
+    /// WebKit offers no way to ask what a given page actually costs, so this is
+    /// a flat, deliberately pessimistic estimate for "a real webpage with its
+    /// process attached". Zero until the view actually exists.
+    var residencyCostBytes: Int { didCreateWebView ? 96 * 1024 * 1024 : 0 }
+
+    /// Release transient UI owned by an inactive mount while keeping the native
+    /// view, history, scroll position, and extracted text intact.
+    ///
+    /// iPad divergence: macOS additionally tears down its local `NSEvent`
+    /// monitor here. There is none on iOS — the equivalent gestures come through
+    /// the content script — so the two calls below are the whole of it.
+    func deactivate() {
+        clearSelection()
+        closeNotePopovers()
+    }
+
+    /// Give back the WKWebView and its content process. Reached from the
+    /// residency policy and from tab close, through
+    /// `LiveTabRuntime.releaseResidency()`.
+    func releaseResidency() {
+        // A debounced auto-archive is a real write to the user's library — the
+        // offline snapshot of the page. Never drop one: keep this controller
+        // (and the session it archives through) alive until the task lands. The
+        // debounce is 1.5s, so by the time an idle timeout fires there is
+        // nothing pending; this matters for a tab closed, or evicted under
+        // memory pressure, in the second after a page finished loading.
+        let pendingArchive = archiveTask
+        archiveTask = nil
+        if let pendingArchive {
+            Task { await pendingArchive.value; withExtendedLifetime(self) {} }
+        }
+        detach()
+        // Unhook the WebKit delegates. They are a resurrection path: eviction
+        // targets tabs that are still OPEN, so `mountDocument` still resolves,
+        // and a late `webViewWebContentProcessDidTerminate` would re-load the
+        // tab's real URL over the network into a view nobody can see. That
+        // callback is not hypothetical — jetsamming background web content
+        // processes is precisely what the system does under the memory pressure
+        // that triggered the eviction in the first place.
+        //
+        // Note we do NOT navigate to about:blank to "retire the content process
+        // early": `decidePolicyFor` cancels every non-http(s) main-frame
+        // navigation that is not one of our own proxy schemes, so that load is
+        // simply refused. Dropping the last reference to the controller — which
+        // is what `LiveTabRuntime.releaseResidency` does immediately after this
+        // returns — is what actually releases the view and its process.
+        guard didCreateWebView else { return }
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
     }
 
     func detach() {
@@ -540,6 +661,9 @@ final class WebViewerController_iOS: NSObject {
         popoverPosition = nil
         selectionNoteDraft = nil
         contextMenu = nil
+        // Bare, deliberately: this runs when the whole viewer is being
+        // re-pointed at a different document, so there is no session left to
+        // restore a draft onto. Not `returnNoteComposerDraft()`.
         noteComposer = nil
         highlightEditor = nil
         noteViewer = nil
@@ -708,19 +832,139 @@ final class WebViewerController_iOS: NSObject {
 
     func contextMenuAddNote() {
         guard let menu = contextMenu else { return }
+        // Unconditionally, and before the anchor check: the menu is going away
+        // either way, and leaving an anchorless one on screen strands it.
         hideContextMenu()
-        if let anchor = menu.anchor {
-            noteComposer = WebNoteComposerState(
-                point: menu.point, anchor: anchor, openedAt: Date())
-        }
+        guard let anchor = menu.anchor else { return }
+        // Same payload hand-off as the note-mode placement tap: a queued AI
+        // reply pre-fills this composer rather than being left stranded.
+        //
+        // Gated on the active tab for the same reason the `"note-placed"`
+        // branch is: `consumePendingNoteContent` reads the *active* tab's
+        // queue, so a menu still mounted on a tab the user has left would
+        // otherwise steal the reply armed for the tab now on screen. This is a
+        // button action rather than a bridge message, so it does not inherit
+        // `handleMessage`'s identical guard.
+        //
+        // No composer at all on the failing branch, rather than an empty one:
+        // `annotationStore` is pane-scoped, so a mount left on a background tab
+        // now points at whatever document the pane moved on to, and submitting
+        // there would file the note against the wrong document.
+        guard let app, let sessionId = mountTabId, app.activeTabId == sessionId else { return }
+        let pendingContent = app.consumePendingNoteContent()
+        presentNoteComposer(
+            WebNoteComposerState(
+                point: menu.point, anchor: anchor, openedAt: Date(),
+                initialContent: pendingContent ?? ""),
+            app: app,
+            sessionId: sessionId)
     }
 
+    /// Record the composer's edits as they happen. Only the mirror moves, so a
+    /// keystroke costs no view invalidation. A write arriving after the
+    /// composer is gone needs no guard: nothing reads the mirror without a
+    /// composer, and the next one reseeds it in `didSet`.
+    func updateNoteComposerDraft(_ text: String) {
+        noteComposerDraft = text
+    }
+
+    /// Swap in a new composer, rescuing whatever the outgoing one held.
+    ///
+    /// A second "Add as note" can be pressed while a composer is still open —
+    /// the panel's button is not gated on one — and the placement tap that
+    /// follows would otherwise overwrite the first reply with the second. This
+    /// is the one dismissal path that cannot simply call
+    /// `returnNoteComposerDraft` first: the incoming reply has already been
+    /// consumed off the queue by the caller, so re-queueing the old draft
+    /// before that read would hand the caller back the WRONG text.
+    ///
+    /// So the order here is load-bearing in both directions: read the stranded
+    /// draft before the assignment (whose `didSet` blanks the mirror), and
+    /// re-queue it after `finishNotePlacement`, which routes through
+    /// `setMode(.view)` and would otherwise drop it again.
+    private func presentNoteComposer(
+        _ state: WebNoteComposerState, app: AppStore, sessionId: String
+    ) {
+        let stranded = noteComposer != nil ? noteComposerDraft : nil
+        noteComposer = state
+        app.finishNotePlacement(forSessionId: sessionId)
+        if let stranded { app.restorePendingNote(stranded, forSessionId: sessionId) }
+    }
+
+    /// Dismissal the user did not ask for: a stray tap on the page, a scroll
+    /// that invalidates the anchor, or another popover taking over. The draft
+    /// goes back on the note queue and placement re-arms, so one more tap
+    /// re-offers the same text instead of it being lost (issue #92).
+    private func returnNoteComposerDraft() {
+        guard noteComposer != nil else { return }
+        // Load-bearing order: `noteComposer`'s didSet blanks the mirror, so
+        // reading the draft after the nil would hand back an empty string and
+        // silently reinstate the bug.
+        let draft = noteComposerDraft
+        noteComposer = nil
+        guard let app, let sessionId = mountTabId else { return }
+        app.restorePendingNote(draft, forSessionId: sessionId)
+    }
+
+    #if DEBUG
+    /// Test seams (same idiom as `WebLibrary.storeDirOverride`), because
+    /// `attach` ends in a real `WKWebView` page load.
+    ///
+    /// Careful: `post` is NOT gated on the content script having reported in —
+    /// only the `push*` helpers are — so it materialises the lazy web view.
+    /// The dismissal paths reach it solely through `clearSelection()`, which
+    /// the message branches below only call when a selection exists, and these
+    /// seams never create one. Anything driven from here that could take a
+    /// selection path needs re-checking against that.
+    func bindForTesting(app: AppStore, tabId: String, annotationStore: AnnotationStore? = nil) {
+        self.app = app
+        mountTabId = tabId
+        self.annotationStore = annotationStore
+    }
+
+    /// Opens a composer the way a placement tap does. `openedAt` is settable
+    /// so a test can age one past the `clickOutside` grace period without
+    /// sleeping.
+    func openNoteComposerForTesting(content: String, openedAt: Date = Date()) {
+        noteComposer = WebNoteComposerState(
+            point: .zero, anchor: Self.testAnchor, openedAt: openedAt, initialContent: content)
+    }
+
+    /// Arms the page context menu. The iOS controller assigns `contextMenu`
+    /// directly — there is no event monitor to skip, unlike macOS's
+    /// `showContextMenu`.
+    func openContextMenuForTesting(anchored: Bool = true) {
+        contextMenu = WebContextMenuState(
+            point: .zero, anchor: anchored ? Self.testAnchor : nil, openedAt: Date())
+    }
+
+    /// Delivers a bridge message exactly as the content script would. The
+    /// incidental dismissals are all message branches, including the literal
+    /// stray page tap from issue #92, so without this seam none of them can be
+    /// regression-tested.
+    func handleBridgeMessageForTesting(_ type: String, _ payload: [String: Any] = [:]) {
+        var body = payload
+        body["vellum"] = true
+        body["type"] = type
+        handleMessage(body)
+    }
+
+    private static let testAnchor = WebNoteAnchor(
+        start: 0, end: 0, text: "", prefix: nil, suffix: nil, pageNumber: 1)
+    #endif
+
+    /// Explicit Cancel / Escape / submit — these MUST discard. Everything else
+    /// that unmounts the composer goes through `returnNoteComposerDraft()`.
     func closeNoteComposer() { noteComposer = nil }
     func closeNoteViewer() { noteViewer = nil }
     func closeHighlightEditor() { highlightEditor = nil }
 
     func closeNotePopovers() {
-        noteComposer = nil
+        // Incidental: this runs on a link tap, an SPA soft-navigation and a
+        // rebind. Tapping a link on a dense article is at least as likely a
+        // mis-tap as tapping whitespace, so the draft is rescued rather than
+        // dropped.
+        returnNoteComposerDraft()
         hideContextMenu()
         noteViewer = nil
         highlightEditor = nil
@@ -1019,25 +1263,38 @@ final class WebViewerController_iOS: NSObject {
             }
             if let menu = contextMenu, clickOutside(menu.openedAt) { hideContextMenu() }
             if let viewer = noteViewer, clickOutside(viewer.openedAt) { noteViewer = nil }
-            if let composer = noteComposer, clickOutside(composer.openedAt) { noteComposer = nil }
+            // The literal repro in issue #92's title: a stray tap on the page.
+            if let composer = noteComposer, clickOutside(composer.openedAt) {
+                returnNoteComposerDraft()
+            }
             if let editor = highlightEditor, clickOutside(editor.openedAt) { highlightEditor = nil }
 
         case "note-placed":
             guard let anchor = parseNoteAnchor(data) else { break }
+            guard let sessionId = mountTabId else { break }
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
                 visualScale: payloadVisualScale(data))
             hideContextMenu()
             noteViewer = nil
-            noteComposer = WebNoteComposerState(point: point, anchor: anchor, openedAt: Date())
-            // Mirror the PDF viewer: placing a note returns to view mode.
-            app.setMode(.view)
+            // Hand the queued AI reply to the composer (main PR #69 parity)
+            // instead of silently throwing it away. `presentNoteComposer` also
+            // rescues whatever an already-open composer was holding, and
+            // mirrors the PDF viewer by returning to view mode.
+            let pendingContent = app.consumePendingNoteContent()
+            presentNoteComposer(
+                WebNoteComposerState(
+                    point: point, anchor: anchor, openedAt: Date(),
+                    initialContent: pendingContent ?? ""),
+                app: app,
+                sessionId: sessionId)
 
         case "context-menu":
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
                 visualScale: payloadVisualScale(data))
-            noteComposer = nil
+            // Another popover taking over is not an explicit cancel.
+            returnNoteComposerDraft()
             noteViewer = nil
             let found = data["found"] as? Bool ?? false
             contextMenu = WebContextMenuState(
@@ -1053,12 +1310,12 @@ final class WebViewerController_iOS: NSObject {
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0,
                 visualScale: payloadVisualScale(data))
             if annotation?.type == .note {
-                noteComposer = nil
+                returnNoteComposerDraft()
                 highlightEditor = nil
                 hideContextMenu()
                 noteViewer = WebNoteViewerState(id: id, point: point, openedAt: Date())
             } else if annotation?.type == .highlight {
-                noteComposer = nil
+                returnNoteComposerDraft()
                 noteViewer = nil
                 hideContextMenu()
                 highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
@@ -1119,10 +1376,11 @@ final class WebViewerController_iOS: NSObject {
             noteViewer = nil
             highlightEditor = nil
             // Keep the composer only if it just opened (the placement tap
-            // can nudge scroll on some pages); otherwise typing continues.
+            // can nudge scroll on some pages); otherwise the anchor is stale
+            // and the draft goes back on the queue rather than being dropped.
             if let composer = noteComposer,
                Date().timeIntervalSince(composer.openedAt) >= 0.4 {
-                noteComposer = nil
+                returnNoteComposerDraft()
             }
 
         case "locate-result":
@@ -1286,7 +1544,9 @@ final class WebViewerController_iOS: NSObject {
                       let number = intValue(page["number"]),
                       let text = page["text"] as? String else { continue }
                 pages.append(WebPageText(number: number, text: text))
-                aiStore?.setPageText(page: number, text: text)
+                if let normalized = aiStore?.setPageText(page: number, text: text) {
+                    runtime?.pageTexts[number] = normalized
+                }
             }
         }
 

@@ -49,6 +49,8 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>PDF Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
@@ -59,11 +61,25 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Vellum Web Archive</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.vellum.webarchive</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Vellum Bundle</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.vellum.bundle</string>
 			</array>
 		</dict>
 	</array>
@@ -84,6 +100,24 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>vellumweb</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.vellum.bundle</string>
+			<key>UTTypeDescription</key>
+			<string>Vellum Bundle</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>vellum</string>
 				</array>
 			</dict>
 		</dict>

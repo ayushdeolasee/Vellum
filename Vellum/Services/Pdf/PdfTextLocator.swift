@@ -78,13 +78,21 @@ enum PdfTextLocator {
 
     /// Whitespace-stripped, lowercased first-match locator returning line-merged
     /// rects at zoom 1 in top-left-origin page points.
-    static func locate(pageNumber: Int, query: String, in document: PDFDocument) -> LocatedText? {
+    ///
+    /// `pageString` is passed in rather than read here: on a page with no text
+    /// layer `PDFPage.string` falls back to Live Text, and every such read in
+    /// the app has to go through `PageTextExtractionGate` (see that file for the
+    /// ANE crash it prevents). Keeping the read at the call site is what lets
+    /// the caller hold the gate for it.
+    static func locate(
+        pageNumber: Int, query: String, in document: PDFDocument, pageString: String
+    ) -> LocatedText? {
         guard pageNumber >= 1, pageNumber <= document.pageCount,
               let page = document.page(at: pageNumber - 1) else { return nil }
         let needle = query
             .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
             .lowercased()
-        guard !needle.isEmpty, let pageString = page.string else { return nil }
+        guard !needle.isEmpty, !pageString.isEmpty else { return nil }
 
         // Whitespace-free lowercase haystack; every character remembers the
         // UTF-16 range of the source character that produced it.

@@ -24,6 +24,13 @@ struct ScratchpadPanel: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    /// Supplied by the window scene's responder chain on iPadOS; users reach it
+    /// with ⌘Z, a three-finger swipe, or a shake. Nil in contexts that do not
+    /// support undo, which `clear()` handles rather than disabling itself.
+    @Environment(\.undoManager) private var undoManager
+
+    @State private var showsExportOptions = false
+    @State private var exportFeedback: ExportFeedback?
 
     /// True only while a capture *this* panel armed is in flight — the AI panel
     /// arms the same `.snapshotRegion` mode, and its crop must not light up the
@@ -56,17 +63,36 @@ struct ScratchpadPanel: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let warning = scratchpadStore.dropWarning {
+            if let feedback = exportFeedback {
+                exportFeedbackBanner(feedback)
+                    .padding(12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let warning = scratchpadStore.dropWarning {
                 dropWarningBanner(warning)
                     .padding(12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.2), value: scratchpadStore.dropWarning)
+        .animation(.easeInOut(duration: 0.2), value: exportFeedback)
         // Accept any drag so a non-image drop reaches `handleDrop` and can be
         // explained, rather than silently rejected. (The WebView covers the
         // editor body; this catches drops on the header/margins.)
         .onDrop(of: [.item], isTargeted: $dropTargeted, perform: handleDrop)
+        .sheet(isPresented: $showsExportOptions) {
+            ScratchpadExportOptionsSheet(
+                suggestedTitle: documentTitle,
+                storageExplanation: ScratchpadMarkdownExporter.storageExplanation(
+                    mode: WebStorageSettings.effectiveMode,
+                    degraded: WebStorageSettings.modeIsDegraded
+                ),
+                onCancel: { showsExportOptions = false },
+                onExport: { options in
+                    showsExportOptions = false
+                    Task { await exportMarkdown(options: options) }
+                }
+            )
+        }
     }
 
     private func dropWarningBanner(_ text: String) -> some View {
@@ -88,6 +114,25 @@ struct ScratchpadPanel: View {
                 .strokeBorder(palette.destructive.opacity(0.35))
         }
         .accessibilityIdentifier("scratchpad.dropWarning")
+    }
+
+    private func exportFeedbackBanner(_ feedback: ExportFeedback) -> some View {
+        Label(feedback.message, systemImage: feedback.isError
+              ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            .font(.callout)
+            .foregroundStyle(feedback.isError ? palette.destructive : palette.foreground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.md))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .strokeBorder(
+                        (feedback.isError ? palette.destructive : palette.primary)
+                            .opacity(0.35)
+                    )
+            }
+            .accessibilityIdentifier("scratchpad.exportFeedback")
     }
 
     private var header: some View {
@@ -114,7 +159,19 @@ struct ScratchpadPanel: View {
                 .accessibilityIdentifier("scratchpad.snapshotRegion")
                 .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
             }
-            IconButton(help: "Clear scratchpad", action: clear) {
+            IconButton(
+                help: "Export scratchpad as Markdown",
+                disabled: scratchpadStore.text.isEmpty,
+                action: { showsExportOptions = true }
+            ) {
+                Image(systemName: "square.and.arrow.up").font(.system(size: 15))
+            }
+            .accessibilityIdentifier("scratchpad.exportMarkdown")
+            IconButton(
+                help: "Clear scratchpad note",
+                disabled: scratchpadStore.text.isEmpty,
+                action: clear
+            ) {
                 Image(systemName: "trash").font(.system(size: 15))
             }
             .accessibilityIdentifier("scratchpad.clear")
@@ -133,8 +190,98 @@ struct ScratchpadPanel: View {
         }
     }
 
+    /// Clear first, then register Undo if this context has an undo manager.
+    /// SwiftUI only supplies `\.undoManager` where the environment supports
+    /// undo, so gating the clear itself on one would leave the only clear
+    /// affordance permanently disabled wherever it is absent.
     private func clear() {
-        scratchpadStore.text = ""
+        guard let transaction = scratchpadStore.clearText() else { return }
+        guard let undoManager else { return }
+        registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
+    }
+
+    private var documentTitle: String {
+        let explicitTitle = appStore.document?.title?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let explicitTitle, !explicitTitle.isEmpty { return explicitTitle }
+        guard let path = appStore.document?.pdfPath, !path.isEmpty else {
+            return "Scratchpad"
+        }
+        if let url = URL(string: path), url.scheme != nil {
+            return url.host ?? "Scratchpad"
+        }
+        return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    }
+
+    @MainActor
+    private func exportMarkdown(options: ScratchpadMarkdownExportOptions) async {
+        // iOS has no save panel: stage the export into a private temp dir, then
+        // hand the finished file (and its assets folder, if any) to the Files
+        // export picker, which copies it wherever the user chooses.
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scratchpad-export-\(UUID().uuidString)", isDirectory: true)
+        // Read the note and the attachments directory on the main actor, then do
+        // every byte of work off it: a 200k-character note (the persistence cap)
+        // with several megabytes of images stages, reads and copies each file
+        // synchronously, which would otherwise freeze the editor mid-export.
+        let markdown = scratchpadStore.text
+        // TODO(packet 1): becomes `ScratchpadAttachmentStore.activeDirectory`
+        // once a document's attachments live in its own folder.
+        let attachmentsDirectory: URL? = ScratchpadAttachmentStore.directory
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            let destination = ScratchpadMarkdownExporter.conflictSafeURL(
+                in: staging,
+                baseName: ScratchpadMarkdownExporter
+                    .suggestedFilename(title: options.title, in: staging)
+                    .replacingOccurrences(of: ".md", with: ""),
+                pathExtension: "md")
+            let summary = try await Task.detached(priority: .userInitiated) {
+                try ScratchpadMarkdownExporter.export(
+                    markdown: markdown,
+                    to: destination,
+                    options: options,
+                    attachmentsDirectory: attachmentsDirectory
+                )
+            }.value
+            var urls = [summary.markdownURL]
+            if let assets = summary.assetsDirectoryURL { urls.append(assets) }
+            // The options sheet is still animating out. UIKit drops a present
+            // sent to a controller mid-dismissal, so wait it out — the staging
+            // work above usually covers this, this only makes it deterministic.
+            // (No equivalent on macOS: there the save panel comes first.)
+            try? await Task.sleep(for: .milliseconds(350))
+            // Fire-and-forget: the picker reads the staged files after this
+            // returns, so the staging dir is left for the system to reap.
+            DocumentPickerCoordinator_iOS.shared.presentExport(urls: urls)
+            let imageDetail: String
+            switch summary.copiedImageCount {
+            case 0: imageDetail = ""
+            case 1: imageDetail = " 1 image copied."
+            case let count: imageDetail = " \(count) images copied."
+            }
+            showExportFeedback(ExportFeedback(
+                message: "Exported \(summary.markdownURL.lastPathComponent).\(imageDetail)",
+                isError: false))
+        } catch {
+            showExportFeedback(ExportFeedback(
+                message: "Couldn’t export the scratchpad: \(error.localizedDescription)",
+                isError: true))
+        }
+    }
+
+    private func showExportFeedback(_ feedback: ExportFeedback) {
+        exportFeedback = feedback
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, exportFeedback == feedback else { return }
+            exportFeedback = nil
+        }
+    }
+
+    private struct ExportFeedback: Equatable {
+        var message: String
+        var isError: Bool
     }
 
     /// Load each dropped image, normalize it (see `scratchpadCapture(from:)`),
@@ -159,6 +306,129 @@ struct ScratchpadPanel: View {
         }
         return true
     }
+}
+
+/// Export options, presented as a sheet. The macOS panel is a fixed-width
+/// inspector-style card because `NSSavePanel` follows it; on iPad the Files
+/// export picker follows instead, so this takes the app's usual sheet shape —
+/// `NavigationStack` + Cancel/Export toolbar items, as in `AddWebpageSheet`.
+private struct ScratchpadExportOptionsSheet: View {
+    var suggestedTitle: String
+    var storageExplanation: String
+    var onCancel: () -> Void
+    var onExport: (ScratchpadMarkdownExportOptions) -> Void
+
+    @State private var copyLinkedImages = true
+    @State private var includeFrontMatter = true
+    @State private var title: String
+
+    init(
+        suggestedTitle: String,
+        storageExplanation: String,
+        onCancel: @escaping () -> Void,
+        onExport: @escaping (ScratchpadMarkdownExportOptions) -> Void
+    ) {
+        self.suggestedTitle = suggestedTitle
+        self.storageExplanation = storageExplanation
+        self.onCancel = onCancel
+        self.onExport = onExport
+        _title = State(initialValue: suggestedTitle)
+    }
+
+    private var confirmDisabled: Bool {
+        includeFrontMatter
+            && title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Creates a portable Markdown file. “Export with Notes” in the document menu creates a Vellum bundle instead.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Section {
+                    Toggle("Copy linked images to an adjacent assets folder", isOn: $copyLinkedImages)
+                        .accessibilityIdentifier("scratchpad.export.copyImages")
+                    if !copyLinkedImages {
+                        Text("Without the assets folder, image links keep Vellum’s internal reference and won’t resolve in other Markdown apps.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Toggle("Include document title as YAML front matter", isOn: $includeFrontMatter)
+                        .accessibilityIdentifier("scratchpad.export.frontMatter")
+                    if includeFrontMatter {
+                        TextField("Document title", text: $title)
+                            .accessibilityIdentifier("scratchpad.export.title")
+                    }
+                }
+                Section {
+                    Label(storageExplanation, systemImage: "externaldrive")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("scratchpad.export.storageExplanation")
+                }
+            }
+            .navigationTitle("Export Markdown")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", role: .cancel, action: onCancel)
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    // "Choose Location…" on macOS, where the save panel comes
+                    // next. Here the Files picker opens only after the export is
+                    // staged, so the label would misdescribe the order — the
+                    // identifier stays put so the accessibility contract matches.
+                    Button("Export…") {
+                        onExport(
+                            ScratchpadMarkdownExportOptions(
+                                copyLinkedImages: copyLinkedImages,
+                                includeFrontMatter: includeFrontMatter,
+                                title: title
+                            )
+                        )
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(confirmDisabled)
+                    .accessibilityIdentifier("scratchpad.export.chooseLocation")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .accessibilityIdentifier("scratchpad.export.options")
+    }
+}
+
+@MainActor
+private func registerScratchpadUndo(
+    _ transaction: ScratchpadClearTransaction,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard let restoration = target.undoClear(transaction) else { return }
+        registerScratchpadRedo(restoration, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
+}
+
+@MainActor
+private func registerScratchpadRedo(
+    _ restoration: ScratchpadClearRestoration,
+    store: ScratchpadStore,
+    undoManager: UndoManager
+) {
+    undoManager.registerUndo(withTarget: store) { target in
+        guard target.redoClear(restoration) else { return }
+        registerScratchpadUndo(restoration.transaction, store: target, undoManager: undoManager)
+    }
+    undoManager.setActionName("Clear Scratchpad")
 }
 
 /// Load the best image representation from `provider` and normalize it. Prefers
@@ -481,6 +751,14 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
                 let inserts = pendingInserts
                 pendingInserts = []
                 for markdown in inserts {
+                    // Restart the attachment's GC exemption from the moment the
+                    // snippet actually reaches the editor (issue #105). An insert
+                    // requested before `ready` sits in `pendingInserts` for the
+                    // whole of editor.html + the JS bundle load, which on a cold
+                    // start is not the couple of frames the window is sized for.
+                    for id in ScratchpadAttachmentStore.referencedIds(in: markdown) {
+                        ScratchpadAttachmentStore.markPending(id)
+                    }
                     webView.evaluateJavaScript(
                         "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)));")
                 }

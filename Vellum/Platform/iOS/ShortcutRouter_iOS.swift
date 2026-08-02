@@ -41,6 +41,25 @@ enum VellumShortcutRouter {
     /// it matches what the toolbar, inspector and find bar all act on, so the
     /// keyboard never disagrees with the rest of the chrome.
     static func perform(_ action: VellumShortcutAction, workspace: WorkspaceStore) {
+        // A modal is up: every document command below acts on something the user
+        // cannot see, and on macOS the equivalent menu items are disabled — a
+        // disabled item does not claim its key equivalent, which is the whole of
+        // issue #98 (⌘W pressed to dismiss a sheet closed the tab underneath).
+        //
+        // `.dismiss` is the one exception and is HANDLED rather than suppressed,
+        // because a matching `UIKeyCommand` is consumed unconditionally on iOS:
+        // if Escape no-oped here, the sheet the user is trying to close would
+        // simply stop responding to it.
+        //
+        // Anything reachable from a Help/Settings scene (macOS keeps Help ▸
+        // Vellum Walkthrough always enabled) must bypass this gate. The iPad
+        // catalog has no such entry today; if packet 3 adds one, hoist it above
+        // this check.
+        if SheetPresence_iOS.isPresenting {
+            if case .dismiss = action { SheetPresence_iOS.topPresented?.dismiss(animated: true) }
+            return
+        }
+
         let pane = workspace.focusedPane
         let app = pane.app
 
@@ -75,7 +94,15 @@ enum VellumShortcutRouter {
 
         // MARK: Find
         case .find:
-            guard app.document != nil else { return }
+            guard app.document != nil else {
+                // Home is on screen, so "Find…" has nothing to find and ⌘F is
+                // free to mean "search my library". Extending the router is
+                // what keeps ONE claimant on the chord — a competing SwiftUI
+                // `.keyboardShortcut("f")` in the Home view would race this one
+                // and SwiftUI picks between duplicates arbitrarily.
+                NotificationCenter.default.post(name: .vellumFocusHomeSearch, object: nil)
+                return
+            }
             app.showFind()
 
         case .findNext:
@@ -117,6 +144,13 @@ enum VellumShortcutRouter {
             // is window-global so it survives focus changes.
             guard app.document != nil else { return }
             workspace.sidebarOpen.toggle()
+
+        case .showSidebarTab(let tab):
+            // Reveal, never toggle: ⌥⌘S is the toggle, and a panel command that
+            // sometimes HID the panel would be a trap. `revealSidebarTab` also
+            // declines without a document, so this cannot silently flip the
+            // user's preference for the next document they open.
+            workspace.revealSidebarTab(tab)
 
         case .splitRight:
             workspace.splitFocused(.horizontal)
@@ -180,6 +214,17 @@ enum VellumShortcutRouter {
             // `ContentView.isTextInputFirstResponder` responder walk.
             guard app.document != nil, !VellumKeyboardFocus.isTextInputFirstResponder else { return }
             app.setMode(app.mode == .note ? .view : .note)
+
+        // MARK: Help
+        //
+        // Deliberately NOT gated on `app.document != nil`: someone who just
+        // closed their last tab is exactly who reaches for these. Both sheets
+        // are presented at the app root, so they travel as notifications.
+        case .showHelp:
+            NotificationCenter.default.post(name: .vellumShowHelp, object: nil)
+
+        case .showWalkthrough:
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
         }
     }
 

@@ -28,6 +28,10 @@ struct PdfToolbar_iOS: View {
     // Web-tab offline-copy state, mirroring the macOS OverflowMenu.
     @State private var pageSaved = false
     @State private var exporting = false
+    /// A separate guard from the web-only `exporting` flag, so a `.vellum`
+    /// export and a `.vellumweb` export can never disable each other's item.
+    @State private var exportingBundle = false
+    @State private var showExportBundle = false
     /// Serializes save/remove so a rapid Remove can't finish before a slow
     /// Save's archive write and get its deletion undone by it.
     @State private var saveToggleTask: Task<Void, Never>?
@@ -42,6 +46,21 @@ struct PdfToolbar_iOS: View {
     // commands), then the page-step chevrons (the page field still jumps
     // anywhere).
     private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 740 }
+    // DELIBERATE DIVERGENCE FROM macOS (#115 review, #129 packet 7 §2.10 G5).
+    // The Mac toolbar splits `[< >]` and `[1 / N]` into two separate glass
+    // capsules. The iPad keeps them in ONE pod, `[< 1/N >]`, for two reasons:
+    //
+    //  * cost. A second capsule spends ~16pt on its own horizontal padding plus
+    //    the inter-pod gap, in a row that already has to shed the zoom pod at
+    //    740pt and these very chevrons at 590pt. Mouse-sized 32pt targets can
+    //    afford the split; 44pt ones cannot.
+    //  * meaning. The Mac's page indicator is an inline editable text field —
+    //    a control in its own right. The iPad's is a *tap target that opens the
+    //    jump alert*, i.e. a third way to do exactly what the two chevrons
+    //    beside it do, so it belongs in their cluster.
+    //
+    // When the chevrons drop out below 590pt the pod degrades to `[1/N]`, which
+    // is still the same one semantic cluster — "page navigation".
     private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 590 }
     // Narrowest tier: when a split pane is squeezed by the open inspector, fold
     // the find/note/ink/bookmark pod into the More menu so the trailing
@@ -57,10 +76,30 @@ struct PdfToolbar_iOS: View {
         ) != nil
     }
 
+    // GROUPING, VERIFIED ON iPadOS 26 (#129 packet 7 §2.10 item 2).
+    //
+    // main's toolbar has to switch the system's shared background off
+    // (`.sharedBackgroundVisibility(.hidden)` on the containing `ToolbarItem`)
+    // or AppKit wraps the whole HStack in one more capsule and the pods read as
+    // a single blob. There is no counterpart to disable here, and the reason is
+    // worth writing down so nobody goes looking for one:
+    //
+    //  * this row is NOT a system `.toolbar` — `PaneView_iOS.content` puts it in
+    //    a bare `VStack(spacing: 0)` above the viewer — so no toolbar chrome
+    //    ever wraps it;
+    //  * on iPadOS, sibling `.glassEffect` capsules only fuse when they are
+    //    inside a `GlassEffectContainer` and closer together than its `spacing`.
+    //    This row deliberately has no container, so each pod samples and renders
+    //    its own capsule and nothing can merge. That is the native expression of
+    //    main's `.hidden`, and it is why the 8pt inter-pod gap below is safe.
+    //
+    // If a `GlassEffectContainer` is ever added here (it buys one shared
+    // sampling pass), it MUST be `spacing: 0` — anything larger re-creates the
+    // blob main spent a review round removing.
     var body: some View {
         HStack(spacing: 8) {
             // Leading pod: close current tab (return to library when last).
-            GlassToolPod {
+            GlassToolPod(label: "Tab") {
                 GlassToolButton(system: "chevron.backward", label: "Close") {
                     if let id = appStore.activeTabId {
                         Task { await appStore.closeTab(id) }
@@ -69,7 +108,7 @@ struct PdfToolbar_iOS: View {
             }
 
             if isWeb {
-                GlassToolPod {
+                GlassToolPod(label: "Page history") {
                     GlassToolButton(system: "arrow.left", label: "Back") {
                         webHistory(-1)
                     }
@@ -78,7 +117,7 @@ struct PdfToolbar_iOS: View {
                     }
                 }
             } else {
-                GlassToolPod {
+                GlassToolPod(label: "Page navigation") {
                     if showPageChevrons {
                         GlassToolButton(system: "chevron.left", label: "Previous page") {
                             appStore.goToPage(appStore.currentPage - 1)
@@ -94,7 +133,7 @@ struct PdfToolbar_iOS: View {
             }
 
             if showZoomPod {
-                GlassToolPod {
+                GlassToolPod(label: "Zoom controls") {
                     GlassToolButton(system: "minus.magnifyingglass", label: "Zoom out") {
                         appStore.zoomOut()
                     }
@@ -109,7 +148,10 @@ struct PdfToolbar_iOS: View {
                             .frame(minWidth: 52, minHeight: 44)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    // Label-width pill (`width: nil`): this slot is 52-72pt wide
+                    // depending on how many digits the zoom has, so a fixed 40pt
+                    // capsule would sit visibly narrower than its own text.
+                    .buttonStyle(ToolbarPressStyle(width: nil))
                     .accessibilityLabel("Reset zoom to 100%")
                     GlassToolButton(system: "plus.magnifyingglass", label: "Zoom in") {
                         appStore.zoomIn()
@@ -120,7 +162,7 @@ struct PdfToolbar_iOS: View {
             Spacer(minLength: 4)
 
             if showActionsPod {
-                GlassToolPod {
+                GlassToolPod(label: "Annotation tools") {
                     GlassToolButton(system: "magnifyingglass", label: "Find") {
                         appStore.findVisible ? appStore.hideFind() : appStore.showFind()
                     }
@@ -150,7 +192,7 @@ struct PdfToolbar_iOS: View {
                 }
             }
 
-            GlassToolPod {
+            GlassToolPod(label: "Panel and document actions") {
                 GlassToolButton(
                     system: "sidebar.right", label: "Toggle sidebar",
                     active: workspace.sidebarOpen
@@ -176,34 +218,32 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text("Enter a page number (1–\(appStore.numPages)).")
         }
-        .sheet(isPresented: $showSettings) {
-            NavigationStack {
-                SettingsView()
-                    .navigationTitle("Settings")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showSettings = false }
-                        }
-                    }
+        // Extracted to `SettingsSheet_iOS` so this and Home's gear button
+        // present the identical sheet — including the environment injections a
+        // `.sheet` does not reliably inherit across the UIHostingController
+        // boundary — and cannot drift apart.
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showExportBundle) {
+            ExportBundleSheet_iOS(
+                title: appStore.document?.title,
+                isWeb: isWeb
+            ) { includeConversations in
+                startBundleExport(includeConversations: includeConversations)
             }
-            // A `.sheet` is a separate presentation host, so it does not
-            // reliably inherit the WindowGroup's environment across the
-            // UIHostingController boundary. Settings ▸ Storage reads the
-            // workspace directly (to exclude open documents from cleanup), so
-            // inject it explicitly rather than relying on that inheritance.
-            .environment(workspace)
-            // The Settings AI tab edits the workspace's dedicated settings
-            // store (not this pane's conversation), mirroring the macOS
-            // Settings scene; changes broadcast to every pane's AiStore.
-            .environment(workspace.settingsAi)
-            .environment(workspace.openRouterCatalog)
-            .environment(workspace.chatgptAuth)
-            .presentationDetents([.large])
         }
     }
 
     /// Tappable "p / N" indicator that opens a jump prompt.
+    ///
+    /// main hides the `/ N` `Text` from VoiceOver (`.accessibilityHidden(true)`)
+    /// because on AppKit the counter is a sibling of the editable page field and
+    /// would otherwise be announced as a second element, reading the digits
+    /// twice. There is no counterpart here and there must not be one: both
+    /// `Text`s live inside a single `Button` label, so SwiftUI already merges
+    /// them into one accessibility element, and the explicit `accessibilityLabel`
+    /// below replaces their combined description outright. Hiding the second
+    /// `Text` would be a no-op at best and, if the label were ever dropped,
+    /// would silently lose the page count.
     private var pageField: some View {
         Button {
             pageFieldText = String(appStore.currentPage)
@@ -221,7 +261,9 @@ struct PdfToolbar_iOS: View {
             .frame(minWidth: 64, minHeight: 44)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // Label-width pill: four-digit page counts widen this slot well past
+        // the 40pt icon pill.
+        .buttonStyle(ToolbarPressStyle(width: nil))
         .accessibilityLabel("Page \(appStore.currentPage) of \(appStore.numPages). Tap to jump.")
     }
 
@@ -281,6 +323,17 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exporting)
             }
+            // Offered for BOTH PDF and web documents. Shorter title than the
+            // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
+            // compact iPad menu — but the accessibility identifier is identical
+            // so shared automation matches.
+            if appStore.document != nil {
+                Button { showExportBundle = true } label: {
+                    Label("Export with Notes…", systemImage: "arrow.up.doc")
+                }
+                .disabled(exportingBundle)
+                .accessibilityIdentifier("toolbar.exportWithNotes")
+            }
             if !showZoomPod {
                 Divider()
                 Button { appStore.zoomIn() } label: {
@@ -317,6 +370,15 @@ struct PdfToolbar_iOS: View {
             Divider()
             Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
         } label: {
+            // DO NOT port main's ZStack trick here (#129 packet 7 §2.10 G4).
+            // On AppKit a menu control paints its own hover highlight *beneath*
+            // any attached background, so main draws the glyph and the pill as
+            // ZStack siblings and drops the `Menu` itself to `.opacity(0.02)` as
+            // a transparent-but-still-hit-testable target. UIKit menus paint no
+            // such highlight under an attached background, so copying that would
+            // buy nothing and make this glyph 2% opaque. The system's own
+            // menu-open highlight is the touch feedback; `contentShape` below
+            // keeps the whole 44pt slot tappable, which is the part that matters.
             Image(systemName: "ellipsis")
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(palette.foreground)
@@ -416,6 +478,109 @@ struct PdfToolbar_iOS: View {
         }
     }
 
+    /// Export the active document as a `.vellum` bundle — the document plus its
+    /// scratchpad + attachments, and (opt-in, default OFF) the AI conversation.
+    /// Available for BOTH PDF and web tabs. macOS uses NSSavePanel; iOS writes
+    /// the bundle to a temporary file and hands it to the Files export picker.
+    private func startBundleExport(includeConversations: Bool) {
+        guard !exportingBundle,
+              let sessionId = appStore.activeTabId,
+              let document = appStore.document else { return }
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        exportingBundle = true
+        Task {
+            defer { exportingBundle = false }
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(slugifiedTitle()).vellum")
+            try? FileManager.default.removeItem(at: tmp)
+            do {
+                try await buildBundle(
+                    sessionId: sessionId, document: document, destination: tmp,
+                    includeConversations: includeConversations, pages: pages)
+            } catch { return }
+            // Not deleted afterwards: the picker copies asynchronously. Same as
+            // exportVellumweb; tmp/ is reclaimed by the system.
+            DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
+        }
+    }
+
+    /// Assemble the bundle content: durable id (lazily stamped), the document
+    /// bytes (PDF as-is / a fresh .vellumweb for web), and the class-B sidecar
+    /// pulled from DocumentDataStore by storage key.
+    private func buildBundle(
+        sessionId: String,
+        document: DocumentInfo,
+        destination: URL,
+        includeConversations: Bool,
+        pages: [WebPageText]
+    ) async throws {
+        // The sidecar currently lives under this session's storage key — resolve
+        // it BEFORE the stamp changes DocumentInfo.docId.
+        let pullKey = DocumentIdentity.storageKey(for: document)
+        // Durable id for the manifest (stamps a writable PDF; byte-hash fallback
+        // for an unwritable one; URL hash for web).
+        let durableId = (try? await appStore.sessions.ensureDocumentId(sessionId: sessionId))
+            ?? pullKey
+        await appStore.syncDocumentId(sessionId: sessionId)
+
+        let documentData: Data
+        let documentFile: String
+        if document.kind == .web {
+            // Reuse the session's .vellumweb writer rather than duplicating it.
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(UUID().uuidString.lowercased()).vellumweb")
+            _ = try await appStore.sessions.exportVellumweb(
+                sessionId: sessionId, destPath: tmp.path, pages: pages)
+            documentData = try Data(contentsOf: tmp)
+            try? FileManager.default.removeItem(at: tmp)
+            documentFile = "\(slugifiedTitle()).vellumweb"
+        } else {
+            // Read AFTER the stamp so the exported PDF carries /VellumDocId.
+            documentData = try await appStore.sessions.readPdfBytes(sessionId: sessionId)
+            let name = (document.pdfPath as NSString).lastPathComponent
+            documentFile = VellumBundle.safeName(name) ?? "document.pdf"
+        }
+
+        let scratchpad = DocumentDataStore.loadScratchpad(forKey: pullKey)
+        let attachments = loadAttachments(forKey: pullKey)
+        let conversations = includeConversations
+            ? DocumentDataStore.loadConversationsData(forKey: pullKey)
+            : nil
+
+        let content = VellumBundle.Content(
+            kind: document.kind,
+            docId: durableId,
+            documentFile: documentFile,
+            documentData: documentData,
+            title: document.title,
+            scratchpad: scratchpad.isEmpty ? nil : scratchpad,
+            attachments: attachments,
+            conversations: conversations)
+        // `VellumBundle.write` hashes and deflates synchronously, and this Task
+        // inherits the view's main-actor isolation — a multi-hundred-MB bundle
+        // would freeze the UI for the whole zip. Off-main it is.
+        try await Task.detached(priority: .userInitiated) {
+            try VellumBundle.write(content, to: destination)
+        }.value
+    }
+
+    /// Read the document's attachments as (bare filename, bytes) pairs.
+    private func loadAttachments(forKey key: String) -> [(name: String, data: Data)] {
+        let dir = DocumentDataStore.attachmentsDir(forKey: key)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return []
+        }
+        var out: [(name: String, data: Data)] = []
+        for name in names.sorted() {
+            if let data = try? Data(contentsOf: dir.appendingPathComponent(name)) {
+                out.append((name, data))
+            }
+        }
+        return out
+    }
+
     /// Slug for the export default filename: lowercased title, non-alphanumeric
     /// runs collapsed to "-", trimmed, max 60 chars, fallback "article".
     private func slugifiedTitle() -> String {
@@ -441,6 +606,47 @@ struct PdfToolbar_iOS: View {
     }
 }
 
+/// The `.vellum` export options. macOS puts this one checkbox in the save
+/// panel's accessoryView; iOS has no save panel, so the choice is made in a
+/// sheet and the finished bundle is handed to the Files export picker.
+struct ExportBundleSheet_iOS: View {
+    var title: String?
+    var isWeb: Bool
+    var onExport: (Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    // Conversations are semi-private: sharing them is explicit, so OFF.
+    @State private var includeConversations = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Include AI conversation", isOn: $includeConversations)
+                        .accessibilityIdentifier("export.includeConversation")
+                } header: {
+                    Text("Include")
+                } footer: {
+                    Text("The \(isWeb ? "page" : "document"), your notes and their images, and "
+                         + "your highlights are always included. The AI conversation is not, "
+                         + "unless you turn it on.")
+                }
+            }
+            .navigationTitle("Export with Notes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Export") { onExport(includeConversations); dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
 /// Identity of the active document — web offline-copy state resets whenever the
 /// tab or backing file changes. Mirrors ToolbarView's `DocumentKey` on macOS.
 private struct DocumentKey_iOS: Hashable {
@@ -456,14 +662,79 @@ private struct DocumentKey_iOS: Hashable {
 
 // MARK: - Glass tool primitives
 
+// GEOMETRY, AND WHY IT IS NOT main's (#129 packet 7 §2.10 G5).
+//
+// The Mac toolbar is built for a cursor: 32x35 hit frames, a 32x26 interaction
+// pill, 35pt capsules. Those numbers are measurements, not a design, and they
+// do not survive a finger. The iPad's rhythm is deliberately larger and is the
+// hard floor for this file:
+//
+//   button slot   44 x 44   (HIG minimum; never shrink to match main)
+//   press pill    40 x 36   (inset inside the slot so it reads as sitting
+//                            *within* the pod's glass, not filling it)
+//   pod capsule   48pt tall, 4pt horizontal padding, 2pt between buttons
+//   between pods  8pt
+//
+// Everything else about the language is main's and is kept: one capsule per
+// semantic cluster, an accessibility container per capsule, monochrome glyphs,
+// hit area = the whole slot, and a single shared interaction backdrop shape.
+
+/// The shared interaction backdrop for every toolbar button — the touch
+/// analogue of the macOS toolbar's hover pill (main PR #115). One shape
+/// everywhere so the nine controls read as one system.
+///
+/// `Color.primary` is deliberate and *concrete*, NOT the hierarchical `.primary`
+/// shape style: the hierarchical one resolves against the button label's
+/// `foregroundStyle`, which on macOS rendered the bookmark's pill at ~40%
+/// strength through its gold tint. The bookmark button here carries the same
+/// gold `tint`, so the same trap applies.
+///
+/// `width: nil` lets the pill track its label instead — used by the two
+/// text buttons (zoom percentage, page indicator), whose slots are wider than
+/// an icon's and grow with the digit count.
+private struct ToolbarPressBackdrop: View {
+    let visible: Bool
+    var width: CGFloat? = 40
+    var strength: Double = 0.10
+    var body: some View {
+        Capsule()
+            .fill(Color.primary.opacity(visible ? strength : 0))
+            .frame(width: width, height: 36)
+    }
+}
+
+/// Reports `isPressed` so the shared backdrop can render it. `.plain` alone
+/// gives no touch feedback at all, and `.borderless`/`.bordered` bring back
+/// system chrome that fights the pod's glass.
+///
+/// iPadOS has no hover, so this replaces main's `.onHover` pill outright rather
+/// than supplementing it — there is nothing to port on the hover side.
+private struct ToolbarPressStyle: ButtonStyle {
+    var width: CGFloat? = 40
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background { ToolbarPressBackdrop(visible: configuration.isPressed, width: width) }
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 /// A Liquid Glass capsule that groups related buttons into one pod.
 struct GlassToolPod<Content: View>: View {
+    /// VoiceOver name for the whole capsule. Applied OUTSIDE `.glassEffect()`:
+    /// the glass wraps its content in one more accessibility group, and a label
+    /// applied inside it never surfaces — the group then falls back to
+    /// inheriting its first child's description ("Previous page" announced for
+    /// every cluster, as measured on macOS in PR #115). Required, not defaulted,
+    /// so a new pod cannot be added without naming itself.
+    var label: String
     @ViewBuilder var content: () -> Content
     var body: some View {
         HStack(spacing: 2) { content() }
             .padding(.horizontal, 4)
             .frame(height: 48)
             .glassEffect(.regular, in: .capsule)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(label)
     }
 }
 
@@ -485,12 +756,31 @@ struct GlassToolButton: View {
                 .frame(width: 44, height: 44)
                 .background {
                     if active {
-                        Circle().fill(palette.primary.opacity(0.16))
+                        // The selected state stays a Button with a stronger
+                        // persistent fill rather than a Toggle: a Toggle brings
+                        // its own system chrome back (the squished press shape
+                        // this pass removes) and its selected state cannot be
+                        // drawn through the shared backdrop.
+                        //
+                        // Active keeps `palette.primary` (the app accent). That
+                        // is the iPad's selected-state convention and — unlike
+                        // the hierarchical `.primary` shape style — it is not
+                        // resolved through the label's `foregroundStyle`, so the
+                        // gold-bookmark dilution that forced macOS onto
+                        // `Color.primary` does not apply. Same Capsule as the
+                        // press pill, same 40x36, so the two states share a
+                        // silhouette instead of a circle fighting a capsule.
+                        Capsule().fill(palette.primary.opacity(0.16))
+                            .frame(width: 40, height: 36)
                     }
                 }
-                .contentShape(Circle())
+                // Rectangle, not Circle: the hit area is the whole slot. A
+                // circular shape inscribed in 44x44 throws away the corners —
+                // ~21% of the nominal target — which is exactly the "hit-tests
+                // only the glyph" failure main measured at 6.5pt-wide chevrons.
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ToolbarPressStyle())
         .accessibilityLabel(label)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
@@ -513,25 +803,61 @@ struct TabStrip_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @State private var joinTargeted = false
+    @State private var showingOverview = false
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(appStore.tabs) { tab in
-                    TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(appStore.tabs) { tab in
+                        TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
+                    }
                 }
-                Button(action: onNewTab) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(palette.mutedForeground)
-                        .frame(width: 40, height: 36)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("New tab")
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+
+            // Both trailing controls sit OUTSIDE the ScrollView. `+` used to be
+            // inside it, which meant it scrolled away once a pane held enough
+            // tabs to overflow — the one moment the overview is most useful.
+            // (iPad-only fix; the macOS strip already pins them.)
+            Button { showingOverview.toggle() } label: {
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.mutedForeground)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show all tabs")
+            .accessibilityIdentifier("tabBar.overview")
+            .popover(isPresented: $showingOverview) {
+                TabOverview_iOS(
+                    tabs: workspace.allTabs,
+                    onActivate: { tab in
+                        workspace.activateWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id)
+                        showingOverview = false
+                    },
+                    onClose: { tab in
+                        Task { await workspace.closeWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id) }
+                    }
+                )
+                .environment(workspace)
+            }
+
+            Button(action: onNewTab) {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.mutedForeground)
+                    // 44pt, matching the chips beside it: this was the one
+                    // control in the reading chrome under the HIG minimum.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New tab")
+            .accessibilityIdentifier("tabBar.newTab")
+            .padding(.trailing, 8)
         }
         .background(.bar)
         // Dropping a tab onto this strip moves it into this pane's group. When
@@ -567,7 +893,14 @@ private struct TabChip_iOS: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    /// The tab whose rename sheet is open — nil the rest of the time.
+    @State private var renamingTab: PdfTab?
 
+    /// Kept as the chip's OWN derivation rather than routing through
+    /// `TabPresentation.title(for:)`: this prettifies an untitled webpage's URL
+    /// into a host/slug, which main's helper does not. See the note on
+    /// `TabPresentation` for why the overview uses the other one (packet 4
+    /// §2.12.1 — smaller blast radius, and the two agree for every PDF).
     private var title: String {
         if let doc = tab.document {
             if doc.kind == .web {
@@ -577,6 +910,15 @@ private struct TabChip_iOS: View {
         }
         return "New Tab"
     }
+
+    /// An interaction this tab armed and has not finished — note placement, a
+    /// queued AI reply, or a drag-to-crop destination. All three now travel with
+    /// the tab (§2.1), so the dot stays truthful while another tab is on screen.
+    private var hasPendingAction: Bool {
+        tab.mode != .view || tab.pendingNoteContent != nil || tab.regionCaptureTarget != nil
+    }
+
+    private var isLastTab: Bool { appStore.tabs.last?.id == tab.id }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -591,12 +933,24 @@ private struct TabChip_iOS: View {
                         .lineLimit(1)
                         .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
                         .frame(maxWidth: 160)
+                    if hasPendingAction {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityValue(isActive ? "Selected" : "")
+            .accessibilityIdentifier("tabBar.tab.\(tab.id)")
+            // Concatenated, not replaced: the selected state is what VoiceOver
+            // uses to tell the current tab from the rest.
+            .accessibilityValue(
+                [isActive ? "Selected" : "", hasPendingAction ? "Action pending" : ""]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ", "))
 
             Button {
                 Task { await appStore.closeTab(tab.id) }
@@ -609,6 +963,7 @@ private struct TabChip_iOS: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("tabBar.close.\(tab.id)")
         }
         .padding(.leading, 12)
         .padding(.trailing, 4)
@@ -630,6 +985,177 @@ private struct TabChip_iOS: View {
             }
             return provider
         }
+        // ONE context menu. Two `.contextMenu` modifiers on the same view do not
+        // compose — the outer replaces the inner — so rename and the tab
+        // management actions have to be built together here.
+        //
+        // ⚠ `.contextMenu` and `.onDrag` both key off long-press on iOS. They
+        // coexist (drag = press-then-move, menu = press-and-hold), but dragging
+        // a tab between panes is the iPad's only way to split or unsplit, so
+        // that gesture is the one to re-check after touching either.
+        .contextMenu {
+            // Rename lives here rather than on the toolbar's title field: that
+            // field shows the FILENAME for a PDF and the URL for a page, so
+            // editing it would read as renaming the file or navigating. The tab
+            // is the one place the document's title is actually rendered.
+            if tab.document != nil {
+                Button("Rename…") { renamingTab = tab }
+            }
+            Button("Duplicate") { Task { await appStore.duplicateTab(tab.id) } }
+                .disabled(tab.document?.kind == .pdf)
+            Button("Move to New Pane") {
+                workspace.splitWithTab(
+                    tabId: tab.id, from: paneId, target: paneId,
+                    direction: .horizontal, before: false)
+            }
+            .disabled(appStore.tabs.count < 2)
+
+            Divider()
+
+            // No "Reveal in Finder" counterpart — iPadOS has none, and a
+            // Files-app reveal is a different feature, not a substitute.
+            if tab.document?.kind == .web {
+                Button("Copy Link") { UIPasteboard.general.string = tab.document?.pdfPath }
+            }
+
+            Divider()
+
+            Button("Close Tab", role: .destructive) {
+                Task { await appStore.closeTab(tab.id) }
+            }
+            Button("Close Others") { Task { await appStore.closeOtherTabs(keeping: tab.id) } }
+                .disabled(appStore.tabs.count < 2)
+            Button("Close Tabs to Right") { Task { await appStore.closeTabsToRight(of: tab.id) } }
+                .disabled(isLastTab)
+        }
+        .sheet(item: $renamingTab) { renaming in
+            RenameDocumentSheet_iOS(
+                currentTitle: renaming.document?.title ?? "",
+                fallbackName: TabPresentation.fallbackName(for: renaming),
+                commit: { newTitle in
+                    Task { await appStore.renameDocument(tabId: renaming.id, title: newTitle) }
+                })
+        }
+    }
+}
+
+// MARK: - Tab overview (all tabs, every pane)
+
+/// Searchable list of every open tab in the window, across panes. Reached from
+/// the strip's `rectangle.stack` button.
+private struct TabOverview_iOS: View {
+    let tabs: [WorkspaceTab]
+    let onActivate: (WorkspaceTab) -> Void
+    let onClose: (WorkspaceTab) -> Void
+
+    @Environment(WorkspaceStore.self) private var workspace
+    @Environment(\.palette) private var palette
+    @State private var query = ""
+
+    private var filteredTabs: [WorkspaceTab] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return tabs }
+        return tabs.filter {
+            TabPresentation.title(for: $0.tab)
+                .localizedStandardContains(needle)
+                || TabPresentation.typeLabel(for: $0.tab)
+                .localizedStandardContains(needle)
+                || $0.paneLabel.localizedStandardContains(needle)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("All Tabs")
+                .font(.headline)
+
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("tabOverview.search")
+
+            if filteredTabs.isEmpty {
+                ContentUnavailableView.search(text: query)
+                    .frame(minHeight: 120)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredTabs) { tab in
+                            row(tab)
+                        }
+                    }
+                }
+                .frame(maxHeight: 360)
+            }
+        }
+        .padding(14)
+        // macOS pins this at 360. On iPad the popover has to survive a compact
+        // Split View pane, so it states an ideal instead of a fixed width — and
+        // `.presentationCompactAdaptation(.popover)` keeps it a popover rather
+        // than letting it become a full-screen sheet there.
+        .frame(minWidth: 360, idealWidth: 380)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    @ViewBuilder
+    private func row(_ tab: WorkspaceTab) -> some View {
+        HStack(spacing: 8) {
+            Button { onActivate(tab) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: TabPresentation.iconName(for: tab.tab))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(TabPresentation.title(for: tab.tab))
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(tab.paneLabel) · \(TabPresentation.typeLabel(for: tab.tab))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if isFocusedActive(tab) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(palette.primary)
+                            .accessibilityLabel("Current tab")
+                    }
+                    if isPending(tab) {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
+                }
+                // 10pt of vertical padding around a two-line title clears the
+                // 44pt touch minimum without the row looking airy.
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                "\(TabPresentation.title(for: tab.tab)), "
+                    + "\(tab.paneLabel), \(TabPresentation.typeLabel(for: tab.tab))"
+                    + (isPending(tab) ? ", action pending" : ""))
+            .accessibilityIdentifier("tabOverview.tab.\(tab.id)")
+
+            Button { onClose(tab) } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(TabPresentation.title(for: tab.tab))")
+            .accessibilityIdentifier("tabOverview.close.\(tab.id)")
+        }
+        .padding(.horizontal, 8)
+        .background(
+            isFocusedActive(tab) ? palette.primary.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: Radius.md))
+    }
+
+    private func isPending(_ tab: WorkspaceTab) -> Bool {
+        tab.tab.mode != .view || tab.tab.pendingNoteContent != nil || tab.tab.regionCaptureTarget != nil
+    }
+
+    private func isFocusedActive(_ tab: WorkspaceTab) -> Bool {
+        tab.paneId == workspace.focusedPaneId && tab.tab.id == workspace.focusedPane.app.activeTabId
     }
 }
 
@@ -669,19 +1195,12 @@ struct SidebarContent_iOS: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GlassSegmentedPicker(
-                options: [
-                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                ],
-                selection: Binding(
-                    get: { workspace.sidebarTab },
-                    set: { workspace.sidebarTab = $0 }
-                ),
-                accessibilityIdentifierPrefix: "sidebarTab"
-            )
-            .padding(.vertical, 10)
+            InspectorTabSwitcher(selection: Binding(
+                get: { workspace.sidebarTab },
+                set: { workspace.sidebarTab = $0 }
+            ))
+            .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+            .padding(.vertical, InspectorLayout.switcherVerticalPadding)
             Divider()
             // Once revealed, a panel stays mounted; only visibility toggles as
             // the tab changes. Keeping them alive (rather than switching, which

@@ -134,6 +134,8 @@ enum VellumShortcutAction: Hashable, Sendable {
     case zoomOut
     case actualSize
     case toggleInspector
+    /// Reveal one of the inspector's three panels (⌥⌘1/2/3, PR #120).
+    case showSidebarTab(WorkspaceStore.SidebarTab)
     case splitRight
     case splitDown
     case mergePanes
@@ -152,6 +154,10 @@ enum VellumShortcutAction: Hashable, Sendable {
     // Annotations
     case bookmarkPage
     case toggleNoteMode
+    // Help. Neither is gated on document focus — someone who just closed their
+    // last tab is exactly who wants them.
+    case showHelp
+    case showWalkthrough
 
     /// Stable string identity. `UIKeyCommand` can only round-trip a property
     /// list, not a Swift enum, so the responder-chain path ships this string in
@@ -172,6 +178,7 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .zoomOut: "zoomOut"
         case .actualSize: "actualSize"
         case .toggleInspector: "toggleInspector"
+        case .showSidebarTab(let tab): "showSidebarTab.\(tab.accessibilityIdentifierStem)"
         case .splitRight: "splitRight"
         case .splitDown: "splitDown"
         case .mergePanes: "mergePanes"
@@ -187,6 +194,8 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .showTab(let index): "showTab.\(index)"
         case .bookmarkPage: "bookmarkPage"
         case .toggleNoteMode: "toggleNoteMode"
+        case .showHelp: "showHelp"
+        case .showWalkthrough: "showWalkthrough"
         }
     }
 }
@@ -208,6 +217,8 @@ enum VellumShortcutMenu: Hashable, Sendable {
     case navigate
     /// Vellum's own "Annotations" menu.
     case annotations
+    /// The standard Help group. Replaced wholesale, like the Mac's.
+    case help
 }
 
 // MARK: - Shortcut
@@ -308,7 +319,7 @@ enum VellumShortcutCatalog {
     ///    windows through Stage Manager / the system multitasking UI.
     ///  • ⌘C / ⌘V / ⌘X / ⌘A / ⌘Z inside text. UIKit already implements these on
     ///    every text surface; shadowing them would break editing.
-    static let all: [VellumShortcut] = file + find + view + navigate + annotations
+    static let all: [VellumShortcut] = file + find + view + navigate + annotations + help
 
     // MARK: File
 
@@ -378,7 +389,20 @@ enum VellumShortcutCatalog {
             .mergePanes, "Merge Panes", VellumKeyCombo("j", [.command, .option]), menu: .view),
         VellumShortcut(
             .closePane, "Close Pane", VellumKeyCombo("\\", [.command, .shift]), menu: .view),
-    ]
+    ] + WorkspaceStore.SidebarTab.allCases.map { tab in
+        // ⌥⌘, not plain ⌘: ⌘1…⌘9 already switch TABS below, and a tab is what
+        // most users reach for first. Generated from `allCases` so the chord
+        // order can never drift from the switcher's left-to-right order.
+        VellumShortcut(
+            .showSidebarTab(tab), "Show \(tab.title)",
+            // `SidebarTab.shortcutModifiers` is SwiftUI's `EventModifiers` (it
+            // is shared verbatim with the macOS switcher). This table speaks
+            // `VellumKeyModifiers`, which also has to reach UIKit — hence the
+            // literal here rather than a conversion that would only ever have
+            // one input.
+            VellumKeyCombo(tab.shortcutDigit, [.command, .option]),
+            menu: .view)
+    }
 
     // MARK: Navigate
 
@@ -432,6 +456,19 @@ enum VellumShortcutCatalog {
         VellumShortcut(
             .toggleNoteMode, "Toggle Note Mode", VellumKeyCombo(.character("n"), []),
             menu: .annotations),
+    ]
+
+    // MARK: Help
+
+    private static let help: [VellumShortcut] = [
+        // Menu-only. ⌘? is not a chord PDFKit or WebKit competes for, and
+        // neither of these targets a document surface anyway.
+        //
+        // `showWalkthrough` has no catalogue row: `VellumShortcut` requires a
+        // combo and the walkthrough is deliberately unbound (main leaves it
+        // unbound too). It is surfaced as a plain Button in the Help group of
+        // `VellumCommands_iOS`.
+        VellumShortcut(.showHelp, "Vellum Help", VellumKeyCombo("?"), menu: .help),
     ]
 
     // MARK: - Lookup

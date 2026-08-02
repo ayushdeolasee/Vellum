@@ -57,12 +57,16 @@ final class AiAddAsNoteTests: XCTestCase {
         XCTAssertNil(store.consumePendingNoteContent())
     }
 
-    // TODO(#129 packet 4 / packet 7): `testWebComposerStateDefaultsToEmptyContent`
-    // is deferred. It asserts `WebNoteComposerState.initialContent == ""`, and the
-    // iPad's `WebNoteComposerState` (Vellum/Views/Web/WebViewerTypes.swift) has no
-    // `initialContent` field yet — the pre-filled web composer is the
-    // `WebViewerView_iOS` bridge half that packet 5 §4 explicitly gates on packet 4
-    // ("port the AppStore half now; gate the web half on packet 4"). Restore this
-    // case verbatim from main's `Tests/AiAddAsNoteTests.swift:56` the moment that
-    // field lands; it needs no other adaptation.
+    /// The web composer opens pre-filled from this field; it defaults to empty
+    /// so a plain note-tool placement is unchanged.
+    ///
+    /// Restored from main verbatim now that `WebNoteComposerState.initialContent`
+    /// exists (#129 packet 7 §2.4a); it was the one case this file deferred.
+    func testWebComposerStateDefaultsToEmptyContent() {
+        let state = WebNoteComposerState(
+            point: .zero,
+            anchor: WebNoteAnchor(start: 0, end: 0, text: "", prefix: nil, suffix: nil, pageNumber: 1),
+            openedAt: Date())
+        XCTAssertEqual(state.initialContent, "")
+    }
 }

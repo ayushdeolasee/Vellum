@@ -104,7 +104,10 @@ final class DocumentPickerCoordinator_iOS: NSObject, UIDocumentPickerDelegate {
         onPick = nil
     }
 
-    private static func topViewController() -> UIViewController? {
+    /// Frontmost presenter for a UIKit modal. Internal rather than private so
+    /// the `.vellum` import prompts share one definition with the pickers
+    /// (`BundleImportPrompts_iOS`) instead of duplicating the scene walk.
+    static func topViewController() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
