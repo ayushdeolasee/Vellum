@@ -11,12 +11,6 @@ import XCTest
 //     `testConnectionValidationRequestsNeverPutCredentialsInURLs`, together with
 //     the `StorageStubURLProtocol` canned transport they use. `AiConnectionValidator`
 //     does not exist on iPad yet; they land with packet 8's suite, not here.
-//   * DEFERRED to packets 5/6 (packet 1 §5 hard inbound dependencies 1 and 2):
-//     `testScratchpadLegacyListAndRemove` and `testAiLegacyListAndRemove`. Both
-//     need `ScratchpadPersistence.listLegacyEntries()/removeLegacyEntry(key:)` and
-//     the `AiPersistence` equivalents, which are the v2 persisters packet 1
-//     deliberately stubs (`legacyScratchpad` -> `[]`). Re-add them verbatim from
-//     main when those land — do not soften them into "returns empty" assertions.
 
 @MainActor
 final class StorageManagementTests: XCTestCase {
@@ -286,6 +280,43 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
         XCTAssertFalse(exists(DocumentDataStore.documentDir(forKey: key)),
                        "folder with no remaining data is pruned")
+    }
+
+    // MARK: - Legacy blob list/remove
+
+    private struct BlobEntry: Codable { var key: String; var text: String }
+
+    func testScratchpadLegacyListAndRemove() throws {
+        let entries = [
+            BlobEntry(key: "/tmp/a.pdf", text: "note a"),
+            BlobEntry(key: "/tmp/b.pdf", text: "longer note b"),
+        ]
+        AppDefaults.current.set(try JSONEncoder().encode(entries), forKey: ScratchpadPersistence.notesKey)
+
+        let listed = ScratchpadPersistence.listLegacyEntries()
+        XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])
+        XCTAssertEqual(listed.first { $0.key == "/tmp/a.pdf" }?.bytes, "note a".utf8.count)
+
+        ScratchpadPersistence.removeLegacyEntry(key: "/tmp/a.pdf")
+        let after = ScratchpadPersistence.listLegacyEntries()
+        XCTAssertEqual(after.map(\.key), ["/tmp/b.pdf"])
+    }
+
+    func testAiLegacyListAndRemove() throws {
+        // The legacy conversations blob is a JS object: {"<path>":[<messages>]}.
+        let blob = """
+        {"/tmp/a.pdf":[{"role":"user","content":"hi"}],\
+        "/tmp/b.pdf":[{"role":"assistant","content":"hello there"}]}
+        """
+        UserDefaults.standard.set(blob, forKey: AiPersistence.conversationsKey)
+
+        let listed = AiPersistence.listLegacyEntries()
+        XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])
+        XCTAssertTrue((listed.first?.bytes ?? 0) > 0)
+
+        AiPersistence.removeLegacyEntry(key: "/tmp/a.pdf")
+        let after = AiPersistence.listLegacyEntries()
+        XCTAssertEqual(after.map(\.key), ["/tmp/b.pdf"])
     }
 
     // MARK: - Retention mapping
