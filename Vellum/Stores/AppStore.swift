@@ -950,16 +950,21 @@ final class AppStore {
         // + its sidecar; then that document opens through the normal path.
         // Everything else is opened directly.
         if path.lowercased().hasSuffix(".vellum") {
-            guard let documentPath = try await importVellumBundle(bundlePath: path) else { return }
             #if os(iOS)
             // A bundle picked from Files is staged into its own tmp/ directory
             // (see DocumentImport.stagingDestination): it is a container, not a
-            // document, so it must not linger.
-            if path.hasPrefix(FileManager.default.temporaryDirectory.path) {
-                try? FileManager.default.removeItem(
-                    at: URL(fileURLWithPath: path).deletingLastPathComponent())
+            // document, so it must not linger. In a defer so the staging dir is
+            // reclaimed on every exit — a rejected bundle (integrity check,
+            // unsafe entry, newer format) throws before reaching any later
+            // cleanup, and a declined merge prompt returns nil.
+            defer {
+                if path.hasPrefix(FileManager.default.temporaryDirectory.path) {
+                    try? FileManager.default.removeItem(
+                        at: URL(fileURLWithPath: path).deletingLastPathComponent())
+                }
             }
             #endif
+            guard let documentPath = try await importVellumBundle(bundlePath: path) else { return }
             try await openDocumentFile(path: documentPath)
             return
         }
