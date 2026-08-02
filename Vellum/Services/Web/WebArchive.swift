@@ -161,19 +161,19 @@ enum WebArchive {
             pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
     }
 
-    nonisolated(unsafe) private static let scriptRegex = regex(
+    private static let scriptRegex = regex(
         #"<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/>"#)
-    nonisolated(unsafe) private static let preloadRegex = regex(
+    private static let preloadRegex = regex(
         #"<link\b[^>]*rel\s*=\s*["']?(?:preload|prefetch|modulepreload|dns-prefetch|preconnect)["']?[^>]*>"#)
-    nonisolated(unsafe) private static let attrStripRegex = regex(
+    private static let attrStripRegex = regex(
         #"\s(?:srcset|sizes|integrity|crossorigin)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)"#)
-    nonisolated(unsafe) private static let imgSrcRegex = regex(
+    private static let imgSrcRegex = regex(
         #"<img\b[^>]*?\ssrc\s*=\s*["']([^"']+)["']"#)
-    nonisolated(unsafe) private static let linkTagRegex = regex(#"<link\b[^>]*>"#)
-    nonisolated(unsafe) private static let hrefRegex = regex(#"\bhref\s*=\s*["']([^"']+)["']"#)
-    nonisolated(unsafe) private static let stylesheetRelRegex = regex(
+    private static let linkTagRegex = regex(#"<link\b[^>]*>"#)
+    private static let hrefRegex = regex(#"\bhref\s*=\s*["']([^"']+)["']"#)
+    private static let stylesheetRelRegex = regex(
         #"\brel\s*=\s*["']?stylesheet["']?"#)
-    nonisolated(unsafe) private static let cssUrlRegex = regex(
+    private static let cssUrlRegex = regex(
         #"url\(\s*['"]?([^'")]+)['"]?\s*\)|@import\s+['"]([^'"]+)['"]"#)
 
     private static func replaceAll(_ regex: NSRegularExpression, in text: String) -> String {
@@ -1032,7 +1032,7 @@ struct MiniZip {
 
     // MARK: CRC32 / DOS timestamps
 
-    nonisolated(unsafe) private static let crcTable: [UInt32] = {
+    private static let crcTable: [UInt32] = {
         (0..<256).map { index -> UInt32 in
             var value = UInt32(index)
             for _ in 0..<8 {
