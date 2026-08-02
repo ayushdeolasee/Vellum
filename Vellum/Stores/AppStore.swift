@@ -208,6 +208,26 @@ final class AppStore {
         }
     }
 
+    /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
+    /// resolved id up into the in-memory DocumentInfo so class-B stores can key
+    /// off it this session. The stamp itself already happened during the write —
+    /// for a just-stamped session the backend returns the id without touching
+    /// disk. No-op once the active document already carries an id (web docs are
+    /// always stamped at open, so this never fires for them).
+    func syncDocumentId(sessionId: String) async {
+        guard let tab = tabs.first(where: { $0.id == sessionId }),
+              tab.document?.kind == .pdf, tab.document?.docId == nil else { return }
+        guard let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else { return }
+        updateTab(sessionId) { tab in
+            if tab.document != nil, tab.document?.docId == nil {
+                tab.document?.docId = id
+            }
+        }
+        if activeTabId == sessionId, document?.docId == nil {
+            document?.docId = id
+        }
+    }
+
     // MARK: - Closing / switching tabs
 
     func closeFile() async {
@@ -339,11 +359,29 @@ final class AppStore {
                 // on the next launch after an update while its sibling web tab
                 // survives — collapsing the split and orphaning the pad.
                 #if os(iOS)
-                let path = DocumentImport.resolveExistingPath(doc.pdfPath) ?? doc.pdfPath
+                // Resolution order: the saved bookmark first (survives a
+                // container-UUID change and a move/rename), then the path heal,
+                // then the raw saved path. Because restore routes through
+                // openFiles → openOneFile → adoptOpenedDocument, a fresh
+                // bookmark is minted for the resolved path automatically, so a
+                // stale one heals itself with no extra work here.
+                var resolvedPath = doc.pdfPath
+                var resolvedURL: URL?
+                if let bookmarkData = doc.bookmarkData,
+                   let resolved = SecurityScopedBookmark.resolve(bookmarkData) {
+                    resolvedPath = resolved.url.path
+                    resolvedURL = resolved.url
+                } else {
+                    resolvedPath = DocumentImport.resolveExistingPath(doc.pdfPath) ?? doc.pdfPath
+                }
+                // The scope must be held for the whole open: PDFKit/CGPDF have
+                // read everything they need by the time `openFile` returns.
+                let accessStarted = resolvedURL?.startAccessingSecurityScopedResource() ?? false
+                defer { if accessStarted { resolvedURL?.stopAccessingSecurityScopedResource() } }
+                await openFiles(paths: [resolvedPath])
                 #else
-                let path = doc.pdfPath
+                await openFiles(paths: [doc.pdfPath])
                 #endif
-                await openFiles(paths: [path])
             }
             // Apply the saved viewport only if a new tab actually opened.
             if tabs.count > before {
@@ -553,6 +591,12 @@ final class AppStore {
     }
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+        var doc = doc
+        // Mint a security-scoped bookmark right now, while the just-completed
+        // open guarantees read access. Web docs have no filesystem path.
+        if doc.kind == .pdf {
+            doc.bookmarkData = SecurityScopedBookmark.make(forPath: doc.pdfPath)
+        }
         RecentFilesService.record(doc)
         // Reveal the side panel by default whenever a document is opened.
         workspace?.sidebarOpen = true
