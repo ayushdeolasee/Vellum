@@ -9,6 +9,32 @@ import UIKit
 // contextMenu, pageViewFrame) and the same store-handler surface (zoom, scroll,
 // find, locate, snapshot), but interaction is touch/gesture-driven instead of
 // NSEvent monitors, and geometry is UIKit-native (top-left origin, no flip).
+/// The two non-`Sendable` values the background text walk has to carry into
+/// `PageTextExtractionGate.extractText(priority:offMain:)`.
+///
+/// That body parameter is `@Sendable` on purpose — that is exactly what keeps
+/// the `page.string` read on the detached utility task instead of dragging it
+/// back onto the main actor (see `startTextExtraction(data:)`). Neither
+/// `PDFDocument` nor the controller is `Sendable`, so the capture needs a box
+/// with an explicit safety argument:
+///
+/// - `copy` is a PRIVATE `PDFDocument(data:)` parsed inside the walk. No view
+///   renders from it and nothing else ever holds a reference, so the walk is its
+///   only accessor and PDFKit's lack of thread safety cannot bite.
+/// - `controller` is only ever dereferenced inside `MainActor.run`, i.e. on the
+///   main actor, which is where every one of its members lives. It stays `weak`
+///   so a walk outliving its controller drops out instead of keeping the whole
+///   viewer alive.
+private final class PdfExtractionWalkContext: @unchecked Sendable {
+    weak var controller: PdfViewerControlleriOS?
+    let copy: PDFDocument
+
+    init(controller: PdfViewerControlleriOS?, copy: PDFDocument) {
+        self.controller = controller
+        self.copy = copy
+    }
+}
+
 @MainActor
 @Observable
 final class PdfViewerControlleriOS: HighlightResizeControlling {
@@ -536,14 +562,48 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard !missingPages.isEmpty else { return }
         extractionTask = Task.detached(priority: .utility) { [weak self] in
             guard let copy = PDFDocument(data: data) else { return }
+            // The gate's `offMain:` body must be `@Sendable` (that is what keeps
+            // it off the main actor), and neither `PDFDocument` nor the
+            // controller is `Sendable`. `PdfExtractionWalkContext` carries both
+            // across that boundary with the safety argument spelled out on the
+            // type — see its doc comment.
+            let walk = PdfExtractionWalkContext(controller: self, copy: copy)
             for pageNumber in missingPages {
-                // Keep the original walk's idle pacing so a background core
-                // isn't pinned for the whole document.
+                // Idle pacing, kept from the original walk so a background core
+                // isn't pinned for the whole document. The gate's own cooldown
+                // is measured from the END of the previous page, so this sleep
+                // normally absorbs it rather than adding to it.
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
-                guard pageNumber <= copy.pageCount,
-                      let page = copy.page(at: pageNumber - 1) else { continue }
-                let text = page.string ?? ""
+
+                // One page at a time, process-wide (main PR #121): `PDFPage
+                // .string` on a page with no text layer sends PDFKit to Live
+                // Text, and overlapping first-time ANE model compiles crash the
+                // process. `offMain:` keeps the read on this detached task —
+                // the whole point of walking a private document copy — while
+                // the gate's queue bookkeeping stays main-actor isolated.
+                let text = await PageTextExtractionGate.shared.extractText(
+                    priority: .background
+                ) { () async -> String? in
+                    // Cache re-check INSIDE the gate: a page the locator (or a
+                    // second pane's walk) filled while this request sat in the
+                    // queue is skipped, not re-extracted. Returning nil also
+                    // tells the gate no read happened, so nothing is paced.
+                    let stillNeeded = await MainActor.run { () -> Bool in
+                        guard let ai = walk.controller?.ai else { return false }
+                        return ai.pageTexts[pageNumber] == nil
+                    }
+                    guard stillNeeded,
+                          pageNumber <= walk.copy.pageCount,
+                          let page = walk.copy.page(at: pageNumber - 1) else { return nil }
+                    return page.string ?? ""
+                }
+                // nil means "already cached, or cancelled while queued" — not a
+                // reason to stop. Real cancellation is caught by the
+                // `Task.isCancelled` check at the top of the next iteration and
+                // staleness by the document/tab generation guard below.
+                guard let text else { continue }
+
                 let stillCurrent = await MainActor.run { [weak self] () -> Bool in
                     guard let self, let ai = self.ai,
                           self.document.map(ObjectIdentifier.init) == docIdentity,
@@ -564,8 +624,18 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     // MARK: - AI highlight locator
 
     func locateText(pageNumber: Int, query: String) async -> LocatedText? {
-        guard let document else { return nil }
-        return PdfTextLocator.locate(pageNumber: pageNumber, query: query, in: document)
+        guard let document, pageNumber >= 1, pageNumber <= document.pageCount,
+              let page = document.page(at: pageNumber - 1) else { return nil }
+        // Same Live Text hazard as the extraction walk: on a scanned page this
+        // `page.string` runs OCR, so it takes the gate rather than racing a walk
+        // that is mid-compile (see PageTextExtractionGate). Main-actor caller,
+        // main-actor body — the synchronous overload.
+        let extracted = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
+            page.string ?? ""
+        }
+        guard let pageString = extracted, !pageString.isEmpty else { return nil }
+        return PdfTextLocator.locate(
+            pageNumber: pageNumber, query: query, in: document, pageString: pageString)
     }
 
     // MARK: - AI page snapshot

@@ -551,6 +551,16 @@ final class AiStore {
     /// pages' text into `pageTexts` (no idle pacing); `nil` extracts the whole
     /// document. Returns how many pages were newly populated. Web documents load
     /// their full text up front, so none is registered for them.
+    ///
+    /// - Important: **Nothing installs this on iPad yet** — no file under
+    ///   `Vellum/Platform/iOS/` assigns it, so `ensureExtracted` returns 0 and
+    ///   `AiToolEngine.getPageText`/`searchDocument` and the per-turn context
+    ///   fill read only what the background walk has already produced. That is
+    ///   a known parity gap versus macOS (#129 packet 7 §5 R3), not a bug in
+    ///   this property. Whoever closes it **must** route the handler's reads
+    ///   through `PageTextExtractionGate.shared` at `.onDemand`: it would
+    ///   otherwise become a fourth ungated producer of `PDFPage.string` bursts
+    ///   and defeat the serialization the gate exists for.
     var ensureExtractedHandler: ((Set<Int>?) async -> Int)?
 
     init() {
