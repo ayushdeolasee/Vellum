@@ -43,12 +43,24 @@ enum StorageHousekeeping {
     /// `listSnapshotStorage` asks iCloud to re-download evicted records as a
     /// side effect). Only "Run Cleanup Now" shows the number, so the launch
     /// sweep leaves it off and gets 0.
+    /// `readLater` is the read-later retention sweep (#157). It runs BEFORE the
+    /// TTL gate below and is unaffected by it: the fourteen-day window on
+    /// prefetched read-later content is a fixed contract, not the
+    /// user-configurable month count that governs derived web/text artifacts, so
+    /// a "Never" retention setting must not switch it off. `openDocumentPaths`
+    /// is what keeps an item currently open in a tab off the chopping block.
     @discardableResult
     static func runCleanup(
         openPdfKeys: Set<String>,
         openWebUrls: Set<String>,
-        measuringReclaimedBytes: Bool = false
+        measuringReclaimedBytes: Bool = false,
+        openDocumentPaths: Set<String> = [],
+        readLater: (any ReadLaterRetentionSweeping)? = nil
     ) async -> Int64 {
+        if let readLater {
+            _ = await readLater.sweepExpiredOfflineCopies(
+                now: .now, openDocumentPaths: openDocumentPaths.union(openWebUrls))
+        }
         guard let cutoff = evictionCutoff() else { return 0 }
         let before = measuringReclaimedBytes ? await derivedByteTotal() : 0
         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openPdfKeys)

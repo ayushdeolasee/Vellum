@@ -38,6 +38,19 @@ struct VellumApp_iOS: App {
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())
+
+        // Read-later autopull's background trigger (#157). Registration has to
+        // happen before the app finishes launching — BGTaskScheduler treats a
+        // late `register` as a programmer error — so it lives here rather than
+        // in a `.task`. The handler asks the integrations store for the same
+        // refresh + prefetch + retention-sweep pass the foreground runs, minus
+        // the documents that are currently open in a tab.
+        ReadLaterBackgroundRefresh.register { [integrations, workspace] in
+            let openPaths = Set(
+                workspace.root.allLeaves()
+                    .flatMap { $0.app.tabs }.compactMap(\.document).map(\.pdfPath))
+            await integrations.backgroundRefresh(openDocumentPaths: openPaths)
+        }
     }
 
     var body: some Scene {
@@ -113,6 +126,11 @@ struct VellumApp_iOS: App {
             // macOS terminate hook.
             if phase == .background {
                 flushOnBackground()
+                // Ask for the next background wake-up on the way out: a request
+                // submitted while in the foreground would be the one the system
+                // schedules against, and leaving is when the queue starts going
+                // stale (#157).
+                ReadLaterBackgroundRefresh.schedule()
             }
             // iOS suspends the process, so the store's 30-minute auto-refresh
             // Task.sleep does not fire in the background and an iPad that has
@@ -163,6 +181,10 @@ struct VellumApp_iOS: App {
             openDocuments.filter { $0.kind == .pdf }
                 .map { DocumentIdentity.storageKey(for: $0) })
         let openWebUrls = Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
+        // Every open document's path, web or PDF: the read-later sweep refuses
+        // to delete an offline copy that is on screen right now.
+        let openPaths = Set(openDocuments.map(\.pdfPath))
+        let integrations = workspace.integrations
 
         // Resolve the iCloud ubiquity container off-main FIRST: it can block,
         // and both the launch sweep (to name the iCloud layout) and the
@@ -181,8 +203,13 @@ struct VellumApp_iOS: App {
             await WebStorageRelocator.sweepAtLaunch()
             // TTL eviction of derived data, using the user's chosen retention
             // window (Settings ▸ Storage ▸ Housekeeping; "Never" skips it).
+            // The read-later retention sweep rides the same pass (#157): one
+            // eviction pass at launch, one policy per data class inside it.
             await StorageHousekeeping.runCleanup(
-                openPdfKeys: openKeys, openWebUrls: openWebUrls)
+                openPdfKeys: openKeys,
+                openWebUrls: openWebUrls,
+                openDocumentPaths: openPaths,
+                readLater: integrations)
         }
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice

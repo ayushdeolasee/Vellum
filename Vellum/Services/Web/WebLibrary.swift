@@ -598,7 +598,10 @@ enum WebLibrary {
         return total
     }
 
-    private static func snapshotArtifactsSize(forKey key: String) -> Int64 {
+    /// Internal, not private: the read-later prefetcher records the size of the
+    /// offline copy it just installed (`retention.json`'s `offline_bytes`), and
+    /// that number must be measured the same way the Storage pane measures it.
+    static func snapshotArtifactsSize(forKey key: String) -> Int64 {
         let fm = FileManager.default
         var total: Int64 = 0
         let attributes = try? fm.attributesOfItem(atPath: snapshotPath(forKey: key).path)

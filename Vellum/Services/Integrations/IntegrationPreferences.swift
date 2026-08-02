@@ -3,6 +3,7 @@ import Foundation
 struct IntegrationPreferences {
     private enum Key {
         static let autoRefresh = "integrations.autoRefresh"
+        static let offlineReading = "integrations.offlineReading"
         static let enabledPrefix = "integrations.enabled."
         static let generationPrefix = "integrations.generation."
         static let fingerprintPrefix = "integrations.accountFingerprint."
@@ -26,6 +27,15 @@ struct IntegrationPreferences {
     var autoRefreshEnabled: Bool {
         get { defaults.object(forKey: Key.autoRefresh) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: Key.autoRefresh) }
+    }
+
+    /// "Download for offline reading" (#157). Default ON, read the same
+    /// inline-default way as `autoRefreshEnabled` rather than through
+    /// `register(defaults:)`, which would pin the registration to whichever
+    /// defaults domain happened to be current when this value was built.
+    var offlineReadingEnabled: Bool {
+        get { defaults.object(forKey: Key.offlineReading) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.offlineReading) }
     }
 
     func metadata(for provider: IntegrationProvider) -> IntegrationConnectionMetadata {

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import PDFKit
 
-struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool }
+struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true }
 
 actor IntegrationsSyncEngine {
     private let credentials: any IntegrationCredentials
@@ -55,10 +55,11 @@ actor IntegrationsSyncEngine {
             if let token = await credentials.credential(for: provider), Self.fingerprint(token) == fingerprint { connected.insert(provider) }
             else { authenticationRequired.insert(provider) }
         }
-        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled)
+        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled)
     }
 
     func setAutoRefreshEnabled(_ enabled: Bool) { preferences.autoRefreshEnabled = enabled }
+    func setOfflineReadingEnabled(_ enabled: Bool) { preferences.offlineReadingEnabled = enabled }
     func validate(provider: IntegrationProvider, candidate: String) async throws { let token = candidate.trimmingCharacters(in: .whitespacesAndNewlines); guard !token.isEmpty else { throw IntegrationError.invalidCredential }; try await validateToken(token, provider) }
 
     func connect(provider: IntegrationProvider, candidate: String) async throws -> ProviderSnapshot {
@@ -206,6 +207,34 @@ actor IntegrationsSyncEngine {
         let task = Task { try await self.runDownload(item, id: id, generation: metadata.generation, fingerprint: metadata.accountFingerprint ?? "", progress: progress) }
         downloadTasks[item.id] = (id: id, task: task)
         return try await task.value
+    }
+
+    /// Background autopull's entry into the download path (#157). Deliberately
+    /// `download` itself rather than a parallel implementation: prefetching and
+    /// opening must share the byte cap, the PDF validation, the revision-guarded
+    /// reuse of an existing copy, the generation guards AND the per-item dedup —
+    /// so a prefetch already in flight is what an open joins instead of racing.
+    func prefetch(_ item: ReadLaterItem) async throws -> ExternalOpenRoute {
+        try await download(item, progress: { _ in })
+    }
+
+    /// Retention's counterpart to `prefetch`: drop a downloaded copy. Refuses
+    /// while the file is open in a tab (same rule `disconnect` enforces), and
+    /// cancels an in-flight download of the same item first so a transfer can't
+    /// re-install the bytes moments after the sweep removed them.
+    func removeDownloadedCopy(for item: ReadLaterItem, openDocumentPaths: Set<String>) async -> Bool {
+        await removeDownloadedCopy(provider: item.provider, itemID: item.vendorID, openDocumentPaths: openDocumentPaths)
+    }
+
+    func removeDownloadedCopy(provider: IntegrationProvider, itemID: String, openDocumentPaths: Set<String>) async -> Bool {
+        guard let url = try? await cache.downloadURL(provider: provider, itemID: itemID) else { return false }
+        let normalizedOpenPaths = Set(openDocumentPaths.map(Self.normalizedPath))
+        guard !normalizedOpenPaths.contains(Self.normalizedPath(url.path)) else { return false }
+        let key = "\(provider.rawValue):\(itemID)"
+        if let entry = downloadTasks[key] { entry.task.cancel(); downloadTasks[key] = nil }
+        let removed = await cache.deleteDownload(provider: provider, itemID: itemID)
+        if removed { RecentFilesService.remove(paths: [url.path]) }
+        return removed
     }
 
     private func runDownload(_ item: ReadLaterItem, id: UUID, generation: Int, fingerprint: String, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {

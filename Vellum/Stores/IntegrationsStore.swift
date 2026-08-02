@@ -14,14 +14,24 @@ final class IntegrationsStore {
     private(set) var inFlightMoves: Set<ReadLaterItem.ID> = []
     private(set) var didStart = false
     var autoRefreshEnabled = true
+    /// "Download for offline reading" (#157). Mirrors the persisted preference;
+    /// the toggle writes through the engine like `autoRefreshEnabled` does.
+    var offlineReadingEnabled = true
 
     @ObservationIgnored private let engine: IntegrationsSyncEngine
+    /// Background autopull + the fourteen-day retention clock. Built here (not
+    /// injected) because it is this store's items the prefetcher works on, and
+    /// every trigger — start, staleness, manual sync, foreground, background
+    /// refresh — already routes through this object.
+    @ObservationIgnored let prefetcher: ReadLaterPrefetcher
     @ObservationIgnored private let thumbnails: IntegrationThumbnailCache
     @ObservationIgnored private let scheduler: any IntegrationSleeper
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let refreshInterval: Duration
     @ObservationIgnored private let staleInterval: TimeInterval
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
+    /// The prefetch run in flight, if any — cancellable by the quit drain.
+    @ObservationIgnored private var prefetchTask: Task<Void, Never>?
     @ObservationIgnored private var operationTasks: [IntegrationProvider: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Store-owned background work — preference writes, the post-connect sync,
     /// moves, disconnects, thumbnail cleanup. Every fire-and-forget task that
@@ -55,8 +65,9 @@ final class IntegrationsStore {
     /// notice they belong to so a newer toast can cancel the older one's timer.
     @ObservationIgnored private var noticeExpiries: [ReadLaterItem.ID: (sequence: Int, task: Task<Void, Never>)] = [:]
 
-    init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60) {
+    init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60, prefetcher: ReadLaterPrefetcher? = nil) {
         self.engine = engine; self.thumbnails = thumbnails; self.scheduler = scheduler; self.now = now; self.refreshInterval = refreshInterval; self.staleInterval = staleInterval
+        self.prefetcher = prefetcher ?? ReadLaterPrefetcher(offline: IntegrationsOfflineStore(engine: engine))
         providers = Dictionary(uniqueKeysWithValues: IntegrationProvider.allCases.map { ($0, .init(provider: $0, connection: .disconnected, items: [], collections: [], lastSuccessfulSync: nil, lastFullSweep: nil, skippedRecordCount: 0, statusMessage: nil)) })
     }
     convenience init() { self.init(engine: IntegrationsSyncEngine()) }
@@ -72,7 +83,7 @@ final class IntegrationsStore {
 
     func start() async {
         guard !didStart else { return }; didStart = true
-        let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled
+        let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled; offlineReadingEnabled = loaded.offlineReadingEnabled
         for provider in IntegrationProvider.allCases {
             if loaded.authenticationRequiredProviders.contains(provider) {
                 if let snapshot = loaded.snapshots[provider] { apply(snapshot, connection: .tokenRejected) }
@@ -83,6 +94,10 @@ final class IntegrationsStore {
             else if loaded.connectedProviders.contains(provider) { update(provider) { $0.connection = .connected; $0.statusMessage = "Connected — not synced yet" } }
         }
         restartAutoRefresh(); await refreshStaleProviders()
+        // Startup trigger for read-later autopull (#157). Behind the sync above,
+        // never in front of it: prefetching plans against the item list, and
+        // planning against a stale one would download yesterday's queue.
+        run { [weak self] in await self?.prefetchOfflineCopies() }
     }
 
     /// The toggle applies to the UI immediately and the preference write runs
@@ -93,6 +108,50 @@ final class IntegrationsStore {
         autoRefreshEnabled = enabled
         run { [engine] in await engine.setAutoRefreshEnabled(enabled) }
         restartAutoRefresh()
+    }
+
+    /// Settings ▸ Integrations ▸ "Download for offline reading". Same shape as
+    /// `setAutoRefresh`: the UI flips immediately, the preference write runs as
+    /// a store-owned task so quitting right afterwards can't revert it. Turning
+    /// it ON starts a run immediately — the user just asked for their queue —
+    /// while turning it OFF only stops future runs: bytes already downloaded
+    /// stay under the fourteen-day clock rather than vanishing on a toggle.
+    func setOfflineReading(_ enabled: Bool) {
+        guard enabled != offlineReadingEnabled else { return }
+        offlineReadingEnabled = enabled
+        run { [engine] in await engine.setOfflineReadingEnabled(enabled) }
+        guard enabled else { return }
+        run { [weak self] in await self?.prefetchOfflineCopies() }
+    }
+
+    /// One prefetch pass over the current queue. Safe to call from every
+    /// trigger: the prefetcher runs one pass at a time and skips whatever is
+    /// already on disk.
+    func prefetchOfflineCopies(policy: ReadLaterPrefetchPolicy = .foreground) async {
+        guard offlineReadingEnabled, !isQuiescing else { return }
+        let items = searchableItems
+        let enabled = offlineReadingEnabled
+        // Held in its own slot rather than only as a `run` handle: prefetching
+        // is minutes of network work, and the quit/background drain must be
+        // able to CANCEL it (like a sync) instead of waiting it out inside a
+        // `beginBackgroundTask` window.
+        let task = Task { [prefetcher] in
+            _ = await prefetcher.run(items: items, isEnabled: enabled, policy: policy)
+        }
+        prefetchTask = task
+        await task.value
+        if prefetchTask == task { prefetchTask = nil }
+    }
+
+    /// The BGAppRefreshTask body (#157): refresh what is stale, top up the
+    /// offline copies within the background budget, then let retention expire
+    /// what the user never came back to. Sweeping LAST means an item downloaded
+    /// moments ago is never a candidate of the same run.
+    func backgroundRefresh(openDocumentPaths: Set<String> = []) async {
+        await refreshStaleProviders()
+        await prefetchOfflineCopies(policy: .background)
+        _ = await sweepExpiredOfflineCopies(
+            now: now(), openDocumentPaths: openDocumentPaths)
     }
 
     func connect(provider: IntegrationProvider, token: String) async throws {
@@ -177,6 +236,10 @@ final class IntegrationsStore {
         isQuiescing = true
         defer { isQuiescing = false }
         autoRefreshTask?.cancel(); autoRefreshTask = nil
+        // Cancelled, not awaited: an unfinished prefetch costs a retry next
+        // launch, and the ledger records nothing for a transfer that did not
+        // land, so there is no half-state to drain.
+        prefetchTask?.cancel(); prefetchTask = nil
         while true {
             for entry in operationTasks.values { entry.task.cancel() }
             let pending = Array(backgroundTasks.values) + operationTasks.values.map(\.task)
@@ -202,6 +265,12 @@ final class IntegrationsStore {
     }
 
     func route(for item: ReadLaterItem) async throws -> ExternalOpenRoute {
+        // Opening IS the read that resets the fourteen-day clock (#157), and it
+        // is recorded here — the single chokepoint every surface routes through
+        // (Home, the external library list, the welcome screen) — rather than in
+        // each of them. Fire-and-forget through `run`, so a ledger write never
+        // delays putting the document on screen.
+        run { [prefetcher] in await prefetcher.markRead(item) }
         if item.kind != .pdf { return .web(item.sourceURL) }
         if let existing = await engine.existingRoute(for: item) { return existing }
         downloads[item.id] = .init(progress: nil, message: "Downloading \(item.title)…", isActive: true, sequence: nextSequence())
@@ -420,6 +489,9 @@ final class IntegrationsStore {
             guard operationTasks[provider]?.id == operationID else { return }
             apply(snapshot, connection: .connected)
             if snapshot.skippedRecordCount > 0 { update(provider) { $0.statusMessage = "Updated; malformed records were skipped, so deletions were preserved." } }
+            // Staleness/manual/post-connect triggers all land here: a sync that
+            // committed new items is exactly when autopull has something to do.
+            run { [weak self] in await self?.prefetchOfflineCopies() }
         } catch is CancellationError {
             guard operationTasks[provider]?.id == operationID else { return }
             update(provider) { $0.connection = .connected; $0.statusMessage = nil }
@@ -490,4 +562,22 @@ final class IntegrationsStore {
     /// Everything that mutates `items` bumps the revision itself — `apply`,
     /// `replace`, `disconnect`, and the connect rollback.
     private func update(_ provider: IntegrationProvider, _ mutation: (inout IntegrationProviderViewState) -> Void) { guard var value = providers[provider] else { return }; mutation(&value); providers[provider] = value }
+}
+
+/// `StorageHousekeeping` evicts read-later bytes through this store, not
+/// through the prefetcher directly: the sweep needs the CURRENT queue to map
+/// ledger ids back to items, and this is the object that has it.
+extension IntegrationsStore: ReadLaterRetentionSweeping {
+    @discardableResult
+    func sweepExpiredOfflineCopies(
+        now: Date, openDocumentPaths: Set<String>
+    ) async -> RetentionSweepReport {
+        // The launch-time housekeeping pass can win the race against the
+        // startup load, and a sweep that runs before the cached snapshots are
+        // applied would see an empty queue. `start()` is idempotent, so this
+        // either loads them or returns immediately.
+        if !didStart { await start() }
+        return await prefetcher.sweep(
+            items: searchableItems, now: now, openDocumentPaths: openDocumentPaths)
+    }
 }

@@ -31,6 +31,64 @@ enum RetentionFixtures {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// The offline half of autopull, scripted. Records what the prefetcher
+    /// asked for so the wiring can be asserted without a network, a WKWebView
+    /// or a provider account.
+    actor OfflineStoreDouble: ReadLaterOfflineStoring {
+        private(set) var storeCalls: [String] = []
+        private(set) var removeCalls: [String] = []
+        private var present: Set<String>
+        private var exempt: Set<String>
+        private var failing: [String: any Error]
+        private var refusingRemoval: Set<String>
+        private let bytes: Int
+
+        init(
+            present: Set<String> = [],
+            exempt: Set<String> = [],
+            failing: [String: any Error] = [:],
+            refusingRemoval: Set<String> = [],
+            bytes: Int = 4_096
+        ) {
+            self.present = present
+            self.exempt = exempt
+            self.failing = failing
+            self.refusingRemoval = refusingRemoval
+            self.bytes = bytes
+        }
+
+        func setExempt(_ ids: Set<String>) { exempt = ids }
+
+        func hasOfflineCopy(for item: ReadLaterItem) async -> Bool { present.contains(item.id) }
+
+        func storeOfflineCopy(for item: ReadLaterItem) async throws -> Int {
+            storeCalls.append(item.id)
+            if let error = failing[item.id] { throw error }
+            present.insert(item.id)
+            return bytes
+        }
+
+        func isExempt(_ item: ReadLaterItem) async -> Bool { exempt.contains(item.id) }
+
+        func removeOfflineCopy(
+            for item: ReadLaterItem, openDocumentPaths: Set<String>
+        ) async -> Bool {
+            removeCalls.append(item.id)
+            guard !refusingRemoval.contains(item.id) else { return false }
+            present.remove(item.id)
+            return true
+        }
+
+        func removeOfflineCopy(
+            forItemID itemID: String, openDocumentPaths: Set<String>
+        ) async -> Bool {
+            removeCalls.append(itemID)
+            guard !refusingRemoval.contains(itemID) else { return false }
+            present.remove(itemID)
+            return true
+        }
+    }
+
     /// Records which item ids a sweep asked to delete, across actor hops, and
     /// can be scripted to report failure for a given id.
     final class DeleterLog: @unchecked Sendable {
