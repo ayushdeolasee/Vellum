@@ -87,6 +87,7 @@
 		53B7BE4E93C5CF617CF049D6 /* DocumentIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */; };
 		546B20185CE6B8EEA5C08069 /* DocumentDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9D539B1461FC063BC82C78 /* DocumentDataStore.swift */; };
 		56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
+		5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
 		5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */; };
@@ -270,6 +271,7 @@
 		1E72CB77832820C619CF16CE /* ReadLaterModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterModelsTests.swift; sourceTree = "<group>"; };
 		219658C41205C0AE35D66332 /* IntegrationsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsStoreTests.swift; sourceTree = "<group>"; };
 		2296945CE1660D607D4F253B /* PageTextExtractionGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextExtractionGateTests.swift; sourceTree = "<group>"; };
+		22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabResidencyTests.swift; sourceTree = "<group>"; };
 		236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRenameService.swift; sourceTree = "<group>"; };
 		2423823E0BE86C417B6ABBC6 /* AiPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPanel.swift; sourceTree = "<group>"; };
 		2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView_iOS.swift; sourceTree = "<group>"; };
@@ -635,6 +637,7 @@
 				583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */,
 				B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
+				22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */,
 				90C50948404B30999979C84A /* VellumBundleTests.swift */,
 				8352DF5C4A0A69EF4D19687D /* WalkthroughLayoutTests.swift */,
 				E2042B70E9B14894B30A1877 /* WalkthroughTests.swift */,
@@ -1304,6 +1307,7 @@
 				5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				723AEAB28F34C7D878D39094 /* StubURLProtocol.swift in Sources */,
+				5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */,
 				742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */,
 				077387370617D3B0DCF008AF /* WalkthroughLayoutTests.swift in Sources */,
 				9B5BE4F139A065CDDF4C5A3E /* WalkthroughTests.swift in Sources */,
