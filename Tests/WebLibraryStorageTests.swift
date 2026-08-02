@@ -110,6 +110,62 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertEqual(WebLibrary.loadRecord(at: recordPath)?.savedAt, originalSavedAt)
     }
 
+    func testPinAnnotationPersistsAndSortsFirst() async throws {
+        let url = "https://example.com/pin-me"
+        let key = WebLibrary.pageKey(url)
+        try WebLibrary.saveRecord(WebPageRecord(url: url), at: WebLibrary.recordPath(forKey: key))
+        let io = WebDocumentIO(url: url, key: key)
+
+        let first = try await io.createAnnotation(
+            CreateAnnotationInput(type: .highlight, pageNumber: 1, content: "a"),
+            storedHighlightColor: "#fde68a")
+        let second = try await io.createAnnotation(
+            CreateAnnotationInput(type: .note, pageNumber: 2, content: "b"),
+            storedHighlightColor: "#fde68a")
+
+        var list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [first.id, second.id])
+
+        let updated = try await io.updateAnnotation(UpdateAnnotationInput(
+            id: second.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(updated)
+
+        list = await io.annotations(pageNumber: nil)
+        XCTAssertEqual(list.map(\.id), [second.id, first.id])
+        XCTAssertTrue(try XCTUnwrap(list.first).pinned)
+
+        let record = try XCTUnwrap(WebLibrary.loadRecord(forKey: key))
+        let stored = try XCTUnwrap(record.annotations.first { $0.id == second.id })
+        XCTAssertEqual(stored.isPinned, true)
+
+        // The decoded model round-trips through the same coding keys, so pin
+        // the literal snake_case name other clients read.
+        let data = try Data(contentsOf: WebLibrary.recordPath(forKey: key))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rawAnnotations = try XCTUnwrap(json["annotations"] as? [[String: Any]])
+        let raw = try XCTUnwrap(rawAnnotations.first { ($0["id"] as? String) == second.id })
+        XCTAssertEqual(raw["is_pinned"] as? Bool, true)
+    }
+
+    /// The other half of the byte-compatibility contract: an unpinned record
+    /// must not emit `is_pinned` at all, so sidecars written by this build stay
+    /// readable byte-for-byte by pre-pin clients.
+    func testUnpinnedWebAnnotationOmitsKey() async throws {
+        let url = "https://example.com/no-pin"
+        let key = WebLibrary.pageKey(url)
+        try WebLibrary.saveRecord(WebPageRecord(url: url), at: WebLibrary.recordPath(forKey: key))
+        let io = WebDocumentIO(url: url, key: key)
+        let created = try await io.createAnnotation(
+            CreateAnnotationInput(type: .highlight, pageNumber: 1, content: "a"),
+            storedHighlightColor: "#fde68a")
+
+        let data = try Data(contentsOf: WebLibrary.recordPath(forKey: key))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rawAnnotations = try XCTUnwrap(json["annotations"] as? [[String: Any]])
+        let raw = try XCTUnwrap(rawAnnotations.first { ($0["id"] as? String) == created.id })
+        XCTAssertNil(raw["is_pinned"], "unpinned records stay byte-compatible with pre-pin sidecars")
+    }
+
     // MARK: - TTL eviction
 
     func testEvictionRemovesOnlyStaleUnsavedArtifacts() throws {
