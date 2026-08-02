@@ -329,7 +329,13 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
     @Environment(WorkspaceStore.self) private var workspace
 
     func makeUIView(context: Context) -> VellumWebView {
-        let webView = controller.webView
+        // The controller has owned its `WKWebView` outright since this file was
+        // written, so there is no "build a fresh one" branch to guard: whether
+        // the view already exists or is materialised here, the same instance
+        // comes back on every remount. `adoptRetainedView` is still what runs,
+        // for its `removeFromSuperview()` — `mergeAll` can transiently leave
+        // two hosts claiming one tab and a `UIView` has only one superview.
+        let webView = controller.adoptRetainedView() ?? controller.webView
         // Hardware-keyboard commands for when WebKit holds first responder. The
         // WorkspaceStore lives for the whole app session, so capturing it once
         // cannot go stale.
@@ -413,6 +419,16 @@ final class WebViewerController_iOS: NSObject {
 
     @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
     var webView: VellumWebView { _webView }
+    /// Whether `_webView` has actually been materialised.
+    ///
+    /// `RetainedViewOwner.retainedView` must be answerable WITHOUT side
+    /// effects, and reading `webView` builds a `WKWebView` and spins up its
+    /// content process. So the conformance below reports through this flag
+    /// rather than through the lazy property: "no view yet" is a real answer,
+    /// and the caller then builds one on its own terms.
+    @ObservationIgnored private var didCreateWebView = false
+    /// Side-effect-free "does a web view exist yet?", for `RetainedViewOwner`.
+    var hasWebView: Bool { didCreateWebView }
 
     /// Isolated content world for the bridge: the content script and the
     /// "vellum" message handler live here, out of reach of page scripts (a
@@ -443,6 +459,7 @@ final class WebViewerController_iOS: NSObject {
             forMainFrameOnly: true,
             in: Self.bridgeWorld))
         let webView = VellumWebView(frame: .zero, configuration: configuration)
+        didCreateWebView = true
         webView.navigationDelegate = self
         webView.uiDelegate = self
         // Native edge-swipe back/forward bypasses the session-rebind path

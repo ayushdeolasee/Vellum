@@ -59,14 +59,17 @@ struct PdfKitView_iOS: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
 
     func makeUIView(context: Context) -> PDFView {
-        // Live tabs (packet 7): this must first try
+        // Live tabs: this must first try
         // `controller.adoptRetainedView { $0.document === document }` and return
         // that parentless view — a remount (tab dragged between panes, or two
         // hosts transiently claiming one tab during Merge Panes) has to reuse
         // PDFKit rather than rebuild it. The protocol is declared in
-        // `LiveTabViewerContract_iOS.swift`; until the controller's `pdfView`
-        // becomes a strong reference there is nothing retained to adopt, so a
-        // fresh view is still built here.
+        // `LiveTabViewerContract_iOS.swift` and `controller.pdfView` is now a
+        // strong reference (packet 7), so there IS something to adopt — but
+        // `Coordinator.detach()` below still nils it on dismantle, so nothing
+        // survives a host teardown yet. Both halves belong to the one-host-per-
+        // tab mount (packet 4 §2.8, which owns this file); packet 7 §1 lists it
+        // as SKIP. Until then a fresh view is built here, exactly as before.
         let view = VellumPDFView()
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical

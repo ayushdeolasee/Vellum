@@ -9,6 +9,7 @@ import UIKit
 // contextMenu, pageViewFrame) and the same store-handler surface (zoom, scroll,
 // find, locate, snapshot), but interaction is touch/gesture-driven instead of
 // NSEvent monitors, and geometry is UIKit-native (top-left origin, no flip).
+
 /// The two non-`Sendable` values the background text walk has to carry into
 /// `PageTextExtractionGate.extractText(priority:offMain:)`.
 ///
@@ -38,7 +39,19 @@ private final class PdfExtractionWalkContext: @unchecked Sendable {
 @MainActor
 @Observable
 final class PdfViewerControlleriOS: HighlightResizeControlling {
-    weak var pdfView: PDFView?
+    /// The tab's `PDFView`, held STRONGLY (packet 7, the `RetainedViewOwner`
+    /// contract in `LiveTabViewerContract_iOS.swift`): under live tabs the
+    /// native view belongs to the tab, not to whichever pane happens to be
+    /// hosting it, and rebuilding PDFKit on every remount is exactly what live
+    /// tabs exist to avoid. No cycle — the view never holds the controller (the
+    /// coordinator holds the controller strongly and the view weakly).
+    ///
+    /// Lifetimes are unchanged for now: `PdfKitView_iOS.Coordinator.detach()`
+    /// still nils this on dismantle, so the view dies with its host exactly as
+    /// it did when the reference was `weak`. Removing that nil — which is what
+    /// makes `adoptRetainedView` an actual reuse — belongs with the one-host-
+    /// per-tab mount in packet 4 §2.8, which owns `PdfKitView_iOS.swift`.
+    var pdfView: PDFView?
     private(set) var document: PDFDocument?
 
     @ObservationIgnored weak var app: AppStore?
