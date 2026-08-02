@@ -153,6 +153,7 @@ enum PdfAnnotationReader {
         let now = PdfDates.rfc3339Now()
         let createdAt = CgPdf.string(dictionary, "VellumCreatedAt") ?? now
         let updatedAt = CgPdf.string(dictionary, "VellumUpdatedAt") ?? now
+        let isPinned = CgPdf.integer(dictionary, "VellumPinned") == 1 ? true : nil
 
         return Annotation(
             id: id,
@@ -162,7 +163,8 @@ enum PdfAnnotationReader {
             content: content,
             positionData: position,
             createdAt: createdAt,
-            updatedAt: updatedAt)
+            updatedAt: updatedAt,
+            isPinned: isPinned)
     }
 
     /// read_position: highlights from /QuadPoints (one UI rect per quad,

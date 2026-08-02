@@ -529,6 +529,10 @@ struct PdfDictSource {
         setValue(forKey: key, raw: Array("\(value)".utf8))
     }
 
+    mutating func setTextString(forKey key: String, to value: String) {
+        setValue(forKey: key, raw: PdfTextString.encode(value))
+    }
+
     mutating func removeEntry(forKey key: String) {
         guard let keyRange = keyTokenRange(key), let span = valueSpan(afterKeyToken: keyRange) else { return }
         bytes.removeSubrange(keyRange.lowerBound..<span.upperBound)
