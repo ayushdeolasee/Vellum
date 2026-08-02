@@ -214,6 +214,17 @@ enum VellumShortcutRouter {
             // `ContentView.isTextInputFirstResponder` responder walk.
             guard app.document != nil, !VellumKeyboardFocus.isTextInputFirstResponder else { return }
             app.setMode(app.mode == .note ? .view : .note)
+
+        // MARK: Help
+        //
+        // Deliberately NOT gated on `app.document != nil`: someone who just
+        // closed their last tab is exactly who reaches for these. Both sheets
+        // are presented at the app root, so they travel as notifications.
+        case .showHelp:
+            NotificationCenter.default.post(name: .vellumShowHelp, object: nil)
+
+        case .showWalkthrough:
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
         }
     }
 

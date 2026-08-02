@@ -117,6 +117,18 @@ struct VellumCommands_iOS: Commands {
             item(.bookmarkPage)
             item(.toggleNoteMode)
         }
+
+        // MARK: Help
+        // Replacing the standard group, like the Mac's `VellumCommands`, so
+        // Vellum's own two entries are the whole Help menu.
+        CommandGroup(replacing: .help) {
+            item(.showHelp)
+            // No catalogue row: `VellumShortcut` requires a chord and the
+            // walkthrough is intentionally unbound, on both platforms.
+            Button("Vellum Walkthrough") {
+                VellumShortcutRouter.perform(.showWalkthrough, workspace: workspace)
+            }
+        }
     }
 
     /// One menu item, fully described by the catalog.

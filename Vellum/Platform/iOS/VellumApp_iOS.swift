@@ -14,6 +14,8 @@ struct VellumApp_iOS: App {
     @State private var workspace: WorkspaceStore
     @State private var inkRegistry: InkRegistry_iOS
     @State private var showStorageChoice = false
+    @State private var showWalkthrough = false
+    @State private var showHelp = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -30,8 +32,43 @@ struct VellumApp_iOS: App {
             ContentView_iOS()
                 .task { await launchMaintenance() }
                 .onOpenURL { url in handleIncomingFile(url) }
-                .sheet(isPresented: $showStorageChoice) {
+                // The storage choice hands off to the walkthrough when it
+                // closes — see `launchMaintenance` for why it goes first.
+                .sheet(
+                    isPresented: $showStorageChoice,
+                    onDismiss: { showWalkthrough = WalkthroughSettings.needsFirstRun }
+                ) {
                     StorageLocationChoiceSheet()
+                        .environment(\.palette, themeStore.palette)
+                        .preferredColorScheme(themeStore.colorScheme)
+                        .tint(themeStore.palette.primary)
+                }
+                // Presented at the ROOT, not on the Home screen: the
+                // walkthrough stays reachable with a document open, and it
+                // outlives the screen that offers it.
+                //
+                // iOS silently drops a second simultaneous presentation, so
+                // each handler guards on the other two flags. Together with the
+                // `if !showStorageChoice` gate in `launchMaintenance`, that is
+                // the "one sheet at a time" rule.
+                .onReceive(
+                    NotificationCenter.default.publisher(for: .vellumShowWalkthrough)
+                ) { _ in
+                    guard !showStorageChoice, !showHelp else { return }
+                    showWalkthrough = true
+                }
+                .sheet(isPresented: $showWalkthrough) {
+                    WalkthroughSheet_iOS()
+                        .environment(\.palette, themeStore.palette)
+                        .preferredColorScheme(themeStore.colorScheme)
+                        .tint(themeStore.palette.primary)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .vellumShowHelp)) { _ in
+                    guard !showStorageChoice, !showWalkthrough else { return }
+                    showHelp = true
+                }
+                .sheet(isPresented: $showHelp) {
+                    HelpCenterView_iOS()
                         .environment(\.palette, themeStore.palette)
                         .preferredColorScheme(themeStore.colorScheme)
                         .tint(themeStore.palette.primary)
@@ -115,6 +152,15 @@ struct VellumApp_iOS: App {
         }
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
+        // Only one sheet at a time. On a true first launch the storage choice
+        // goes first — it decides where everything the walkthrough describes
+        // gets written — and hands off to the walkthrough when it closes (see
+        // the sheet's `onDismiss`). This ordering is already safe here because
+        // `launchMaintenance` awaits `WebStorageSettings.resolveICloudRoot()`
+        // before reaching this line.
+        if !showStorageChoice {
+            showWalkthrough = WalkthroughSettings.needsFirstRun
+        }
     }
 
     /// Scene-background flush. macOS drains these on `applicationShouldTerminate`;

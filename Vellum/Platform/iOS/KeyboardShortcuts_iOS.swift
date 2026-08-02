@@ -154,6 +154,10 @@ enum VellumShortcutAction: Hashable, Sendable {
     // Annotations
     case bookmarkPage
     case toggleNoteMode
+    // Help. Neither is gated on document focus — someone who just closed their
+    // last tab is exactly who wants them.
+    case showHelp
+    case showWalkthrough
 
     /// Stable string identity. `UIKeyCommand` can only round-trip a property
     /// list, not a Swift enum, so the responder-chain path ships this string in
@@ -190,6 +194,8 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .showTab(let index): "showTab.\(index)"
         case .bookmarkPage: "bookmarkPage"
         case .toggleNoteMode: "toggleNoteMode"
+        case .showHelp: "showHelp"
+        case .showWalkthrough: "showWalkthrough"
         }
     }
 }
@@ -211,6 +217,8 @@ enum VellumShortcutMenu: Hashable, Sendable {
     case navigate
     /// Vellum's own "Annotations" menu.
     case annotations
+    /// The standard Help group. Replaced wholesale, like the Mac's.
+    case help
 }
 
 // MARK: - Shortcut
@@ -311,7 +319,7 @@ enum VellumShortcutCatalog {
     ///    windows through Stage Manager / the system multitasking UI.
     ///  • ⌘C / ⌘V / ⌘X / ⌘A / ⌘Z inside text. UIKit already implements these on
     ///    every text surface; shadowing them would break editing.
-    static let all: [VellumShortcut] = file + find + view + navigate + annotations
+    static let all: [VellumShortcut] = file + find + view + navigate + annotations + help
 
     // MARK: File
 
@@ -448,6 +456,19 @@ enum VellumShortcutCatalog {
         VellumShortcut(
             .toggleNoteMode, "Toggle Note Mode", VellumKeyCombo(.character("n"), []),
             menu: .annotations),
+    ]
+
+    // MARK: Help
+
+    private static let help: [VellumShortcut] = [
+        // Menu-only. ⌘? is not a chord PDFKit or WebKit competes for, and
+        // neither of these targets a document surface anyway.
+        //
+        // `showWalkthrough` has no catalogue row: `VellumShortcut` requires a
+        // combo and the walkthrough is deliberately unbound (main leaves it
+        // unbound too). It is surfaced as a plain Button in the Help group of
+        // `VellumCommands_iOS`.
+        VellumShortcut(.showHelp, "Vellum Help", VellumKeyCombo("?"), menu: .help),
     ]
 
     // MARK: - Lookup
