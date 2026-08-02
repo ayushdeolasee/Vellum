@@ -26,6 +26,26 @@ final class VellumPDFView: PDFView, VellumShortcutResponder {
             // The bounds themselves change with the mode, so nothing about the
             // previously applied policy can be reused.
             appliedPolicy = nil
+            // A mode change changes the RULES, which means the scale the view
+            // is sitting at was chosen under rules that no longer hold: a tab
+            // adopted into the phone reader at an absolute 200% has to be
+            // FITTED, not merely floored. Only `openingScale` fits, and only
+            // `refitsFromScratch` routes through it.
+            refitsFromScratch = true
+            applyZoomPolicy()
+        }
+    }
+
+    /// Whether this mount is its pane's active tab — the same flag
+    /// `PdfKitView_iOS.isActive` carries, pushed down because the fit is
+    /// applied from `layoutSubviews`, which UIKit runs on background tabs too.
+    /// See `applyZoomPolicy` for what an unguarded background fit would do.
+    var isActive: Bool = true {
+        didSet {
+            // A tab that was fitted-out while inactive (or whose viewport
+            // rotated underneath it) fits on the way in. Going inactive needs
+            // no work: the guard simply starts refusing.
+            guard isActive, isActive != oldValue else { return }
             applyZoomPolicy()
         }
     }
@@ -46,6 +66,11 @@ final class VellumPDFView: PDFView, VellumShortcutResponder {
     private var appliedPolicy: PdfZoomPolicy?
     private weak var appliedDocument: PDFDocument?
 
+    /// Set when the next apply has to FIT rather than adjust — a mode change,
+    /// which is the one case where the document is unchanged and the scale
+    /// still has to be recomputed from the viewport rather than carried over.
+    private var refitsFromScratch = false
+
     /// The viewport's width is only known once UIKit has laid the view out —
     /// it is zero throughout `makeUIView` — so the fit is applied here rather
     /// than at construction. This is also the callback that fires on rotation
@@ -64,7 +89,15 @@ final class VellumPDFView: PDFView, VellumShortcutResponder {
     /// no-op assignment and every later call returns at the `appliedPolicy`
     /// guard. That is what keeps the iPad path untouched by construction.
     func applyZoomPolicy() {
-        guard let document, bounds.width > 0 else { return }
+        // An INACTIVE mount must not touch `scaleFactor`. PDFKit answers every
+        // assignment with `.PDFViewScaleChanged`, the coordinator mirrors that
+        // into the PANE-WIDE `AppStore.zoom`, and the pane's visible tab would
+        // then be dragged to a background tab's fit scale on its next
+        // `updateUIView`. `updateUIView` already guards the store→view half of
+        // that loop on `isActive`; this is the view→store half. The fit is not
+        // lost, only deferred: `isActive.didSet` re-runs this on the way in,
+        // and UIKit lays the view out again when it is shown.
+        guard isActive, let document, bounds.width > 0 else { return }
         let policy = PdfZoomPolicy.resolve(
             mode: zoomMode,
             pageWidth: Self.displayedWidth(of: document.page(at: 0), box: displayBox),
@@ -76,14 +109,17 @@ final class VellumPDFView: PDFView, VellumShortcutResponder {
             horizontalInset: Double(pageBreakMargins.left + pageBreakMargins.right),
             minimumScale: absoluteScaleRange.lowerBound,
             maximumScale: absoluteScaleRange.upperBound)
-        let isNewDocument = appliedDocument !== document
-        guard isNewDocument || policy != appliedPolicy else { return }
+        // A fresh document and a mode change are the two "fit it" cases;
+        // everything else (rotation, a resize) adjusts the scale in hand.
+        let fitsFromScratch = refitsFromScratch || appliedDocument !== document
+        guard fitsFromScratch || policy != appliedPolicy else { return }
         let previousFitWidth = appliedPolicy?.fitWidthScale
+        refitsFromScratch = false
         appliedPolicy = policy
         appliedDocument = document
         minScaleFactor = CGFloat(policy.minimumScale)
         maxScaleFactor = CGFloat(policy.maximumScale)
-        let target = isNewDocument
+        let target = fitsFromScratch
             ? policy.openingScale(persisted: Double(scaleFactor))
             : policy.adjustedScale(
                 current: Double(scaleFactor), previousFitWidth: previousFitWidth)
@@ -185,7 +221,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
         view.minScaleFactor = CGFloat(AppStore.minZoom)
         view.maxScaleFactor = CGFloat(AppStore.maxZoom)
         // Set before the document: the first layout pass is what computes the
-        // fit-width scale, and it needs to know it is fitting by then.
+        // fit-width scale, and it needs to know it is fitting — and whether it
+        // is even allowed to touch the scale — by then.
+        view.isActive = isActive
         view.zoomMode = zoomMode
         view.backgroundColor = UIColor(palette.well)
         // Install the Pencil overlay provider BEFORE the document so PDFKit wires
@@ -211,10 +249,21 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         uiView.backgroundColor = UIColor(palette.well)
-        // Also covers the adopted-view path in `makeUIView`, where a tab that
-        // moved between shells has to be told about its new scaling rules.
-        // Idempotent — the setter ignores an unchanged mode.
-        if let vellum = uiView as? VellumPDFView { vellum.zoomMode = zoomMode }
+        // Both of these also cover the adopted-view path in `makeUIView`, where
+        // a tab that moved between panes or shells has to be told which pane's
+        // active tab it is now and what its new scaling rules are. Both setters
+        // are idempotent — they ignore an unchanged value.
+        //
+        // `isActive` FIRST: a mount that is going inactive has to be refusing
+        // scale writes before the mode change asks for a re-fit, or the fit it
+        // performs on the way out lands in the pane's shared zoom.
+        if let vellum = uiView as? VellumPDFView {
+            vellum.isActive = isActive
+            // A tab that just moved between shells is not merely floored at its
+            // new mode's bounds — it is re-fitted, since an absolute scale
+            // chosen on an iPad-sized viewport means nothing on a phone one.
+            vellum.zoomMode = zoomMode
+        }
         if uiView.document !== document {
             uiView.document = document
             controller.pdfView = uiView

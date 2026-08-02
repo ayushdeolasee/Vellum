@@ -8,40 +8,40 @@ import UIKit
 /// the existing iPad split-screen shell (`ContentView_iOS`) and the phone shell
 /// being built out in later phases. This view is the only place that decides
 /// between them, so the choice stays in one readable spot instead of leaking
-/// size-class checks into every screen.
+/// idiom checks into every screen.
 ///
-/// The test is deliberately BOTH halves of "is this an iPhone-shaped scene":
+/// The test is the IDIOM, and deliberately not the horizontal size class:
 ///
-///   * `horizontalSizeClass == .compact` — the real signal for "there is only
-///     room for one column". Phones report compact width in portrait and, on
-///     everything narrower than the Max/Plus bodies, in landscape too.
-///   * `userInterfaceIdiom == .phone` — a guard for the iPad, NOT a redundant
-///     check. An iPad in Slide Over or a narrow Split View / windowed scene is
-///     also compact-width, and it has always rendered `ContentView_iOS` there.
-///     Gating on size class alone would swap the iPad's multitasking layout for
-///     the phone skeleton, which is exactly the "iPad path untouched" rule this
-///     phase is not allowed to break.
+///   * A phone is a phone in both orientations. Gating on `.compact` width
+///     instead would hand the Max/Plus bodies — which report REGULAR width in
+///     landscape — the iPad shell, so the same device would be "not built yet"
+///     held one way and a full two-pane reader held the other. Worse, the two
+///     branches are different view types, so every rotation would change the
+///     subtree's structural identity and SwiftUI would destroy and rebuild the
+///     whole shell: split-view column state, pane focus, presented sheets and
+///     scroll positions all reset on a turn of the wrist.
+///   * An iPad stays on `ContentView_iOS` at every width. Slide Over and a
+///     narrow Split View are compact-width too, and they have always rendered
+///     the iPad shell; keeping the idiom as the only input is what makes "the
+///     iPad path is untouched" true by construction rather than by argument.
 ///
-/// The consequence is that a Max/Plus phone in landscape (regular width) still
-/// lands on `ContentView_iOS` for now. That is the honest phase-0 answer —
-/// the app it already is, rather than a placeholder — and the phone shell takes
-/// over both orientations once it is real (#153).
+/// The idiom cannot change for the life of the process, so this `if` is decided
+/// once — the branch never flips at runtime and neither shell is ever rebuilt
+/// by this view.
 ///
 /// Each branch also declares how a PDF viewer beneath it should scale (#152).
 /// The phone reader fits the page to the viewport's width and floors zoom-out
-/// there; everything else keeps absolute zoom. Declaring BOTH sides here, next
-/// to the shell choice itself, is what keeps the fit-width behaviour from
-/// leaking into the iPad's compact-width multitasking layouts — those render
-/// `ContentView_iOS`, and `ContentView_iOS` is stated to be `.free`.
+/// there — in landscape as well, where "fit the width" simply resolves to a
+/// larger scale. Everything else keeps absolute zoom. Declaring BOTH sides
+/// here, next to the shell choice itself, is what keeps fit-width from leaking
+/// into the iPad's compact-width multitasking layouts.
 struct RootShell_iOS: View {
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
     /// Cached because the idiom cannot change for the life of the process,
     /// while `body` re-evaluates on every rotation and resize.
     private let idiom = UIDevice.current.userInterfaceIdiom
 
     var body: some View {
-        if horizontalSizeClass == .compact, idiom == .phone {
+        if idiom == .phone {
             PhoneShell_iOS()
                 .environment(\.pdfZoomMode, .fitWidth)
         } else {

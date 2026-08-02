@@ -106,6 +106,11 @@ struct VellumApp_iOS: App {
     /// tmp/) off the main actor, then hands the local paths to the shell
     /// through the SAME `vellumOpenFile` channel ⌘O uses — a payload means
     /// "open these", no payload still means "show the picker".
+    ///
+    /// Universal target caveat (#151): the phone is an "Open in" target too, and
+    /// the shell that receives this there cannot open anything yet. Both shells
+    /// therefore listen — `ContentView_iOS` opens the files, `PhoneShell_iOS`
+    /// says where they went — so the channel is never posted into a void.
     @MainActor
     private func handleIncomingFile(_ url: URL) {
         Task {
