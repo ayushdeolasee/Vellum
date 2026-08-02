@@ -656,27 +656,61 @@ struct TabStrip_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
     @State private var joinTargeted = false
+    @State private var showingOverview = false
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(appStore.tabs) { tab in
-                    TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(appStore.tabs) { tab in
+                        TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
+                    }
                 }
-                Button(action: onNewTab) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(palette.mutedForeground)
-                        // 44pt, matching the chips beside it: this was the one
-                        // control in the reading chrome under the HIG minimum.
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("New tab")
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+
+            // Both trailing controls sit OUTSIDE the ScrollView. `+` used to be
+            // inside it, which meant it scrolled away once a pane held enough
+            // tabs to overflow — the one moment the overview is most useful.
+            // (iPad-only fix; the macOS strip already pins them.)
+            Button { showingOverview.toggle() } label: {
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.mutedForeground)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show all tabs")
+            .accessibilityIdentifier("tabBar.overview")
+            .popover(isPresented: $showingOverview) {
+                TabOverview_iOS(
+                    tabs: workspace.allTabs,
+                    onActivate: { tab in
+                        workspace.activateWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id)
+                        showingOverview = false
+                    },
+                    onClose: { tab in
+                        Task { await workspace.closeWorkspaceTab(paneId: tab.paneId, tabId: tab.tab.id) }
+                    }
+                )
+                .environment(workspace)
+            }
+
+            Button(action: onNewTab) {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.mutedForeground)
+                    // 44pt, matching the chips beside it: this was the one
+                    // control in the reading chrome under the HIG minimum.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New tab")
+            .accessibilityIdentifier("tabBar.newTab")
+            .padding(.trailing, 8)
         }
         .background(.bar)
         // Dropping a tab onto this strip moves it into this pane's group. When
@@ -712,7 +746,14 @@ private struct TabChip_iOS: View {
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    /// The tab whose rename sheet is open — nil the rest of the time.
+    @State private var renamingTab: PdfTab?
 
+    /// Kept as the chip's OWN derivation rather than routing through
+    /// `TabPresentation.title(for:)`: this prettifies an untitled webpage's URL
+    /// into a host/slug, which main's helper does not. See the note on
+    /// `TabPresentation` for why the overview uses the other one (packet 4
+    /// §2.12.1 — smaller blast radius, and the two agree for every PDF).
     private var title: String {
         if let doc = tab.document {
             if doc.kind == .web {
@@ -722,6 +763,15 @@ private struct TabChip_iOS: View {
         }
         return "New Tab"
     }
+
+    /// An interaction this tab armed and has not finished — note placement, a
+    /// queued AI reply, or a drag-to-crop destination. All three now travel with
+    /// the tab (§2.1), so the dot stays truthful while another tab is on screen.
+    private var hasPendingAction: Bool {
+        tab.mode != .view || tab.pendingNoteContent != nil || tab.regionCaptureTarget != nil
+    }
+
+    private var isLastTab: Bool { appStore.tabs.last?.id == tab.id }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -736,12 +786,24 @@ private struct TabChip_iOS: View {
                         .lineLimit(1)
                         .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
                         .frame(maxWidth: 160)
+                    if hasPendingAction {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityValue(isActive ? "Selected" : "")
+            .accessibilityIdentifier("tabBar.tab.\(tab.id)")
+            // Concatenated, not replaced: the selected state is what VoiceOver
+            // uses to tell the current tab from the rest.
+            .accessibilityValue(
+                [isActive ? "Selected" : "", hasPendingAction ? "Action pending" : ""]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ", "))
 
             Button {
                 Task { await appStore.closeTab(tab.id) }
@@ -754,6 +816,7 @@ private struct TabChip_iOS: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("tabBar.close.\(tab.id)")
         }
         .padding(.leading, 12)
         .padding(.trailing, 4)
@@ -775,6 +838,177 @@ private struct TabChip_iOS: View {
             }
             return provider
         }
+        // ONE context menu. Two `.contextMenu` modifiers on the same view do not
+        // compose — the outer replaces the inner — so rename and the tab
+        // management actions have to be built together here.
+        //
+        // ⚠ `.contextMenu` and `.onDrag` both key off long-press on iOS. They
+        // coexist (drag = press-then-move, menu = press-and-hold), but dragging
+        // a tab between panes is the iPad's only way to split or unsplit, so
+        // that gesture is the one to re-check after touching either.
+        .contextMenu {
+            // Rename lives here rather than on the toolbar's title field: that
+            // field shows the FILENAME for a PDF and the URL for a page, so
+            // editing it would read as renaming the file or navigating. The tab
+            // is the one place the document's title is actually rendered.
+            if tab.document != nil {
+                Button("Rename…") { renamingTab = tab }
+            }
+            Button("Duplicate") { Task { await appStore.duplicateTab(tab.id) } }
+                .disabled(tab.document?.kind == .pdf)
+            Button("Move to New Pane") {
+                workspace.splitWithTab(
+                    tabId: tab.id, from: paneId, target: paneId,
+                    direction: .horizontal, before: false)
+            }
+            .disabled(appStore.tabs.count < 2)
+
+            Divider()
+
+            // No "Reveal in Finder" counterpart — iPadOS has none, and a
+            // Files-app reveal is a different feature, not a substitute.
+            if tab.document?.kind == .web {
+                Button("Copy Link") { UIPasteboard.general.string = tab.document?.pdfPath }
+            }
+
+            Divider()
+
+            Button("Close Tab", role: .destructive) {
+                Task { await appStore.closeTab(tab.id) }
+            }
+            Button("Close Others") { Task { await appStore.closeOtherTabs(keeping: tab.id) } }
+                .disabled(appStore.tabs.count < 2)
+            Button("Close Tabs to Right") { Task { await appStore.closeTabsToRight(of: tab.id) } }
+                .disabled(isLastTab)
+        }
+        .sheet(item: $renamingTab) { renaming in
+            RenameDocumentSheet_iOS(
+                currentTitle: renaming.document?.title ?? "",
+                fallbackName: TabPresentation.fallbackName(for: renaming),
+                commit: { newTitle in
+                    Task { await appStore.renameDocument(tabId: renaming.id, title: newTitle) }
+                })
+        }
+    }
+}
+
+// MARK: - Tab overview (all tabs, every pane)
+
+/// Searchable list of every open tab in the window, across panes. Reached from
+/// the strip's `rectangle.stack` button.
+private struct TabOverview_iOS: View {
+    let tabs: [WorkspaceTab]
+    let onActivate: (WorkspaceTab) -> Void
+    let onClose: (WorkspaceTab) -> Void
+
+    @Environment(WorkspaceStore.self) private var workspace
+    @Environment(\.palette) private var palette
+    @State private var query = ""
+
+    private var filteredTabs: [WorkspaceTab] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return tabs }
+        return tabs.filter {
+            TabPresentation.title(for: $0.tab)
+                .localizedStandardContains(needle)
+                || TabPresentation.typeLabel(for: $0.tab)
+                .localizedStandardContains(needle)
+                || $0.paneLabel.localizedStandardContains(needle)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("All Tabs")
+                .font(.headline)
+
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("tabOverview.search")
+
+            if filteredTabs.isEmpty {
+                ContentUnavailableView.search(text: query)
+                    .frame(minHeight: 120)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredTabs) { tab in
+                            row(tab)
+                        }
+                    }
+                }
+                .frame(maxHeight: 360)
+            }
+        }
+        .padding(14)
+        // macOS pins this at 360. On iPad the popover has to survive a compact
+        // Split View pane, so it states an ideal instead of a fixed width — and
+        // `.presentationCompactAdaptation(.popover)` keeps it a popover rather
+        // than letting it become a full-screen sheet there.
+        .frame(minWidth: 360, idealWidth: 380)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    @ViewBuilder
+    private func row(_ tab: WorkspaceTab) -> some View {
+        HStack(spacing: 8) {
+            Button { onActivate(tab) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: TabPresentation.iconName(for: tab.tab))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(TabPresentation.title(for: tab.tab))
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(tab.paneLabel) · \(TabPresentation.typeLabel(for: tab.tab))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if isFocusedActive(tab) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(palette.primary)
+                            .accessibilityLabel("Current tab")
+                    }
+                    if isPending(tab) {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
+                }
+                // 10pt of vertical padding around a two-line title clears the
+                // 44pt touch minimum without the row looking airy.
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                "\(TabPresentation.title(for: tab.tab)), "
+                    + "\(tab.paneLabel), \(TabPresentation.typeLabel(for: tab.tab))"
+                    + (isPending(tab) ? ", action pending" : ""))
+            .accessibilityIdentifier("tabOverview.tab.\(tab.id)")
+
+            Button { onClose(tab) } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(TabPresentation.title(for: tab.tab))")
+            .accessibilityIdentifier("tabOverview.close.\(tab.id)")
+        }
+        .padding(.horizontal, 8)
+        .background(
+            isFocusedActive(tab) ? palette.primary.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: Radius.md))
+    }
+
+    private func isPending(_ tab: WorkspaceTab) -> Bool {
+        tab.tab.mode != .view || tab.tab.pendingNoteContent != nil || tab.tab.regionCaptureTarget != nil
+    }
+
+    private func isFocusedActive(_ tab: WorkspaceTab) -> Bool {
+        tab.paneId == workspace.focusedPaneId && tab.tab.id == workspace.focusedPane.app.activeTabId
     }
 }
 

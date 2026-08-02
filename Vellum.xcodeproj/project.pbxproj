@@ -99,6 +99,7 @@
 		918DFC344E014C07E6F9DD69 /* ChatGPTClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 028998E6FC55C768B398E4AA /* ChatGPTClient.swift */; };
 		91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */; };
 		91F222D3BA33FB57079495ED /* katex in Resources */ = {isa = PBXBuildFile; fileRef = E3E5D7D6B867201216086389 /* katex */; };
+		920B059184B5064D1111B4D6 /* TabPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1BFC5037CE20820A854225 /* TabPresentation.swift */; };
 		923DF93BFF82ECA377E4BEE9 /* WebArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = E064C75923B5E7D98E256470 /* WebArchive.swift */; };
 		95FC64725D07DAC4E9B2AB5F /* HighlightSwatchButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A23802792908CA275A878C /* HighlightSwatchButton.swift */; };
 		96C0C12EDA80DF36A0FB9950 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D692FDA3FFA9D0B8F15A16 /* WorkspaceStore.swift */; };
@@ -357,6 +358,7 @@
 		F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDropTests.swift; sourceTree = "<group>"; };
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
+		FB1BFC5037CE20820A854225 /* TabPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabPresentation.swift; sourceTree = "<group>"; };
 		FD01D08235008A4E602D0373 /* PaneTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeView.swift; sourceTree = "<group>"; };
 		FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF653B1B8741B61DBE9B55EE /* WebStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorage.swift; sourceTree = "<group>"; };
@@ -743,6 +745,7 @@
 				591147DD4B09255C3446521D /* PdfViewerTypes.swift */,
 				87B22387C1A8E19F0316151E /* PdfViewerView.swift */,
 				E30CD609AEA2C0A662890153 /* TabBarView.swift */,
+				FB1BFC5037CE20820A854225 /* TabPresentation.swift */,
 				78E2B3DF66E30481C363C740 /* ToolbarView.swift */,
 			);
 			path = PDF;
@@ -985,6 +988,7 @@
 				D5F586434585D55B08108B40 /* StorageSettingsTab.swift in Sources */,
 				6BA39956BEE5A9BB036F74E7 /* TabBarView.swift in Sources */,
 				07AE67F8DC12B0AAD737C3FD /* TabDrag.swift in Sources */,
+				920B059184B5064D1111B4D6 /* TabPresentation.swift in Sources */,
 				D8FB17ACCD415EFD9623E48B /* TabResidency.swift in Sources */,
 				64B391AA816FE70BC4C51874 /* TestEnvironment.swift in Sources */,
 				1F177B6D7BEF6B4E7C7620CE /* Theme.swift in Sources */,
