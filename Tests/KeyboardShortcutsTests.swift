@@ -84,6 +84,12 @@ final class KeyboardShortcutsTests: XCTestCase {
             // Annotations
             (.bookmarkPage, "Bookmark Page", .character("d"), .command, .annotations),
             (.toggleNoteMode, "Toggle Note Mode", .character("n"), [], .annotations),
+            // Help. Transcribed from main's `CommandGroup(replacing: .help)`,
+            // which keeps the stock "Vellum Help" name and its ⌘? equivalent.
+            // Its sibling "Vellum Walkthrough" is deliberately absent here: main
+            // leaves the walkthrough unbound, so the iPad surfaces it as a plain
+            // Button in `VellumCommands_iOS` rather than as a catalogue row.
+            (.showHelp, "Vellum Help", .character("?"), .command, .help),
         ]
         return rows
     }
@@ -156,7 +162,7 @@ final class KeyboardShortcutsTests: XCTestCase {
                 shortcut.title.isEmpty, "\(shortcut.action.identifier) has no title")
         }
         let menus = Set(VellumShortcutCatalog.all.map(\.menu))
-        XCTAssertEqual(menus, [.file, .find, .view, .navigate, .annotations])
+        XCTAssertEqual(menus, [.file, .find, .view, .navigate, .annotations, .help])
     }
 
     func testIdentifiersRoundTripThroughTheCatalog() {
