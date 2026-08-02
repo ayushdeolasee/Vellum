@@ -138,6 +138,25 @@ private struct PhoneShellRoot_iOS: View {
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
             }
+            // The tab switcher (P7). A cover rather than a sheet: it replaces
+            // the document rather than sitting over it, so there is nothing
+            // behind it worth peeking at, and no detent to get wrong.
+            //
+            // Mounted at the SHELL, not on the reader route, because Home
+            // offers the switcher too (`PhoneHome_iOS.header`) — and Home is
+            // where someone with three documents open and none of them on
+            // screen actually is. It coexists with the inspector's `.sheet`
+            // (presented from the reader, a descendant) because the two are
+            // mutually exclusive by construction: `inspectorPresented` is false
+            // whenever `switcherPresented` is true, so the sheet is on its way
+            // out in the same transaction this presents.
+            //
+            // Handed its stores rather than reading them, like every other
+            // presentation here: a cover is its own hosting boundary.
+            .fullScreenCover(isPresented: switcherPresented) {
+                PhoneTabSwitcher_iOS(
+                    shell: shell, workspace: workspace, app: pane.app, themeStore: themeStore)
+            }
             .onChange(of: colorScheme, initial: true) { _, scheme in
                 themeStore.systemAppearanceChanged(isDark: scheme == .dark)
             }
@@ -171,19 +190,18 @@ private struct PhoneShellRoot_iOS: View {
     /// Home: search-first, phone-native (P4). The corpus is the shell-held one,
     /// so leaving and returning is a repaint rather than three disk walks.
     ///
-    /// `onShowTabs` becomes `shell.switcherPresented = true` in P7, when there is
-    /// a full-screen card grid to present. Until then it does the useful half of
-    /// what that button will do — go back to the document — because Home only
-    /// offers it when a document is open (see `PhoneHome_iOS.header`), and a
-    /// visible control that does nothing is worse than one that does less.
+    /// Home's Tabs button raises the switcher (P7) rather than jumping straight
+    /// back to the current document: from Home, "which of my documents" is the
+    /// question being asked, and the grid is the answer. Tapping a card is what
+    /// returns to the reader.
     private var homeRoute: some View {
         PhoneHome_iOS(
             store: homeSearch,
             onOpen: { presentImporter() },
             onAddWebpage: { addWebpagePresented = true },
             onShowTabs: {
-                guard pane.app.document != nil else { return }
-                shell.showReader()
+                guard !pane.app.tabs.isEmpty else { return }
+                shell.switcherPresented = true
             })
     }
 
@@ -265,6 +283,19 @@ private struct PhoneShellRoot_iOS: View {
         Binding(
             get: { shell.inspectorPresented },
             set: { shell.setInspectorPresented($0) }
+        )
+    }
+
+    /// The switcher's presentation. Written by hand rather than with
+    /// `@Bindable` because `shell` is `@State`-owned here and the setter has one
+    /// rule of its own: a `false` arriving from the cover's own dismissal
+    /// (swipe-down, or the system taking it away) is the user leaving the
+    /// switcher, which is exactly what the flag means — but it must go through
+    /// the store so the shell has a single writer for it.
+    private var switcherPresented: Binding<Bool> {
+        Binding(
+            get: { shell.switcherPresented },
+            set: { shell.switcherPresented = $0 }
         )
     }
 

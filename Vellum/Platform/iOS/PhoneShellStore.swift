@@ -67,12 +67,21 @@ final class PhoneShellStore {
 
     /// Whether the inspector sheet should be on screen.
     ///
-    /// Two terms. `workspace.inspectorPresented` is the shared rule — a
+    /// Three terms. `workspace.inspectorPresented` is the shared rule — a
     /// document must be open and the user must want the panel — and
     /// `route == .reader` is the phone's: the sheet belongs over the document,
     /// and Home has its own full-screen surface underneath it.
+    ///
+    /// The third is the tab switcher (P7), and it is a mechanical necessity as
+    /// much as a design one. UIKit presents one thing at a time from a given
+    /// host: a `.fullScreenCover` asked to present while this sheet is up
+    /// either fails or stacks over a panel that has no business being under it.
+    /// Standing the sheet down while the switcher is up also happens to be the
+    /// right picture — the switcher replaces the document, and an inspector
+    /// over a grid of cards inspects nothing. The preference itself is
+    /// untouched, so closing the switcher brings the panel back.
     var inspectorPresented: Bool {
-        workspace.inspectorPresented && route == .reader
+        workspace.inspectorPresented && route == .reader && !switcherPresented
     }
 
     /// Applies a presentation change originating from SwiftUI's sheet.
@@ -89,8 +98,12 @@ final class PhoneShellStore {
     /// Hence: presentation changes are only accepted while the reader is the
     /// route that owns the sheet. Anything arriving from any other route is
     /// SwiftUI reporting a consequence, not a user asking for one.
+    ///
+    /// The switcher is the same trap wearing different clothes: raising it also
+    /// takes `inspectorPresented` false, and SwiftUI writes that false back the
+    /// same way. Hence the guard names both routes-away-from-the-sheet.
     func setInspectorPresented(_ isPresented: Bool) {
-        guard route == .reader else { return }
+        guard route == .reader, !switcherPresented else { return }
         workspace.setInspectorPresented(isPresented)
     }
 
