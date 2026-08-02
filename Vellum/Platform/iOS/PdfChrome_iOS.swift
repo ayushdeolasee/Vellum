@@ -28,6 +28,10 @@ struct PdfToolbar_iOS: View {
     // Web-tab offline-copy state, mirroring the macOS OverflowMenu.
     @State private var pageSaved = false
     @State private var exporting = false
+    /// A separate guard from the web-only `exporting` flag, so a `.vellum`
+    /// export and a `.vellumweb` export can never disable each other's item.
+    @State private var exportingBundle = false
+    @State private var showExportBundle = false
     /// Serializes save/remove so a rapid Remove can't finish before a slow
     /// Save's archive write and get its deletion undone by it.
     @State private var saveToggleTask: Task<Void, Never>?
@@ -239,6 +243,14 @@ struct PdfToolbar_iOS: View {
             .environment(workspace.chatgptAuth)
             .presentationDetents([.large])
         }
+        .sheet(isPresented: $showExportBundle) {
+            ExportBundleSheet_iOS(
+                title: appStore.document?.title,
+                isWeb: isWeb
+            ) { includeConversations in
+                startBundleExport(includeConversations: includeConversations)
+            }
+        }
     }
 
     /// Tappable "p / N" indicator that opens a jump prompt.
@@ -330,6 +342,17 @@ struct PdfToolbar_iOS: View {
                     Label("Export a Copy…", systemImage: "square.and.arrow.up")
                 }
                 .disabled(exporting)
+            }
+            // Offered for BOTH PDF and web documents. Shorter title than the
+            // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
+            // compact iPad menu — but the accessibility identifier is identical
+            // so shared automation matches.
+            if appStore.document != nil {
+                Button { showExportBundle = true } label: {
+                    Label("Export with Notes…", systemImage: "arrow.up.doc")
+                }
+                .disabled(exportingBundle)
+                .accessibilityIdentifier("toolbar.exportWithNotes")
             }
             if !showZoomPod {
                 Divider()
@@ -475,6 +498,109 @@ struct PdfToolbar_iOS: View {
         }
     }
 
+    /// Export the active document as a `.vellum` bundle — the document plus its
+    /// scratchpad + attachments, and (opt-in, default OFF) the AI conversation.
+    /// Available for BOTH PDF and web tabs. macOS uses NSSavePanel; iOS writes
+    /// the bundle to a temporary file and hands it to the Files export picker.
+    private func startBundleExport(includeConversations: Bool) {
+        guard !exportingBundle,
+              let sessionId = appStore.activeTabId,
+              let document = appStore.document else { return }
+        let pages = aiStore.pageTexts
+            .sorted { $0.key < $1.key }
+            .map { WebPageText(number: $0.key, text: $0.value) }
+        exportingBundle = true
+        Task {
+            defer { exportingBundle = false }
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(slugifiedTitle()).vellum")
+            try? FileManager.default.removeItem(at: tmp)
+            do {
+                try await buildBundle(
+                    sessionId: sessionId, document: document, destination: tmp,
+                    includeConversations: includeConversations, pages: pages)
+            } catch { return }
+            // Not deleted afterwards: the picker copies asynchronously. Same as
+            // exportVellumweb; tmp/ is reclaimed by the system.
+            DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
+        }
+    }
+
+    /// Assemble the bundle content: durable id (lazily stamped), the document
+    /// bytes (PDF as-is / a fresh .vellumweb for web), and the class-B sidecar
+    /// pulled from DocumentDataStore by storage key.
+    private func buildBundle(
+        sessionId: String,
+        document: DocumentInfo,
+        destination: URL,
+        includeConversations: Bool,
+        pages: [WebPageText]
+    ) async throws {
+        // The sidecar currently lives under this session's storage key — resolve
+        // it BEFORE the stamp changes DocumentInfo.docId.
+        let pullKey = DocumentIdentity.storageKey(for: document)
+        // Durable id for the manifest (stamps a writable PDF; byte-hash fallback
+        // for an unwritable one; URL hash for web).
+        let durableId = (try? await appStore.sessions.ensureDocumentId(sessionId: sessionId))
+            ?? pullKey
+        await appStore.syncDocumentId(sessionId: sessionId)
+
+        let documentData: Data
+        let documentFile: String
+        if document.kind == .web {
+            // Reuse the session's .vellumweb writer rather than duplicating it.
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(UUID().uuidString.lowercased()).vellumweb")
+            _ = try await appStore.sessions.exportVellumweb(
+                sessionId: sessionId, destPath: tmp.path, pages: pages)
+            documentData = try Data(contentsOf: tmp)
+            try? FileManager.default.removeItem(at: tmp)
+            documentFile = "\(slugifiedTitle()).vellumweb"
+        } else {
+            // Read AFTER the stamp so the exported PDF carries /VellumDocId.
+            documentData = try await appStore.sessions.readPdfBytes(sessionId: sessionId)
+            let name = (document.pdfPath as NSString).lastPathComponent
+            documentFile = VellumBundle.safeName(name) ?? "document.pdf"
+        }
+
+        let scratchpad = DocumentDataStore.loadScratchpad(forKey: pullKey)
+        let attachments = loadAttachments(forKey: pullKey)
+        let conversations = includeConversations
+            ? DocumentDataStore.loadConversationsData(forKey: pullKey)
+            : nil
+
+        let content = VellumBundle.Content(
+            kind: document.kind,
+            docId: durableId,
+            documentFile: documentFile,
+            documentData: documentData,
+            title: document.title,
+            scratchpad: scratchpad.isEmpty ? nil : scratchpad,
+            attachments: attachments,
+            conversations: conversations)
+        // `VellumBundle.write` hashes and deflates synchronously, and this Task
+        // inherits the view's main-actor isolation — a multi-hundred-MB bundle
+        // would freeze the UI for the whole zip. Off-main it is.
+        try await Task.detached(priority: .userInitiated) {
+            try VellumBundle.write(content, to: destination)
+        }.value
+    }
+
+    /// Read the document's attachments as (bare filename, bytes) pairs.
+    private func loadAttachments(forKey key: String) -> [(name: String, data: Data)] {
+        let dir = DocumentDataStore.attachmentsDir(forKey: key)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return []
+        }
+        var out: [(name: String, data: Data)] = []
+        for name in names.sorted() {
+            if let data = try? Data(contentsOf: dir.appendingPathComponent(name)) {
+                out.append((name, data))
+            }
+        }
+        return out
+    }
+
     /// Slug for the export default filename: lowercased title, non-alphanumeric
     /// runs collapsed to "-", trimmed, max 60 chars, fallback "article".
     private func slugifiedTitle() -> String {
@@ -497,6 +623,47 @@ struct PdfToolbar_iOS: View {
             while slug.hasSuffix("-") { slug.removeLast() }
         }
         return slug.isEmpty ? "article" : slug
+    }
+}
+
+/// The `.vellum` export options. macOS puts this one checkbox in the save
+/// panel's accessoryView; iOS has no save panel, so the choice is made in a
+/// sheet and the finished bundle is handed to the Files export picker.
+struct ExportBundleSheet_iOS: View {
+    var title: String?
+    var isWeb: Bool
+    var onExport: (Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    // Conversations are semi-private: sharing them is explicit, so OFF.
+    @State private var includeConversations = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Include AI conversation", isOn: $includeConversations)
+                        .accessibilityIdentifier("export.includeConversation")
+                } header: {
+                    Text("Include")
+                } footer: {
+                    Text("The \(isWeb ? "page" : "document"), your notes and their images, and "
+                         + "your highlights are always included. The AI conversation is not, "
+                         + "unless you turn it on.")
+                }
+            }
+            .navigationTitle("Export with Notes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Export") { onExport(includeConversations); dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 
