@@ -63,7 +63,7 @@
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.vellum.vellumweb</string>
+				<string>com.vellum.webarchive</string>
 			</array>
 		</dict>
 	</array>
@@ -71,12 +71,13 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>com.vellum.vellumweb</string>
+			<string>com.vellum.webarchive</string>
 			<key>UTTypeDescription</key>
 			<string>Vellum Web Archive</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
+				<string>public.zip-archive</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>
