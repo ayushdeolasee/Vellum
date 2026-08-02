@@ -142,10 +142,9 @@ struct AiPanel_iOS: View {
                 }
                 .accessibilityIdentifier("aiPanel.settings")
                 touchIconButton(
-                    system: "trash", label: "Clear AI conversation", action: clearConversation
+                    system: "trash", label: "Clear AI conversation",
+                    disabled: aiStore.messages.isEmpty, action: clearConversation
                 )
-                .disabled(aiStore.messages.isEmpty)
-                .opacity(aiStore.messages.isEmpty ? 0.4 : 1)
                 .accessibilityIdentifier("aiPanel.clearConversation")
             }
         }
@@ -188,13 +187,20 @@ struct AiPanel_iOS: View {
     }
 
     /// A touch-sized icon button matching the sidebar header idiom.
+    ///
+    /// `disabled` is a parameter rather than a `.disabled(_:)` applied at the
+    /// call site so the dimmed styling lives with the enabled styling: every
+    /// header control dims the same way instead of each caller inventing its own
+    /// opacity.
     private func touchIconButton(
-        system: String, label: String, active: Bool = false, action: @escaping () -> Void
+        system: String, label: String, active: Bool = false, disabled: Bool = false,
+        action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: system)
                 .font(.system(size: 15))
                 .foregroundStyle(active ? palette.primary : palette.mutedForeground)
+                .opacity(disabled ? 0.4 : 1)
                 .frame(width: 36, height: 36)
                 .background {
                     if active { Circle().fill(palette.primary.opacity(0.16)) }
@@ -202,6 +208,7 @@ struct AiPanel_iOS: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .accessibilityLabel(label)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
