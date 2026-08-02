@@ -44,99 +44,125 @@ final class ChatGPTClient {
         onEvent(.status("Thinking"))
 
         for _ in 0..<8 {
-            var body: [String: Any] = [
-                "model": model,
-                "instructions": systemPrompt,
-                "input": input,
-                "tools": Self.functionTools,
-                "tool_choice": "auto",
-                "parallel_tool_calls": true,
-                "store": false,
-                // Prompt caching (PR A.5): a per-session key so the stable prompt
-                // prefix is reused across tool-loop iterations and follow-ups.
-                // NOTE: acceptance by the ChatGPT OAuth (Codex) backend is pending
-                // live verification; drop from this client only if the backend 400s.
-                "prompt_cache_key": "vellum-\(sessionIdAtStart)",
-                "stream": true,
-                // Cost guard: cap the output. Reasoning tokens count against
-                // this budget too, so it stays generous; hitting it is surfaced
-                // via `response.incomplete` below instead of clipping silently.
-                "max_output_tokens": 8192,
-            ]
-            // Reasoning effort on the gpt-5 family. `.auto` omits the field so
-            // the Codex backend applies its own default (the removed codex-CLI
-            // path sent none); explicit modes set it.
-            if model.lowercased().hasPrefix("gpt-5"), let effort = thinkingMode.openAIEffort {
-                body["reasoning"] = ["effort": effort]
-            }
+            let body = Self.requestBody(
+                model: model,
+                systemPrompt: systemPrompt,
+                input: input,
+                thinkingMode: thinkingMode,
+                sessionIdAtStart: sessionIdAtStart
+            )
             let request = try await makeRequest(url: url, body: body)
             let bytes = try await openStream(request)
 
-            var text = ""
-            var calls: [[String: Any]] = []
-            var hitTokenLimit = false
-            for try await payload in SSE.dataPayloads(bytes) {
-                guard let object = Self.jsonObjectOrNil(payload),
-                      let type = object["type"] as? String else { continue }
-                switch type {
-                case "response.output_text.delta":
-                    if let delta = object["delta"] as? String, !delta.isEmpty {
-                        text += delta
-                        onEvent(.textDelta(delta))
-                    }
-                case "response.output_item.done":
-                    if let item = object["item"] as? [String: Any],
-                       item["type"] as? String == "function_call" {
-                        calls.append(item)
-                    }
-                case "response.incomplete":
-                    let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
-                    if reason == "max_output_tokens" { hitTokenLimit = true }
-                case "response.failed", "error":
-                    let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
-                        ?? (object["message"] as? String)
-                    throw AiClientError.message(message ?? "ChatGPT streaming failed.")
-                default:
-                    break
-                }
-            }
+            // Same parse AND same gate as the direct client. This loop used to be
+            // a second copy of both, which is how #107 came to be fixed in one
+            // client and not the other; the one remaining behavioural difference
+            // is now the `throwsOnUnexpectedIncomplete` argument rather than a
+            // divergent body. A turn cut off at the token limit never runs its
+            // queued calls or starts another turn.
+            let turn = try await OpenAIClient.consumeTurn(
+                bytes, provider: "ChatGPT", throwsOnUnexpectedIncomplete: false, onEvent: onEvent)
 
-            if calls.isEmpty {
-                var reply = text
-                if hitTokenLimit {
-                    guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        throw AiClientError.message("ChatGPT hit the output-token limit before producing any text. Try a lower thinking mode.")
-                    }
-                    reply += "\n\n_(reply truncated at the output-token limit)_"
-                }
+            switch try OpenAIClient.turnOutcome(
+                turn, provider: "ChatGPT", hasPriorActions: !actionResults.isEmpty) {
+            case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
-            }
-
-            for call in calls {
-                guard let name = call["name"] as? String,
-                      let callId = call["call_id"] as? String else { continue }
-                let argumentsText = call["arguments"] as? String ?? "{}"
-                let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
-                let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
-                input.append([
-                    "type": "function_call",
-                    "call_id": callId,
-                    "name": name,
-                    "arguments": argumentsText,
-                ])
-                onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
-                let result = await toolEngine.run(
-                    action,
-                    sessionIdAtStart: sessionIdAtStart,
-                    actionCount: actionResults.count
-                )
-                actionResults.append(result)
-                onEvent(.toolFinished(result: result))
-                input.append(["type": "function_call_output", "call_id": callId, "output": result])
+            case .runTools(let queued):
+                for call in queued {
+                    guard let name = call["name"] as? String,
+                          let callId = call["call_id"] as? String else { continue }
+                    let argumentsText = call["arguments"] as? String ?? "{}"
+                    let values = (try? JSONSerialization.jsonObject(with: Data(argumentsText.utf8))) as? [String: Any] ?? [:]
+                    let action = AiToolAction(tool: name, args: Self.toolArguments(from: values))
+                    input.append([
+                        "type": "function_call",
+                        "call_id": callId,
+                        "name": name,
+                        "arguments": argumentsText,
+                    ])
+                    onEvent(.toolStarted(summary: GeminiClient.toolSummary(action)))
+                    let result = await toolEngine.run(
+                        action,
+                        sessionIdAtStart: sessionIdAtStart,
+                        actionCount: actionResults.count
+                    )
+                    actionResults.append(result)
+                    onEvent(.toolFinished(result: result))
+                    input.append(["type": "function_call_output", "call_id": callId, "output": result])
+                }
             }
             onEvent(.status("Thinking"))
         }
         return AiProviderResult(reply: Self.finalize("", actions: actionResults), actionResults: actionResults)
+    }
+
+    /// The cap this client sent for every mode before #96, kept as the floor so
+    /// the fix can only ever raise a budget.
+    static let previousFlatOutputCap = 8192
+
+    /// Request body for one tool-loop turn.
+    ///
+    /// Reasoning effort on the gpt-5 family: `.auto` omits the field so the
+    /// Codex backend applies its own default (the removed codex-CLI path sent
+    /// none); explicit modes set it — resolved through the same per-family table
+    /// the direct client uses. The Codex slugs name the same models, so passing
+    /// the raw value through meant Instant sent "minimal" to gpt-5.5 (the
+    /// default here), which is the value #94 is about: the family rejects it
+    /// outright.
+    ///
+    /// The output cap is scaled by that same resolved effort through
+    /// `OpenAIClient.maxOutputTokens`. It used to be a flat 8192 for every mode,
+    /// which is the #96 bug: reasoning tokens are billed against
+    /// `max_output_tokens` on the Responses API, so High spent most of one
+    /// shared budget thinking and got the same room for the answer as Instant —
+    /// which is exactly how a long High answer ends up truncated. Every slug
+    /// this client ships is a gpt-5 variant, so `isReasoningModel` is true for
+    /// all of them today; it is still passed rather than assumed so a future
+    /// non-reasoning slug keeps the flat cap.
+    ///
+    /// Floored at `previousFlatOutputCap`, so the fix only ever raises a cap.
+    /// Without the floor, Instant would *fall* to 4096 on the four slugs whose
+    /// `minimal` resolves to effort `none`: `none` spends no reasoning tokens at
+    /// all, so that reduction would come entirely out of visible answer length —
+    /// reintroducing this issue's own symptom on the one mode it wasn't reported
+    /// for. The direct `OpenAIClient` keeps the unfloored table because 4096 has
+    /// been its shipped Instant budget since #95; here 8192 is the shipped value
+    /// and lowering it isn't this fix's job.
+    static func requestBody(
+        model: String,
+        systemPrompt: String,
+        input: [[String: Any]],
+        thinkingMode: AiThinkingMode,
+        sessionIdAtStart: String
+    ) -> [String: Any] {
+        let effort = OpenAIClient.supportedReasoningEffort(
+            model: model, requested: thinkingMode.openAIEffort)
+        var body: [String: Any] = [
+            "model": model,
+            "instructions": systemPrompt,
+            "input": input,
+            "tools": Self.functionTools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "store": false,
+            // Prompt caching (PR A.5): a per-session key so the stable prompt
+            // prefix is reused across tool-loop iterations and follow-ups.
+            // NOTE: acceptance by the ChatGPT OAuth (Codex) backend is pending
+            // live verification; drop from this client only if the backend 400s.
+            "prompt_cache_key": "vellum-\(sessionIdAtStart)",
+            "stream": true,
+            // Cost guard: cap the output, scaled to the thinking mode. Hitting
+            // it is surfaced via `response.incomplete` instead of clipping
+            // silently.
+            "max_output_tokens": max(
+                previousFlatOutputCap,
+                OpenAIClient.maxOutputTokens(
+                    forEffort: effort, reasoning: OpenAIClient.isReasoningModel(model))),
+        ]
+        if let effort {
+            body["reasoning"] = ["effort": effort]
+        }
+        return body
     }
 
     /// Builds a Responses request with fresh OAuth credentials and the CLI's
