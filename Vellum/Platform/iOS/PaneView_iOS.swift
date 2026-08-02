@@ -139,12 +139,16 @@ struct PaneView_iOS: View {
                   let document = app.document else { return }
             let key = DocumentIdentity.storageKey(for: document)
             guard keys.contains(key) else { return }
-            // TODO(parity-129 packet-1): still needs
-            // ScratchpadStore.discardNotesForExternalDelete(matchingKey:)
-            // (packet 6) for the notes branch. Do NOT call
-            // pane.scratchpad.loadForDocument here — that flushes the stale note
-            // back over the file that was just deleted, which is the exact bug
-            // the discard path exists to prevent.
+            // FOLLOW-UP (post-#129): the notes branch is still missing. It needs
+            // `ScratchpadStore.discardNotesForExternalDelete(matchingKey:)`,
+            // which does not exist here because the scratchpad has no
+            // per-document file for the Storage pane to have deleted — it is
+            // still one UserDefaults blob (see the "scratchpad onto
+            // DocumentDataStore" notes in `ScratchpadPersistence`). Land it with
+            // that migration. Do NOT call `pane.scratchpad.loadForDocument`
+            // here as a stopgap — that flushes the stale note back over the file
+            // that was just deleted, which is the exact bug the discard path
+            // exists to prevent.
             if note.userInfo?["chat"] as? Bool == true {
                 // Cache already invalidated by the poster; reload re-reads the now
                 // empty disk without writing.

@@ -120,9 +120,13 @@ final class DocumentDataStoreTests: XCTestCase {
     /// attachment sweep + scheme rewrite are `ScratchpadStore` v2 (packet 6). The
     /// DocumentDataStore contract under test is identical when `rekey` is called
     /// directly, so every store-level assertion below is main's, unchanged.
-    /// TODO(parity-129 packet 6): restore main's `ScratchpadStore`-driven body —
-    /// `store.loadForDocument(...)` + `await drainAttachmentSweeps()` + the
+    /// FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): restore
+    /// main's `ScratchpadStore`-driven body — `store.loadForDocument(...)` +
+    /// `await drainAttachmentSweeps()` + the
     /// `store.text == "carried note ![x](vellum-scratchpad://<id>)"` assertion.
+    /// `ScratchpadStore.loadForDocument` cannot drive a rekey while the note
+    /// itself lives in the path-keyed UserDefaults blob rather than
+    /// `documents/<key>/scratchpad.md`.
     func testRekeyMovesFallbackFolderToStampedKey() throws {
         let path = "/tmp/stamp-\(UUID().uuidString).pdf"
         let pathKey = DocumentIdentity.sha256Hex(path)
