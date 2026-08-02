@@ -150,6 +150,50 @@ struct PositionCoalescingTests {
         #expect(storage.writeCount == 1)
     }
 
+    /// The bug: `performWrite` cleared `dirty`, `firstDirtyAt` and scheduled
+    /// nothing BEFORE the write, so a write that threw left the store looking
+    /// clean with no timer pending. The coalesced position was then never
+    /// retried — the maxDelay guarantee quietly became "drop it until the user
+    /// happens to scroll again", and a jetsam in between lost the page.
+    @Test("A write that fails leaves the record dirty and retries it")
+    func failedWriteIsRetried() async throws {
+        let clock = ManualPositionClock(PositionFixtures.date("2026-08-02T09:00:00.000000+00:00"))
+        let timer = ManualPositionTimer()
+        let storage = InMemoryPositionStorage()
+        let store = makeStore(clock: clock, timer: timer, storage: storage)
+        storage.failNextWrite(with: PositionStorageError.io("disk full"))
+
+        await store.record(.moved(ReadingPosition(page: 200)), for: key)
+        await timer.fire()
+
+        #expect(storage.writeCount == 0)
+        // Still pending rather than silently abandoned.
+        #expect(timer.pendingDelay != nil)
+
+        await timer.fire()
+
+        #expect(storage.writeCount == 1)
+        #expect(try stampedPosition(in: storage).value.page == 200)
+    }
+
+    @Test("A flush after a failed write still gets the position onto disk")
+    func flushAfterAFailedWriteStillWrites() async throws {
+        let clock = ManualPositionClock(PositionFixtures.date("2026-08-02T09:00:00.000000+00:00"))
+        let timer = ManualPositionTimer()
+        let storage = InMemoryPositionStorage()
+        let store = makeStore(clock: clock, timer: timer, storage: storage)
+        storage.failNextWrite(with: PositionStorageError.io("disk full"))
+
+        await store.record(.moved(ReadingPosition(page: 200)), for: key)
+        await store.flush()
+        #expect(storage.writeCount == 0)
+
+        await store.flush()
+
+        #expect(storage.writeCount == 1)
+        #expect(try stampedPosition(in: storage).value.page == 200)
+    }
+
     private func stampedPosition(in storage: InMemoryPositionStorage) throws -> Stamped<ReadingPosition> {
         let bytes = try #require(storage.lastWrittenBytes)
         let record = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: bytes)

@@ -92,10 +92,17 @@ enum StorageAccess: Sendable {
     /// instead of silently addressing a container with a nil identifier.
     case unavailable
 
+    /// Synchronous routing with an injected container factory. There is
+    /// deliberately NO default factory here: the default would be
+    /// `ICloudSyncedContainer()`, whose init performs the potentially lengthy
+    /// `url(forUbiquityContainerIdentifier:)` lookup on whatever thread asks —
+    /// and the natural mirror of `WebStorageLayout.resolve` is a main-actor
+    /// call site. Callers that want the real container use the async form
+    /// below, which does that lookup off the caller's thread.
     static func resolve(
         mode: WebStorageMode,
         storeDir: URL,
-        container: @Sendable () -> (any SyncedContainer)? = { ICloudSyncedContainer() }
+        container: @Sendable () -> (any SyncedContainer)?
     ) -> StorageAccess {
         let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
         switch mode {
@@ -103,6 +110,21 @@ enum StorageAccess: Sendable {
             return .direct(root: root)
         case .icloud:
             guard let container = container() else { return .unavailable }
+            return .coordinated(container, root: root)
+        }
+    }
+
+    /// The default path. Safe to call from the main actor: the ubiquity lookup
+    /// runs on a detached background task, and the local and custom-folder
+    /// modes never reach it at all.
+    static func resolve(mode: WebStorageMode, storeDir: URL) async -> StorageAccess {
+        let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
+        switch mode {
+        case .local, .custom:
+            return .direct(root: root)
+        case .icloud:
+            let container = await Task.detached(priority: .utility) { ICloudSyncedContainer() }.value
+            guard let container else { return .unavailable }
             return .coordinated(container, root: root)
         }
     }

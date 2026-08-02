@@ -44,6 +44,8 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     private var delivered = 0
     private var materializations = 0
     private var queryRunning = true
+    private var enumerations = 0
+    private var existenceChecks = 0
 
     let conflicts: AsyncStream<ConflictEvent>
     private let sink: AsyncStream<ConflictEvent>.Continuation
@@ -123,9 +125,26 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     var coordinatedRemoveCount: Int { lock.withLock { removals } }
     var metadataQueryCount: Int { lock.withLock { queries } }
     /// Must always be 0: the seam offers no directory enumeration.
-    var directoryEnumerationCount: Int { 0 }
-    /// Must always be 0: the seam offers no existence check.
-    var existenceCheckCount: Int { 0 }
+    ///
+    /// Real state, not a literal `0`. A hardcoded constant would make every
+    /// assertion built on it tautological — it could not fail no matter what
+    /// the code under test did — so the counter is live and
+    /// `noteDirectoryEnumeration()` is the one way to move it. Anything that
+    /// reaches for `FileManager` against the synced root goes through there.
+    var directoryEnumerationCount: Int { lock.withLock { enumerations } }
+    /// Must always be 0: the seam offers no existence check. Live, for the same
+    /// reason as `directoryEnumerationCount`.
+    var existenceCheckCount: Int { lock.withLock { existenceChecks } }
+
+    /// Records a directory enumeration the seam is not supposed to perform.
+    /// Nothing in the shipping path calls this; it exists so the invariant is
+    /// measured rather than asserted against a constant, and so a test can show
+    /// the counter is capable of failing.
+    func noteDirectoryEnumeration() { lock.withLock { enumerations += 1 } }
+
+    /// Records an existence check (`fileExists(atPath:)` and friends), which
+    /// materializes a ubiquitous file. Same contract as above.
+    func noteExistenceCheck() { lock.withLock { existenceChecks += 1 } }
     var presenterRegistrations: Int { lock.withLock { registrations } }
     var presenterRemovals: Int { lock.withLock { removalsOfPresenter } }
     /// Must never exceed 1.
@@ -184,7 +203,11 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     }
 
     func list(_ directory: URL, matching filter: SyncedItemFilter) async throws -> [SyncedItem] {
-        lock.withLock {
+        // Suspended means the metadata query is stopped, so there is nothing to
+        // ask. The real adapter throws here; a fake that answered anyway would
+        // certify caller code against an error path it never has to handle.
+        try lock.withLock {
+            if suspended { throw SyncedContainerError.unavailable }
             queries += 1
             let target = directory.standardizedFileURL
             return

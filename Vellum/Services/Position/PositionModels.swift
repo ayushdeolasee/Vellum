@@ -176,7 +176,9 @@ struct DeviceIdentity: Hashable, Sendable {
     nonisolated(unsafe) static var nameOverride: String?
     nonisolated(unsafe) static var platformOverride: String?
 
-    /// Mints and persists a per-install id in UserDefaults.
+    /// Mints and persists a per-install id in UserDefaults. Non-blocking: this
+    /// is evaluated as `PositionStore.init`'s default argument, which is a main
+    /// thread in practice.
     static func current() -> DeviceIdentity {
         let defaults = UserDefaults.standard
         let id: String
@@ -186,10 +188,11 @@ struct DeviceIdentity: Hashable, Sendable {
             id = UUID().uuidString.lowercased()
             defaults.set(id, forKey: defaultsKey)
         }
+        let platform = platformOverride ?? defaultPlatform
         return DeviceIdentity(
             id: DeviceID(id),
-            name: nameOverride ?? ProcessInfo.processInfo.hostName,
-            platform: platformOverride ?? defaultPlatform)
+            name: nameOverride ?? defaultName(for: platform),
+            platform: platform)
     }
 
     private static var defaultPlatform: String {
@@ -201,6 +204,23 @@ struct DeviceIdentity: Hashable, Sendable {
         // compile time; `platformOverride` covers anything else.
         return "ipados"
         #endif
+    }
+
+    /// A constant, deliberately: `ProcessInfo.processInfo.hostName` is
+    /// documented as potentially performing a synchronous name resolution, so
+    /// on a network with slow or absent reverse DNS it blocks whichever thread
+    /// asks — here, the main thread at startup. It also answers with a hostname
+    /// rather than the display name this field is contracted to carry
+    /// ("Ayush's iPhone"), and that hostname would be baked into every synced
+    /// record for peers to show. The app layer installs the real name into
+    /// `nameOverride` from `UIDevice.current.name`, which is main-actor
+    /// isolated and therefore cannot be read from here.
+    private static func defaultName(for platform: String) -> String {
+        switch platform {
+        case "macos": return "Mac"
+        case "ios": return "iPhone"
+        default: return "iPad"
+        }
     }
 }
 
@@ -503,10 +523,26 @@ struct ResumeEntry: Hashable, Sendable {
 
 /// Just enough JSON to carry keys this build doesn't know about across a
 /// decode/encode round trip.
+///
+/// Number fidelity, precisely: a number is tried as `Int`, then `Decimal`, then
+/// `Double`. `Decimal` sits in the middle because it is the only one of the
+/// three that survives a value outside `Int`'s range without losing digits —
+/// `12345678901234567890` becomes `1.2345678901234567e+19` through `Double` and
+/// comes back out mangled, which for a cross-device file is a v1 build
+/// corrupting a v2 build's field while claiming to merely carry it.
+///
+/// What is NOT preserved is a number's WRITTEN FORM: `2.0` carries back out as
+/// `2`. That is a limit of `JSONEncoder`, not a choice here — it emits `2` for
+/// `Double(2.0)` and for `Decimal(string: "2.0")` alike, and `JSONDecoder`
+/// normalizes both on the way in, so no case of this enum can round-trip the
+/// trailing `.0`. Values are preserved; JSON number *spelling* is normalized.
+/// Pinned by "An integral float from a future version carries its value, not
+/// its spelling".
 indirect enum PositionJSON: Hashable, Sendable, Codable {
     case null
     case bool(Bool)
     case int(Int)
+    case decimal(Decimal)
     case double(Double)
     case string(String)
     case array([PositionJSON])
@@ -520,6 +556,8 @@ indirect enum PositionJSON: Hashable, Sendable, Codable {
             self = .bool(value)
         } else if let value = try? container.decode(Int.self) {
             self = .int(value)
+        } else if let value = try? container.decode(Decimal.self) {
+            self = .decimal(value)
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)
         } else if let value = try? container.decode(String.self) {
@@ -537,6 +575,7 @@ indirect enum PositionJSON: Hashable, Sendable, Codable {
         case .null: try container.encodeNil()
         case .bool(let value): try container.encode(value)
         case .int(let value): try container.encode(value)
+        case .decimal(let value): try container.encode(value)
         case .double(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         case .array(let value): try container.encode(value)

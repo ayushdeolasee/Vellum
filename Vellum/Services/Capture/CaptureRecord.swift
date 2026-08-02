@@ -217,11 +217,16 @@ enum CaptureTimestamp {
 // MARK: - Forward compatibility
 
 /// Just enough JSON to carry keys this build doesn't know about across a
-/// decode/encode round trip.
+/// decode/encode round trip. Same number-fidelity rules as `PositionJSON`:
+/// `Int`, then `Decimal` (so a value outside `Int`'s range keeps its digits
+/// instead of going through `Double` and coming back mangled), then `Double`.
+/// A number's written form is normalized — `2.0` carries out as `2` — because
+/// `JSONEncoder` has no way to emit the other spelling.
 indirect enum CaptureJSON: Hashable, Sendable, Codable {
     case null
     case bool(Bool)
     case int(Int)
+    case decimal(Decimal)
     case double(Double)
     case string(String)
     case array([CaptureJSON])
@@ -235,6 +240,8 @@ indirect enum CaptureJSON: Hashable, Sendable, Codable {
             self = .bool(value)
         } else if let value = try? container.decode(Int.self) {
             self = .int(value)
+        } else if let value = try? container.decode(Decimal.self) {
+            self = .decimal(value)
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)
         } else if let value = try? container.decode(String.self) {
@@ -252,6 +259,7 @@ indirect enum CaptureJSON: Hashable, Sendable, Codable {
         case .null: try container.encodeNil()
         case .bool(let value): try container.encode(value)
         case .int(let value): try container.encode(value)
+        case .decimal(let value): try container.encode(value)
         case .double(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         case .array(let value): try container.encode(value)

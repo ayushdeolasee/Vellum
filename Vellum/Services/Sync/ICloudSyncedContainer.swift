@@ -25,14 +25,22 @@ actor ICloudSyncedContainer: SyncedContainer {
     private let clock: PositionClock
     private let injectedResolver: (any ConflictResolver)?
     private let coordinationQueue: OperationQueue
-    private let presenter: DirectoryConflictPresenter
-    private let watcher: UbiquitousMetadataWatcher
+    private nonisolated let registration: PresenterRegistration
+    private nonisolated let watcher: UbiquitousMetadataWatcher
+    /// The query start is asynchronous (it has to hop to the main actor), so a
+    /// prompt `suspend()` has to be able to wait for it — otherwise stop() runs
+    /// before start() and the container reports suspended with a live query.
+    private nonisolated let startup: Task<Void, Never>
 
     nonisolated let conflicts: AsyncStream<ConflictEvent>
     private nonisolated let conflictSink: AsyncStream<ConflictEvent>.Continuation
 
     private var isSuspended = false
-    private var presenterIsRegistered = true
+    /// URLs this container replaced whose bytes the metadata query has not
+    /// reported yet. See `settledReadiness(of:)`.
+    private var locallyCurrent: Set<URL> = []
+
+    private nonisolated var presenter: DirectoryConflictPresenter { registration.presenter }
 
     /// Blocking on first call (the ubiquity lookup), so construct this off the
     /// main thread. Returns nil when the container is unavailable.
@@ -64,16 +72,30 @@ actor ICloudSyncedContainer: SyncedContainer {
             guard let event = Self.conflictEvent(at: url, detectedAt: now.now()) else { return }
             sink.yield(event)
         }
-        self.presenter = DirectoryConflictPresenter(url: self.root, queue: queue, onConflict: emit)
+        self.registration = PresenterRegistration(
+            presenter: DirectoryConflictPresenter(url: self.root, queue: queue, onConflict: emit))
         self.watcher = UbiquitousMetadataWatcher(onConflict: emit)
 
-        NSFileCoordinator.addFilePresenter(presenter)
+        self.registration.register()
         let watcher = self.watcher
-        Task { @MainActor in watcher.start() }
+        self.startup = Task { @MainActor in watcher.start() }
     }
 
+    /// Everything registered in `init` has to come back out. A presenter left
+    /// registered outlives its container — `NSFileCoordinator` holds a global
+    /// strong reference to it — and keeps firing conflict callbacks into a dead
+    /// object graph; Apple's deadlock-prevention kill is the other half of that
+    /// mistake. The query has to be stopped for the same reason. Neither hop
+    /// touches `self`, so nothing is resurrected here.
     deinit {
         conflictSink.finish()
+        registration.unregister()
+        let watcher = self.watcher
+        let startup = self.startup
+        Task { @MainActor in
+            await startup.value
+            watcher.stop()
+        }
     }
 
     // MARK: Reads
@@ -95,12 +117,16 @@ actor ICloudSyncedContainer: SyncedContainer {
     func replace(_ url: URL, with data: Data) async throws {
         try await SyncedContainerAccessor.guarded(url) {
             try await coordinatedReplace(url, with: data)
+            // These bytes are current on local disk right now; the metadata
+            // query won't say so for up to its batching interval.
+            locallyCurrent.insert(url.standardizedFileURL)
         }
     }
 
     func remove(_ url: URL) async throws {
         try await SyncedContainerAccessor.guarded(url) {
             try await coordinatedRemove(url)
+            locallyCurrent.remove(url.standardizedFileURL)
         }
     }
 
@@ -144,10 +170,11 @@ actor ICloudSyncedContainer: SyncedContainer {
     func suspend() async {
         guard !isSuspended else { return }
         isSuspended = true
-        if presenterIsRegistered {
-            NSFileCoordinator.removeFilePresenter(presenter)
-            presenterIsRegistered = false
-        }
+        registration.unregister()
+        // Let the construction-time start finish first: `suspend()` called
+        // promptly after `init` would otherwise stop a query that has not
+        // started, and the start would then win.
+        await startup.value
         let watcher = self.watcher
         await MainActor.run { watcher.stop() }
     }
@@ -155,10 +182,7 @@ actor ICloudSyncedContainer: SyncedContainer {
     func resume() async {
         guard isSuspended else { return }
         isSuspended = false
-        if !presenterIsRegistered {
-            NSFileCoordinator.addFilePresenter(presenter)
-            presenterIsRegistered = true
-        }
+        registration.register()
         let watcher = self.watcher
         await MainActor.run { watcher.start() }
         // No replay buffer: `unresolvedConflictVersionsOfItem` is authoritative
@@ -172,9 +196,46 @@ actor ICloudSyncedContainer: SyncedContainer {
 
     // MARK: Coordinated primitives
 
-    private func ensureReady(_ url: URL, _ materializing: Materialization) async throws {
+    /// How long a read waits for the metadata query's first gathering pass
+    /// before it is willing to call an unmentioned file not-downloaded.
+    private static let gatheringGrace: TimeInterval = 2
+
+    /// What the query knows about `url` right now, or nil when it has not
+    /// mentioned it at all.
+    ///
+    /// "Not in the result set" is NOT "not downloaded". The query reports
+    /// nothing until its first gathering pass finishes and batches updates at
+    /// one second after that, so reading the absence as `.notDownloaded` fails
+    /// every read in the first seconds after launch and every read of bytes
+    /// this container itself just wrote. Hence the two fallbacks: our own
+    /// replace marks the URL current until the query says otherwise, and an
+    /// unknown URL waits out the gathering pass before being judged.
+    private func reportedReadiness(of url: URL) async -> ItemReadiness? {
         let watcher = self.watcher
-        let readiness = await MainActor.run { watcher.readiness(of: url) }
+        let standardized = url.standardizedFileURL
+        if let reported = await MainActor.run(body: { watcher.readiness(of: url) }) {
+            // The query is authoritative from the moment it has an opinion —
+            // a peer's newer version must be able to make this stale again.
+            locallyCurrent.remove(standardized)
+            return reported
+        }
+        return locallyCurrent.contains(standardized) ? .current : nil
+    }
+
+    private func settledReadiness(of url: URL) async -> ItemReadiness {
+        if let readiness = await reportedReadiness(of: url) { return readiness }
+        let watcher = self.watcher
+        let deadline = clock.now().addingTimeInterval(Self.gatheringGrace)
+        while clock.now() < deadline {
+            if await MainActor.run(body: { watcher.hasFinishedGathering }) { break }
+            try? await Task.sleep(for: .milliseconds(50))
+            if let readiness = await reportedReadiness(of: url) { return readiness }
+        }
+        return await reportedReadiness(of: url) ?? .notDownloaded
+    }
+
+    private func ensureReady(_ url: URL, _ materializing: Materialization) async throws {
+        let readiness = await settledReadiness(of: url)
         if readiness.isReady { return }
         switch materializing {
         case .requireCurrent:
@@ -187,7 +248,7 @@ actor ICloudSyncedContainer: SyncedContainer {
             }
             let deadline = clock.now().addingTimeInterval(timeout)
             while clock.now() < deadline {
-                if await MainActor.run(body: { watcher.readiness(of: url) }).isReady { return }
+                if await reportedReadiness(of: url)?.isReady == true { return }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             throw SyncedContainerError.timedOut(url)
@@ -348,6 +409,37 @@ private struct UncheckedBox<Value>: @unchecked Sendable {
     init(_ value: Value) { self.value = value }
 }
 
+/// Owns the registered/unregistered state of one presenter behind a lock, so
+/// `deinit` can unregister without hopping to the actor's isolation (it can't)
+/// and without racing `suspend()`/`resume()`. Both verbs are idempotent.
+private final class PresenterRegistration: @unchecked Sendable {
+    let presenter: DirectoryConflictPresenter
+    private let lock = NSLock()
+    private var isRegistered = false
+
+    init(presenter: DirectoryConflictPresenter) {
+        self.presenter = presenter
+    }
+
+    func register() {
+        let shouldAdd = lock.withLock {
+            guard !isRegistered else { return false }
+            isRegistered = true
+            return true
+        }
+        if shouldAdd { NSFileCoordinator.addFilePresenter(presenter) }
+    }
+
+    func unregister() {
+        let shouldRemove = lock.withLock {
+            guard isRegistered else { return false }
+            isRegistered = false
+            return true
+        }
+        if shouldRemove { NSFileCoordinator.removeFilePresenter(presenter) }
+    }
+}
+
 /// One presenter for a whole DIRECTORY. `presentedSubitem(at:didGain:)` is what
 /// makes that possible — one presenter on `records/` sees a conflict on every
 /// sidecar inside it, so there is never one presenter per file.
@@ -381,6 +473,9 @@ private final class UbiquitousMetadataWatcher {
     private var observers: [any NSObjectProtocol] = []
     private let onConflict: @Sendable (URL) -> Void
     private(set) var isRunning = false
+    /// False until the first `DidFinishGathering`. Until then an empty result
+    /// set means "we haven't looked yet", not "the file isn't there".
+    private(set) var hasFinishedGathering = false
 
     nonisolated init(onConflict: @escaping @Sendable (URL) -> Void) {
         self.onConflict = onConflict
@@ -394,7 +489,10 @@ private final class UbiquitousMetadataWatcher {
         let center = NotificationCenter.default
         for name in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
             let token = center.addObserver(forName: name, object: query, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.reportConflicts() }
+                MainActor.assumeIsolated {
+                    self?.hasFinishedGathering = true
+                    self?.reportConflicts()
+                }
             }
             observers.append(token)
         }
@@ -404,6 +502,7 @@ private final class UbiquitousMetadataWatcher {
     func stop() {
         guard isRunning else { return }
         query.stop()
+        hasFinishedGathering = false
         let center = NotificationCenter.default
         for token in observers { center.removeObserver(token) }
         observers.removeAll()
@@ -417,13 +516,15 @@ private final class UbiquitousMetadataWatcher {
         }
     }
 
-    func readiness(of url: URL) -> ItemReadiness {
+    /// nil means "the query has no opinion yet", which is not the same as
+    /// `.notDownloaded` — see `ICloudSyncedContainer.reportedReadiness(of:)`.
+    func readiness(of url: URL) -> ItemReadiness? {
         withResults { results in
             for result in results {
                 guard let item = Self.item(from: result) else { continue }
                 if item.url.standardizedFileURL == url.standardizedFileURL { return item.readiness }
             }
-            return .notDownloaded
+            return nil
         }
     }
 

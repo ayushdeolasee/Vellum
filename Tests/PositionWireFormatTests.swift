@@ -111,6 +111,78 @@ struct PositionWireFormatTests {
         #expect(try PositionCoding.encoder.encode(decoded) == bytes)
     }
 
+    /// `device_name` is display text that every peer shows in an "open
+    /// elsewhere" affordance, and it is baked into every record this device
+    /// writes. It used to default to `ProcessInfo.processInfo.hostName`, which
+    /// answers with a hostname rather than a display name and which Apple
+    /// documents as potentially performing a synchronous name resolution — on
+    /// the main thread, since this is `PositionStore.init`'s default argument.
+    @Test("The default device name is display text, resolved without a name lookup")
+    func defaultDeviceNameIsDisplayText() {
+        DeviceIdentity.nameOverride = nil
+        defer {
+            DeviceIdentity.nameOverride = nil
+            DeviceIdentity.platformOverride = nil
+        }
+
+        DeviceIdentity.platformOverride = "ios"
+        #expect(DeviceIdentity.current().name == "iPhone")
+        DeviceIdentity.platformOverride = "macos"
+        #expect(DeviceIdentity.current().name == "Mac")
+        DeviceIdentity.platformOverride = "ipados"
+        #expect(DeviceIdentity.current().name == "iPad")
+
+        // The app layer's installed name still wins — that is the only path
+        // that can reach `UIDevice.current.name`, which is main-actor isolated.
+        DeviceIdentity.nameOverride = "Ayush's iPhone"
+        #expect(DeviceIdentity.current().name == "Ayush's iPhone")
+    }
+
+    /// A number too big for `Int` used to fall through to `Double`, so a future
+    /// version's id or byte count came back out as `1.2345678901234567e+19` —
+    /// this build corrupting a field it claims only to carry. `Decimal` sits
+    /// between the two now and keeps every digit.
+    @Test("A future version's number too large for Int survives with every digit")
+    func largeUnknownNumbersKeepTheirDigits() throws {
+        let bytes = Data(
+            #"""
+            {"device_id":"6f1b2a44-8c3e-4d10-9f77-1a2b3c4d5e6f","device_name":"Ayush's iPhone","device_platform":"ios","documents":{},"schema_version":1,"vendor_id":12345678901234567890,"written_at":"2026-08-02T18:40:11.014000+00:00"}
+            """#.utf8)
+
+        let decoded = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: bytes)
+
+        #expect(decoded.unknownFields["vendor_id"] == .decimal(Decimal(string: "12345678901234567890")!))
+        #expect(try PositionCoding.encoder.encode(decoded) == bytes)
+    }
+
+    /// The limit of the carry-through guarantee, pinned rather than discovered:
+    /// a number's VALUE survives, its SPELLING does not. `JSONEncoder` emits
+    /// `2` for `Double(2.0)` and for `Decimal(string: "2.0")` alike, and
+    /// `JSONDecoder` normalizes both on the way in, so no representation can
+    /// round-trip the trailing `.0`. Fractional values are unaffected.
+    @Test("An integral float from a future version carries its value, not its spelling")
+    func integralFloatsNormalizeTheirSpelling() throws {
+        let bytes = Data(
+            #"""
+            {"device_id":"6f1b2a44-8c3e-4d10-9f77-1a2b3c4d5e6f","device_name":"Ayush's iPhone","device_platform":"ios","documents":{},"read_velocity":3.0,"schema_version":1,"written_at":"2026-08-02T18:40:11.014000+00:00"}
+            """#.utf8)
+
+        let decoded = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: bytes)
+        let rewritten = try PositionCoding.encoder.encode(decoded)
+
+        #expect(String(decoding: rewritten, as: UTF8.self).contains(#""read_velocity":3,"#))
+        // The value is intact, which is the guarantee that actually matters.
+        let reread = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: rewritten)
+        #expect(reread.unknownFields["read_velocity"] == decoded.unknownFields["read_velocity"])
+
+        // A fractional value keeps its bytes exactly.
+        let fractional = Data(
+            String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "3.0", with: "3.25").utf8)
+        let decodedFraction = try PositionCoding.decoder.decode(
+            PositionDeviceRecord.self, from: fractional)
+        #expect(try PositionCoding.encoder.encode(decodedFraction) == fractional)
+    }
+
     @Test("Timestamps are written in the same RFC3339 shape as the webpage sidecar")
     func timestampsMatchTheSidecarShape() throws {
         let bytes = try PositionCoding.encoder.encode(documentedRecord())

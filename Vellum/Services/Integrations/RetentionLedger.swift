@@ -133,17 +133,32 @@ actor RetentionLedger {
 
     private let fileURL: URL
     private let clock: PositionClock
-    private var file: RetentionLedgerFile
+    private var storedFile: RetentionLedgerFile?
 
+    /// `init` does NO I/O. `shared` is a lazy static, so its first touch runs
+    /// wherever the first reference happens — plausibly a main-actor scene-phase
+    /// handler kicking off a sweep — and reading plus decoding `retention.json`
+    /// there would stall the UI for as long as first-access storage takes. The
+    /// read is deferred to the first method call instead, which is
+    /// actor-isolated and therefore never on the caller's thread.
     init(fileURL: URL = RetentionLayout.ledgerURL, clock: PositionClock = SystemPositionClock()) {
         self.fileURL = fileURL
         self.clock = clock
-        // Corrupt or absent is the same thing to a caller: start empty and
-        // rebuild. Never thrown upward.
-        let loaded = (try? Data(contentsOf: fileURL)).flatMap {
-            try? RetentionCoding.decoder.decode(RetentionLedgerFile.self, from: $0)
+    }
+
+    /// Corrupt or absent is the same thing to a caller: start empty and
+    /// rebuild. Never thrown upward.
+    private var file: RetentionLedgerFile {
+        get {
+            if let storedFile { return storedFile }
+            let loaded = (try? Data(contentsOf: fileURL)).flatMap {
+                try? RetentionCoding.decoder.decode(RetentionLedgerFile.self, from: $0)
+            }
+            let file = loaded ?? RetentionLedgerFile(writtenAt: clock.now())
+            storedFile = file
+            return file
         }
-        self.file = loaded ?? RetentionLedgerFile(writtenAt: clock.now())
+        set { storedFile = newValue }
     }
 
     // MARK: - Events

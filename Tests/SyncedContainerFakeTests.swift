@@ -75,6 +75,27 @@ struct SyncedContainerFakeTests {
         #expect(container.existenceCheckCount == 0)
     }
 
+    /// The two counters above were literal `0`s once, which made every
+    /// assertion built on them unfalsifiable — a drain loop could have added a
+    /// `contentsOfDirectory` call against the synced root and the suite would
+    /// still have been green. They are live state now, and this is the proof:
+    /// the only way to move them exists, and moving it moves them.
+    @Test("The never-stat counters are live state, not constants")
+    func evidenceCountersCanActuallyFail() async throws {
+        let container = FakeSyncedContainer()
+        container.seed(url("a.json"), data: Data("a".utf8))
+        _ = try await container.list(records)
+        #expect(container.directoryEnumerationCount == 0)
+        #expect(container.existenceCheckCount == 0)
+
+        container.noteDirectoryEnumeration()
+        container.noteExistenceCheck()
+        container.noteExistenceCheck()
+
+        #expect(container.directoryEnumerationCount == 1)
+        #expect(container.existenceCheckCount == 2)
+    }
+
     /// Opening a coordinated access inside another one is the documented way to
     /// deadlock an app on iCloud. The guard turns it into a thrown error, which
     /// a crash report can name and a test can assert.

@@ -88,4 +88,23 @@ struct SyncedContainerPresenterTests {
 
         #expect(container.deliveredConflictCount == 0)
     }
+
+    /// Discovery is the metadata query and nothing else, so a suspended
+    /// container has nothing to answer with. The real adapter throws
+    /// `.unavailable` here; the fake used to answer from its dictionary
+    /// regardless, which certified caller code against an error path it would
+    /// meet the first time a background list raced a scene-phase suspend.
+    @Test("Listing while suspended is unavailable, exactly as the real container is")
+    func listingWhileSuspendedIsUnavailable() async throws {
+        let container = FakeSyncedContainer()
+        container.seed(url("a.json"), data: Data("a".utf8))
+
+        await container.suspend()
+        await #expect(throws: SyncedContainerError.unavailable) {
+            _ = try await container.list(records)
+        }
+
+        await container.resume()
+        #expect(try await container.list(records).count == 1)
+    }
 }

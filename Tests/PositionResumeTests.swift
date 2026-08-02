@@ -132,4 +132,116 @@ struct PositionResumeTests {
         #expect(await store.recents() == [entry])
         #expect(storage.writeCount == 1)
     }
+
+    /// The bug: `hydrate()` set its "done" flag BEFORE awaiting `loadAll()`, so
+    /// a read that arrived during that suspension — Home asking for recents
+    /// while the first flush of the launch is still loading — sailed past it,
+    /// and the merged view then substituted the not-yet-folded in-memory
+    /// documents for this device's entire persisted history. "Continue reading"
+    /// came back holding only what this launch had touched.
+    @Test("A read that arrives mid-hydration still sees this device's stored history")
+    func readDuringHydrationSeesStoredHistory() async throws {
+        let t0 = PositionFixtures.date("2026-08-02T09:12:44.100000+00:00")
+        let storage = GatedPositionStorage()
+        storage.seed(
+            PositionFixtures.record(
+                .phone, writtenAt: t0,
+                documents: [
+                    book: .init(
+                        readingPosition: Stamped(at: t0, value: ReadingPosition(page: 114)),
+                        openedAt: t0,
+                        title: Stamped(at: t0, value: "Structure and Interpretation"))
+                ]))
+        let store = PositionStore(
+            storage: storage,
+            device: .phone,
+            clock: ManualPositionClock(t0.addingTimeInterval(60)),
+            timer: ManualPositionTimer(),
+            policy: .default)
+
+        // An open event schedules a flush; the flush starts hydrating and parks
+        // inside `loadAll()`.
+        await store.record(.opened(title: "Spec #150", tabOrdinal: 0), for: spec)
+        async let flushed: Void = store.flush()
+        await storage.firstLoadStarted()
+
+        async let observed = store.recents(limit: 8)
+        // Give the reentrant read time to reach the store while the load is
+        // still parked. If it arrives later instead, the assertion holds
+        // anyway — hydration will simply have finished first.
+        try? await Task.sleep(for: .milliseconds(100))
+        storage.releaseFirstLoad()
+
+        await flushed
+        let keys = await observed.map(\.key)
+        #expect(keys.contains(book))
+        #expect(keys.contains(spec))
+    }
+}
+
+/// Parks the FIRST `loadAll()` until the test lets it go, so a read can be made
+/// to land inside the hydration suspension deterministically.
+private final class GatedPositionStorage: PositionStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [DeviceID: PositionDeviceRecord] = [:]
+    private var loads = 0
+    private var started: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Void, Never>?
+    private var releasedEarly = false
+    private var startedEarly = false
+
+    func seed(_ record: PositionDeviceRecord) {
+        lock.withLock { records[record.deviceID] = record }
+    }
+
+    /// Returns once the first `loadAll()` has begun.
+    func firstLoadStarted() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                if startedEarly { return true }
+                started = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func releaseFirstLoad() {
+        let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
+            let waiting = release
+            release = nil
+            if waiting == nil { releasedEarly = true }
+            return waiting
+        }
+        waiting?.resume()
+    }
+
+    func loadAll() async -> [PositionDeviceRecord] {
+        let isFirst: Bool = lock.withLock {
+            loads += 1
+            return loads == 1
+        }
+        if isFirst {
+            let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
+                let waiting = started
+                started = nil
+                if waiting == nil { startedEarly = true }
+                return waiting
+            }
+            waiting?.resume()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow: Bool = lock.withLock {
+                    if releasedEarly { return true }
+                    release = continuation
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        }
+        return lock.withLock { records.values.sorted { $0.deviceID < $1.deviceID } }
+    }
+
+    func write(_ record: PositionDeviceRecord) async throws {
+        lock.withLock { records[record.deviceID] = record }
+    }
 }

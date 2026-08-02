@@ -34,9 +34,11 @@ actor PositionStore {
     private var documents: [DocumentKey: PositionDeviceRecord.DocumentEntry] = [:]
     private var lastStamps: [String: Date] = [:]
     private var hydrated = false
+    private var hydration: Task<Void, Never>?
     private var dirty = false
     private var firstDirtyAt: Date?
     private var lastWriteAt: Date?
+    private var writeFailures = 0
 
     init(
         storage: PositionStorage,
@@ -142,8 +144,35 @@ actor PositionStore {
         var record = currentRecord(writtenAt: now)
         record.trimToMostRecent()
         documents = record.documents
-        try? await storage.write(record)
+        do {
+            try await storage.write(record)
+            writeFailures = 0
+        } catch {
+            // A failed write is transient (disk full today, a coordinated
+            // adapter's `.cancelled`/`.notReady` later), so the record stays
+            // dirty with a timer pending. Clearing the flag and walking away
+            // would turn "never hold a dirty record longer than maxDelay" into
+            // "drop it until the user happens to scroll again".
+            writeFailures += 1
+            dirty = true
+            if firstDirtyAt == nil { firstDirtyAt = now }
+            scheduleRetry()
+        }
     }
+
+    /// Retries back off on their own schedule rather than through
+    /// `scheduleWrite`: `CoalescePolicy.immediate` asks for a zero delay, and a
+    /// zero-delay retry against a persistently failing adapter is a spin.
+    private func scheduleRetry() {
+        let steps = min(max(writeFailures - 1, 0), 6)
+        let delay = min(Self.maxRetryDelay, Self.baseRetryDelay * Double(1 << steps))
+        timer.schedule(after: delay) { [weak self] in
+            await self?.performWrite()
+        }
+    }
+
+    private static let baseRetryDelay: TimeInterval = 1
+    private static let maxRetryDelay: TimeInterval = 60
 
     private func currentRecord(writtenAt: Date) -> PositionDeviceRecord {
         PositionDeviceRecord(
@@ -174,10 +203,29 @@ actor PositionStore {
 
     /// Folds this device's own file in once, so a flush extends its history
     /// rather than replacing it with only what this launch touched.
+    ///
+    /// The flag is set only after `loadAll()` has returned and been folded in.
+    /// Setting it up front would let an actor-reentrant caller — a `recents()`
+    /// racing the first flush at launch — sail past the suspension believing
+    /// hydration was done, and `mergedView()` would then substitute the
+    /// not-yet-folded in-memory documents for this device's whole persisted
+    /// history. Concurrent callers await the one in-flight load instead.
     private func hydrate() async {
+        if hydrated { return }
+        if let hydration {
+            await hydration.value
+            return
+        }
+        let task = Task { await self.loadOwnRecord() }
+        hydration = task
+        await task.value
+        hydration = nil
+    }
+
+    private func loadOwnRecord() async {
+        let stored = await storage.loadAll()
         guard !hydrated else { return }
         hydrated = true
-        let stored = await storage.loadAll()
         guard let own = stored.first(where: { $0.deviceID == device.id }),
             PositionMerge.isUsable(own)
         else { return }
