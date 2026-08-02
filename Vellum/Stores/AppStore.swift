@@ -289,6 +289,47 @@ final class AppStore {
         }
     }
 
+    /// Rename the open document from the tab bar.
+    ///
+    /// Distinct from `updateDocumentTitle` above, which exists for the webpage
+    /// content script reporting the DOM `<title>` and is deliberately
+    /// in-memory-only and non-empty-only: a page reporting its own title should
+    /// not permanently overwrite a name the user chose, and a page reporting an
+    /// empty one should be ignored. A user rename is the opposite on both
+    /// counts — it must persist, and clearing it must be allowed to mean
+    /// "go back to the filename".
+    ///
+    /// The file on disk is untouched; see `DocumentRenameService` for why.
+    func renameDocument(tabId: String, title: String) async {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
+            return
+        }
+        let normalized = DocumentRenameService.normalized(title)
+        let target = DocumentRenameService.Target(
+            kind: document.kind,
+            locator: document.pdfPath,
+            recordedPath: document.pdfPath,
+            storageKey: DocumentIdentity.storageKey(for: document))
+
+        // `apply` reports whether it wrote anything. The in-memory update below
+        // is what the UI reads either way, so the result is intentionally
+        // discarded — named here so it isn't an unused-expression warning.
+        _ = await Task.detached(priority: .userInitiated) {
+            DocumentRenameService.apply(target, title: normalized)
+        }.value
+
+        var updated = document
+        updated.title = normalized
+        updateTab(tabId) { $0.document = updated }
+        if activeTabId == tabId { document_setActive(updated) }
+    }
+
+    /// Split out so `renameDocument` reads as one thought; assigning
+    /// `self.document` inline shadows the local `document` binding above it.
+    private func document_setActive(_ info: DocumentInfo) {
+        document = info
+    }
+
     /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
     /// resolved id up into the in-memory DocumentInfo so class-B stores can key
     /// off it this session. The stamp itself already happened during the write —
@@ -331,10 +372,48 @@ final class AppStore {
         }
     }
 
+    /// Close a tab and tear its backend session down.
+    ///
+    /// The tab leaves `tabs` — and therefore the tab strip — BEFORE any of the
+    /// teardown work runs. That work is a `last_page` metadata write, which is a
+    /// full read + parse + serialize + atomic rewrite of the PDF on the IO actor
+    /// (~15s on a large document). Awaiting it first meant the tab sat visibly
+    /// in the strip for that whole time after the user tapped ×, so closing
+    /// looked broken.
+    ///
+    /// The teardown registers itself in the workspace-wide registry before it
+    /// starts. The tab is already gone from `tabs`, so nothing else would await
+    /// it: not the scene-background flush's per-tab loop, and not a reopen of
+    /// the same file. The registry (not `self`) is captured for the cleanup —
+    /// closing a split pane's last tab collapses the pane and drops this store,
+    /// and the entry has to outlive it.
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
         evictPreparedPdf(tabId: tabId)
+
+        // Backend teardown can involve metadata/file I/O. The tab has already
+        // disappeared from the UI, so finish that work asynchronously instead
+        // of making the close gesture look frozen. Start tabs have no session.
+        //
+        // TODO(packet 4 §2.6): once the live-tab runtimes land, the ordering
+        // grows a third step — metadata (which changes the file's validation
+        // hash) → `runtime.flushPdfText()` (re-keys the page-text cache to the
+        // bytes that will reopen) → session close → drop the runtime.
+        if let closingDocument = closingTab.document {
+            let lastPage = String(closingTab.currentPage)
+            let sessions = self.sessions
+            let teardowns = self.teardowns
+            teardowns.register(
+                tabId: tabId,
+                documentPath: closingDocument.pdfPath,
+                task: Task {
+                    try? await sessions.setDocumentMetadata(
+                        sessionId: tabId, key: "last_page", value: lastPage)
+                    try? await sessions.closeFile(sessionId: tabId)
+                    teardowns.finish(tabId: tabId)
+                })
+        }
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
@@ -353,20 +432,6 @@ final class AppStore {
             }
         }
         workspace?.scheduleSave()
-
-        // Backend teardown can involve metadata/file I/O. The tab has already
-        // disappeared from the UI, so finish that work asynchronously instead
-        // of making the close gesture look frozen. Start tabs have no session.
-        if closingTab.document != nil {
-            let sessions = sessions
-            Task {
-                try? await sessions.setDocumentMetadata(
-                    sessionId: closingTab.id,
-                    key: "last_page",
-                    value: String(closingTab.currentPage))
-                try? await sessions.closeFile(sessionId: closingTab.id)
-            }
-        }
     }
 
     func activateTab(_ tabId: String) {
@@ -701,6 +766,11 @@ final class AppStore {
     // MARK: - Internals
 
     private func openOneFile(path: String) async throws {
+        // Close-then-immediately-reopen: a teardown from a preceding close may
+        // still be rewriting this exact file. Opening before it lands would
+        // restore a stale reading position and lose any write the new session
+        // makes before the teardown's atomic rename.
+        await awaitTeardowns(ofDocumentAt: path)
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
         let isArchive = path.lowercased().hasSuffix(".vellumweb")

@@ -113,6 +113,13 @@ struct VellumApp_iOS: App {
 
         Task { @MainActor in
             defer { token.end() }
+            // Tabs closed moments ago finish their metadata write and session
+            // close behind the UI (AppStore.closeTab) and are no longer in
+            // `tabs`, so the per-tab loop below would miss them. Drained via the
+            // workspace registry, not per pane: a close that collapsed its pane
+            // left no leaf to ask. First, because their last_page writes must
+            // land before the loop rewrites the same files.
+            await workspace.tabTeardowns.awaitAll()
             for controller in inkRegistry.controllers.values {
                 await controller.flushPendingInkAndWait()
             }
