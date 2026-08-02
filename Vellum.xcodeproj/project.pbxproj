@@ -71,6 +71,7 @@
 		56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
+		5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */; };
 		5ECD33C8989F2BEF18A108A4 /* AiAddAsNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC6D7A36009931F223DB9C2 /* AiAddAsNoteTests.swift */; };
 		5FF82C62FE4C7CC82FD160FD /* AiConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */; };
 		610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */; };
@@ -92,6 +93,7 @@
 		86D51A60816B39EA73862181 /* PdfTextLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00E4B04332A759BD4D59A98 /* PdfTextLocator.swift */; };
 		8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B19F1048CA6DE0E71C521DB /* VellumApp.swift */; };
 		885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */ = {isa = PBXBuildFile; fileRef = 8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */; };
+		8B86C4435F04F6310965D0E7 /* SheetPresence_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */; };
 		8D58E063EF882C7E725B81A0 /* AiPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */; };
 		8DDA7D560DAB61C377817B0D /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7870954383EAE833F32ABF /* FindBar.swift */; };
 		8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */; };
@@ -225,6 +227,7 @@
 		37F7B1CD3853E8F7239B9191 /* ScratchpadMarkdownExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownExporterTests.swift; sourceTree = "<group>"; };
 		3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManagementTests.swift; sourceTree = "<group>"; };
 		3E954582457ABFF5574EC93C /* tool-descriptions.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-descriptions.md"; sourceTree = "<group>"; };
+		420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetPresence_iOS.swift; sourceTree = "<group>"; };
 		4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScopedBookmark.swift; sourceTree = "<group>"; };
 		438D3DD29145D25F74DF89C8 /* InkOverlayProvider_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkOverlayProvider_iOS.swift; sourceTree = "<group>"; };
 		43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReferences.swift; sourceTree = "<group>"; };
@@ -306,6 +309,7 @@
 		B18CA5A14795BD97D91F2056 /* AnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationStore.swift; sourceTree = "<group>"; };
 		B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorTabSwitcher.swift; sourceTree = "<group>"; };
 		B4AF0117D296B571E62111BB /* AiToolSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolSummary.swift; sourceTree = "<group>"; };
+		B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetPresenceIOSTests.swift; sourceTree = "<group>"; };
 		B6E95679B108A0702A0657D8 /* PKCE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PKCE.swift; sourceTree = "<group>"; };
 		B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfBookmarks.swift; sourceTree = "<group>"; };
 		BA9D539B1461FC063BC82C78 /* DocumentDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataStore.swift; sourceTree = "<group>"; };
@@ -409,6 +413,7 @@
 				2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */,
 				6040B8B4AEED7AF52B89AE11 /* ScratchOutInk_iOS.swift */,
 				C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */,
+				420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */,
 				BCD3CD51FA59977E52683DB3 /* ShortcutRouter_iOS.swift */,
 				721E9C680C7E5E5E6ECBFDB9 /* VellumApp_iOS.swift */,
 				D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */,
@@ -502,6 +507,7 @@
 				2E0D324F9CE4133DCC02BBD4 /* ScratchpadImportTests.swift */,
 				37F7B1CD3853E8F7239B9191 /* ScratchpadMarkdownExporterTests.swift */,
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
+				B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
 				DB8C07E2E3B6096D5FBD0510 /* WebLibraryStorageTests.swift */,
 				F062AD70FC7186BB19425B0D /* WebNoteDraftTests.swift */,
@@ -979,6 +985,7 @@
 				47362B3C5DF753594BDEC3E9 /* SentReferenceChips.swift in Sources */,
 				B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */,
 				2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */,
+				8B86C4435F04F6310965D0E7 /* SheetPresence_iOS.swift in Sources */,
 				22AF5CEF40F9C905992B2D35 /* ShortcutRouter_iOS.swift in Sources */,
 				7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */,
 				56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */,
@@ -1046,6 +1053,7 @@
 				36CA355A9BBDE3BB111BC559 /* ScratchpadImportTests.swift in Sources */,
 				F588EF4EEF4D4DA1E50F5D85 /* ScratchpadMarkdownExporterTests.swift in Sources */,
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
+				5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				4F0CAF425277CA915B0EEFDB /* WebLibraryStorageTests.swift in Sources */,
 				51C2DFBA6EF574596408F09E /* WebNoteDraftTests.swift in Sources */,

@@ -134,6 +134,8 @@ enum VellumShortcutAction: Hashable, Sendable {
     case zoomOut
     case actualSize
     case toggleInspector
+    /// Reveal one of the inspector's three panels (⌥⌘1/2/3, PR #120).
+    case showSidebarTab(WorkspaceStore.SidebarTab)
     case splitRight
     case splitDown
     case mergePanes
@@ -172,6 +174,7 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .zoomOut: "zoomOut"
         case .actualSize: "actualSize"
         case .toggleInspector: "toggleInspector"
+        case .showSidebarTab(let tab): "showSidebarTab.\(tab.accessibilityIdentifierStem)"
         case .splitRight: "splitRight"
         case .splitDown: "splitDown"
         case .mergePanes: "mergePanes"
@@ -378,7 +381,20 @@ enum VellumShortcutCatalog {
             .mergePanes, "Merge Panes", VellumKeyCombo("j", [.command, .option]), menu: .view),
         VellumShortcut(
             .closePane, "Close Pane", VellumKeyCombo("\\", [.command, .shift]), menu: .view),
-    ]
+    ] + WorkspaceStore.SidebarTab.allCases.map { tab in
+        // ⌥⌘, not plain ⌘: ⌘1…⌘9 already switch TABS below, and a tab is what
+        // most users reach for first. Generated from `allCases` so the chord
+        // order can never drift from the switcher's left-to-right order.
+        VellumShortcut(
+            .showSidebarTab(tab), "Show \(tab.title)",
+            // `SidebarTab.shortcutModifiers` is SwiftUI's `EventModifiers` (it
+            // is shared verbatim with the macOS switcher). This table speaks
+            // `VellumKeyModifiers`, which also has to reach UIKit — hence the
+            // literal here rather than a conversion that would only ever have
+            // one input.
+            VellumKeyCombo(tab.shortcutDigit, [.command, .option]),
+            menu: .view)
+    }
 
     // MARK: Navigate
 
