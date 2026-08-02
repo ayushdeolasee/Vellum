@@ -505,11 +505,9 @@ struct StorageSettingsTab: View {
                 documents: DocumentDataStore.listDocuments(),
                 web: WebLibrary.listSnapshotStorage(),
                 webRecordBytes: WebLibrary.totalRecordBytes(),
-                // TODO(parity-129 packet-1): still needs
-                // ScratchpadPersistence.listLegacyEntries() (packet 6). Until it
-                // lands the orphans section lists unmigrated chats but not
-                // unmigrated notes — visible but not wrong.
-                legacyScratchpad: [],
+                legacyScratchpad: ScratchpadPersistence.listLegacyEntries().map {
+                    LegacyRow(source: .scratchpad, key: $0.key, bytes: $0.bytes)
+                },
                 legacyAi: AiPersistence.listLegacyEntries().map {
                     LegacyRow(source: .ai, key: $0.key, bytes: $0.bytes)
                 })
@@ -622,11 +620,7 @@ struct StorageSettingsTab: View {
         Task {
             await Task.detached {
                 switch source {
-                // TODO(parity-129 packet-1): still needs
-                // ScratchpadPersistence.removeLegacyEntry(key:) (packet 6). The
-                // scratchpad listing is stubbed to [] above, so no row can reach
-                // this branch yet.
-                case .scratchpad: break
+                case .scratchpad: ScratchpadPersistence.removeLegacyEntry(key: key)
                 case .ai: AiPersistence.removeLegacyEntry(key: key)
                 }
             }.value

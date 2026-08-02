@@ -130,6 +130,7 @@
 		C6DDAF69E8B4AA13F0314DA4 /* ZoomHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9C121F8857A7DE7430ABF90 /* ZoomHandlerTests.swift */; };
 		C70838E7CAE4DCE99455D99F /* PdfViewerView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */; };
 		C7F0A762A988E52CD11D2A5E /* PdfAtomicWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E923D872F0FF00E6DAB9BA8 /* PdfAtomicWriter.swift */; };
+		C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */; };
 		C91E39E971206E14521EB884 /* VellumCommands_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */; };
 		CAE0D09A93AD11B1BED6224D /* ScratchOutRecognizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD3BBED12CD46602B3CC142 /* ScratchOutRecognizerTests.swift */; };
 		CB17BF693B55AF25352B366A /* WelcomeScreen_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */; };
@@ -255,6 +256,7 @@
 		7E4C07C56943274B9E062A70 /* RecentFilesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentFilesService.swift; sourceTree = "<group>"; };
 		7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField.swift; sourceTree = "<group>"; };
 		7E530DFE8240A79EA6D77961 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
+		814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownExporter.swift; sourceTree = "<group>"; };
 		84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestLaunchConfiguration.swift; sourceTree = "<group>"; };
 		8764C0B9C595EB79CC9B28F0 /* PaneView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneView_iOS.swift; sourceTree = "<group>"; };
 		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
@@ -694,6 +696,7 @@
 		F271A96845AFED2A54F2E5E3 /* Scratchpad */ = {
 			isa = PBXGroup;
 			children = (
+				814A8BA159D87FCEEA80B3B3 /* ScratchpadMarkdownExporter.swift */,
 				287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */,
 			);
 			path = Scratchpad;
@@ -936,6 +939,7 @@
 				AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */,
 				D4E3F592FB25D9F7BBE0B010 /* ScratchOutInk_iOS.swift in Sources */,
 				13BB407EB986D9510A89DBB9 /* ScratchOutRecognizer.swift in Sources */,
+				C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */,
 				C4FA78D55C7E718218C43A3B /* ScratchpadPanel_iOS.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,
 				74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */,
