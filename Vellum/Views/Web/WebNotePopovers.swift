@@ -183,11 +183,29 @@ private struct SmallPrimaryButton: View {
 // MARK: - WebNoteComposer
 
 struct WebNoteComposerView: View {
+    var initialContent: String = ""
     var onSubmit: (String) -> Void
     var onClose: () -> Void
+    /// Reports edits upward so an unasked-for dismissal (stray tap, scroll)
+    /// can hand the draft back to the note queue instead of dropping it — see
+    /// `WebViewerController_iOS.returnNoteComposerDraft` and issue #92.
+    var onDraftChange: (String) -> Void = { _ in }
 
-    @State private var text = ""
+    @State private var text: String
     @Environment(\.palette) private var palette
+
+    init(
+        initialContent: String = "",
+        onSubmit: @escaping (String) -> Void,
+        onClose: @escaping () -> Void,
+        onDraftChange: @escaping (String) -> Void = { _ in }
+    ) {
+        self.initialContent = initialContent
+        self.onSubmit = onSubmit
+        self.onClose = onClose
+        self.onDraftChange = onDraftChange
+        _text = State(initialValue: initialContent)
+    }
 
     var body: some View {
         PopoverCard {
@@ -200,7 +218,15 @@ struct WebNoteComposerView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(palette.mutedForeground)
                 }
-                NoteTextEditor(text: $text, onSubmit: submit, onClose: onClose)
+                // Written through on set rather than observed with
+                // `.onChange`: that fires during a later update pass, so a
+                // dismissal landing in the same pass could hand back a mirror
+                // one keystroke stale. The write costs nothing — it lands on an
+                // observation-ignored field and invalidates no view.
+                NoteTextEditor(
+                    text: Binding(get: { text }, set: { text = $0; onDraftChange($0) }),
+                    onSubmit: submit,
+                    onClose: onClose)
                 HStack(spacing: 6) {
                     Spacer()
                     SmallGhostButton(title: "Cancel", action: onClose)

@@ -569,6 +569,40 @@ final class AppStore {
         return content
     }
 
+    /// Put an unplaced note draft back on the queue and re-arm placement, so
+    /// the next tap on the page offers the same text again.
+    ///
+    /// Issue #92: the web viewer's placement tap only opens a composer — the
+    /// note is not written until the user submits — so between those two steps
+    /// the composer holds the *only* copy of a queued AI reply
+    /// (`consumePendingNoteContent` already cleared the store). A stray tap, a
+    /// page scroll, a misdirected link, or a tab switch all unmount that
+    /// composer, and the reply used to go with it. The PDF viewer has no such
+    /// window: it writes the note on the placement tap itself. Handing the
+    /// draft back here closes the gap — a mis-tap now costs one more tap
+    /// instead of the whole reply.
+    ///
+    /// Empty (or whitespace-only) drafts are dropped — a plain note-tool
+    /// placement the user tapped away from has nothing worth preserving, and
+    /// re-arming note mode for it would be friction with no payoff.
+    ///
+    /// PARITY GAP (deliberate): macOS also restores onto a *background* tab, by
+    /// writing `pendingNoteContent`/`regionCaptureTarget` into that tab's
+    /// record. `PdfTab` here carries neither field yet — they arrive with the
+    /// tab-residency port. Until then a restore aimed at a tab that is no
+    /// longer on screen is dropped rather than mis-filed onto the tab that is.
+    /// When `PdfTab.pendingNoteContent` lands, replace the `return` below with
+    /// main's `updateTab(sessionId) { $0.mode = .note; $0.pendingNoteContent =
+    /// content; $0.regionCaptureTarget = nil }`.
+    func restorePendingNote(_ content: String, forSessionId sessionId: String) {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // While the tab is the one on screen this is exactly "arm placement
+        // again", so it goes through the same door rather than restating it —
+        // anything `setMode(.note)` grows later applies to restores too.
+        guard activeTabId == sessionId else { return }
+        beginNoteWithContent(content)
+    }
+
     // MARK: - Internals
 
     private func openOneFile(path: String) async throws {
