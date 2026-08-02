@@ -370,8 +370,13 @@ actor WebDocumentIO {
 
     func annotations(pageNumber: Int?) -> [Annotation] {
         let record = WebLibrary.loadRecord(forKey: key) ?? WebPageRecord(url: url)
-        guard let pageNumber else { return record.annotations }
-        return record.annotations.filter { $0.pageNumber == pageNumber }
+        let list: [Annotation]
+        if let pageNumber {
+            list = record.annotations.filter { $0.pageNumber == pageNumber }
+        } else {
+            list = record.annotations
+        }
+        return Annotation.sortedForDisplay(list)
     }
 
     func createAnnotation(_ input: CreateAnnotationInput, storedHighlightColor: String) throws -> Annotation {
@@ -429,6 +434,9 @@ actor WebDocumentIO {
             // sidebar/star land on the wrong virtual page after a round-trip.
             if let pageNumber = input.pageNumber {
                 record.annotations[index].pageNumber = pageNumber
+            }
+            if let isPinned = input.isPinned {
+                record.annotations[index].isPinned = isPinned
             }
             record.annotations[index].updatedAt = WebLibrary.rfc3339Now()
             return true
