@@ -16,6 +16,31 @@ struct ScratchpadImageCapture: Sendable {
     var pageNumber: Int?
 }
 
+/// One attachment's bytes, captured before a clear so Undo can put the file
+/// back even if the sweep collected it in the meantime.
+struct ScratchpadAttachmentSnapshot: Equatable, Sendable {
+    var id: String
+    var fileExtension: String
+    var data: Data
+}
+
+/// Everything a Clear removed, tied to the exact document and tab that owned it
+/// so Undo repairs that note rather than whichever one is visible later.
+struct ScratchpadClearTransaction: Equatable, Sendable {
+    var document: DocumentInfo
+    var key: String
+    var sessionId: String
+    var removedText: String
+    var attachments: [ScratchpadAttachmentSnapshot]
+}
+
+struct ScratchpadClearRestoration: Equatable, Sendable {
+    var transaction: ScratchpadClearTransaction
+    /// Exact prefix inserted by Undo. Redo removes only this prefix, preserving
+    /// work appended after the clear or after Undo.
+    var insertedPrefix: String
+}
+
 /// Markdown + LaTeX scratchpad notes for the active document. State mirrors the
 /// AI store's per-document lifecycle: `loadForDocument` on tab/document change,
 /// `clearDocumentContext` when leaving. Edits autosave on a short debounce, and
@@ -43,7 +68,16 @@ final class ScratchpadStore {
     /// few seconds; nil when no warning is showing.
     private(set) var dropWarning: String?
 
+    /// Weak like `AiStore.app` — the store is owned by the pane, which owns the
+    /// AppStore too, so a strong reference here would be a cycle.
+    @ObservationIgnored weak var app: AppStore?
+
     private var currentKey: String?
+    private var currentDocument: DocumentInfo?
+    /// The session (tab) id the current document was loaded under, captured at
+    /// load so a clear registered now can be undone against the right tab even
+    /// if the active tab changed in the meantime.
+    private var currentSessionId: String?
     private var isRestoring = false
     private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var dropWarningTask: Task<Void, Never>?
@@ -54,6 +88,8 @@ final class ScratchpadStore {
         flush()
         let key = ScratchpadPersistence.documentKey(document)
         currentKey = key
+        currentDocument = document
+        currentSessionId = app?.activeTabId
         setRestored(key.map { ScratchpadPersistence.load(for: $0) } ?? "")
         pruneOrphanedAttachments()
     }
@@ -64,6 +100,12 @@ final class ScratchpadStore {
     func addImage(_ capture: ScratchpadImageCapture, label: String) {
         guard let id = ScratchpadAttachmentStore.save(
             data: capture.data, fileExtension: capture.fileExtension) else { return }
+        // Claim the GC exemption before the snippet goes anywhere (#105). The
+        // bytes are on disk but no saved note mentions them yet, so a sweep
+        // running right now would see a perfectly ordinary orphan. It has to
+        // happen before `insertMarkdownHandler`, which can hand the snippet
+        // straight to a ready editor — "after" is already too late.
+        ScratchpadAttachmentStore.markPending(id)
         // Keep the alt text single-line and free of the `]` that would close it.
         let safeLabel = label
             .replacingOccurrences(of: "\n", with: " ")
@@ -104,12 +146,19 @@ final class ScratchpadStore {
         // filesystem off-main. Re-decoding every note here made each tab switch
         // pay the full persistence cost.
         let texts = ScratchpadPersistence.persistedTextsSnapshot()
+        // The sweep runs on a background task while this actor keeps going, so
+        // an attachment saved right after this line (a drop or region snapshot
+        // landing on a freshly opened note) would not be in `referenced` and
+        // would be deleted out from under the note. Collect only against files
+        // that already existed when the snapshot was taken.
+        let referencedAsOf = Date()
         Task.detached(priority: .utility) {
             var referenced = Set<String>()
             for text in texts {
                 referenced.formUnion(ScratchpadAttachmentStore.referencedIds(in: text))
             }
-            ScratchpadAttachmentStore.collectGarbage(referencedIds: referenced)
+            ScratchpadAttachmentStore.collectGarbage(
+                referencedIds: referenced, referencedAsOf: referencedAsOf)
         }
     }
 
@@ -118,7 +167,124 @@ final class ScratchpadStore {
     func clearDocumentContext() {
         flush()
         currentKey = nil
+        currentDocument = nil
+        currentSessionId = nil
         setRestored("")
+    }
+
+    // MARK: - Undoable clear
+
+    /// Capture the note and every referenced attachment before clearing. If any
+    /// referenced byte cannot be read, fail closed: leaving the note untouched
+    /// is safer than offering an Undo that restores broken image references.
+    @discardableResult
+    func clearText() -> ScratchpadClearTransaction? {
+        guard !text.isEmpty,
+              let currentDocument,
+              let currentKey,
+              let currentSessionId else { return nil }
+        let ids = ScratchpadAttachmentStore.referencedIds(in: text)
+        var attachments: [ScratchpadAttachmentSnapshot] = []
+        for id in ids {
+            guard let url = ScratchpadAttachmentStore.fileURL(for: id),
+                  let data = try? Data(contentsOf: url) else {
+                showWarning("Couldn't safely clear this note because one of its images is unavailable.")
+                return nil
+            }
+            attachments.append(.init(
+                id: id, fileExtension: url.pathExtension.lowercased(), data: data))
+        }
+        let transaction = ScratchpadClearTransaction(
+            document: currentDocument, key: currentKey, sessionId: currentSessionId,
+            removedText: text, attachments: attachments)
+        text = ""
+        return transaction
+    }
+
+    /// Restore the cleared note ahead of any work created afterward. Attachment
+    /// bytes are restored before the markdown is persisted.
+    @discardableResult
+    func undoClear(_ transaction: ScratchpadClearTransaction) -> ScratchpadClearRestoration? {
+        guard let document = currentDocument(for: transaction) else { return nil }
+        let showing = isShowing(transaction, document: document)
+        if showing { cancelPendingSave() }
+        let current = showing ? text : ScratchpadPersistence.load(for: transaction.key)
+        let separator = current.isEmpty ? "" : "\n\n"
+        let prefix = transaction.removedText + separator
+        let restored = prefix + current
+        // The iPad keeps one flat attachment pool, so this is where the bytes
+        // came from and where they go back.
+        // TODO(packet 1): becomes `DocumentDataStore.attachmentsDir(forKey:)`
+        // once a document's attachments live in its own folder (main dc3ac525).
+        let directory = ScratchpadAttachmentStore.directory
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for attachment in transaction.attachments {
+                try attachment.data.write(
+                    to: directory.appendingPathComponent(
+                        "\(attachment.id).\(attachment.fileExtension)"),
+                    options: .atomic)
+            }
+        } catch {
+            showWarning("Couldn't restore the cleared note. Its recovery data is still available in Undo.")
+            return nil
+        }
+        // Unlike main's, this `save` cannot throw — it writes the in-memory
+        // cache and schedules a coalesced defaults flush — so it sits outside
+        // the `do` block. The failure that actually matters, the attachment
+        // write, still raises the banner above.
+        ScratchpadPersistence.save(for: transaction.key, text: restored)
+        if showing { setRestored(restored) }
+        return ScratchpadClearRestoration(transaction: transaction, insertedPrefix: prefix)
+    }
+
+    /// Remove only the prefix reinserted by Undo. If the restored portion was
+    /// edited in place, fail closed rather than deleting ambiguous content.
+    @discardableResult
+    func redoClear(_ restoration: ScratchpadClearRestoration) -> Bool {
+        let transaction = restoration.transaction
+        guard let document = currentDocument(for: transaction) else { return false }
+        let showing = isShowing(transaction, document: document)
+        if showing { cancelPendingSave() }
+        let current = showing ? text : ScratchpadPersistence.load(for: transaction.key)
+        guard current.hasPrefix(restoration.insertedPrefix) else {
+            showWarning("Couldn't redo Clear Scratchpad because the restored text was edited.")
+            return false
+        }
+        let remaining = String(current.dropFirst(restoration.insertedPrefix.count))
+        ScratchpadPersistence.save(for: transaction.key, text: remaining)
+        if showing { setRestored(remaining) }
+        return true
+    }
+
+    /// Resolve through the transaction's tab. The path/kind guard keeps a stale
+    /// undo transaction from following a reused tab into another document.
+    ///
+    /// Main additionally re-stamps the document's storage key here, because a
+    /// clear can be undone after doc-ID stamping has rekeyed the folder. On iPad
+    /// the key is `document.pdfPath` and never changes mid-session, so the whole
+    /// resolution collapses to this tab lookup.
+    // TODO(packet 1): reinstate `adoptVisibleIdentity` /
+    // `DocumentDataStore.rekey` / `DocumentIdentity.storageKey` from main's
+    // dc3ac525 once doc-ID stamping owns the scratchpad's storage key.
+    private func currentDocument(for transaction: ScratchpadClearTransaction) -> DocumentInfo? {
+        guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
+              isSameDocument(document, transaction.document) else { return nil }
+        return document
+    }
+
+    private func isShowing(_ transaction: ScratchpadClearTransaction, document: DocumentInfo) -> Bool {
+        guard currentSessionId == transaction.sessionId, let currentDocument else { return false }
+        return isSameDocument(currentDocument, document)
+    }
+
+    private func isSameDocument(_ lhs: DocumentInfo, _ rhs: DocumentInfo) -> Bool {
+        lhs.kind == rhs.kind && lhs.pdfPath == rhs.pdfPath
+    }
+
+    private func cancelPendingSave() {
+        saveTask?.cancel()
+        saveTask = nil
     }
 
     /// Commit the current text to the authoritative in-memory cache immediately;

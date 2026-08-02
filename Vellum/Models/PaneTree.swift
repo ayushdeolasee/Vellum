@@ -40,7 +40,9 @@ final class PaneModel: Identifiable {
         self.app = app
         self.annotations = annotations
         self.ai = ai
-        self.scratchpad = ScratchpadStore()
+        let scratchpad = ScratchpadStore()
+        scratchpad.app = app
+        self.scratchpad = scratchpad
     }
 }
 
