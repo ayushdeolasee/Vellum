@@ -34,6 +34,10 @@ struct SettingsView: View {
             StorageSettingsTab()
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
                 .tag(WorkspaceStore.SettingsSection.storage)
+
+            IntegrationsSettingsTab()
+                .tabItem { Label("Integrations", systemImage: "link") }
+                .tag(WorkspaceStore.SettingsSection.integrations)
         }
         .accessibilityIdentifier("settings.content")
         #if os(macOS)

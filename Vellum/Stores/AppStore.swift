@@ -281,6 +281,31 @@ final class AppStore {
     /// "go back to the filename".
     ///
     /// The file on disk is untouched; see `DocumentRenameService` for why.
+    ///
+    /// TEARDOWN-RACE AUDIT (#129 Stage J, the counterpart of the guard in
+    /// `importVellumBundleShowingErrors`). No `awaitTeardowns` is needed here,
+    /// and adding one would only serialise a rename behind an unrelated close:
+    ///
+    ///   * A close's teardown writes three things — the PDF's own Info
+    ///     dictionary (`setDocumentMetadata` `last_page`, a full file rewrite),
+    ///     the page-text cache (`flushPdfText`), and the backend session close.
+    ///   * A rename writes three DIFFERENT things — `documents/<key>/meta.json`
+    ///     (`DocumentDataStore.setTitle`, atomic), the recents list in
+    ///     `AppDefaults`, and, for web documents only, the WebLibrary sidecar
+    ///     record. It never opens the document file. Nothing on the teardown
+    ///     path calls `DocumentDataStore.touch`, so meta.json has no second
+    ///     writer here.
+    ///
+    /// For PDFs the two file sets are therefore disjoint. For web documents both
+    /// paths do reach the same sidecar record — the teardown's `last_page` and
+    /// this rename's `title` — but every mutation of it is funnelled through
+    /// `WebLibrary.withRecord`, whose per-record-path `NSLock` serialises the
+    /// read-modify-write. The interleaving that motivated the import guard (a
+    /// whole-file rewrite from stale in-memory bytes) has no analogue.
+    ///
+    /// The same reasoning covers `HomeSearchStore`'s rename, which calls
+    /// `DocumentRenameService.apply` directly for a document that may have no
+    /// open tab at all.
     func renameDocument(tabId: String, title: String) async {
         guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
             return

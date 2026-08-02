@@ -105,20 +105,10 @@ final class WebNoteDraftStoreTests: XCTestCase {
         XCTAssertNil(app.pendingNoteContent)
     }
 
-    /// The iPad's documented degradation: a restore aimed at a tab that is no
-    /// longer on screen is dropped rather than mis-filed onto the tab that is.
-    /// This pins the *safe* half of that gap — the foreground tab is untouched —
-    /// which is the property that must survive the eventual fix.
-    ///
-    /// TODO(#129 packet 4): main's two background-tab cases,
-    /// `testDraftIsRestoredOntoItsOwnTabNotTheOneOnScreen` and
-    /// `testRestoringClearsAnyArmedRegionCapture`, are deferred with the
-    /// tab-residency port. Both write into the origin tab's record, and `PdfTab`
-    /// (Vellum/Models/Models.swift) carries neither `pendingNoteContent` nor
-    /// `regionCaptureTarget` yet. Restore them from main's
-    /// `Tests/AiAddAsNoteTests.swift:125` and `:156` the moment those fields
-    /// land, and replace this case with the first of them.
-    func testRestoringOntoABackgroundTabDropsTheDraftRatherThanMisfilingIt() {
+    /// The draft belongs to the tab that was composing it. Switching tabs also
+    /// unmounts the composer, so the restore must land on the origin tab and
+    /// leave the tab now on screen completely alone.
+    func testDraftIsRestoredOntoItsOwnTabNotTheOneOnScreen() {
         let app = makePaneWithTab()
         let origin = app.activeTabId!
         placeNote(app, content: "The answer.")
@@ -129,7 +119,26 @@ final class WebNoteDraftStoreTests: XCTestCase {
 
         XCTAssertEqual(app.activeTabId, other)
         XCTAssertEqual(app.mode, .view, "the foreground tab must not be dragged into note mode")
-        XCTAssertNil(app.pendingNoteContent, "and must not inherit another tab's reply")
+        XCTAssertNil(app.pendingNoteContent)
+
+        app.activateTab(origin)
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.pendingNoteContent, "The answer.")
+    }
+
+    /// Restoring must not strand the tab in a half-armed state: note mode and
+    /// region capture are mutually exclusive everywhere else in `AppStore`.
+    func testRestoringClearsAnyArmedRegionCapture() {
+        let app = makePaneWithTab()
+        let session = app.activeTabId!
+        placeNote(app, content: "The answer.")
+        app.beginRegionCapture(target: .scratchpad)
+
+        app.restorePendingNote("The answer.", forSessionId: session)
+
+        XCTAssertEqual(app.mode, .note)
+        XCTAssertEqual(app.regionCaptureTarget, .ai)
+        XCTAssertNil(app.tabs.first(where: { $0.id == session })?.regionCaptureTarget)
     }
 }
 

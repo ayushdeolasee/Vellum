@@ -34,6 +34,11 @@ struct SettingsSheet_iOS: View {
                 }
         }
         .environment(workspace)
+        // Settings ▸ Integrations and both of its sheets read the store via
+        // @Environment(IntegrationsStore.self), and a missing @Environment
+        // observable is a fatalError, not a nil — so it has to be injected into
+        // this separate presentation host too.
+        .environment(workspace.integrations)
         .environment(workspace.settingsAi)
         .environment(workspace.openRouterCatalog)
         .environment(workspace.chatgptAuth)

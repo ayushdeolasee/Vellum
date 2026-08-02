@@ -18,6 +18,7 @@ struct PdfToolbar_iOS: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
 
     @State private var pageFieldText = ""
@@ -366,6 +367,13 @@ struct PdfToolbar_iOS: View {
                 Button {
                     workspace.closePane(workspace.focusedPaneId)
                 } label: { Label("Close Pane", systemImage: "xmark.rectangle") }
+            }
+            // Only for a document that maps back to a read-later item — the
+            // reader's route to refiling an article without leaving it.
+            if let path = appStore.document?.pdfPath,
+               let item = integrations.readLaterItem(forOpenDocumentPath: path) {
+                Divider()
+                MoveToCollectionMenu(item: item, integrations: integrations)
             }
             Divider()
             Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }

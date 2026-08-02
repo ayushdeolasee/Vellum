@@ -9,9 +9,11 @@ import XCTest
 // (`dc3ac525`): `testAiClearFollowsSameSessionStampForUndoAndRedo` and
 // `testScratchpadClearFollowsSameSessionStampForUndoRedoAndAttachments`. They
 // assert that a clear survives the document acquiring a durable /VellumDocId
-// mid-transaction and rekeying its storage — behaviour packet 6 ports in its
-// adapted, path-key form (see the `// TODO(packet 1)` markers in
-// `ScratchpadStore`). Restore them with the doc-ID-stamp rekey.
+// mid-transaction and rekeying its storage. The iPad's scratchpad is still
+// keyed by `document.pdfPath` in a UserDefaults blob, so there is no rekey to
+// survive — see the "scratchpad onto DocumentDataStore" follow-up notes in
+// `ScratchpadStore.currentDocument(for:)` and `ScratchpadPersistence`. Restore
+// both tests with that migration, not before.
 
 @MainActor
 final class SafeClearTests: XCTestCase {

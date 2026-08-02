@@ -248,8 +248,15 @@ final class ScratchpadStore {
         let restored = prefix + current
         // The iPad keeps one flat attachment pool, so this is where the bytes
         // came from and where they go back.
-        // TODO(packet 1): becomes `DocumentDataStore.attachmentsDir(forKey:)`
-        // once a document's attachments live in its own folder (main dc3ac525).
+        //
+        // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): this
+        // becomes `DocumentDataStore.attachmentsDir(forKey:)` once a document's
+        // attachments live in `documents/<key>/attachments/` (main dc3ac525).
+        // Blocked on the storage migration itself, not on any single symbol:
+        // `ScratchpadPersistence` is still the LIVE defaults-blob store keyed by
+        // `document.pdfPath`, so moving this alone would write restored bytes
+        // into a folder nothing reads. See the matching notes in
+        // `ScratchpadPersistence` and `ScratchpadAttachmentStore`.
         let directory = ScratchpadAttachmentStore.directory
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -298,9 +305,12 @@ final class ScratchpadStore {
     /// clear can be undone after doc-ID stamping has rekeyed the folder. On iPad
     /// the key is `document.pdfPath` and never changes mid-session, so the whole
     /// resolution collapses to this tab lookup.
-    // TODO(packet 1): reinstate `adoptVisibleIdentity` /
-    // `DocumentDataStore.rekey` / `DocumentIdentity.storageKey` from main's
-    // dc3ac525 once doc-ID stamping owns the scratchpad's storage key.
+    // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): reinstate
+    // main's `adoptVisibleIdentity` + `DocumentDataStore.rekey` +
+    // `DocumentIdentity.storageKey` resolution here (main dc3ac525). Needs two
+    // things this tree does not have: `AppStore.adoptVisibleIdentity` (no such
+    // symbol on iPad) and a scratchpad keyed by `DocumentIdentity.storageKey`
+    // rather than `document.pdfPath`. Both arrive with the storage migration.
     private func currentDocument(for transaction: ScratchpadClearTransaction) -> DocumentInfo? {
         guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
               isSameDocument(document, transaction.document) else { return nil }

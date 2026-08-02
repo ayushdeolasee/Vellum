@@ -225,8 +225,11 @@ struct ScratchpadPanel: View {
         // with several megabytes of images stages, reads and copies each file
         // synchronously, which would otherwise freeze the editor mid-export.
         let markdown = scratchpadStore.text
-        // TODO(packet 1): becomes `ScratchpadAttachmentStore.activeDirectory`
-        // once a document's attachments live in its own folder.
+        // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): becomes
+        // `ScratchpadAttachmentStore.activeDirectory` once a document's
+        // attachments live in `documents/<key>/attachments/`. Until then
+        // `activeDirectory` is always nil, so reading it here would export a
+        // note with none of its images.
         let attachmentsDirectory: URL? = ScratchpadAttachmentStore.directory
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)

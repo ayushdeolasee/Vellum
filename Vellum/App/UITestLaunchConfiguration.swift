@@ -45,14 +45,21 @@ enum UITestLaunchConfiguration {
         // resolution. The app-data root itself is redirected by `storageRoot`.
         WebStorageSettings.setMode(.local)
 
-        // TODO(packet: walkthrough) once WalkthroughSettings lands, restore:
-        //   if !ProcessInfo.processInfo.arguments.contains("--ui-test-show-walkthrough") {
-        //       WalkthroughSettings.markSeen()
-        //   }
-        // TODO(packet: foundation/AppDefaults) once AppDefaults lands, restore:
-        //   if ProcessInfo.processInfo.arguments.contains("--ui-test-corrupt-restoration") {
-        //       AppDefaults.current.set("{not valid workspace json", forKey: "vellum.workspace")
-        //   }
+        // #65 presents the walkthrough sheet on every fresh defaults domain,
+        // which is exactly what `--ui-test-reset-state` creates — it would sit
+        // modally over Home in every test. Mark it seen unless a test opts in.
+        if !ProcessInfo.processInfo.arguments.contains("--ui-test-show-walkthrough") {
+            WalkthroughSettings.markSeen()
+        }
+
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-corrupt-restoration") {
+            // Through `AppDefaults`, the same door `WorkspaceService.load` reads
+            // from. Seeding `.standard` directly would only be equivalent as
+            // long as this process resolves to `.standard`, and if that ever
+            // stopped holding the restoration test would not fail — it would
+            // find no workspace at all and still reach a usable Home screen.
+            AppDefaults.current.set("{not valid workspace json", forKey: "vellum.workspace")
+        }
 
         if let root = storageRoot {
             try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

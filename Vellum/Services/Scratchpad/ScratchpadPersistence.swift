@@ -97,9 +97,11 @@ enum ScratchpadPersistence {
     /// (packet 1) has not taken the scratchpad over yet — so what this lists is
     /// every note, not only unmigrated ones. The Storage pane's wording is
     /// already "not yet migrated", which is accurate for exactly that reason.
-    // TODO(packet 1): once `ScratchpadPersistence` moves onto `DocumentDataStore`
-    // this becomes a genuine migration-leftovers listing, matching main's
-    // `1d9d4469`-era semantics; no signature change is needed then.
+    // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): once this
+    // type writes through `DocumentDataStore.saveScratchpad(forKey:)` instead of
+    // the defaults blob, this becomes a genuine migration-leftovers listing,
+    // matching main's `1d9d4469`-era semantics. No signature change is needed
+    // then — only the store underneath changes.
     static func listLegacyEntries() -> [(key: String, bytes: Int)] {
         readEntries().map { (key: $0.key, bytes: $0.text.utf8.count) }
     }
@@ -177,7 +179,8 @@ enum ScratchpadAttachmentStore {
     /// attachments live in one flat pool — but declared so `fileURL(for:)` and
     /// the Markdown exporter's containment check read the same way they do on
     /// macOS, and so a suite can set it without a conditional.
-    // TODO(packet 1): set this from `ScratchpadStore.loadForDocument` to
+    // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): set this from
+    // `ScratchpadStore.loadForDocument` to
     // `DocumentDataStore.attachmentsDir(forKey:)` once notes move into
     // `documents/<key>/`, and add the matching `writeDirectory` for `save`.
     nonisolated(unsafe) static var activeDirectory: URL?
@@ -278,7 +281,8 @@ enum ScratchpadAttachmentStore {
     /// no matter how many attachments exist across all documents. `preferredDir`
     /// is probed ahead of the flat pool — nil on iPad today, but the exporter
     /// and the migration path both pass one.
-    // TODO(packet 1): fold `activeDirectory` into the preferred element
+    // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): fold
+    // `activeDirectory` into the preferred element
     // (`preferredDir ?? activeDirectory`) once a document's attachments live in
     // its own folder.
     static func fileURL(for id: String, preferredDir: URL? = nil) -> URL? {

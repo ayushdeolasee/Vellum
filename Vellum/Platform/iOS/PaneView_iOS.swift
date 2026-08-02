@@ -31,6 +31,7 @@ struct PaneView_iOS: View {
     let pane: PaneModel
 
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(InkRegistry_iOS.self) private var inkRegistry
     @Environment(\.palette) private var palette
     @State private var activeZone: DropZone?
@@ -138,12 +139,16 @@ struct PaneView_iOS: View {
                   let document = app.document else { return }
             let key = DocumentIdentity.storageKey(for: document)
             guard keys.contains(key) else { return }
-            // TODO(parity-129 packet-1): still needs
-            // ScratchpadStore.discardNotesForExternalDelete(matchingKey:)
-            // (packet 6) for the notes branch. Do NOT call
-            // pane.scratchpad.loadForDocument here — that flushes the stale note
-            // back over the file that was just deleted, which is the exact bug
-            // the discard path exists to prevent.
+            // FOLLOW-UP (post-#129): the notes branch is still missing. It needs
+            // `ScratchpadStore.discardNotesForExternalDelete(matchingKey:)`,
+            // which does not exist here because the scratchpad has no
+            // per-document file for the Storage pane to have deleted — it is
+            // still one UserDefaults blob (see the "scratchpad onto
+            // DocumentDataStore" notes in `ScratchpadPersistence`). Land it with
+            // that migration. Do NOT call `pane.scratchpad.loadForDocument`
+            // here as a stopgap — that flushes the stale note back over the file
+            // that was just deleted, which is the exact bug the discard path
+            // exists to prevent.
             if note.userInfo?["chat"] as? Bool == true {
                 // Cache already invalidated by the poster; reload re-reads the now
                 // empty disk without writing.
@@ -216,7 +221,29 @@ struct PaneView_iOS: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(edges: .bottom)
+                .overlay(alignment: .bottomTrailing) { readLaterNotice }
             }
+    }
+
+    /// Download/move progress for the read-later item this document came from,
+    /// shown over the reader so a sync started elsewhere is still visible while
+    /// the user is reading.
+    @ViewBuilder
+    private var readLaterNotice: some View {
+        if let path = app.document?.pdfPath,
+           let item = integrations.readLaterItem(forOpenDocumentPath: path),
+           let notice = integrations.notice(forItem: item.id) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+            ) {
+                if notice.isMove { integrations.dismissMoveNotice(item.id) } else { integrations.dismissDownloadNotice(item.id) }
+            }
+            // Inset far enough to clear the ink palette's bottom-trailing well.
+            .padding(.trailing, 18)
+            .padding(.bottom, 96)
+        }
     }
 
     /// File pickers and sheets are presented once, at the shell — focus this
