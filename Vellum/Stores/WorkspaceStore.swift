@@ -15,6 +15,12 @@ import Observation
 final class WorkspaceStore {
     let sessions: SessionService
 
+    /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
+    /// reopen or Save As in one pane waits out a close started in another —
+    /// including a pane that has since collapsed. The scene-background flush
+    /// drains it directly.
+    let tabTeardowns = TabTeardownRegistry()
+
     /// The layout tree. Reassigned wholesale on every structural change.
     private(set) var root: PaneNode
     /// Id of the focused leaf — drives the toolbar, inspector, and menu commands.
@@ -161,7 +167,9 @@ final class WorkspaceStore {
         self.settingsAi = settingsAi
         self.openRouterCatalog = catalog
         self.chatgptAuth = auth
-        let pane = PaneModel(sessions: sessions, openRouterCatalog: catalog, chatgptAuth: auth)
+        let pane = PaneModel(
+            sessions: sessions, teardowns: tabTeardowns,
+            openRouterCatalog: catalog, chatgptAuth: auth)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
@@ -187,7 +195,8 @@ final class WorkspaceStore {
 
     private func makePane(startTab: Bool) -> PaneModel {
         let pane = PaneModel(
-            sessions: sessions, openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
+            sessions: sessions, teardowns: tabTeardowns,
+            openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
         return pane
