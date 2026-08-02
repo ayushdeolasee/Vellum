@@ -118,6 +118,18 @@ struct PaneView_iOS: View {
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarImported)) { note in
+            // A `.vellum` import merged notes/chat into this document's sidecar
+            // on disk. If THIS pane is showing it, the live stores still hold
+            // pre-import state whose next flush would overwrite the merge —
+            // `discardAndReload` (never `loadForDocument`, which flushes first).
+            guard let key = note.userInfo?["key"] as? String,
+                  let document = app.document,
+                  DocumentIdentity.storageKey(for: document) == key else { return }
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            pane.ai.loadConversationForDocument(document)
+            pane.scratchpad.discardAndReload(for: document)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentDataDeleted)) { note in
             // The Storage pane deleted this document's notes/chat on disk. If THIS
             // pane shows it, drop the matching in-memory state WITHOUT saving so a
