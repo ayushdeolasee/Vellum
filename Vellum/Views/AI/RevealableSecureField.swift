@@ -13,7 +13,14 @@ import UIKit
 /// view with `isRevealed == false`, so a revealed key never carries over to
 /// another provider's field (never show another provider's key in plaintext).
 struct RevealableSecureField: View {
+    /// VoiceOver name for the field itself. Callers pass the provider-specific
+    /// key label ("Gemini API Key"), so a screen reader announces which
+    /// credential it is sitting in rather than a generic "secure text field".
+    let accessibilityLabel: String
     let placeholder: String
+    /// What the eye button calls the thing it reveals. Only "API key" today, but
+    /// the reveal control is not otherwise credential-specific.
+    var credentialName = "API key"
     @Binding var text: String
 
     @Environment(\.palette) private var palette
@@ -21,7 +28,12 @@ struct RevealableSecureField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            SecureTextFieldRep(placeholder: placeholder, isSecure: !isRevealed, text: $text)
+            SecureTextFieldRep(
+                placeholder: placeholder,
+                accessibilityLabel: accessibilityLabel,
+                isSecure: !isRevealed,
+                text: $text
+            )
                 .frame(height: 30)
 
             Button {
@@ -34,8 +46,12 @@ struct RevealableSecureField: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isRevealed ? "Hide API key" : "Show API key")
+            .accessibilityLabel(isRevealed ? "Hide \(credentialName)" : "Show \(credentialName)")
         }
+        // Field and eye button stay two separate elements inside one container,
+        // so VoiceOver can reach the toggle instead of flattening it into the
+        // field's label.
+        .accessibilityElement(children: .contain)
         .padding(.horizontal, 8)
         .background(RoundedRectangle(cornerRadius: 6).fill(palette.surface))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
@@ -46,12 +62,14 @@ struct RevealableSecureField: View {
 /// not login passwords, so QuickType/autofill/autocorrect are all turned off.
 private struct SecureTextFieldRep: UIViewRepresentable {
     let placeholder: String
+    let accessibilityLabel: String
     let isSecure: Bool
     @Binding var text: String
 
     func makeUIView(context: Context) -> UITextField {
         let field = UITextField()
         field.placeholder = placeholder
+        field.accessibilityLabel = accessibilityLabel
         field.font = .systemFont(ofSize: 15)
         field.autocapitalizationType = .none
         field.autocorrectionType = .no
@@ -74,6 +92,7 @@ private struct SecureTextFieldRep: UIViewRepresentable {
     func updateUIView(_ field: UITextField, context: Context) {
         if field.text != text { field.text = text }
         field.placeholder = placeholder
+        field.accessibilityLabel = accessibilityLabel
         if field.isSecureTextEntry != isSecure {
             // Flipping isSecureTextEntry while first responder can drop the whole
             // string on the next keystroke; re-seat the text to keep it intact.

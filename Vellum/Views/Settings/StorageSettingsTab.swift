@@ -505,13 +505,14 @@ struct StorageSettingsTab: View {
                 documents: DocumentDataStore.listDocuments(),
                 web: WebLibrary.listSnapshotStorage(),
                 webRecordBytes: WebLibrary.totalRecordBytes(),
-                // TODO(parity-129 packet-1): needs
-                // ScratchpadPersistence.listLegacyEntries() (packet 6) and
-                // AiPersistence.listLegacyEntries() (packet 5). Until they land
-                // the orphans section degrades to orphaned documents only —
-                // visible but not wrong.
+                // TODO(parity-129 packet-1): still needs
+                // ScratchpadPersistence.listLegacyEntries() (packet 6). Until it
+                // lands the orphans section lists unmigrated chats but not
+                // unmigrated notes — visible but not wrong.
                 legacyScratchpad: [],
-                legacyAi: [])
+                legacyAi: AiPersistence.listLegacyEntries().map {
+                    LegacyRow(source: .ai, key: $0.key, bytes: $0.bytes)
+                })
         }.value
         let cache = await PageTextCache.shared.listEntries()
         docEntries = listing.documents
@@ -600,14 +601,12 @@ struct StorageSettingsTab: View {
     /// even for a document open in another pane).
     @MainActor
     private func postDataDeleted(keys: [String], notes: Bool, chat: Bool) {
-        // The AI cache is process-wide (not per-pane), so it should be
-        // invalidated here up front — a pane not currently showing the doc still
-        // holds no live view, but a queued flush from any AiStore must not
-        // clobber the delete.
-        // TODO(parity-129 packet-1): needs
-        // AiPersistence.invalidateCachedConversation(forKey:) (packet 5).
-        // Until it lands, a Delete Chat on a document open in a pane can be
-        // resurrected by the write-behind cache's next flush.
+        // The AI cache is process-wide (not per-pane), so invalidate it here up
+        // front — a pane not currently showing the doc still holds no live view,
+        // but a queued flush from any AiStore must not clobber the delete.
+        if chat {
+            for key in keys { AiPersistence.invalidateCachedConversation(forKey: key) }
+        }
         NotificationCenter.default.post(
             name: .vellumDocumentDataDeleted, object: nil,
             userInfo: ["keys": keys, "notes": notes, "chat": chat])
@@ -618,11 +617,19 @@ struct StorageSettingsTab: View {
         case .scratchpad: legacyScratchpad.removeAll { $0.id == legacy.id }
         case .ai: legacyAi.removeAll { $0.id == legacy.id }
         }
+        let source = legacy.source
+        let key = legacy.key
         Task {
-            // TODO(parity-129 packet-1): needs
-            // ScratchpadPersistence.removeLegacyEntry(key:) (packet 6) and
-            // AiPersistence.removeLegacyEntry(key:) (packet 5). The listing is
-            // stubbed to [] above, so no row can reach this path yet.
+            await Task.detached {
+                switch source {
+                // TODO(parity-129 packet-1): still needs
+                // ScratchpadPersistence.removeLegacyEntry(key:) (packet 6). The
+                // scratchpad listing is stubbed to [] above, so no row can reach
+                // this branch yet.
+                case .scratchpad: break
+                case .ai: AiPersistence.removeLegacyEntry(key: key)
+                }
+            }.value
             await reload()
         }
     }

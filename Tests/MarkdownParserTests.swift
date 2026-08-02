@@ -25,8 +25,14 @@ final class MarkdownParserTests: XCTestCase {
     // MARK: - Blocks: lists
 
     func testLists() {
-        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.unordered(["a", "b"])])
-        XCTAssertEqual(MarkdownParser.parse("1. a\n2. b"), [.ordered(["a", "b"])])
+        XCTAssertEqual(MarkdownParser.parse("- a\n- b"), [.list([
+            MarkdownListItem(depth: 0, marker: .unordered, text: "a"),
+            MarkdownListItem(depth: 0, marker: .unordered, text: "b"),
+        ])])
+        XCTAssertEqual(MarkdownParser.parse("1. a\n2. b"), [.list([
+            MarkdownListItem(depth: 0, marker: .ordered(1), text: "a"),
+            MarkdownListItem(depth: 0, marker: .ordered(2), text: "b"),
+        ])])
     }
 
     // MARK: - Blocks: quotes
@@ -220,4 +226,11 @@ final class MarkdownParserTests: XCTestCase {
     func testPlainPreviewStripsBlockMarkers() {
         XCTAssertEqual(MarkdownParser.plainPreview("# H\n- item"), "H item")
     }
+
+    // TODO(#129 packet 7 §4.2): main adds 11 more `MathRenderer.segments` /
+    // `codeSpanRanges` cases here (#127 — code spans vs the math splitter,
+    // escaped `\(`/`\)`, astral-plane offsets, mismatched backtick runs). They
+    // are deferred to Stage F because every one of them needs
+    // `MathRenderer.codeSpanRanges`, which packet 7 §2.5 has not landed yet.
+    // Packet 5 §I.2 owns only the `testLists` change above.
 }
