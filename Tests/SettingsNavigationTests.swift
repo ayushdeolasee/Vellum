@@ -20,17 +20,69 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(workspace.settingsSection, .storage)
     }
 
-    // Two groups from main's copy of this file are deliberately absent.
+    // One group from main's copy of this file is deliberately absent.
     //
     // `testUpdateCheckerIsWorkspaceOwnedAndAutomaticCheckIsClaimedOnce` is a
     // PERMANENT drop: it asserts `workspace.updateChecker` /
     // `didStartAutomaticUpdateCheck` / `claimAutomaticUpdateCheck()`, and a
     // Sparkle-style self-updater is meaningless in an App Store app.
     //
-    // The four AI-validation tests (`testApiKeyProvidersRequireCredentialsAndModels`,
-    // `testOpenRouterKeyWithoutModelIsNotConfigured`,
-    // `testChatGPTConfigurationUsesSignInStateAndModel`) are a DEFERRAL, not a
-    // drop: they need `AiSettings.isConfigured(chatGPTSignedIn:)`, which does
-    // not exist on iPad until the AI packet lands. That packet also claims this
-    // file — it should add them back rather than treat their absence as intent.
+    // The AI-validation tests below were deferred while `AiSettings` had no
+    // iPad home. The AI packet has since landed
+    // `AiSettings.isConfigured(chatGPTSignedIn:)`, so they are restored
+    // verbatim from main.
+
+    func testApiKeyProvidersRequireCredentialsAndModels() {
+        let providers: [(
+            AiProvider,
+            WritableKeyPath<AiSettings, String>,
+            WritableKeyPath<AiSettings, String>
+        )] = [
+            (.gemini, \.apiKey, \.model),
+            (.openai, \.openaiApiKey, \.openaiModel),
+            (.openrouter, \.openrouterApiKey, \.openrouterModel),
+            (.opencode, \.opencodeApiKey, \.opencodeModel),
+            (.opencodeGo, \.opencodeGoApiKey, \.opencodeGoModel),
+        ]
+
+        for (provider, keyPath, modelPath) in providers {
+            var settings = AiSettings()
+            settings.provider = provider
+            settings[keyPath: modelPath] = "model"
+            settings[keyPath: keyPath] = " \n "
+            XCTAssertFalse(
+                settings.isConfigured(chatGPTSignedIn: true),
+                "\(provider) should reject whitespace-only credentials")
+
+            settings[keyPath: keyPath] = "credential"
+            XCTAssertTrue(
+                settings.isConfigured(chatGPTSignedIn: false),
+                "\(provider) should accept a credential with a selected model")
+
+            settings[keyPath: modelPath] = " \n "
+            XCTAssertFalse(
+                settings.isConfigured(chatGPTSignedIn: true),
+                "\(provider) should reject a missing model")
+        }
+    }
+
+    func testOpenRouterKeyWithoutModelIsNotConfigured() {
+        var settings = AiSettings()
+        settings.provider = .openrouter
+        settings.openrouterApiKey = "sk-or-test"
+        settings.openrouterModel = ""
+
+        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: false))
+    }
+
+    func testChatGPTConfigurationUsesSignInStateAndModel() {
+        var settings = AiSettings()
+        settings.provider = .chatgpt
+
+        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: false))
+        XCTAssertTrue(settings.isConfigured(chatGPTSignedIn: true))
+
+        settings.chatgptModel = " "
+        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: true))
+    }
 }
