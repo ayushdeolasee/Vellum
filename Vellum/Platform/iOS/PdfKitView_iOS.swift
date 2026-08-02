@@ -14,6 +14,99 @@ import UIKit
 final class VellumPDFView: PDFView, VellumShortcutResponder {
     var onShortcut: VellumShortcutHandler?
 
+    // MARK: - Zoom policy (issue #152)
+
+    /// How this view picks its scale, injected by whichever shell hosts it
+    /// (`\.pdfZoomMode`). `.free` — the default, and every iPad/mac mount — is
+    /// the behaviour this view has always had: absolute zoom between the
+    /// app-wide bounds. `.fitWidth` is the phone reader.
+    var zoomMode: PdfZoomMode = .free {
+        didSet {
+            guard zoomMode != oldValue else { return }
+            // The bounds themselves change with the mode, so nothing about the
+            // previously applied policy can be reused.
+            appliedPolicy = nil
+            applyZoomPolicy()
+        }
+    }
+
+    /// The app-wide zoom range (`AppStore.minZoom ... AppStore.maxZoom`), kept
+    /// separately because `minScaleFactor` is no longer a copy of it: fit-width
+    /// RAISES the view's minimum to the fit scale, so the absolute floor has to
+    /// survive somewhere for the policy to be recomputed from.
+    var absoluteScaleRange: ClosedRange<Double> = AppStore.minZoom...AppStore.maxZoom
+
+    /// The policy currently installed, and the document it was installed for.
+    /// A new document opens at its fit scale; a mere viewport change adjusts
+    /// the scale the reader is already at (`PdfZoomPolicy.adjustedScale`).
+    ///
+    /// The document reference is weak — this is an identity marker, not
+    /// ownership — and a zeroed one reads as "different", which re-fits. That
+    /// is the safe direction to fail in.
+    private var appliedPolicy: PdfZoomPolicy?
+    private weak var appliedDocument: PDFDocument?
+
+    /// The viewport's width is only known once UIKit has laid the view out —
+    /// it is zero throughout `makeUIView` — so the fit is applied here rather
+    /// than at construction. This is also the callback that fires on rotation
+    /// and on any resize of the reader, which is exactly when a width-derived
+    /// scale needs recomputing.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        applyZoomPolicy()
+    }
+
+    /// Re-derive the scale bounds for the current viewport and apply them.
+    ///
+    /// Under `.free` the resolved policy is a constant — the same
+    /// `minScaleFactor`/`maxScaleFactor` the representable already assigned,
+    /// and an opening scale equal to the current one — so the first call is a
+    /// no-op assignment and every later call returns at the `appliedPolicy`
+    /// guard. That is what keeps the iPad path untouched by construction.
+    func applyZoomPolicy() {
+        guard let document, bounds.width > 0 else { return }
+        let policy = PdfZoomPolicy.resolve(
+            mode: zoomMode,
+            pageWidth: Self.displayedWidth(of: document.page(at: 0), box: displayBox),
+            viewportWidth: Double(bounds.width),
+            // The only horizontal padding this view adds; vertical page breaks
+            // carry the 6pt gaps, the sides are flush. If a device check ever
+            // shows PDFKit inset the page further, it is fed in HERE and the
+            // policy needs no change.
+            horizontalInset: Double(pageBreakMargins.left + pageBreakMargins.right),
+            minimumScale: absoluteScaleRange.lowerBound,
+            maximumScale: absoluteScaleRange.upperBound)
+        let isNewDocument = appliedDocument !== document
+        guard isNewDocument || policy != appliedPolicy else { return }
+        let previousFitWidth = appliedPolicy?.fitWidthScale
+        appliedPolicy = policy
+        appliedDocument = document
+        minScaleFactor = CGFloat(policy.minimumScale)
+        maxScaleFactor = CGFloat(policy.maximumScale)
+        let target = isNewDocument
+            ? policy.openingScale(persisted: Double(scaleFactor))
+            : policy.adjustedScale(
+                current: Double(scaleFactor), previousFitWidth: previousFitWidth)
+        if abs(target - Double(scaleFactor)) > 0.0001 {
+            scaleFactor = CGFloat(target)
+            // PDFKit posts .PDFViewScaleChanged for this, which is what mirrors
+            // the new scale into AppStore.zoom (the % label, the persisted tab).
+        }
+    }
+
+    /// Width of a page as it is DISPLAYED, at zoom 1.
+    ///
+    /// Page one stands in for the document: a per-page fit would rescale the
+    /// reader mid-scroll through a document with mixed page sizes, which reads
+    /// as the page jumping, and mixed sizes are rare enough not to be worth
+    /// that. `bounds(for:)` is in unrotated page space, so a `/Rotate 90` page
+    /// displays with its height across.
+    private static func displayedWidth(of page: PDFPage?, box: PDFDisplayBox) -> Double {
+        guard let page else { return 0 }
+        let bounds = page.bounds(for: box)
+        return Double(page.rotation % 180 == 0 ? bounds.width : bounds.height)
+    }
+
     /// Built once: `keyCommands` is queried on every key press while this view
     /// is in the responder chain, and the array is constant for the lifetime of
     /// the view (the catalog is static and the selector never changes).
@@ -59,6 +152,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
     @Environment(AppStore.self) private var app
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    /// `.fitWidth` only under the compact phone shell; `.free` everywhere else,
+    /// including an iPad in Slide Over. See `RootShell_iOS`.
+    @Environment(\.pdfZoomMode) private var zoomMode
 
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
 
@@ -85,8 +181,12 @@ struct PdfKitView_iOS: UIViewRepresentable {
         view.autoScales = false
         view.displaysPageBreaks = true
         view.pageBreakMargins = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        view.absoluteScaleRange = AppStore.minZoom...AppStore.maxZoom
         view.minScaleFactor = CGFloat(AppStore.minZoom)
         view.maxScaleFactor = CGFloat(AppStore.maxZoom)
+        // Set before the document: the first layout pass is what computes the
+        // fit-width scale, and it needs to know it is fitting by then.
+        view.zoomMode = zoomMode
         view.backgroundColor = UIColor(palette.well)
         // Install the Pencil overlay provider BEFORE the document so PDFKit wires
         // a per-page canvas as each page lays out.
@@ -111,6 +211,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         uiView.backgroundColor = UIColor(palette.well)
+        // Also covers the adopted-view path in `makeUIView`, where a tab that
+        // moved between shells has to be told about its new scaling rules.
+        // Idempotent — the setter ignores an unchanged mode.
+        if let vellum = uiView as? VellumPDFView { vellum.zoomMode = zoomMode }
         if uiView.document !== document {
             uiView.document = document
             controller.pdfView = uiView
@@ -122,8 +226,17 @@ struct PdfKitView_iOS: UIViewRepresentable {
         guard isActive else { return }
         // Store → view zoom sync only when it drifts (button zoom); the live
         // pinch drives scaleFactor directly and PDFViewScaleChanged mirrors it.
-        if abs(Double(uiView.scaleFactor) - app.zoom) > 0.0001 {
-            uiView.scaleFactor = CGFloat(app.zoom)
+        //
+        // Bounded by the VIEW's range rather than pushed raw: fit-width reading
+        // raises `minScaleFactor` above the app-wide floor, so a zoom persisted
+        // on a roomier viewport (an iPad, a rotated phone) can sit below what
+        // this one allows, and pushing it verbatim would strand the page
+        // narrower than the screen. On iPad the two ranges are identical and
+        // this is the same assignment it always was.
+        let target = min(
+            Double(uiView.maxScaleFactor), max(Double(uiView.minScaleFactor), app.zoom))
+        if abs(Double(uiView.scaleFactor) - target) > 0.0001 {
+            uiView.scaleFactor = CGFloat(target)
         }
     }
 

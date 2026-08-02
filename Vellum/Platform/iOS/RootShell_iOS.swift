@@ -26,6 +26,13 @@ import UIKit
 /// lands on `ContentView_iOS` for now. That is the honest phase-0 answer —
 /// the app it already is, rather than a placeholder — and the phone shell takes
 /// over both orientations once it is real (#153).
+///
+/// Each branch also declares how a PDF viewer beneath it should scale (#152).
+/// The phone reader fits the page to the viewport's width and floors zoom-out
+/// there; everything else keeps absolute zoom. Declaring BOTH sides here, next
+/// to the shell choice itself, is what keeps the fit-width behaviour from
+/// leaking into the iPad's compact-width multitasking layouts — those render
+/// `ContentView_iOS`, and `ContentView_iOS` is stated to be `.free`.
 struct RootShell_iOS: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -36,8 +43,10 @@ struct RootShell_iOS: View {
     var body: some View {
         if horizontalSizeClass == .compact, idiom == .phone {
             PhoneShell_iOS()
+                .environment(\.pdfZoomMode, .fitWidth)
         } else {
             ContentView_iOS()
+                .environment(\.pdfZoomMode, .free)
         }
     }
 }
