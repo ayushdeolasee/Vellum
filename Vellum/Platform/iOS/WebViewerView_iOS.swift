@@ -16,50 +16,16 @@ import WebKit
 // "viewport-scrolled", exactly as the macOS handlers already do.
 
 struct WebViewerView_iOS: View {
-    // MARK: - Live-tab mount contract (packet 4 §2.0) — accepted, not honoured
-    //
-    // `(tabId:document:isActive:runtime:)` is the shape packet 7's rebuilt
-    // viewer takes, so `LiveTabHost_iOS` can mount one per open tab instead of
-    // one per pane. Interface only for now: nothing constructs a
-    // `LiveTabRuntime`, nothing calls that initializer, and the four values
-    // below are stored and never read. The body still resolves the document
-    // through `app.document` and still owns its controller in `@State`.
-    //
-    // Packet 7 deletes `init()`, drops the optionality, and switches the body
-    // over to these — gating every `onChange`-driven push on `isActiveMount`
-    // and taking the controller from `mountedRuntime.webController`.
-
-    /// Tab this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedTabId: String?
-    /// Document this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedDocument: DocumentInfo?
+    let tabId: String
+    let document: DocumentInfo
     /// Whether this mount is its pane's ACTIVE tab. Inactive mounts sit at
-    /// opacity 0 and must not push selection/navigation state into the shared
-    /// stores. Defaults to `true` on the pre-live-tabs path, where the single
-    /// mounted viewer is by definition the active one — so every push that runs
-    /// today still runs.
-    private let isActiveMount: Bool
-    /// The tab's workspace-owned runtime: the controller and the `WKWebView` it
-    /// keeps alive come from here once packet 7 lands. `nil` on the
-    /// pre-live-tabs path.
-    private let mountedRuntime: LiveTabRuntime?
-
-    init() {
-        self.mountedTabId = nil
-        self.mountedDocument = nil
-        self.isActiveMount = true
-        self.mountedRuntime = nil
-    }
-
-    /// The live-tab entry point. Declared so packet 7 has a compiler-checked
-    /// target and packet 4 §2.8 has something to call; the arguments are
-    /// accepted and ignored until packet 7 honours them.
-    init(tabId: String, document: DocumentInfo, isActive: Bool, runtime: LiveTabRuntime) {
-        self.mountedTabId = tabId
-        self.mountedDocument = document
-        self.isActiveMount = isActive
-        self.mountedRuntime = runtime
-    }
+    /// opacity 0 inside `LiveTabHost_iOS`; every push into the pane's shared
+    /// stores below is gated on this, or a background page's scroll/selection
+    /// would overwrite the visible tab's.
+    let isActive: Bool
+    /// The tab's runtime. The `WKWebView` and its content process hang off
+    /// `runtime.webController`, so they survive this host being remounted.
+    let runtime: LiveTabRuntime
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -67,12 +33,18 @@ struct WebViewerView_iOS: View {
     @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
-    // The controller owns the WKWebView. Keep it alive while the pane changes
-    // tabs so switching does not synchronously tear down and rebuild WebKit.
-    @State private var controller = WebViewerController_iOS()
+    /// Sticky "this tab has been shown at least once". A warm tab promoted back
+    /// into the hot set is remounted while still INACTIVE; without this it would
+    /// render `Color.clear` and the retained web view would not be re-parented
+    /// until the tab was next selected — exactly the cost the hot tier exists to
+    /// have already paid. `controller.isAttached` covers the case where the
+    /// `@State` itself did not survive the remount.
+    @State private var hasActivated = false
+
+    private var controller: WebViewerController_iOS { runtime.webController }
 
     var body: some View {
-        if app.document?.kind == .web {
+        if hasActivated || isActive || controller.isAttached {
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
                     WebViewRepresentable_iOS(controller: controller)
@@ -198,15 +170,22 @@ struct WebViewerView_iOS: View {
             .background(palette.well)
             .clipped()
             .onAppear {
-                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+                guard isActive else { return }
+                hasActivated = true
+                attach()
             }
+            // In-tab link navigation rebinds the tab to a new URL; `attach`
+            // early-returns when neither the tab nor the URL actually moved.
             .onChange(of: documentIdentity) {
-                controller.attach(app: app, annotationStore: annotationStore, aiStore: aiStore)
+                guard isActive else { return }
+                attach()
             }
-            .onDisappear {
-                controller.detach()
-            }
+            // Deliberately NO `.onDisappear { controller.detach() }`. The
+            // controller belongs to the runtime, not to this host: a remount
+            // (tab dragged between panes, warm tab coming back) must not tear
+            // down WebKit. `LiveTabRuntime.releaseResidency()` is what detaches.
             .onChange(of: controller.initCount) {
+                guard isActive else { return }
                 controller.pushAnnotations(annotationStore.annotations)
                 controller.pushMode(app.mode)
                 controller.pushSelectedHighlight()
@@ -215,23 +194,40 @@ struct WebViewerView_iOS: View {
                     selectedId: annotationStore.selectedAnnotationId)
             }
             .onChange(of: annotationStore.annotations) {
+                guard isActive else { return }
                 controller.pushAnnotations(annotationStore.annotations)
             }
             .onChange(of: app.mode) {
+                guard isActive else { return }
                 controller.pushMode(app.mode)
             }
             // Only explicit navigation requests scroll. In-page note/highlight
             // taps update selection state without moving a viewport that already
             // contains the annotation.
             .onChange(of: annotationStore.selectionRequestCount) {
+                guard isActive else { return }
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
                     selectedId: annotationStore.selectedAnnotationId)
             }
             .onChange(of: app.zoom) { _, zoom in
+                guard isActive else { return }
                 controller.applyZoom(zoom)
             }
+            .onChange(of: isActive) { _, active in
+                guard active else {
+                    controller.deactivate()
+                    return
+                }
+                hasActivated = true
+                attach()
+                controller.pushAnnotations(annotationStore.annotations)
+                controller.pushMode(app.mode)
+                controller.pushSelectedHighlight()
+                controller.applyZoom(app.zoom)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
+                guard isActive else { return }
                 let delta = note.userInfo?["delta"] as? Int ?? 0
                 controller.goHistory(delta: delta)
             }
@@ -240,8 +236,14 @@ struct WebViewerView_iOS: View {
         }
     }
 
+    private func attach() {
+        controller.attach(
+            app: app, annotationStore: annotationStore, aiStore: aiStore,
+            tabId: tabId, document: document, runtime: runtime)
+    }
+
     private var documentIdentity: WebDocumentIdentity_iOS {
-        WebDocumentIdentity_iOS(tabId: app.activeTabId, url: app.document?.pdfPath)
+        WebDocumentIdentity_iOS(tabId: tabId, url: document.pdfPath)
     }
 
     /// Hand the finished crop to whichever panel armed the capture (mirrors
@@ -395,6 +397,10 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private weak var annotationStore: AnnotationStore?
     @ObservationIgnored private weak var aiStore: AiStore?
     @ObservationIgnored private var mountTabId: String?
+    /// The tab's runtime, weak because the runtime owns this controller. Page
+    /// text reported by the content script is mirrored here as well as into the
+    /// pane's shared `AiStore` — see `LiveTabRuntime.pageTexts`.
+    @ObservationIgnored private weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var loadedDocumentUrl: String?
     @ObservationIgnored private var attached = false
     // Whether the injected content script supports point anchors (declared in
@@ -474,11 +480,25 @@ final class WebViewerController_iOS: NSObject {
 
     // MARK: Lifecycle
 
-    func attach(app: AppStore, annotationStore: AnnotationStore, aiStore: AiStore) {
+    func attach(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        aiStore: AiStore,
+        tabId: String,
+        document: DocumentInfo,
+        runtime: LiveTabRuntime
+    ) {
+        // A tab can migrate to another pane while its native WKWebView stays
+        // alive, so the pane-scoped stores are rebound on EVERY attach, not
+        // only the first.
         attached = true
         self.app = app
         self.annotationStore = annotationStore
         self.aiStore = aiStore
+        self.runtime = runtime
+        // The page text this tab already extracted lives on its runtime;
+        // `AiStore` holds only whichever document the pane last showed.
+        aiStore.restorePageTexts(runtime.pageTexts)
         applyZoom(app.zoom)
 
         // Global hooks used by the toolbar, sidebar, and AI tool execution
@@ -524,24 +544,29 @@ final class WebViewerController_iOS: NSObject {
             self?.printPage()
         }
 
-        guard let doc = app.document, doc.kind == .web,
-              let tabId = app.activeTabId else { return }
+        guard document.kind == .web else { return }
 
-        // Re-evaluation of the SwiftUI body is common during tab-strip edits.
-        // Only load when the viewer is actually being rebound to another tab or
-        // URL; reloading an unchanged page loses its live scroll/selection state.
-        guard mountTabId != tabId || loadedDocumentUrl != doc.pdfPath else {
+        // Re-evaluation of the SwiftUI body is common during tab-strip edits,
+        // and a remount is now routine (a tab dragged between panes, a warm tab
+        // coming back). Only load when the viewer is actually being rebound to
+        // another tab or URL; reloading an unchanged page loses its live
+        // scroll/selection state, which is the whole point of live tabs.
+        guard mountTabId != tabId || loadedDocumentUrl != document.pdfPath else {
             pushAnnotations(annotationStore.annotations)
             pushMode(app.mode)
             pushSelectedHighlight()
+            // An init message may have been queued and deliberately discarded
+            // while this tab was inactive; ask the preserved page for a fresh
+            // snapshot so extraction and viewport state catch up.
+            post("request-init")
             return
         }
 
         cancelPendingArchive()
         clearTransientStateForRebind()
         mountTabId = tabId
-        loadedDocumentUrl = doc.pdfPath
-        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
+        loadedDocumentUrl = document.pdfPath
+        webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: document.pdfPath)))
     }
 
     /// Whether a mounted host has claimed this controller. Read by the residency
@@ -1519,7 +1544,9 @@ final class WebViewerController_iOS: NSObject {
                       let number = intValue(page["number"]),
                       let text = page["text"] as? String else { continue }
                 pages.append(WebPageText(number: number, text: text))
-                aiStore?.setPageText(page: number, text: text)
+                if let normalized = aiStore?.setPageText(page: number, text: text) {
+                    runtime?.pageTexts[number] = normalized
+                }
             }
         }
 

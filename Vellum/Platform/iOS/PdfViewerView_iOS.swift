@@ -16,55 +16,29 @@ private struct PreparedPdf: @unchecked Sendable {
     let document: PDFDocument?
 }
 
+/// What makes the viewer's load task run again: becoming active, or the tab's
+/// file being replaced underneath it (`LiveTabRuntime.documentGeneration`).
+private struct PdfLoadTrigger_iOS: Equatable {
+    let isActive: Bool
+    let generation: Int
+}
+
 struct PdfViewerView_iOS: View {
-    var ink: InkController_iOS
-
-    // MARK: - Live-tab mount contract (packet 4 §2.0) — accepted, not honoured
-    //
-    // `(tabId:documentInfo:isActive:runtime:)` is the shape packet 7's rebuilt
-    // viewer takes, so that `LiveTabHost_iOS` can mount one of these per open
-    // tab instead of one per pane. Interface only for now: nothing constructs a
-    // `LiveTabRuntime`, nothing calls that initializer, and the four values
-    // below are stored and never read. The body still resolves the document
-    // through `app.document` / `app.activeTabId` and still owns its controller
-    // in `@State`, exactly as before.
-    //
-    // Packet 7 deletes `init(ink:)`, drops the optionality, and switches the
-    // body over to these — gating every `onChange`-driven push on
-    // `isActiveMount` and taking the controller from `mountedRuntime`.
-
-    /// Tab this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedTabId: String?
-    /// Document this host is mounted for; `nil` on the pre-live-tabs path.
-    private let mountedDocument: DocumentInfo?
+    let tabId: String
+    let documentInfo: DocumentInfo
     /// Whether this mount is its pane's ACTIVE tab. Inactive mounts sit at
-    /// opacity 0 and must not push zoom/scroll/find state into the shared
-    /// stores. Defaults to `true` on the pre-live-tabs path, where the single
-    /// mounted viewer is by definition the active one — so every push that runs
-    /// today still runs.
-    private let isActiveMount: Bool
-    /// The tab's workspace-owned runtime: the controller, the retained
-    /// `PDFView`, the ink controller and the prepared document all come from
-    /// here once packet 7 lands. `nil` on the pre-live-tabs path.
-    private let mountedRuntime: LiveTabRuntime?
+    /// opacity 0 inside `LiveTabHost_iOS` and must not push zoom/scroll/find
+    /// state into the pane's shared stores.
+    let isActive: Bool
+    /// Everything expensive this tab owns: the PDF controller and its retained
+    /// `PDFView`, the parsed document, the ink controller, the page-text cache.
+    let runtime: LiveTabRuntime
 
-    init(ink: InkController_iOS) {
-        self.ink = ink
-        self.mountedTabId = nil
-        self.mountedDocument = nil
-        self.isActiveMount = true
-        self.mountedRuntime = nil
-    }
-
-    /// The live-tab entry point. Declared so packet 7 has a compiler-checked
-    /// target and packet 4 §2.8 has something to call; the arguments are
-    /// accepted and ignored until packet 7 honours them.
     init(tabId: String, documentInfo: DocumentInfo, isActive: Bool, runtime: LiveTabRuntime) {
-        self.ink = runtime.ink
-        self.mountedTabId = tabId
-        self.mountedDocument = documentInfo
-        self.isActiveMount = isActive
-        self.mountedRuntime = runtime
+        self.tabId = tabId
+        self.documentInfo = documentInfo
+        self.isActive = isActive
+        self.runtime = runtime
     }
 
     @Environment(AppStore.self) private var app
@@ -72,39 +46,48 @@ struct PdfViewerView_iOS: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
 
-    @State private var controller = PdfViewerControlleriOS()
-    @State private var loadState: LoadState = .idle
+    private var controller: PdfViewerControlleriOS { runtime.pdfController }
+    /// Pencil ink is per-DOCUMENT and therefore per-runtime. The pane used to
+    /// own one controller for every tab it showed, which aliased page canvases
+    /// across documents the moment two tabs were mounted at once.
+    private var ink: InkController_iOS { runtime.ink }
+
+    /// Tab the shared handler slots are currently registered for; nil when this
+    /// view has no live registration (see `deactivate`'s ownership guard).
     @State private var handlersTabId: String?
 
-    private enum LoadState {
-        case idle
-        case loading
-        case readFailed(String)
-        case parseFailed
-        case loaded(PDFDocument, tabId: String)
-    }
-
     var body: some View {
-        if let document = app.document, document.kind == .pdf, let tabId = app.activeTabId {
-            content(tabId: tabId)
-                .task(id: tabId) { await load(tabId: tabId) }
-                .onDisappear { teardown() }
-        } else {
-            Color.clear
-        }
+        content()
+            // First activation prepares the document. Subsequent activations
+            // reuse the same PDFView/controller and only reclaim the shared
+            // command handlers, preserving native scroll, selection and find
+            // state. `documentGeneration` covers the one case where this tab's
+            // file changes without the tab, the host or `isActive` changing.
+            .task(id: PdfLoadTrigger_iOS(isActive: isActive, generation: runtime.documentGeneration)) {
+                guard isActive else {
+                    deactivate()
+                    return
+                }
+                if case .idle = runtime.pdfLoadState {
+                    await load(tabId: tabId)
+                } else {
+                    activate()
+                }
+            }
     }
 
     @ViewBuilder
-    private func content(tabId: String) -> some View {
-        switch loadState {
+    private func content() -> some View {
+        switch runtime.pdfLoadState {
         case .readFailed(let message):
             statusView(Text("Failed to read PDF: \(message)").foregroundStyle(palette.destructive))
         case .parseFailed:
             statusView(Text("Failed to load PDF").foregroundStyle(palette.destructive))
-        case .loaded(let document, let loadedTabId) where loadedTabId == tabId:
+        case .loaded(let document):
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    PdfKitView_iOS(controller: controller, document: document, ink: ink)
+                    PdfKitView_iOS(
+                        controller: controller, document: document, ink: ink, isActive: isActive)
                         .frame(width: geo.size.width, height: geo.size.height)
                     PdfOverlayStack_iOS(controller: controller)
                 }
@@ -129,20 +112,30 @@ struct PdfViewerView_iOS: View {
     }
 
     private func load(tabId: String) async {
+        defer {
+            // `.task(id:)` is intentionally cancelled on a rapid switch. Leave
+            // the host retryable rather than stranded in its placeholder.
+            if Task.isCancelled, case .loading = runtime.pdfLoadState {
+                runtime.pdfLoadState = .idle
+            }
+        }
         unregisterHandlers()
         handlersTabId = nil
         controller.reset()
-        loadState = .loading
-        aiStore.clearDocumentContext()
+        runtime.pdfLoadState = .loading
+        if isActive { aiStore.clearDocumentContext() }
         do {
             // The persistent text cache is keyed by the current PDF bytes, so
             // read them even when this tab can reuse an already prepared PDF.
             let data = try await app.sessions.readPdfBytes(sessionId: tabId)
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             let document: PDFDocument
-            if let cached = app.cachedPreparedPdf(tabId: tabId) {
-                // Fast path: this tab was opened recently — reuse the prepared
-                // document, skipping the parse and strip entirely.
+            if let cached = runtime.preparedDocument {
+                // Fast path: this tab already parsed its document and a switch
+                // away cancelled the load before it finished wiring up. Reuse
+                // the prepared document, skipping the parse and strip entirely.
+                // Eviction clears it, so this can never resurrect a document the
+                // residency policy has already reclaimed.
                 document = cached
             } else {
                 // Parse the PDF and strip its embedded annotations OFF the main
@@ -159,48 +152,53 @@ struct PdfViewerView_iOS: View {
                     }
                     return PreparedPdf(document: document)
                 }.value
-                guard !Task.isCancelled, app.activeTabId == tabId else { return }
+                guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
                 guard let parsed = prepared.document else {
-                    loadState = .parseFailed
+                    runtime.pdfLoadState = .parseFailed
                     return
                 }
-                app.storePreparedPdf(parsed, tabId: tabId)
+                // The byte count is what the residency policy costs this tab at
+                // when ranking eviction candidates against its byte budget.
+                runtime.adoptPreparedPdf(parsed, byteCount: data.count)
                 document = parsed
             }
-            // Restore persisted page text before adopting (PDF only; this view
-            // is guarded to document.kind == .pdf). Hashing + JSON decode run
-            // off the main actor inside the cache actor.
-            // Storage key resolved from the just-opened DocumentInfo: its docId
-            // when the file carries one, else the path hash. The write path
-            // keyed itself the same way at open (PdfSessionCacheKeys), so
-            // lookup, persister, and every in-app refreshHash agree for the
-            // whole session.
-            let storageKey = app.document.map { DocumentIdentity.storageKey(for: $0) }
+            // Restore persisted page text before adopting (PDF only; the host
+            // only builds this view for `kind == .pdf`). Hashing + JSON decode
+            // run off the main actor inside the cache actor.
+            //
+            // Storage key resolved from the mounted DocumentInfo — not the
+            // pane's active projection, which may already be another tab.
+            let storageKey = DocumentIdentity.storageKey(for: documentInfo)
+            let path = documentInfo.pdfPath
             let cached: [Int: String]?
-            if let path = app.document?.pdfPath, let storageKey {
+            if !path.isEmpty {
                 cached = await PageTextCache.shared.lookup(
-                    key: storageKey, path: path, data: data, title: app.document?.title)
+                    key: storageKey, path: path, data: data, title: documentInfo.title)
             } else {
                 cached = nil
             }
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             // Unconditional replace (empty on a miss): anything an outgoing
             // tab's extraction wrote into pageTexts during the awaits above
             // belongs to the OLD document and must not survive into this one.
-            aiStore.restorePageTexts(cached ?? [:])
+            runtime.pageTexts = cached ?? [:]
+            if isActive { aiStore.restorePageTexts(runtime.pageTexts) }
+            let initialPage = app.tab(id: tabId)?.currentPage ?? 1
             controller.adopt(
                 document: document,
                 app: app,
                 annotationStore: annotationStore,
                 ai: aiStore,
-                initialPage: app.currentPage
+                initialPage: initialPage,
+                tabId: tabId,
+                runtime: runtime
             )
-            app.setNumPages(document.pageCount)
-            if document.pageCount >= 1, let path = app.document?.pdfPath, let storageKey {
+            if isActive { app.setNumPages(document.pageCount) }
+            if document.pageCount >= 1, !path.isEmpty {
                 controller.installPersister(PageTextPersister(
                     key: storageKey,
                     path: path,
-                    title: app.document?.title,
+                    title: documentInfo.title,
                     pageCount: document.pageCount,
                     seeded: cached ?? [:]))
             }
@@ -208,14 +206,16 @@ struct PdfViewerView_iOS: View {
             ink.app = app
             ink.isActive = false
             ink.inkProvider.resetCache()
-            registerHandlers()
-            handlersTabId = tabId
-            loadState = .loaded(document, tabId: tabId)
-            controller.startTextExtraction(data: data)
+            runtime.pdfLoadState = .loaded(document)
+            if isActive {
+                registerHandlers()
+                handlersTabId = tabId
+                controller.startTextExtraction(data: data)
+            }
         } catch {
-            guard !Task.isCancelled, app.activeTabId == tabId else { return }
+            guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             NSLog("[PdfViewer-iOS] readPdfBytes FAILED: %@", error.localizedDescription)
-            loadState = .readFailed(error.localizedDescription)
+            runtime.pdfLoadState = .readFailed(error.localizedDescription)
         }
     }
 
@@ -261,14 +261,53 @@ struct PdfViewerView_iOS: View {
         app.flushPageTextCacheHandler = nil
     }
 
-    private func teardown() {
-        if app.activeTabId == handlersTabId || app.document == nil {
+    /// The tab is on screen again, with its document already loaded: reclaim
+    /// the pane's shared handler slots and re-point the controller at whichever
+    /// pane now hosts it (a tab can be dragged between panes while warm).
+    private func activate() {
+        guard app.activeTabId == tabId else { return }
+        controller.rebind(
+            app: app, annotationStore: annotationStore, ai: aiStore,
+            tabId: tabId, runtime: runtime)
+        ink.pdfController = controller
+        ink.app = app
+        aiStore.restorePageTexts(runtime.pageTexts)
+        registerHandlers()
+        handlersTabId = tabId
+        if case .loaded(let pdf) = runtime.pdfLoadState {
+            app.setNumPages(pdf.pageCount)
+            Task { await resumeTextExtraction(pageCount: pdf.pageCount) }
+        }
+    }
+
+    /// Pick the background text walk back up where the last deactivation parked
+    /// it. The bytes are re-read rather than kept on the controller: the iPad
+    /// walk runs over a PRIVATE `PDFDocument(data:)` copy (that is what keeps it
+    /// off the main actor), so retaining the data would mean a second full copy
+    /// of every large scanned PDF alive for the life of the tab — precisely the
+    /// footprint the residency ceilings exist to bound. Fully-indexed documents
+    /// never pay the read at all.
+    private func resumeTextExtraction(pageCount: Int) async {
+        guard runtime.pageTexts.count < pageCount else { return }
+        guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
+        guard !Task.isCancelled, app.activeTabId == tabId else { return }
+        controller.startTextExtraction(data: data)
+    }
+
+    /// The tab went to the background. The document, the `PDFView` and the
+    /// extracted text all stay exactly where they are — only the walk stops and
+    /// the shared handler slots are given up.
+    private func deactivate() {
+        controller.pauseTextExtraction()
+        guard handlersTabId == tabId else { return }
+        // If another document host is taking over it owns these shared slots
+        // now (or is about to), and clearing blindly here can race its
+        // registration. An empty pane has no replacement viewer, so clear then.
+        if app.document == nil {
             unregisterHandlers()
             aiStore.clearDocumentContext()
         }
         handlersTabId = nil
-        controller.reset()
-        loadState = .idle
     }
 }
 

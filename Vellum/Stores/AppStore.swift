@@ -89,36 +89,15 @@ final class AppStore {
 
     let sessions: SessionService
 
-    // MARK: - Prepared-PDF cache
+    // MARK: - Prepared PDFs
     //
-    // Switching tabs tears down and rebuilds the viewer (`.id(activeTabId)`), so
-    // without a cache every switch re-reads + re-parses + re-strips the whole PDF
-    // (now off-main, but still a visible delay for large docs). Cache the display-
-    // ready PDFDocument per tab so switching back is instant. A stripped display
-    // doc stays valid across annotation edits (annotations render from overlays,
-    // page content is unchanged), so no invalidation is needed beyond close/LRU.
-    private static let maxPreparedCache = 3
-    @ObservationIgnored private var preparedPdfCache: [(tabId: String, doc: PDFDocument)] = []
-
-    func cachedPreparedPdf(tabId: String) -> PDFDocument? {
-        guard let index = preparedPdfCache.firstIndex(where: { $0.tabId == tabId }) else { return nil }
-        // Touch: move to most-recently-used.
-        let entry = preparedPdfCache.remove(at: index)
-        preparedPdfCache.append(entry)
-        return entry.doc
-    }
-
-    func storePreparedPdf(_ doc: PDFDocument, tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-        preparedPdfCache.append((tabId, doc))
-        if preparedPdfCache.count > Self.maxPreparedCache {
-            preparedPdfCache.removeFirst()
-        }
-    }
-
-    func evictPreparedPdf(tabId: String) {
-        preparedPdfCache.removeAll { $0.tabId == tabId }
-    }
+    // There used to be a three-entry LRU of parsed `PDFDocument`s here, because
+    // switching tabs tore down and rebuilt the viewer. Tabs now keep their whole
+    // viewer mounted, and the parsed document lives on the tab's
+    // `LiveTabRuntime`. Keeping a second copy here would be actively harmful:
+    // evicting a runtime under memory pressure would free the view but leave the
+    // document alive in the LRU, so the memory the eviction existed to reclaim
+    // would not actually come back. One owner, one lifetime.
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -392,7 +371,6 @@ final class AppStore {
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        evictPreparedPdf(tabId: tabId)
 
         // Backend teardown can involve metadata/file I/O. The tab has already
         // disappeared from the UI, so finish that work asynchronously instead

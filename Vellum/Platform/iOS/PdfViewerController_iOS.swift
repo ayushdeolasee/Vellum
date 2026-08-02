@@ -46,17 +46,27 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     /// tabs exist to avoid. No cycle — the view never holds the controller (the
     /// coordinator holds the controller strongly and the view weakly).
     ///
-    /// Lifetimes are unchanged for now: `PdfKitView_iOS.Coordinator.detach()`
-    /// still nils this on dismantle, so the view dies with its host exactly as
-    /// it did when the reference was `weak`. Removing that nil — which is what
-    /// makes `adoptRetainedView` an actual reuse — belongs with the one-host-
-    /// per-tab mount in packet 4 §2.8, which owns `PdfKitView_iOS.swift`.
+    /// The reference genuinely outlives its host as of packet 4 §2.8:
+    /// `Coordinator.detach()` no longer nils it, so a remount adopts this view
+    /// through `adoptRetainedView` instead of building a new one. It is
+    /// released by `LiveTabRuntime.releaseResidency()` — which drops the whole
+    /// controller — and by nothing else.
     var pdfView: PDFView?
     private(set) var document: PDFDocument?
 
     @ObservationIgnored weak var app: AppStore?
     @ObservationIgnored weak var annotationStore: AnnotationStore?
     @ObservationIgnored weak var ai: AiStore?
+
+    /// The tab this controller is mounted for. Live tabs mount several viewers
+    /// at once, so every generation guard below asks "is MY tab the active one"
+    /// rather than reading the pane's active projection at the moment it runs.
+    @ObservationIgnored private(set) var tabId: String?
+    /// The tab's runtime, weak because the runtime owns this controller.
+    /// Extracted page text is mirrored here as well as into the pane's shared
+    /// `AiStore`: the AiStore holds only the ACTIVE tab's pages, so a background
+    /// tab's already-extracted text would otherwise be lost on every switch.
+    @ObservationIgnored weak var runtime: LiveTabRuntime?
 
     /// Bumped whenever scroll/zoom/layout moves page geometry so the overlays
     /// recompute their positions.
@@ -89,7 +99,9 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         app: AppStore,
         annotationStore: AnnotationStore,
         ai: AiStore,
-        initialPage: Int
+        initialPage: Int,
+        tabId: String,
+        runtime: LiveTabRuntime
     ) {
         reset()
         self.document = document
@@ -97,6 +109,28 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         self.annotationStore = annotationStore
         self.ai = ai
         self.initialPage = initialPage
+        self.tabId = tabId
+        self.runtime = runtime
+    }
+
+    /// Re-point the pane-scoped stores without touching the loaded document.
+    /// A tab dragged to another pane keeps its `PDFView` and its parsed
+    /// document but must start talking to the destination pane's stores, and a
+    /// warm tab coming back re-registers against whatever pane now hosts it.
+    /// Deliberately NOT `adopt`: that resets, which would throw away the very
+    /// native state live tabs exist to keep.
+    func rebind(
+        app: AppStore,
+        annotationStore: AnnotationStore,
+        ai: AiStore,
+        tabId: String,
+        runtime: LiveTabRuntime
+    ) {
+        self.app = app
+        self.annotationStore = annotationStore
+        self.ai = ai
+        self.tabId = tabId
+        self.runtime = runtime
     }
 
     func reset() {
@@ -111,6 +145,8 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         didInitialScroll = false
         findMatches = []
         findIndex = -1
+        tabId = nil
+        runtime = nil
     }
 
     /// Called by PdfKitView_iOS once the PDFView exists with the document set.
@@ -573,8 +609,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
         // Generation guards: a stale walk must stop writing into the shared
-        // pageTexts once the pane shows another tab or another document.
-        let tabId = app?.activeTabId
+        // pageTexts once the pane shows another tab or another document. The id
+        // is THIS MOUNT's tab (live tabs mount several viewers at once), so an
+        // inactive tab's walk parks itself instead of racing the visible one.
+        let tabId = self.tabId ?? app?.activeTabId
         let docIdentity = ObjectIdentifier(document)
         let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
         let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
@@ -629,6 +667,12 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                           self.app?.activeTabId == tabId else { return false }
                     if ai.pageTexts[pageNumber] == nil,
                        let normalized = ai.setPageText(page: pageNumber, text: text) {
+                        // Mirror onto the tab's runtime as well. `AiStore` holds
+                        // only the pane's ACTIVE document, so without this every
+                        // page this walk extracted would be discarded the moment
+                        // the user switched tabs — and the restore on the way
+                        // back would have nothing to restore.
+                        self.runtime?.pageTexts[pageNumber] = normalized
                         self.persister?.noteExtracted(page: pageNumber, text: normalized)
                     }
                     return true
@@ -638,6 +682,15 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             // Whole document walked: flush with complete = true.
             await MainActor.run { [weak self] in self?.persister }?.flush()
         }
+    }
+
+    /// Stop the background walk without discarding what it has already
+    /// written. The iPad walk is a detached task over a PRIVATE document copy,
+    /// so cancelling it is the whole of the pause — there is no main-actor loop
+    /// to drain, which is why this needs no `await` (main's macOS twin does).
+    func pauseTextExtraction() {
+        extractionTask?.cancel()
+        extractionTask = nil
     }
 
     // MARK: - AI highlight locator

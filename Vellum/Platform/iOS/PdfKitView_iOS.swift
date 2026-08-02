@@ -51,6 +51,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
     let controller: PdfViewerControlleriOS
     let document: PDFDocument
     let ink: InkController_iOS
+    /// Whether this mount is its pane's active tab. Inactive mounts are drawn
+    /// at opacity 0 and must not push the shared store's zoom back into their
+    /// own view — that would fight the visible tab's pinch.
+    let isActive: Bool
 
     @Environment(AppStore.self) private var app
     @Environment(WorkspaceStore.self) private var workspace
@@ -59,17 +63,22 @@ struct PdfKitView_iOS: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
 
     func makeUIView(context: Context) -> PDFView {
-        // Live tabs: this must first try
-        // `controller.adoptRetainedView { $0.document === document }` and return
-        // that parentless view — a remount (tab dragged between panes, or two
-        // hosts transiently claiming one tab during Merge Panes) has to reuse
-        // PDFKit rather than rebuild it. The protocol is declared in
-        // `LiveTabViewerContract_iOS.swift` and `controller.pdfView` is now a
-        // strong reference (packet 7), so there IS something to adopt — but
-        // `Coordinator.detach()` below still nils it on dismantle, so nothing
-        // survives a host teardown yet. Both halves belong to the one-host-per-
-        // tab mount (packet 4 §2.8, which owns this file); packet 7 §1 lists it
-        // as SKIP. Until then a fresh view is built here, exactly as before.
+        // Live tabs: the PDFView belongs to the tab's `LiveTabRuntime` and
+        // outlives this host, so a remount (tab dragged to another pane, a warm
+        // tab coming back, or two hosts transiently claiming one tab during
+        // Merge Panes) re-parents the existing view rather than rebuilding
+        // PDFKit. `adoptRetainedView` hands it back PARENTLESS — a UIView may
+        // have only one superview.
+        if let retained = controller.adoptRetainedView(where: { $0.document === document }) {
+            // Deliberately NOT re-running the configuration block below on an
+            // adopted view. `pageOverlayViewProvider` is already this tab's ink
+            // provider (ink is per-runtime), and `addInteraction` is additive:
+            // re-adding the `UIPencilInteraction` on every remount would stack
+            // delegates and fire one double-tap N times.
+            context.coordinator.attach(to: retained)
+            controller.documentAttached()
+            return retained
+        }
         let view = VellumPDFView()
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -107,6 +116,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
             controller.pdfView = uiView
             controller.documentAttached()
         }
+        // `app.zoom` is the pane's ACTIVE tab's zoom. An inactive mount reading
+        // it would yank its own (invisible) document to another tab's scale and
+        // lose the user's place in it.
+        guard isActive else { return }
         // Store → view zoom sync only when it drifts (button zoom); the live
         // pinch drives scaleFactor directly and PDFViewScaleChanged mirrors it.
         if abs(Double(uiView.scaleFactor) - app.zoom) > 0.0001 {
@@ -293,7 +306,12 @@ struct PdfKitView_iOS: UIViewRepresentable {
             observers = []
             offsetObservation?.invalidate()
             offsetObservation = nil
-            if controller.pdfView === view { controller.pdfView = nil }
+            // The PDFView is NOT released here. It belongs to the tab's
+            // `LiveTabRuntime`, not to this host: nil'ing the controller's
+            // reference on dismantle is what used to make every remount rebuild
+            // PDFKit, and it is what `adoptRetainedView` above exists to undo.
+            // The view is released by `LiveTabRuntime.releaseResidency()`, which
+            // drops the controller wholesale.
             view = nil
         }
     }

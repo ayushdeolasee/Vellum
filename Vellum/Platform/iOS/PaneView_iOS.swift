@@ -34,10 +34,18 @@ struct PaneView_iOS: View {
     @Environment(InkRegistry_iOS.self) private var inkRegistry
     @Environment(\.palette) private var palette
     @State private var activeZone: DropZone?
-    @State private var ink = InkController_iOS()
 
     private var app: AppStore { pane.app }
     private var isFocused: Bool { workspace.focusedPaneId == pane.id }
+
+    /// The ACTIVE tab's ink controller. Ink is per-DOCUMENT state and lives on
+    /// the tab's `LiveTabRuntime` (see `LiveTabRuntime.ink`), because several
+    /// tabs' `PDFView`s are mounted at once now and each installs its
+    /// `ink.inkProvider` as `pageOverlayViewProvider` — one pane-owned
+    /// controller would hand tab B's page-3 canvas to tab A's page 3.
+    private var activeInk: InkController_iOS? {
+        app.activeTabId.map { workspace.liveTabRuntime(for: $0).ink }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -91,13 +99,19 @@ struct PaneView_iOS: View {
             if !isFocused { workspace.focus(pane.id) }
         })
         .task(id: documentIdentity) { await loadDocumentState() }
-        .onAppear { inkRegistry.register(ink, for: pane.id) }
+        // The registry is the shared inspector's pane -> controller lookup for
+        // its Handwriting section. It now holds the ACTIVE TAB's controller and
+        // re-registers whenever the pane changes tabs; the controllers
+        // themselves are owned by the runtimes.
+        .onChange(of: app.activeTabId, initial: true) { _, _ in
+            if let activeInk { inkRegistry.register(activeInk, for: pane.id) }
+        }
         .onDisappear {
             // Flush BEFORE deregistering. The scene-background flush drains the
             // registry, so a controller with debounced ink that has already been
             // removed would never be reached — closing a split pane moments
             // before pressing Home would drop the last strokes.
-            ink.flushPendingInk()
+            activeInk?.flushPendingInk()
             inkRegistry.remove(pane.id)
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
@@ -131,14 +145,40 @@ struct PaneView_iOS: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.document == nil {
+        if app.tabs.isEmpty {
+            // No tab at all: closing the last tab in a lone pane leaves the pane
+            // open on the library (`AppStore.closeTab` -> `paneDidEmpty`). The
+            // ForEach below would render an empty ZStack here, so this case has
+            // to be spelled out — there is no tab to host it.
+            WelcomeLibrary_iOS(onOpen: requestOpenFile, onAddWebpage: requestAddWebpage, compact: true)
+        } else if app.document == nil {
             // Active start tab: the library, inside the pane.
+            //
+            // Differs from macOS on purpose. There, `LiveTabHost` renders a
+            // per-tab `WelcomeScreen` because that screen grabs first responder
+            // and an invisible one must not. On iPad the start tab's home
+            // surface is the full-pane library, which is pane-scoped rather than
+            // tab-scoped, so it stays here and no host is built for a start tab.
             WelcomeLibrary_iOS(onOpen: requestOpenFile, onAddWebpage: requestAddWebpage, compact: true)
         } else {
             // Keep the reader chrome as one layout unit. Returning these views
             // as separate ViewBuilder children caused the outer max-height
             // frame to expand the toolbar and viewer independently, giving the
             // toolbar roughly half of the pane.
+            //
+            // The chrome stays OUTSIDE the per-tab ZStack: the tab strip,
+            // toolbar and find bar are pane-scoped and read the pane's active
+            // projection. Only the viewer is multiplexed.
+            reader(ink: activeInk ?? InkController_iOS())
+        }
+    }
+
+    /// `ink` is the ACTIVE tab's controller. It is passed in rather than read
+    /// here so the toolbar keeps its non-optional contract; the `??` at the call
+    /// site is unreachable (this branch requires `app.document != nil`, which
+    /// requires an active tab) and exists only to keep that fact local.
+    @ViewBuilder
+    private func reader(ink: InkController_iOS) -> some View {
             VStack(spacing: 0) {
                 PdfToolbar_iOS(
                     ink: ink,
@@ -149,20 +189,22 @@ struct PaneView_iOS: View {
                     FindBar()
                 }
 
-                documentViewer
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(edges: .bottom)
+                ZStack {
+                    ForEach(app.tabs) { tab in
+                        LiveTabHost_iOS(
+                            tabId: tab.id,
+                            document: tab.document,
+                            isActive: tab.id == app.activeTabId,
+                            runtime: workspace.liveTabRuntime(for: tab.id))
+                            .opacity(tab.id == app.activeTabId ? 1 : 0)
+                            .allowsHitTesting(tab.id == app.activeTabId)
+                            .accessibilityHidden(tab.id != app.activeTabId)
+                            .zIndex(tab.id == app.activeTabId ? 1 : 0)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea(edges: .bottom)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var documentViewer: some View {
-        if app.document?.kind == .web {
-            WebViewerView_iOS()
-        } else {
-            PdfViewerView_iOS(ink: ink)
-        }
     }
 
     /// File pickers and sheets are presented once, at the shell — focus this
@@ -193,6 +235,13 @@ struct PaneView_iOS: View {
             forKey: DocumentIdentity.storageKey(for: document))
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
+        // The incoming tab may already have walked its pages; its runtime is
+        // where that survived the switch (`AiStore` only ever holds the pane's
+        // current document).
+        if let tabId = app.activeTabId,
+           let runtime = workspace.existingLiveTabRuntime(for: tabId) {
+            pane.ai.restorePageTexts(runtime.pageTexts)
+        }
         pane.scratchpad.loadForDocument(app.document)
     }
 
@@ -207,14 +256,83 @@ struct PaneView_iOS: View {
         // Wait for the viewer's load() to adopt the document (it resets
         // ink.isActive = false when it finishes, so a fixed delay races a slow
         // cold launch), then activate past that reset.
-        for _ in 0..<40 where ink.pdfController?.document == nil {
+        for _ in 0..<40 where activeInk?.pdfController?.document == nil {
             try? await Task.sleep(for: .milliseconds(250))
         }
         try? await Task.sleep(for: .milliseconds(500))
         guard !Task.isCancelled else { return }
-        ink.isActive = true
+        activeInk?.isActive = true
     }
     #endif
+}
+
+/// Stable identity for one tab's expensive native viewer. Inactive hosts stay
+/// mounted (and therefore keep PDFKit / WKWebView state) while becoming
+/// visually and interactively inert. The document value may change in place
+/// when a start tab adopts an opened file; keying by tab id preserves the tab
+/// identity across that transition.
+private struct LiveTabHost_iOS: View {
+    let tabId: String
+    let document: DocumentInfo?
+    let isActive: Bool
+    let runtime: LiveTabRuntime
+
+    @Environment(WorkspaceStore.self) private var workspace
+
+    /// The active tab always renders, whatever the policy currently thinks —
+    /// `body` runs before the `.task` below has had a chance to promote it, and
+    /// the tab the user just tapped must never be the one we decline to draw.
+    private var shouldRender: Bool { isActive || runtime.isRendered }
+
+    var body: some View {
+        Group {
+            // `document != nil` matters: a start tab's runtime can be evicted
+            // like any other, but it has nothing to restore, and flashing
+            // "Restoring tab…" for the frame before the `.task` below
+            // reactivates it would read as a bug.
+            if runtime.isEvicted, document != nil {
+                if isActive {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Restoring tab…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Color.clear
+                }
+            } else if !shouldRender {
+                // WARM. The tab's PDFView/WKWebView are alive on its runtime,
+                // but nothing here holds them, so they leave the window's
+                // layout and display cycle entirely — no draw, no tile work, no
+                // relayout on a rotation. Coming back RE-PARENTS the same
+                // native view (`PdfKitView_iOS.makeUIView` adopts the retained
+                // PDFView; `WebViewerController_iOS.attach` takes its
+                // already-attached branch and never reloads), so the restore is
+                // a re-parent rather than a parse or a network fetch.
+                //
+                // This host itself stays mounted so the `.task` below still runs
+                // and can promote the tab back to hot the moment it is selected.
+                Color.clear
+            } else if let document {
+                if document.kind == .web {
+                    WebViewerView_iOS(
+                        tabId: tabId, document: document, isActive: isActive, runtime: runtime)
+                } else {
+                    PdfViewerView_iOS(
+                        tabId: tabId, documentInfo: document, isActive: isActive, runtime: runtime)
+                }
+            } else {
+                // A start tab. Its home surface is the pane-wide library (see
+                // `PaneView_iOS.content`), so there is nothing tab-scoped to
+                // draw here.
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: isActive) {
+            guard isActive else { return }
+            workspace.activateLiveTabRuntime(runtime)
+        }
+    }
 }
 
 private struct PaneDocumentIdentity_iOS: Hashable {
