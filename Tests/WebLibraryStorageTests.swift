@@ -110,6 +110,25 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertEqual(WebLibrary.loadRecord(at: recordPath)?.savedAt, originalSavedAt)
     }
 
+    func testKeepOfflineStatusRequiresAnActualSnapshot() async throws {
+        let url = "https://example.com/offline-status"
+        let key = try makeRecord(url: url, saved: true, openedMonthsAgo: 1)
+        let session = WebDocumentSession(
+            url: url,
+            record: try XCTUnwrap(WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))))
+
+        let initiallyOffline = try await session.isSaved()
+        XCTAssertFalse(initiallyOffline, "a Saved record without bytes is not offline")
+
+        try makeArtifacts(forKey: key)
+        let archivedOffline = try await session.isSaved()
+        XCTAssertTrue(archivedOffline, "a Saved record with snapshot bytes is offline")
+
+        try await session.setSaved(false)
+        let removedOffline = try await session.isSaved()
+        XCTAssertFalse(removedOffline, "removing the copy clears both membership and artifacts")
+    }
+
     func testPinAnnotationPersistsAndSortsFirst() async throws {
         let url = "https://example.com/pin-me"
         let key = WebLibrary.pageKey(url)
