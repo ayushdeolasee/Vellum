@@ -12,6 +12,7 @@
 		019D03DA6C4B054E963D7C4C /* PdfAnnotationCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */; };
 		01B8CF6F2E2B4CF0D3A33B51 /* BundleImportPrompts_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F062F6AD131F0C0181F9A45B /* BundleImportPrompts_iOS.swift */; };
 		032D39F719342677DF2EBE2E /* SyncedContainerPresenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1F457515DBD00FDB7340D8 /* SyncedContainerPresenterTests.swift */; };
+		03E99D5BACF1287AABF930D4 /* PhoneInspectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9594980C9F3FD85C18DEA2F6 /* PhoneInspectorTests.swift */; };
 		048A3FAF2FABD4414F200AB3 /* IntegrationsSettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53899B1157FB1D317B24206F /* IntegrationsSettingsTab.swift */; };
 		04B708FC21162BB941B6CC47 /* RetentionLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47206539C63AB91217C0F80 /* RetentionLedger.swift */; };
 		061D7A9B2F617E18682F3957 /* HelpCenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7216037A6DB5358FE306AA86 /* HelpCenterTests.swift */; };
@@ -111,6 +112,7 @@
 		53E547B991B1DE7E701183D2 /* PhoneShellStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90FD1C6014DA791900E3F0EF /* PhoneShellStateTests.swift */; };
 		546B20185CE6B8EEA5C08069 /* DocumentDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9D539B1461FC063BC82C78 /* DocumentDataStore.swift */; };
 		54E5D11BCC123B35C6A0F216 /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */; };
+		560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */; };
 		56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
 		5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
@@ -472,6 +474,7 @@
 		90FD1C6014DA791900E3F0EF /* PhoneShellStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShellStateTests.swift; sourceTree = "<group>"; };
 		9226E4F0D1E5CD00013BCC49 /* HelpTopic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpTopic.swift; sourceTree = "<group>"; };
 		95809D33AB6DF0D9BCF1BE88 /* VellumBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumBundle.swift; sourceTree = "<group>"; };
+		9594980C9F3FD85C18DEA2F6 /* PhoneInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneInspectorTests.swift; sourceTree = "<group>"; };
 		9674A1105A70C761C2EC40AB /* AiReferencePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiReferencePersistenceTests.swift; sourceTree = "<group>"; };
 		96768879872A93B8FD39C342 /* OpenRouterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterClient.swift; sourceTree = "<group>"; };
 		96A7991568F0B38518672931 /* InkController_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkController_iOS.swift; sourceTree = "<group>"; };
@@ -585,6 +588,7 @@
 		F062F6AD131F0C0181F9A45B /* BundleImportPrompts_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleImportPrompts_iOS.swift; sourceTree = "<group>"; };
 		F07613531ED060241AC3AE6C /* ICloudSyncedContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudSyncedContainer.swift; sourceTree = "<group>"; };
 		F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDropTests.swift; sourceTree = "<group>"; };
+		F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneInspectorSheet_iOS.swift; sourceTree = "<group>"; };
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
 		F2ED6E4FCE053674A62E9EDD /* ReadLaterModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterModels.swift; sourceTree = "<group>"; };
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
@@ -651,6 +655,7 @@
 				255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */,
 				A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */,
 				1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */,
+				F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */,
 				EEC84C9F0FE81B815658203C /* PhoneReaderChrome_iOS.swift */,
 				CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */,
 				6E4FB9AB7345DD4F55352DD1 /* PhoneShellStore.swift */,
@@ -780,6 +785,7 @@
 				A5003641A54B311693588C6C /* PdfPersistenceTests.swift */,
 				0B700C5630743F12FAFB3C96 /* PdfZoomPolicyTests.swift */,
 				483181603DAF95A4B32E193B /* PhoneChromeLayoutTests.swift */,
+				9594980C9F3FD85C18DEA2F6 /* PhoneInspectorTests.swift */,
 				90FD1C6014DA791900E3F0EF /* PhoneShellStateTests.swift */,
 				41B668A374C9761E4C84D702 /* PositionCoalescingTests.swift */,
 				B4ABCBB671113030B9925FC5 /* PositionMergeTests.swift */,
@@ -1416,6 +1422,7 @@
 				C70838E7CAE4DCE99455D99F /* PdfViewerView_iOS.swift in Sources */,
 				745C2FE03E47537DD0F3BDD0 /* PdfZoomPolicy.swift in Sources */,
 				D558820DF2F7C8B0247E7487 /* PhoneHome_iOS.swift in Sources */,
+				560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */,
 				C9874BACDDA1316D5CB6BBFE /* PhoneReaderChrome_iOS.swift in Sources */,
 				103831355F7B4AE1977FB8BB /* PhoneShellStore.swift in Sources */,
 				B40539229B7FA2B662AEDA7C /* PhoneShell_iOS.swift in Sources */,
@@ -1544,6 +1551,7 @@
 				806EDA3BB34A3680F7B39E1B /* PdfPersistenceTests.swift in Sources */,
 				5BEEF07E614919A1E431E977 /* PdfZoomPolicyTests.swift in Sources */,
 				64F801579781F4CAF1D9E516 /* PhoneChromeLayoutTests.swift in Sources */,
+				03E99D5BACF1287AABF930D4 /* PhoneInspectorTests.swift in Sources */,
 				53E547B991B1DE7E701183D2 /* PhoneShellStateTests.swift in Sources */,
 				AA5DCBC0B5F97BC2DEF95C39 /* PositionCoalescingTests.swift in Sources */,
 				507C9AD45EF965F394F074F4 /* PositionMergeTests.swift in Sources */,

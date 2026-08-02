@@ -100,6 +100,31 @@ final class PhoneShellStore {
         workspace.sidebarTab
     }
 
+    /// The ink controller the inspector's Handwriting section reads — the live
+    /// tab's own, taken straight off its runtime.
+    ///
+    /// NOT via `InkRegistry_iOS`. That registry exists to retarget the sidebar's
+    /// ink as *pane focus* moves between split panes, and this idiom is
+    /// `.singlePane` by construction (D4): there is one pane, it can never lose
+    /// focus, and routing through the registry would add an indirection whose
+    /// only job is to answer a question the phone shell cannot ask. Asking the
+    /// runtime directly also means the section follows the *active tab*, which
+    /// is the thing that actually changes here.
+    ///
+    /// `liveTabRuntime(for:)` mints a runtime if there isn't one, which is
+    /// harmless at this call site and only at this one: it is asked for the
+    /// active tab, and the reader has already mounted that tab's runtime. (The
+    /// tab switcher must never ask it — see `WorkspaceStore.liveTabRuntime`.)
+    ///
+    /// Read-only by design. `InkPagesSection_iOS` is jump-to-page navigation so
+    /// that iPad-made ink stays navigable here, but no ink *tools* are exposed
+    /// anywhere in the phone chrome — nothing sets `isActive`, so the tool
+    /// palette never appears.
+    var inspectorInk: InkController_iOS? {
+        guard let tabId = app.activeTabId else { return nil }
+        return workspace.liveTabRuntime(for: tabId).ink
+    }
+
     /// Selects a panel and makes sure it is actually on screen — the phone's
     /// entry point for every existing reveal path ("quote in AI", ⌥⌘1/2/3, the
     /// ink reveal, `AppStore`'s note flow).
