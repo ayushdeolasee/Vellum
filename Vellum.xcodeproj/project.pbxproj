@@ -64,6 +64,7 @@
 		29757DBD2CB38B5DF2FA8DE3 /* SecurityScopedBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4352F4BA23CA855F4267806D /* SecurityScopedBookmark.swift */; };
 		29A1A58CA7A3C47374E3C949 /* RaindropClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F24325DB469DC976471FB7 /* RaindropClient.swift */; };
 		2A751A5BF362521EBEF003A6 /* IntegrationThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6D207F76764C52312C77AEA /* IntegrationThumbnailCache.swift */; };
+		2A8F5489B4C8EBB5EF5AFD83 /* HomeOpenIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2464B358D0D5E267B7D55CFC /* HomeOpenIntentTests.swift */; };
 		2C1F0711357BA1CF11111099 /* ExternalLibraryFilteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B753184F67511D027B50AA /* ExternalLibraryFilteringTests.swift */; };
 		2D9B44E54F3EF77786B0CCBC /* InkController_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A7991568F0B38518672931 /* InkController_iOS.swift */; };
 		2E35DAA98C4A45A551382874 /* PaneTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */; };
@@ -117,6 +118,7 @@
 		5BEEF07E614919A1E431E977 /* PdfZoomPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B700C5630743F12FAFB3C96 /* PdfZoomPolicyTests.swift */; };
 		5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */; };
 		5CBE7B58D55F0591B7B3C932 /* CaptureInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DE9C753D4C5E74504BBF8D /* CaptureInbox.swift */; };
+		5D5E62773F1EBF3B6D532D42 /* HomeLibraryActions_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */; };
 		5ECD33C8989F2BEF18A108A4 /* AiAddAsNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC6D7A36009931F223DB9C2 /* AiAddAsNoteTests.swift */; };
 		5FF82C62FE4C7CC82FD160FD /* AiConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */; };
 		610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */; };
@@ -156,6 +158,7 @@
 		89E3026802FF4B000AE55B5A /* CaptureTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9936C8BC806FD5ACB4862377 /* CaptureTestSupport.swift */; };
 		89E877066CAE853FF369D5F7 /* HomeSearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56E0D2A9B180E6017E9C6CA6 /* HomeSearchEngine.swift */; };
 		8B86C4435F04F6310965D0E7 /* SheetPresence_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */; };
+		8D06DD5261B29B2EF20EFF4D /* HomeOpenIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA89E87B20A4F50BCDB89F75 /* HomeOpenIntent.swift */; };
 		8D58E063EF882C7E725B81A0 /* AiPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */; };
 		8DDA7D560DAB61C377817B0D /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7870954383EAE833F32ABF /* FindBar.swift */; };
 		8E2B30ED60C29E54F33081F7 /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F5F272385E3E99333CFC6C1 /* MarkdownParserTests.swift */; };
@@ -238,6 +241,7 @@
 		D4BFAA8A50183B5A6EF1257F /* ReadwiseClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 042460BE8BC7FA9B270712D2 /* ReadwiseClient.swift */; };
 		D4E3F592FB25D9F7BBE0B010 /* ScratchOutInk_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6040B8B4AEED7AF52B89AE11 /* ScratchOutInk_iOS.swift */; };
 		D529B1BD4F7B9FA1E791246F /* PageTextPersister.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504DC8725E6198531EC21429 /* PageTextPersister.swift */; };
+		D558820DF2F7C8B0247E7487 /* PhoneHome_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */; };
 		D5F586434585D55B08108B40 /* StorageSettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB83E31DAAFDC48C15F2F130 /* StorageSettingsTab.swift */; };
 		D64BF423C2774096CC911A39 /* PositionResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80D1F0FECE8BA3793B43B42C /* PositionResumeTests.swift */; };
 		D6B79D50C1DBB43C29F0A19E /* KeyboardShortcuts_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C4B2A34AE7B5D089B26884 /* KeyboardShortcuts_iOS.swift */; };
@@ -321,6 +325,7 @@
 		1AF164F3710054DE83B01BD6 /* ScratchDefaultsTrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchDefaultsTrait.swift; sourceTree = "<group>"; };
 		1B16BB3DA6BAD63BFC33B328 /* IntegrationDownloadClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationDownloadClientTests.swift; sourceTree = "<group>"; };
 		1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchStore.swift; sourceTree = "<group>"; };
+		1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHome_iOS.swift; sourceTree = "<group>"; };
 		1DB1457E96D2FA9A96B968DD /* ScratchOutRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchOutRecognizer.swift; sourceTree = "<group>"; };
 		1E72CB77832820C619CF16CE /* ReadLaterModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterModelsTests.swift; sourceTree = "<group>"; };
 		219658C41205C0AE35D66332 /* IntegrationsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsStoreTests.swift; sourceTree = "<group>"; };
@@ -329,6 +334,7 @@
 		22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabResidencyTests.swift; sourceTree = "<group>"; };
 		236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRenameService.swift; sourceTree = "<group>"; };
 		2423823E0BE86C417B6ABBC6 /* AiPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiPanel.swift; sourceTree = "<group>"; };
+		2464B358D0D5E267B7D55CFC /* HomeOpenIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOpenIntentTests.swift; sourceTree = "<group>"; };
 		2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView_iOS.swift; sourceTree = "<group>"; };
 		255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerController_iOS.swift; sourceTree = "<group>"; };
 		26319BD42BBB2666619FEBFB /* IntegrationsSyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsSyncEngine.swift; sourceTree = "<group>"; };
@@ -495,6 +501,7 @@
 		B731E162E5BC19099ACCB0A2 /* SyncedContainerFakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerFakeTests.swift; sourceTree = "<group>"; };
 		B778A6D627FC3EA9CC5E9CF5 /* RetentionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetentionEngineTests.swift; sourceTree = "<group>"; };
 		B81C915E0D9617AFC8B14CF4 /* PdfBookmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfBookmarks.swift; sourceTree = "<group>"; };
+		BA89E87B20A4F50BCDB89F75 /* HomeOpenIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOpenIntent.swift; sourceTree = "<group>"; };
 		BA9D539B1461FC063BC82C78 /* DocumentDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataStore.swift; sourceTree = "<group>"; };
 		BB2C2905E4A08861E42C2EED /* RecentsResolveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentsResolveTests.swift; sourceTree = "<group>"; };
 		BB83E31DAAFDC48C15F2F130 /* StorageSettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageSettingsTab.swift; sourceTree = "<group>"; };
@@ -528,6 +535,7 @@
 		CF26A8AE533298D45E31BC6A /* AppDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDefaults.swift; sourceTree = "<group>"; };
 		CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell_iOS.swift; sourceTree = "<group>"; };
 		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLibraryActions_iOS.swift; sourceTree = "<group>"; };
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
 		D450AE607EF035559343B2B7 /* IntegrationCredentials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationCredentials.swift; sourceTree = "<group>"; };
 		D47206539C63AB91217C0F80 /* RetentionLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetentionLedger.swift; sourceTree = "<group>"; };
@@ -615,6 +623,7 @@
 				71490A27042704DDA72A2CE3 /* DocumentPicker_iOS.swift */,
 				E968ACCDC46285BF1FBA2550 /* ExternalLibraryList_iOS.swift */,
 				DD108C6E47B57843360C1EFE /* HelpCenterView_iOS.swift */,
+				D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */,
 				6D281471A76A306A77CBC080 /* HomeNotifications_iOS.swift */,
 				64F834FB8760337F67C69FCE /* HomeResultViews_iOS.swift */,
 				96A7991568F0B38518672931 /* InkController_iOS.swift */,
@@ -631,6 +640,7 @@
 				3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */,
 				255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */,
 				A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */,
+				1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */,
 				CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */,
 				6E4FB9AB7345DD4F55352DD1 /* PhoneShellStore.swift */,
 				E97DF51AB1BA63B8ED2200D0 /* RegionCaptureOverlay_iOS.swift */,
@@ -742,6 +752,7 @@
 				7F74ED028819A0D803E89E25 /* DocumentRenameTests.swift */,
 				5B4C5B671FAF08B65F04B96F /* DocumentsRelocationTests.swift */,
 				7216037A6DB5358FE306AA86 /* HelpCenterTests.swift */,
+				2464B358D0D5E267B7D55CFC /* HomeOpenIntentTests.swift */,
 				3F26F0ACC6F7B4DFEA39EB78 /* HomeSearchEngineTests.swift */,
 				BF3639A904AFB66CC400B4A4 /* HomeSearchRankerTests.swift */,
 				9891795C7062DF1FEB661852 /* HomeSearchStoreTests.swift */,
@@ -997,6 +1008,7 @@
 		ADE5C1838128DB2BD9B88CDA /* Search */ = {
 			isa = PBXGroup;
 			children = (
+				BA89E87B20A4F50BCDB89F75 /* HomeOpenIntent.swift */,
 				56E0D2A9B180E6017E9C6CA6 /* HomeSearchEngine.swift */,
 				BC12177F7D45E8D3AC6AE4E0 /* HomeSearchItem.swift */,
 				E70BA19480CF71B6E14A7984 /* HomeSearchProvider.swift */,
@@ -1322,7 +1334,9 @@
 				AF8C51F03882437F3B51C328 /* HelpTopic.swift in Sources */,
 				4FF972F2B1437D5D46AE6BA4 /* HighlightLayer.swift in Sources */,
 				95FC64725D07DAC4E9B2AB5F /* HighlightSwatchButton.swift in Sources */,
+				5D5E62773F1EBF3B6D532D42 /* HomeLibraryActions_iOS.swift in Sources */,
 				897EFAE50CA3036CD389956B /* HomeNotifications_iOS.swift in Sources */,
+				8D06DD5261B29B2EF20EFF4D /* HomeOpenIntent.swift in Sources */,
 				A445248BDE2A02BA8D905926 /* HomeResultViews_iOS.swift in Sources */,
 				89E877066CAE853FF369D5F7 /* HomeSearchEngine.swift in Sources */,
 				7A9E17C5B161FD9C0AE88840 /* HomeSearchItem.swift in Sources */,
@@ -1387,6 +1401,7 @@
 				3F4C2E045464817FDB1ED160 /* PdfViewerView.swift in Sources */,
 				C70838E7CAE4DCE99455D99F /* PdfViewerView_iOS.swift in Sources */,
 				745C2FE03E47537DD0F3BDD0 /* PdfZoomPolicy.swift in Sources */,
+				D558820DF2F7C8B0247E7487 /* PhoneHome_iOS.swift in Sources */,
 				103831355F7B4AE1977FB8BB /* PhoneShellStore.swift in Sources */,
 				B40539229B7FA2B662AEDA7C /* PhoneShell_iOS.swift in Sources */,
 				A7FD6BAB651128F7F942817B /* Platform.swift in Sources */,
@@ -1492,6 +1507,7 @@
 				B182304308E617431DAAC4EC /* FakeSyncedContainer.swift in Sources */,
 				A2D1AC2B2C6A9CE030404D0A /* FixtureLoader.swift in Sources */,
 				061D7A9B2F617E18682F3957 /* HelpCenterTests.swift in Sources */,
+				2A8F5489B4C8EBB5EF5AFD83 /* HomeOpenIntentTests.swift in Sources */,
 				F5C06F91CFD5CF5D40BC0365 /* HomeSearchEngineTests.swift in Sources */,
 				1B5F21D31EC3CF8C1A2AB3C7 /* HomeSearchRankerTests.swift in Sources */,
 				D95609F2F3FB73070B563A14 /* HomeSearchStoreTests.swift in Sources */,

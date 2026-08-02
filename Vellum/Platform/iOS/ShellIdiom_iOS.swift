@@ -71,6 +71,27 @@ enum ShellIdiom_iOS: String, Sendable, CaseIterable {
         }
     }
 
+    /// The device noun for user-facing copy.
+    ///
+    /// One binary serves both families, so any sentence that names the hardware
+    /// has to ask rather than assume. Before #153 several did assume — the
+    /// first-run hero promised "AI-powered reading for iPad" and the storage
+    /// sheet offered to "Keep on This iPad" — which on an iPhone is the very
+    /// first sentence the app says being wrong about the device it is running on.
+    ///
+    /// Not localized, and deliberately so: these are Apple's product names, which
+    /// are not translated in any locale.
+    var deviceName: String {
+        switch self {
+        case .phone: "iPhone"
+        case .pad: "iPad"
+        }
+    }
+
+    /// "this iPhone" / "this iPad" — the form storage copy uses when it is
+    /// distinguishing local storage from iCloud.
+    var thisDevice: String { "this \(deviceName)" }
+
     /// How much native tab state this idiom's residency policy may hold.
     var residencyBudget: TabResidencyBudget {
         switch self {

@@ -166,6 +166,13 @@ struct StorageLocationChoiceSheet: View {
 
     private var icloudAvailable: Bool { WebStorageSettings.icloudVellumRoot != nil }
 
+    /// "iPhone" / "iPad". This sheet is the first thing a new install shows and
+    /// it is the one screen whose whole subject is *where your files live*, so
+    /// naming the wrong device here is worse than cosmetic. One binary serves
+    /// both families (#153 D6), so it asks the idiom oracle rather than
+    /// hard-coding "iPad" the way it did before.
+    private var device: String { ShellIdiom_iOS.current.deviceName }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
@@ -183,7 +190,7 @@ struct StorageLocationChoiceSheet: View {
                 systemImage: "icloud",
                 description: icloudAvailable
                     ? "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your devices."
-                    : "iCloud Drive isn't available on this iPad. Sign in to iCloud and turn on iCloud Drive to use this option.",
+                    : "iCloud Drive isn't available on this \(device). Sign in to iCloud and turn on iCloud Drive to use this option.",
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
             ) {
@@ -195,7 +202,7 @@ struct StorageLocationChoiceSheet: View {
                 title: "Choose a Folder…",
                 badge: nil,
                 systemImage: "folder",
-                description: "Offline copies go in a folder you pick in Files. Your highlights, notes, AI conversations, and reading positions stay on this iPad and won't sync.",
+                description: "Offline copies go in a folder you pick in Files. Your highlights, notes, AI conversations, and reading positions stay on this \(device) and won't sync.",
                 disabled: false,
                 identifier: "storageChoice.custom"
             ) {
@@ -204,7 +211,7 @@ struct StorageLocationChoiceSheet: View {
             }
 
             choiceCard(
-                title: "Keep on This iPad",
+                title: "Keep on This \(device)",
                 badge: nil,
                 systemImage: "internaldrive",
                 description: "Everything stays in Vellum's private app folder. No syncing.",

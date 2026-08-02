@@ -168,14 +168,23 @@ private struct PhoneShellRoot_iOS: View {
         }
     }
 
-    /// Provisional Home: the iPad library screen, which already works at
-    /// compact width. P4 replaces it with the phone-native, search-first Home;
-    /// the shell-held corpus is handed in so that swap is a view change only.
+    /// Home: search-first, phone-native (P4). The corpus is the shell-held one,
+    /// so leaving and returning is a repaint rather than three disk walks.
+    ///
+    /// `onShowTabs` becomes `shell.switcherPresented = true` in P7, when there is
+    /// a full-screen card grid to present. Until then it does the useful half of
+    /// what that button will do — go back to the document — because Home only
+    /// offers it when a document is open (see `PhoneHome_iOS.header`), and a
+    /// visible control that does nothing is worse than one that does less.
     private var homeRoute: some View {
-        WelcomeLibrary_iOS(
+        PhoneHome_iOS(
+            store: homeSearch,
             onOpen: { presentImporter() },
             onAddWebpage: { addWebpagePresented = true },
-            store: homeSearch)
+            onShowTabs: {
+                guard pane.app.document != nil else { return }
+                shell.showReader()
+            })
     }
 
     /// The reader: the SAME multiplexed live-tab stack the iPad pane mounts
