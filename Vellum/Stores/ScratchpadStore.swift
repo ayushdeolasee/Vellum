@@ -93,6 +93,27 @@ final class ScratchpadStore {
     /// text so switching tabs never drops an unsaved edit.
     func loadForDocument(_ document: DocumentInfo?) {
         flush()
+        restore(document: document)
+    }
+
+    /// Reload this document's note from disk WITHOUT first flushing the stale
+    /// in-memory text — used when a `.vellum` import rewrote scratchpad.md on
+    /// disk under this document's key. The normal `loadForDocument` FLUSHES the
+    /// current text first, which would rewrite the just-imported file with the
+    /// pre-import note before reading it back (the mirror of the DELETE path's
+    /// trap). This cancels any pending debounced save so a write armed before
+    /// the import can never fire afterward, then restores from disk under the
+    /// restore guard (so the reload itself never schedules a write).
+    func discardAndReload(for document: DocumentInfo?) {
+        cancelPendingSave()
+        restore(document: document)
+    }
+
+    /// Shared body of `loadForDocument` / `discardAndReload`: retarget the store
+    /// to `document` and load its note from disk. Assumes the caller has already
+    /// dealt with the previous document's in-memory text (either flushing it or
+    /// deliberately discarding it) — this method itself never persists.
+    private func restore(document: DocumentInfo?) {
         let key = ScratchpadPersistence.documentKey(document)
         currentKey = key
         currentDocument = document
@@ -303,8 +324,7 @@ final class ScratchpadStore {
     /// Commit the current text to the authoritative in-memory cache immediately;
     /// the persistence layer coalesces the disk write off-main.
     func flush() {
-        saveTask?.cancel()
-        saveTask = nil
+        cancelPendingSave()
         guard let currentKey else { return }
         ScratchpadPersistence.save(for: currentKey, text: text)
     }
