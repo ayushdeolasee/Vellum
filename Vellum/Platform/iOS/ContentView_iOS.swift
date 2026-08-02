@@ -26,7 +26,8 @@ struct ContentView_iOS: View {
         // macOS toolbar). Each pane's subtree re-injects its own triple.
         PaneShell_iOS(
             onOpenFile: { presentImporter() },
-            onAddWebpage: { addWebpagePresented = true }
+            onAddWebpage: { addWebpagePresented = true },
+            initialColumnWidth: workspace.sidebarWidth
         )
         .environment(focused.app)
         .environment(focused.annotations)
@@ -140,6 +141,32 @@ private struct PaneShell_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(InkRegistry_iOS.self) private var inkRegistry
 
+    /// The width the inspector column opens at, frozen in `@State` rather than
+    /// read live from `workspace.sidebarWidth`.
+    ///
+    /// SwiftUI re-applies `ideal:` to the column whenever that argument changes
+    /// between updates, and `.onGeometryChange` below writes every width it
+    /// measures back into the store — so a live read closes a loop through the
+    /// layout system, and a body re-run landing mid-drag re-applies a stale
+    /// width over the one the user is dragging to.
+    ///
+    /// `sidebarWidth` being `@ObservationIgnored` does not cover this on its
+    /// own: it only stops the *store write* from invalidating the view. Anything
+    /// else that re-runs this body — a toolbar change, a tab switch — would
+    /// still re-read the property and hand SwiftUI a new `ideal:`.
+    ///
+    /// Re-seeded from the store in `.onChange` below only when the column is
+    /// (re)presented, which is the one moment `ideal:` is legitimately
+    /// consulted — so reopening a document still restores the user's width.
+    @State private var idealColumnWidth: CGFloat
+
+    init(onOpenFile: @escaping () -> Void, onAddWebpage: @escaping () -> Void,
+         initialColumnWidth: CGFloat) {
+        self.onOpenFile = onOpenFile
+        self.onAddWebpage = onAddWebpage
+        _idealColumnWidth = State(initialValue: initialColumnWidth)
+    }
+
     private var focused: PaneModel { workspace.focusedPane }
 
     var body: some View {
@@ -152,16 +179,35 @@ private struct PaneShell_iOS: View {
         }
         .inspector(isPresented: inspectorPresented) {
             SidebarContent_iOS(ink: inkRegistry.controllers[workspace.focusedPaneId])
-                .inspectorColumnWidth(min: 280, ideal: 360, max: 560)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    workspace.rememberSidebarWidth(width)
+                }
+                // MUST STAY THE OUTERMOST MODIFIER ON THE INSPECTOR CONTENT —
+                // the column-width envelope is a view trait read off the ROOT of
+                // this closure and does not survive being wrapped. (Measured on
+                // macOS in #122: with `.onGeometryChange` applied after it, the
+                // host fell back to its built-in width and registered NO
+                // min/max, so the divider had nothing to drag between.)
+                .inspectorColumnWidth(
+                    min: InspectorLayout.minimumWidth,
+                    ideal: idealColumnWidth,
+                    max: InspectorLayout.maximumWidth)
+        }
+        .onChange(of: workspace.inspectorPresented) { _, isPresented in
+            if isPresented { idealColumnWidth = workspace.sidebarWidth }
         }
     }
 
     /// Inspector only makes sense with a document in the focused pane; the open
-    /// state itself is window-global (WorkspaceStore) so it survives focus changes.
+    /// state itself is window-global (WorkspaceStore) so it survives focus
+    /// changes. `setInspectorPresented` is what makes that true: when focus
+    /// moves to a start tab SwiftUI writes `false` because the inspector became
+    /// conditionally unavailable, and the store ignores that write — so the
+    /// user's chosen panel and column width survive a trip through Home.
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { focused.app.document != nil && workspace.sidebarOpen },
-            set: { workspace.sidebarOpen = $0 }
+            get: { workspace.inspectorPresented },
+            set: { workspace.setInspectorPresented($0) }
         )
     }
 }

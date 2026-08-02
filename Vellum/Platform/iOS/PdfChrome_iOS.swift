@@ -814,19 +814,12 @@ struct SidebarContent_iOS: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GlassSegmentedPicker(
-                options: [
-                    (WorkspaceStore.SidebarTab.annotations, "Annotations"),
-                    (WorkspaceStore.SidebarTab.ai, "AI"),
-                    (WorkspaceStore.SidebarTab.scratchpad, "Scratchpad"),
-                ],
-                selection: Binding(
-                    get: { workspace.sidebarTab },
-                    set: { workspace.sidebarTab = $0 }
-                ),
-                accessibilityIdentifierPrefix: "sidebarTab"
-            )
-            .padding(.vertical, 10)
+            InspectorTabSwitcher(selection: Binding(
+                get: { workspace.sidebarTab },
+                set: { workspace.sidebarTab = $0 }
+            ))
+            .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
+            .padding(.vertical, InspectorLayout.switcherVerticalPadding)
             Divider()
             // Once revealed, a panel stays mounted; only visibility toggles as
             // the tab changes. Keeping them alive (rather than switching, which

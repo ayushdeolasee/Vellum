@@ -120,8 +120,15 @@ struct VellumApp_iOS: App {
             // left no leaf to ask. First, because their last_page writes must
             // land before the loop rewrites the same files.
             await workspace.tabTeardowns.awaitAll()
-            for controller in inkRegistry.controllers.values {
-                await controller.flushPendingInkAndWait()
+            // Every OPEN tab's ink, not just the focused pane's. The registry
+            // now holds one controller per pane (the active tab's projection
+            // the inspector reads), while ink itself is per-tab state on the
+            // runtime — so iterating the registry would silently skip the
+            // debounced strokes of every background tab.
+            for pane in workspace.root.allLeaves() {
+                for tab in pane.app.tabs {
+                    await workspace.liveTabRuntime(for: tab.id).ink.flushPendingInkAndWait()
+                }
             }
             for pane in workspace.root.allLeaves() {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
@@ -131,11 +138,13 @@ struct VellumApp_iOS: App {
                         sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
                     try? await workspace.sessions.saveFile(sessionId: tab.id)
                 }
-                // Persist the active document's in-flight page text AFTER the
-                // last_page writes (each refreshed the cache's validation
-                // hash), so a reopen still hits (issue #37 PR B).
-                await pane.app.flushPageTextCacheHandler?()
             }
+            // Every runtime, not just the focused pane's handler: the metadata
+            // writes above changed each PDF's validation hash, and with live
+            // tabs there is one extractor per TAB rather than one per pane. The
+            // old `pane.app.flushPageTextCacheHandler?()` covered only whichever
+            // viewer last claimed that slot (issue #37 PR B).
+            await workspace.flushLivePageTextCaches()
             // Drain the coalesced background flushes so a page-text cache write
             // (issue #37) or an in-flight conversation blob (do-not-reintroduce
             // #8) still lands if the app is suspended right after backgrounding.
