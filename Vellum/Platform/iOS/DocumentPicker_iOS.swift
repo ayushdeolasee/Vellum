@@ -63,6 +63,27 @@ final class DocumentPickerCoordinator_iOS: NSObject, UIDocumentPickerDelegate {
         presenter.present(picker, animated: true)
     }
 
+    /// Present a single-selection PDF picker (Settings ▸ Storage "Relink…").
+    /// Narrower than `present(onPick:)` on purpose: relinking reconnects orphaned
+    /// data to exactly one file, and only a PDF can carry the embedded
+    /// /VellumDocId the relink verifies against. `onPick` receives the chosen
+    /// (security-scoped) URL; it isn't called on cancel.
+    func presentPdfPicker(onPick: @escaping (URL) -> Void) {
+        self.onPick = { urls in
+            guard let first = urls.first else { return }
+            onPick(first)
+        }
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.pdf], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = self
+        guard let presenter = Self.topViewController() else {
+            self.onPick = nil
+            return
+        }
+        presenter.present(picker, animated: true)
+    }
+
     /// Present the export picker (web tab "Export a Copy…"). The system copies
     /// the temporary archive to the destination the user chooses in Files.
     /// Fire-and-forget: there is no result to report back.
