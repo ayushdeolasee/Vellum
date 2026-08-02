@@ -104,6 +104,26 @@ struct PaneView_iOS: View {
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentDataDeleted)) { note in
+            // The Storage pane deleted this document's notes/chat on disk. If THIS
+            // pane shows it, drop the matching in-memory state WITHOUT saving so a
+            // live writer's next flush can't resurrect the just-deleted file.
+            guard let keys = note.userInfo?["keys"] as? [String],
+                  let document = app.document else { return }
+            let key = DocumentIdentity.storageKey(for: document)
+            guard keys.contains(key) else { return }
+            // TODO(parity-129 packet-1): needs
+            // AiPersistence.invalidateCachedConversation(forKey:) (packet 5) and
+            // ScratchpadStore.discardNotesForExternalDelete(matchingKey:)
+            // (packet 6). Until those land the chat reload re-reads a cache the
+            // poster could not invalidate, and the notes branch cannot discard.
+            // Do NOT call pane.scratchpad.loadForDocument here — that flushes the
+            // stale note back over the file that was just deleted, which is the
+            // exact bug the discard path exists to prevent.
+            if note.userInfo?["chat"] as? Bool == true {
+                pane.ai.loadConversationForDocument(document)
+            }
+        }
         #if DEBUG
         .task(id: app.activeTabId) { await autoInkForTesting() }
         #endif
@@ -163,8 +183,14 @@ struct PaneView_iOS: View {
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
         pane.scratchpad.clearDocumentContext()
-        guard app.document?.pdfPath != nil else { return }
+        guard let document = app.document else { return }
         await pane.annotations.loadAnnotations()
+        guard !Task.isCancelled else { return }
+        // In iCloud mode the document's notes/conversations may be evicted
+        // placeholders — download them off-main before the sync reads below so
+        // they load real bytes rather than degrading to empty.
+        await DocumentDataStore.materializeIfNeeded(
+            forKey: DocumentIdentity.storageKey(for: document))
         guard !Task.isCancelled else { return }
         pane.ai.loadConversationForDocument(app.document)
         pane.scratchpad.loadForDocument(app.document)

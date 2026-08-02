@@ -122,10 +122,16 @@ struct PdfViewerView_iOS: View {
             // Restore persisted page text before adopting (PDF only; this view
             // is guarded to document.kind == .pdf). Hashing + JSON decode run
             // off the main actor inside the cache actor.
+            // Storage key resolved from the just-opened DocumentInfo: its docId
+            // when the file carries one, else the path hash. The write path
+            // keyed itself the same way at open (PdfSessionCacheKeys), so
+            // lookup, persister, and every in-app refreshHash agree for the
+            // whole session.
+            let storageKey = app.document.map { DocumentIdentity.storageKey(for: $0) }
             let cached: [Int: String]?
-            if let path = app.document?.pdfPath {
+            if let path = app.document?.pdfPath, let storageKey {
                 cached = await PageTextCache.shared.lookup(
-                    path: path, data: data, title: app.document?.title)
+                    key: storageKey, path: path, data: data, title: app.document?.title)
             } else {
                 cached = nil
             }
@@ -142,8 +148,9 @@ struct PdfViewerView_iOS: View {
                 initialPage: app.currentPage
             )
             app.setNumPages(document.pageCount)
-            if document.pageCount >= 1, let path = app.document?.pdfPath {
+            if document.pageCount >= 1, let path = app.document?.pdfPath, let storageKey {
                 controller.installPersister(PageTextPersister(
+                    key: storageKey,
                     path: path,
                     title: app.document?.title,
                     pageCount: document.pageCount,

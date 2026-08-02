@@ -66,9 +66,12 @@ struct VellumApp_iOS: App {
     private func launchMaintenance() async {
         let openDocuments = workspace.root.allLeaves()
             .flatMap { $0.app.tabs }.compactMap(\.document)
-        let openPaths = Set(openDocuments.filter { $0.kind == .pdf }.map(\.pdfPath))
+        // The text cache excludes open documents by STORAGE KEY now (docId when
+        // stamped, else path hash) — the same key their lookup/persister used.
+        let openKeys = Set(
+            openDocuments.filter { $0.kind == .pdf }
+                .map { DocumentIdentity.storageKey(for: $0) })
         let openWebUrls = Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
-        let cutoff = Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .now
 
         // Resolve the iCloud ubiquity container off-main FIRST: it can block,
         // and both the launch sweep (to name the iCloud layout) and the
@@ -85,8 +88,10 @@ struct VellumApp_iOS: App {
             // location change the user makes in the first-launch sheet below
             // (single relocation runner — parity plan do-not-reintroduce #9).
             await WebStorageRelocator.sweepAtLaunch()
-            await PageTextCache.shared.evictStale(olderThan: cutoff, excludingPaths: openPaths)
-            WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+            // TTL eviction of derived data, using the user's chosen retention
+            // window (Settings ▸ Storage ▸ Housekeeping; "Never" skips it).
+            await StorageHousekeeping.runCleanup(
+                openPdfKeys: openKeys, openWebUrls: openWebUrls)
         }
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
