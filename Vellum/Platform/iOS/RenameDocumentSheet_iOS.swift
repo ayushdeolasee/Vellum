@@ -1,14 +1,24 @@
 #if os(iOS)
 import SwiftUI
 
-/// The rename prompt, shared by the home screen's row context menu and the tab
-/// strip's, so a document is renamed the same way wherever the user reaches for
-/// it.
+/// Rename what a document is *called in Vellum*, shared by the home screen's
+/// row context menu and the tab strip's, so a document is renamed the same way
+/// wherever the user reaches for it.
 ///
 /// Deliberately a sheet rather than an inline editable label. Inline editing in
 /// a list that re-sorts and re-ranks live is a trap: committing a name under a
 /// name sort makes the row jump away mid-keystroke, and the home list also
 /// re-ranks against the search query. A sheet holds still.
+///
+/// The footer sentence is the user-facing statement of the PR-#82 guarantee and
+/// is verbatim from main: the on-disk filename is never touched, so a rename
+/// cannot break a Files.app link, an iCloud sync, or anyone else's copy.
+///
+/// "Use original name" clears the draft to `""` on purpose — the empty string
+/// is what `DocumentRenameService.normalized` turns into `nil`, which is what
+/// *drops* the override and lets the document fall back to its filename. Do not
+/// "helpfully" refill the field with `fallbackName`; that would store the
+/// fallback as an override instead of removing one.
 ///
 /// iPad rebuild of main's `Vellum/Views/Welcome/RenameDocumentSheet.swift`
 /// (packet 3 §2.10): same three inputs and the same semantics, in the
@@ -19,9 +29,9 @@ struct RenameDocumentSheet_iOS: View {
     /// What the row currently shows — the starting text, and what the field is
     /// seeded with.
     let currentTitle: String
-    /// The name the document would show with no override: its filename or its
-    /// host. Shown as the placeholder so clearing the field is obviously not
-    /// the same as leaving it blank forever.
+    /// The name the document would show with no override: its filename (PDF) or
+    /// its host+path (webpage). Shown as the placeholder so clearing the field
+    /// is obviously not the same as leaving it blank forever.
     let fallbackName: String
     let commit: (String) -> Void
 

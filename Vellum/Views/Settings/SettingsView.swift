@@ -6,23 +6,36 @@ import SwiftUI
 /// highlight color), and AI (provider / key / model / voice). New settings slot
 /// into the matching tab instead of accreting in ad-hoc popovers.
 struct SettingsView: View {
+    /// #70: the selected tab is workspace state, not view state, so a caller
+    /// that presents Settings for a *reason* — Home's gear button, "Configure
+    /// AI…", a Storage warning — can route to the right tab instead of dumping
+    /// the reader on General and making them find it.
+    @Environment(WorkspaceStore.self) private var workspace
+
     var body: some View {
-        TabView {
+        @Bindable var workspace = workspace
+        TabView(selection: $workspace.settingsSection) {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(WorkspaceStore.SettingsSection.general)
 
             ReadingSettingsTab()
                 .tabItem { Label("Reading", systemImage: "text.book.closed") }
+                .tag(WorkspaceStore.SettingsSection.reading)
 
             AnnotationsSettingsTab()
                 .tabItem { Label("Annotations", systemImage: "highlighter") }
+                .tag(WorkspaceStore.SettingsSection.annotations)
 
             AiSettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(WorkspaceStore.SettingsSection.ai)
 
             StorageSettingsTab()
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
+                .tag(WorkspaceStore.SettingsSection.storage)
         }
+        .accessibilityIdentifier("settings.content")
         #if os(macOS)
         // Fixed-width settings window on macOS; on iPad the sheet fills its
         // presentation and the TabView renders as a bottom tab bar.

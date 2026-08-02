@@ -94,7 +94,15 @@ enum VellumShortcutRouter {
 
         // MARK: Find
         case .find:
-            guard app.document != nil else { return }
+            guard app.document != nil else {
+                // Home is on screen, so "Find…" has nothing to find and ⌘F is
+                // free to mean "search my library". Extending the router is
+                // what keeps ONE claimant on the chord — a competing SwiftUI
+                // `.keyboardShortcut("f")` in the Home view would race this one
+                // and SwiftUI picks between duplicates arbitrarily.
+                NotificationCenter.default.post(name: .vellumFocusHomeSearch, object: nil)
+                return
+            }
             app.showFind()
 
         case .findNext:

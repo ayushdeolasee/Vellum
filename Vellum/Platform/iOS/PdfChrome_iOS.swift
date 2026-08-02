@@ -218,31 +218,11 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text("Enter a page number (1–\(appStore.numPages)).")
         }
-        .sheet(isPresented: $showSettings) {
-            NavigationStack {
-                SettingsView()
-                    .navigationTitle("Settings")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showSettings = false }
-                        }
-                    }
-            }
-            // A `.sheet` is a separate presentation host, so it does not
-            // reliably inherit the WindowGroup's environment across the
-            // UIHostingController boundary. Settings ▸ Storage reads the
-            // workspace directly (to exclude open documents from cleanup), so
-            // inject it explicitly rather than relying on that inheritance.
-            .environment(workspace)
-            // The Settings AI tab edits the workspace's dedicated settings
-            // store (not this pane's conversation), mirroring the macOS
-            // Settings scene; changes broadcast to every pane's AiStore.
-            .environment(workspace.settingsAi)
-            .environment(workspace.openRouterCatalog)
-            .environment(workspace.chatgptAuth)
-            .presentationDetents([.large])
-        }
+        // Extracted to `SettingsSheet_iOS` so this and Home's gear button
+        // present the identical sheet — including the environment injections a
+        // `.sheet` does not reliably inherit across the UIHostingController
+        // boundary — and cannot drift apart.
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
