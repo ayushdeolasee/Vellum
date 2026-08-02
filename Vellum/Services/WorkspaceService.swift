@@ -82,14 +82,22 @@ struct WorkspaceState: Codable, Equatable {
 enum WorkspaceService {
     private static let storageKey = "vellum.workspace"
 
+    /// Reads and writes go through `AppDefaults`, not `UserDefaults.standard`,
+    /// so a test cannot persist over the developer's own window layout. Nothing
+    /// used to stop it: `save` had no seam, and tests stayed out of real
+    /// defaults only because `WorkspaceStore.scheduleSave` happens to bail on
+    /// `guard didRestore` — incidental protection that any test calling
+    /// `restoreFromDisk()` or `saveNow()` would walk straight past (#102).
+    private static var defaults: UserDefaults { AppDefaults.current }
+
     static func save(_ state: WorkspaceState) {
         guard let data = try? JSONEncoder().encode(state),
               let json = String(data: data, encoding: .utf8) else { return }
-        UserDefaults.standard.set(json, forKey: storageKey)
+        defaults.set(json, forKey: storageKey)
     }
 
     static func load() -> WorkspaceState? {
-        guard let json = UserDefaults.standard.string(forKey: storageKey),
+        guard let json = defaults.string(forKey: storageKey),
               let data = json.data(using: .utf8),
               let state = try? JSONDecoder().decode(WorkspaceState.self, from: data) else {
             return nil
@@ -98,6 +106,6 @@ enum WorkspaceService {
     }
 
     static func clear() {
-        UserDefaults.standard.removeObject(forKey: storageKey)
+        defaults.removeObject(forKey: storageKey)
     }
 }
