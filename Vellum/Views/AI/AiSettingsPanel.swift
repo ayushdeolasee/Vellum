@@ -141,7 +141,11 @@ struct AiSettingsPanel: View {
                 field("Account") { ChatGPTSignInControl() }
             } else {
                 field(aiStore.keyFieldLabel) {
-                    RevealableSecureField(placeholder: aiStore.keyFieldPlaceholder, text: aiStore.apiKeyBinding)
+                    RevealableSecureField(
+                        accessibilityLabel: aiStore.keyFieldLabel,
+                        placeholder: aiStore.keyFieldPlaceholder,
+                        text: aiStore.apiKeyBinding
+                    )
                         .id(aiStore.settings.provider)
                 }
             }
