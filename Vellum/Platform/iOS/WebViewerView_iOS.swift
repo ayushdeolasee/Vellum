@@ -541,6 +541,63 @@ final class WebViewerController_iOS: NSObject {
         webView.load(URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: doc.pdfPath)))
     }
 
+    /// Whether a mounted host has claimed this controller. Read by the residency
+    /// policy and by `LiveTabHost_iOS`.
+    var isAttached: Bool { attached }
+
+    /// Rough resident footprint for the residency policy's byte budget. A loaded
+    /// `WKWebView` carries its own web content process, so it is never cheap;
+    /// WebKit offers no way to ask what a given page actually costs, so this is
+    /// a flat, deliberately pessimistic estimate for "a real webpage with its
+    /// process attached". Zero until the view actually exists.
+    var residencyCostBytes: Int { didCreateWebView ? 96 * 1024 * 1024 : 0 }
+
+    /// Release transient UI owned by an inactive mount while keeping the native
+    /// view, history, scroll position, and extracted text intact.
+    ///
+    /// iPad divergence: macOS additionally tears down its local `NSEvent`
+    /// monitor here. There is none on iOS — the equivalent gestures come through
+    /// the content script — so the two calls below are the whole of it.
+    func deactivate() {
+        clearSelection()
+        closeNotePopovers()
+    }
+
+    /// Give back the WKWebView and its content process. Reached from the
+    /// residency policy and from tab close, through
+    /// `LiveTabRuntime.releaseResidency()`.
+    func releaseResidency() {
+        // A debounced auto-archive is a real write to the user's library — the
+        // offline snapshot of the page. Never drop one: keep this controller
+        // (and the session it archives through) alive until the task lands. The
+        // debounce is 1.5s, so by the time an idle timeout fires there is
+        // nothing pending; this matters for a tab closed, or evicted under
+        // memory pressure, in the second after a page finished loading.
+        let pendingArchive = archiveTask
+        archiveTask = nil
+        if let pendingArchive {
+            Task { await pendingArchive.value; withExtendedLifetime(self) {} }
+        }
+        detach()
+        // Unhook the WebKit delegates. They are a resurrection path: eviction
+        // targets tabs that are still OPEN, so `mountDocument` still resolves,
+        // and a late `webViewWebContentProcessDidTerminate` would re-load the
+        // tab's real URL over the network into a view nobody can see. That
+        // callback is not hypothetical — jetsamming background web content
+        // processes is precisely what the system does under the memory pressure
+        // that triggered the eviction in the first place.
+        //
+        // Note we do NOT navigate to about:blank to "retire the content process
+        // early": `decidePolicyFor` cancels every non-http(s) main-frame
+        // navigation that is not one of our own proxy schemes, so that load is
+        // simply refused. Dropping the last reference to the controller — which
+        // is what `LiveTabRuntime.releaseResidency` does immediately after this
+        // returns — is what actually releases the view and its process.
+        guard didCreateWebView else { return }
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
     func detach() {
         guard attached else { return }
         attached = false

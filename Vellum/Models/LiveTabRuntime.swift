@@ -8,32 +8,24 @@ import PDFKit
 /// prepared document.
 ///
 /// This is also the unit the residency policy reclaims: one runtime is one
-/// resident resource. Everything expensive a tab owns hangs off here and
-/// nowhere else, so an eviction that drops the runtime's contents genuinely
-/// gives the memory back.
+/// `TabResidentResource` (see Services/TabResidency.swift). Everything
+/// expensive a tab owns hangs off here and nowhere else, so an eviction that
+/// drops the runtime's contents genuinely gives the memory back.
 ///
 /// The runtime object itself survives eviction — it is just a tab id, a
 /// page-text dictionary and a couple of controllers. What eviction throws away
 /// is the native state hanging off it.
-///
-/// ## Interface-only, for now (packet 4 §2.0 — the C3 cycle break)
-///
-/// This file currently ships the cross-packet contract and **nothing else**.
-/// Nothing in the app constructs a `LiveTabRuntime` yet: `WorkspaceStore` gains
-/// `liveTabRuntime(for:)` in packet 4 §2.5 and `PaneView_iOS` starts mounting
-/// one host per tab in §2.8. Until then every member below is inert, which is
-/// the point — packet 7 can rebuild the viewers against these names while
-/// packet 4 builds the residency policy behind them, and neither has to wait.
-///
-/// Deliberately **not** here yet, so this commit stays behaviour-free:
-/// `pdfLoadState`, `isRendered`, `isEvicted`, `invalidateLoadedPdf()`,
-/// `applyResidencyTier(_:)`, `releaseResidency()`, `reactivate()`,
-/// `residencyCostBytes`, `flushPdfText()` and the `TabResidentResource`
-/// conformance. Those arrive with packet 4 §2.3/§2.4, together with the
-/// residency policy that gives them meaning.
 @MainActor
 @Observable
 final class LiveTabRuntime {
+    enum PdfLoadState {
+        case idle
+        case loading
+        case readFailed(String)
+        case parseFailed
+        case loaded(PDFDocument)
+    }
+
     let tabId: String
 
     /// The tab's PDF controller. It lives here rather than in the viewer's
@@ -55,6 +47,23 @@ final class LiveTabRuntime {
     /// canvas to tab A's page 3. Ink is per-DOCUMENT state and now lives on the
     /// runtime with everything else the tab owns.
     var ink = InkController_iOS()
+
+    /// Where the tab's PDF load has got to. Owned by the runtime rather than by
+    /// the mounted viewer's `@State` so a remount — a tab dragged between panes,
+    /// or a warm tab coming back — does not restart a load that already
+    /// finished.
+    var pdfLoadState: PdfLoadState = .idle
+
+    private(set) var isEvicted = false
+
+    /// Whether this tab is in the hot tier and should therefore be mounted and
+    /// drawn. `PaneView_iOS` reads it, so it is observed: a demotion on the
+    /// sweeper's tick pulls the viewer out of the rendered tree by itself.
+    ///
+    /// Starts `false` — a tab the user has never opened has nothing to render
+    /// and should not build a viewer just to sit at opacity 0. The residency
+    /// policy sets it on the first activation.
+    private(set) var isRendered = false
 
     /// Page text extracted from this tab's document, by 1-based page number.
     /// Kept on the runtime (and deliberately kept across an eviction) so the AI
@@ -85,9 +94,20 @@ final class LiveTabRuntime {
     /// because neither `isActive` nor the view's structural identity changes
     /// across a retarget, so nothing else would make it re-read the file.
     ///
-    /// Nothing bumps it yet: `invalidateLoadedPdf()` — the only writer — lands
-    /// with packet 4 §2.4. Viewers may already key their load task on it.
     private(set) var documentGeneration = 0
+
+    /// Drop the document parsed from the tab's previous location and ask the
+    /// mounted viewer to load again. Unlike `releaseResidency` the tab stays
+    /// resident: only the parsed document is discarded, and the persister is
+    /// flushed first so page text extracted from the old location is written
+    /// under the key it was gathered with.
+    func invalidateLoadedPdf() {
+        pdfController.flushAndDropPersister()
+        preparedDocument = nil
+        pdfByteCount = 0
+        pdfLoadState = .idle
+        documentGeneration += 1
+    }
 
     init(tabId: String) {
         self.tabId = tabId
@@ -99,4 +119,91 @@ final class LiveTabRuntime {
         preparedDocument = document
         pdfByteCount = byteCount
     }
+
+    // MARK: - TabResidentResource
+
+    /// Rough resident footprint. A PDF tab is costed at its file size; a web tab
+    /// at a flat, deliberately pessimistic estimate for "a real webpage with its
+    /// own web content process attached", because WebKit offers no way to ask
+    /// what a given page actually costs. A tab that has never been shown holds
+    /// neither and costs nothing.
+    var residencyCostBytes: Int {
+        pdfByteCount + webController.residencyCostBytes
+    }
+
+    /// Hot ⇄ warm. Warm keeps everything expensive — the parsed `PDFDocument`,
+    /// the `PDFView`, the `WKWebView` and its content process are all still
+    /// here, held by the controllers below — and only stops the tab being drawn:
+    /// `LiveTabHost_iOS` swaps the viewer for `Color.clear`, which unmounts the
+    /// representable and takes the native view out of the window's layout and
+    /// display cycle. Coming back re-parents that same native view instead of
+    /// rebuilding it, which is the point of having a middle tier at all.
+    ///
+    /// The equality guard is a cheap early-out, not a correctness requirement:
+    /// this runs for every resident tab on every sweeper tick, and skipping the
+    /// registrar call entirely is free. Measured, so nobody has to wonder:
+    /// Observation does *not* notify on a write of an equal value, so removing
+    /// the guard would not actually invalidate anything — which also means no
+    /// test can distinguish the two, and there deliberately isn't one.
+    func applyResidencyTier(_ tier: TabResidencyTier) {
+        let rendered = tier == .hot
+        guard isRendered != rendered else { return }
+        isRendered = rendered
+    }
+
+    /// Reclaim the native state. Reached from the residency policy (idle
+    /// timeout, tab/byte ceiling, memory pressure) and directly on tab close.
+    /// Idempotent.
+    ///
+    /// Nothing unsaved is lost here, and that is a property of the surrounding
+    /// code rather than of this method: annotations are written through the
+    /// session backend on every edit, the scroll position was mirrored into the
+    /// `PdfTab` while the tab was still on screen, and the extraction walk's
+    /// pages are handed to `PageTextPersister.flushDetached()` below — a real
+    /// write that the background path awaits via `awaitInFlightFlushes()`. The
+    /// web side additionally holds its teardown open until a pending
+    /// auto-archive lands (see `WebViewerController_iOS.releaseResidency`).
+    func releaseResidency() {
+        guard !isEvicted else { return }
+        // Debounced ink is a real, unwritten user edit (the write coalescing
+        // from PR #78 is exactly what makes it possible for one to be pending
+        // here). Hold the controller alive until its flush lands, the same way
+        // the web side holds itself open for a pending auto-archive.
+        let pendingInk = ink
+        Task { @MainActor in
+            await pendingInk.flushPendingInkAndWait()
+            withExtendedLifetime(pendingInk) {}
+        }
+        pdfController.flushAndDropPersister()
+        pdfController.reset()
+        webController.releaseResidency()
+        // Drop the controller objects themselves: they strongly own the PDFView
+        // and the WKWebView, so resetting alone would stop them without
+        // releasing the memory this eviction is meant to reclaim.
+        pdfController = PdfViewerControlleriOS()
+        webController = WebViewerController_iOS()
+        ink = InkController_iOS()
+        pdfLoadState = .idle
+        preparedDocument = nil
+        pdfByteCount = 0
+        isRendered = false
+        // `pageTexts` is deliberately kept: it is a few hundred KB of strings at
+        // most, it is what lets the AI context stay truthful while an evicted
+        // viewer restores, and it saves the restore a full extraction walk.
+        isEvicted = true
+    }
+
+    func reactivate() {
+        guard isEvicted else { return }
+        pdfLoadState = .idle
+        isEvicted = false
+    }
+
+    /// iPad's PDF controller has no `pauseTextExtraction`; `flushPersister()` is
+    /// the equivalent drain of the page-text cache it owns.
+    func flushPdfText() async {
+        await pdfController.flushPersister()
+    }
 }
+
+extension LiveTabRuntime: TabResidentResource {}
