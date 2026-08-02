@@ -105,7 +105,23 @@ enum DocumentRenameService {
     }
 }
 
-// NOTE (parity #129, packet 4 §2.14): main also carries a
-// `DocumentRenameService.Target.init(item: HomeSearchItem)` convenience for the
-// home screen's row context menu. `HomeSearchItem` arrives with packet 3, so
-// that extension lands with it — this file otherwise matches main verbatim.
+extension DocumentRenameService.Target {
+    /// Build a target from a home-screen result.
+    init(item: HomeSearchItem) {
+        let recorded: String?
+        switch item.target {
+        case .file(_, let recordedPath):
+            // Only recents rows carry a recents record; a library-only document
+            // has its recorded path set to its locator by the provider, and
+            // updating a recents entry that does not exist is a harmless no-op.
+            recorded = recordedPath
+        case .url(let url):
+            recorded = url
+        }
+        self.init(
+            kind: item.kind,
+            locator: item.target.openKey,
+            recordedPath: recorded,
+            storageKey: item.storageKey)
+    }
+}

@@ -13,6 +13,27 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceStore {
+    /// Which tab the Settings sheet opens on. Held here rather than as `@State`
+    /// inside `SettingsView` so callers that present Settings for a reason —
+    /// Home's gear button, "Configure AI…", the Storage warning — can route to
+    /// the right tab instead of dumping the user on General.
+    ///
+    /// `integrations` ships even though iPad has no read-later integrations
+    /// yet: an unreachable case costs nothing and means the integrations packet
+    /// adds its tab without editing this enum.
+    enum SettingsSection: Hashable, Sendable {
+        case general
+        case reading
+        case annotations
+        case ai
+        case storage
+        case integrations
+    }
+
+    /// The Settings tab currently selected. Set it *before* presenting the
+    /// sheet; `SettingsView`'s `TabView` binds straight to it.
+    var settingsSection: SettingsSection = .general
+
     let sessions: SessionService
 
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
