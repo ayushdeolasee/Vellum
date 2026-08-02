@@ -29,6 +29,7 @@ struct VellumApp_iOS: App {
         WindowGroup {
             ContentView_iOS()
                 .task { await launchMaintenance() }
+                .onOpenURL { url in handleIncomingFile(url) }
                 .sheet(isPresented: $showStorageChoice) {
                     StorageLocationChoiceSheet()
                         .environment(\.palette, themeStore.palette)
@@ -54,6 +55,25 @@ struct VellumApp_iOS: App {
             if phase == .background {
                 flushOnBackground()
             }
+        }
+    }
+
+    /// Files-app open / share-sheet "Open in Vellum" for a registered type
+    /// (.pdf, .vellumweb, .vellum). The iOS analogue of macOS's
+    /// `NSApplicationDelegate.application(_:open:)`: it copies the
+    /// security-scoped file into the writable library (or stages a bundle in
+    /// tmp/) off the main actor, then hands the local paths to the shell
+    /// through the SAME `vellumOpenFile` channel ⌘O uses — a payload means
+    /// "open these", no payload still means "show the picker".
+    @MainActor
+    private func handleIncomingFile(_ url: URL) {
+        Task {
+            let paths = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPicked([url])
+            }.value
+            guard !paths.isEmpty else { return }
+            NotificationCenter.default.post(
+                name: .vellumOpenFile, object: nil, userInfo: ["paths": paths])
         }
     }
 

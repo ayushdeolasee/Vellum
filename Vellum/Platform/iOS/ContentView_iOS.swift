@@ -70,8 +70,16 @@ struct ContentView_iOS: View {
         // Keyboard-shortcut / pane routing: ⌘O and every pane's "Open File…"
         // post here since panes and Commands structs can't drive this view's
         // presentation themselves.
-        .onReceive(NotificationCenter.default.publisher(for: .vellumOpenFile)) { _ in
-            presentImporter()
+        .onReceive(NotificationCenter.default.publisher(for: .vellumOpenFile)) { note in
+            // A payload means "open these files" (a Files-app open routed here
+            // by VellumApp_iOS); no payload keeps the original meaning,
+            // "present the importer" (⌘O and a pane's Open File…).
+            if let paths = note.userInfo?["paths"] as? [String], !paths.isEmpty {
+                let app = workspace.focusedPane.app
+                Task { await app.openFiles(paths: paths) }
+            } else {
+                presentImporter()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
             addWebpagePresented = true

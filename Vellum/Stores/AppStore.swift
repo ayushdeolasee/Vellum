@@ -1129,6 +1129,20 @@ final class AppStore {
     /// so the document lands in `DocumentImport.libraryDirectory` — the same
     /// place every picked PDF is copied to.
     private func importVellumBundle(bundlePath: String) async throws -> String? {
+        do {
+            return try await importVellumBundleShowingErrors(bundlePath: bundlePath)
+        } catch {
+            // `openFiles` only collects error strings into `AppStore.error`,
+            // which the iPad shell never renders — so a bundle rejected for
+            // failing its integrity check, carrying an unsafe entry path, or
+            // being written by a newer Vellum would fail silently, which reads
+            // as a broken app. Safe rejection has to be VISIBLE rejection.
+            await BundleImportPrompts_iOS.importFailed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func importVellumBundleShowingErrors(bundlePath: String) async throws -> String? {
         let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
         let destination = DocumentImport.bundleDestination(
             documentFile: imported.manifest.documentFile, docId: imported.manifest.docId)
