@@ -75,7 +75,7 @@ final class AnnotationStore {
         do {
             let loaded = try await sessions.getAnnotations(sessionId: sessionId, pageNumber: nil)
             if app.activeTabId == sessionId {
-                annotations = loaded
+                annotations = Annotation.sortedForDisplay(loaded)
                 isLoading = false
                 selectedAnnotationId = nil
             }
@@ -134,20 +134,33 @@ final class AnnotationStore {
         await addBookmark(pageNumber: app.currentPage)
     }
 
+    /// Pin or unpin an annotation so it floats to (or leaves) the top of the
+    /// sidebar list. Works for highlights, notes, and bookmarks.
+    func togglePin(id: String) async {
+        guard let annotation = annotations.first(where: { $0.id == id }) else { return }
+        await updateAnnotation(UpdateAnnotationInput(
+            id: id,
+            color: nil,
+            content: nil,
+            positionData: nil,
+            isPinned: !annotation.pinned))
+    }
+
     func updateAnnotation(_ input: UpdateAnnotationInput) async {
         guard let sessionId = app.activeTabId else { return }
         let pendingCreate = pendingCreates[input.id]
         // Optimistic update
-        annotations = annotations.map { annotation in
+        annotations = Annotation.sortedForDisplay(annotations.map { annotation in
             guard annotation.id == input.id else { return annotation }
             var next = annotation
             if let color = input.color { next.color = color }
             if let content = input.content { next.content = content }
             if let positionData = input.positionData { next.positionData = positionData }
             if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
+            if let isPinned = input.isPinned { next.isPinned = isPinned }
             next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
             return next
-        }
+        })
         if let pendingCreate, !(await pendingCreate.value) { return }
         guard app.activeTabId == sessionId else { return }
         do {
