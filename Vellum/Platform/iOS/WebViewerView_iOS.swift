@@ -84,8 +84,11 @@ struct WebViewerView_iOS: View {
                     // land inside the crop. Routes per AppStore.regionCaptureTarget.
                     if app.mode == .snapshotRegion {
                         RegionCaptureOverlay_iOS { rect in
-                            captureRegion(rect)
-                            app.setMode(.view)
+                            // See PdfViewerView_iOS: the destination has to be
+                            // read out of the tab before the mode reset clears
+                            // it, which is what `finishRegionCapture` is for.
+                            let target = app.finishRegionCapture()
+                            captureRegion(rect, target: target)
                         } onCancel: {
                             app.setMode(.view)
                         }
@@ -245,9 +248,9 @@ struct WebViewerView_iOS: View {
     /// PdfOverlayStack_iOS.captureRegion). The AI path stays silent on a miss —
     /// a failed takeSnapshot mid-scroll is not worth a banner; the scratchpad
     /// path warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect) {
+    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
         let sessionId = app.activeTabId
-        switch app.regionCaptureTarget {
+        switch target {
         case .ai:
             // Pin the destination tab AND document before the await, then let
             // `addCapturedReference` discard the crop if the pane moved on — the
@@ -852,13 +855,14 @@ final class WebViewerController_iOS: NSObject {
     ///
     /// So the order here is load-bearing in both directions: read the stranded
     /// draft before the assignment (whose `didSet` blanks the mirror), and
-    /// re-queue it after `setMode(.view)`, which would otherwise drop it again.
+    /// re-queue it after `finishNotePlacement`, which routes through
+    /// `setMode(.view)` and would otherwise drop it again.
     private func presentNoteComposer(
         _ state: WebNoteComposerState, app: AppStore, sessionId: String
     ) {
         let stranded = noteComposer != nil ? noteComposerDraft : nil
         noteComposer = state
-        app.setMode(.view)
+        app.finishNotePlacement(forSessionId: sessionId)
         if let stranded { app.restorePendingNote(stranded, forSessionId: sessionId) }
     }
 

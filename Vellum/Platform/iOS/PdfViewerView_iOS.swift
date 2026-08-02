@@ -311,8 +311,12 @@ struct PdfOverlayStack_iOS: View {
             // (AppStore.regionCaptureTarget).
             if app.mode == .snapshotRegion {
                 RegionCaptureOverlay_iOS { rect in
-                    captureRegion(rect)
-                    app.setMode(.view)
+                    // `finishRegionCapture` hands back the destination the tab
+                    // armed and returns to view mode in one step; reading
+                    // `regionCaptureTarget` after the reset would always say
+                    // `.ai`.
+                    let target = app.finishRegionCapture()
+                    captureRegion(rect, target: target)
                 } onCancel: {
                     // Plain tap or tiny wobble: back out without a warning — the
                     // user changed their mind.
@@ -356,8 +360,8 @@ struct PdfOverlayStack_iOS: View {
     /// Hand the finished crop to whichever panel armed the capture. The AI path
     /// stays silent on a miss (it just re-arms nothing); the scratchpad path
     /// warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect) {
-        switch app.regionCaptureTarget {
+    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
+        switch target {
         case .ai:
             // A region crop always lands on a page (capturePageRegion bails
             // otherwise), so the snapshot's optional page is always populated.

@@ -490,6 +490,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         // this placement consumes it as the note's initial content (nil for a
         // plain, hand-placed note).
         let pendingContent = app?.consumePendingNoteContent()
+        // Recorded BEFORE the write below suspends: with live tabs the user can
+        // switch panes/tabs while `addNote` is in flight, and only the still-
+        // active origin session may leave note mode.
+        let originSessionId = app?.activeTabId
         let position = PositionData(
             rects: [AnnotationRect(x: clickX, y: clickY, width: 0, height: 0)],
             pageWidth: pageWidth, pageHeight: pageHeight,
@@ -502,7 +506,9 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         if let annotation = await annotationStore?.addNote(input) {
             annotationStore?.selectAnnotation(annotation.id)
         }
-        app?.setMode(.view)
+        if let originSessionId {
+            app?.finishNotePlacement(forSessionId: originSessionId)
+        }
     }
 
     func addNoteFromContextMenu() {
