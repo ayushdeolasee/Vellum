@@ -34,6 +34,9 @@ struct AnnotationSidebar: View {
                                 onSaveEdit: { saveEdit(annotation.id) },
                                 onCancelEdit: { cancelEdit() },
                                 onChangeColor: { color in changeColor(annotation, to: color) },
+                                onTogglePin: {
+                                    Task { await annotationStore.togglePin(id: annotation.id) }
+                                },
                                 onDelete: {
                                     Task { await annotationStore.deleteAnnotation(id: annotation.id) }
                                 }
@@ -45,6 +48,12 @@ struct AnnotationSidebar: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: editFieldFocused) { wasFocused, isFocused in
+            guard wasFocused, !isFocused, let editingId,
+                  annotationStore.annotations.first(where: { $0.id == editingId })?.type == .bookmark
+            else { return }
+            saveEdit(editingId)
+        }
     }
 
     private var header: some View {
@@ -150,6 +159,7 @@ struct AnnotationSidebar: View {
         }
     }
 
+    // Store already keeps pin/page/created order; filter only by type.
     private var filteredAnnotations: [Annotation] {
         guard let filter else { return annotationStore.annotations }
         return annotationStore.annotations.filter { $0.type == filter }
@@ -260,6 +270,7 @@ private struct AnnotationRow: View {
     let onSaveEdit: () -> Void
     let onCancelEdit: () -> Void
     let onChangeColor: (String) -> Void
+    let onTogglePin: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.palette) private var palette
@@ -280,6 +291,12 @@ private struct AnnotationRow: View {
                         .tracking(0.5)
                     Text("·")
                     Text("p.\(annotation.pageNumber)")
+                    if annotation.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: metaSize - 1))
+                            .foregroundStyle(palette.primary)
+                            .accessibilityLabel("Pinned")
+                    }
                 }
                 .font(.system(size: metaSize, weight: .medium))
                 .foregroundStyle(palette.mutedForeground)
@@ -294,7 +311,10 @@ private struct AnnotationRow: View {
                 }
 
                 if editing {
-                    TextField("", text: $editText)
+                    TextField(
+                        "", text: $editText,
+                        prompt: annotation.type == .bookmark ? Text("Add a title…") : nil
+                    )
                         .textFieldStyle(.plain)
                         .font(.system(size: fontSize))
                         .padding(.horizontal, 8)
@@ -325,15 +345,49 @@ private struct AnnotationRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            // Bookmarks have no content to double-tap until a title exists, so
+            // they get an explicit edit affordance next to the trash. Touch has
+            // no hover, so it stays visible whenever the row is on screen.
+            if annotation.type == .bookmark, !editing {
+                let hasTitle = annotation.content?.isEmpty == false
+                Button(action: onStartEdit) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 14))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(palette.mutedForeground)
+                .help(hasTitle ? "Edit bookmark title" : "Add bookmark title")
+                .accessibilityLabel(hasTitle ? "Edit bookmark title" : "Add bookmark title")
+                .accessibilityIdentifier("annotationRow.editTitle")
+            }
+
+            // Pin is a sibling control (not nested under the row tap) so it
+            // never also navigates.
+            Button(action: onTogglePin) {
+                Image(systemName: annotation.pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 13))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(annotation.pinned ? palette.primary : palette.mutedForeground)
+            .help(annotation.pinned ? "Unpin annotation" : "Pin annotation to top")
+            .accessibilityLabel(annotation.pinned ? "Unpin annotation" : "Pin annotation")
+            .accessibilityAddTraits(annotation.pinned ? [.isButton, .isSelected] : .isButton)
+            .accessibilityIdentifier("annotationRow.pin")
+
+            // Always visible with a 44 pt target: `.onHover` never fires for a
+            // finger, so hover-gating would make this unreachable on iPad.
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 14))
-                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(palette.mutedForeground)
-            .opacity(hovering || selected ? 1 : 0)
             .help("Delete annotation")
             .accessibilityLabel("Delete annotation")
             .accessibilityIdentifier("annotationRow.delete")
@@ -348,6 +402,14 @@ private struct AnnotationRow: View {
         .contentShape(RoundedRectangle(cornerRadius: Radius.lg))
         .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
+        .contextMenu {
+            Button(annotation.pinned ? "Unpin" : "Pin to Top", action: onTogglePin)
+            if annotation.type == .bookmark {
+                Button(annotation.content?.isEmpty == false ? "Edit Title" : "Add Title",
+                       action: onStartEdit)
+            }
+            Button("Delete", role: .destructive, action: onDelete)
+        }
     }
 
     @ViewBuilder
