@@ -1,0 +1,5 @@
+Placeholder so xcodegen can resolve the folder-reference resource build phase
+for VellumTests (project.yml). Packet 8 (issue #137, Stage I) fills this
+directory with the Raindrop/ and Readwise/ JSON fixtures that
+Tests/Integrations/TestSupport/FixtureLoader.swift loads out of the test
+bundle. Delete this file once real fixtures land.

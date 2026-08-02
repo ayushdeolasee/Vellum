@@ -34,6 +34,15 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+        excludes:
+          # Bundled below as a folder reference instead of being compiled:
+          # `Tests/Integrations/TestSupport/FixtureLoader.swift` resolves the
+          # JSON fixtures out of the test bundle at runtime, so the
+          # Raindrop/Readwise subdirectory layout has to survive into it.
+          - Integrations/Fixtures
+      - path: Tests/Integrations/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Vellum
     settings:
