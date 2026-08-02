@@ -96,18 +96,21 @@ struct AnnotationSidebar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(palette.foreground)
 
-                HStack(spacing: 3) {
-                    Text("Select text to highlight, or press")
-                    Text("N")
-                        .font(.system(size: 10, design: .monospaced))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(.separator)
-                        }
-                    Text("to drop a note.")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Select text to highlight,")
+                    HStack(spacing: 3) {
+                        Text("or press")
+                        Text("N")
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 3))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(.separator)
+                            }
+                        Text("to drop a note.")
+                    }
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(palette.mutedForeground)
