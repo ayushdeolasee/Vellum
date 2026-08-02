@@ -95,6 +95,7 @@
 		610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */; };
 		61926E81ED718C34215E0FA0 /* HelpCenterView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD108C6E47B57843360C1EFE /* HelpCenterView_iOS.swift */; };
 		64B391AA816FE70BC4C51874 /* TestEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27D5C4D285C243BF0A68572 /* TestEnvironment.swift */; };
+		6546FC16BBD8F31E5576C5F5 /* ReadLaterSearchProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBE4DC478563900EDE99FB82 /* ReadLaterSearchProvider.swift */; };
 		6589E6D1E1359D677F29159C /* PdfViewerController_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */; };
 		66994E1A97D429CAC940EECC /* WalkthroughSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19503ACED68A5C202EBE2E4 /* WalkthroughSheet_iOS.swift */; };
 		67B320CA1556DCBF8C2A8507 /* PdfGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */; };
@@ -471,6 +472,7 @@
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
 		F52D1C3512CC3036812C1B2B /* WalkthroughContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughContent.swift; sourceTree = "<group>"; };
 		FB1BFC5037CE20820A854225 /* TabPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabPresentation.swift; sourceTree = "<group>"; };
+		FBE4DC478563900EDE99FB82 /* ReadLaterSearchProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterSearchProvider.swift; sourceTree = "<group>"; };
 		FD01D08235008A4E602D0373 /* PaneTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeView.swift; sourceTree = "<group>"; };
 		FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF653B1B8741B61DBE9B55EE /* WebStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorage.swift; sourceTree = "<group>"; };
@@ -822,6 +824,7 @@
 				BC12177F7D45E8D3AC6AE4E0 /* HomeSearchItem.swift */,
 				E70BA19480CF71B6E14A7984 /* HomeSearchProvider.swift */,
 				63D1A270BA1DE40AC978F462 /* HomeSearchRanker.swift */,
+				FBE4DC478563900EDE99FB82 /* ReadLaterSearchProvider.swift */,
 			);
 			path = Search;
 			sourceTree = "<group>";
@@ -1190,6 +1193,7 @@
 				29A1A58CA7A3C47374E3C949 /* RaindropClient.swift in Sources */,
 				158F9D13B73118720C92C88E /* ReadLaterHTTPClient.swift in Sources */,
 				E2641696297CFDDCBD9248BA /* ReadLaterModels.swift in Sources */,
+				6546FC16BBD8F31E5576C5F5 /* ReadLaterSearchProvider.swift in Sources */,
 				D4BFAA8A50183B5A6EF1257F /* ReadwiseClient.swift in Sources */,
 				1F884AF6AF2ABD755DFE414D /* RecentFilesService.swift in Sources */,
 				7F04998EEE729814B58BE9D9 /* RegionCaptureOverlay_iOS.swift in Sources */,
