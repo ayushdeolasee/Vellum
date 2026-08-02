@@ -48,6 +48,16 @@ private struct PhoneShellRoot_iOS: View {
     @State private var addWebpagePresented = false
     @State private var isImporting = false
 
+    /// A one-shot request to put the keyboard in Home's search field, raised
+    /// when ⌘F arrives with nothing to find (#153 P8).
+    ///
+    /// It is a *flag on the shell* rather than a notification Home listens for,
+    /// because Home is a route: the chord is reachable from the reader, where the
+    /// field does not exist yet, so the request has to survive the route change
+    /// and be consumed by the screen once it mounts. `PhoneHome_iOS` clears it,
+    /// which is what stops every later visit to Home from raising the keyboard.
+    @State private var focusHomeSearch = false
+
     init(workspace: WorkspaceStore) {
         self.workspace = workspace
         _shell = State(initialValue: PhoneShellStore(workspace: workspace))
@@ -138,6 +148,22 @@ private struct PhoneShellRoot_iOS: View {
             .onReceive(NotificationCenter.default.publisher(for: .vellumAddWebpage)) { _ in
                 addWebpagePresented = true
             }
+            // ⌘T on a single-pane workspace. The router refuses to mint a start
+            // tab there (#153 D1) and posts this instead, because the route lives
+            // here and the router — shared with the iPad, and reachable from a
+            // `UIKeyCommand` on the PDF surface — has no handle on the shell.
+            .onReceive(NotificationCenter.default.publisher(for: .vellumShowHome)) { _ in
+                shell.showHome()
+            }
+            // ⌘F with no document: "Find…" has nothing to find and the chord
+            // means "search my library" instead. Both halves are done here —
+            // route to Home, then ask the field for the keyboard — because the
+            // reader is where the chord is usually pressed and Home is not in
+            // the tree yet to hear the notification for itself.
+            .onReceive(NotificationCenter.default.publisher(for: .vellumFocusHomeSearch)) { _ in
+                focusHomeSearch = true
+                shell.showHome()
+            }
             // The tab switcher (P7). A cover rather than a sheet: it replaces
             // the document rather than sitting over it, so there is nothing
             // behind it worth peeking at, and no detent to get wrong.
@@ -171,7 +197,7 @@ private struct PhoneShellRoot_iOS: View {
                 shell.didOpenDocument()
             }
             #if DEBUG
-            .task { await autoOpenForTesting() }
+            .task { await applyLaunchPlan() }
             #endif
     }
 
@@ -197,6 +223,7 @@ private struct PhoneShellRoot_iOS: View {
     private var homeRoute: some View {
         PhoneHome_iOS(
             store: homeSearch,
+            focusSearch: $focusHomeSearch,
             onOpen: { presentImporter() },
             onAddWebpage: { addWebpagePresented = true },
             onShowTabs: {
@@ -245,6 +272,11 @@ private struct PhoneShellRoot_iOS: View {
                 onOpenFile: { presentImporter() },
                 onAddWebpage: { addWebpagePresented = true })
         }
+        // The route's own handle, so a UI test can assert "the reader is on
+        // screen" without depending on which chrome happens to be visible —
+        // `phone.reader.title` and friends are absent in immersive mode, which
+        // is exactly one of the states `VELLUM_PHONE_STATE` exists to screenshot.
+        .accessibilityIdentifier("phone.reader")
         // Immersive reading is the absence of chrome, and that has to include
         // the system's own: the status bar and the home indicator are the two
         // remaining pieces of furniture over a full-bleed page.
@@ -318,20 +350,64 @@ private struct PhoneShellRoot_iOS: View {
     }
 
     #if DEBUG
-    /// QA hook, shared with the iPad shell: headless runs can't drive a
-    /// document picker. P8 composes `VELLUM_PHONE_STATE` on top of this.
-    private func autoOpenForTesting() async {
+    /// The launch-environment QA hook (#153 P8) — the one place the phone reads
+    /// `VELLUM_AUTOOPEN_URL` / `VELLUM_AUTOOPEN_PDF` / `VELLUM_PHONE_STATE`.
+    ///
+    /// Parsing and composition live in `PhoneLaunchPlan`, which is a pure
+    /// function of the environment dictionary and therefore unit-tested; this
+    /// method is only the effects — open the document, then land on the surface.
+    /// Splitting it that way is deliberate: the interesting rule ("a state that
+    /// needs a document, with no document anywhere, degrades to Home") is
+    /// exactly the part a simulator cannot check cheaply.
+    private func applyLaunchPlan() async {
+        let plan = PhoneLaunchPlan.parse(environment: ProcessInfo.processInfo.environment)
+        guard !plan.isEmpty else { return }
+
         let app = pane.app
-        guard app.document == nil, app.tabs.isEmpty else { return }
-        if let url = ProcessInfo.processInfo.environment["VELLUM_AUTOOPEN_URL"] {
-            await app.openUrl(url)
-            return
+        // Only into an empty shell, matching the hook this replaces: a restored
+        // session already has the document the run wants to photograph, and
+        // importing a second copy over it would change what the screenshot shows.
+        if app.document == nil, app.tabs.isEmpty, let open = plan.open {
+            switch open {
+            case .url(let url):
+                await app.openUrl(url)
+            case .pdf(let path):
+                guard FileManager.default.fileExists(atPath: path) else { break }
+                let paths = DocumentImport.importPicked([URL(fileURLWithPath: path)])
+                guard !paths.isEmpty else { break }
+                await app.openFiles(paths: paths)
+            }
         }
-        guard let path = ProcessInfo.processInfo.environment["VELLUM_AUTOOPEN_PDF"],
-              FileManager.default.fileExists(atPath: path) else { return }
-        let paths = DocumentImport.importPicked([URL(fileURLWithPath: path)])
-        guard !paths.isEmpty else { return }
-        await app.openFiles(paths: paths)
+
+        guard let state = plan.resolvedState(hasDocument: app.document != nil) else { return }
+
+        // Opening a document lands the shell on the reader by way of the
+        // `activeTabId` safety net above, and that runs on SwiftUI's schedule
+        // rather than ours — `showReader()` resets the chrome, which would undo
+        // `.immersive` if we raced it. `restoreFromDisk` can activate a tab late
+        // for the same reason. One turn of the runloop after the opens have
+        // settled is enough, and this is a DEBUG screenshot hook: a coordination
+        // channel built to make it exact would be more machinery than the thing
+        // it coordinates.
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled else { return }
+
+        switch state {
+        case .home:
+            shell.showHome()
+        case .reader:
+            shell.showReader()
+        case .immersive:
+            shell.showReader()
+            shell.setChrome(false)
+        case .inspector:
+            // Whatever panel the workspace last selected, so a run can pick one
+            // with the ⌥⌘1/2/3 chords and still use this to present it.
+            shell.revealInspector(shell.inspectorTab)
+        case .tabs:
+            shell.showReader()
+            shell.switcherPresented = true
+        }
     }
     #endif
 }

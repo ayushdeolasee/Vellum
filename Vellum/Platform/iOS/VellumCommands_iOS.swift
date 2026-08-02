@@ -76,12 +76,21 @@ struct VellumCommands_iOS: Commands {
 
             item(.toggleInspector)
 
-            Divider()
+            // Pane management, and only where there is a second pane to manage
+            // (#153 D4). On a `.singlePane` workspace these four are omitted
+            // outright rather than shown disabled: iPadOS builds this menu once
+            // per `Commands` evaluation, so a "disabled" item is really just an
+            // item that looks available in the ⌘-hold HUD and does nothing. The
+            // divider goes with them — a trailing separator over an empty group
+            // is the tell that something was hidden.
+            if workspace.layout == .splitScreen {
+                Divider()
 
-            item(.splitRight)
-            item(.splitDown)
-            item(.mergePanes)
-            item(.closePane)
+                item(.splitRight)
+                item(.splitDown)
+                item(.mergePanes)
+                item(.closePane)
+            }
         }
 
         // MARK: Navigate
@@ -138,9 +147,16 @@ struct VellumCommands_iOS: Commands {
     /// evaluation and does not re-validate items the way AppKit does before each
     /// menu tracking session, so a live title would read as stale more often
     /// than it read as correct.
+    ///
+    /// The availability check is the same one the router enforces
+    /// (`VellumShortcutCatalog.isAvailable`), applied here so a command that a
+    /// single-pane workspace cannot honour never reaches the HUD at all — and so
+    /// that a future gated action added to a menu below cannot leak in by
+    /// someone forgetting the surrounding `if`.
     @ViewBuilder
     private func item(_ action: VellumShortcutAction) -> some View {
-        if let shortcut = VellumShortcutCatalog[action] {
+        if VellumShortcutCatalog.isAvailable(action, in: workspace.layout),
+           let shortcut = VellumShortcutCatalog[action] {
             Button(shortcut.title) {
                 VellumShortcutRouter.perform(action, workspace: workspace)
             }

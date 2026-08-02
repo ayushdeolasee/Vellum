@@ -139,6 +139,7 @@
 		6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */; };
 		7108684D8FC432CEA922BC6F /* IntegrationsSyncEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775B99053C1485E779A62CE6 /* IntegrationsSyncEngineTests.swift */; };
 		723AEAB28F34C7D878D39094 /* StubURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0BEE9BC19E2CAE995864D6 /* StubURLProtocol.swift */; };
+		73A02E0FE09DD80215C12FEA /* PhoneLaunchState_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBEC22121640E7169439E3B3 /* PhoneLaunchState_iOS.swift */; };
 		742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C50948404B30999979C84A /* VellumBundleTests.swift */; };
 		745C2FE03E47537DD0F3BDD0 /* PdfZoomPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 784C007D95038C1220BBF263 /* PdfZoomPolicy.swift */; };
 		74F87D19B20B4A7A23919B5F /* PaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD01D08235008A4E602D0373 /* PaneTreeView.swift */; };
@@ -222,6 +223,7 @@
 		BEADF6098AC6C592A53810F2 /* TabResidencyBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD7C72856A02537E63E6CC4 /* TabResidencyBudgetTests.swift */; };
 		C00AC72121CE0C914C5B1C32 /* ShellIdiom_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 746237EA42F01B2A8B1AF425 /* ShellIdiom_iOS.swift */; };
 		C0467FFEFEFFFC2D272897A1 /* HomeSearchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */; };
+		C131DCD066F428AFFC8459E2 /* PhoneLaunchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED60213848C19BB826911B8D /* PhoneLaunchStateTests.swift */; };
 		C18C6BCDAC6EB771C15F6440 /* PdfKitView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */; };
 		C216FBF992CE583A32436389 /* InkToolPalette_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */; };
 		C4FA78D55C7E718218C43A3B /* ScratchpadPanel_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */; };
@@ -584,8 +586,10 @@
 		E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataStoreTests.swift; sourceTree = "<group>"; };
 		EB1F457515DBD00FDB7340D8 /* SyncedContainerPresenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerPresenterTests.swift; sourceTree = "<group>"; };
 		EBE57EDAF8BBFC6EEBB35108 /* CaptureInboxDrainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureInboxDrainTests.swift; sourceTree = "<group>"; };
+		EBEC22121640E7169439E3B3 /* PhoneLaunchState_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLaunchState_iOS.swift; sourceTree = "<group>"; };
 		EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSessionBackend.swift; sourceTree = "<group>"; };
 		EC849F7BCACD9A70CD3E3430 /* KeyboardShortcutsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsTests.swift; sourceTree = "<group>"; };
+		ED60213848C19BB826911B8D /* PhoneLaunchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLaunchStateTests.swift; sourceTree = "<group>"; };
 		EE2F0F8D6919A69747C15246 /* ReadwiseClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadwiseClientTests.swift; sourceTree = "<group>"; };
 		EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibrary.swift; sourceTree = "<group>"; };
 		EEC84C9F0FE81B815658203C /* PhoneReaderChrome_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneReaderChrome_iOS.swift; sourceTree = "<group>"; };
@@ -662,6 +666,7 @@
 				A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */,
 				1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */,
 				F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */,
+				EBEC22121640E7169439E3B3 /* PhoneLaunchState_iOS.swift */,
 				EEC84C9F0FE81B815658203C /* PhoneReaderChrome_iOS.swift */,
 				CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */,
 				6E4FB9AB7345DD4F55352DD1 /* PhoneShellStore.swift */,
@@ -794,6 +799,7 @@
 				0B700C5630743F12FAFB3C96 /* PdfZoomPolicyTests.swift */,
 				483181603DAF95A4B32E193B /* PhoneChromeLayoutTests.swift */,
 				9594980C9F3FD85C18DEA2F6 /* PhoneInspectorTests.swift */,
+				ED60213848C19BB826911B8D /* PhoneLaunchStateTests.swift */,
 				90FD1C6014DA791900E3F0EF /* PhoneShellStateTests.swift */,
 				EF3669EB8BFCE9EA79F61A22 /* PhoneTabCardTests.swift */,
 				41B668A374C9761E4C84D702 /* PositionCoalescingTests.swift */,
@@ -1432,6 +1438,7 @@
 				745C2FE03E47537DD0F3BDD0 /* PdfZoomPolicy.swift in Sources */,
 				D558820DF2F7C8B0247E7487 /* PhoneHome_iOS.swift in Sources */,
 				560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */,
+				73A02E0FE09DD80215C12FEA /* PhoneLaunchState_iOS.swift in Sources */,
 				C9874BACDDA1316D5CB6BBFE /* PhoneReaderChrome_iOS.swift in Sources */,
 				103831355F7B4AE1977FB8BB /* PhoneShellStore.swift in Sources */,
 				B40539229B7FA2B662AEDA7C /* PhoneShell_iOS.swift in Sources */,
@@ -1563,6 +1570,7 @@
 				5BEEF07E614919A1E431E977 /* PdfZoomPolicyTests.swift in Sources */,
 				64F801579781F4CAF1D9E516 /* PhoneChromeLayoutTests.swift in Sources */,
 				03E99D5BACF1287AABF930D4 /* PhoneInspectorTests.swift in Sources */,
+				C131DCD066F428AFFC8459E2 /* PhoneLaunchStateTests.swift in Sources */,
 				53E547B991B1DE7E701183D2 /* PhoneShellStateTests.swift in Sources */,
 				0B382C5B47359915D2A5339D /* PhoneTabCardTests.swift in Sources */,
 				AA5DCBC0B5F97BC2DEF95C39 /* PositionCoalescingTests.swift in Sources */,

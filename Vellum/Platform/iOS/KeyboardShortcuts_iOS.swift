@@ -198,6 +198,28 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .showWalkthrough: "showWalkthrough"
         }
     }
+
+    /// Whether this action only means something in a workspace that may hold
+    /// more than one pane (#153 P8).
+    ///
+    /// One binary serves both idioms, so the catalog stays whole — the table is
+    /// still the Mac's table, and dropping rows from it on a phone would break
+    /// the golden test that keeps iPad honest. Availability is a *projection* of
+    /// the table instead, asked at both dispatch surfaces:
+    /// `VellumCommands_iOS` omits the menu items so the ⌘-hold HUD never
+    /// advertises a chord that does nothing, and `VellumShortcutRouter` re-checks
+    /// it at invocation time because a `UIKeyCommand` on a document surface never
+    /// consulted a menu in the first place.
+    ///
+    /// The four rows here are exactly the pane-management commands. On
+    /// `.singlePane` (`ShellIdiom_iOS.phone`, D4) `WorkspaceStore` no-ops all of
+    /// them anyway, so the gate is about what the app *offers*, not about safety.
+    var requiresSplitScreen: Bool {
+        switch self {
+        case .splitRight, .splitDown, .mergePanes, .closePane: true
+        default: false
+        }
+    }
 }
 
 // MARK: - Menu placement
@@ -485,6 +507,24 @@ enum VellumShortcutCatalog {
     /// Shortcuts belonging to one menu, in table order.
     static func shortcuts(in menu: VellumShortcutMenu) -> [VellumShortcut] {
         all.filter { $0.menu == menu }
+    }
+
+    /// Whether `action` is offered in a workspace with this pane capability.
+    ///
+    /// The single owner of the compact gate: both `VellumCommands_iOS` (which
+    /// decides what appears in the menu) and `VellumShortcutRouter` (which
+    /// decides what a chord does) ask this, so the menu and the keyboard can
+    /// never disagree about which commands a phone has.
+    static func isAvailable(
+        _ action: VellumShortcutAction, in layout: PaneLayoutCapability
+    ) -> Bool {
+        layout == .splitScreen || !action.requiresSplitScreen
+    }
+
+    /// The table as this layout offers it — the golden table minus whatever the
+    /// idiom has nowhere to put.
+    static func all(in layout: PaneLayoutCapability) -> [VellumShortcut] {
+        all.filter { isAvailable($0.action, in: layout) }
     }
 
     /// Resolves the string identity a `UIKeyCommand` carried back to its action.

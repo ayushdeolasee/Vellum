@@ -34,6 +34,17 @@ struct PhoneHome_iOS: View {
     /// store and writes `query`/`filter`/`sort` into it, but it does not own its
     /// lifetime — `PhoneShell_iOS` does.
     @Bindable var store: HomeSearchStore
+    /// A one-shot "put the keyboard in the search field" request, owned by the
+    /// shell and CLEARED here.
+    ///
+    /// It is a binding rather than a notification this screen listens for
+    /// because Home is a route: ⌘F is usually pressed in the reader, where this
+    /// view does not exist to hear anything, so the shell routes Home and leaves
+    /// the request behind for whenever the screen mounts. Clearing it on arrival
+    /// is what keeps the request one-shot — a flag left set would raise the
+    /// software keyboard on every later visit to Home, which is precisely the
+    /// auto-focus this screen is documented not to do.
+    @Binding var focusSearch: Bool
     var onOpen: () -> Void
     var onAddWebpage: () -> Void
     var onShowTabs: () -> Void
@@ -52,11 +63,13 @@ struct PhoneHome_iOS: View {
 
     init(
         store: HomeSearchStore,
+        focusSearch: Binding<Bool>,
         onOpen: @escaping () -> Void,
         onAddWebpage: @escaping () -> Void,
         onShowTabs: @escaping () -> Void
     ) {
         self.store = store
+        _focusSearch = focusSearch
         self.onOpen = onOpen
         self.onAddWebpage = onAddWebpage
         self.onShowTabs = onShowTabs
@@ -118,8 +131,14 @@ struct PhoneHome_iOS: View {
             guard phase == .active else { return }
             Task { await store.load() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .vellumFocusHomeSearch)) { _ in
+        // `initial: true` covers the case the binding exists for: the request
+        // was raised in the reader and this screen is only now being built, so
+        // there was no change to observe — just a flag that is already set by
+        // the time the field appears.
+        .onChange(of: focusSearch, initial: true) { _, requested in
+            guard requested else { return }
             searchFocused = true
+            focusSearch = false
         }
         .homeLibraryPresentations(actions, toastAlignment: .bottom)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
