@@ -35,6 +35,7 @@ struct SyncedContainerRoutingTests {
         private let releaseLookup: DispatchSemaphore
         private let result: URL?
         private var calls = 0
+        private var mainThreadLookups: [Bool] = []
 
         init(result: URL?, lookupStarted: DispatchSemaphore, releaseLookup: DispatchSemaphore) {
             self.result = result
@@ -43,9 +44,13 @@ struct SyncedContainerRoutingTests {
         }
 
         var callCount: Int { lock.withLock { calls } }
+        var lookupRanOnMainThread: Bool { lock.withLock { mainThreadLookups.contains(true) } }
 
         func lookup(_ identifier: SyncedContainerIdentifier) -> URL? {
-            lock.withLock { calls += 1 }
+            lock.withLock {
+                calls += 1
+                mainThreadLookups.append(Thread.isMainThread)
+            }
             lookupStarted.signal()
             _ = releaseLookup.wait(timeout: .now() + 5)
             return result
@@ -68,6 +73,17 @@ struct SyncedContainerRoutingTests {
             .appendingPathComponent("vellum-sync-routing-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func wait(
+        for semaphore: DispatchSemaphore,
+        timeout: DispatchTime
+    ) async -> DispatchTimeoutResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: semaphore.wait(timeout: timeout))
+            }
+        }
     }
 
     /// Anchors `Bundle(for:)` on the test bundle, which is the bundle a derived
@@ -166,13 +182,51 @@ struct SyncedContainerRoutingTests {
         #expect(lookup.callCount == 1)
     }
 
+    @Test("Async iCloud access resolves the root away from the main actor", .timeLimit(.minutes(1)))
+    func asyncICloudAccessResolveDoesNotBlockMainActor() async {
+        let storeDir = scratch()
+        let containerRoot = scratch()
+        let lookupStarted = DispatchSemaphore(value: 0)
+        let releaseLookup = DispatchSemaphore(value: 0)
+        let mainActorProbe = DispatchSemaphore(value: 0)
+        let lookup = BlockingRootLookup(
+            result: containerRoot,
+            lookupStarted: lookupStarted,
+            releaseLookup: releaseLookup)
+        VellumUbiquityContainerRoot.resetCacheForTests()
+        VellumUbiquityContainerRoot.rootLookupOverride = lookup.lookup
+        defer {
+            releaseLookup.signal()
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: containerRoot)
+        }
+
+        let resolve = Task { @MainActor in
+            await StorageAccess.resolve(mode: .icloud, storeDir: storeDir)
+        }
+        guard await wait(for: lookupStarted, timeout: .now() + 2) == .success else {
+            Issue.record("The async StorageAccess resolver never entered the root lookup")
+            return
+        }
+
+        Task { @MainActor in mainActorProbe.signal() }
+        #expect(await wait(for: mainActorProbe, timeout: .now() + 2) == .success)
+        #expect(!lookup.lookupRanOnMainThread)
+
+        releaseLookup.signal()
+        let access = await resolve.value
+        #expect(access.isCoordinated)
+        await access.container?.suspend()
+    }
+
     @Test("Local storage resolves to the direct path and constructs no container")
     func localIsDirect() {
         let storeDir = scratch()
         defer { try? FileManager.default.removeItem(at: storeDir) }
         let probe = FactoryProbe()
 
-        let access = StorageAccess.resolve(mode: .local, storeDir: storeDir) {
+        let access = StorageAccess.resolve(mode: .local, storeDir: storeDir, icloudRoot: nil) {
             probe.note()
             return FakeSyncedContainer()
         }
@@ -194,7 +248,7 @@ struct SyncedContainerRoutingTests {
         }
         let probe = FactoryProbe()
 
-        let access = StorageAccess.resolve(mode: .custom, storeDir: storeDir) {
+        let access = StorageAccess.resolve(mode: .custom, storeDir: storeDir, icloudRoot: nil) {
             probe.note()
             return FakeSyncedContainer()
         }
@@ -216,12 +270,17 @@ struct SyncedContainerRoutingTests {
             try? FileManager.default.removeItem(at: containerRoot)
         }
 
-        let access = StorageAccess.resolve(mode: .icloud, storeDir: storeDir) { FakeSyncedContainer() }
+        let vellumRoot = containerRoot
+            .appendingPathComponent("Documents/Vellum", isDirectory: true)
+        let access = StorageAccess.resolve(
+            mode: .icloud,
+            storeDir: storeDir,
+            icloudRoot: vellumRoot) { FakeSyncedContainer() }
 
         #expect(access.isCoordinated)
         #expect(
-            access.root == containerRoot
-                .appendingPathComponent("Documents/Vellum/.vellum/records", isDirectory: true))
+            access.root == vellumRoot
+                .appendingPathComponent(".vellum/records", isDirectory: true))
     }
 
     @Test("DEBUG fake ubiquity root drives the byte-compatible WebStorage layout")
@@ -278,7 +337,10 @@ struct SyncedContainerRoutingTests {
         }
         _ = VellumUbiquityContainerRoot.root(for: .vellum, environment: [:])
 
-        let access = StorageAccess.resolve(mode: .icloud, storeDir: storeDir) { nil }
+        let access = StorageAccess.resolve(
+            mode: .icloud,
+            storeDir: storeDir,
+            icloudRoot: nil) { nil }
 
         guard case .unavailable = access else {
             Issue.record("iCloud with no container must resolve to .unavailable, got \(access)")

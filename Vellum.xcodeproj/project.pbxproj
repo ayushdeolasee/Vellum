@@ -271,6 +271,7 @@
 		DB49B34BAD564527EF5585A2 /* WebViewerTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C4546D0D679437B876586A /* WebViewerTypes.swift */; };
 		DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 0F9E9D97558DCF004997C26D /* SwiftMath */; };
 		DC1C5A05CD05F5849C9F1093 /* IntegrationsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C8DEB50E950BCD7AEA5AB0D /* IntegrationsStore.swift */; };
+		DC90959CCEECB144053DE7D1 /* StorageCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00CABCB86F3697739A9D4B6F /* StorageCoordinator.swift */; };
 		DDA81241E68550A68F3D82A0 /* CaptureInboxLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 727E2F4BE67C51B47AAFB570 /* CaptureInboxLayout.swift */; };
 		E2641696297CFDDCBD9248BA /* ReadLaterModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2ED6E4FCE053674A62E9EDD /* ReadLaterModels.swift */; };
 		E43B370B9FE717B8FBDB16F4 /* DocumentActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 717C1543B2E8976D6267F8A5 /* DocumentActionsTests.swift */; };
@@ -295,6 +296,7 @@
 		F037DEA7B143966084D8BD71 /* WalkthroughContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F52D1C3512CC3036812C1B2B /* WalkthroughContent.swift */; };
 		F0A6C5F01EBEBA10210B6D32 /* DocumentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28BDBF0FA0F7F13C32A07F05 /* DocumentIdentity.swift */; };
 		F0ACBADDBB9B0C0E9224BAAD /* ContentView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */; };
+		F0AEA35EEC47E6386F0D9816 /* StorageCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F224CCEAC71638DF7EE556FE /* StorageCoordinatorTests.swift */; };
 		F14F33AEF8094C593CF6A6DE /* DocumentSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */; };
 		F375A6682F4CEFF5406ADD9D /* OAuthLoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5B78507B70CB73698D8DC4 /* OAuthLoopbackServer.swift */; };
 		F4ED32A7851D641FB6F47CA4 /* AiReferencePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9674A1105A70C761C2EC40AB /* AiReferencePersistenceTests.swift */; };
@@ -323,6 +325,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		00CABCB86F3697739A9D4B6F /* StorageCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageCoordinator.swift; sourceTree = "<group>"; };
 		01F38132FDC803C6ACEB43CC /* AiStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiStore.swift; sourceTree = "<group>"; };
 		027E09C0BD7A98F4590A5878 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		028998E6FC55C768B398E4AA /* ChatGPTClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTClient.swift; sourceTree = "<group>"; };
@@ -617,6 +620,7 @@
 		F07613531ED060241AC3AE6C /* ICloudSyncedContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudSyncedContainer.swift; sourceTree = "<group>"; };
 		F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDropTests.swift; sourceTree = "<group>"; };
 		F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneInspectorSheet_iOS.swift; sourceTree = "<group>"; };
+		F224CCEAC71638DF7EE556FE /* StorageCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageCoordinatorTests.swift; sourceTree = "<group>"; };
 		F2630E8BE36D65B9E485FD6F /* Controls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Controls.swift; sourceTree = "<group>"; };
 		F2ED6E4FCE053674A62E9EDD /* ReadLaterModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterModels.swift; sourceTree = "<group>"; };
 		F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeZenClient.swift; sourceTree = "<group>"; };
@@ -838,6 +842,7 @@
 				709F72C1FA6B697D52FCD5BC /* SelectableMessageTests.swift */,
 				583E0A6988C207365E311AC2 /* SettingsNavigationTests.swift */,
 				B5E9C8F4E1EBEFAF5B926EC6 /* SheetPresenceIOSTests.swift */,
+				F224CCEAC71638DF7EE556FE /* StorageCoordinatorTests.swift */,
 				3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */,
 				86FE3DB21F9C987943472B41 /* SyncedContainerConflictTests.swift */,
 				B731E162E5BC19099ACCB0A2 /* SyncedContainerFakeTests.swift */,
@@ -1176,6 +1181,7 @@
 			children = (
 				FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */,
 				F07613531ED060241AC3AE6C /* ICloudSyncedContainer.swift */,
+				00CABCB86F3697739A9D4B6F /* StorageCoordinator.swift */,
 				0AE428525E41E75F87CAE44F /* SyncedContainer.swift */,
 				C854CEB16A3B128A02C7499A /* SyncedContainerModels.swift */,
 			);
@@ -1512,6 +1518,7 @@
 				C00AC72121CE0C914C5B1C32 /* ShellIdiom_iOS.swift in Sources */,
 				22AF5CEF40F9C905992B2D35 /* ShortcutRouter_iOS.swift in Sources */,
 				7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */,
+				DC90959CCEECB144053DE7D1 /* StorageCoordinator.swift in Sources */,
 				56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */,
 				43C780BABA587B2775DFC01E /* StorageInventory.swift in Sources */,
 				4B759FBB179307FE097DA861 /* StorageLocationChoiceSheet.swift in Sources */,
@@ -1631,6 +1638,7 @@
 				FFFCBEA9C2190362FA4B52F5 /* SelectableMessageTests.swift in Sources */,
 				6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */,
 				5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */,
+				F0AEA35EEC47E6386F0D9816 /* StorageCoordinatorTests.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				723AEAB28F34C7D878D39094 /* StubURLProtocol.swift in Sources */,
 				77BC4CF86B7FBC38EB8B9117 /* SyncedContainerConflictTests.swift in Sources */,

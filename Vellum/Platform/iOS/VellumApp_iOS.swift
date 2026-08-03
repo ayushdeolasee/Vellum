@@ -16,6 +16,7 @@ struct VellumApp_iOS: App {
     @State private var showStorageChoice = false
     @State private var showWalkthrough = false
     @State private var showHelp = false
+    @State private var backgroundFlushController: BackgroundFlushController
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -38,6 +39,7 @@ struct VellumApp_iOS: App {
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())
+        _backgroundFlushController = State(initialValue: BackgroundFlushController())
 
         // Read-later autopull's background trigger (#157). Registration has to
         // happen before the app finishes launching — BGTaskScheduler treats a
@@ -101,6 +103,11 @@ struct VellumApp_iOS: App {
                     guard !showStorageChoice, !showWalkthrough else { return }
                     showHelp = true
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .vellumStorageModeChanged)) { _ in
+                    Task { @MainActor in
+                        await workspace.reconfigureStorageCoordinator()
+                    }
+                }
                 .sheet(isPresented: $showHelp) {
                     HelpCenterView_iOS()
                         .environment(\.palette, themeStore.palette)
@@ -137,7 +144,11 @@ struct VellumApp_iOS: App {
             // been away for a day would show stale items until someone tapped
             // Sync Now. Returning to the foreground is the moment to re-check.
             if phase == .active {
-                workspace.integrations.run { await workspace.integrations.foregroundRefresh() }
+                backgroundFlushController.invalidate()
+                Task { @MainActor in
+                    await workspace.foregroundStorageCoordinator()
+                    workspace.integrations.run { await workspace.integrations.foregroundRefresh() }
+                }
             }
         }
     }
@@ -177,6 +188,7 @@ struct VellumApp_iOS: App {
         // but maintenance must join that same startup before it snapshots the
         // queue. Otherwise a cold launch can prefetch an empty initial store.
         await workspace.integrations.start()
+        await workspace.startStorageCoordinator()
 
         let openDocuments = workspace.root.allLeaves()
             .flatMap { $0.app.tabs }.compactMap(\.document)
@@ -242,14 +254,15 @@ struct VellumApp_iOS: App {
     @MainActor
     private func flushOnBackground() {
         let workspace = self.workspace
+        let flushController = backgroundFlushController
+        let generation = flushController.begin()
 
-        let token = BackgroundFlushToken()
-        token.id = UIApplication.shared.beginBackgroundTask(withName: "VellumBackgroundFlush") {
-            Task { @MainActor in token.end() }
+        let token = BackgroundFlushToken(name: "VellumBackgroundFlush") {
+            flushController.expire(generation: generation)
         }
 
-        Task { @MainActor in
-            defer { token.end() }
+        let task = Task { @MainActor in
+            defer { flushController.finish(generation: generation) }
             await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their metadata write and session
             // close behind the UI (AppStore.closeTab) and are no longer in
@@ -293,19 +306,93 @@ struct VellumApp_iOS: App {
             await ScratchpadPersistence.awaitPendingFlush()
             await AiPersistence.awaitPendingFlush()
             // The iOS analogue of the Mac's applicationShouldTerminate barrier:
-            // cancel in-flight syncs and wait for the store-owned writes
-            // (preference flips, optimistic moves, disconnects, thumbnail
-            // cleanup). Last, so it does not hold up the per-tab saves above.
+            // cancel in-flight read-later syncs and wait for the store-owned
+            // writes (preference flips, optimistic moves, disconnects,
+            // thumbnail cleanup), then suspend coordinated storage.
             await workspace.integrations.awaitQuiescence()
+            guard flushController.isCurrent(generation), !Task.isCancelled else { return }
+            _ = await workspace.backgroundStorageCoordinator(timeout: 20) {
+                await MainActor.run { flushController.isCurrent(generation) }
+            }
         }
+        flushController.install(task: task, token: token, generation: generation)
     }
 }
 
-/// Holds the `beginBackgroundTask` identifier so the expiration handler and the
-/// flush task can each end it exactly once, on the main actor.
+/// Main-actor controller for the iOS scene-background flush. The generation is
+/// the authority: expiration and foreground invalidate the generation, cancel the
+/// task, and end the UIKit background token exactly once. The storage coordinator
+/// checks this generation again inside its final suspend path.
 @MainActor
-private final class BackgroundFlushToken {
-    var id: UIBackgroundTaskIdentifier = .invalid
+final class BackgroundFlushController {
+    private struct Active {
+        var generation: Int
+        var task: Task<Void, Never>
+        var token: any BackgroundFlushHandle
+    }
+
+    private var generation = 0
+    private var active: Active?
+
+    func begin() -> Int {
+        invalidate()
+        generation += 1
+        return generation
+    }
+
+    func install(task: Task<Void, Never>, token: any BackgroundFlushHandle, generation: Int) {
+        guard self.generation == generation, active == nil else {
+            task.cancel()
+            token.end()
+            return
+        }
+        active = Active(generation: generation, task: task, token: token)
+    }
+
+    func isCurrent(_ generation: Int) -> Bool {
+        self.generation == generation && active?.generation == generation
+    }
+
+    func finish(generation: Int) {
+        guard active?.generation == generation else { return }
+        active?.token.end()
+        active = nil
+    }
+
+    func expire(generation: Int) {
+        guard active?.generation == generation else { return }
+        let expired = active
+        active = nil
+        self.generation += 1
+        expired?.task.cancel()
+        expired?.token.end()
+    }
+
+    func invalidate() {
+        generation += 1
+        let stale = active
+        active = nil
+        stale?.task.cancel()
+        stale?.token.end()
+    }
+}
+
+/// Holds the `beginBackgroundTask` identifier so all owners can end it exactly
+/// once, on the main actor.
+@MainActor
+protocol BackgroundFlushHandle: AnyObject {
+    func end()
+}
+
+@MainActor
+final class BackgroundFlushToken: BackgroundFlushHandle {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String, expiration: @escaping @MainActor @Sendable () -> Void) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) {
+            Task { @MainActor in expiration() }
+        }
+    }
 
     func end() {
         guard id != .invalid else { return }

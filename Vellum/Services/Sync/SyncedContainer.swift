@@ -102,6 +102,7 @@ enum StorageAccess: Sendable {
     static func resolve(
         mode: WebStorageMode,
         storeDir: URL,
+        icloudRoot: URL?,
         container: @Sendable () -> (any SyncedContainer)?
     ) -> StorageAccess {
         switch mode {
@@ -109,7 +110,7 @@ enum StorageAccess: Sendable {
             let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
             return .direct(root: root)
         case .icloud:
-            guard let root = WebStorageSettings.icloudVellumRoot else { return .unavailable }
+            guard let root = icloudRoot else { return .unavailable }
             guard let container = container() else { return .unavailable }
             let layout = WebStorageLayout.pretty(
                 root: root, recordsInRoot: true, localStoreDir: storeDir)
@@ -126,9 +127,13 @@ enum StorageAccess: Sendable {
             let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
             return .direct(root: root)
         case .icloud:
-            let container = await Task.detached(priority: .utility) { ICloudSyncedContainer() }.value
+            let (root, container) = await Task.detached(priority: .utility) {
+                WebStorageSettings.resolveICloudRoot()
+                let root = WebStorageSettings.icloudVellumRoot
+                return (root, root == nil ? nil : ICloudSyncedContainer())
+            }.value
+            guard let root else { return .unavailable }
             guard let container else { return .unavailable }
-            guard let root = WebStorageSettings.icloudVellumRoot else { return .unavailable }
             let layout = WebStorageLayout.pretty(
                 root: root, recordsInRoot: true, localStoreDir: storeDir)
             return .coordinated(container, root: layout.recordsDir)

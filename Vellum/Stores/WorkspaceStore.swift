@@ -71,6 +71,11 @@ final class WorkspaceStore {
     /// boundary.
     let positions: DocumentPositionService
 
+    /// App-level coordinated-storage owner. Local/custom modes never install a
+    /// container; iCloud mode owns exactly one container and one conflict
+    /// consumer through this service.
+    @ObservationIgnored let storageCoordinator: StorageCoordinator
+
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
     /// reopen or Save As in one pane waits out a close started in another —
     /// including a pane that has since collapsed. The scene-background flush
@@ -364,13 +369,15 @@ final class WorkspaceStore {
         sessions: SessionService, integrations: IntegrationsStore = IntegrationsStore(),
         residency: TabResidencyManager = TabResidencyManager(),
         layout: PaneLayoutCapability = .splitScreen,
-        positions: DocumentPositionService = DocumentPositionService()
+        positions: DocumentPositionService = DocumentPositionService(),
+        storageCoordinator: StorageCoordinator = StorageCoordinator()
     ) {
         self.residency = residency
         self.sessions = sessions
         self.integrations = integrations
         self.layout = layout
         self.positions = positions
+        self.storageCoordinator = storageCoordinator
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()
@@ -408,6 +415,32 @@ final class WorkspaceStore {
             }
         }
         await positions.flush()
+    }
+
+    func startStorageCoordinator() async {
+        await storageCoordinator.start()
+    }
+
+    func foregroundStorageCoordinator() async {
+        await storageCoordinator.foreground()
+    }
+
+    func reconfigureStorageCoordinator() async {
+        await storageCoordinator.reconfigure()
+    }
+
+    @discardableResult
+    func backgroundStorageCoordinator(
+        timeout: TimeInterval? = nil,
+        finalSuspensionAllowed: @escaping @Sendable () async -> Bool = { true }
+    ) async -> StorageCoordinator.BackgroundDrainOutcome {
+        await storageCoordinator.background(
+            timeout: timeout,
+            finalSuspensionAllowed: finalSuspensionAllowed)
+    }
+
+    func stopStorageCoordinator(timeout: TimeInterval? = nil) async {
+        await storageCoordinator.stop(timeout: timeout)
     }
 
     static func readingPosition(for tab: PdfTab) -> ReadingPosition {

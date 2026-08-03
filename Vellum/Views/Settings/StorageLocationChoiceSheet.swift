@@ -90,6 +90,7 @@ enum WebStorageRelocator {
 
         WebStorageMigrator.recordPendingRelocation(mode: previous, customPath: previousCustomPath)
         WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
+        NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
@@ -155,6 +156,7 @@ enum WebStorageRelocator {
 }
 
 extension Notification.Name {
+    static let vellumStorageModeChanged = Notification.Name("vellumStorageModeChanged")
     static let vellumStorageRelocationChanged = Notification.Name("vellumStorageRelocationChanged")
 }
 
