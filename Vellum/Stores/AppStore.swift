@@ -188,6 +188,7 @@ final class AppStore {
     /// pane's store (see `TabTeardownRegistry`); standalone stores (tests) get
     /// a private one.
     private let teardowns: TabTeardownRegistry
+    private let documentAccess: DocumentAccessResolver
     @ObservationIgnored private var pendingPositionRecords: [String: PendingPositionRecord] = [:]
     @ObservationIgnored private var positionRecordTask: Task<Void, Never>?
 
@@ -196,9 +197,14 @@ final class AppStore {
         var position: ReadingPosition
     }
 
-    init(sessions: SessionService, teardowns: TabTeardownRegistry = TabTeardownRegistry()) {
+    init(
+        sessions: SessionService,
+        teardowns: TabTeardownRegistry = TabTeardownRegistry(),
+        documentAccess: DocumentAccessResolver = .live
+    ) {
         self.sessions = sessions
         self.teardowns = teardowns
+        self.documentAccess = documentAccess
     }
 
     // MARK: - Opening documents
@@ -211,6 +217,7 @@ final class AppStore {
             isLoading = false
         } catch {
             isLoading = false
+            routeStorageRecoveryIfNeeded(error)
             self.error = String(describing: error.localizedDescription)
         }
     }
@@ -224,6 +231,7 @@ final class AppStore {
             do {
                 try await openOneFile(path: path)
             } catch {
+                routeStorageRecoveryIfNeeded(error)
                 errors.append("\(path): \(error.localizedDescription)")
             }
         }
@@ -664,37 +672,15 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    // Resolution order (an iPad divergence main has no need
-                    // for): the saved bookmark first — it survives both a
-                    // container-UUID change and a move/rename — then the path
-                    // heal, then the raw saved path. The persisted path is
-                    // absolute and rooted in the app's data container, whose
-                    // UUID changes across reinstalls and OS updates, so without
-                    // the heal a PDF tab silently drops on the next launch after
-                    // an update while its sibling web tab survives, collapsing
-                    // the split and orphaning the pad.
-                    //
-                    // Access only needs to stay open for the read that opens the
-                    // file; PDFKit/CGPDF have finished parsing what they need by
-                    // the time `openFile` returns.
-                    var resolvedPath = savedDocument.pdfPath
-                    var resolvedURL: URL?
-                    var bookmarkNeedsRefresh = false
-                    if let bookmarkData = savedDocument.bookmarkData,
-                       let resolved = SecurityScopedBookmark.resolve(bookmarkData) {
-                        resolvedPath = resolved.url.path
-                        resolvedURL = resolved.url
-                        bookmarkNeedsRefresh = resolved.isStale
-                    } else {
-                        resolvedPath = DocumentImport.resolveExistingPath(savedDocument.pdfPath)
-                            ?? savedDocument.pdfPath
+                    opened = try await documentAccess.restoreSavedPDF(
+                        savedDocument,
+                        sessionId: sessionId,
+                        resolveExistingPath: DocumentImport.resolveExistingPath
+                    ) { [sessions] path, sessionId in
+                        try await sessions.openFile(path: path, sessionId: sessionId)
+                    } close: { [sessions] sessionId in
+                        try? await sessions.closeFile(sessionId: sessionId)
                     }
-                    let accessStarted = resolvedURL?.startAccessingSecurityScopedResource() ?? false
-                    defer { if accessStarted { resolvedURL?.stopAccessingSecurityScopedResource() } }
-                    opened = try await sessions.openFile(path: resolvedPath, sessionId: sessionId)
-                    opened.bookmarkData = bookmarkNeedsRefresh || savedDocument.bookmarkData == nil
-                        ? SecurityScopedBookmark.make(forPath: resolvedPath)
-                        : savedDocument.bookmarkData
                 }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
@@ -717,6 +703,7 @@ final class AppStore {
                 tabs.append(tab)
                 restoredTabIds[descriptorIndex] = sessionId
             } catch {
+                routeStorageRecoveryIfNeeded(error)
                 // One unavailable document must not prevent the rest of the
                 // workspace from restoring. The reconciled tree is saved by
                 // WorkspaceStore after all panes have finished.
@@ -1039,6 +1026,11 @@ final class AppStore {
         try await openDocumentFile(path: path)
     }
 
+    private func routeStorageRecoveryIfNeeded(_ error: Error) {
+        guard case DocumentAccessError.unavailable = error else { return }
+        workspace?.settingsSection = .storage
+    }
+
     private func openDocumentFile(path: String) async throws {
         let isArchive = path.lowercased().hasSuffix(".vellumweb")
         // Close-then-immediately-reopen: a teardown from a preceding close may
@@ -1061,7 +1053,14 @@ final class AppStore {
         if isArchive {
             doc = try await sessions.openVellumwebFile(path: path, sessionId: sessionId)
         } else {
-            doc = try await sessions.openFile(path: path, sessionId: sessionId)
+            doc = try await documentAccess.openPickedPDF(
+                url: URL(fileURLWithPath: path),
+                sessionId: sessionId
+            ) { [sessions] path, sessionId in
+                try await sessions.openFile(path: path, sessionId: sessionId)
+            } close: { [sessions] sessionId in
+                try? await sessions.closeFile(sessionId: sessionId)
+            }
         }
         await adoptOpenedDocument(doc, sessionId: sessionId)
         if isArchive {
@@ -1268,11 +1267,11 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         var doc = doc
-        // Mint a security-scoped bookmark right now, while the just-completed
-        // open guarantees read access. Web docs have no filesystem path.
-        if doc.kind == .pdf {
-            doc.bookmarkData = SecurityScopedBookmark.make(forPath: doc.pdfPath)
-        }
+        // PDF bookmarks are persisted in the device-local
+        // DocumentAccessBookmarkStore. Keep DocumentInfo free of new bookmark
+        // bytes so workspace JSON stops growing access credentials; the
+        // `bookmarkData` field remains only for decoding old saved tabs.
+        doc.bookmarkData = nil
         RecentFilesService.record(doc)
         let resume = await workspace?.positions.resumePosition(for: doc)
         let openingPage = resume?.page ?? doc.lastPage ?? 1

@@ -323,7 +323,7 @@ enum DocumentDataStore {
     /// One entry per `documents/<key>/` folder. Pure FileManager walk — safe to
     /// call from the Storage tab's off-main reload (same Task.detached the tab
     /// already uses for the cache/web listings).
-    static func listDocuments() -> [DocumentDataEntry] {
+    static func listDocuments(documentAccess: DocumentAccessResolver = .live) -> [DocumentDataEntry] {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: rootDirectory.path) else { return [] }
         var out: [DocumentDataEntry] = []
@@ -335,7 +335,7 @@ enum DocumentDataStore {
             let sourceExists: Bool = {
                 guard let meta else { return true }
                 if meta.kind == DocumentKind.web.rawValue { return true }
-                return fm.fileExists(atPath: meta.lastKnownPath)
+                return documentAccess.sourceExists(key: name, lastKnownPath: meta.lastKnownPath)
             }()
             out.append(DocumentDataEntry(
                 key: name,
@@ -424,12 +424,19 @@ enum DocumentDataStore {
     /// recents list re-resolves dead PDF paths through this stamp
     /// (RecentFilesService.resolvedPath), so updating it here is enough to
     /// reconnect a moved document without re-keying its folder.
-    static func relink(forKey key: String, newPath: String) {
-        guard var meta = loadMeta(forKey: key) else { return }
+    static func relink(forKey key: String, newPath: String) throws {
+        guard var meta = loadMeta(forKey: key) else {
+            throw DocumentAccessError.missingMetadata(key)
+        }
         meta.lastKnownPath = newPath
         meta.lastOpened = WebLibrary.rfc3339Now()
-        guard let data = try? WebLibrary.jsonEncoderPretty.encode(meta) else { return }
-        try? writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+        let data = try WebLibrary.jsonEncoderPretty.encode(meta)
+        try writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+    }
+
+    static func restoreMeta(_ meta: Meta, forKey key: String) throws {
+        let data = try WebLibrary.jsonEncoderPretty.encode(meta)
+        try writeAtomic(data, to: metaPath(forKey: key), label: "document meta rollback")
     }
 
     // MARK: - Rename

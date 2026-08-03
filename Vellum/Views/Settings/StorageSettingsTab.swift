@@ -50,7 +50,7 @@ struct StorageSettingsTab: View {
     @State private var pendingDeleteChat: StorageInventory.DocumentRow?
     @State private var pendingOrphanDelete: StorageInventory.DocumentRow?
     @State private var pendingLegacyDelete: LegacyRow?
-    @State private var relinkFailureTitle: String?
+    @State private var relinkFailures: [String: String] = [:]
 
     /// The unified per-document rows for the current sort.
     private var rows: [StorageInventory.DocumentRow] {
@@ -251,6 +251,7 @@ struct StorageSettingsTab: View {
             ForEach(orphanRows) { row in
                 OrphanRow(
                     row: row,
+                    failureMessage: relinkFailures[row.key],
                     onRelink: { relink(row) },
                     onDelete: { pendingOrphanDelete = row })
             }
@@ -702,31 +703,35 @@ struct StorageSettingsTab: View {
 
     private func relink(_ row: StorageInventory.DocumentRow) {
         let key = row.key
-        let docIdKeyed = row.isDocIdKeyed
-        let title = row.title
         // The iPad picker is asynchronous (no modal `runModal()`), so the whole
         // verify-and-relink runs from its callback.
         DocumentPickerCoordinator_iOS.shared.presentPdfPicker { url in
-            let path = url.path
             Task {
-                let verified = await Task.detached { () -> Bool in
-                    // The picked URL is security-scoped: hold the scope across
-                    // the verification read, which parses the file off-main.
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    // A docId-keyed entry can be proven: the picked PDF must carry
-                    // the same embedded /VellumDocId. A path-hash fallback entry has
-                    // no embedded id, so the user's pick is accepted as-is.
-                    if docIdKeyed { return PdfMetadata.documentId(atPath: path) == key }
-                    return true
-                }.value
-                guard verified else {
-                    relinkFailureTitle = title
-                    return
+                let result = await DocumentAccessResolver.live.relink(
+                    key: key,
+                    isDocIdKeyed: row.isDocIdKeyed,
+                    to: url)
+                switch result {
+                case .success:
+                    relinkFailures[key] = nil
+                    await reload()
+                case .failure(let error):
+                    relinkFailures[key] = relinkFailureMessage(error, title: row.title)
                 }
-                await Task.detached { DocumentDataStore.relink(forKey: key, newPath: path) }.value
-                await reload()
             }
+        }
+    }
+
+    private func relinkFailureMessage(_ error: DocumentAccessError, title: String) -> String {
+        switch error {
+        case .identityMismatch:
+            return "That PDF is not \(title). Pick the original file, or delete this stored data."
+        case .unavailable:
+            return "That PDF is unavailable. If it is in iCloud or on an external drive, download or reconnect it, then try again."
+        case .missingMetadata:
+            return "The stored metadata for this row is missing. Refresh Storage and try again."
+        case .storeUnavailable(let message):
+            return message
         }
     }
 
@@ -804,16 +809,6 @@ struct StorageSettingsTab: View {
             } message: { _ in
                 Text("Vellum will move offline pages, notes, highlights, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes the move when that location returns.")
             }
-            .alert(
-                "Couldn't relink",
-                isPresented: Binding(
-                    get: { relinkFailureTitle != nil },
-                    set: { if !$0 { relinkFailureTitle = nil } })
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("That PDF isn't the same document as “\(relinkFailureTitle ?? "")” — its identity stamp doesn't match. Pick the original file, or delete the orphaned data instead.")
-            }
     }
 
     private func bindingFor<T>(_ pending: Binding<T?>) -> Binding<Bool> {
@@ -886,6 +881,7 @@ private struct BreakdownLine: View {
 private struct OrphanRow: View {
     @Environment(\.palette) private var palette
     let row: StorageInventory.DocumentRow
+    let failureMessage: String?
     let onRelink: () -> Void
     let onDelete: () -> Void
 
@@ -898,6 +894,12 @@ private struct OrphanRow: View {
                 Label("Original file not found", systemImage: "questionmark.circle")
                     .font(.caption)
                     .foregroundStyle(palette.gold)
+                if let failureMessage {
+                    Text(failureMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("storageOrphan.relinkFailure.\(row.key)")
+                }
             }
             Spacer()
             Text(row.totalBytes.formatted(.byteCount(style: .file)))

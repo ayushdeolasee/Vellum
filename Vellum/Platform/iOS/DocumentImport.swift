@@ -3,10 +3,10 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// iOS document intake. Files chosen from the Files app / iCloud are external and
-/// security-scoped; Vellum writes annotations back into the PDF, so we copy each
-/// picked file into the app's Documents directory and operate on that writable
-/// copy. This keeps the whole path-based service layer (sessions, recent files,
-/// atomic writer) unchanged from macOS.
+/// security-scoped; Vellum writes annotations and reading metadata back into the
+/// PDF, so picked PDFs are copied into the writable local library before a
+/// long-lived document session opens. `.vellum` bundles are containers to
+/// unpack, so they are staged into tmp/ instead.
 enum DocumentImport {
     static var libraryDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -38,19 +38,18 @@ enum DocumentImport {
     static func resolveExistingPath(_ path: String) -> String? {
         if FileManager.default.fileExists(atPath: path) { return path }
         let candidate = libraryDirectory.appendingPathComponent((path as NSString).lastPathComponent)
-        if FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
-        return nil
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate.path : nil
     }
 
     /// Copy security-scoped picked URLs into the writable library, returning the
     /// local paths to hand to `AppStore.openFiles`. A file already inside the
-    /// container is opened in place (except a `.vellum`, which is a container to
-    /// unpack, not a document to keep open). Name collisions get a numeric
-    /// suffix so two different source files never clobber each other.
+    /// local library is opened in place (except a `.vellum`, which is a
+    /// container to unpack, not a document to keep open). Name collisions get a
+    /// numeric suffix so two different source files never clobber each other.
     static func importPicked(_ urls: [URL]) -> [String] {
         var paths: [String] = []
         for url in urls {
-            if url.path.hasPrefix(libraryDirectory.path), !isBundle(url) {
+            if isLocalLibraryURL(url), !isBundle(url) {
                 paths.append(url.path)
                 continue
             }
@@ -77,6 +76,12 @@ enum DocumentImport {
 
     private static func isBundle(_ url: URL) -> Bool {
         url.pathExtension.lowercased() == "vellum"
+    }
+
+    static func isLocalLibraryURL(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let root = libraryDirectory.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
     }
 
     /// A private per-import directory under `tmp/`. Own directory rather than a

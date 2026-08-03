@@ -70,6 +70,7 @@ final class WorkspaceStore {
     /// owning the facade here gives every pane the same key resolver and flush
     /// boundary.
     let positions: DocumentPositionService
+    private let documentAccess: DocumentAccessResolver
 
     /// App-level coordinated-storage owner. Local/custom modes never install a
     /// container; iCloud mode owns exactly one container and one conflict
@@ -370,7 +371,8 @@ final class WorkspaceStore {
         residency: TabResidencyManager = TabResidencyManager(),
         layout: PaneLayoutCapability = .splitScreen,
         positions: DocumentPositionService = DocumentPositionService(),
-        storageCoordinator: StorageCoordinator = StorageCoordinator()
+        storageCoordinator: StorageCoordinator = StorageCoordinator(),
+        documentAccess: DocumentAccessResolver = .live
     ) {
         self.residency = residency
         self.sessions = sessions
@@ -378,6 +380,7 @@ final class WorkspaceStore {
         self.layout = layout
         self.positions = positions
         self.storageCoordinator = storageCoordinator
+        self.documentAccess = documentAccess
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()
@@ -387,7 +390,7 @@ final class WorkspaceStore {
         self.openRouterCatalog = catalog
         self.chatgptAuth = auth
         let pane = PaneModel(
-            sessions: sessions, teardowns: tabTeardowns,
+            sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
             openRouterCatalog: catalog, chatgptAuth: auth)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
@@ -492,7 +495,7 @@ final class WorkspaceStore {
 
     private func makePane(startTab: Bool) -> PaneModel {
         let pane = PaneModel(
-            sessions: sessions, teardowns: tabTeardowns,
+            sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
             openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
