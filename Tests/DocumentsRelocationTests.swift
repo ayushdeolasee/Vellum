@@ -31,7 +31,7 @@ final class DocumentsRelocationTests: XCTestCase {
         WebLibrary.layoutOverride = nil
         WebStorageSettings.modeOverride = nil
         WebStorageSettings.customRootOverride = nil
-        WebStorageSettings.icloudDriveRootOverride = nil
+        VellumUbiquityContainerRoot.resetCacheForTests()
         DocumentDataStore.rootDirectoryOverride = nil
         WebICloud.materializeOverride = nil
         WebStorageMigrator.clearPendingRelocation()
@@ -89,16 +89,18 @@ final class DocumentsRelocationTests: XCTestCase {
 
     func testResolvePerModeAndDegradedFallback() {
         // iCloud root present → pretty layout with documents under the root.
-        // icloudDriveRoot existence-checks the drive dir, so create it first.
-        let iCloudDrive = tempDir.appendingPathComponent("iCloudDrive", isDirectory: true)
-        try? FileManager.default.createDirectory(at: iCloudDrive, withIntermediateDirectories: true)
-        WebStorageSettings.icloudDriveRootOverride = iCloudDrive
+        let containerRoot = tempDir.appendingPathComponent("iCloudContainer", isDirectory: true)
+        try? FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
+        VellumUbiquityContainerRoot.resetCacheForTests()
+        VellumUbiquityContainerRoot.rootLookupOverride = { _ in containerRoot }
+        WebStorageSettings.resolveICloudRoot(environment: [:])
         let icloudResolved = WebStorageLayout.resolve(mode: .icloud, storeDir: storeDir)
         XCTAssertTrue(icloudResolved.documentsDir.path.contains("/.vellum/documents"))
 
         // iCloud root missing → degrades to local documents.
-        WebStorageSettings.icloudDriveRootOverride =
-            tempDir.appendingPathComponent("nonexistent", isDirectory: true)
+        VellumUbiquityContainerRoot.resetCacheForTests()
+        VellumUbiquityContainerRoot.rootLookupOverride = { _ in nil }
+        WebStorageSettings.resolveICloudRoot(environment: [:])
         let degraded = WebStorageLayout.resolve(mode: .icloud, storeDir: storeDir)
         XCTAssertEqual(degraded.documentsDir, localDocuments)
 

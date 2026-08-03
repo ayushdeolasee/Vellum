@@ -27,7 +27,7 @@ final class WebStorageLocationTests: XCTestCase {
         WebLibrary.layoutOverride = nil
         WebStorageSettings.modeOverride = nil
         WebStorageSettings.customRootOverride = nil
-        WebStorageSettings.icloudDriveRootOverride = nil
+        VellumUbiquityContainerRoot.resetCacheForTests()
         WebStorageSettings.autoSavePagesOverride = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
@@ -55,7 +55,9 @@ final class WebStorageLocationTests: XCTestCase {
 
     func testEffectiveModeDegradesToLocalWhenRootsMissing() {
         WebStorageSettings.modeOverride = .icloud
-        WebStorageSettings.icloudDriveRootOverride = tempDir.appendingPathComponent("nonexistent")
+        VellumUbiquityContainerRoot.resetCacheForTests()
+        VellumUbiquityContainerRoot.rootLookupOverride = { _ in nil }
+        WebStorageSettings.resolveICloudRoot(environment: [:])
         XCTAssertEqual(WebStorageSettings.effectiveMode, .local)
         XCTAssertTrue(WebStorageSettings.modeIsDegraded)
 

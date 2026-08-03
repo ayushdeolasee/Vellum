@@ -370,26 +370,8 @@ actor ICloudSyncedContainer: SyncedContainer {
 
     // MARK: Container root
 
-    private nonisolated(unsafe) static var cachedRoots: [String: URL] = [:]
-    private nonisolated(unsafe) static var resolvedIdentifiers: Set<String> = []
-    private static let rootLock = NSLock()
-
-    /// Called exactly once per identifier and cached — including the nil
-    /// answer, so an unavailable container isn't re-probed on every access.
     private static func containerRoot(for identifier: SyncedContainerIdentifier) -> URL? {
-        rootLock.lock()
-        if resolvedIdentifiers.contains(identifier.rawValue) {
-            let cached = cachedRoots[identifier.rawValue]
-            rootLock.unlock()
-            return cached
-        }
-        rootLock.unlock()
-        let url = FileManager.default.url(forUbiquityContainerIdentifier: identifier.rawValue)
-        rootLock.lock()
-        resolvedIdentifiers.insert(identifier.rawValue)
-        cachedRoots[identifier.rawValue] = url
-        rootLock.unlock()
-        return url
+        VellumUbiquityContainerRoot.root(for: identifier)
     }
 
     private static func mapped(_ error: any Error, url: URL) -> SyncedContainerError {

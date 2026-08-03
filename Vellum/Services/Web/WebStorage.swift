@@ -6,13 +6,14 @@ import Foundation
 // copies only; records stay in Application Support and do not sync), or this
 // device (the pre-existing layout, everything under Application Support).
 //
-// iOS adaptation (parity plan decision #5): iCloud resolves through the app's
-// ubiquity container — `FileManager.url(forUbiquityContainerIdentifier: nil)`,
-// which is nil without an iCloud entitlement or when signed out, in which case
-// the mode gracefully degrades to `.local`. The lookup can block on first use,
-// so it is resolved OFF the main thread (`resolveICloudRoot`) and cached; the
-// user-visible library lives under the container's `Documents/Vellum/` so it
-// appears in the Files app. A custom folder is a security-scoped URL from
+// iOS adaptation (parity plan decision #5): iCloud resolves through Vellum's
+// fixed explicit ubiquity container identifier (`SyncedContainerIdentifier.vellum`),
+// never through a nil/per-bundle-ID lookup. The result is nil without an iCloud
+// entitlement or when signed out, in which case the mode gracefully degrades to
+// `.local`. The lookup can block on first use, so it is resolved OFF the main
+// thread (`resolveICloudRoot`) and cached by the shared container-root resolver;
+// the user-visible library lives under the container's `Documents/Vellum/` so
+// it appears in the Files app. A custom folder is a security-scoped URL from
 // UIDocumentPicker (Phase 4): we persist bookmark `Data`, resolve it back to a
 // URL, and hold `startAccessingSecurityScopedResource` for the process while
 // the mode is active.
@@ -42,7 +43,6 @@ enum WebStorageSettings {
     // Test seams (same idiom as WebLibrary.storeDirOverride).
     nonisolated(unsafe) static var modeOverride: WebStorageMode?
     nonisolated(unsafe) static var customRootOverride: URL?
-    nonisolated(unsafe) static var icloudDriveRootOverride: URL?
     nonisolated(unsafe) static var autoSavePagesOverride: Bool?
 
     /// Nil until the user has made the first-launch choice.
@@ -88,47 +88,23 @@ enum WebStorageSettings {
 
     // MARK: iCloud ubiquity container (resolved off-main, cached)
 
-    /// Cache for the resolved ubiquity container's user-visible root
-    /// (`<container>/Documents`). `didResolveUbiquity` distinguishes "not yet
-    /// resolved" from "resolved to nil (unavailable)".
-    private nonisolated(unsafe) static var resolvedUbiquityRoot: URL?
-    private nonisolated(unsafe) static var didResolveUbiquity = false
-    private static let ubiquityLock = NSLock()
-
     /// Resolve the iCloud ubiquity container. Blocking on first call, so this
     /// MUST run off the main thread (launch sweep / background task). Caches the
     /// result — including nil when there is no entitlement or the user is signed
     /// out — so subsequent reads are cheap. Callers degrade to `.local` on nil.
-    static func resolveICloudRoot() {
-        ubiquityLock.lock()
-        let alreadyDone = didResolveUbiquity
-        ubiquityLock.unlock()
-        if alreadyDone { return }
-        // The Documents subfolder is what surfaces in the Files app.
-        let root = FileManager.default
-            .url(forUbiquityContainerIdentifier: nil)?
-            .appendingPathComponent("Documents", isDirectory: true)
-        ubiquityLock.lock()
-        resolvedUbiquityRoot = root
-        didResolveUbiquity = true
-        ubiquityLock.unlock()
+    static func resolveICloudRoot(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        _ = VellumUbiquityContainerRoot.documentsRoot(
+            for: .vellum, environment: environment)
     }
 
-    /// iCloud Drive's real on-disk root, nil when unavailable. The test override
-    /// goes through the same existence check so degraded-mode behavior is
-    /// testable; production reads the cached ubiquity container (resolved off
-    /// the main thread by `resolveICloudRoot`, nil until then / when signed out).
+    /// iCloud Drive's real on-disk root, nil until resolved or when unavailable.
+    /// Production reads only the cached ubiquity container (resolved off the
+    /// main thread by `resolveICloudRoot`) so UI-facing path checks never perform
+    /// a blocking lookup.
     static var icloudDriveRoot: URL? {
-        if let icloudDriveRootOverride {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: icloudDriveRootOverride.path, isDirectory: &isDir),
-                  isDir.boolValue else { return nil }
-            return icloudDriveRootOverride
-        }
-        ubiquityLock.lock()
-        let root = resolvedUbiquityRoot
-        ubiquityLock.unlock()
-        return root
+        VellumUbiquityContainerRoot.cachedDocumentsRoot(for: .vellum)
     }
 
     static var icloudVellumRoot: URL? {
