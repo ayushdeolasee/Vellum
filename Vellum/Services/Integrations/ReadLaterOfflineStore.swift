@@ -23,10 +23,13 @@ protocol ReadLaterOfflineStoring: Sendable {
     /// Deletes the offline copy. `false` means "still there" — the ledger keeps
     /// tracking the item so a later sweep can try again.
     func removeOfflineCopy(for item: ReadLaterItem, openDocumentPaths: Set<String>) async -> Bool
-    /// Best-effort delete for an id whose item has left the queue. Only the
-    /// provider and vendor id survive in the ledger key, which is enough to
-    /// locate a downloaded PDF but not a page's archive — see the implementation.
-    func removeOfflineCopy(forItemID itemID: String, openDocumentPaths: Set<String>) async -> Bool
+    /// Best-effort delete for an item that left the queue. Provider/vendor id
+    /// locates PDFs; the optional persisted source URL locates article archives.
+    func removeOfflineCopy(
+        forItemID itemID: String,
+        sourceURL: String?,
+        openDocumentPaths: Set<String>
+    ) async -> Bool
 }
 
 struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
@@ -147,6 +150,13 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
     ) async -> Bool {
         switch item.kind {
         case .pdf:
+            guard case .file(let url)? = await engine.existingRoute(for: item) else {
+                return false
+            }
+            let hasAnnotations = await Task.detached(priority: .utility) {
+                Self.pdfHasAnnotations(at: url)
+            }.value
+            guard !hasAnnotations else { return false }
             return await engine.removeDownloadedCopy(
                 for: item, openDocumentPaths: openDocumentPaths)
         case .article:
@@ -172,22 +182,54 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
         }
     }
 
-    /// The item is gone from the queue (deleted at the provider), so only the
-    /// ledger key remains. `"<provider>:<vendor id>"` is enough to name a
-    /// downloaded PDF, so those bytes are reclaimed here; a page's archive is
-    /// keyed by URL hash, which the id does not carry — those artifacts are
-    /// left to `StorageHousekeeping`'s ordinary unsaved-snapshot TTL, which
-    /// already owns exactly that class of data.
+    /// The item is gone from the queue (deleted at the provider). PDFs are
+    /// addressed by provider/vendor id; article entries persist their normalized
+    /// source URL in the retention ledger so this path can reconstruct the
+    /// URL-derived archive key. Old article entries without that locator stay
+    /// tracked rather than claiming bytes were removed when they were not.
     func removeOfflineCopy(
-        forItemID itemID: String, openDocumentPaths: Set<String>
+        forItemID itemID: String,
+        sourceURL: String?,
+        openDocumentPaths: Set<String>
     ) async -> Bool {
-        guard let separator = itemID.firstIndex(of: ":") else { return true }
+        // Legacy article rows without a source locator cannot prove their
+        // URL-keyed bytes were removed. Start false and report success only for
+        // an artifact we actually located (article URL and/or PDF id).
+        var removedLocatedArtifact = false
+        if let sourceURL {
+            guard let normalized = try? WebUrl.normalize(sourceURL),
+                !openDocumentPaths.contains(normalized)
+            else { return false }
+            let key = WebLibrary.pageKey(normalized)
+            removedLocatedArtifact = await Task.detached(priority: .utility) {
+                if let record = WebLibrary.loadRecord(forKey: key),
+                    record.saved || !record.annotations.isEmpty
+                {
+                    return false
+                }
+                WebLibrary.removeLocalSnapshots(forKey: key)
+                return true
+            }.value
+            guard removedLocatedArtifact else { return false }
+        }
+
+        guard let separator = itemID.firstIndex(of: ":") else {
+            return removedLocatedArtifact
+        }
         let providerID = String(itemID[itemID.startIndex..<separator])
         let vendorID = String(itemID[itemID.index(after: separator)...])
         guard let provider = IntegrationProvider(rawValue: providerID), !vendorID.isEmpty else {
-            return true
+            return removedLocatedArtifact
         }
-        return await engine.removeDownloadedCopy(
+        guard let pdfURL = await engine.downloadedCopyURL(
+            provider: provider, itemID: vendorID)
+        else { return removedLocatedArtifact }
+        guard !openDocumentPaths.contains(pdfURL.path) else { return false }
+        let hasAnnotations = await Task.detached(priority: .utility) {
+            Self.pdfHasAnnotations(at: pdfURL)
+        }.value
+        guard !hasAnnotations else { return false }
+        return await engine.removeDownloadedCopyIfPresent(
             provider: provider, itemID: vendorID, openDocumentPaths: openDocumentPaths)
     }
 

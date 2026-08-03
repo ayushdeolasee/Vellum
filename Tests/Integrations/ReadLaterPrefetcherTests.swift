@@ -127,6 +127,30 @@ struct ReadLaterPrefetcherTests {
         }
     }
 
+    @Test("A sweep arriving during prefetch waits and evaluates the landed copy")
+    func sweepSerializesBehindPrefetch() async throws {
+        let directory = RetentionFixtures.scratchDirectory("read-later-prefetch-serialization")
+        defer { RetentionFixtures.remove(directory) }
+        let started = IntegrationTestGate()
+        let release = IntegrationTestGate()
+        let offline = RetentionFixtures.OfflineStoreDouble(
+            storeStarted: started, storeRelease: release)
+        let clock = ManualPositionClock(now)
+        let prefetcher = makePrefetcher(directory: directory, offline: offline, clock: clock)
+        let queued = try item("serialized")
+
+        let runTask = Task { await prefetcher.run(items: [queued], isEnabled: true) }
+        await started.wait()
+        let sweepTask = Task { await prefetcher.sweep(items: [queued], now: now) }
+        await release.open()
+
+        let run = await runTask.value
+        let sweep = await sweepTask.value
+        #expect(run.stored == 1)
+        #expect(sweep.evaluated == 1)
+        #expect(sweep.retained == 1)
+    }
+
     @Test("Fourteen days later the sweep deletes the copy and the ledger forgets it")
     func sweepDeletesExpiredCopies() async throws {
         try await withScratch { _, offline, clock, prefetcher in
@@ -237,19 +261,102 @@ struct ReadLaterPrefetcherTests {
         #expect(await state.wasEvicted(open.id) == false)
     }
 
-    @Test("An item that left the queue is still deleted by id")
+    @Test("A vanished PDF is still deleted by id")
     func vanishedItemIsDeletedByID() async throws {
         try await withScratch { _, offline, clock, prefetcher in
-            let gone = try item("gone")
+            let gone = try item("gone", kind: .pdf)
             _ = await prefetcher.run(items: [gone], isEnabled: true)
             let later = now.addingTimeInterval(RetentionFixtures.days(30))
             clock.set(later)
-            // The queue no longer contains it — a Readwise delete between runs.
+            // The queue no longer contains it, but its provider/id still names
+            // the PDF and the offline store verifies it is not annotated.
             let report = await prefetcher.sweep(items: [], now: later)
             #expect(report.deleted == 1)
             #expect(await offline.removeCalls == [gone.id])
         }
     }
+
+    @Test("A legacy vanished article without a source locator stays tracked")
+    func legacyArticleWithoutLocatorIsNotFalselyDeleted() async throws {
+        let directory = RetentionFixtures.scratchDirectory("read-later-prefetch-legacy-article")
+        defer { RetentionFixtures.remove(directory) }
+        let clock = ManualPositionClock(now)
+        let ledger = RetentionLedger(
+            fileURL: directory.appendingPathComponent("retention.json"), clock: clock)
+        let article = try item("legacy-article")
+        await ledger.markAdded(article.id, at: now, offlineBytes: 15)
+        let prefetcher = ReadLaterPrefetcher(
+            offline: IntegrationsOfflineStore(
+                engine: IntegrationsSyncEngine(credentials: InMemoryIntegrationCredentials())),
+            ledger: ledger,
+            state: ReadLaterPrefetchState(
+                fileURL: directory.appendingPathComponent("prefetch.json"), clock: clock),
+            clock: clock)
+
+        let later = now.addingTimeInterval(RetentionFixtures.days(30))
+        clock.set(later)
+        let report = await prefetcher.sweep(items: [], now: later)
+
+        #expect(report.expired == 1)
+        #expect(report.deleted == 0)
+        #expect(await ledger.snapshot().items[article.id] != nil)
+    }
+
+    @Test("A current item kind change removes both its article and PDF artifacts")
+    func currentKindChangeDeletesEveryLocatedArtifact() async throws {
+        let directory = RetentionFixtures.scratchDirectory("read-later-prefetch-article")
+        let webDirectory = directory.appendingPathComponent("web", isDirectory: true)
+        defer {
+            WebLibrary.storeDirOverride = nil
+            WebStorageSettings.modeOverride = nil
+            RetentionFixtures.remove(directory)
+        }
+        try FileManager.default.createDirectory(at: webDirectory, withIntermediateDirectories: true)
+        WebLibrary.storeDirOverride = webDirectory
+        WebStorageSettings.modeOverride = .local
+
+        let article = try item("gone-article")
+        let normalized = try WebUrl.normalize(article.sourceURL.absoluteString)
+        let key = WebLibrary.pageKey(normalized)
+        try Data("offline article".utf8).write(to: WebLibrary.snapshotPath(forKey: key))
+
+        let cache = IntegrationsCache(
+            root: directory.appendingPathComponent("integrations", isDirectory: true))
+        let temporaryPDF = try await cache.temporaryDownloadURL(
+            provider: article.provider, itemID: article.vendorID)
+        try Data("%PDF-1.4\n%%EOF".utf8).write(to: temporaryPDF)
+        _ = try await cache.installDownload(
+            temporaryURL: temporaryPDF,
+            manifest: .init(
+                provider: article.provider, itemID: article.vendorID, revision: "pdf-revision"))
+        let engine = IntegrationsSyncEngine(
+            credentials: InMemoryIntegrationCredentials(), cache: cache)
+
+        let clock = ManualPositionClock(now)
+        let ledger = RetentionLedger(
+            fileURL: directory.appendingPathComponent("retention.json"), clock: clock)
+        await ledger.markAdded(
+            article.id, at: now, offlineBytes: 15, sourceURL: normalized)
+        let prefetcher = ReadLaterPrefetcher(
+            offline: IntegrationsOfflineStore(engine: engine),
+            ledger: ledger,
+            state: ReadLaterPrefetchState(
+                fileURL: directory.appendingPathComponent("prefetch.json"), clock: clock),
+            clock: clock)
+
+        let later = now.addingTimeInterval(RetentionFixtures.days(30))
+        clock.set(later)
+        let currentPDF = try item("gone-article", kind: .pdf)
+        let report = await prefetcher.sweep(items: [currentPDF], now: later)
+
+        #expect(report.deleted == 1)
+        #expect(WebLibrary.hasLocalSnapshot(forKey: key) == false)
+        #expect(
+            await cache.hasDownloadArtifacts(
+                provider: article.provider, itemID: article.vendorID) == false)
+        #expect(await ledger.snapshot().items[article.id] == nil)
+    }
+
 }
 
 @Suite("Read-later autopull — the eviction tombstone file", .serialized)

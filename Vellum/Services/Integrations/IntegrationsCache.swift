@@ -84,6 +84,24 @@ actor IntegrationsCache {
         return destination
     }
 
+    /// Whether an id names real download artifacts. The id-only retention path
+    /// uses this to distinguish a vanished PDF (reclaimable by provider/id)
+    /// from an article whose URL-keyed archive cannot be reconstructed.
+    func existingDownloadURL(provider: IntegrationProvider, itemID: String) -> URL? {
+        guard let pdf = try? downloadURL(provider: provider, itemID: itemID),
+            fileManager.fileExists(atPath: pdf.path)
+        else { return nil }
+        return pdf
+    }
+
+    func hasDownloadArtifacts(provider: IntegrationProvider, itemID: String) -> Bool {
+        guard let manifest = try? manifestURL(provider: provider, itemID: itemID) else {
+            return existingDownloadURL(provider: provider, itemID: itemID) != nil
+        }
+        return existingDownloadURL(provider: provider, itemID: itemID) != nil
+            || fileManager.fileExists(atPath: manifest.path)
+    }
+
     /// Deletes one installed copy and its manifest — the retention sweep's
     /// counterpart to `installDownload`. Reports whether anything is gone from
     /// disk afterwards: a copy that never existed is already "deleted" as far

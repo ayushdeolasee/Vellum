@@ -13,6 +13,11 @@ final class IntegrationsStore {
     /// these and overlapping moves of the same item are rejected at entry.
     private(set) var inFlightMoves: Set<ReadLaterItem.ID> = []
     private(set) var didStart = false
+    /// Join point for concurrent launch callers. The app's startup sync and
+    /// launch housekeeping are separate `.task`s; without one shared task, the
+    /// housekeeping path can observe `didStart` while cached provider snapshots
+    /// are still loading and mistake an empty queue for an authoritative one.
+    @ObservationIgnored private var startupTask: Task<Void, Never>?
     var autoRefreshEnabled = true
     /// "Download for offline reading" (#157). Mirrors the persisted preference;
     /// the toggle writes through the engine like `autoRefreshEnabled` does.
@@ -82,7 +87,21 @@ final class IntegrationsStore {
     var searchRevision: Int { itemsRevisions.values.reduce(0, +) }
 
     func start() async {
-        guard !didStart else { return }; didStart = true
+        if didStart { return }
+        if let startupTask {
+            await startupTask.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performStart()
+        }
+        startupTask = task
+        await task.value
+        startupTask = nil
+    }
+
+    private func performStart() async {
         let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled; offlineReadingEnabled = loaded.offlineReadingEnabled
         for provider in IntegrationProvider.allCases {
             if loaded.authenticationRequiredProviders.contains(provider) {
@@ -93,11 +112,12 @@ final class IntegrationsStore {
             else if loaded.corruptProviders.contains(provider) { update(provider) { $0.connection = .failed("The local cache is damaged. Sync Now to rebuild it."); $0.statusMessage = "Cache recovery needed" } }
             else if loaded.connectedProviders.contains(provider) { update(provider) { $0.connection = .connected; $0.statusMessage = "Connected — not synced yet" } }
         }
+        guard !Task.isCancelled, !isQuiescing else {
+            didStart = true
+            return
+        }
         restartAutoRefresh(); await refreshStaleProviders()
-        // Startup trigger for read-later autopull (#157). Behind the sync above,
-        // never in front of it: prefetching plans against the item list, and
-        // planning against a stale one would download yesterday's queue.
-        run { [weak self] in await self?.prefetchOfflineCopies() }
+        didStart = true
     }
 
     /// The toggle applies to the UI immediately and the preference write runs
@@ -129,6 +149,10 @@ final class IntegrationsStore {
     /// already on disk.
     func prefetchOfflineCopies(policy: ReadLaterPrefetchPolicy = .foreground) async {
         guard offlineReadingEnabled, !isQuiescing else { return }
+        if let prefetchTask {
+            await prefetchTask.value
+            return
+        }
         let items = searchableItems
         let enabled = offlineReadingEnabled
         // Held in its own slot rather than only as a `run` handle: prefetching
@@ -148,6 +172,7 @@ final class IntegrationsStore {
     /// what the user never came back to. Sweeping LAST means an item downloaded
     /// moments ago is never a candidate of the same run.
     func backgroundRefresh(openDocumentPaths: Set<String> = []) async {
+        await start()
         await refreshStaleProviders()
         await prefetchOfflineCopies(policy: .background)
         _ = await sweepExpiredOfflineCopies(
@@ -240,9 +265,12 @@ final class IntegrationsStore {
         // launch, and the ledger records nothing for a transfer that did not
         // land, so there is no half-state to drain.
         prefetchTask?.cancel(); prefetchTask = nil
+        startupTask?.cancel()
         while true {
             for entry in operationTasks.values { entry.task.cancel() }
-            let pending = Array(backgroundTasks.values) + operationTasks.values.map(\.task)
+            let pending = Array(backgroundTasks.values)
+                + operationTasks.values.map(\.task)
+                + [startupTask].compactMap { $0 }
             guard !pending.isEmpty else { return }
             for task in pending { await task.value }
             // Let continuations those completions resumed run before
@@ -272,7 +300,7 @@ final class IntegrationsStore {
         // delays putting the document on screen.
         run { [prefetcher] in await prefetcher.markRead(item) }
         if item.kind != .pdf { return .web(item.sourceURL) }
-        if let existing = await engine.existingRoute(for: item) { return existing }
+        if let existing = await engine.acquireExistingRoute(for: item) { return existing }
         downloads[item.id] = .init(progress: nil, message: "Downloading \(item.title)…", isActive: true, sequence: nextSequence())
         do { let route = try await engine.download(item) { [weak self] value in await MainActor.run { guard let self else { return }; let old = self.downloads[item.id]; self.downloads[item.id] = .init(progress: value.map { max(old?.progress ?? 0, min(1, $0)) }, message: "Downloading \(item.title)…", isActive: true, sequence: old?.sequence ?? self.nextSequence()) } }; downloads[item.id] = nil; return route }
         catch { downloads[item.id] = .init(progress: nil, message: error.localizedDescription, isActive: false, sequence: nextSequence()); throw error }
@@ -572,11 +600,11 @@ extension IntegrationsStore: ReadLaterRetentionSweeping {
     func sweepExpiredOfflineCopies(
         now: Date, openDocumentPaths: Set<String>
     ) async -> RetentionSweepReport {
-        // The launch-time housekeeping pass can win the race against the
-        // startup load, and a sweep that runs before the cached snapshots are
-        // applied would see an empty queue. `start()` is idempotent, so this
-        // either loads them or returns immediately.
-        if !didStart { await start() }
+        // The launch-time housekeeping pass can race the startup load. `start()`
+        // joins the one in-flight startup task, so snapshots and any required
+        // refresh are settled before an empty queue can be called authoritative.
+        await start()
+        if let prefetchTask { await prefetchTask.value }
         return await prefetcher.sweep(
             items: searchableItems, now: now, openDocumentPaths: openDocumentPaths)
     }

@@ -15,6 +15,15 @@ actor IntegrationsSyncEngine {
     private let maximumPDFBytes: Int
     private var inFlight: [IntegrationProvider: (id: UUID, mode: IntegrationSyncMode, task: Task<ProviderSnapshot, Error>)] = [:]
     private var downloadTasks: [String: (id: UUID, task: Task<ExternalOpenRoute, Error>)] = [:]
+    /// Item ids currently being removed by retention. A download cannot register
+    /// while its id is in this set, so cancellation + deletion is one barrier
+    /// rather than an await across which a replacement transfer can appear.
+    private var removingDownloads: Set<String> = []
+    /// Short lease bridging “return the existing file URL” to the reader adding
+    /// that path to the workspace's open-document set. Retention refuses the
+    /// item during this window; after it expires the open-path gate owns it.
+    private var openingProtectionUntil: [String: Date] = [:]
+    private static let openingProtectionWindow: TimeInterval = 30
     private var transitioningProviders: Set<IntegrationProvider> = []
     /// Identifies the walks this engine instance started. A tentative walk
     /// tagged with anything else was left behind by a previous launch, and
@@ -198,9 +207,40 @@ actor IntegrationsSyncEngine {
     /// again rather than opened from a copy nothing would ever refresh.
     func existingRoute(for item: ReadLaterItem) async -> ExternalOpenRoute? { if let url = try? await cache.currentDownload(provider: item.provider, itemID: item.vendorID, revision: Self.revision(item)) { return .file(url) }; return nil }
 
+    /// Existing route for a user open. Presence probes use `existingRoute`
+    /// without a lease; only handing the URL to a reader protects it.
+    func acquireExistingRoute(for item: ReadLaterItem) async -> ExternalOpenRoute? {
+        while true {
+            while removingDownloads.contains(item.id) {
+                if Task.isCancelled { return nil }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            let route = await existingRoute(for: item)
+            // `existingRoute` awaits the cache actor. Removal may have begun in
+            // that suspension; retry behind its barrier rather than leasing a
+            // URL that is already being deleted.
+            if removingDownloads.contains(item.id) { continue }
+            guard let route else { return nil }
+            openingProtectionUntil[item.id] = now().addingTimeInterval(
+                Self.openingProtectionWindow)
+            return route
+        }
+    }
+
     func download(_ item: ReadLaterItem, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {
-        guard transitioningProviders.contains(item.provider) == false else { throw IntegrationError.staleGeneration }
-        if let existing = await existingRoute(for: item) { return existing }
+        while true {
+            while removingDownloads.contains(item.id) {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard transitioningProviders.contains(item.provider) == false else {
+                throw IntegrationError.staleGeneration
+            }
+            let existing = await existingRoute(for: item)
+            if removingDownloads.contains(item.id) { continue }
+            if let existing { return existing }
+            break
+        }
         if let current = downloadTasks[item.id] { return try await current.task.value }
         let metadata = preferences.metadata(for: item.provider); guard metadata.enabled else { throw IntegrationError.disconnected }
         let id = UUID()
@@ -226,12 +266,46 @@ actor IntegrationsSyncEngine {
         await removeDownloadedCopy(provider: item.provider, itemID: item.vendorID, openDocumentPaths: openDocumentPaths)
     }
 
+    /// Id-only deletion is valid only when PDF artifacts actually exist. An
+    /// article uses a URL-derived web-archive key that cannot be recovered from
+    /// its provider id; reporting a missing PDF as success would forget its
+    /// retention entry while leaving those bytes behind.
+    func downloadedCopyURL(provider: IntegrationProvider, itemID: String) async -> URL? {
+        await cache.existingDownloadURL(provider: provider, itemID: itemID)
+    }
+
+    func removeDownloadedCopyIfPresent(
+        provider: IntegrationProvider, itemID: String, openDocumentPaths: Set<String>
+    ) async -> Bool {
+        let key = "\(provider.rawValue):\(itemID)"
+        if downloadTasks[key] == nil {
+            guard await cache.hasDownloadArtifacts(provider: provider, itemID: itemID) else {
+                return false
+            }
+        }
+        return await removeDownloadedCopy(
+            provider: provider, itemID: itemID, openDocumentPaths: openDocumentPaths)
+    }
+
     func removeDownloadedCopy(provider: IntegrationProvider, itemID: String, openDocumentPaths: Set<String>) async -> Bool {
-        guard let url = try? await cache.downloadURL(provider: provider, itemID: itemID) else { return false }
+        let key = "\(provider.rawValue):\(itemID)"
+        if let protectedUntil = openingProtectionUntil[key] {
+            if protectedUntil > now() { return false }
+            openingProtectionUntil[key] = nil
+        }
+        guard removingDownloads.insert(key).inserted else { return false }
+        defer { removingDownloads.remove(key) }
+
+        if let entry = downloadTasks[key] {
+            entry.task.cancel()
+            downloadTasks[key] = nil
+            _ = await entry.task.result
+        }
+        guard let url = try? await cache.downloadURL(provider: provider, itemID: itemID) else {
+            return false
+        }
         let normalizedOpenPaths = Set(openDocumentPaths.map(Self.normalizedPath))
         guard !normalizedOpenPaths.contains(Self.normalizedPath(url.path)) else { return false }
-        let key = "\(provider.rawValue):\(itemID)"
-        if let entry = downloadTasks[key] { entry.task.cancel(); downloadTasks[key] = nil }
         let removed = await cache.deleteDownload(provider: provider, itemID: itemID)
         if removed { RecentFilesService.remove(paths: [url.path]) }
         return removed

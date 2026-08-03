@@ -127,6 +127,7 @@ struct VellumApp: App {
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
                     await workspace.integrations.start()
+                    await workspace.integrations.prefetchOfflineCopies()
                     // Launch-time TTL eviction of derived data (issue #37 PR B /
                     // issue #29): the extracted-text cache, plus web-snapshot
                     // artifacts for pages the user never saved or annotated.

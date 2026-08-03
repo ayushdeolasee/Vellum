@@ -42,19 +42,25 @@ enum RetentionFixtures {
         private var failing: [String: any Error]
         private var refusingRemoval: Set<String>
         private let bytes: Int
+        private let storeStarted: IntegrationTestGate?
+        private let storeRelease: IntegrationTestGate?
 
         init(
             present: Set<String> = [],
             exempt: Set<String> = [],
             failing: [String: any Error] = [:],
             refusingRemoval: Set<String> = [],
-            bytes: Int = 4_096
+            bytes: Int = 4_096,
+            storeStarted: IntegrationTestGate? = nil,
+            storeRelease: IntegrationTestGate? = nil
         ) {
             self.present = present
             self.exempt = exempt
             self.failing = failing
             self.refusingRemoval = refusingRemoval
             self.bytes = bytes
+            self.storeStarted = storeStarted
+            self.storeRelease = storeRelease
         }
 
         func setExempt(_ ids: Set<String>) { exempt = ids }
@@ -63,6 +69,8 @@ enum RetentionFixtures {
 
         func storeOfflineCopy(for item: ReadLaterItem) async throws -> Int {
             storeCalls.append(item.id)
+            await storeStarted?.open()
+            await storeRelease?.wait()
             if let error = failing[item.id] { throw error }
             present.insert(item.id)
             return bytes
@@ -80,7 +88,9 @@ enum RetentionFixtures {
         }
 
         func removeOfflineCopy(
-            forItemID itemID: String, openDocumentPaths: Set<String>
+            forItemID itemID: String,
+            sourceURL: String?,
+            openDocumentPaths: Set<String>
         ) async -> Bool {
             removeCalls.append(itemID)
             guard !refusingRemoval.contains(itemID) else { return false }

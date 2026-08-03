@@ -67,6 +67,26 @@ struct RetentionLedgerTests {
         #expect(try Data(contentsOf: url) == documentedBytes)
     }
 
+    @Test("Article source URLs round-trip under the snake_case wire key")
+    func articleSourceURLRoundTrips() async throws {
+        let directory = RetentionFixtures.scratchDirectory("retention-ledger-source")
+        defer { RetentionFixtures.remove(directory) }
+        let url = scratchLedgerURL(directory)
+        let ledger = RetentionLedger(fileURL: url, clock: ManualPositionClock(writtenAt))
+        let source = "https://example.com/article"
+
+        await ledger.markAdded(
+            RetentionFixtures.readwise, at: added, offlineBytes: 512, sourceURL: source)
+
+        let data = try Data(contentsOf: url)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let items = try #require(json["items"] as? [String: Any])
+        let item = try #require(items[RetentionFixtures.readwise] as? [String: Any])
+        #expect(item["source_url"] as? String == source)
+        #expect(await ledger.snapshot().items[RetentionFixtures.readwise]?.sourceURL == source)
+    }
+
     @Test("Every written ledger carries schema_version")
     func schemaVersionIsWritten() async throws {
         let directory = RetentionFixtures.scratchDirectory("retention-ledger")

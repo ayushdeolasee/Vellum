@@ -49,6 +49,7 @@ actor ReadLaterPrefetcher {
     /// finishing while a background refresh is mid-flight), and two runs would
     /// plan against the same "not downloaded yet" facts and transfer twice.
     private var isRunning = false
+    private var isSweeping = false
 
     init(
         offline: any ReadLaterOfflineStoring,
@@ -91,11 +92,10 @@ actor ReadLaterPrefetcher {
         // every eviction tombstone and hand the whole expired queue back to the
         // next run.
         guard !items.isEmpty else { return ReadLaterPrefetchReport() }
-        guard !isRunning else { return ReadLaterPrefetchReport() }
+        guard await waitUntilIdle() else { return ReadLaterPrefetchReport() }
         isRunning = true
         defer { isRunning = false }
 
-        await state.retainOnly(Set(items.map(\.id)))
         await reconcileExemptions(items: items)
 
         // Gathering facts is I/O per item (a stat for a page, an actor hop and a
@@ -144,7 +144,11 @@ actor ReadLaterPrefetcher {
                 let bytes = try await offline.storeOfflineCopy(for: item)
                 // The clock starts HERE — at local ingestion — not at the
                 // provider's `saved_at`, which can be months old.
-                await ledger.markAdded(item.id, at: clock.now(), offlineBytes: bytes)
+                await ledger.markAdded(
+                    item.id,
+                    at: clock.now(),
+                    offlineBytes: bytes,
+                    sourceURL: item.kind == .article ? item.sourceURL.absoluteString : nil)
                 await state.clearEviction(item.id)
                 report.stored += 1
                 report.bytes += bytes
@@ -189,29 +193,59 @@ actor ReadLaterPrefetcher {
         now: Date,
         openDocumentPaths: Set<String> = []
     ) async -> RetentionSweepReport {
-        // Same reason `run` refuses an empty queue: without the items, ledger
-        // ids can only be mapped back to downloaded PDFs, and a page's archive
-        // would be forgotten (not deleted) on the strength of a list that had
-        // simply not loaded yet. The caller loads first — see
-        // `IntegrationsStore.sweepExpiredOfflineCopies`.
-        guard !items.isEmpty else { return RetentionSweepReport() }
+        guard await waitUntilIdle() else { return RetentionSweepReport() }
+        isSweeping = true
+        defer { isSweeping = false }
+
+        // Unlike `run`, an empty list is safe and meaningful here. The ledger
+        // owns the fixed fourteen-day clock; current queue rows are used to
+        // reconcile exemptions, while vanished rows carry enough locator data
+        // for the offline store to verify and remove their actual artifacts.
         await reconcileExemptions(items: items)
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let tracked = await ledger.snapshot().items
         let deleted = DeletedIDs()
         let report = await ledger.sweep(now: now) { itemID in
             let removed: Bool
-            if let item = byID[itemID] {
+            if let sourceURL = tracked[itemID]?.sourceURL {
+                // A provider item can change kind while retaining its id. Once
+                // an article locator has ever been persisted, clean through the
+                // multi-artifact path even while the row is still current so an
+                // old web archive cannot outlive its replacement PDF (or vice
+                // versa).
+                removed = await offline.removeOfflineCopy(
+                    forItemID: itemID,
+                    sourceURL: sourceURL,
+                    openDocumentPaths: openDocumentPaths)
+            } else if let item = byID[itemID] {
                 removed = await offline.removeOfflineCopy(
                     for: item, openDocumentPaths: openDocumentPaths)
             } else {
+                // The ledger, not the provider queue, owns the fourteen-day
+                // claim. The id-only path independently verifies the concrete
+                // PDF/article artifact and its annotation exemption before it
+                // reports success, so an empty startup queue is safe here.
                 removed = await offline.removeOfflineCopy(
-                    forItemID: itemID, openDocumentPaths: openDocumentPaths)
+                    forItemID: itemID,
+                    sourceURL: tracked[itemID]?.sourceURL,
+                    openDocumentPaths: openDocumentPaths)
             }
             if removed { await deleted.insert(itemID) }
             return removed
         }
         await state.markEvicted(await deleted.ids(), at: now)
         return report
+    }
+
+    /// Actor reentrancy means another trigger can arrive while a network store
+    /// or deletion is suspended. Wait for that real operation instead of
+    /// reporting a misleading empty success and silently skipping a trigger.
+    private func waitUntilIdle() async -> Bool {
+        while isRunning || isSweeping {
+            if Task.isCancelled { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return !Task.isCancelled
     }
 
     /// Collects ids across the sweep's `@Sendable` deleter hops.

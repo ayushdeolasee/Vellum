@@ -35,13 +35,24 @@ struct RetentionItemState: Codable, Sendable, Equatable {
     var annotatedAt: Date?
     /// Diagnostics only (a future Storage pane row); never an input to a verdict.
     var offlineBytes: Int?
+    /// Normalized source URL for an article archive. PDFs deliberately leave
+    /// this nil because their provider/vendor id already names the downloaded
+    /// artifact. This lets retention reclaim a page after its provider row has
+    /// vanished without guessing a URL-derived archive key.
+    var sourceURL: String?
 
-    init(addedAt: Date, lastReadAt: Date? = nil, annotatedAt: Date? = nil, offlineBytes: Int? = nil)
-    {
+    init(
+        addedAt: Date,
+        lastReadAt: Date? = nil,
+        annotatedAt: Date? = nil,
+        offlineBytes: Int? = nil,
+        sourceURL: String? = nil
+    ) {
         self.addedAt = addedAt
         self.lastReadAt = lastReadAt
         self.annotatedAt = annotatedAt
         self.offlineBytes = offlineBytes
+        self.sourceURL = sourceURL
     }
 
     enum CodingKeys: String, CodingKey {
@@ -49,6 +60,7 @@ struct RetentionItemState: Codable, Sendable, Equatable {
         case lastReadAt = "last_read_at"
         case annotatedAt = "annotated_at"
         case offlineBytes = "offline_bytes"
+        case sourceURL = "source_url"
     }
 }
 
@@ -166,11 +178,17 @@ actor RetentionLedger {
     /// The clock starts at LOCAL ingestion — the moment Vellum takes custody of
     /// the offline copy — not at the provider's `saved_at`, which can be months
     /// old and would expire a freshly-prefetched item the instant it lands.
-    func markAdded(_ itemID: String, at: Date? = nil, offlineBytes: Int? = nil) {
+    func markAdded(
+        _ itemID: String,
+        at: Date? = nil,
+        offlineBytes: Int? = nil,
+        sourceURL: String? = nil
+    ) {
         let stamp = at ?? clock.now()
         var item = file.items[itemID] ?? RetentionItemState(addedAt: stamp)
         item.addedAt = stamp
         if let offlineBytes { item.offlineBytes = offlineBytes }
+        if let sourceURL { item.sourceURL = sourceURL }
         file.items[itemID] = item
         persist()
     }

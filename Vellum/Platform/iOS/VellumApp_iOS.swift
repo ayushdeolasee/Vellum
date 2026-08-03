@@ -173,6 +173,11 @@ struct VellumApp_iOS: App {
     /// the first-launch storage choice if the user hasn't made one yet.
     @MainActor
     private func launchMaintenance() async {
+        // The root also starts integrations in its own task for fast UI data,
+        // but maintenance must join that same startup before it snapshots the
+        // queue. Otherwise a cold launch can prefetch an empty initial store.
+        await workspace.integrations.start()
+
         let openDocuments = workspace.root.allLeaves()
             .flatMap { $0.app.tabs }.compactMap(\.document)
         // The text cache excludes open documents by STORAGE KEY now (docId when
@@ -195,6 +200,10 @@ struct VellumApp_iOS: App {
         }.value
 
         Task.detached(priority: .background) {
+            // Startup autopull runs before retention. The app's other sync
+            // triggers join the same store-owned prefetch task, and the
+            // prefetcher serializes a sweep that arrives during I/O.
+            await integrations.prefetchOfflineCopies()
             // Finish any interrupted storage-location move and fold legacy-local
             // strays into the active layout before the evictors walk the store.
             // Routed through the relocator so it can't run concurrently with a

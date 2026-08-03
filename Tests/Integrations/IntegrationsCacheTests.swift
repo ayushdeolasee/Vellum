@@ -115,6 +115,25 @@ struct IntegrationsCacheTests {
         #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r1") == nil)
     }
 
+    @Test func downloadArtifactPresenceDistinguishesPDFsFromUnknownArticleIDs() async throws {
+        let root = try IntegrationTemporaryRoot.make()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = IntegrationsCache(root: root)
+
+        #expect(await cache.hasDownloadArtifacts(provider: .readwise, itemID: "article") == false)
+
+        let temporary = try await cache.temporaryDownloadURL(
+            provider: .readwise, itemID: "pdf")
+        try Data("%PDF-test".utf8).write(to: temporary)
+        _ = try await cache.installDownload(
+            temporaryURL: temporary,
+            manifest: .init(provider: .readwise, itemID: "pdf", revision: "r1"))
+
+        #expect(await cache.hasDownloadArtifacts(provider: .readwise, itemID: "pdf"))
+        #expect(await cache.deleteDownload(provider: .readwise, itemID: "pdf"))
+        #expect(await cache.hasDownloadArtifacts(provider: .readwise, itemID: "pdf") == false)
+    }
+
     @Test func failedManifestWriteRollsBackMovedPDF() async throws {
         let root = try IntegrationTemporaryRoot.make()
         defer { try? FileManager.default.removeItem(at: root) }
