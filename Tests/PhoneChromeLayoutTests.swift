@@ -79,6 +79,14 @@ struct PhoneChromeLayoutTests {
         #expect(needed <= PhoneChromeLayout.narrowestSupportedWidth)
     }
 
+    @Test("A four-digit PDF page indicator cannot widen the bottom bar")
+    func bottomBarFitsForLargePDFs() async throws {
+        let fixture = try await ChromeFixture(pageCount: 9_999, lastPage: 9_999)
+        let bar = PhoneReaderBottomBar(shell: fixture.shell, onOpenFile: {}, onAddWebpage: {})
+        let needed = intrinsicWidth(of: fixture.host(bar))
+        #expect(needed <= PhoneChromeLayout.narrowestSupportedWidth)
+    }
+
     // MARK: - Touch targets
 
     @Test("Every interactive slot in the chrome is at least 44pt on both axes")
@@ -164,8 +172,14 @@ private struct ChromeFixture {
     let workspace: WorkspaceStore
     let shell: PhoneShellStore
 
-    init(kind: DocumentKind = .pdf) async throws {
-        workspace = WorkspaceStore(sessions: ChromeSessionService(), layout: .singlePane)
+    init(
+        kind: DocumentKind = .pdf,
+        pageCount: Int = 12,
+        lastPage: Int = 1
+    ) async throws {
+        workspace = WorkspaceStore(
+            sessions: ChromeSessionService(pageCount: pageCount, lastPage: lastPage),
+            layout: .singlePane)
         shell = PhoneShellStore(workspace: workspace)
         let app = workspace.focusedPane.app
         switch kind {
@@ -196,8 +210,18 @@ private struct ChromeFixture {
 /// becomes a second implementation to keep honest.
 @MainActor
 private final class ChromeSessionService: SessionService {
+    private let pageCount: Int
+    private let lastPage: Int
+
+    init(pageCount: Int, lastPage: Int) {
+        self.pageCount = pageCount
+        self.lastPage = lastPage
+    }
+
     func openFile(path: String, sessionId: String) async throws -> DocumentInfo {
-        DocumentInfo(kind: .pdf, pdfPath: path, title: "Chrome PDF", pageCount: 12, lastPage: 1)
+        DocumentInfo(
+            kind: .pdf, pdfPath: path, title: "Chrome PDF",
+            pageCount: pageCount, lastPage: lastPage)
     }
 
     func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo {

@@ -1234,10 +1234,15 @@ final class AppStore {
             activateTab(existing.id)
             return
         }
-        // Reveal the side panel for a genuinely new document. Reopening a
-        // document that is already tabbed above is navigation, not a fresh
-        // open, and must preserve an explicit user choice to hide the panel.
-        workspace?.sidebarOpen = true
+        // A split-screen inspector is a companion column, so a genuinely new
+        // document reveals it. Reopening an already-tabbed document is
+        // navigation and preserves an explicit choice to hide the column. On a
+        // single-pane phone the same state presents
+        // a sheet over the reader; opening a document must not cover it before
+        // the user asks.
+        if workspace?.layout == .splitScreen {
+            workspace?.sidebarOpen = true
+        }
         let tab = PdfTab(
             id: sessionId,
             document: doc,

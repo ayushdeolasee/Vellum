@@ -34,7 +34,7 @@ enum PhoneChromeLayout {
     static let podGap: CGFloat = 8
 
     /// Distance from the screen edge to the outermost capsule.
-    static let edgeInset: CGFloat = 12
+    static let edgeInset: CGFloat = 8
 
     /// Gap between a bar and the safe-area edge it hugs. Small on purpose: the
     /// safe area already holds the status bar and the home indicator away.
@@ -231,6 +231,27 @@ struct PhoneReaderTopBar: View {
 
 // MARK: - Bottom bar
 
+/// The phone-width variant of `GlassToolPod`.
+///
+/// The shared iPad pod leaves 4pt at each edge and 2pt between controls. Seven
+/// web-reader controls cannot fit at 375pt with that desktop-like breathing
+/// room, even though their 44pt hit targets do. This variant removes only the
+/// decorative interior gaps; target geometry and capsule height stay exactly
+/// the same.
+private struct PhoneGlassToolPod<Content: View>: View {
+    var label: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(spacing: 0) { content() }
+            .padding(.horizontal, 2)
+            .frame(height: PhoneChromeLayout.capsuleHeight)
+            .glassEffect(.regular, in: .capsule)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(label)
+    }
+}
+
 /// Everything the reader reaches for with a thumb: where they are in the
 /// document, the two annotation tools the phone exposes, and the three ways out
 /// (inspector, tabs, more).
@@ -309,29 +330,27 @@ struct PhoneReaderBottomBar: View {
     @ViewBuilder
     private var positionPod: some View {
         if isWeb {
-            GlassToolPod(label: "Page history") {
+            PhoneGlassToolPod(label: "Page history") {
                 GlassToolButton(system: "arrow.left", label: "Back") { webHistory(-1) }
                 GlassToolButton(system: "arrow.right", label: "Forward") { webHistory(1) }
             }
         } else {
-            GlassToolPod(label: "Page navigation") {
+            PhoneGlassToolPod(label: "Page navigation") {
                 Button {
                     pageFieldText = String(app.currentPage)
                     showPageJump = true
                 } label: {
-                    HStack(spacing: 4) {
-                        Text("\(app.currentPage)")
-                            .foregroundStyle(palette.foreground)
-                        Text("/ \(app.numPages)")
-                            .foregroundStyle(palette.mutedForeground)
-                    }
-                    .font(.system(size: 15, weight: .medium))
-                    .monospacedDigit()
-                    .padding(.horizontal, 10)
-                    // Label-width, like the iPad's: four-digit page counts widen
-                    // this slot well past an icon's 44pt.
-                    .frame(minWidth: 64, minHeight: PhoneChromeLayout.buttonSide)
-                    .contentShape(Rectangle())
+                    Text("\(app.currentPage) / \(app.numPages)")
+                        .font(.system(size: 15, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.foreground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                        // Fixed-width on purpose: a 10,000-page scan must not
+                        // push More off a 375pt screen. The label scales within
+                        // its slot while VoiceOver receives the full value.
+                        .frame(width: 64, height: PhoneChromeLayout.buttonSide)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("phone.reader.page")
@@ -343,7 +362,7 @@ struct PhoneReaderBottomBar: View {
     /// The two annotation tools the phone exposes. Ink is not among them: the
     /// phone has no Pencil, and iPad-made strokes render read-only.
     private var markPod: some View {
-        GlassToolPod(label: "Marks") {
+        PhoneGlassToolPod(label: "Marks") {
             GlassToolButton(
                 system: isBookmarked ? "bookmark.fill" : "bookmark",
                 label: isBookmarked ? "Remove bookmark" : "Bookmark",
@@ -362,7 +381,7 @@ struct PhoneReaderBottomBar: View {
     }
 
     private var actionPod: some View {
-        GlassToolPod(label: "Panels and actions") {
+        PhoneGlassToolPod(label: "Panels and actions") {
             GlassToolButton(
                 system: "sidebar.right", label: "Notes, AI and scratchpad",
                 active: shell.inspectorPresented
