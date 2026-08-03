@@ -42,7 +42,7 @@ protocol PositionStorage: Sendable {
     func write(_ record: PositionDeviceRecord) async throws
 }
 
-enum PositionStorageError: Error, Equatable {
+enum PositionStorageError: Error, Equatable, Sendable {
     case io(String)
 }
 
@@ -106,10 +106,12 @@ struct FilePositionStorage: PositionStorage {
             throw PositionStorageError.io(
                 "Failed to serialize position record: \(error.localizedDescription)")
         }
-        let tmp = path.appendingPathExtension("tmp")
+        let tmp = root.appendingPathComponent(
+            ".\(path.lastPathComponent).tmp-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())")
         do {
             try json.write(to: tmp)
         } catch {
+            try? fileManager.removeItem(at: tmp)
             throw PositionStorageError.io(
                 "Failed to write position record: \(error.localizedDescription)")
         }

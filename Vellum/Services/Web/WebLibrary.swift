@@ -548,14 +548,20 @@ enum WebLibrary {
     /// opened before `cutoff`. Only ever deletes the derived artifacts — the
     /// sidecar record (reading state) always survives, and a record with no
     /// parseable timestamp is never evicted.
-    static func evictStaleUnsavedSnapshots(olderThan cutoff: Date, excludingUrls: Set<String>) {
+    static func evictStaleUnsavedSnapshots(
+        olderThan cutoff: Date,
+        excludingUrls: Set<String>,
+        lastOpened: (@Sendable (String) async -> Date?)? = nil
+    ) async {
         for file in allRecordFiles() {
             // An unreadable (e.g. evicted) record is never grounds for
             // eviction — loadRecord returning nil skips the page entirely.
             guard let record = loadRecord(at: file),
                   !record.saved, record.annotations.isEmpty,
                   !excludingUrls.contains(record.url),
-                  let opened = parseRfc3339(record.openedAt) ?? parseRfc3339(record.savedAt),
+                  let opened = await lastOpened?(record.url)
+                    ?? parseRfc3339(record.openedAt)
+                    ?? parseRfc3339(record.savedAt),
                   opened < cutoff
             else { continue }
             removeLocalSnapshots(forKey: pageKey(record.url))

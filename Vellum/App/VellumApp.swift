@@ -26,9 +26,8 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             guard let workspace = Self.workspace else { return .terminateNow }
             let leaves = workspace.root.allLeaves()
             let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
-            // Persist the split layout, and every pane's pending scratchpad
-            // edit (each pane owns its own note), before tearing down sessions.
-            workspace.saveNow()
+            // Persist every pane's pending scratchpad edit (each pane owns its
+            // own note) before tearing down sessions.
             for leaf in leaves { leaf.scratchpad.flush() }
             guard hasTabs else {
                 // No open tabs, but a conversation or page-text write saved just
@@ -39,12 +38,14 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // conversations.json / cache write always lands. Both awaits are
                 // no-ops when nothing is pending.
                 Task { @MainActor in
+                    await workspace.saveNowAfterPendingPositionRecords()
                     // A tab closed moments ago finishes its metadata write and
                     // session close behind the UI (AppStore.closeTab); it is no
                     // longer in `tabs`, so nothing else here would await it.
                     // Drained via the workspace registry, not per pane: a close
                     // that collapsed its pane left no leaf to ask.
                     await workspace.tabTeardowns.awaitAll()
+                    await workspace.positions.flush()
                     await PageTextPersister.awaitInFlightFlushes()
                     await AiPersistence.awaitPendingFlush()
                     // Read-later work the user started behind the UI — the
@@ -58,16 +59,20 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateLater
             }
             Task { @MainActor in
+                await workspace.saveNowAfterPendingPositionRecords()
                 // Tabs closed moments ago finish their metadata write and
                 // session close behind the UI (AppStore.closeTab) and are no
                 // longer in `tabs`, so the loop below would miss them. Drained
                 // via the workspace registry, not per pane: a close that
                 // collapsed its pane left no leaf to ask.
                 await workspace.tabTeardowns.awaitAll()
+                await workspace.flushOpenTabPositions(markClosed: true)
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
-                        try? await workspace.sessions.setDocumentMetadata(
-                            sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                        if tab.document?.kind == .pdf {
+                            try? await workspace.sessions.setDocumentMetadata(
+                                sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                        }
                     }
                 }
                 // Metadata rewrites PDFs and changes their validation hashes.
@@ -148,6 +153,7 @@ struct VellumApp: App {
                             .map { DocumentIdentity.storageKey(for: $0) })
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
+                    let positions = workspace.positions
                     Task.detached(priority: .background) {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
@@ -160,7 +166,9 @@ struct VellumApp: App {
                         // retention window (Settings ▸ Storage ▸ Housekeeping;
                         // "Never" skips it). Excludes currently-open documents.
                         await StorageHousekeeping.runCleanup(
-                            openPdfKeys: openKeys, openWebUrls: openWebUrls)
+                            openPdfKeys: openKeys,
+                            openWebUrls: openWebUrls,
+                            webLastOpened: { await positions.lastOpenedForWebURL($0) })
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the

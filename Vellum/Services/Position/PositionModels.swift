@@ -176,11 +176,11 @@ struct DeviceIdentity: Hashable, Sendable {
     nonisolated(unsafe) static var nameOverride: String?
     nonisolated(unsafe) static var platformOverride: String?
 
-    /// Mints and persists a per-install id in UserDefaults. Non-blocking: this
+    /// Mints and persists a per-install id in AppDefaults. Non-blocking: this
     /// is evaluated as `PositionStore.init`'s default argument, which is a main
     /// thread in practice.
     static func current() -> DeviceIdentity {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.current
         let id: String
         if let stored = defaults.string(forKey: defaultsKey), !stored.isEmpty {
             id = stored
@@ -242,6 +242,7 @@ struct DeviceIdentityStub: Hashable, Sendable, Codable {
 
 enum PositionEvent: Sendable {
     case opened(title: String?, tabOrdinal: Int?)
+    case titled(String)
     case moved(ReadingPosition)
     case closed
 }

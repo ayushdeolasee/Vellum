@@ -23,6 +23,7 @@ struct StorageSettingsTab: View {
     @State private var docEntries: [DocumentDataStore.DocumentDataEntry] = []
     @State private var cacheEntries: [PageTextCacheEntry] = []
     @State private var webEntries: [WebLibrary.SnapshotStorageEntry] = []
+    @State private var positionWebLastOpened: [String: Date] = [:]
     @State private var webRecordBytes: Int64 = 0
     @State private var legacyScratchpad: [LegacyRow] = []
     @State private var legacyAi: [LegacyRow] = []
@@ -55,7 +56,9 @@ struct StorageSettingsTab: View {
     private var rows: [StorageInventory.DocumentRow] {
         StorageInventory.joinRows(
             documents: docEntries, cacheEntries: cacheEntries,
-            webEntries: webEntries, sort: sortOrder)
+            webEntries: webEntries,
+            positionLastOpened: positionWebLastOpened,
+            sort: sortOrder)
     }
 
     private var linkedRows: [StorageInventory.DocumentRow] {
@@ -513,8 +516,10 @@ struct StorageSettingsTab: View {
                 })
         }.value
         let cache = await PageTextCache.shared.listEntries()
+        let positionWeb = await workspace.positions.lastOpenedByWebKey()
         docEntries = listing.documents
         webEntries = listing.web
+        positionWebLastOpened = positionWeb
         webRecordBytes = listing.webRecordBytes
         legacyScratchpad = listing.legacyScratchpad
         legacyAi = listing.legacyAi
@@ -657,9 +662,13 @@ struct StorageSettingsTab: View {
         cleanupResult = nil
         let pdfKeys = openPdfKeys
         let webUrls = openWebUrls
+        let positions = workspace.positions
         Task {
             let reclaimed = await StorageHousekeeping.runCleanup(
-                openPdfKeys: pdfKeys, openWebUrls: webUrls, measuringReclaimedBytes: true)
+                openPdfKeys: pdfKeys,
+                openWebUrls: webUrls,
+                measuringReclaimedBytes: true,
+                webLastOpened: { await positions.lastOpenedForWebURL($0) })
             await reload()
             cleanupResult = reclaimedMessage(reclaimed)
             isCleaningUp = false

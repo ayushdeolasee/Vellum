@@ -36,18 +36,12 @@ final class WebSessionBackend {
         // "for convenience".
         let opened = try await Task.detached(priority: .userInitiated) {
             let normalized = try WebUrl.normalize(url)
-            let recordPath = WebLibrary.recordPath(forKey: WebLibrary.pageKey(normalized))
 
-            // Read + touch + rewrite the sidecar off the main thread, serialized
-            // per key via withRecord so a concurrent session for the same page
-            // can't clobber this open (or vice versa). The lock is keyed by
-            // record path, not by calling thread, so serialization is unchanged
-            // by moving the path computation in here.
-            let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
-                record.url = normalized
-                record.openedAt = WebLibrary.rfc3339Now()
-                return record
-            }
+            // Read only: opening a page is reading-position state now, and that
+            // lives in PositionStore. Do not rewrite the shared annotation
+            // sidecar just because a tab opened.
+            let record = WebLibrary.loadRecord(forKey: WebLibrary.pageKey(normalized))
+                ?? WebPageRecord(url: normalized)
             return (normalized: normalized, record: record)
         }.value
 
@@ -88,7 +82,6 @@ final class WebSessionBackend {
 
             let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
                 record.url = normalized
-                record.openedAt = WebLibrary.rfc3339Now()
 
                 // Merge archive metadata without clobbering local reading state.
                 if record.title == nil {

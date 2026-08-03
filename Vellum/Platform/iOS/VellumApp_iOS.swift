@@ -190,6 +190,7 @@ struct VellumApp_iOS: App {
         // to delete an offline copy that is on screen right now.
         let openPaths = Set(openDocuments.map(\.pdfPath))
         let integrations = workspace.integrations
+        let positions = workspace.positions
 
         // Resolve the iCloud ubiquity container off-main FIRST: it can block,
         // and both the launch sweep (to name the iCloud layout) and the
@@ -218,7 +219,8 @@ struct VellumApp_iOS: App {
                 openPdfKeys: openKeys,
                 openWebUrls: openWebUrls,
                 openDocumentPaths: openPaths,
-                readLater: integrations)
+                readLater: integrations,
+                webLastOpened: { await positions.lastOpenedForWebURL($0) })
         }
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
@@ -240,7 +242,6 @@ struct VellumApp_iOS: App {
     @MainActor
     private func flushOnBackground() {
         let workspace = self.workspace
-        workspace.saveNow()
 
         let token = BackgroundFlushToken()
         token.id = UIApplication.shared.beginBackgroundTask(withName: "VellumBackgroundFlush") {
@@ -249,6 +250,7 @@ struct VellumApp_iOS: App {
 
         Task { @MainActor in
             defer { token.end() }
+            await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their metadata write and session
             // close behind the UI (AppStore.closeTab) and are no longer in
             // `tabs`, so the per-tab loop below would miss them. Drained via the
@@ -256,6 +258,7 @@ struct VellumApp_iOS: App {
             // left no leaf to ask. First, because their last_page writes must
             // land before the loop rewrites the same files.
             await workspace.tabTeardowns.awaitAll()
+            await workspace.flushOpenTabPositions()
             // Every OPEN tab's ink, not just the focused pane's. The registry
             // now holds one controller per pane (the active tab's projection
             // the inspector reads), while ink itself is per-tab state on the
@@ -270,8 +273,10 @@ struct VellumApp_iOS: App {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
                 pane.scratchpad.flush()
                 for tab in pane.app.tabs {
-                    try? await workspace.sessions.setDocumentMetadata(
-                        sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                    if tab.document?.kind == .pdf {
+                        try? await workspace.sessions.setDocumentMetadata(
+                            sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                    }
                     try? await workspace.sessions.saveFile(sessionId: tab.id)
                 }
             }

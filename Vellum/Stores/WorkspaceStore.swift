@@ -66,6 +66,11 @@ final class WorkspaceStore {
     /// previews can hand in a store with stubbed clients.
     let integrations: IntegrationsStore
 
+    /// Window-owned position service. The underlying store is per device, but
+    /// owning the facade here gives every pane the same key resolver and flush
+    /// boundary.
+    let positions: DocumentPositionService
+
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
     /// reopen or Save As in one pane waits out a close started in another —
     /// including a pane that has since collapsed. The scene-background flush
@@ -358,12 +363,14 @@ final class WorkspaceStore {
     init(
         sessions: SessionService, integrations: IntegrationsStore = IntegrationsStore(),
         residency: TabResidencyManager = TabResidencyManager(),
-        layout: PaneLayoutCapability = .splitScreen
+        layout: PaneLayoutCapability = .splitScreen,
+        positions: DocumentPositionService = DocumentPositionService()
     ) {
         self.residency = residency
         self.sessions = sessions
         self.integrations = integrations
         self.layout = layout
+        self.positions = positions
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()
@@ -379,6 +386,34 @@ final class WorkspaceStore {
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
         pane.app.workspace = self
+    }
+
+    func awaitPendingPositionRecords() async {
+        for leaf in root.allLeaves() {
+            await leaf.app.flushPendingPositionRecords()
+        }
+    }
+
+    func flushOpenTabPositions(markClosed: Bool = false) async {
+        await awaitPendingPositionRecords()
+        for leaf in root.allLeaves() {
+            for tab in leaf.app.tabs {
+                guard let document = tab.document else { continue }
+                await positions.recordMoved(
+                    document: document,
+                    position: Self.readingPosition(for: tab))
+                if markClosed {
+                    await positions.recordClosed(document: document)
+                }
+            }
+        }
+        await positions.flush()
+    }
+
+    static func readingPosition(for tab: PdfTab) -> ReadingPosition {
+        ReadingPosition(
+            page: max(1, tab.currentPage),
+            pageCount: tab.numPages > 0 ? tab.numPages : tab.document?.pageCount)
     }
 
     // MARK: - Focus
@@ -507,10 +542,8 @@ final class WorkspaceStore {
         // from here on, so its native state is released now rather than in half
         // an hour. (In the common case — a pane emptied by a tab drag — `tabs`
         // is already empty and only the pin matters.)
+        closingPane.app.discardAllTabsForPaneClosure()
         forgetPanePin(closingPane.app)
-        for tab in closingPane.app.tabs {
-            removeLiveTabRuntime(for: tab.id)
-        }
         if root.isLeaf {
             let pane = makePane(startTab: false)
             root = .leaf(pane)
@@ -698,6 +731,11 @@ final class WorkspaceStore {
         WorkspaceService.save(serialize())
     }
 
+    func saveNowAfterPendingPositionRecords() async {
+        await awaitPendingPositionRecords()
+        saveNow()
+    }
+
     /// Rebuild the layout from disk once, at launch. Paints the pane structure
     /// immediately, then asynchronously reopens each tab's document (fresh
     /// sessions). Missing files simply drop their tab.
@@ -771,10 +809,17 @@ final class WorkspaceStore {
         // stays exempt from eviction for the life of the process (issue #52).
         let survivors = Set(root.allLeaves().map(\.id))
         for pane in before where !survivors.contains(pane.id) {
+            pane.app.discardAllTabsForPaneClosure()
             forgetPanePin(pane.app)
         }
         if root.leaf(id: focusedPaneId) == nil {
             focusedPaneId = root.firstLeafId
+        }
+    }
+
+    func hasOpenDocument(key: DocumentKey, excludingTabIds: Set<String> = []) -> Bool {
+        root.allLeaves().contains { pane in
+            pane.app.containsOpenDocument(key: key, excludingTabIds: excludingTabIds)
         }
     }
 

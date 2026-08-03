@@ -39,6 +39,19 @@ actor PositionStore {
     private var firstDirtyAt: Date?
     private var lastWriteAt: Date?
     private var writeFailures = 0
+    private var dirtyGeneration: UInt64 = 0
+    private var inFlightWrite: Task<WriteOutcome, Never>?
+    private var inFlightGeneration: UInt64?
+
+    private struct WriteOutcome: Sendable {
+        var generation: UInt64
+        var result: Result<Void, PositionStorageError>
+
+        var succeeded: Bool {
+            if case .success = result { return true }
+            return false
+        }
+    }
 
     init(
         storage: PositionStorage,
@@ -69,6 +82,8 @@ actor PositionStore {
             entry.openState = Stamped(
                 at: stamp(key, "open_state"),
                 value: OpenState(isOpen: true, tabOrdinal: tabOrdinal))
+        case .titled(let title):
+            entry.title = Stamped(at: stamp(key, "title"), value: title)
         case .moved(let position):
             entry.readingPosition = Stamped(at: stamp(key, "reading_position"), value: position)
         case .closed:
@@ -85,7 +100,17 @@ actor PositionStore {
     /// after the bytes are on disk, or after the write failed silently.
     func flush() async {
         timer.cancel()
-        await performWrite()
+        while true {
+            if let task = inFlightWrite {
+                let succeeded = await finishWrite(task)
+                guard succeeded else { return }
+                continue
+            }
+            guard dirty else { return }
+            guard let task = await beginWriteIfNeeded() else { continue }
+            let succeeded = await finishWrite(task)
+            guard succeeded else { return }
+        }
     }
 
     // MARK: - Reads
@@ -98,6 +123,16 @@ actor PositionStore {
     func recents(limit: Int = 8) async -> [ResumeEntry] {
         PositionMerge.recents(from: await mergedView(), limit: limit)
             .compactMap { localized($0) }
+    }
+
+    func webLastOpenedByKey() async -> [String: Date] {
+        let merged = await mergedView()
+        return merged.reduce(into: [:]) { out, pair in
+            guard pair.key.namespace == .web,
+                  let openedAt = pair.value.effectiveOpenedAt
+            else { return }
+            out[pair.key.hash] = openedAt
+        }
     }
 
     /// Documents reported open. `nil` means "on any device"; pass a `DeviceID`
@@ -117,6 +152,7 @@ actor PositionStore {
 
     private func markDirty() {
         let now = clock.now()
+        dirtyGeneration &+= 1
         dirty = true
         if firstDirtyAt == nil { firstDirtyAt = now }
         scheduleWrite(now: now)
@@ -129,14 +165,28 @@ actor PositionStore {
         if let lastWriteAt {
             delay = max(delay, policy.minInterval - now.timeIntervalSince(lastWriteAt))
         }
+        let scheduledGeneration = dirtyGeneration
         timer.schedule(after: max(0, delay)) { [weak self] in
-            await self?.performWrite()
+            await self?.performScheduledWrite(generation: scheduledGeneration)
         }
     }
 
-    private func performWrite() async {
-        guard dirty else { return }
+    private func performScheduledWrite(generation: UInt64) async {
+        if let task = inFlightWrite {
+            let succeeded = await finishWrite(task)
+            guard succeeded else { return }
+        }
+        guard dirty, dirtyGeneration <= generation else { return }
+        guard let task = await beginWriteIfNeeded() else { return }
+        _ = await finishWrite(task)
+    }
+
+    private func beginWriteIfNeeded() async -> Task<WriteOutcome, Never>? {
+        guard dirty, inFlightWrite == nil else { return inFlightWrite }
         await hydrate()
+        guard dirty, inFlightWrite == nil else { return inFlightWrite }
+
+        let generation = dirtyGeneration
         dirty = false
         firstDirtyAt = nil
         let now = clock.now()
@@ -144,10 +194,35 @@ actor PositionStore {
         var record = currentRecord(writtenAt: now)
         record.trimToMostRecent()
         documents = record.documents
-        do {
-            try await storage.write(record)
+        let storage = self.storage
+        let task = Task { () -> WriteOutcome in
+            do {
+                try await storage.write(record)
+                return WriteOutcome(generation: generation, result: .success(()))
+            } catch let error as PositionStorageError {
+                return WriteOutcome(generation: generation, result: .failure(error))
+            } catch {
+                return WriteOutcome(
+                    generation: generation,
+                    result: .failure(.io(error.localizedDescription)))
+            }
+        }
+        inFlightWrite = task
+        inFlightGeneration = generation
+        return task
+    }
+
+    @discardableResult
+    private func finishWrite(_ task: Task<WriteOutcome, Never>) async -> Bool {
+        let outcome = await task.value
+        guard inFlightGeneration == outcome.generation else { return outcome.succeeded }
+        inFlightWrite = nil
+        inFlightGeneration = nil
+        switch outcome.result {
+        case .success:
             writeFailures = 0
-        } catch {
+            return true
+        case .failure:
             // A failed write is transient (disk full today, a coordinated
             // adapter's `.cancelled`/`.notReady` later), so the record stays
             // dirty with a timer pending. Clearing the flag and walking away
@@ -155,8 +230,9 @@ actor PositionStore {
             // "drop it until the user happens to scroll again".
             writeFailures += 1
             dirty = true
-            if firstDirtyAt == nil { firstDirtyAt = now }
+            if firstDirtyAt == nil { firstDirtyAt = clock.now() }
             scheduleRetry()
+            return false
         }
     }
 
@@ -166,8 +242,9 @@ actor PositionStore {
     private func scheduleRetry() {
         let steps = min(max(writeFailures - 1, 0), 6)
         let delay = min(Self.maxRetryDelay, Self.baseRetryDelay * Double(1 << steps))
+        let scheduledGeneration = dirtyGeneration
         timer.schedule(after: delay) { [weak self] in
-            await self?.performWrite()
+            await self?.performScheduledWrite(generation: scheduledGeneration)
         }
     }
 

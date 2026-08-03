@@ -187,7 +187,7 @@ final class WebLibraryStorageTests: XCTestCase {
 
     // MARK: - TTL eviction
 
-    func testEvictionRemovesOnlyStaleUnsavedArtifacts() throws {
+    func testEvictionRemovesOnlyStaleUnsavedArtifacts() async throws {
         let staleUnsaved = try makeRecord(
             url: "https://example.com/stale", saved: false, openedMonthsAgo: 8)
         let staleSaved = try makeRecord(
@@ -205,7 +205,7 @@ final class WebLibraryStorageTests: XCTestCase {
             try makeArtifacts(forKey: key)
         }
 
-        WebLibrary.evictStaleUnsavedSnapshots(
+        await WebLibrary.evictStaleUnsavedSnapshots(
             olderThan: cutoff(monthsAgo: 6),
             excludingUrls: ["https://example.com/open-tab"])
 

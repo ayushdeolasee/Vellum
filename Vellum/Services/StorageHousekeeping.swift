@@ -55,16 +55,21 @@ enum StorageHousekeeping {
         openWebUrls: Set<String>,
         measuringReclaimedBytes: Bool = false,
         openDocumentPaths: Set<String> = [],
-        readLater: (any ReadLaterRetentionSweeping)? = nil
+        readLater: (any ReadLaterRetentionSweeping)? = nil,
+        now: Date = .now,
+        webLastOpened: (@Sendable (String) async -> Date?)? = nil
     ) async -> Int64 {
         if let readLater {
             _ = await readLater.sweepExpiredOfflineCopies(
-                now: .now, openDocumentPaths: openDocumentPaths.union(openWebUrls))
+                now: now, openDocumentPaths: openDocumentPaths.union(openWebUrls))
         }
-        guard let cutoff = evictionCutoff() else { return 0 }
+        guard let cutoff = evictionCutoff(now: now) else { return 0 }
         let before = measuringReclaimedBytes ? await derivedByteTotal() : 0
         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openPdfKeys)
-        WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+        await WebLibrary.evictStaleUnsavedSnapshots(
+            olderThan: cutoff,
+            excludingUrls: openWebUrls,
+            lastOpened: webLastOpened)
         guard measuringReclaimedBytes else { return 0 }
         let after = await derivedByteTotal()
         return max(0, before - after)

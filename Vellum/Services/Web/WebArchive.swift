@@ -491,9 +491,8 @@ enum WebArchive {
         return name
     }
 
-    static func readArchive(at path: URL) throws -> ImportedArchive {
+    static func readManifest(at path: URL) throws -> ArchiveManifest {
         let zip = try MiniZip(contentsOf: path)
-
         let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
         let manifest: ArchiveManifest
         do {
@@ -510,6 +509,13 @@ enum WebArchive {
             throw SessionServiceError.invalidDocument(
                 "This archive uses format version \(manifest.version) — please update Vellum")
         }
+        return manifest
+    }
+
+    static func readArchive(at path: URL) throws -> ImportedArchive {
+        let zip = try MiniZip(contentsOf: path)
+
+        let manifest = try readManifest(at: path)
 
         let snapshotBytes = try zip.readCapped(
             "snapshot/index.html", cap: WebFetch.maxResponseBytes)

@@ -14,7 +14,7 @@ struct PositionCoalescingTests {
     private func makeStore(
         clock: ManualPositionClock,
         timer: ManualPositionTimer,
-        storage: InMemoryPositionStorage,
+        storage: any PositionStorage,
         policy: CoalescePolicy = .default
     ) -> PositionStore {
         PositionStore(
@@ -194,9 +194,116 @@ struct PositionCoalescingTests {
         #expect(try stampedPosition(in: storage).value.page == 200)
     }
 
+    @Test("A flush joins an already-firing timer write instead of overlapping it")
+    func flushJoinsInFlightTimerWrite() async throws {
+        let clock = ManualPositionClock(PositionFixtures.date("2026-08-02T09:00:00.000000+00:00"))
+        let timer = ManualPositionTimer()
+        let storage = BlockedPositionStorage()
+        let store = makeStore(clock: clock, timer: timer, storage: storage)
+
+        await store.record(.moved(ReadingPosition(page: 1)), for: key)
+        let timerTask = Task { await timer.fire() }
+        await storage.waitForWriteStart(1)
+
+        let flushTask = Task { await store.flush() }
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(await storage.writeStartCount == 1)
+        #expect(await storage.maxConcurrentWrites == 1)
+
+        await storage.releaseWrite(1)
+        await timerTask.value
+        await flushTask.value
+
+        #expect(await storage.writeStartCount == 1)
+        #expect(await storage.writtenPages == [1])
+    }
+
+    @Test("A flush writes a newer generation after joining an older timer write")
+    func flushWritesNewerGenerationAfterOlderTimerWrite() async throws {
+        let clock = ManualPositionClock(PositionFixtures.date("2026-08-02T09:00:00.000000+00:00"))
+        let timer = ManualPositionTimer()
+        let storage = BlockedPositionStorage()
+        let store = makeStore(clock: clock, timer: timer, storage: storage)
+
+        await store.record(.moved(ReadingPosition(page: 1)), for: key)
+        let timerTask = Task { await timer.fire() }
+        await storage.waitForWriteStart(1)
+
+        clock.advance(by: 1)
+        await store.record(.moved(ReadingPosition(page: 2)), for: key)
+        let flushTask = Task { await store.flush() }
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(await storage.writeStartCount == 1)
+        #expect(await storage.maxConcurrentWrites == 1)
+
+        await storage.releaseWrite(1)
+        await timerTask.value
+        await flushTask.value
+
+        #expect(await storage.writtenPages == [1, 2])
+        #expect(await storage.maxConcurrentWrites == 1)
+        #expect(await storage.stampedPosition(for: key)?.value.page == 2)
+    }
+
     private func stampedPosition(in storage: InMemoryPositionStorage) throws -> Stamped<ReadingPosition> {
         let bytes = try #require(storage.lastWrittenBytes)
         let record = try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: bytes)
         return try #require(record.documents[key]?.readingPosition)
+    }
+}
+
+private actor BlockedPositionStorage: PositionStorage {
+    private var records: [DeviceID: PositionDeviceRecord] = [:]
+    private var writesStarted = 0
+    private var activeWrites = 0
+    private var maxActiveWrites = 0
+    private var startedContinuations: [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private var releaseContinuations: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var releasedWrites: Set<Int> = []
+    private var pages: [Int] = []
+
+    var writeStartCount: Int { writesStarted }
+    var maxConcurrentWrites: Int { maxActiveWrites }
+    var writtenPages: [Int] { pages }
+
+    func waitForWriteStart(_ ordinal: Int) async {
+        if writesStarted >= ordinal { return }
+        await withCheckedContinuation { continuation in
+            startedContinuations[ordinal, default: []].append(continuation)
+        }
+    }
+
+    func releaseWrite(_ ordinal: Int) {
+        releasedWrites.insert(ordinal)
+        releaseContinuations.removeValue(forKey: ordinal)?.resume()
+    }
+
+    func loadAll() async -> [PositionDeviceRecord] {
+        records.values.sorted { $0.deviceID < $1.deviceID }
+    }
+
+    func write(_ record: PositionDeviceRecord) async throws {
+        writesStarted += 1
+        let ordinal = writesStarted
+        activeWrites += 1
+        maxActiveWrites = max(maxActiveWrites, activeWrites)
+        let started = startedContinuations.removeValue(forKey: ordinal) ?? []
+        for continuation in started { continuation.resume() }
+        if ordinal == 1, !releasedWrites.contains(ordinal) {
+            await withCheckedContinuation { continuation in
+                releaseContinuations[ordinal] = continuation
+            }
+        }
+        if let page = record.documents.values.compactMap({ $0.readingPosition?.value.page }).max() {
+            pages.append(page)
+        }
+        records[record.deviceID] = record
+        activeWrites -= 1
+    }
+
+    func stampedPosition(for key: DocumentKey) -> Stamped<ReadingPosition>? {
+        records.values.first?.documents[key]?.readingPosition
     }
 }
