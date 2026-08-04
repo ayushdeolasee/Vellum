@@ -149,6 +149,13 @@ actor StorageCoordinator {
         status()
     }
 
+    /// Join the operation/conflict pass that is active right now. Pending
+    /// deferred conflicts are intentionally not counted: they remain parked
+    /// until the next foreground retry instead of making this barrier hang.
+    func awaitQuiescence() async {
+        await waitForQuiescenceUnbounded()
+    }
+
     func start() async {
         await enqueueLifecycle { await self.startImpl() }
     }

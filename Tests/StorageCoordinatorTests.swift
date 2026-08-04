@@ -202,6 +202,7 @@ struct StorageCoordinatorTests {
 
         await coordinator.foreground()
         await resolver.waitForCount(3)
+        await coordinator.awaitQuiescence()
         let status = await coordinator.currentStatus()
         #expect(status.pendingConflicts == 0)
         #expect(status.lastError == nil)
