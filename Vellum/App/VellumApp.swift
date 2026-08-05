@@ -170,7 +170,8 @@ struct VellumApp: App {
                         // so it can't run concurrently with a location change
                         // the user makes in the first-launch sheet below. The
                         // sweep runs regardless of the retention policy.
-                        await WebStorageRelocator.sweepAtLaunch()
+                        await WebStorageRelocator.sweepAtLaunch(
+                            coordinator: workspace.storageCoordinator)
                         // TTL eviction of derived data, using the user's chosen
                         // retention window (Settings ▸ Storage ▸ Housekeeping;
                         // "Never" skips it). Excludes currently-open documents.

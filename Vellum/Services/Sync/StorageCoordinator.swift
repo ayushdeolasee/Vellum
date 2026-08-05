@@ -189,6 +189,21 @@ actor StorageCoordinator {
         await enqueueLifecycle { await self.reconfigureImpl() }
     }
 
+    /// Run a store-wide relocation with normal operations and conflict delivery
+    /// stopped. When `reconfigureAfter` is true, the mode preference is assumed
+    /// to have changed already; the new container/layout is installed before
+    /// admission reopens, leaving no old-root/new-root race window.
+    func performExclusiveStorageOperation<T: Sendable>(
+        reconfigureAfter: Bool = false,
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T {
+        await enqueueLifecycle {
+            await self.performExclusiveStorageOperationImpl(
+                reconfigureAfter: reconfigureAfter,
+                operation)
+        }
+    }
+
     @discardableResult
     func background(
         timeout: TimeInterval? = nil,
@@ -504,6 +519,46 @@ actor StorageCoordinator {
             await container.suspend()
         }
         install(next)
+    }
+
+    private func performExclusiveStorageOperationImpl<T: Sendable>(
+        reconfigureAfter: Bool,
+        _ operation: @Sendable () async -> T
+    ) async -> T {
+        if lifecycle == .idle || lifecycle == .stopped {
+            await startImpl()
+        } else if lifecycle == .suspended {
+            await foregroundImpl()
+        }
+
+        acceptsCoordinatedOperations = false
+        acceptsConflictResolution = false
+        lifecycle = .starting
+        await waitForQuiescenceUnbounded()
+        await cancelAndJoinRuntimeTasks()
+
+        let result = await operation()
+
+        if reconfigureAfter {
+            let next = await resolveConfiguration(chosenMode: modeProvider())
+            if let container = access.container, !containerIsSuspended {
+                await container.suspend()
+            }
+            install(next)
+        } else {
+            lifecycle = .active
+            switch access {
+            case .coordinated(let container, _):
+                acceptsCoordinatedOperations = true
+                acceptsConflictResolution = true
+                startConflictConsumer(container)
+                launchConflictDrainIfNeeded()
+            case .direct, .unavailable:
+                acceptsCoordinatedOperations = false
+                acceptsConflictResolution = false
+            }
+        }
+        return result
     }
 
     private func install(_ configuration: ResolvedConfiguration) {

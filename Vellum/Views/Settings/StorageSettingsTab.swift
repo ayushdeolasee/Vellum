@@ -389,7 +389,8 @@ struct StorageSettingsTab: View {
     /// never flows through `pendingLocation`/the confirmation dialog the way the
     /// two instant modes do.
     private func chooseCustomFolder() {
-        WebStorageRelocator.chooseCustomFolder {
+        WebStorageRelocator.chooseCustomFolder(
+            coordinator: workspace.storageCoordinator) {
             refreshSettings()
             relocationStatus = WebStorageRelocator.status
             // The move runs in the background; refresh the listings once it has
@@ -697,7 +698,10 @@ struct StorageSettingsTab: View {
     }
 
     private func applyPendingLocation(_ choice: PendingLocation) {
-        WebStorageRelocator.apply(mode: choice.mode, customPath: choice.customPath)
+        WebStorageRelocator.apply(
+            mode: choice.mode,
+            customPath: choice.customPath,
+            coordinator: workspace.storageCoordinator)
         refreshSettings()
         relocationStatus = WebStorageRelocator.status
     }

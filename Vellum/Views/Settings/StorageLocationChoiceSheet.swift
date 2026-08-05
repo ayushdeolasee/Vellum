@@ -52,7 +52,7 @@ enum WebStorageRelocator {
     /// Awaits its turn on the chain — the first-launch sheet can hand us a new
     /// destination while this is still queued — and awaits completion, since
     /// callers go on to walk the store this sweep is still moving.
-    static func sweepAtLaunch() async {
+    static func sweepAtLaunch(coordinator: StorageCoordinator) async {
         let isResuming = UserDefaults.standard.string(
             forKey: WebStorageSettings.pendingRelocationKey
         ) != nil
@@ -68,7 +68,11 @@ enum WebStorageRelocator {
         // newer move is still running, and would read the *new* request's
         // pending marker as "the previous location is still unavailable".
         let generation = relocationGeneration
-        await enqueue { WebStorageMigrator.sweepAtLaunch() }.value
+        await enqueue {
+            await coordinator.performExclusiveStorageOperation {
+                WebStorageMigrator.sweepAtLaunch()
+            }
+        }.value
         if isResuming, generation == relocationGeneration {
             if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
                 status = Status(message: "Interrupted storage move recovered successfully.")
@@ -82,7 +86,12 @@ enum WebStorageRelocator {
         }
     }
 
-    static func apply(mode: WebStorageMode, customPath: String? = nil, customBookmark: Data? = nil) {
+    static func apply(
+        mode: WebStorageMode,
+        customPath: String? = nil,
+        customBookmark: Data? = nil,
+        coordinator: StorageCoordinator
+    ) {
         let previous = WebStorageSettings.chosenMode ?? .local
         let previousCustomPath = UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
@@ -90,7 +99,6 @@ enum WebStorageRelocator {
 
         WebStorageMigrator.recordPendingRelocation(mode: previous, customPath: previousCustomPath)
         WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
-        NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
@@ -112,11 +120,27 @@ enum WebStorageRelocator {
                 message: "The previous location is unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
             )
             NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+            enqueue {
+                _ = await coordinator.performExclusiveStorageOperation(
+                    reconfigureAfter: true) { false }
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .vellumStorageModeChanged, object: nil)
+                }
+            }
             return
         }
 
         enqueue {
-            guard WebStorageMigrator.relocate(from: source, to: destination) else {
+            let moved = await coordinator.performExclusiveStorageOperation(
+                reconfigureAfter: true
+            ) {
+                WebStorageMigrator.relocate(from: source, to: destination)
+            }
+            await MainActor.run {
+                NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
+            }
+            guard moved else {
                 await MainActor.run {
                     guard generation == relocationGeneration else { return }
                     status = Status(
@@ -142,14 +166,21 @@ enum WebStorageRelocator {
     /// URL, persists it, and applies the relocation. `then` runs after a
     /// successful apply (dismiss the sheet / refresh Settings); cancel is a
     /// no-op, leaving the mode unchanged.
-    static func chooseCustomFolder(then: @escaping () -> Void) {
+    static func chooseCustomFolder(
+        coordinator: StorageCoordinator,
+        then: @escaping () -> Void
+    ) {
         DocumentPickerCoordinator_iOS.shared.presentFolderPicker { url in
             // A picked folder is delivered security-scoped; access it while we
             // mint the bookmark that lets us re-open it in future sessions.
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? url.bookmarkData() else { return }
-            apply(mode: .custom, customPath: url.path, customBookmark: data)
+            apply(
+                mode: .custom,
+                customPath: url.path,
+                customBookmark: data,
+                coordinator: coordinator)
             then()
         }
     }
@@ -165,6 +196,7 @@ extension Notification.Name {
 struct StorageLocationChoiceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
+    @Environment(WorkspaceStore.self) private var workspace
 
     private var icloudAvailable: Bool { WebStorageSettings.icloudVellumRoot != nil }
 
@@ -196,7 +228,8 @@ struct StorageLocationChoiceSheet: View {
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
             ) {
-                WebStorageRelocator.apply(mode: .icloud)
+                WebStorageRelocator.apply(
+                    mode: .icloud, coordinator: workspace.storageCoordinator)
                 dismiss()
             }
 
@@ -209,7 +242,8 @@ struct StorageLocationChoiceSheet: View {
                 identifier: "storageChoice.custom"
             ) {
                 // Async: the picker's callback applies the change and dismisses.
-                WebStorageRelocator.chooseCustomFolder { dismiss() }
+                WebStorageRelocator.chooseCustomFolder(
+                    coordinator: workspace.storageCoordinator) { dismiss() }
             }
 
             choiceCard(
@@ -220,7 +254,8 @@ struct StorageLocationChoiceSheet: View {
                 disabled: false,
                 identifier: "storageChoice.local"
             ) {
-                WebStorageRelocator.apply(mode: .local)
+                WebStorageRelocator.apply(
+                    mode: .local, coordinator: workspace.storageCoordinator)
                 dismiss()
             }
         }

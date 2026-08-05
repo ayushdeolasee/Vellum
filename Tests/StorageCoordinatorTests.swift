@@ -528,6 +528,53 @@ struct StorageCoordinatorTests {
         #expect(resolverTwo.seenCount == 1)
     }
 
+    @Test("Exclusive relocation keeps admission closed until the new layout is installed")
+    func exclusiveRelocationAtomicallyInstallsNewLayout() async {
+        let storeDir = scratch("storage-exclusive")
+        let root = scratch("storage-exclusive-root")
+        let state = StorageModeState(mode: .icloud, root: root)
+        let container = FakeSyncedContainer()
+        let relocation = AsyncGate()
+        defer {
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { state.mode },
+            effectiveModeProvider: { state.mode ?? .local },
+            rootResolver: { state.root },
+            containerFactory: { container })
+        await coordinator.start()
+
+        state.set(mode: .local)
+        let transition = Task {
+            await coordinator.performExclusiveStorageOperation(reconfigureAfter: true) {
+                await relocation.enterAndWait()
+                return true
+            }
+        }
+        await relocation.waitUntilEntered()
+
+        let during = await coordinator.currentStatus()
+        let admittedDuringMove = try? await coordinator.withStorageContext { _ in true }
+        #expect(during.lifecycle == .starting)
+        #expect(!during.acceptsCoordinatedOperations)
+        #expect(admittedDuringMove == nil)
+        #expect(!container.isSuspended)
+
+        await relocation.release()
+        #expect(await transition.value)
+
+        let after = await coordinator.currentStatus()
+        let layout = try? await coordinator.withStorageContext { $0.layout }
+        #expect(after.lifecycle == .active)
+        #expect(after.effectiveMode == .local)
+        #expect(after.availability == .direct)
+        #expect(container.isSuspended)
+        #expect(layout == .local(storeDir: storeDir))
+    }
+
     @Test("Reconfigure keeps a storage-context lease on one root and container")
     func reconfigureKeepsStorageContextLeaseStable() async throws {
         let storeDir = scratch("storage-context-reconfigure")

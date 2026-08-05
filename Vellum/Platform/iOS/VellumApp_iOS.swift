@@ -228,7 +228,8 @@ struct VellumApp_iOS: App {
             // Routed through the relocator so it can't run concurrently with a
             // location change the user makes in the first-launch sheet below
             // (single relocation runner — parity plan do-not-reintroduce #9).
-            await WebStorageRelocator.sweepAtLaunch()
+            await WebStorageRelocator.sweepAtLaunch(
+                coordinator: workspace.storageCoordinator)
             // TTL eviction of derived data, using the user's chosen retention
             // window (Settings ▸ Storage ▸ Housekeeping; "Never" skips it).
             // The read-later retention sweep rides the same pass (#157): one
