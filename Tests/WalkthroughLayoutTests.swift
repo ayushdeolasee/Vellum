@@ -160,4 +160,24 @@ final class WalkthroughLayoutTests: XCTestCase {
             accuracy: 1,
             "the title bar and footer no longer measure their declared heights")
     }
+
+    /// A form sheet is full-width on iPhone. The walkthrough's reading-width
+    /// cap must yield to that compact proposal or the footer's Done button is
+    /// laid out hundreds of points beyond the trailing edge.
+    func testSheetDoesNotOverflowPhoneWidth() {
+        let phoneWidth: CGFloat = 368
+        let host = UIHostingController(
+            rootView: WalkthroughSheet_iOS()
+                .environment(\.palette, .light)
+                .tint(ThemePalette.light.primary))
+        host.view.frame = CGRect(
+            x: 0, y: 0, width: phoneWidth, height: WalkthroughSheet_iOS.maxSheetHeight)
+        let measured = host.sizeThatFits(
+            in: CGSize(width: phoneWidth, height: WalkthroughSheet_iOS.maxSheetHeight))
+
+        XCTAssertLessThanOrEqual(
+            measured.width,
+            phoneWidth + 0.5,
+            "the only allowed overage is one physical-pixel rounding step")
+    }
 }

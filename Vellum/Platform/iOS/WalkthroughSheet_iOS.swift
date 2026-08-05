@@ -44,10 +44,9 @@ struct WalkthroughSheet_iOS: View {
     // and adding a control silently takes points away from every page while the
     // layout test fails pointing at the copy instead of at the cause.
 
-    /// Fixed content width. A reading-width column; wider makes the bullets
-    /// scan badly, narrower makes every one of them wrap. This is the content
-    /// width inside the form sheet, not a window width — the sheet owns its
-    /// own outer size via `.presentationDetents`.
+    /// Maximum content width. iPad gets the intended reading column; compact
+    /// phones accept their sheet's narrower proposal instead of forcing a
+    /// 640-point view off both screen edges.
     static let sheetWidth: CGFloat = 640
     /// Backstop on the sheet's height. Past this the page area scrolls rather
     /// than growing — see `pageContent`.
@@ -81,7 +80,7 @@ struct WalkthroughSheet_iOS: View {
             Divider().frame(height: Self.dividerHeight)
             footer
         }
-        .frame(width: Self.sheetWidth)
+        .frame(maxWidth: Self.sheetWidth)
         .frame(maxHeight: Self.maxSheetHeight)
         // No explicit background: take the system sheet material, like
         // StorageLocationChoiceSheet does. Painting palette.surface here made
