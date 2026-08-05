@@ -45,6 +45,11 @@ struct CompactWorkspaceTests {
         #expect(ShellIdiom_iOS.pad.paneLayout == .splitScreen)
     }
 
+    @Test func eachIdiomCarriesItsOwnStorageCopy() {
+        #expect(ShellIdiom_iOS.phone.thisDevice == "this iPhone")
+        #expect(ShellIdiom_iOS.pad.thisDevice == "this iPad")
+    }
+
     #if DEBUG
     /// `VELLUM_FORCE_SHELL` is what lets a QA run drive the phone shell on an
     /// iPad simulator (and lets this suite exercise the branch the host device

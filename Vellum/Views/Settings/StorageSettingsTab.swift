@@ -19,6 +19,8 @@ struct StorageSettingsTab: View {
     @Environment(\.palette) private var palette
     @Environment(WorkspaceStore.self) private var workspace
 
+    private var thisDevice: String { ShellIdiom_iOS.current.thisDevice }
+
     // Joined-list sources (each listed off-main in `reload`).
     @State private var docEntries: [DocumentDataStore.DocumentDataEntry] = []
     @State private var cacheEntries: [PageTextCacheEntry] = []
@@ -315,7 +317,7 @@ struct StorageSettingsTab: View {
             Picker("Location", selection: locationBinding) {
                 Text("iCloud Drive").tag(WebStorageMode.icloud)
                 Text("Custom Folder").tag(WebStorageMode.custom)
-                Text("This iPad").tag(WebStorageMode.local)
+                Text("This \(ShellIdiom_iOS.current.deviceName)").tag(WebStorageMode.local)
             }
             .accessibilityIdentifier("storage.locationPicker")
 
@@ -367,9 +369,9 @@ struct StorageSettingsTab: View {
         if WebStorageSettings.modeIsDegraded {
             switch storageMode {
             case .icloud:
-                return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on this iPad until it comes back."
+                return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on \(thisDevice) until it comes back."
             case .custom:
-                return "The chosen folder can't be found. Vellum is storing everything on this iPad until you pick a folder again."
+                return "The chosen folder can't be found. Vellum is storing everything on \(thisDevice) until you pick a folder again."
             case .local:
                 return ""
             }
@@ -378,9 +380,9 @@ struct StorageSettingsTab: View {
         case .icloud:
             return "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your devices."
         case .custom:
-            return "Offline copies live in your folder. iCloud syncing is not available for a custom folder: highlights, notes, AI conversations, and reading positions stay on this iPad."
+            return "Offline copies live in your folder. iCloud syncing is not available for a custom folder: highlights, notes, AI conversations, and reading positions stay on \(thisDevice)."
         case .local:
-            return "Everything stays in Vellum's private app folder on this iPad. No syncing."
+            return "Everything stays in Vellum's private app folder on \(thisDevice). No syncing."
         }
     }
 
@@ -688,11 +690,11 @@ struct StorageSettingsTab: View {
         let mode: WebStorageMode
         let customPath: String?
         var id: String { "\(mode.rawValue):\(customPath ?? "")" }
-        var label: String {
+        @MainActor var label: String {
             switch mode {
             case .icloud: "iCloud Drive"
             case .custom: "the selected folder"
-            case .local: "this iPad"
+            case .local: ShellIdiom_iOS.current.thisDevice
             }
         }
     }
