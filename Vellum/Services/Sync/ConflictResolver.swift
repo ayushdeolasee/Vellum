@@ -30,10 +30,25 @@ struct PreserveLosersConflictResolver: ConflictResolver {
         _ event: ConflictEvent,
         reading: @Sendable (ConflictVersion) async throws -> Data
     ) async throws -> ConflictResolution {
-        if event.url.pathExtension == "json",
+        if isWebRecord(event.url),
            let merged = try await mergeWebPageRecord(event, reading: reading) {
             try await archive(event.url, merged)
             return .merged(event.url)
+        }
+        if event.url.lastPathComponent == "conversations.json" {
+            guard let merged = try await mergeConversations(event, reading: reading) else {
+                return .deferred
+            }
+            try await archive(event.url, merged)
+            return .merged(event.url)
+        }
+        if event.url.lastPathComponent == "meta.json",
+           let merged = try await mergeMeta(event, reading: reading) {
+            try await archive(event.url, merged)
+            return .merged(event.url)
+        }
+        if event.url.deletingLastPathComponent().lastPathComponent == "positions" {
+            NSLog("[Vellum] Position conflict at %@: one device record was written by multiple peers; preserving every version", event.url.path)
         }
 
         var archived: [URL] = []
@@ -44,6 +59,11 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             archived.append(destination)
         }
         return .keptCurrent(archivedLosers: archived)
+    }
+
+    private func isWebRecord(_ url: URL) -> Bool {
+        return url.pathExtension == "json"
+            && url.deletingLastPathComponent().lastPathComponent == "records"
     }
 
     private func mergeWebPageRecord(
@@ -90,7 +110,60 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             }
             return lhs.id < rhs.id
         }
-        // `openedAt` is volatile recency state; keep the current winner's value.
+        current.openedAt = current.openedAt ?? incoming.openedAt
+    }
+
+    private func mergeConversations(
+        _ event: ConflictEvent,
+        reading: @Sendable (ConflictVersion) async throws -> Data
+    ) async throws -> Data? {
+        guard let currentVersion = event.currentVersion else { return nil }
+        let currentBytes = try await reading(currentVersion)
+        guard let current = try? JSONDecoder().decode([AiMessage].self, from: currentBytes)
+        else { return nil }
+        var byID: [String: AiMessage] = [:]
+        for message in current where byID[message.id] == nil {
+            byID[message.id] = message
+        }
+        for version in event.losingVersions {
+            let bytes = try await reading(version)
+            guard let incoming = try? JSONDecoder().decode([AiMessage].self, from: bytes) else {
+                return nil
+            }
+            for message in incoming where byID[message.id] == nil {
+                byID[message.id] = message
+            }
+        }
+        let merged = AiPersistence.limitedMessages(
+            byID.values.sorted {
+                $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt
+            })
+        return try JSONEncoder().encode(merged)
+    }
+
+    private func mergeMeta(
+        _ event: ConflictEvent,
+        reading: @Sendable (ConflictVersion) async throws -> Data
+    ) async throws -> Data? {
+        guard let currentVersion = event.currentVersion else { return nil }
+        let currentBytes = try await reading(currentVersion)
+        guard var merged = try? JSONDecoder().decode(
+            DocumentDataStore.Meta.self, from: currentBytes) else { return nil }
+        for version in event.losingVersions {
+            let bytes = try await reading(version)
+            guard let incoming = try? JSONDecoder().decode(DocumentDataStore.Meta.self, from: bytes)
+            else { return nil }
+            let mergedDate = WebLibrary.parseRfc3339(merged.lastOpened) ?? .distantPast
+            let incomingDate = WebLibrary.parseRfc3339(incoming.lastOpened) ?? .distantPast
+            if incomingDate > mergedDate {
+                let olderTitle = merged.title
+                merged = incoming
+                merged.title = incoming.title ?? olderTitle
+            } else if merged.title == nil {
+                merged.title = incoming.title
+            }
+        }
+        return try WebLibrary.jsonEncoderPretty.encode(merged)
     }
 
     static func archiveURL(for url: URL, version: ConflictVersion) -> URL {
