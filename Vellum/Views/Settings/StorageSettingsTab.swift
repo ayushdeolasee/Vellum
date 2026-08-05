@@ -496,19 +496,17 @@ struct StorageSettingsTab: View {
 
     private struct Listing: Sendable {
         var documents: [DocumentDataStore.DocumentDataEntry]
-        var web: [WebLibrary.SnapshotStorageEntry]
-        var webRecordBytes: Int64
         var legacyScratchpad: [LegacyRow]
         var legacyAi: [LegacyRow]
     }
 
     private func reload() async {
         isLoading = true
+        async let coordinatedWeb = workspace.webLibraryStorage.listSnapshotStorage()
+        async let coordinatedWebRecordBytes = workspace.webLibraryStorage.totalRecordBytes()
         let listing = await Task.detached(priority: .userInitiated) { () -> Listing in
             Listing(
                 documents: DocumentDataStore.listDocuments(),
-                web: WebLibrary.listSnapshotStorage(),
-                webRecordBytes: WebLibrary.totalRecordBytes(),
                 legacyScratchpad: ScratchpadPersistence.listLegacyEntries().map {
                     LegacyRow(source: .scratchpad, key: $0.key, bytes: $0.bytes)
                 },
@@ -516,12 +514,14 @@ struct StorageSettingsTab: View {
                     LegacyRow(source: .ai, key: $0.key, bytes: $0.bytes)
                 })
         }.value
+        let web = await coordinatedWeb
+        let recordBytes = await coordinatedWebRecordBytes
         let cache = await PageTextCache.shared.listEntries()
         let positionWeb = await workspace.positions.lastOpenedByWebKey()
         docEntries = listing.documents
-        webEntries = listing.web
+        webEntries = web
         positionWebLastOpened = positionWeb
-        webRecordBytes = listing.webRecordBytes
+        webRecordBytes = recordBytes
         legacyScratchpad = listing.legacyScratchpad
         legacyAi = listing.legacyAi
         cacheEntries = cache
@@ -576,7 +576,7 @@ struct StorageSettingsTab: View {
         webEntries.removeAll { keys.contains($0.key) }
         Task {
             for key in keys {
-                await Task.detached { WebLibrary.removeLocalSnapshots(forKey: key) }.value
+                await workspace.webLibraryStorage.removeLocalSnapshots(forKey: key)
             }
             await reload()
         }
@@ -594,7 +594,7 @@ struct StorageSettingsTab: View {
             postDataDeleted(keys: keys, notes: true, chat: true)
             for key in keys {
                 await PageTextCache.shared.delete(key: key)
-                await Task.detached { WebLibrary.removeLocalSnapshots(forKey: key) }.value
+                await workspace.webLibraryStorage.removeLocalSnapshots(forKey: key)
             }
             await reload()
         }
@@ -652,7 +652,7 @@ struct StorageSettingsTab: View {
         dataRemovalResult = nil
         webEntries = []
         Task {
-            await Task.detached { WebLibrary.removeAllSnapshotArtifacts() }.value
+            await workspace.webLibraryStorage.removeAllSnapshotArtifacts()
             await reload()
             dataRemovalResult = reclaimedMessage(max(0, before - webArchiveBytes))
         }
@@ -669,7 +669,8 @@ struct StorageSettingsTab: View {
                 openPdfKeys: pdfKeys,
                 openWebUrls: webUrls,
                 measuringReclaimedBytes: true,
-                webLastOpened: { await positions.lastOpenedForWebURL($0) })
+                webLastOpened: { await positions.lastOpenedForWebURL($0) },
+                webStorage: workspace.webLibraryStorage)
             await reload()
             cleanupResult = reclaimedMessage(reclaimed)
             isCleaningUp = false

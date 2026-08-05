@@ -117,8 +117,16 @@ struct VellumApp: App {
         KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())
-        let workspace = WorkspaceStore(sessions: sessions, integrations: integrations)
+        let storageCoordinator = StorageCoordinator()
+        let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
+        let integrations = IntegrationsStore(
+            engine: IntegrationsSyncEngine(),
+            webLibraryStorage: webLibraryStorage)
+        let workspace = WorkspaceStore(
+            sessions: sessions,
+            integrations: integrations,
+            storageCoordinator: storageCoordinator,
+            webLibraryStorage: webLibraryStorage)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         VellumAppDelegate.workspace = workspace
@@ -169,7 +177,8 @@ struct VellumApp: App {
                         await StorageHousekeeping.runCleanup(
                             openPdfKeys: openKeys,
                             openWebUrls: openWebUrls,
-                            webLastOpened: { await positions.lastOpenedForWebURL($0) })
+                            webLastOpened: { await positions.lastOpenedForWebURL($0) },
+                            webStorage: workspace.webLibraryStorage)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the

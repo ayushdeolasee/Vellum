@@ -27,7 +27,14 @@ actor WebLibraryStorage {
         forKey key: String,
         materializing: Materialization = .downloadIfNeeded(timeout: 10)
     ) async -> WebPageRecord? {
-        try? await withStorageContext { context in
+        try? await loadRecordStrict(forKey: key, materializing: materializing)
+    }
+
+    func loadRecordStrict(
+        forKey key: String,
+        materializing: Materialization = .downloadIfNeeded(timeout: 10)
+    ) async throws -> WebPageRecord? {
+        try await withStorageContext { context in
             switch context {
             case .direct(let layout):
                 return Self.loadRecordDirect(forKey: key, layout: layout)
@@ -115,6 +122,25 @@ actor WebLibraryStorage {
                 return archive.readiness.isReady
             }
         }) ?? false
+    }
+
+    func snapshotArtifactsSize(forKey key: String) async -> Int64 {
+        await acquireIndex()
+        defer { releaseIndex() }
+
+        return (try? await withStorageContext { context in
+            switch context {
+            case .direct:
+                return WebLibrary.snapshotArtifactsSize(forKey: key)
+            case .coordinated(let container, let layout):
+                let managed = try await Self.existingManagedArchiveMetadata(
+                    forKey: key,
+                    layout: layout,
+                    container: container,
+                    readyOnly: false)
+                return Self.derivedSnapshotBytes(forKey: key) + (managed?.byteSize ?? 0)
+            }
+        }) ?? Self.derivedSnapshotBytes(forKey: key)
     }
 
     func removeLocalSnapshots(forKey key: String) async {
@@ -233,6 +259,88 @@ actor WebLibraryStorage {
                     layout.recordsDir,
                     matching: SyncedItemFilter(fileExtension: "json", readyOnly: readyOnly)
                 ).map(Self.metadata)
+            }
+        }
+    }
+
+    func listSnapshotStorage() async -> [WebLibrary.SnapshotStorageEntry] {
+        let metadata = (try? await listRecordMetadata(readyOnly: false)) ?? []
+        let activeNames = Set(metadata.map(\.name))
+        let legacyNames = WebLibrary.recordFileNames(inDir: WebLibrary.storeDir)
+            .filter { !activeNames.contains($0) }
+        var entries: [WebLibrary.SnapshotStorageEntry] = []
+        let names = metadata.filter { $0.readiness.isReady }.map(\.name) + legacyNames
+        for name in names {
+            let key = (name as NSString).deletingPathExtension
+            guard let record = await loadRecord(forKey: key) else { continue }
+            let bytes = await snapshotArtifactsSize(forKey: key)
+            guard bytes > 0 else { continue }
+            entries.append(Self.snapshotEntry(record: record, key: key, bytes: bytes))
+        }
+        entries.sort { $0.byteSize > $1.byteSize }
+        return entries
+    }
+
+    func totalRecordBytes() async -> Int64 {
+        let metadata = (try? await listRecordMetadata(readyOnly: false)) ?? []
+        let activeNames = Set(metadata.map(\.name))
+        let coordinatedBytes = metadata.reduce(Int64(0)) { $0 + ($1.byteSize ?? 0) }
+        let legacyBytes = WebLibrary.recordFileNames(inDir: WebLibrary.storeDir)
+            .filter { !activeNames.contains($0) }
+            .reduce(Int64(0)) { total, name in
+                total + WebICloud.size(
+                    ofItemAt: WebLibrary.storeDir.appendingPathComponent(name))
+            }
+        if metadata.allSatisfy({ $0.byteSize == nil }) {
+            return WebLibrary.totalRecordBytes()
+        }
+        return coordinatedBytes + legacyBytes
+    }
+
+    func evictStaleUnsavedSnapshots(
+        olderThan cutoff: Date,
+        excludingUrls: Set<String>,
+        lastOpened: (@Sendable (String) async -> Date?)? = nil
+    ) async {
+        let metadata = (try? await listRecordMetadata(readyOnly: false)) ?? []
+        let activeNames = Set(metadata.map(\.name))
+        let names = metadata.filter { $0.readiness.isReady }.map(\.name)
+            + WebLibrary.recordFileNames(inDir: WebLibrary.storeDir)
+                .filter { !activeNames.contains($0) }
+        for name in names {
+            let key = (name as NSString).deletingPathExtension
+            guard let record = await loadRecord(forKey: key),
+                  !record.saved,
+                  record.annotations.isEmpty,
+                  !excludingUrls.contains(record.url),
+                  let opened = await lastOpened?(record.url)
+                    ?? WebLibrary.parseRfc3339(record.openedAt)
+                    ?? WebLibrary.parseRfc3339(record.savedAt),
+                  opened < cutoff
+            else { continue }
+            await removeLocalSnapshots(forKey: key)
+        }
+    }
+
+    func removeAllSnapshotArtifacts() async {
+        await acquireIndex()
+        defer { releaseIndex() }
+
+        try? await withStorageContext { context in
+            switch context {
+            case .direct:
+                WebLibrary.removeAllSnapshotArtifacts()
+            case .coordinated(let container, let layout):
+                Self.removeDerivedLocalArtifacts()
+                let archives = try await container.list(
+                    layout.archivesDir,
+                    matching: SyncedItemFilter(fileExtension: "vellumweb", readyOnly: false))
+                for archive in archives {
+                    try? await container.remove(archive.url)
+                }
+                if let indexPath = layout.indexPath {
+                    try? await container.remove(indexPath)
+                }
             }
         }
     }
@@ -566,6 +674,54 @@ actor WebLibraryStorage {
         }
         let installed = WebLibrary.archiveDir(forKey: key).appendingPathComponent("snapshot.html")
         return fm.fileExists(atPath: installed.path, isDirectory: &isDir) && !isDir.boolValue
+    }
+
+    private static func derivedSnapshotBytes(forKey key: String) -> Int64 {
+        let fm = FileManager.default
+        var total = ((try? fm.attributesOfItem(
+            atPath: WebLibrary.snapshotPath(forKey: key).path)[.size]) as? NSNumber)?.int64Value ?? 0
+        guard let enumerator = fm.enumerator(
+            at: WebLibrary.archiveDir(forKey: key),
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [],
+            errorHandler: nil)
+        else { return total }
+        for case let file as URL in enumerator {
+            guard let values = try? file.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey]),
+                values.isRegularFile == true
+            else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    private static func snapshotEntry(
+        record: WebPageRecord,
+        key: String,
+        bytes: Int64
+    ) -> WebLibrary.SnapshotStorageEntry {
+        WebLibrary.SnapshotStorageEntry(
+            key: key,
+            url: record.url,
+            title: record.title,
+            saved: record.saved,
+            hasAnnotations: !record.annotations.isEmpty,
+            lastOpened: WebLibrary.parseRfc3339(record.openedAt)
+                ?? WebLibrary.parseRfc3339(record.savedAt),
+            byteSize: bytes)
+    }
+
+    private static func removeDerivedLocalArtifacts() {
+        let fm = FileManager.default
+        try? fm.removeItem(
+            at: WebLibrary.storeDir.appendingPathComponent("archives", isDirectory: true))
+        guard let names = try? fm.contentsOfDirectory(atPath: WebLibrary.storeDir.path) else {
+            return
+        }
+        for name in names where name.hasSuffix(".snapshot.html") || name.hasSuffix(".vellumweb") {
+            try? fm.removeItem(at: WebLibrary.storeDir.appendingPathComponent(name))
+        }
     }
 
     private static func encodeRecord(_ record: WebPageRecord) throws -> Data {

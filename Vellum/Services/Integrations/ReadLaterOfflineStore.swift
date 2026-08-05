@@ -34,9 +34,14 @@ protocol ReadLaterOfflineStoring: Sendable {
 
 struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
     private let engine: IntegrationsSyncEngine
+    private let storage: WebLibraryStorage
 
-    init(engine: IntegrationsSyncEngine) {
+    init(
+        engine: IntegrationsSyncEngine,
+        storage: WebLibraryStorage = WebLibraryStorage()
+    ) {
         self.engine = engine
+        self.storage = storage
     }
 
     // MARK: - Presence
@@ -47,9 +52,7 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
             return await engine.existingRoute(for: item) != nil
         case .article:
             guard let key = Self.pageKey(for: item) else { return false }
-            return await Task.detached(priority: .utility) {
-                WebLibrary.hasLocalSnapshot(forKey: key)
-            }.value
+            return await storage.hasLocalSnapshot(forKey: key)
         case .epub, .video, .other:
             return false
         }
@@ -105,20 +108,18 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
             assetsSkipped: captured.skipped)
         let assets = captured.assets.map { ($0.name, $0.bytes) }
         let snapshotHtml = captured.html
-        return try await Task.detached(priority: .utility) {
+        try await Task.detached(priority: .utility) {
             try WebArchive.installArchiveDir(
                 key: key, snapshotHtml: snapshotHtml, assets: assets, manifest: manifest)
-            // A record, but NOT a saved one: the sidecar is where a later
-            // highlight is written, and its existence is what lets the
-            // exemption check below see that highlight.
-            try? WebLibrary.withRecord(
-                url: normalized, recordPath: WebLibrary.recordPath(forKey: key)
-            ) { record in
-                record.url = normalized
-                if record.title == nil { record.title = title }
-            }
-            return Int(WebLibrary.snapshotArtifactsSize(forKey: key))
         }.value
+        // A record, but NOT a saved one: the sidecar is where a later
+        // highlight is written, and its existence is what lets the exemption
+        // check below see that highlight.
+        try? await storage.mutateRecord(url: normalized, key: key) { record in
+            record.url = normalized
+            if record.title == nil { record.title = title }
+        }
+        return Int(await storage.snapshotArtifactsSize(forKey: key))
     }
 
     // MARK: - Exemption
@@ -127,12 +128,16 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
         switch item.kind {
         case .article:
             guard let key = Self.pageKey(for: item) else { return false }
-            return await Task.detached(priority: .utility) {
-                guard let record = WebLibrary.loadRecord(forKey: key) else { return false }
-                // `saved` counts as well as annotations: "Keep Offline" is the
-                // user saying keep it, and annotating promotes to saved anyway.
-                return record.saved || !record.annotations.isEmpty
-            }.value
+            let record: WebPageRecord?
+            do {
+                record = try await storage.loadRecordStrict(forKey: key)
+            } catch {
+                return true
+            }
+            guard let record else { return false }
+            // `saved` counts as well as annotations: "Keep Offline" is the
+            // user saying keep it, and annotating promotes to saved anyway.
+            return record.saved || !record.annotations.isEmpty
         case .pdf:
             guard case .file(let url)? = await engine.existingRoute(for: item) else { return false }
             return await Task.detached(priority: .utility) {
@@ -164,19 +169,21 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
                 let normalized = try? WebUrl.normalize(item.sourceURL.absoluteString)
             else { return false }
             guard !openDocumentPaths.contains(normalized) else { return false }
-            return await Task.detached(priority: .utility) {
-                // Defensive second gate. The prefetcher reconciles exemptions
-                // immediately before every sweep, so an annotated page should
-                // never reach this line; if one does, refusing keeps it tracked
-                // and the next reconcile exempts it for good.
-                if let record = WebLibrary.loadRecord(forKey: key),
-                    record.saved || !record.annotations.isEmpty
-                {
-                    return false
-                }
-                WebLibrary.removeLocalSnapshots(forKey: key)
-                return true
-            }.value
+            // Defensive second gate. The prefetcher reconciles exemptions
+            // immediately before every sweep, so an annotated page should
+            // never reach this line; if one does, refusing keeps it tracked.
+            let record: WebPageRecord?
+            do {
+                record = try await storage.loadRecordStrict(forKey: key)
+            } catch {
+                return false
+            }
+            if let record,
+               record.saved || !record.annotations.isEmpty {
+                return false
+            }
+            await storage.removeLocalSnapshots(forKey: key)
+            return !(await storage.hasLocalSnapshot(forKey: key))
         case .epub, .video, .other:
             return true
         }
@@ -201,15 +208,18 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
                 !openDocumentPaths.contains(normalized)
             else { return false }
             let key = WebLibrary.pageKey(normalized)
-            removedLocatedArtifact = await Task.detached(priority: .utility) {
-                if let record = WebLibrary.loadRecord(forKey: key),
-                    record.saved || !record.annotations.isEmpty
-                {
-                    return false
-                }
-                WebLibrary.removeLocalSnapshots(forKey: key)
-                return true
-            }.value
+            let record: WebPageRecord?
+            do {
+                record = try await storage.loadRecordStrict(forKey: key)
+            } catch {
+                return false
+            }
+            if let record,
+               record.saved || !record.annotations.isEmpty {
+                return false
+            }
+            await storage.removeLocalSnapshots(forKey: key)
+            removedLocatedArtifact = !(await storage.hasLocalSnapshot(forKey: key))
             guard removedLocatedArtifact else { return false }
         }
 

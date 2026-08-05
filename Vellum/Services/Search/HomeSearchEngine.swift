@@ -49,10 +49,12 @@ actor HomeSearchEngine {
     /// so a local copy of an article always wins the dedupe over the remote
     /// one); it isn't listed here because its corpus arrives from
     /// `IntegrationsStore`, not from disk.
-    static func defaultProviders() -> [any HomeSearchProvider] {
+    static func defaultProviders(
+        storage: WebLibraryStorage = WebLibraryStorage()
+    ) -> [any HomeSearchProvider] {
         [
             RecentDocumentsSearchProvider(),
-            SavedWebpagesSearchProvider(),
+            SavedWebpagesSearchProvider(load: { try await storage.listSaved() }),
             LibraryDocumentsSearchProvider(),
         ]
     }

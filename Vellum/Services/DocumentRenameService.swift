@@ -93,6 +93,41 @@ enum DocumentRenameService {
         return wrote
     }
 
+    /// Production variant: web sidecars cross the coordinated async gateway,
+    /// while PDF metadata and the device-local recents list retain their
+    /// existing stores.
+    @discardableResult
+    static func apply(
+        _ target: Target,
+        title: String?,
+        storage: WebLibraryStorage
+    ) async -> Bool {
+        var wrote = false
+
+        if let key = target.storageKey,
+           await Task.detached(priority: .userInitiated, operation: {
+               DocumentDataStore.setTitle(forKey: key, title: title)
+           }).value {
+            wrote = true
+        }
+
+        if target.kind == .web,
+           (try? await storage.setTitle(rawUrl: target.locator, title: title)) != nil {
+            wrote = true
+        }
+
+        if let recorded = target.recordedPath {
+            let changed = await Task.detached(priority: .userInitiated) {
+                let before = RecentFilesService.getRecent()
+                let after = RecentFilesService.updateTitle(path: recorded, title: title)
+                return before != after
+            }.value
+            if changed { wrote = true }
+        }
+
+        return wrote
+    }
+
     /// The normalized title actually stored: trimmed, and nil when blank.
     ///
     /// Blank means "stop overriding", not "the title is the empty string" — an

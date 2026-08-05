@@ -70,9 +70,10 @@ final class IntegrationsStore {
     /// notice they belong to so a newer toast can cancel the older one's timer.
     @ObservationIgnored private var noticeExpiries: [ReadLaterItem.ID: (sequence: Int, task: Task<Void, Never>)] = [:]
 
-    init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60, prefetcher: ReadLaterPrefetcher? = nil) {
+    init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60, prefetcher: ReadLaterPrefetcher? = nil, webLibraryStorage: WebLibraryStorage = WebLibraryStorage()) {
         self.engine = engine; self.thumbnails = thumbnails; self.scheduler = scheduler; self.now = now; self.refreshInterval = refreshInterval; self.staleInterval = staleInterval
-        self.prefetcher = prefetcher ?? ReadLaterPrefetcher(offline: IntegrationsOfflineStore(engine: engine))
+        self.prefetcher = prefetcher ?? ReadLaterPrefetcher(
+            offline: IntegrationsOfflineStore(engine: engine, storage: webLibraryStorage))
         providers = Dictionary(uniqueKeysWithValues: IntegrationProvider.allCases.map { ($0, .init(provider: $0, connection: .disconnected, items: [], collections: [], lastSuccessfulSync: nil, lastFullSweep: nil, skippedRecordCount: 0, statusMessage: nil)) })
     }
     convenience init() { self.init(engine: IntegrationsSyncEngine()) }

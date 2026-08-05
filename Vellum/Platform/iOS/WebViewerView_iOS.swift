@@ -425,6 +425,12 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private var processReloadedUrl: String?
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
+    @ObservationIgnored private let storage: WebLibraryStorage
+
+    init(storage: WebLibraryStorage = WebLibraryStorage()) {
+        self.storage = storage
+        super.init()
+    }
 
     @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
     var webView: VellumWebView { _webView }
@@ -449,7 +455,7 @@ final class WebViewerController_iOS: NSObject {
 
     private func makeWebView() -> VellumWebView {
         let configuration = WKWebViewConfiguration()
-        let schemeHandler = VellumWebSchemeHandler()
+        let schemeHandler = VellumWebSchemeHandler(storage: storage)
         configuration.setURLSchemeHandler(
             schemeHandler, forURLScheme: VellumWebSchemeHandler.scheme)
         configuration.setURLSchemeHandler(

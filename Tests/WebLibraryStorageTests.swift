@@ -511,4 +511,41 @@ final class WebLibraryStorageTests: XCTestCase {
         let record = await storage.loadRecord(forKey: key)
         XCTAssertEqual(Set(record?.annotations.map(\.id) ?? []), Set(["a", "b", "c", "d"]))
     }
+
+    func testCoordinatedStorageInventoryAndClearUseContainer() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/inventory"
+        let key = WebLibrary.pageKey(url)
+        var record = WebPageRecord(url: url)
+        record.saved = true
+        record.title = "Inventory"
+        let recordData = try WebLibrary.jsonEncoderPretty.encode(record)
+        container.seed(
+            layout.recordsDir.appendingPathComponent("\(key).json"),
+            data: recordData)
+        let archiveData = Data("archive bytes".utf8)
+        container.seed(
+            layout.archivesDir.appendingPathComponent("Inventory.vellumweb"),
+            data: archiveData)
+        var index = WebArchiveIndex.Contents()
+        index.entries[key] = "Inventory.vellumweb"
+        container.seed(
+            layout.indexPath!,
+            data: try WebLibrary.jsonEncoderPretty.encode(index))
+
+        let entries = await storage.listSnapshotStorage()
+        let recordBytes = await storage.totalRecordBytes()
+        XCTAssertEqual(entries.map(\.key), [key])
+        XCTAssertEqual(entries.first?.byteSize, Int64(archiveData.count))
+        XCTAssertEqual(recordBytes, Int64(recordData.count))
+
+        await storage.removeAllSnapshotArtifacts()
+
+        XCTAssertNil(container.peek(
+            layout.archivesDir.appendingPathComponent("Inventory.vellumweb")))
+        XCTAssertNil(container.peek(layout.indexPath!))
+        XCTAssertNotNil(container.peek(
+            layout.recordsDir.appendingPathComponent("\(key).json")))
+        XCTAssertGreaterThanOrEqual(container.coordinatedRemoveCount, 2)
+    }
 }

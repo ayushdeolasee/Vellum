@@ -43,7 +43,7 @@ private struct PhoneShellRoot_iOS: View {
     /// rebuilt — three disk walks and a re-index — each time the user came back
     /// from reading, which on a phone is constantly. Held here it outlives the
     /// route and a return to Home is a repaint.
-    @State private var homeSearch = HomeSearchStore()
+    @State private var homeSearch: HomeSearchStore
 
     @State private var addWebpagePresented = false
     @State private var isImporting = false
@@ -61,6 +61,7 @@ private struct PhoneShellRoot_iOS: View {
     init(workspace: WorkspaceStore) {
         self.workspace = workspace
         _shell = State(initialValue: PhoneShellStore(workspace: workspace))
+        _homeSearch = State(initialValue: workspace.focusedPane.homeSearch)
     }
 
     /// The one pane. `.singlePane` means `focusedPane` can never change out

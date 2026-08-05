@@ -130,7 +130,11 @@ struct PaneView_iOS: View {
             // open on the library (`AppStore.closeTab` -> `paneDidEmpty`). The
             // ForEach below would render an empty ZStack here, so this case has
             // to be spelled out — there is no tab to host it.
-            WelcomeLibrary_iOS(onOpen: requestOpenFile, onAddWebpage: requestAddWebpage, compact: true)
+            WelcomeLibrary_iOS(
+                onOpen: requestOpenFile,
+                onAddWebpage: requestAddWebpage,
+                compact: true,
+                store: pane.homeSearch)
         } else if app.document == nil {
             // Active start tab: the library, inside the pane.
             //
@@ -139,7 +143,11 @@ struct PaneView_iOS: View {
             // and an invisible one must not. On iPad the start tab's home
             // surface is the full-pane library, which is pane-scoped rather than
             // tab-scoped, so it stays here and no host is built for a start tab.
-            WelcomeLibrary_iOS(onOpen: requestOpenFile, onAddWebpage: requestAddWebpage, compact: true)
+            WelcomeLibrary_iOS(
+                onOpen: requestOpenFile,
+                onAddWebpage: requestAddWebpage,
+                compact: true,
+                store: pane.homeSearch)
         } else {
             // Keep the reader chrome as one layout unit. Returning these views
             // as separate ViewBuilder children caused the outer max-height

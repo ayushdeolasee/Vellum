@@ -76,6 +76,9 @@ final class WorkspaceStore {
     /// container; iCloud mode owns exactly one container and one conflict
     /// consumer through this service.
     @ObservationIgnored let storageCoordinator: StorageCoordinator
+    /// The web-library gateway paired with `storageCoordinator`. Production
+    /// callers share it so record and index mutations serialize app-wide.
+    @ObservationIgnored let webLibraryStorage: WebLibraryStorage
 
     /// Closed tabs' in-flight teardowns, shared by every pane's AppStore so a
     /// reopen or Save As in one pane waits out a close started in another —
@@ -313,7 +316,8 @@ final class WorkspaceStore {
     /// sweeper.
     func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
         liveTabRuntimes[tabId] ?? {
-            let created = LiveTabRuntime(tabId: tabId)
+            let created = LiveTabRuntime(
+                tabId: tabId, webLibraryStorage: webLibraryStorage)
             liveTabRuntimes[tabId] = created
             return created
         }()
@@ -372,6 +376,7 @@ final class WorkspaceStore {
         layout: PaneLayoutCapability = .splitScreen,
         positions: DocumentPositionService = DocumentPositionService(),
         storageCoordinator: StorageCoordinator = StorageCoordinator(),
+        webLibraryStorage: WebLibraryStorage? = nil,
         documentAccess: DocumentAccessResolver = .live
     ) {
         self.residency = residency
@@ -380,9 +385,12 @@ final class WorkspaceStore {
         self.layout = layout
         self.positions = positions
         self.storageCoordinator = storageCoordinator
+        let webLibraryStorage = webLibraryStorage
+            ?? WebLibraryStorage(coordinator: storageCoordinator)
+        self.webLibraryStorage = webLibraryStorage
         self.documentAccess = documentAccess
         if let manager = sessions as? DocumentSessionManager {
-            manager.webBackend.storage = WebLibraryStorage(coordinator: storageCoordinator)
+            manager.webBackend.storage = webLibraryStorage
         }
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
@@ -394,7 +402,8 @@ final class WorkspaceStore {
         self.chatgptAuth = auth
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
-            openRouterCatalog: catalog, chatgptAuth: auth)
+            openRouterCatalog: catalog, chatgptAuth: auth,
+            webLibraryStorage: webLibraryStorage)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
         // `self` is fully initialized now: give the pane its workspace back-ref.
@@ -499,7 +508,8 @@ final class WorkspaceStore {
     private func makePane(startTab: Bool) -> PaneModel {
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
-            openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth)
+            openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth,
+            webLibraryStorage: webLibraryStorage)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
         return pane

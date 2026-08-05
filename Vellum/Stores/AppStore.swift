@@ -364,9 +364,14 @@ final class AppStore {
         // `apply` reports whether it wrote anything. The in-memory update below
         // is what the UI reads either way, so the result is intentionally
         // discarded — named here so it isn't an unused-expression warning.
-        _ = await Task.detached(priority: .userInitiated) {
-            DocumentRenameService.apply(target, title: normalized)
-        }.value
+        if let storage = workspace?.webLibraryStorage {
+            _ = await DocumentRenameService.apply(
+                target, title: normalized, storage: storage)
+        } else {
+            _ = await Task.detached(priority: .userInitiated) {
+                DocumentRenameService.apply(target, title: normalized)
+            }.value
+        }
 
         var updated = document
         updated.title = normalized

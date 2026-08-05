@@ -134,18 +134,20 @@ struct SavedWebpagesSearchProvider: HomeSearchProvider {
     let id = "webpages"
     let displayName = "Saved webpages"
 
-    private let load: @Sendable () -> [WebLibraryEntry]
+    private let load: @Sendable () async throws -> [WebLibraryEntry]
 
     /// Reads `WebLibrary` directly rather than going through
     /// `SessionService.listSavedWebpages()`: that method's only job is to hop
     /// the same call off the main thread, and this provider is already off it.
-    init(load: @escaping @Sendable () -> [WebLibraryEntry] = { WebLibrary.listSaved() }) {
+    init(load: @escaping @Sendable () async throws -> [WebLibraryEntry] = {
+        WebLibrary.listSaved()
+    }) {
         self.load = load
     }
 
     func items(matching _: String) async throws -> [HomeSearchItem] {
         let now = Date()
-        return load().map { entry in
+        return try await load().map { entry in
             let name = RecentFilesService.webpageDisplayName(for: entry.url)
             let title = HomeSearchItemBuilder.title(entry.title, fallback: name)
             let date = WebLibrary.parseRfc3339(entry.savedAt)
