@@ -199,6 +199,7 @@
 		A40D6A592F5445FE2DB7788B /* DocumentExportActions_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E27C5349B9DFE95B31A08AE /* DocumentExportActions_iOS.swift */; };
 		A445248BDE2A02BA8D905926 /* HomeResultViews_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F834FB8760337F67C69FCE /* HomeResultViews_iOS.swift */; };
 		A53C7337EE653AC598D9FD13 /* ScratchDefaultsTrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AF164F3710054DE83B01BD6 /* ScratchDefaultsTrait.swift */; };
+		A5ABD7F007FBF5DE2358B373 /* CoordinatedPositionStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F0600EC2BCA1DCC7A02C186 /* CoordinatedPositionStorageTests.swift */; };
 		A5E5A42BE09B4A7911646AFF /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723EC058218A6DF8D994CC26 /* UpdateChecker.swift */; };
 		A5E81D63CD3B19716028FF80 /* UITestLaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */; };
 		A621DD544ED35968DE4D0C6D /* ChromeTapCatcher_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F2184C5148E76963CD7389 /* ChromeTapCatcher_iOS.swift */; };
@@ -344,6 +345,7 @@
 		0B700C5630743F12FAFB3C96 /* PdfZoomPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfZoomPolicyTests.swift; sourceTree = "<group>"; };
 		0D0C63462421A1E994C543BB /* OpenRouterCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterCatalog.swift; sourceTree = "<group>"; };
 		0E27C5349B9DFE95B31A08AE /* DocumentExportActions_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExportActions_iOS.swift; sourceTree = "<group>"; };
+		0F0600EC2BCA1DCC7A02C186 /* CoordinatedPositionStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinatedPositionStorageTests.swift; sourceTree = "<group>"; };
 		0FDE9E4FAA9229184B3BDC7F /* LiveTabViewerContract_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabViewerContract_iOS.swift; sourceTree = "<group>"; };
 		102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfGeometry.swift; sourceTree = "<group>"; };
 		13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextCacheTests.swift; sourceTree = "<group>"; };
@@ -806,6 +808,7 @@
 				C0ED1F29D936156597D0B386 /* CaptureOversizeTests.swift */,
 				901640829E3A153018E80E2C /* CaptureRecordTests.swift */,
 				227BEA6311D7E328EFCB9025 /* CompactWorkspaceTests.swift */,
+				0F0600EC2BCA1DCC7A02C186 /* CoordinatedPositionStorageTests.swift */,
 				5A5DD549A406B0F92F0CC6B8 /* DocumentAccessBookmarkStoreTests.swift */,
 				717C1543B2E8976D6267F8A5 /* DocumentActionsTests.swift */,
 				E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */,
@@ -1593,6 +1596,7 @@
 				3BD832551E4B2F9143763C3C /* CaptureRecordTests.swift in Sources */,
 				89E3026802FF4B000AE55B5A /* CaptureTestSupport.swift in Sources */,
 				AEF4510535C861EEF49E9952 /* CompactWorkspaceTests.swift in Sources */,
+				A5ABD7F007FBF5DE2358B373 /* CoordinatedPositionStorageTests.swift in Sources */,
 				78A99602D6C7EDD3EA7FD7F1 /* DocumentAccessBookmarkStoreTests.swift in Sources */,
 				E43B370B9FE717B8FBDB16F4 /* DocumentActionsTests.swift in Sources */,
 				252A859CBF3B6F40740EC8BB /* DocumentDataStoreTests.swift in Sources */,

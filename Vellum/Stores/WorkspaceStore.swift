@@ -374,7 +374,7 @@ final class WorkspaceStore {
         sessions: SessionService, integrations: IntegrationsStore = IntegrationsStore(),
         residency: TabResidencyManager = TabResidencyManager(),
         layout: PaneLayoutCapability = .splitScreen,
-        positions: DocumentPositionService = DocumentPositionService(),
+        positions: DocumentPositionService? = nil,
         storageCoordinator: StorageCoordinator = StorageCoordinator(),
         webLibraryStorage: WebLibraryStorage? = nil,
         documentAccess: DocumentAccessResolver = .live
@@ -383,8 +383,9 @@ final class WorkspaceStore {
         self.sessions = sessions
         self.integrations = integrations
         self.layout = layout
-        self.positions = positions
         self.storageCoordinator = storageCoordinator
+        self.positions = positions ?? DocumentPositionService(
+            storage: CoordinatedPositionStorage(coordinator: storageCoordinator))
         let webLibraryStorage = webLibraryStorage
             ?? WebLibraryStorage(coordinator: storageCoordinator)
         self.webLibraryStorage = webLibraryStorage

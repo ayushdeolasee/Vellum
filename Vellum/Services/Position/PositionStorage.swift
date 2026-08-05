@@ -130,6 +130,86 @@ struct FilePositionStorage: PositionStorage {
     }
 }
 
+/// Routes position records through the app's active storage context. Local and
+/// custom-folder modes keep the proven direct adapter above; iCloud discovers
+/// peer records through metadata and coordinates every byte read and replace.
+struct CoordinatedPositionStorage: PositionStorage {
+    let coordinator: StorageCoordinator
+
+    func loadAll() async -> [PositionDeviceRecord] {
+        (try? await coordinator.withStorageContext { context in
+            switch context {
+            case .direct:
+                return await FilePositionStorage().loadAll()
+            case .coordinated(let container, let layout):
+                return try await loadAll(
+                    from: Self.positionsRoot(for: layout),
+                    container: container)
+            }
+        }) ?? []
+    }
+
+    func write(_ record: PositionDeviceRecord) async throws {
+        try await coordinator.withStorageContext { context in
+            switch context {
+            case .direct:
+                try await FilePositionStorage().write(record)
+            case .coordinated(let container, let layout):
+                let root = Self.positionsRoot(for: layout)
+                let url = root.appendingPathComponent(
+                    PositionLayout.fileName(for: record.deviceID, version: record.schemaVersion))
+                let bytes = try PositionCoding.encoder.encode(record)
+                try await container.replace(url, with: bytes)
+            }
+        }
+    }
+
+    private func loadAll(
+        from root: URL,
+        container: any SyncedContainer
+    ) async throws -> [PositionDeviceRecord] {
+        let items = try await container.list(
+            root,
+            matching: SyncedItemFilter(fileExtension: "json", readyOnly: true))
+        var records: [PositionDeviceRecord] = []
+        for item in items {
+            guard let parsed = PositionLayout.parseFileName(item.name) else { continue }
+            do {
+                var record = try await container.read(item.url) { data in
+                    try PositionCoding.decoder.decode(PositionDeviceRecord.self, from: data)
+                }
+                record.fileNameVersion = parsed.version
+                if parsed.version != record.schemaVersion {
+                    try await quarantine(item.url, in: root, container: container)
+                }
+                records.append(record)
+            } catch {
+                try? await quarantine(item.url, in: root, container: container)
+            }
+        }
+        return records
+    }
+
+    private func quarantine(
+        _ source: URL,
+        in root: URL,
+        container: any SyncedContainer
+    ) async throws {
+        let bytes = try await container.data(at: source)
+        let destination = root
+            .appendingPathComponent("quarantine", isDirectory: true)
+            .appendingPathComponent(source.lastPathComponent)
+        // Keep the peer's source intact. Its owner may still be able to repair
+        // or replace it, and deleting it here would propagate data loss.
+        try await container.replace(destination, with: bytes)
+    }
+
+    private static func positionsRoot(for layout: WebStorageLayout) -> URL {
+        layout.recordsDir.deletingLastPathComponent()
+            .appendingPathComponent("positions", isDirectory: true)
+    }
+}
+
 /// Tests / previews.
 final class InMemoryPositionStorage: PositionStorage, @unchecked Sendable {
     private let lock = NSLock()
