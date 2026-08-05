@@ -50,6 +50,13 @@ struct CompactWorkspaceTests {
         #expect(ShellIdiom_iOS.pad.thisDevice == "this iPad")
     }
 
+    @Test func eachIdiomCarriesItsPositionWireIdentityWithoutReadingDefaults() {
+        #expect(ShellIdiom_iOS.phone.deviceName == "iPhone")
+        #expect(ShellIdiom_iOS.phone.positionPlatform == "ios")
+        #expect(ShellIdiom_iOS.pad.deviceName == "iPad")
+        #expect(ShellIdiom_iOS.pad.positionPlatform == "ipados")
+    }
+
     #if DEBUG
     /// `VELLUM_FORCE_SHELL` is what lets a QA run drive the phone shell on an
     /// iPad simulator (and lets this suite exercise the branch the host device

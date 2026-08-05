@@ -92,6 +92,14 @@ enum ShellIdiom_iOS: String, Sendable, CaseIterable {
     /// distinguishing local storage from iCloud.
     var thisDevice: String { "this \(deviceName)" }
 
+    /// Wire-format platform label for this device's position record.
+    var positionPlatform: String {
+        switch self {
+        case .phone: "ios"
+        case .pad: "ipados"
+        }
+    }
+
     /// How much native tab state this idiom's residency policy may hold.
     var residencyBudget: TabResidencyBudget {
         switch self {

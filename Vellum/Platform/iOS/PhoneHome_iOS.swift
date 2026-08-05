@@ -48,6 +48,7 @@ struct PhoneHome_iOS: View {
     var onOpen: () -> Void
     var onAddWebpage: () -> Void
     var onShowTabs: () -> Void
+    var onDocumentOpened: () -> Void
 
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
@@ -57,6 +58,7 @@ struct PhoneHome_iOS: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var actions: HomeLibraryActions_iOS
+    @State private var continueReading: [ContinueReadingItem] = []
     @State private var showSettings = false
     @State private var showHelp = false
     @FocusState private var searchFocused: Bool
@@ -66,13 +68,15 @@ struct PhoneHome_iOS: View {
         focusSearch: Binding<Bool>,
         onOpen: @escaping () -> Void,
         onAddWebpage: @escaping () -> Void,
-        onShowTabs: @escaping () -> Void
+        onShowTabs: @escaping () -> Void,
+        onDocumentOpened: @escaping () -> Void
     ) {
         self.store = store
         _focusSearch = focusSearch
         self.onOpen = onOpen
         self.onAddWebpage = onAddWebpage
         self.onShowTabs = onShowTabs
+        self.onDocumentOpened = onDocumentOpened
         _actions = State(initialValue: HomeLibraryActions_iOS(store: store))
     }
 
@@ -110,7 +114,7 @@ struct PhoneHome_iOS: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
-        .task { await store.load() }
+        .task { await reloadLibrary() }
         // One driver for every input that invalidates the results (query,
         // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
         // which is exactly the debounce semantics we want while typing.
@@ -123,13 +127,17 @@ struct PhoneHome_iOS: View {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             await store.updateReadLater(integrations.searchableItems)
+            await reloadContinueReading()
         }
         // Re-index when the app comes back to the front: the corpus is a
         // snapshot of on-disk sources, and a Files.app move or the Storage pane
         // can change all of them while Vellum is backgrounded.
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            Task { await store.load() }
+            Task { await reloadLibrary() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumCapturedLibraryChanged)) { _ in
+            Task { await reloadLibrary() }
         }
         // `initial: true` covers the case the binding exists for: the request
         // was raised in the reader and this screen is only now being built, so
@@ -343,6 +351,10 @@ struct PhoneHome_iOS: View {
     private var resultList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                if showsContinueReading {
+                    continueReadingSection
+                }
+
                 if let link = store.linkSuggestion {
                     HomeLinkActionRow(
                         url: link,
@@ -388,6 +400,50 @@ struct PhoneHome_iOS: View {
         // no room for a "Done" bar over the list.
         .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("phone.home.results")
+    }
+
+    /// Cross-device position entries are intentionally separate from the
+    /// legacy Recents rows below. They use the merged position store, so the
+    /// first row can be a page last read on the Mac even when this phone has
+    /// never opened it. Search and explicit filters hide this shelf so those
+    /// modes contain only the answer the reader asked for.
+    private var showsContinueReading: Bool {
+        !store.isSearching && store.filter == .all && !continueReading.isEmpty
+    }
+
+    private var continueReadingSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Continue Reading")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .kerning(0.4)
+                Text("\(continueReading.count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.mutedForeground.opacity(0.7))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(palette.mutedForeground)
+            .padding(.horizontal, HomeLayout.rowInset)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+            .accessibilityIdentifier("phone.home.continueReading.header")
+            .accessibilityLabel(
+                continueReading.count == 1
+                    ? "Continue Reading, 1 item"
+                    : "Continue Reading, \(continueReading.count) items")
+
+            ForEach(continueReading) { item in
+                ContinueReadingRow_iOS(item: item) { open(item.document) }
+            }
+
+            Divider()
+                .padding(.horizontal, HomeLayout.rowInset)
+                .padding(.top, 8)
+        }
     }
 
     /// Two different "nothing here" messages, because they need two different
@@ -570,6 +626,22 @@ struct PhoneHome_iOS: View {
         }
     }
 
+    private func reloadLibrary() async {
+        await store.load()
+        await reloadContinueReading()
+    }
+
+    private func reloadContinueReading() async {
+        // Resolve before limiting. The newest merged records can legitimately
+        // belong to documents that are not present on this phone, so fetching
+        // an arbitrary prefix can leave fewer than three rows even though
+        // older, locally openable records exist.
+        let recents = await workspace.positions.store.recents(limit: Int.max)
+        guard !Task.isCancelled else { return }
+        continueReading = ContinueReadingResolver.resolve(
+            recents, in: store.corpusItems, limit: 3)
+    }
+
     private func open(_ item: HomeSearchItem) {
         guard !appStore.isLoading else { return }
         // A read-later hit opens the way it would from the account's own list:
@@ -586,12 +658,18 @@ struct PhoneHome_iOS: View {
             for: item.target, resolveExisting: DocumentImport.resolveExistingPath
         ) {
         case .url(let url):
-            Task { await appStore.openUrl(url) }
+            Task {
+                await appStore.openUrl(url)
+                documentDidOpenIfSuccessful()
+            }
         case .file(let path, let staleRecentPath):
             if let staleRecentPath {
                 _ = RecentFilesService.remove(path: staleRecentPath)
             }
-            Task { await appStore.openFiles(paths: [path]) }
+            Task {
+                await appStore.openFiles(paths: [path])
+                documentDidOpenIfSuccessful()
+            }
         }
     }
 
@@ -605,13 +683,26 @@ struct PhoneHome_iOS: View {
             case .web(let url): await appStore.openUrl(url.absoluteString)
             case .file(let url): await appStore.openFiles(paths: [url.path])
             }
+            documentDidOpenIfSuccessful()
         }
     }
 
     private func openLink(_ link: String) {
         guard !appStore.isLoading else { return }
         store.query = ""
-        Task { await appStore.openUrl(link) }
+        Task {
+            await appStore.openUrl(link)
+            documentDidOpenIfSuccessful()
+        }
+    }
+
+    /// Opening can reactivate an already-mounted tab without changing the
+    /// document value. Judge the completed operation by the store's resulting
+    /// state rather than by observing a value transition, and never leave Home
+    /// when the attempted open reported an error.
+    private func documentDidOpenIfSuccessful() {
+        guard appStore.document != nil, appStore.error == nil else { return }
+        onDocumentOpened()
     }
 
     /// The phone's answer to "Show in Finder". Only offered when the file is
@@ -619,6 +710,72 @@ struct PhoneHome_iOS: View {
     private func shareTarget(for item: HomeSearchItem) -> String? {
         guard item.canRevealInFinder, case .file(let path, _) = item.target else { return nil }
         return path
+    }
+}
+
+/// A compact, full-width handoff row. It deliberately names both the position
+/// and the source device: "Page 42" is the resumption promise, while "From
+/// Ayush's Mac" explains why a document the phone has never opened is here.
+private struct ContinueReadingRow_iOS: View {
+    let item: ContinueReadingItem
+    let open: () -> Void
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 12) {
+                Image(systemName: item.document.systemImage)
+                    .font(.system(size: 15))
+                    .foregroundStyle(palette.primary)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        palette.primary.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: Radius.md))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(palette.foreground)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    HStack(spacing: 5) {
+                        if !item.progressLabel.isEmpty {
+                            Text(item.progressLabel)
+                        }
+                        if !item.progressLabel.isEmpty, item.deviceLabel != nil {
+                            Text("·").accessibilityHidden(true)
+                        }
+                        if let device = item.deviceLabel {
+                            Text(device)
+                        }
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .padding(.horizontal, HomeLayout.rowInset)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .selectionSurface(
+                selected: false, hovering: false,
+                in: RoundedRectangle(cornerRadius: Radius.md), palette: palette)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("phone.home.continueReading.row")
+        .accessibilityLabel(item.title)
+        .accessibilityValue(
+            [item.progressLabel, item.deviceLabel].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: ", "))
     }
 }
 #endif

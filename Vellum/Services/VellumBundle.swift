@@ -424,6 +424,60 @@ enum VellumBundle {
         return failedAttachments
     }
 
+    /// Workspace-backed counterpart used by production. Every lookup and byte
+    /// mutation under `documents/<key>` goes through the coordinator; the sync
+    /// overload above is retained for direct-root tests and local-only tools.
+    @discardableResult
+    @MainActor
+    static func installSidecar(
+        _ imported: Imported,
+        forKey key: String,
+        coordinator: StorageCoordinator,
+        resolveScratchpadConflict resolveConflict: (_ title: String) -> ScratchpadDecision
+    ) async throws -> [String] {
+        if let incoming = imported.scratchpad, !incoming.isEmpty {
+            if try await DocumentDataStore.scratchpadExists(
+                forKey: key, coordinator: coordinator) == false
+            {
+                try await DocumentDataStore.saveScratchpad(
+                    forKey: key, text: incoming, coordinator: coordinator)
+            } else if try await DocumentDataStore.loadScratchpad(
+                forKey: key, coordinator: coordinator) != incoming
+            {
+                let title = imported.manifest.title ?? "this document"
+                if resolveConflict(title) == .useImported {
+                    try await DocumentDataStore.saveScratchpad(
+                        forKey: key, text: incoming, coordinator: coordinator)
+                }
+            }
+        }
+
+        var failedAttachments: [String] = []
+        if !imported.attachments.isEmpty {
+            let existingNames = try await DocumentDataStore.listAttachmentNames(
+                forKey: key, coordinator: coordinator)
+            let existingStems = Set(existingNames.map {
+                ($0 as NSString).deletingPathExtension.lowercased()
+            })
+            for (name, data) in imported.attachments {
+                let stem = (name as NSString).deletingPathExtension.lowercased()
+                if existingStems.contains(stem) { continue }
+                do {
+                    try await DocumentDataStore.saveAttachment(
+                        forKey: key, name: name, data: data, coordinator: coordinator)
+                } catch {
+                    failedAttachments.append(name)
+                }
+            }
+        }
+
+        if let incoming = imported.conversations {
+            try await mergeConversations(
+                incoming, forKey: key, coordinator: coordinator)
+        }
+        return failedAttachments
+    }
+
     /// Union the imported conversation with any local one by message id, sort by
     /// created_at, then apply the per-document caps (AiPersistence contract).
     private static func mergeConversations(_ incomingData: Data, forKey key: String) throws {
@@ -460,5 +514,35 @@ enum VellumBundle {
         guard !capped.isEmpty else { return }
         let data = try JSONEncoder().encode(capped)
         try DocumentDataStore.saveConversationsData(forKey: key, data: data)
+    }
+
+    private static func mergeConversations(
+        _ incomingData: Data,
+        forKey key: String,
+        coordinator: StorageCoordinator
+    ) async throws {
+        let incoming = AiPersistence.decodeMessages(incomingData)?.messages ?? []
+        var local: [AiMessage] = []
+        if let localData = try await DocumentDataStore.loadConversationsData(
+            forKey: key, coordinator: coordinator), !localData.isEmpty
+        {
+            guard let decoded = AiPersistence.decodeMessages(localData) else {
+                throw SessionServiceError.io(
+                    "This document's existing AI conversation couldn't be read, so the imported chat was not merged into it. The existing file was left untouched.")
+            }
+            local = decoded.messages
+        }
+        guard !incoming.isEmpty || !local.isEmpty else { return }
+
+        var seen = Set<String>()
+        var merged: [AiMessage] = []
+        for message in local + incoming where seen.insert(message.id).inserted {
+            merged.append(message)
+        }
+        merged.sort { $0.createdAt < $1.createdAt }
+        let capped = AiPersistence.limitedMessages(merged)
+        guard !capped.isEmpty else { return }
+        try await DocumentDataStore.saveConversationsData(
+            forKey: key, data: JSONEncoder().encode(capped), coordinator: coordinator)
     }
 }

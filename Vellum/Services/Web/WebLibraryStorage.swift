@@ -11,7 +11,10 @@ actor WebLibraryStorage {
         var contentModifiedAt: Date?
     }
 
-    private let coordinator: StorageCoordinator?
+    /// Shared app-level coordinator. Exposed read-only so adjacent class-B
+    /// services can join the identical lifecycle gate instead of constructing
+    /// or caching a second iCloud container.
+    nonisolated let coordinator: StorageCoordinator?
     private var heldRecordKeys: Set<String> = []
     private var recordWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var heldIndex = false

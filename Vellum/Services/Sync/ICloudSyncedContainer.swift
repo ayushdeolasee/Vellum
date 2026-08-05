@@ -142,8 +142,14 @@ actor ICloudSyncedContainer: SyncedContainer {
             try? await Task.sleep(for: .milliseconds(50))
             guard !isSuspended else { throw SyncedContainerError.unavailable }
         }
-        let items = await MainActor.run { watcher.items(in: directory) }
-        return items.filter(filter.matches).sorted { $0.name < $1.name }
+        let snapshot = await MainActor.run {
+            (isComplete: watcher.hasFinishedGathering, items: watcher.items(in: directory))
+        }
+        guard !isSuspended else { throw SyncedContainerError.unavailable }
+        guard snapshot.isComplete else {
+            throw SyncedContainerError.timedOut(directory)
+        }
+        return snapshot.items.filter(filter.matches).sorted { $0.name < $1.name }
     }
 
     // MARK: Conflicts

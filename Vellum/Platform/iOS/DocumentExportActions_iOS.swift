@@ -202,11 +202,25 @@ final class DocumentExportActions_iOS {
             documentFile = VellumBundle.safeName(name) ?? "document.pdf"
         }
 
-        let scratchpad = DocumentDataStore.loadScratchpad(forKey: pullKey)
-        let attachments = loadAttachments(forKey: pullKey)
-        let conversations = includeConversations
-            ? DocumentDataStore.loadConversationsData(forKey: pullKey)
-            : nil
+        let scratchpad: String
+        let attachments: [(name: String, data: Data)]
+        let conversations: Data?
+        if let coordinator = app.workspace?.storageCoordinator {
+            scratchpad = try await DocumentDataStore.loadScratchpad(
+                forKey: pullKey, coordinator: coordinator)
+            attachments = try await DocumentDataStore.loadAttachments(
+                forKey: pullKey, coordinator: coordinator)
+            conversations = includeConversations
+                ? try await DocumentDataStore.loadConversationsData(
+                    forKey: pullKey, coordinator: coordinator)
+                : nil
+        } else {
+            scratchpad = DocumentDataStore.loadScratchpad(forKey: pullKey)
+            attachments = loadAttachments(forKey: pullKey)
+            conversations = includeConversations
+                ? DocumentDataStore.loadConversationsData(forKey: pullKey)
+                : nil
+        }
 
         let content = VellumBundle.Content(
             kind: document.kind,

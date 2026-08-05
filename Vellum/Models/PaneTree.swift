@@ -31,6 +31,7 @@ final class PaneModel: Identifiable {
         documentAccess: DocumentAccessResolver = .live,
         openRouterCatalog: OpenRouterCatalog,
         chatgptAuth: ChatGPTAuth,
+        storageCoordinator: StorageCoordinator? = nil,
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
         self.id = id
@@ -44,7 +45,7 @@ final class PaneModel: Identifiable {
         self.app = app
         self.annotations = annotations
         self.ai = ai
-        let scratchpad = ScratchpadStore()
+        let scratchpad = ScratchpadStore(coordinator: storageCoordinator)
         scratchpad.app = app
         self.scratchpad = scratchpad
         self.homeSearch = HomeSearchStore(storage: webLibraryStorage)

@@ -2,6 +2,19 @@ import Foundation
 
 // FOUNDATION ONLY — compiled into the share extension. See CaptureRecord.swift.
 
+/// The Safari-to-extension XPC payload is undocumented and extension memory is
+/// deliberately small. One MiB is a conservative v1 ceiling: enough for long
+/// articles, bounded enough to avoid treating an undocumented transport as
+/// unlimited. The decision is pure and byte-based so an on-device probe can
+/// change one number without changing capture semantics.
+enum CaptureDOMPolicy {
+    static let maximumByteCount = 1 * 1024 * 1024
+
+    static func includes(byteCount: Int, maximumByteCount: Int = maximumByteCount) -> Bool {
+        byteCount <= maximumByteCount
+    }
+}
+
 /// The whole oversize-fallback decision, as a pure function of its arguments.
 enum CaptureRecordBuilder {
     /// `maxHTMLBytes` is a PARAMETER with no default. The real threshold is the
@@ -17,6 +30,7 @@ enum CaptureRecordBuilder {
         sourceURL: String,
         title: String?,
         outerHTML: String?,
+        reportedHTMLByteCount: Int? = nil,
         maxHTMLBytes: Int,
         now: Date,
         captureID: String = UUID().uuidString.lowercased(),
@@ -25,6 +39,21 @@ enum CaptureRecordBuilder {
         let capturedAt = CaptureTimestamp.string(from: now)
 
         guard let outerHTML else {
+            if let byteCount = reportedHTMLByteCount,
+               CaptureDOMPolicy.includes(
+                   byteCount: byteCount, maximumByteCount: maxHTMLBytes) == false {
+                // Safari's preprocessor measured the DOM but omitted it before
+                // the XPC hop. Preserve that distinction from a bare URL share.
+                return CaptureRecord(
+                    captureID: captureID,
+                    capturedAt: capturedAt,
+                    sourceURL: sourceURL,
+                    title: title,
+                    payload: .urlOnly,
+                    droppedReason: .oversize,
+                    droppedHTMLByteCount: byteCount,
+                    extensionBuild: extensionBuild)
+            }
             // No DOM was ever offered — shared from Messages, a bare URL.
             return CaptureRecord(
                 captureID: captureID,
@@ -37,7 +66,8 @@ enum CaptureRecordBuilder {
         }
 
         let byteCount = outerHTML.utf8.count
-        guard byteCount <= maxHTMLBytes else {
+        guard CaptureDOMPolicy.includes(
+            byteCount: byteCount, maximumByteCount: maxHTMLBytes) else {
             return CaptureRecord(
                 captureID: captureID,
                 capturedAt: capturedAt,

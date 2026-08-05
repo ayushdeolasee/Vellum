@@ -12,12 +12,10 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
             withIntermediateDirectories: true
         )
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
     }
 
     override func tearDownWithError() throws {
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
         try? FileManager.default.removeItem(at: temporaryDirectory)
     }
 

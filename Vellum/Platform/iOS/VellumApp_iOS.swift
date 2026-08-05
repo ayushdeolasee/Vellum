@@ -10,6 +10,7 @@ import UIKit
 /// in a `beginBackgroundTask` so the system grants time for the writes.
 @main
 struct VellumApp_iOS: App {
+    @UIApplicationDelegateAdaptor(CaptureAppDelegate.self) private var captureAppDelegate
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
     @State private var inkRegistry: InkRegistry_iOS
@@ -17,6 +18,9 @@ struct VellumApp_iOS: App {
     @State private var showWalkthrough = false
     @State private var showHelp = false
     @State private var backgroundFlushController: BackgroundFlushController
+    @State private var systemRouteHandoff: VellumSystemRouteHandoff
+    private let captureIngestion: CaptureIngestion?
+    private let widgetSnapshotPublisher: VellumWidgetSnapshotPublisher
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -27,6 +31,9 @@ struct VellumApp_iOS: App {
         let sessions = DocumentSessionManager()
         let storageCoordinator = StorageCoordinator()
         let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
+        let captureIngestion = CaptureInboxLayout.resolve().map {
+            CaptureIngestion(layout: $0, storage: webLibraryStorage)
+        }
         let integrations = IntegrationsStore(
             engine: IntegrationsSyncEngine(),
             webLibraryStorage: webLibraryStorage)
@@ -35,6 +42,12 @@ struct VellumApp_iOS: App {
         // whether the workspace may split are three consequences of the same
         // fact and must not be allowed to disagree.
         let idiom = ShellIdiom_iOS.current
+        // Position records are shared across platforms and their device label
+        // is user-facing on Continue Reading. Install the main-actor UIKit
+        // values before WorkspaceStore constructs its position service; the
+        // cross-platform model cannot safely reach into UIDevice itself.
+        DeviceIdentity.nameOverride = UIDevice.current.name
+        DeviceIdentity.platformOverride = idiom.positionPlatform
         let workspace = WorkspaceStore(
             sessions: sessions,
             integrations: integrations,
@@ -46,6 +59,20 @@ struct VellumApp_iOS: App {
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())
         _backgroundFlushController = State(initialValue: BackgroundFlushController())
+        _systemRouteHandoff = State(initialValue: .shared)
+        self.captureIngestion = captureIngestion
+        widgetSnapshotPublisher = VellumWidgetSnapshotPublisher()
+
+        // Background URLSession completion is delivered through UIApplicationDelegate,
+        // while every foreground/launch trigger below calls the same actor-owned,
+        // idempotent drain. The delegate is deliberately only a wake-up bridge.
+        CaptureAppDelegate.drainInbox = { [captureIngestion, storageCoordinator] in
+            // A background-session launch can arrive before any SwiftUI `.task`
+            // has started storage. Join the same idempotent lifecycle gate the
+            // foreground uses before asking the web-library adapter to write.
+            await storageCoordinator.start()
+            _ = await captureIngestion?.drain()
+        }
 
         // Read-later autopull's background trigger (#157). Registration has to
         // happen before the app finishes launching — BGTaskScheduler treats a
@@ -71,9 +98,35 @@ struct VellumApp_iOS: App {
                 // Startup sync. Deliberately BEFORE the detached maintenance
                 // work: start() loads the cached snapshots, so the providers'
                 // items are on screen before the TTL sweep starts churning.
-                .task { await workspace.integrations.start() }
+                .task {
+                    await workspace.integrations.start()
+                    await publishWidgetSnapshot()
+                }
+                // Publishing follows item revisions, but must not own startup.
+                // Cached snapshots bump this value while `start()` is still
+                // restoring providers; tying both jobs to one task would cancel
+                // startup before its refresh timer and stale-provider pass land.
+                .task(id: workspace.integrations.searchRevision) {
+                    await publishWidgetSnapshot()
+                }
                 .task { await launchMaintenance() }
-                .onOpenURL { url in handleIncomingFile(url) }
+                .task {
+                    await workspace.startStorageCoordinator()
+                    _ = await captureIngestion?.drain()
+                }
+                .onOpenURL { url in handleIncomingURL(url) }
+                .onChange(of: workspace.focusedPane.app.document?.pdfPath) { _, _ in
+                    Task { await publishWidgetSnapshot() }
+                }
+                .onChange(of: systemRouteHandoff.pendingRequest, initial: true) { _, request in
+                    guard let request,
+                          let route = systemRouteHandoff.consume(request.id)
+                    else { return }
+                    Task {
+                        await workspace.restoreFromDisk()
+                        _ = await VellumSystemRouteOpener.open(route, workspace: workspace)
+                    }
+                }
                 // The storage choice hands off to the walkthrough when it
                 // closes — see `launchMaintenance` for why it goes first.
                 .sheet(
@@ -153,6 +206,7 @@ struct VellumApp_iOS: App {
                 backgroundFlushController.invalidate()
                 Task { @MainActor in
                     await workspace.foregroundStorageCoordinator()
+                    _ = await captureIngestion?.drain()
                     workspace.integrations.run { await workspace.integrations.foregroundRefresh() }
                 }
             }
@@ -172,7 +226,13 @@ struct VellumApp_iOS: App {
     /// therefore listen — `ContentView_iOS` opens the files, `PhoneShell_iOS`
     /// says where they went — so the channel is never posted into a void.
     @MainActor
-    private func handleIncomingFile(_ url: URL) {
+    private func handleIncomingURL(_ url: URL) {
+        if url.scheme?.lowercased() == VellumDeepLink.scheme {
+            guard let route = VellumDeepLink.parse(url) else { return }
+            systemRouteHandoff.submit(route)
+            return
+        }
+
         Task {
             let paths = await Task.detached(priority: .userInitiated) {
                 DocumentImport.importPicked([url])
@@ -181,6 +241,12 @@ struct VellumApp_iOS: App {
             NotificationCenter.default.post(
                 name: .vellumOpenFile, object: nil, userInfo: ["paths": paths])
         }
+    }
+
+    @MainActor
+    private func publishWidgetSnapshot() async {
+        await widgetSnapshotPublisher.publish(
+            readLaterItems: workspace.integrations.searchableItems)
     }
 
     /// Launch-time TTL eviction of derived data (issue #37 PR B / issue #29):
@@ -292,7 +358,7 @@ struct VellumApp_iOS: App {
             }
             for pane in workspace.root.allLeaves() {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
-                pane.scratchpad.flush()
+                await pane.scratchpad.flush().value
                 for tab in pane.app.tabs {
                     if tab.document?.kind == .pdf {
                         try? await workspace.sessions.setDocumentMetadata(

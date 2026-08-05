@@ -42,6 +42,12 @@ final class HelpTopicSearchTests: XCTestCase {
         XCTAssertEqual(HelpTopic.search("eviction").map(\.id), ["retention"])
     }
 
+    func testPhoneWorkflowsAreDiscoverable() {
+        XCTAssertEqual(HelpTopic.search("phone chrome").map(\.id), ["phone-reader"])
+        XCTAssertEqual(HelpTopic.search("share extension").map(\.id), ["safari-share"])
+        XCTAssertTrue(HelpTopic.search("Continue Reading").map(\.id).contains("phone-home"))
+    }
+
     func testSearchIsCaseInsensitive() {
         XCTAssertEqual(HelpTopic.search("ICLOUD").map(\.id), HelpTopic.search("icloud").map(\.id))
         XCTAssertFalse(HelpTopic.search("ICLOUD").isEmpty)

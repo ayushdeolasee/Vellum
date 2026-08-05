@@ -133,7 +133,7 @@ final class DocumentsRelocationTests: XCTestCase {
         try makeDocumentFolder(in: localDocuments, key: "doc-a", note: "alpha notes")
         WebLibrary.layoutOverride = icloudLayout
 
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout))
 
         let moved = icloudLayout.documentsDir
             .appendingPathComponent("doc-a/scratchpad.md")
@@ -144,14 +144,14 @@ final class DocumentsRelocationTests: XCTestCase {
             "source folder is gone after the move")
 
         // Idempotent: nothing left to move.
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout))
     }
 
     func testRelocateLocalToCustomLeavesDocumentsLocal() throws {
         try makeDocumentFolder(in: localDocuments, key: "doc-c", note: "stays put")
         WebLibrary.layoutOverride = customLayout
 
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: customLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: customLayout))
 
         // Custom keeps documents local: source == dest documentsDir, no move.
         XCTAssertTrue(exists(localDocuments.appendingPathComponent("doc-c/scratchpad.md")))
@@ -163,11 +163,11 @@ final class DocumentsRelocationTests: XCTestCase {
     func testRelocateBackRegeneratesLocalAndCleansUp() throws {
         try makeDocumentFolder(in: localDocuments, key: "doc-b", note: "round trip")
         WebLibrary.layoutOverride = icloudLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout))
         XCTAssertTrue(exists(icloudLayout.documentsDir.appendingPathComponent("doc-b")))
 
         WebLibrary.layoutOverride = localLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: icloudLayout, to: localLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: icloudLayout, to: localLayout))
 
         XCTAssertTrue(exists(localDocuments.appendingPathComponent("doc-b/scratchpad.md")))
         // The pretty documents dir we created is cleaned up once empty.
@@ -192,7 +192,7 @@ final class DocumentsRelocationTests: XCTestCase {
             [.modificationDate: new], ofItemAtPath: dstDir.appendingPathComponent("scratchpad.md").path)
 
         WebLibrary.layoutOverride = icloudLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout))
 
         let mergedNote = dstDir.appendingPathComponent("scratchpad.md")
         XCTAssertEqual(
@@ -214,7 +214,7 @@ final class DocumentsRelocationTests: XCTestCase {
         WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
         WebLibrary.layoutOverride = icloudLayout
 
-        WebStorageMigrator.sweepAtLaunch()
+        WebStorageMigrator.sweepAtLaunchDirectForTests()
 
         XCTAssertTrue(
             exists(icloudLayout.documentsDir.appendingPathComponent("doc-resume/scratchpad.md")),
@@ -318,7 +318,7 @@ final class DocumentsRelocationTests: XCTestCase {
 
         WebLibrary.layoutOverride = icloudLayout
         XCTAssertFalse(
-            WebStorageMigrator.relocate(from: localLayout, to: icloudLayout),
+            WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout),
             "an unmaterializable folder makes relocate report not-clean")
         XCTAssertTrue(exists(srcDir), "the source folder is preserved, not moved as a stub")
         XCTAssertFalse(
@@ -327,7 +327,7 @@ final class DocumentsRelocationTests: XCTestCase {
 
         // Via the launch sweep the pending marker is kept for a later retry.
         WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
-        WebStorageMigrator.sweepAtLaunch()
+        WebStorageMigrator.sweepAtLaunchDirectForTests()
         XCTAssertNotNil(
             UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey),
             "the skipped move keeps the pending marker")
@@ -362,7 +362,7 @@ final class DocumentsRelocationTests: XCTestCase {
         }
 
         WebLibrary.layoutOverride = icloudLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: icloudLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: icloudLayout))
 
         // Newest (destination) wins; the source's older note did NOT overwrite it,
         // and there is exactly one real note — no stub left beside a rival copy.

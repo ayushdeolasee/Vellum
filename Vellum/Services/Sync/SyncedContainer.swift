@@ -32,7 +32,8 @@ protocol SyncedContainer: Sendable {
     func remove(_ url: URL) async throws
 
     /// The ONLY discovery API. Backed by a metadata query, never by directory
-    /// enumeration or an existence check.
+    /// enumeration or an existence check. A returned array is a complete
+    /// discovery snapshot; adapters throw while discovery is still incomplete.
     func list(_ directory: URL, matching filter: SyncedItemFilter) async throws -> [SyncedItem]
 
     /// Typed detection surface. Carries no merge policy of its own.

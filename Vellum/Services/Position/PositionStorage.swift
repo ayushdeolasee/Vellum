@@ -205,8 +205,7 @@ struct CoordinatedPositionStorage: PositionStorage {
     }
 
     private static func positionsRoot(for layout: WebStorageLayout) -> URL {
-        layout.recordsDir.deletingLastPathComponent()
-            .appendingPathComponent("positions", isDirectory: true)
+        layout.positionsDir
     }
 }
 

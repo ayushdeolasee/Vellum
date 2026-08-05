@@ -13,7 +13,7 @@ import ImageIO
 /// Images enter the note two ways: a drag-to-crop region snapshot of the PDF
 /// (the camera button arms `.snapshotRegion` mode over the page; the touch
 /// overlay lands in Phase 6) and external images dropped onto the panel. Both
-/// write bytes to `ScratchpadAttachmentStore` and append a lightweight
+/// stage bytes in this pane's resolver and append a lightweight
 /// `![](vellum-scratchpad://id)` reference the editor resolves through its
 /// WebView scheme handler. The iPad analogue of the macOS `ScratchpadPanel` —
 /// AppKit drag/`NSViewRepresentable`/`NSColor` become UIDropInteraction/
@@ -52,6 +52,7 @@ struct ScratchpadPanel: View {
                 palette: palette
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(!scratchpadStore.isPersistencePaused)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
@@ -78,7 +79,10 @@ struct ScratchpadPanel: View {
         // Accept any drag so a non-image drop reaches `handleDrop` and can be
         // explained, rather than silently rejected. (The WebView covers the
         // editor body; this catches drops on the header/margins.)
-        .onDrop(of: [.item], isTargeted: $dropTargeted, perform: handleDrop)
+        .onDrop(of: [.item], isTargeted: $dropTargeted) { providers in
+            guard !scratchpadStore.isPersistencePaused else { return false }
+            return handleDrop(providers)
+        }
         .sheet(isPresented: $showsExportOptions) {
             ScratchpadExportOptionsSheet(
                 suggestedTitle: documentTitle,
@@ -161,7 +165,7 @@ struct ScratchpadPanel: View {
             }
             IconButton(
                 help: "Export scratchpad as Markdown",
-                disabled: scratchpadStore.text.isEmpty,
+                disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
                 action: { showsExportOptions = true }
             ) {
                 Image(systemName: "square.and.arrow.up").font(.system(size: 15))
@@ -169,7 +173,7 @@ struct ScratchpadPanel: View {
             .accessibilityIdentifier("scratchpad.exportMarkdown")
             IconButton(
                 help: "Clear scratchpad note",
-                disabled: scratchpadStore.text.isEmpty,
+                disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
                 action: clear
             ) {
                 Image(systemName: "trash").font(.system(size: 15))
@@ -220,31 +224,36 @@ struct ScratchpadPanel: View {
         // export picker, which copies it wherever the user chooses.
         let staging = FileManager.default.temporaryDirectory
             .appendingPathComponent("scratchpad-export-\(UUID().uuidString)", isDirectory: true)
-        // Read the note and the attachments directory on the main actor, then do
+        // Snapshot this pane's staged bytes on the main actor, then do
         // every byte of work off it: a 200k-character note (the persistence cap)
         // with several megabytes of images stages, reads and copies each file
         // synchronously, which would otherwise freeze the editor mid-export.
         let markdown = scratchpadStore.text
-        // FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): becomes
-        // `ScratchpadAttachmentStore.activeDirectory` once a document's
-        // attachments live in `documents/<key>/attachments/`. Until then
-        // `activeDirectory` is always nil, so reading it here would export a
-        // note with none of its images.
-        let attachmentsDirectory: URL? = ScratchpadAttachmentStore.directory
+        let attachments = scratchpadStore.attachmentResolver.snapshot()
         do {
-            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-            let destination = ScratchpadMarkdownExporter.conflictSafeURL(
-                in: staging,
-                baseName: ScratchpadMarkdownExporter
-                    .suggestedFilename(title: options.title, in: staging)
-                    .replacingOccurrences(of: ".md", with: ""),
-                pathExtension: "md")
             let summary = try await Task.detached(priority: .userInitiated) {
-                try ScratchpadMarkdownExporter.export(
+                try FileManager.default.createDirectory(
+                    at: staging, withIntermediateDirectories: true)
+                let sourceAssets = staging.appendingPathComponent(
+                    "source-assets", isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: sourceAssets, withIntermediateDirectories: true)
+                for attachment in attachments {
+                    try attachment.data.write(
+                        to: sourceAssets.appendingPathComponent(attachment.name),
+                        options: .atomic)
+                }
+                let destination = ScratchpadMarkdownExporter.conflictSafeURL(
+                    in: staging,
+                    baseName: ScratchpadMarkdownExporter
+                        .suggestedFilename(title: options.title, in: staging)
+                        .replacingOccurrences(of: ".md", with: ""),
+                    pathExtension: "md")
+                return try ScratchpadMarkdownExporter.export(
                     markdown: markdown,
                     to: destination,
                     options: options,
-                    attachmentsDirectory: attachmentsDirectory
+                    attachmentsDirectory: sourceAssets
                 )
             }.value
             var urls = [summary.markdownURL]
@@ -529,27 +538,32 @@ func scratchpadCapture(from data: Data) -> ScratchpadImageCapture? {
         width: tw, height: th, pageNumber: nil)
 }
 
-/// Resolves `vellum-scratchpad://<id>` image requests from the editor WebView
-/// by streaming the attachment file's bytes back. Stateless — the id maps to a
-/// flat file in `ScratchpadAttachmentStore`, so it needs no document context.
+/// Resolves `vellum-scratchpad://<id>` from this pane's staged byte resolver.
+/// It never reads an iCloud documents-root URL directly.
 final class ScratchpadAttachmentSchemeHandler: NSObject, WKURLSchemeHandler {
+    private let resolver: ScratchpadAttachmentResolver
+
+    init(resolver: ScratchpadAttachmentResolver) {
+        self.resolver = resolver
+    }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else {
             task.didFailWithError(URLError(.badURL))
             return
         }
         let id = url.host ?? url.lastPathComponent
-        guard let fileURL = ScratchpadAttachmentStore.fileURL(for: id),
-              let data = try? Data(contentsOf: fileURL) else {
+        guard let attachment = resolver.attachment(for: id) else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
-        let mime = ScratchpadAttachmentStore.mediaType(forExtension: fileURL.pathExtension)
+        let ext = (attachment.name as NSString).pathExtension
+        let mime = ScratchpadAttachmentStore.mediaType(forExtension: ext)
         let response = URLResponse(
             url: url, mimeType: mime,
-            expectedContentLength: data.count, textEncodingName: nil)
+            expectedContentLength: attachment.data.count, textEncodingName: nil)
         task.didReceive(response)
-        task.didReceive(data)
+        task.didReceive(attachment.data)
         task.didFinish()
     }
 
@@ -605,6 +619,16 @@ final class ScratchpadWebView: WKWebView, UIDropInteractionDelegate {
     }
 }
 
+/// A background flush can make a queued image snippet authoritative before the
+/// WebView becomes ready. In that case `setContent` owns delivery; inserting the
+/// same queued snippet afterward would duplicate it.
+func scratchpadShouldDeliverPendingInsertion(
+    _ markdown: String,
+    authoritativeText: String
+) -> Bool {
+    !authoritativeText.contains(markdown)
+}
+
 /// CodeMirror 6 editor hosted in an offline `WKWebView`. The bundled
 /// `Resources/katex` folder holds the editor bundle, KaTeX, and marked — no
 /// network. Swift pushes content + theme in; the editor posts back `ready` and
@@ -626,7 +650,7 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
         // Serve `vellum-scratchpad://<id>` image references from disk. The
         // configuration retains the handler, so a fresh instance is fine.
         config.setURLSchemeHandler(
-            ScratchpadAttachmentSchemeHandler(),
+            ScratchpadAttachmentSchemeHandler(resolver: store.attachmentResolver),
             forURLScheme: ScratchpadAttachmentStore.scheme)
 
         let webView = ScratchpadWebView(frame: .zero, configuration: config)
@@ -753,7 +777,9 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
             if !pendingInserts.isEmpty {
                 let inserts = pendingInserts
                 pendingInserts = []
-                for markdown in inserts {
+                for markdown in inserts where scratchpadShouldDeliverPendingInsertion(
+                    markdown, authoritativeText: parent.store.text)
+                {
                     // Restart the attachment's GC exemption from the moment the
                     // snippet actually reaches the editor (issue #105). An insert
                     // requested before `ready` sits in `pendingInserts` for the

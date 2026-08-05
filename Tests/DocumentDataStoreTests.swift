@@ -3,41 +3,9 @@ import XCTest
 
 // Coverage for the per-document data store: folder-backed note round-trips, the
 // path-hash -> docId rekey, and the delete-means-delete / prune contracts.
-//
-// iPad port scope (parity-129 packet 1 §4 + packet 9 §1.4). Packet 1 lands the
-// DocumentDataStore-only half of main's suite; the rest is BLOCKED on packet 6's
-// `ScratchpadPersistence` v2 (`save(forKey:schemeText:)`, `load(forKey:)`,
-// `relativeToScheme`/`schemeToRelative`, `migrateLegacyIfNeeded`) and the
-// `ScratchpadStore` v2 it drives (`attachmentSweepTask`, `isPersistencePaused`,
-// `discardNotesForExternalDelete`, `discardAndReload`) plus
-// `ScratchpadAttachmentStore.activeDirectory` / the `collectGarbage(in:referencedIds:
-// referencedAsOf:)` signature. iPad still has the v1 legacy-blob persister.
-//
-// HELD BACK for packet 6 — re-add VERBATIM from
-// `main@7742a895:Tests/DocumentDataStoreTests.swift`, do not soften:
-//   * `testPersistenceSaveWritesRelativeAndLoadsScheme`
-//   * `testRelativeToSchemeMultipleRefs`, `testRelativeToSchemeBareRef`,
-//     `testSchemeToRelativeUsesResolvedExtension`,
-//     `testSchemeToRelativeFallsBackWhenExtensionUnknown`,
-//     `testRewritesLeaveNoRefsAndMalformedUntouched`,
-//     `testSchemeToRelativeHandlesEmojiBeforeRef`,
-//     `testSchemeToRelativeHandlesEmojiBetweenRefs`
-//   * `testLazyMigrationMovesNoteAndAttachmentAndClearsBlob`,
-//     `testMigrationWritesNoteBeforeCopyingAttachmentsAndRetries`,
-//     `testLazyMigrationCopiesSharedAttachmentForSecondNote`,
-//     `testLazyMigrationSkippedWhenScratchpadExists`
-//   * `testClearingNoteRemovesFileAttachmentAndFolder` — packet 1 §4 lists it as
-//     landing now, but its subject is `ScratchpadPersistence.save(forKey:schemeText:)`
-//     clearing a note down to nothing, which does not exist on iPad yet.
-//   * `testGCDoesNotTouchAnotherDocumentsAttachments` (needs
-//     `collectGarbage(in:referencedIds:)`)
-//   * `testStuckInICloudNotePausesPersistence`,
-//     `testDiscardNotesForExternalDeleteDoesNotResurrect`,
-//     `testDiscardAndReloadKeepsImportedNoteOverStaleText`
-//
-// RELOCATED, not dropped: `testGCSparesAttachmentsWrittenAfterTheReferenceSnapshot`
-// moves into `Tests/SafeClearTests.swift` with packet 6 (packet 9 §1.4 / packet 6
-// §4.4) — a verbatim copy here would leave it living in both files.
+// Live coordinated Scratchpad regressions live with the pane-facing attachment
+// tests in `ScratchpadImportTests`; this suite retains the direct local-folder
+// primitives and synchronous compatibility coverage.
 
 @MainActor
 final class DocumentDataStoreTests: XCTestCase {
@@ -114,19 +82,8 @@ final class DocumentDataStoreTests: XCTestCase {
 
     /// Data written into the path-hash fallback folder (pre-stamp) moves wholesale
     /// to the docId folder, attachments included, and the fallback folder is gone.
-    ///
-    /// iPad adaptation (packet 1 §4): main drives this through
-    /// `ScratchpadStore.loadForDocument`, whose implicit rekey + background
-    /// attachment sweep + scheme rewrite are `ScratchpadStore` v2 (packet 6). The
-    /// DocumentDataStore contract under test is identical when `rekey` is called
-    /// directly, so every store-level assertion below is main's, unchanged.
-    /// FOLLOW-UP (post-#129, "scratchpad onto DocumentDataStore"): restore
-    /// main's `ScratchpadStore`-driven body — `store.loadForDocument(...)` +
-    /// `await drainAttachmentSweeps()` + the
-    /// `store.text == "carried note ![x](vellum-scratchpad://<id>)"` assertion.
-    /// `ScratchpadStore.loadForDocument` cannot drive a rekey while the note
-    /// itself lives in the path-keyed UserDefaults blob rather than
-    /// `documents/<key>/scratchpad.md`.
+    /// The live coordinated path enters the same move through Scratchpad's
+    /// exclusive old-key + new-key write barrier.
     func testRekeyMovesFallbackFolderToStampedKey() throws {
         let path = "/tmp/stamp-\(UUID().uuidString).pdf"
         let pathKey = DocumentIdentity.sha256Hex(path)

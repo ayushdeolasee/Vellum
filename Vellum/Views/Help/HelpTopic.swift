@@ -67,6 +67,20 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             shortcut: "⌘L",
             keywords: ["url", "article", "link", "browser", "internet"]),
         HelpTopic(
+            id: "phone-home",
+            title: "Use Home on iPhone",
+            symbol: "house",
+            summary: "Search titles, filenames, and web addresses from Home. Open a result, add a webpage, or use Continue Reading to resume from its last saved position.",
+            shortcut: nil,
+            keywords: ["phone", "library", "search", "recent", "resume", "handoff"]),
+        HelpTopic(
+            id: "phone-reader",
+            title: "Use the iPhone reader",
+            symbol: "iphone",
+            summary: "Tap the page indicator to jump in a PDF. The bottom bar also holds bookmarks, the sticky-note tool, the inspector, open documents, and More actions.",
+            shortcut: nil,
+            keywords: ["phone", "chrome", "page", "toolbar", "controls", "jump"]),
+        HelpTopic(
             id: "new-tab",
             title: "New tab",
             symbol: "plus.rectangle.on.rectangle",
@@ -77,9 +91,9 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "switch-tabs",
             title: "Switch between tabs",
             symbol: "rectangle.on.rectangle",
-            summary: "Jump straight to a tab with ⌘1 through ⌘9, or step through them with ⌘⇧[ and ⌘⇧]. Cycling wraps around at either end.",
+            summary: "On iPhone, open the card switcher to choose or close a document; its + returns to Home to open another. With a keyboard, jump with ⌘1 through ⌘9 or cycle with ⌘⇧[ and ⌘⇧]. Cycling wraps around.",
             shortcut: "⌘1–⌘9",
-            keywords: ["cycle", "next", "previous", "navigate"]),
+            keywords: ["cycle", "next", "previous", "navigate", "phone", "cards", "close"]),
         HelpTopic(
             id: "split-right",
             title: "Split the pane right",
@@ -129,9 +143,9 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "inspector",
             title: "Show or hide the inspector",
             symbol: "sidebar.right",
-            summary: "The panel on the right holds three tabs: Annotations, AI, and Scratchpad.",
+            summary: "Annotations, AI, and Scratchpad share one inspector. It is a draggable pull-up sheet on iPhone and a side panel on iPad and Mac.",
             shortcut: "⌘⌥S",
-            keywords: ["sidebar", "panel", "annotations", "ai", "scratchpad"]),
+            keywords: ["sidebar", "panel", "sheet", "phone", "annotations", "ai", "scratchpad"]),
         HelpTopic(
             id: "scratchpad",
             title: "Scratchpad",
@@ -183,6 +197,13 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             shortcut: nil,
             keywords: ["snapshot", "archive", "library", "cache", "storage"]),
         HelpTopic(
+            id: "safari-share",
+            title: "Save from Safari",
+            symbol: "safari",
+            summary: "Share a webpage to Vellum. The extension hands it to the app, which creates the offline archive; pages over the conservative 1 MiB DOM limit fall back to fetching the shared URL.",
+            shortcut: nil,
+            keywords: ["capture", "share extension", "app group", "webpage", "offline", "xpc"]),
+        HelpTopic(
             id: "retention",
             title: "What Vellum deletes",
             symbol: "clock.arrow.circlepath",
@@ -196,9 +217,9 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             title: "Where your library lives",
             symbol: "icloud",
             // Three modes, matching WebStorageMode: .icloud / .custom / .local.
-            summary: "iCloud Drive, a folder you choose, or this iPad only. Settings ▸ Storage shows the active location and per-document usage, and moving between them relocates what is already there.",
+            summary: "Choose local storage, iCloud Drive, or a folder you control. Scratchpad notes, AI conversations, and reading positions sync in iCloud mode; builds without the iCloud entitlement stay local. Settings ▸ Storage shows the active location.",
             shortcut: nil,
-            keywords: ["icloud", "folder", "sync", "location", "move", "disk"]),
+            keywords: ["icloud", "folder", "sync", "location", "move", "disk", "entitlement", "scratchpad"]),
         HelpTopic(
             id: "export",
             title: "Export a document",

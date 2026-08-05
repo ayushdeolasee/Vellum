@@ -31,7 +31,9 @@ struct StorageCoordinatorTests {
         chosenMode: WebStorageMode?,
         storeDir: URL,
         factory: @escaping @Sendable () async -> (any SyncedContainer)?,
-        effectiveMode: @escaping @Sendable () -> WebStorageMode
+        effectiveMode: @escaping @Sendable () -> WebStorageMode,
+        conflictArchiveRegistry: StorageCoordinator.ConflictArchiveRegistry =
+            ConflictArchiveRegistryState().registry
     ) -> StorageCoordinator {
         StorageCoordinator(
             storeDir: storeDir,
@@ -41,7 +43,8 @@ struct StorageCoordinatorTests {
                 WebStorageSettings.resolveICloudRoot(environment: [:])
                 return WebStorageSettings.icloudVellumRoot
             },
-            containerFactory: factory)
+            containerFactory: factory,
+            conflictArchiveRegistry: conflictArchiveRegistry)
     }
 
     @Test("Local and custom modes never construct a synced container")
@@ -165,6 +168,335 @@ struct StorageCoordinatorTests {
 
         #expect(resolver.seenCount == 1)
         #expect(await coordinator.currentStatus().pendingConflicts == 0)
+    }
+
+    @Test("Preserved conflict archives remain coordinated for export and delete")
+    func preservedConflictArchivesCanBeRecoveredAndDeleted() async throws {
+        let storeDir = scratch("storage-conflict-archive")
+        let root = scratch("storage-root")
+        let target = url("scratchpad.md")
+        let archive = target.deletingLastPathComponent()
+            .appendingPathComponent("conflicts/scratchpad.v-loser.md")
+        let loserBytes = Data("losing notes".utf8)
+        let resolver = CountingResolver(outcomes: [
+            .success(.keptCurrent(archivedLosers: [archive]))
+        ])
+        let container = FakeSyncedContainer(resolver: resolver)
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .icloud })
+        await coordinator.start()
+
+        container.seed(target, data: Data("current notes".utf8))
+        container.seed(archive, data: loserBytes, readiness: .notDownloaded)
+        container.injectConflict(at: target, versions: [Self.current, Self.loser])
+        await resolver.waitForCount(1)
+        await coordinator.awaitQuiescence()
+
+        let descriptor = try #require(await coordinator.archivedConflicts().first)
+        let exported = try await coordinator.exportArchivedConflict(descriptor)
+        #expect(try Data(contentsOf: exported) == loserBytes)
+        #expect(container.coordinatedReadCount == 1)
+        #expect(container.materializationCount == 1)
+        #expect(container.directoryEnumerationCount == 0)
+        #expect(container.existenceCheckCount == 0)
+
+        try await coordinator.deleteArchivedConflict(descriptor)
+        #expect(container.peek(archive) == nil)
+        #expect(container.coordinatedRemoveCount == 1)
+        #expect(await coordinator.archivedConflicts().isEmpty)
+    }
+
+    @Test("Archive export participates in background drain")
+    func archiveExportDrainsBeforeSuspend() async throws {
+        let storeDir = scratch("storage-conflict-export-drain")
+        let root = scratch("storage-root")
+        let target = url("scratchpad.md")
+        let archive = target.deletingLastPathComponent()
+            .appendingPathComponent("conflicts/scratchpad.v-loser.md")
+        let resolver = CountingResolver(outcomes: [
+            .success(.keptCurrent(archivedLosers: [archive]))
+        ])
+        let base = FakeSyncedContainer(resolver: resolver)
+        let container = BlockingRecoveryContainer(base: base)
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .icloud })
+        await coordinator.start()
+
+        base.seed(target, data: Data("current".utf8))
+        base.seed(archive, data: Data("loser".utf8))
+        base.injectConflict(at: target, versions: [Self.current, Self.loser])
+        await resolver.waitForCount(1)
+        await coordinator.awaitQuiescence()
+        let descriptor = try #require(await coordinator.archivedConflicts().first)
+
+        let export = Task { try await coordinator.exportArchivedConflict(descriptor) }
+        await container.readGate.waitUntilEntered()
+        let background = Task { await coordinator.background() }
+        await waitUntil {
+            let status = await coordinator.currentStatus()
+            return status.lifecycle == .backgrounding && status.inFlightOperations == 1
+        }
+
+        #expect(base.isSuspended == false)
+        await container.readGate.release()
+        _ = try await export.value
+        let outcome = await background.value
+        #expect(outcome.drained)
+        #expect(base.isSuspended)
+    }
+
+    @Test("Archive deletion participates in background drain")
+    func archiveDeletionDrainsBeforeSuspend() async throws {
+        let storeDir = scratch("storage-conflict-delete-drain")
+        let root = scratch("storage-root")
+        let target = url("scratchpad.md")
+        let archive = target.deletingLastPathComponent()
+            .appendingPathComponent("conflicts/scratchpad.v-loser.md")
+        let resolver = CountingResolver(outcomes: [
+            .success(.keptCurrent(archivedLosers: [archive]))
+        ])
+        let base = FakeSyncedContainer(resolver: resolver)
+        let container = BlockingRecoveryContainer(base: base)
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .icloud })
+        await coordinator.start()
+
+        base.seed(target, data: Data("current".utf8))
+        base.seed(archive, data: Data("loser".utf8))
+        base.injectConflict(at: target, versions: [Self.current, Self.loser])
+        await resolver.waitForCount(1)
+        await coordinator.awaitQuiescence()
+        let descriptor = try #require(await coordinator.archivedConflicts().first)
+
+        let deletion = Task { try await coordinator.deleteArchivedConflict(descriptor) }
+        await container.removeGate.waitUntilEntered()
+        let background = Task { await coordinator.background() }
+        await waitUntil {
+            let status = await coordinator.currentStatus()
+            return status.lifecycle == .backgrounding && status.inFlightOperations == 1
+        }
+
+        #expect(base.isSuspended == false)
+        await container.removeGate.release()
+        try await deletion.value
+        let outcome = await background.value
+        #expect(outcome.drained)
+        #expect(base.isSuspended)
+    }
+
+    @Test("Preserved conflict archives are rediscovered after coordinator restart")
+    func archivedConflictsSurviveRestart() async throws {
+        let storeDir = scratch("storage-conflict-restart")
+        let root = scratch("storage-root")
+        let syncedRoot = root.appendingPathComponent("Documents/Vellum", isDirectory: true)
+        let target = syncedRoot.appendingPathComponent(
+            ".vellum/documents/key/scratchpad.md")
+        let archive = target.deletingLastPathComponent()
+            .appendingPathComponent("conflicts/scratchpad.v-loser.md")
+        let registryState = ConflictArchiveRegistryState()
+        let resolver = CountingResolver(outcomes: [
+            .success(.keptCurrent(archivedLosers: [archive]))
+        ])
+        let firstContainer = FakeSyncedContainer(resolver: resolver)
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let firstCoordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { firstContainer },
+            effectiveMode: { .icloud },
+            conflictArchiveRegistry: registryState.registry)
+        await firstCoordinator.start()
+        firstContainer.seed(target, data: Data("current".utf8))
+        firstContainer.seed(archive, data: Data("loser".utf8))
+        firstContainer.injectConflict(at: target, versions: [Self.current, Self.loser])
+        await resolver.waitForCount(1)
+        await firstCoordinator.awaitQuiescence()
+        #expect(await firstCoordinator.archivedConflicts().count == 1)
+        await firstCoordinator.stop()
+
+        let secondContainer = FakeSyncedContainer()
+        secondContainer.seed(archive, data: Data("loser".utf8))
+        let secondCoordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { secondContainer },
+            effectiveMode: { .icloud },
+            conflictArchiveRegistry: registryState.registry)
+        await secondCoordinator.start()
+
+        let restored = try #require(await secondCoordinator.archivedConflicts().first)
+        #expect(restored.archiveURL == archive)
+        #expect(secondContainer.metadataQueryCount == 1)
+        #expect(secondContainer.directoryEnumerationCount == 0)
+        #expect(secondContainer.existenceCheckCount == 0)
+    }
+
+    @Test("Incomplete iCloud discovery keeps the launch relocation marker")
+    func incompleteDiscoveryKeepsLaunchRelocationPending() async {
+        let storeDir = scratch("storage-incomplete-relocation")
+        let root = scratch("storage-root")
+        let localLayout = WebStorageLayout.local(storeDir: storeDir)
+        let source = WebStorageLayout.pretty(
+            root: root.appendingPathComponent("Documents/Vellum", isDirectory: true),
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let container = FakeSyncedContainer()
+        container.failNextList(with: .timedOut(source.recordsDir))
+        installRoot(root)
+        WebLibrary.layoutOverride = localLayout
+        WebStorageMigrator.recordPendingRelocation(mode: .icloud, customPath: nil)
+        defer {
+            WebStorageMigrator.clearPendingRelocation()
+            WebLibrary.layoutOverride = nil
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .local,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .local })
+        await coordinator.start()
+
+        await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
+
+        #expect(UserDefaults.standard.string(
+            forKey: WebStorageSettings.pendingRelocationKey) != nil)
+        #expect(container.metadataQueryCount > 0)
+        #expect(container.coordinatedRemoveCount == 0)
+    }
+
+    @Test("Managed web archive conflicts are rediscovered without trusting arbitrary URLs")
+    func managedWebArchiveConflictsSurviveRestart() async throws {
+        let storeDir = scratch("storage-web-conflict-restart")
+        let root = scratch("storage-root")
+        let syncedRoot = root.appendingPathComponent("Documents/Vellum", isDirectory: true)
+        let layout = WebStorageLayout.pretty(
+            root: syncedRoot, recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.archivesDir.appendingPathComponent("Article.vellumweb")
+        let archive = layout.archivesDir.appendingPathComponent(
+            "conflicts/Article.v-loser.vellumweb")
+        let wrongShape = layout.archivesDir.appendingPathComponent("Untrusted.vellumweb")
+        let unmanagedOriginal = syncedRoot.appendingPathComponent("Other/notes.md")
+        let unmanagedArchive = syncedRoot.appendingPathComponent(
+            "Other/conflicts/notes.v-loser.md")
+        let registryState = ConflictArchiveRegistryState()
+        let descriptors = [
+            StorageCoordinator.ArchivedConflict(
+                archiveURL: archive, originalURL: original, detectedAt: .now),
+            StorageCoordinator.ArchivedConflict(
+                archiveURL: wrongShape, originalURL: original, detectedAt: .now),
+            StorageCoordinator.ArchivedConflict(
+                archiveURL: unmanagedArchive, originalURL: unmanagedOriginal, detectedAt: .now),
+        ]
+        registryState.registry.save(descriptors)
+        let container = FakeSyncedContainer()
+        for descriptor in descriptors {
+            container.seed(descriptor.archiveURL, data: Data("preserved".utf8))
+        }
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .icloud },
+            conflictArchiveRegistry: registryState.registry)
+
+        await coordinator.start()
+
+        let restored = await coordinator.archivedConflicts()
+        #expect(restored.map(\.archiveURL) == [archive])
+        #expect(container.metadataQueryCount == 1)
+        #expect(container.directoryEnumerationCount == 0)
+        #expect(container.existenceCheckCount == 0)
+    }
+
+    @Test("Preserved conflict archives return when iCloud storage is reselected")
+    func archivedConflictsSurviveReconfigureAwayAndBack() async throws {
+        let storeDir = scratch("storage-conflict-reconfigure")
+        let root = scratch("storage-root")
+        let target = root.appendingPathComponent(
+            ".vellum/documents/key/scratchpad.md")
+        let archive = target.deletingLastPathComponent()
+            .appendingPathComponent("conflicts/scratchpad.v-loser.md")
+        let state = StorageModeState(mode: .icloud, root: root)
+        let registryState = ConflictArchiveRegistryState()
+        let resolver = CountingResolver(outcomes: [
+            .success(.keptCurrent(archivedLosers: [archive]))
+        ])
+        let firstContainer = FakeSyncedContainer(resolver: resolver)
+        let secondContainer = FakeSyncedContainer()
+        secondContainer.seed(archive, data: Data("loser".utf8))
+        let factory = ContainerSequence([firstContainer, secondContainer])
+        defer {
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { state.mode },
+            effectiveModeProvider: { state.mode ?? .local },
+            rootResolver: { state.root },
+            containerFactory: { factory.next() },
+            conflictArchiveRegistry: registryState.registry)
+        await coordinator.start()
+
+        firstContainer.seed(target, data: Data("current".utf8))
+        firstContainer.seed(archive, data: Data("loser".utf8))
+        firstContainer.injectConflict(at: target, versions: [Self.current, Self.loser])
+        await resolver.waitForCount(1)
+        await coordinator.awaitQuiescence()
+        #expect(await coordinator.archivedConflicts().count == 1)
+
+        state.set(mode: .local)
+        await coordinator.reconfigure()
+        #expect(await coordinator.archivedConflicts().isEmpty)
+
+        state.set(mode: .icloud)
+        await coordinator.reconfigure()
+        let restored = try #require(await coordinator.archivedConflicts().first)
+        #expect(restored.archiveURL == archive)
+        #expect(factory.callCount == 2)
+        #expect(secondContainer.metadataQueryCount == 1)
     }
 
     @Test("Throwing and deferred resolutions stay pending and retry on foreground")
@@ -836,6 +1168,17 @@ private final class StorageModeState: @unchecked Sendable {
     }
 }
 
+private final class ConflictArchiveRegistryState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var conflicts: [StorageCoordinator.ArchivedConflict] = []
+
+    var registry: StorageCoordinator.ConflictArchiveRegistry {
+        StorageCoordinator.ConflictArchiveRegistry(
+            load: { [self] in lock.withLock { conflicts } },
+            save: { [self] next in lock.withLock { conflicts = next } })
+    }
+}
+
 private final class ContainerSequence: @unchecked Sendable {
     private let lock = NSLock()
     private var containers: [FakeSyncedContainer]
@@ -949,6 +1292,47 @@ private final class CountingResolver: ConflictResolver, @unchecked Sendable {
             throw error
         }
     }
+}
+
+private final class BlockingRecoveryContainer: SyncedContainer, @unchecked Sendable {
+    let base: FakeSyncedContainer
+    let readGate = AsyncGate()
+    let removeGate = AsyncGate()
+
+    init(base: FakeSyncedContainer) {
+        self.base = base
+    }
+
+    var conflicts: AsyncStream<ConflictEvent> { base.conflicts }
+
+    func read<T: Sendable>(
+        _ url: URL,
+        materializing: Materialization,
+        _ body: @Sendable (Data) throws -> T
+    ) async throws -> T {
+        await readGate.enterAndWait()
+        return try await base.read(url, materializing: materializing, body)
+    }
+
+    func replace(_ url: URL, with data: Data) async throws {
+        try await base.replace(url, with: data)
+    }
+
+    func remove(_ url: URL) async throws {
+        await removeGate.enterAndWait()
+        try await base.remove(url)
+    }
+
+    func list(_ directory: URL, matching filter: SyncedItemFilter) async throws -> [SyncedItem] {
+        try await base.list(directory, matching: filter)
+    }
+
+    func resolveConflict(_ event: ConflictEvent) async throws -> ConflictResolution {
+        try await base.resolveConflict(event)
+    }
+
+    func suspend() async { await base.suspend() }
+    func resume() async { await base.resume() }
 }
 
 private actor AsyncGate {

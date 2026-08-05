@@ -189,6 +189,7 @@ final class AppStore {
     /// a private one.
     private let teardowns: TabTeardownRegistry
     private let documentAccess: DocumentAccessResolver
+    private let capturedUnreadLedger: CapturedUnreadLedger
     @ObservationIgnored private var pendingPositionRecords: [String: PendingPositionRecord] = [:]
     @ObservationIgnored private var positionRecordTask: Task<Void, Never>?
 
@@ -200,11 +201,13 @@ final class AppStore {
     init(
         sessions: SessionService,
         teardowns: TabTeardownRegistry = TabTeardownRegistry(),
-        documentAccess: DocumentAccessResolver = .live
+        documentAccess: DocumentAccessResolver = .live,
+        capturedUnreadLedger: CapturedUnreadLedger = .shared
     ) {
         self.sessions = sessions
         self.teardowns = teardowns
         self.documentAccess = documentAccess
+        self.capturedUnreadLedger = capturedUnreadLedger
     }
 
     // MARK: - Opening documents
@@ -1196,6 +1199,50 @@ final class AppStore {
         return (destination.path, failedAttachments)
     }
 
+    /// Production import path. The document payload is already installed; its
+    /// class-B sidecar must use the workspace's coordinated storage boundary.
+    @MainActor
+    static func finishImportedBundle(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        key: String,
+        coordinator: StorageCoordinator,
+        resolveScratchpadConflict resolveConflict: @escaping @Sendable (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) async throws -> (path: String, failedAttachments: [String]) {
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarWillImport, object: nil,
+            userInfo: ["key": key])
+        let failedAttachments: [String]
+        do {
+            failedAttachments = try await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+                forKeys: [key]
+            ) {
+                try await VellumBundle.installSidecar(
+                    imported, forKey: key, coordinator: coordinator,
+                    resolveScratchpadConflict: resolveConflict)
+            }
+        } catch {
+            // Unfreeze panes and reload the still-authoritative pre-import bytes.
+            NotificationCenter.default.post(
+                name: .vellumDocumentSidecarImported, object: nil,
+                userInfo: ["key": key])
+            throw error
+        }
+
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarImported, object: nil, userInfo: ["key": key])
+
+        if imported.manifest.kind != "web" {
+            let info = DocumentInfo(
+                kind: .pdf, pdfPath: destination.path, title: imported.manifest.title,
+                pageCount: nil, lastPage: nil, docId: key)
+            try? await DocumentDataStore.touch(
+                document: info, coordinator: coordinator)
+        }
+        return (destination.path, failedAttachments)
+    }
+
     /// The panel-free import core, in main's exact shape. Kept so the two-phase
     /// split above can be asserted against it and can never drift.
     @MainActor
@@ -1251,15 +1298,27 @@ final class AppStore {
         // codec's resolver is synchronous (NSAlert.runModal on the Mac) and an
         // iOS alert can only be awaited.
         var decision = VellumBundle.ScratchpadDecision.keepLocal
+        let coordinator = workspace?.storageCoordinator
         if let incoming = imported.scratchpad, !incoming.isEmpty,
-           DocumentDataStore.scratchpadExists(forKey: key),
-           DocumentDataStore.loadScratchpad(forKey: key) != incoming {
+           let coordinator,
+           try await DocumentDataStore.scratchpadExists(
+                forKey: key, coordinator: coordinator),
+           try await DocumentDataStore.loadScratchpad(
+                forKey: key, coordinator: coordinator) != incoming {
             decision = await BundleImportPrompts_iOS.scratchpadConflict(
                 title: imported.manifest.title ?? "this document")
         }
 
-        let result = try Self.finishImportedBundle(
-            imported, to: destination, key: key) { _ in decision }
+        let result: (path: String, failedAttachments: [String])
+        if let coordinator {
+            let resolvedDecision = decision
+            result = try await Self.finishImportedBundle(
+                imported, to: destination, key: key, coordinator: coordinator
+            ) { _ in resolvedDecision }
+        } else {
+            result = try Self.finishImportedBundle(
+                imported, to: destination, key: key) { _ in decision }
+        }
 
         // Never a silent success with broken image refs: name the attachments
         // that could not be installed.
@@ -1272,6 +1331,9 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         var doc = doc
+        // This is intentionally device-local. Opening a captured page must not
+        // rewrite its shared WebLibrary sidecar or contend with note saves.
+        await capturedUnreadLedger.markOpened(document: doc)
         // PDF bookmarks are persisted in the device-local
         // DocumentAccessBookmarkStore. Keep DocumentInfo free of new bookmark
         // bytes so workspace JSON stops growing access credentials; the

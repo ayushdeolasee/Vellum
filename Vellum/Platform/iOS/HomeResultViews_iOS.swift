@@ -122,7 +122,7 @@ struct HomeResultRow: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
-        .accessibilityValue(item.subtitle)
+        .accessibilityValue(accessibilityValue)
         // Reached by long-press on iPad, which is the standard affordance for
         // destructive row actions.
         .contextMenu {
@@ -142,6 +142,13 @@ struct HomeResultRow: View {
                 }
             }
         }
+    }
+
+    private var accessibilityValue: String {
+        if item.badges.contains(.capturedUnread) {
+            return "New, not yet opened. \(item.subtitle)"
+        }
+        return item.subtitle
     }
 
     private var icon: some View {
@@ -166,6 +173,16 @@ struct HomeBadgeStrip: View {
 
     var body: some View {
         HStack(spacing: 5) {
+            if badges.contains(.capturedUnread) {
+                Text("New")
+                    .font(.caption.bold())
+                    .foregroundStyle(palette.primaryForeground)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(palette.primary, in: Capsule())
+                    .fixedSize()
+                    .accessibilityLabel("New, not yet opened")
+            }
             badge(.missing, "exclamationmark.triangle.fill", "File not found at its last known location",
                   tint: palette.destructive)
             badge(.saved, "bookmark.fill", "Saved to your library", tint: palette.gold)

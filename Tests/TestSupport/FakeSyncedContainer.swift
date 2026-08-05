@@ -31,6 +31,7 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     private var conflictsByURL: [URL: Conflict] = [:]
     private var suspended = false
     private var pendingWriteError: SyncedContainerError?
+    private var pendingListError: SyncedContainerError?
 
     private var reads = 0
     private var writes = 0
@@ -106,6 +107,10 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
 
     func cancelNextWrite() {
         failNextWrite(with: .cancelled)
+    }
+
+    func failNextList(with error: SyncedContainerError) {
+        lock.withLock { pendingListError = error }
     }
 
     /// Inspect bytes without recording a coordinated read.
@@ -209,6 +214,10 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
         try lock.withLock {
             if suspended { throw SyncedContainerError.unavailable }
             queries += 1
+            if let pendingListError {
+                self.pendingListError = nil
+                throw pendingListError
+            }
             let target = directory.standardizedFileURL
             return
                 entries

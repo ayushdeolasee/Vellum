@@ -18,8 +18,7 @@ import SwiftUI
 struct StorageSettingsTab: View {
     @Environment(\.palette) private var palette
     @Environment(WorkspaceStore.self) private var workspace
-
-    private var thisDevice: String { ShellIdiom_iOS.current.thisDevice }
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     // Joined-list sources (each listed off-main in `reload`).
     @State private var docEntries: [DocumentDataStore.DocumentDataEntry] = []
@@ -29,7 +28,10 @@ struct StorageSettingsTab: View {
     @State private var webRecordBytes: Int64 = 0
     @State private var legacyScratchpad: [LegacyRow] = []
     @State private var legacyAi: [LegacyRow] = []
+    @State private var archivedConflicts: [StorageCoordinator.ArchivedConflict] = []
     @State private var isLoading = true
+    @State private var showsOrphansSheet = false
+    @State private var showsConflictsSheet = false
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
     @State private var searchText = ""
@@ -70,6 +72,11 @@ struct StorageSettingsTab: View {
     private var hasOrphanSection: Bool {
         !orphanRows.isEmpty || !legacyScratchpad.isEmpty || !legacyAi.isEmpty
     }
+    private var usesRecoverySheets: Bool {
+        StorageCompactRouting.usesRecoverySheets(
+            idiom: ShellIdiom_iOS.current,
+            horizontalSizeClass: horizontalSizeClass)
+    }
 
     var body: some View {
         applyDialogs(formContent)
@@ -78,9 +85,12 @@ struct StorageSettingsTab: View {
     private var formContent: some View {
         Form {
             storageLocationSection
+            if !archivedConflicts.isEmpty { syncConflictsSection }
             summaryTilesSection
             documentsSection
-            if hasOrphanSection { orphansSection }
+            if hasOrphanSection {
+                if usesRecoverySheets { orphansSheetLinkSection } else { orphansSection }
+            }
             housekeepingSection
             removeStoredDataSection
         }
@@ -92,8 +102,27 @@ struct StorageSettingsTab: View {
         .onReceive(NotificationCenter.default.publisher(for: .vellumStorageRelocationChanged)) { _ in
             handleRelocationStatusChange()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .vellumStorageConflictArchivesChanged)
+        ) { _ in
+            Task {
+                archivedConflicts = await workspace.storageCoordinator.archivedConflicts()
+            }
+        }
         .onDisappear {
             relocationReloadTask?.cancel()
+        }
+        .sheet(isPresented: $showsOrphansSheet) {
+            StorageOrphansSheet_iOS(
+                orphanRows: orphanRows,
+                legacyRows: legacyScratchpad + legacyAi,
+                relinkFailures: relinkFailures,
+                onRelink: relink,
+                onDeleteOrphan: deleteEverything,
+                onDeleteLegacy: deleteLegacy)
+        }
+        .sheet(isPresented: $showsConflictsSheet) {
+            StorageConflictsSheet_iOS(conflicts: $archivedConflicts)
         }
     }
 
@@ -247,18 +276,43 @@ struct StorageSettingsTab: View {
 
     // MARK: - Orphans & unlinked
 
+    private var orphansSheetLinkSection: some View {
+        Section {
+            Button {
+                showsOrphansSheet = true
+            } label: {
+                HStack {
+                    Label("Orphans & unlinked", systemImage: "link.badge.plus")
+                    Spacer()
+                    Text("\(orphanRows.count + legacyScratchpad.count + legacyAi.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityIdentifier("storage.orphans")
+        } footer: {
+            Text("Review moved files and data left by older versions.")
+        }
+    }
+
     @ViewBuilder
     private var orphansSection: some View {
         Section {
             ForEach(orphanRows) { row in
-                OrphanRow(
+                StorageOrphanRow_iOS(
                     row: row,
                     failureMessage: relinkFailures[row.key],
                     onRelink: { relink(row) },
                     onDelete: { pendingOrphanDelete = row })
             }
             ForEach(legacyScratchpad + legacyAi) { legacy in
-                LegacyRowView(row: legacy, onDelete: { pendingLegacyDelete = legacy })
+                StorageLegacyRow_iOS(
+                    row: legacy,
+                    onDelete: { pendingLegacyDelete = legacy })
             }
         } header: {
             Text("Orphans & unlinked")
@@ -266,6 +320,31 @@ struct StorageSettingsTab: View {
             Text("Documents whose file has moved (relink to reconnect notes and chat) and data left by an older version that hasn't been migrated yet. Nothing here is ever deleted automatically — a missing file may just be on an unplugged drive.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Preserved sync conflicts
+
+    private var syncConflictsSection: some View {
+        Section {
+            Button {
+                showsConflictsSheet = true
+            } label: {
+                HStack {
+                    Label("Sync conflicts", systemImage: "arrow.triangle.branch")
+                    Spacer()
+                    Text("\(archivedConflicts.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityIdentifier("storage.conflicts")
+        } footer: {
+            Text("Vellum preserved losing versions that could not be merged safely.")
         }
     }
 
@@ -366,24 +445,10 @@ struct StorageSettingsTab: View {
     }
 
     private var locationFooterText: String {
-        if WebStorageSettings.modeIsDegraded {
-            switch storageMode {
-            case .icloud:
-                return "iCloud Drive isn't available right now (signed out, or iCloud Drive is off). Vellum is storing everything on \(thisDevice) until it comes back."
-            case .custom:
-                return "The chosen folder can't be found. Vellum is storing everything on \(thisDevice) until you pick a folder again."
-            case .local:
-                return ""
-            }
-        }
-        switch storageMode {
-        case .icloud:
-            return "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your devices."
-        case .custom:
-            return "Offline copies live in your folder. iCloud syncing is not available for a custom folder: highlights, notes, AI conversations, and reading positions stay on \(thisDevice)."
-        case .local:
-            return "Everything stays in Vellum's private app folder on \(thisDevice). No syncing."
-        }
+        StorageLocationCopy.settingsFooter(
+            for: storageMode,
+            isDegraded: WebStorageSettings.modeIsDegraded,
+            deviceName: ShellIdiom_iOS.current.deviceName)
     }
 
     /// The custom-folder flow is asynchronous on iPadOS: the picker's callback
@@ -507,20 +572,27 @@ struct StorageSettingsTab: View {
         isLoading = true
         async let coordinatedWeb = workspace.webLibraryStorage.listSnapshotStorage()
         async let coordinatedWebRecordBytes = workspace.webLibraryStorage.totalRecordBytes()
-        let listing = await Task.detached(priority: .userInitiated) { () -> Listing in
-            Listing(
-                documents: DocumentDataStore.listDocuments(),
+        async let coordinatedDocuments = DocumentDataStore.listDocuments(
+            coordinator: workspace.storageCoordinator)
+        let legacy = await Task.detached(priority: .userInitiated) {
+            (
                 legacyScratchpad: ScratchpadPersistence.listLegacyEntries().map {
                     LegacyRow(source: .scratchpad, key: $0.key, bytes: $0.bytes)
                 },
                 legacyAi: AiPersistence.listLegacyEntries().map {
                     LegacyRow(source: .ai, key: $0.key, bytes: $0.bytes)
-                })
+                }
+            )
         }.value
+        let listing = Listing(
+            documents: await coordinatedDocuments,
+            legacyScratchpad: legacy.legacyScratchpad,
+            legacyAi: legacy.legacyAi)
         let web = await coordinatedWeb
         let recordBytes = await coordinatedWebRecordBytes
         let cache = await PageTextCache.shared.listEntries()
         let positionWeb = await workspace.positions.lastOpenedByWebKey()
+        let conflicts = await workspace.storageCoordinator.archivedConflicts()
         docEntries = listing.documents
         webEntries = web
         positionWebLastOpened = positionWeb
@@ -528,6 +600,7 @@ struct StorageSettingsTab: View {
         legacyScratchpad = listing.legacyScratchpad
         legacyAi = listing.legacyAi
         cacheEntries = cache
+        archivedConflicts = conflicts
         isLoading = false
     }
 
@@ -542,11 +615,41 @@ struct StorageSettingsTab: View {
     private func deleteNotes(_ row: StorageInventory.DocumentRow) {
         mutateDoc(row.key) { $0.notesBytes = 0 }
         let keys = [row.key] + row.adoptedKeys
+        var deleteTokens: [(ScratchpadStore, ScratchpadExternalDeleteToken)] = []
+        for pane in workspace.root.allLeaves() {
+            for key in keys {
+                if let token = pane.scratchpad.prepareForExternalDelete(matchingKey: key) {
+                    deleteTokens.append((pane.scratchpad, token))
+                }
+            }
+        }
         Task {
-            await Task.detached { DocumentDataStore.deleteNotes(forKey: row.key) }.value
+            let deleted = await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+                forKeys: keys
+            ) {
+                do {
+                    for key in keys {
+                        try await DocumentDataStore.deleteNotesSafely(
+                            forKey: key, coordinator: workspace.storageCoordinator)
+                    }
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            guard deleted else {
+                for (store, token) in deleteTokens {
+                    await store.finishExternalDelete(token, succeeded: false)
+                }
+                await reload()
+                return
+            }
             // A pane showing this document must drop its live note WITHOUT saving,
             // or its quit-flush would rewrite the just-deleted markdown.
             postDataDeleted(keys: keys, notes: true, chat: false)
+            for (store, token) in deleteTokens {
+                await store.finishExternalDelete(token, succeeded: true)
+            }
             await reload()
         }
     }
@@ -555,7 +658,8 @@ struct StorageSettingsTab: View {
         mutateDoc(row.key) { $0.conversationBytes = 0 }
         let keys = [row.key] + row.adoptedKeys
         Task {
-            await Task.detached { DocumentDataStore.deleteConversation(forKey: row.key) }.value
+            await DocumentDataStore.deleteConversation(
+                forKey: row.key, coordinator: workspace.storageCoordinator)
             // A pane showing this document must drop its cached chat, or the
             // AiPersistence write-behind cache would recreate the history.
             postDataDeleted(keys: keys, notes: false, chat: true)
@@ -590,11 +694,41 @@ struct StorageSettingsTab: View {
         docEntries.removeAll { $0.key == row.key }
         cacheEntries.removeAll { keys.contains($0.pathKey) }
         webEntries.removeAll { keys.contains($0.key) }
+        var deleteTokens: [(ScratchpadStore, ScratchpadExternalDeleteToken)] = []
+        for pane in workspace.root.allLeaves() {
+            for key in keys {
+                if let token = pane.scratchpad.prepareForExternalDelete(matchingKey: key) {
+                    deleteTokens.append((pane.scratchpad, token))
+                }
+            }
+        }
         Task {
-            await Task.detached { DocumentDataStore.deleteAll(forKey: row.key) }.value
+            let deleted = await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+                forKeys: keys
+            ) {
+                do {
+                    for key in keys {
+                        try await DocumentDataStore.deleteAllSafely(
+                            forKey: key, coordinator: workspace.storageCoordinator)
+                    }
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            guard deleted else {
+                for (store, token) in deleteTokens {
+                    await store.finishExternalDelete(token, succeeded: false)
+                }
+                await reload()
+                return
+            }
             // Both notes and chat are gone — a pane showing this document must
             // drop its live scratchpad + AI state so neither writer resurrects it.
             postDataDeleted(keys: keys, notes: true, chat: true)
+            for (store, token) in deleteTokens {
+                await store.finishExternalDelete(token, succeeded: true)
+            }
             for key in keys {
                 await PageTextCache.shared.delete(key: key)
                 await workspace.webLibraryStorage.removeLocalSnapshots(forKey: key)
@@ -627,12 +761,14 @@ struct StorageSettingsTab: View {
         let source = legacy.source
         let key = legacy.key
         Task {
-            await Task.detached {
-                switch source {
-                case .scratchpad: ScratchpadPersistence.removeLegacyEntry(key: key)
-                case .ai: AiPersistence.removeLegacyEntry(key: key)
-                }
-            }.value
+            switch source {
+            case .scratchpad:
+                await ScratchpadPersistence.removeLegacyEntry(key: key)
+            case .ai:
+                await Task.detached {
+                    AiPersistence.removeLegacyEntry(key: key)
+                }.value
+            }
             await reload()
         }
     }
@@ -717,7 +853,8 @@ struct StorageSettingsTab: View {
                 let result = await DocumentAccessResolver.live.relink(
                     key: key,
                     isDocIdKeyed: row.isDocIdKeyed,
-                    to: url)
+                    to: url,
+                    coordinator: workspace.storageCoordinator)
                 switch result {
                 case .success:
                     relinkFailures[key] = nil
@@ -814,7 +951,8 @@ struct StorageSettingsTab: View {
                     .accessibilityIdentifier("storage.confirmMigration")
                 Button("Cancel", role: .cancel) { refreshSettings() }
             } message: { _ in
-                Text("Vellum will move offline pages, notes, highlights, reading positions, and AI conversations in the background. Keep Vellum open until the move finishes. If the destination becomes unavailable, Vellum keeps using its safe local copy and resumes the move when that location returns.")
+                Text(StorageLocationCopy.relocationConfirmation(
+                    on: ShellIdiom_iOS.current.deviceName))
             }
     }
 
@@ -885,84 +1023,10 @@ private struct BreakdownLine: View {
     }
 }
 
-private struct OrphanRow: View {
-    @Environment(\.palette) private var palette
-    let row: StorageInventory.DocumentRow
-    let failureMessage: String?
-    let onRelink: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.title)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Label("Original file not found", systemImage: "questionmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(palette.gold)
-                if let failureMessage {
-                    Text(failureMessage)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .accessibilityIdentifier("storageOrphan.relinkFailure.\(row.key)")
-                }
-            }
-            Spacer()
-            Text(row.totalBytes.formatted(.byteCount(style: .file)))
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Button("Relink…", action: onRelink)
-                .buttonStyle(.borderless)
-                .accessibilityIdentifier("storageOrphan.relink.\(row.key)")
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Delete data for \(row.title)")
-            .accessibilityIdentifier("storageOrphan.delete.\(row.key)")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("storageOrphan.\(row.key)")
-    }
-}
-
-private struct LegacyRowView: View {
-    let row: LegacyRow
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.displayLabel)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("Not yet migrated · \(row.kindLabel)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text(Int64(row.bytes).formatted(.byteCount(style: .file)))
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Delete \(row.kindLabel) for \(row.displayLabel)")
-            .accessibilityIdentifier("storageLegacy.delete.\(row.id)")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("storageLegacy.\(row.id)")
-    }
-}
-
 /// A leftover path-keyed blob entry (pre-migration notes or chat) for the
 /// orphans section.
 struct LegacyRow: Identifiable, Sendable, Equatable {
-    enum Source: Sendable { case scratchpad, ai }
+    enum Source: Sendable, Equatable { case scratchpad, ai }
     var source: Source
     var key: String
     var bytes: Int

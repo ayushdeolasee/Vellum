@@ -167,3 +167,14 @@ struct CoordinatedLibraryFileStore: LibraryFileStore {
         }
     }
 }
+
+extension StorageCoordinator.StorageContext {
+    var fileStore: any LibraryFileStore {
+        switch self {
+        case .direct:
+            DirectLibraryFileStore()
+        case .coordinated(let container, _):
+            CoordinatedLibraryFileStore(container: container)
+        }
+    }
+}

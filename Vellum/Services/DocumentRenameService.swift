@@ -104,11 +104,18 @@ enum DocumentRenameService {
     ) async -> Bool {
         var wrote = false
 
-        if let key = target.storageKey,
-           await Task.detached(priority: .userInitiated, operation: {
-               DocumentDataStore.setTitle(forKey: key, title: title)
-           }).value {
-            wrote = true
+        if let key = target.storageKey {
+            if let coordinator = storage.coordinator {
+                if await DocumentDataStore.setTitle(
+                    forKey: key, title: title, coordinator: coordinator)
+                {
+                    wrote = true
+                }
+            } else if await Task.detached(priority: .userInitiated, operation: {
+                DocumentDataStore.setTitle(forKey: key, title: title)
+            }).value {
+                wrote = true
+            }
         }
 
         if target.kind == .web,

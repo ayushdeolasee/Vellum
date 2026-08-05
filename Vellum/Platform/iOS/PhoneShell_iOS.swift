@@ -123,7 +123,7 @@ private struct PhoneShellRoot_iOS: View {
                     let app = pane.app
                     Task {
                         await app.openUrl(url)
-                        shell.didOpenDocument()
+                        routeToOpenedDocumentIfSuccessful(app)
                     }
                 }
             }
@@ -140,7 +140,7 @@ private struct PhoneShellRoot_iOS: View {
                     let app = pane.app
                     Task {
                         await app.openFiles(paths: paths)
-                        shell.didOpenDocument()
+                        routeToOpenedDocumentIfSuccessful(app)
                     }
                 } else {
                     presentImporter()
@@ -155,6 +155,12 @@ private struct PhoneShellRoot_iOS: View {
             // `UIKeyCommand` on the PDF surface — has no handle on the shell.
             .onReceive(NotificationCenter.default.publisher(for: .vellumShowHome)) { _ in
                 shell.showHome()
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .vellumSystemRouteDidOpenDocument)
+            ) { _ in
+                routeToOpenedDocumentIfSuccessful(pane.app)
             }
             // ⌘F with no document: "Find…" has nothing to find and the chord
             // means "search my library" instead. Both halves are done here —
@@ -194,8 +200,8 @@ private struct PhoneShellRoot_iOS: View {
             // finished); this catches everything else, including the tab
             // `restoreFromDisk` reactivates.
             .onChange(of: pane.app.activeTabId) { _, tabId in
-                guard tabId != nil, pane.app.document != nil else { return }
-                shell.didOpenDocument()
+                guard tabId != nil else { return }
+                routeToOpenedDocumentIfSuccessful(pane.app)
             }
             #if DEBUG
             .task { await applyLaunchPlan() }
@@ -230,7 +236,8 @@ private struct PhoneShellRoot_iOS: View {
             onShowTabs: {
                 guard !pane.app.tabs.isEmpty else { return }
                 shell.switcherPresented = true
-            })
+            },
+            onDocumentOpened: { shell.didOpenDocument() })
     }
 
     /// The reader: the SAME multiplexed live-tab stack the iPad pane mounts
@@ -345,9 +352,19 @@ private struct PhoneShellRoot_iOS: View {
                 }.value
                 guard !paths.isEmpty else { return }
                 await app.openFiles(paths: paths)
-                shell.didOpenDocument()
+                routeToOpenedDocumentIfSuccessful(app)
             }
         }
+    }
+
+    /// An awaited open may fail while an older document remains mounted, so a
+    /// non-nil document alone is not proof the requested target opened. The
+    /// absence of an AppStore error is the completed-open success signal. It
+    /// also covers reactivating an already-open tab, where no document-value
+    /// change is emitted for the safety-net observer above to notice.
+    private func routeToOpenedDocumentIfSuccessful(_ app: AppStore) {
+        guard app.document != nil, app.error == nil else { return }
+        shell.didOpenDocument()
     }
 
     #if DEBUG

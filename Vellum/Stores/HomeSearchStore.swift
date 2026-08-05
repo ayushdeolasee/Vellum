@@ -120,6 +120,11 @@ final class HomeSearchStore {
     private(set) var sections: [HomeSearchResultSection] = []
     /// `sections` flattened in display order — the list arrow keys walk.
     private(set) var visibleItems: [HomeSearchItem] = []
+    /// The complete local corpus, before query/filter/sort. The phone's
+    /// Continue Reading section joins cross-device position keys against this
+    /// snapshot so changing the search field cannot make a resumable document
+    /// temporarily unresolvable.
+    private(set) var corpusItems: [HomeSearchItem] = []
     /// True until the first corpus load finishes, so the view can hold off the
     /// empty state instead of flashing "nothing here" on the way in.
     private(set) var isLoading = true
@@ -208,8 +213,9 @@ final class HomeSearchStore {
     func load() async {
         isLoading = true
         await engine.reload()
+        corpusItems = await engine.corpus
         failures = await engine.failures
-        libraryIsEmpty = await engine.corpus.isEmpty
+        libraryIsEmpty = corpusItems.isEmpty
         isLoading = false
         await refresh()
     }

@@ -211,6 +211,27 @@ struct WebStorageLayout: Equatable, Sendable {
     /// `.vellum/index.json` next to the archives (pretty modes only).
     var indexPath: URL?
 
+    /// True only for the fixed iCloud layout. A custom pretty folder still
+    /// keeps records/documents local and must never construct a coordinator.
+    var requiresCoordination: Bool {
+        guard let internalDir = indexPath?.deletingLastPathComponent() else { return false }
+        return recordsDir.deletingLastPathComponent().standardizedFileURL
+                == internalDir.standardizedFileURL
+            && documentsDir.deletingLastPathComponent().standardizedFileURL
+                == internalDir.standardizedFileURL
+    }
+
+    /// Reading positions follow class-B data: fixed iCloud syncs them under
+    /// `.vellum/positions`; local and custom modes keep the existing app-data
+    /// sibling of `documents/`.
+    var positionsDir: URL {
+        if requiresCoordination, let internalDir = indexPath?.deletingLastPathComponent() {
+            return internalDir.appendingPathComponent("positions", isDirectory: true)
+        }
+        return documentsDir.deletingLastPathComponent()
+            .appendingPathComponent("positions", isDirectory: true)
+    }
+
     /// The documents/ home for a local (app-container) layout. Derived from
     /// `storeDir` (a sibling of `web/` under appData) so the `storeDirOverride`
     /// test seam covers it too, and so it stays byte-for-byte the pre-existing
@@ -473,14 +494,48 @@ enum WebStorageMigrator {
 
     /// Launch-time pass: resume any interrupted relocation, then fold whatever
     /// still sits in the legacy local store into the active layout.
-    static func sweepAtLaunch() {
+    static func sweepAtLaunchDirectForTests() {
         let active = WebLibrary.activeLayout
-        if let source = pendingRelocationSource(), relocate(from: source, to: active) {
+        if let source = pendingRelocationSource(), relocateDirect(from: source, to: active) {
             clearPendingRelocation()
         }
         let localLayout = WebStorageLayout.local(storeDir: WebLibrary.storeDir)
         if active != localLayout {
-            _ = relocate(from: localLayout, to: active)
+            _ = relocateDirect(from: localLayout, to: active)
+        }
+    }
+
+    /// Production launch sweep. Each leg borrows its direct/coordinated file
+    /// stores from the coordinator while normal storage traffic is stopped.
+    static func sweepAtLaunch(coordinator: StorageCoordinator) async {
+        let active = WebLibrary.activeLayout
+        if let source = pendingRelocationSource() {
+            let moved = await coordinator.performExclusiveStorageRelocation(
+                from: source,
+                to: active
+            ) { sourceContext, destinationContext in
+                guard let sourceContext, let destinationContext else { return false }
+                return await relocate(
+                    from: source,
+                    to: active,
+                    sourceStore: sourceContext.fileStore,
+                    destinationStore: destinationContext.fileStore)
+            }
+            if moved { clearPendingRelocation() }
+        }
+
+        let localLayout = WebStorageLayout.local(storeDir: WebLibrary.storeDir)
+        guard active != localLayout else { return }
+        _ = await coordinator.performExclusiveStorageRelocation(
+            from: localLayout,
+            to: active
+        ) { sourceContext, destinationContext in
+            guard let sourceContext, let destinationContext else { return false }
+            return await relocate(
+                from: localLayout,
+                to: active,
+                sourceStore: sourceContext.fileStore,
+                destinationStore: destinationContext.fileStore)
         }
     }
 
@@ -515,7 +570,7 @@ enum WebStorageMigrator {
     /// (plain snapshots, unpacked archive dirs) never move — they live in the
     /// local store regardless of mode.
     @discardableResult
-    static func relocate(from source: WebStorageLayout, to dest: WebStorageLayout) -> Bool {
+    static func relocateDirect(from source: WebStorageLayout, to dest: WebStorageLayout) -> Bool {
         guard source != dest else { return true }
         let fm = FileManager.default
         var clean = true
@@ -600,10 +655,413 @@ enum WebStorageMigrator {
             }
         }
 
+        // Reading-position history belongs beside the class-B data it
+        // describes. The direct implementation can reuse the same recursive,
+        // newest-wins primitive as documents; the coordinated implementation
+        // below transfers each file through LibraryFileStore instead.
+        if source.positionsDir != dest.positionsDir,
+           !DocumentDataStore.moveOrMergeDirectory(
+                from: source.positionsDir,
+                into: dest.positionsDir) {
+            clean = false
+        }
+
         if clean, source.pretty {
             cleanUpEmptyPrettyDirs(of: source)
         }
         return clean
+    }
+
+    /// Relocate every user-owned storage class. The caller supplies the access
+    /// discipline for each side, so an iCloud URL cannot accidentally fall
+    /// through to FileManager/WebICloud. A non-current item is left at the
+    /// source and makes the result false, preserving the pending marker.
+    @discardableResult
+    static func relocate(
+        from source: WebStorageLayout,
+        to destination: WebStorageLayout,
+        sourceStore: any LibraryFileStore,
+        destinationStore: any LibraryFileStore
+    ) async -> Bool {
+        guard source != destination else { return true }
+
+        // Preserve the mature byte-for-byte local/custom implementation when
+        // neither side needs coordination.
+        if !sourceStore.isCoordinated, !destinationStore.isCoordinated {
+            return relocateDirect(from: source, to: destination)
+        }
+
+        var clean = true
+        if source.recordsDir != destination.recordsDir {
+            clean = await relocateRecords(
+                from: source,
+                to: destination,
+                sourceStore: sourceStore,
+                destinationStore: destinationStore) && clean
+        }
+        clean = await relocateArchives(
+            from: source,
+            to: destination,
+            sourceStore: sourceStore,
+            destinationStore: destinationStore) && clean
+        clean = await relocateTree(
+            from: source.documentsDir,
+            to: destination.documentsDir,
+            sourceStore: sourceStore,
+            destinationStore: destinationStore) && clean
+        clean = await relocateTree(
+            from: source.positionsDir,
+            to: destination.positionsDir,
+            sourceStore: sourceStore,
+            destinationStore: destinationStore) && clean
+        return clean
+    }
+
+    private static func relocateRecords(
+        from source: WebStorageLayout,
+        to destination: WebStorageLayout,
+        sourceStore: any LibraryFileStore,
+        destinationStore: any LibraryFileStore
+    ) async -> Bool {
+        let sourceEntries: [LibraryFileEntry]
+        let destinationEntries: [LibraryFileEntry]
+        do {
+            sourceEntries = try await sourceStore.list(source.recordsDir, suffix: ".json")
+            destinationEntries = try await destinationStore.list(
+                destination.recordsDir, suffix: ".json")
+        } catch {
+            return false
+        }
+        let destinationByName = Dictionary(
+            uniqueKeysWithValues: destinationEntries.map { ($0.name, $0) })
+        var clean = true
+
+        for entry in sourceEntries {
+            guard entry.readiness.isReady else {
+                clean = false
+                continue
+            }
+            let destinationURL = destination.recordsDir.appendingPathComponent(entry.name)
+            do {
+                guard let sourceData = try await sourceStore.read(entry.url) else {
+                    clean = false
+                    continue
+                }
+                let output: Data
+                if let existing = destinationByName[entry.name] {
+                    guard existing.readiness.isReady,
+                          let destinationData = try await destinationStore.read(destinationURL),
+                          let merged = mergedRecord(sourceData, into: destinationData)
+                    else {
+                        clean = false
+                        continue
+                    }
+                    output = merged
+                } else {
+                    output = sourceData
+                }
+                try await destinationStore.replace(destinationURL, with: output)
+                try await sourceStore.remove(entry.url)
+            } catch {
+                clean = false
+            }
+        }
+        return clean
+    }
+
+    private static func mergedRecord(_ source: Data, into destination: Data) -> Data? {
+        guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
+              var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
+        else { return nil }
+        WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
+        current.saved = current.saved || incoming.saved
+        current.savedAt = current.savedAt ?? incoming.savedAt
+        current.title = current.title ?? incoming.title
+        current.pageCount = current.pageCount ?? incoming.pageCount
+        current.lastPage = current.lastPage ?? incoming.lastPage
+        current.openedAt = current.openedAt ?? incoming.openedAt
+        return try? WebLibrary.jsonEncoderPretty.encode(current)
+    }
+
+    private static func relocateArchives(
+        from source: WebStorageLayout,
+        to destination: WebStorageLayout,
+        sourceStore: any LibraryFileStore,
+        destinationStore: any LibraryFileStore
+    ) async -> Bool {
+        let sourceArchives: [LibraryFileEntry]
+        let destinationArchives: [LibraryFileEntry]
+        do {
+            sourceArchives = try await sourceStore.list(
+                source.archivesDir, suffix: ".vellumweb")
+            destinationArchives = try await destinationStore.list(
+                destination.archivesDir, suffix: ".vellumweb")
+        } catch {
+            return false
+        }
+
+        var sourceIndex: WebArchiveIndex.Contents
+        var destinationIndex: WebArchiveIndex.Contents
+        do {
+            sourceIndex = try await loadIndex(for: source, store: sourceStore)
+            destinationIndex = try await loadIndex(for: destination, store: destinationStore)
+        } catch {
+            return false
+        }
+
+        let sourceByName = Dictionary(uniqueKeysWithValues: sourceArchives.map { ($0.name, $0) })
+        var destinationByName = Dictionary(
+            uniqueKeysWithValues: destinationArchives.map { ($0.name, $0) })
+        var occupied = Set(destinationByName.keys).union(destinationIndex.entries.values)
+        var sourceIndexChanged = false
+        var clean = true
+
+        if source.pretty {
+            let indexedNames = Set(sourceIndex.entries.values)
+            if sourceArchives.contains(where: { !indexedNames.contains($0.name) }) {
+                // A pretty archive without an index key cannot safely be
+                // renamed to the hashed local form. Leave it at the source and
+                // keep recovery pending rather than silently orphaning it.
+                clean = false
+            }
+        }
+
+        let keys: [String]
+        if source.pretty {
+            keys = sourceIndex.entries.keys.sorted()
+        } else {
+            keys = sourceArchives.map { String($0.name.dropLast(".vellumweb".count)) }.sorted()
+        }
+
+        for key in keys {
+            let sourceName = source.pretty
+                ? sourceIndex.entries[key]
+                : "\(key).vellumweb"
+            guard let sourceName, let sourceEntry = sourceByName[sourceName] else {
+                // An index entry left behind by an already-completed copy is
+                // stale and safe to prune; a missing local archive needs no work.
+                if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
+                    sourceIndexChanged = true
+                }
+                continue
+            }
+            guard sourceEntry.readiness.isReady else {
+                clean = false
+                continue
+            }
+
+            let destinationName: String
+            if destination.pretty {
+                if let existing = destinationIndex.entries[key] {
+                    destinationName = existing
+                } else {
+                    let recordURL = destination.recordsDir.appendingPathComponent("\(key).json")
+                    do {
+                        guard let data = try await destinationStore.read(recordURL),
+                              let record = try? JSONDecoder().decode(WebPageRecord.self, from: data)
+                        else {
+                            clean = false
+                            continue
+                        }
+                        let base = WebArchiveIndex.sanitizedBaseName(
+                            title: record.title, url: record.url)
+                        var candidate = "\(base).vellumweb"
+                        var counter = 2
+                        while occupied.contains(candidate) {
+                            candidate = "\(base) \(counter).vellumweb"
+                            counter += 1
+                        }
+                        destinationIndex.entries[key] = candidate
+                        try await saveIndex(
+                            destinationIndex, for: destination, store: destinationStore)
+                        occupied.insert(candidate)
+                        destinationName = candidate
+                    } catch {
+                        clean = false
+                        continue
+                    }
+                }
+            } else {
+                destinationName = "\(key).vellumweb"
+            }
+
+            let destinationURL = destination.archivesDir.appendingPathComponent(destinationName)
+            do {
+                guard let bytes = try await sourceStore.read(sourceEntry.url) else {
+                    clean = false
+                    continue
+                }
+                if let existing = destinationByName[destinationName] {
+                    guard existing.readiness.isReady,
+                          try await destinationStore.read(destinationURL) != nil
+                    else {
+                        clean = false
+                        continue
+                    }
+                } else {
+                    try await destinationStore.replace(destinationURL, with: bytes)
+                    destinationByName[destinationName] = LibraryFileEntry(
+                        url: destinationURL,
+                        name: destinationName,
+                        readiness: .current,
+                        byteSize: Int64(bytes.count),
+                        contentModifiedAt: sourceEntry.contentModifiedAt)
+                }
+                try await sourceStore.remove(sourceEntry.url)
+                if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
+                    sourceIndexChanged = true
+                }
+            } catch {
+                clean = false
+            }
+        }
+
+        if sourceIndexChanged {
+            do {
+                try await saveIndex(sourceIndex, for: source, store: sourceStore)
+            } catch {
+                clean = false
+            }
+        }
+        return clean
+    }
+
+    private static func loadIndex(
+        for layout: WebStorageLayout,
+        store: any LibraryFileStore
+    ) async throws -> WebArchiveIndex.Contents {
+        guard let indexPath = layout.indexPath,
+              let data = try await store.read(indexPath)
+        else { return WebArchiveIndex.Contents() }
+        return try JSONDecoder().decode(WebArchiveIndex.Contents.self, from: data)
+    }
+
+    private static func saveIndex(
+        _ contents: WebArchiveIndex.Contents,
+        for layout: WebStorageLayout,
+        store: any LibraryFileStore
+    ) async throws {
+        guard let indexPath = layout.indexPath else { return }
+        if contents.entries.isEmpty {
+            try await store.remove(indexPath)
+        } else {
+            try await store.replace(
+                indexPath, with: try WebLibrary.jsonEncoderPretty.encode(contents))
+        }
+    }
+
+    private struct RelativeFile: Sendable {
+        var relativePath: String
+        var entry: LibraryFileEntry
+    }
+
+    private static func relocateTree(
+        from sourceRoot: URL,
+        to destinationRoot: URL,
+        sourceStore: any LibraryFileStore,
+        destinationStore: any LibraryFileStore
+    ) async -> Bool {
+        guard sourceRoot != destinationRoot else { return true }
+        let sourceFiles: [RelativeFile]
+        let destinationFiles: [RelativeFile]
+        do {
+            sourceFiles = try await treeFiles(in: sourceRoot, store: sourceStore)
+            destinationFiles = try await treeFiles(in: destinationRoot, store: destinationStore)
+        } catch {
+            return false
+        }
+        let destinationByPath = Dictionary(
+            uniqueKeysWithValues: destinationFiles.map { ($0.relativePath, $0.entry) })
+        var clean = true
+
+        for file in sourceFiles {
+            guard file.entry.readiness.isReady else {
+                clean = false
+                continue
+            }
+            let destinationURL = destinationRoot.appendingPathComponent(file.relativePath)
+            do {
+                guard let sourceData = try await sourceStore.read(file.entry.url) else {
+                    clean = false
+                    continue
+                }
+                if let existing = destinationByPath[file.relativePath] {
+                    guard existing.readiness.isReady,
+                          try await destinationStore.read(destinationURL) != nil
+                    else {
+                        clean = false
+                        continue
+                    }
+                    if shouldReplace(existing: existing, with: file.entry) {
+                        try await destinationStore.replace(destinationURL, with: sourceData)
+                    }
+                } else {
+                    try await destinationStore.replace(destinationURL, with: sourceData)
+                }
+                try await sourceStore.remove(file.entry.url)
+            } catch {
+                clean = false
+            }
+        }
+        return clean
+    }
+
+    private static func shouldReplace(
+        existing: LibraryFileEntry,
+        with incoming: LibraryFileEntry
+    ) -> Bool {
+        guard let incomingDate = incoming.contentModifiedAt else { return false }
+        guard let existingDate = existing.contentModifiedAt else { return true }
+        return incomingDate > existingDate
+    }
+
+    private static func treeFiles(
+        in root: URL,
+        store: any LibraryFileStore
+    ) async throws -> [RelativeFile] {
+        let entries = try await store.list(root, suffix: nil)
+        return try await treeFiles(
+            entries,
+            relativePrefix: "",
+            depth: 0,
+            store: store)
+    }
+
+    private static func treeFiles(
+        _ entries: [LibraryFileEntry],
+        relativePrefix: String,
+        depth: Int,
+        store: any LibraryFileStore
+    ) async throws -> [RelativeFile] {
+        var files: [RelativeFile] = []
+        for entry in entries {
+            let relative = relativePrefix.isEmpty
+                ? entry.name
+                : "\(relativePrefix)/\(entry.name)"
+            if entry.url.pathExtension.isEmpty, depth < 8 {
+                do {
+                    let children = try await store.list(entry.url, suffix: nil)
+                    if !children.isEmpty {
+                        files += try await treeFiles(
+                            children,
+                            relativePrefix: relative,
+                            depth: depth + 1,
+                            store: store)
+                        continue
+                    }
+                    // Empty document/attachments/quarantine directories carry
+                    // no bytes. A deeper extensionless leaf can still be a real
+                    // attachment, so let the read path decide at depth >= 2.
+                    if depth < 2 { continue }
+                } catch {
+                    // DirectLibraryFileStore cannot list a regular file URL;
+                    // that is the signal that an extensionless attachment is a
+                    // leaf. Coordinated metadata listing simply returns empty.
+                }
+            }
+            files.append(RelativeFile(relativePath: relative, entry: entry))
+        }
+        return files
     }
 
     private static func archiveURL(forKey key: String, in layout: WebStorageLayout) -> URL? {
@@ -647,6 +1105,11 @@ enum WebStorageMigrator {
            layout.documentsDir.deletingLastPathComponent().standardizedFileURL
             == internalDir.standardizedFileURL {
             dirs.append(layout.documentsDir)
+        }
+        if let internalDir = layout.indexPath?.deletingLastPathComponent(),
+           layout.positionsDir.deletingLastPathComponent().standardizedFileURL
+            == internalDir.standardizedFileURL {
+            dirs.append(layout.positionsDir)
         }
         if let internalDir = layout.indexPath?.deletingLastPathComponent() {
             dirs.append(internalDir) // last: it contains the others above in iCloud mode

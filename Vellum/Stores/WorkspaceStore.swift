@@ -290,6 +290,10 @@ final class WorkspaceStore {
     private(set) var didRestore = false
     /// Suppresses saves while a restore is populating panes.
     @ObservationIgnored private var isRestoring = false
+    /// Join point for a cold-launch system route and the shell's own restore
+    /// task. Both can arrive together; the route must not open into a workspace
+    /// that is still replacing its pane tree from disk.
+    @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     // MARK: - Workspace-owned live tab runtimes
@@ -404,6 +408,7 @@ final class WorkspaceStore {
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
             openRouterCatalog: catalog, chatgptAuth: auth,
+            storageCoordinator: storageCoordinator,
             webLibraryStorage: webLibraryStorage)
         self.root = .leaf(pane)
         self.focusedPaneId = pane.id
@@ -510,6 +515,7 @@ final class WorkspaceStore {
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
             openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth,
+            storageCoordinator: storageCoordinator,
             webLibraryStorage: webLibraryStorage)
         pane.app.workspace = self
         if startTab { pane.app.newStartTab() }
@@ -790,7 +796,20 @@ final class WorkspaceStore {
     /// immediately, then asynchronously reopens each tab's document (fresh
     /// sessions). Missing files simply drop their tab.
     func restoreFromDisk() async {
+        if let restoreTask {
+            await restoreTask.value
+            return
+        }
         guard !didRestore else { return }
+        let task = Task { @MainActor in
+            await performRestoreFromDisk()
+        }
+        restoreTask = task
+        await task.value
+        restoreTask = nil
+    }
+
+    private func performRestoreFromDisk() async {
         didRestore = true
         guard let state = WorkspaceService.load() else { return }
         isRestoring = true

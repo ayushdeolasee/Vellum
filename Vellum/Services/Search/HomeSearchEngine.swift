@@ -52,10 +52,16 @@ actor HomeSearchEngine {
     static func defaultProviders(
         storage: WebLibraryStorage = WebLibraryStorage()
     ) -> [any HomeSearchProvider] {
-        [
+        let libraryProvider: LibraryDocumentsSearchProvider
+        if let coordinator = storage.coordinator {
+            libraryProvider = LibraryDocumentsSearchProvider(coordinator: coordinator)
+        } else {
+            libraryProvider = LibraryDocumentsSearchProvider()
+        }
+        return [
             RecentDocumentsSearchProvider(),
             SavedWebpagesSearchProvider(load: { try await storage.listSaved() }),
-            LibraryDocumentsSearchProvider(),
+            libraryProvider,
         ]
     }
 
@@ -190,6 +196,20 @@ actor HomeSearchEngine {
                 order.append(item.identity)
             } else {
                 merged[item.identity]?.badges.formUnion(item.badges)
+                // Recents has display priority, but an unstamped PDF recent
+                // only knows the legacy path-hash key. If a duplicate from the
+                // documents inventory carries the later durable stamp, retain
+                // the recents row while upgrading just that key. Never replace
+                // one non-legacy key with another: both may be stable ids and
+                // provider order remains authoritative in that conflict.
+                if let existing = merged[item.identity],
+                   existing.kind == .pdf,
+                   existing.storageKey == DocumentIdentity.sha256Hex(existing.target.openKey),
+                   let stableKey = item.storageKey,
+                   !stableKey.isEmpty,
+                   stableKey != existing.storageKey {
+                    merged[item.identity]?.storageKey = stableKey
+                }
             }
         }
         return order.compactMap { merged[$0] }

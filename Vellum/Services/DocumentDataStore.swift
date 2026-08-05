@@ -17,6 +17,114 @@ enum DocumentDataStore {
     /// `WebLibrary.storeDirOverride` / `ScratchpadAttachmentStore.directoryOverride`).
     nonisolated(unsafe) static var rootDirectoryOverride: URL?
 
+    /// The async class-B boundary used by production whenever a storage
+    /// coordinator is available. Synchronous methods below remain the direct
+    /// local/custom implementation and the test override; iCloud callers must
+    /// enter through these overloads so discovery and byte access stay behind
+    /// `LibraryFileStore`.
+    private struct Access: Sendable {
+        let store: any LibraryFileStore
+        let documentsRoot: URL
+        let fallbackRoot: URL?
+    }
+
+    private static func withAccess<T: Sendable>(
+        coordinator: StorageCoordinator,
+        _ operation: @escaping @Sendable (Access) async throws -> T
+    ) async throws -> T {
+        if let rootDirectoryOverride {
+            return try await operation(Access(
+                store: DirectLibraryFileStore(), documentsRoot: rootDirectoryOverride,
+                fallbackRoot: nil))
+        }
+        return try await coordinator.withStorageContext { context in
+            let localRoot = WebStorageLayout.local(storeDir: WebLibrary.storeDir).documentsDir
+            let activeRoot = context.layout.documentsDir
+            return try await operation(Access(
+                store: context.fileStore,
+                documentsRoot: activeRoot,
+                fallbackRoot: localRoot.standardizedFileURL == activeRoot.standardizedFileURL
+                    ? nil : localRoot))
+        }
+    }
+
+    private static func safeStorageKey(_ key: String) -> String {
+        DocumentIdentity.isCanonicalKey(key) ? key : DocumentIdentity.sha256Hex(key)
+    }
+
+    private static func documentDir(forKey key: String, root: URL) -> URL {
+        root.appendingPathComponent(safeStorageKey(key), isDirectory: true)
+    }
+
+    private static func readData(
+        forKey key: String,
+        relativeName: String,
+        coordinator: StorageCoordinator
+    ) async throws -> Data? {
+        try await withAccess(coordinator: coordinator) { access in
+            try await readData(forKey: key, relativeName: relativeName, access: access)
+        }
+    }
+
+    private static func readData(
+        forKey key: String,
+        relativeName: String,
+        access: Access
+    ) async throws -> Data? {
+        let active = documentDir(forKey: key, root: access.documentsRoot)
+            .appendingPathComponent(relativeName)
+        do {
+            if let data = try await access.store.read(active) { return data }
+        } catch let error as LibraryFileError {
+            guard case .notDownloaded = error,
+                  let fallbackRoot = access.fallbackRoot else { throw error }
+            let fallback = documentDir(forKey: key, root: fallbackRoot)
+                .appendingPathComponent(relativeName)
+            if let data = try await DirectLibraryFileStore().read(fallback) { return data }
+            throw error
+        }
+        guard let fallbackRoot = access.fallbackRoot else { return nil }
+        return try await DirectLibraryFileStore().read(
+            documentDir(forKey: key, root: fallbackRoot)
+                .appendingPathComponent(relativeName))
+    }
+
+    private static func replaceData(
+        _ data: Data,
+        forKey key: String,
+        relativeName: String,
+        coordinator: StorageCoordinator
+    ) async throws {
+        try await withAccess(coordinator: coordinator) { access in
+            let destination = documentDir(forKey: key, root: access.documentsRoot)
+                .appendingPathComponent(relativeName)
+            // A coordinated read is the readiness guard. A stale/download-pending
+            // item throws here, so a newly encoded empty/default value cannot
+            // replace remote bytes this device has not actually read.
+            _ = try await access.store.read(destination)
+            try await access.store.replace(destination, with: data)
+        }
+    }
+
+    private static func removeData(
+        forKey key: String,
+        relativeName: String,
+        coordinator: StorageCoordinator,
+        refuseUnavailable: Bool
+    ) async throws {
+        try await withAccess(coordinator: coordinator) { access in
+            let active = documentDir(forKey: key, root: access.documentsRoot)
+                .appendingPathComponent(relativeName)
+            if refuseUnavailable { _ = try await access.store.read(active) }
+            try await access.store.remove(active)
+            if let fallbackRoot = access.fallbackRoot {
+                try await DirectLibraryFileStore().remove(
+                    documentDir(forKey: key, root: fallbackRoot)
+                        .appendingPathComponent(relativeName))
+            }
+        }
+    }
+
     /// The documents/ home for the user's chosen storage location, resolved PER
     /// OPERATION through the active web-storage layout (so a mode change takes
     /// effect on the next read/write, never a value cached at init). In iCloud
@@ -111,6 +219,15 @@ enum DocumentDataStore {
         return try? JSONDecoder().decode(Meta.self, from: data)
     }
 
+    static func loadMeta(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> Meta? {
+        guard let data = try await readData(
+            forKey: key, relativeName: "meta.json", coordinator: coordinator)
+        else { return nil }
+        return try JSONDecoder().decode(Meta.self, from: data)
+    }
+
     /// Upsert the document's meta.json, refreshing `last_opened`. Called from the
     /// per-pane document load path. A previously stored title is kept when the
     /// incoming document has none.
@@ -137,15 +254,53 @@ enum DocumentDataStore {
                         label: "document meta")
     }
 
+    static func touch(
+        document: DocumentInfo,
+        force: Bool = false,
+        coordinator: StorageCoordinator
+    ) async throws {
+        let key = DocumentIdentity.storageKey(for: document)
+        let existing = try await loadMeta(forKey: key, coordinator: coordinator)
+        if !force, existing == nil,
+           try await hasDataFiles(forKey: key, coordinator: coordinator) == false {
+            return
+        }
+        let meta = Meta(
+            version: 1,
+            kind: document.kind.rawValue,
+            title: document.title ?? existing?.title,
+            lastKnownPath: document.pdfPath,
+            lastOpened: WebLibrary.rfc3339Now())
+        try await replaceData(
+            try WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
+            relativeName: "meta.json", coordinator: coordinator)
+    }
+
     // MARK: - scratchpad.md
 
     static func scratchpadExists(forKey key: String) -> Bool {
         FileManager.default.fileExists(atPath: readPath(forKey: key, relativeName: "scratchpad.md").path)
     }
 
+    static func scratchpadExists(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> Bool {
+        try await readData(
+            forKey: key, relativeName: "scratchpad.md", coordinator: coordinator) != nil
+    }
+
     /// The persisted (relative-ref) markdown for a document, or "" if none.
     static func loadScratchpad(forKey key: String) -> String {
         (try? String(contentsOf: readPath(forKey: key, relativeName: "scratchpad.md"), encoding: .utf8)) ?? ""
+    }
+
+    static func loadScratchpad(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> String {
+        guard let data = try await readData(
+            forKey: key, relativeName: "scratchpad.md", coordinator: coordinator)
+        else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Atomically write scratchpad.md. Throws on write failure (user data) — and
@@ -156,12 +311,37 @@ enum DocumentDataStore {
         try writeAtomic(Data(text.utf8), to: path, label: "scratchpad note")
     }
 
+    static func saveScratchpad(
+        forKey key: String, text: String, coordinator: StorageCoordinator
+    ) async throws {
+        try await replaceData(
+            Data(text.utf8), forKey: key, relativeName: "scratchpad.md",
+            coordinator: coordinator)
+    }
+
     /// Delete scratchpad.md (delete-means-delete; §8). Best-effort — a missing
     /// file is already the desired end state. Skips an iCloud-evicted copy: an
     /// empty-note save must not delete real notes that just haven't downloaded
     /// (explicit Storage-pane deletes bypass this via their own removeItem).
     static func removeScratchpad(forKey key: String) {
         removeSyncedFile(forKey: key, relativeName: "scratchpad.md")
+    }
+
+    static func removeScratchpad(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async {
+        try? await removeScratchpadSafely(forKey: key, coordinator: coordinator)
+    }
+
+    /// Throwing form used by the live Scratchpad write queue. A failed or
+    /// not-downloaded read must keep the edit dirty instead of being reported as
+    /// a successful clear.
+    static func removeScratchpadSafely(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws {
+        try await removeData(
+            forKey: key, relativeName: "scratchpad.md", coordinator: coordinator,
+            refuseUnavailable: true)
     }
 
     /// Remove a synced file from BOTH the active-layout dir and the local
@@ -189,9 +369,23 @@ enum DocumentDataStore {
         FileManager.default.fileExists(atPath: readPath(forKey: key, relativeName: "conversations.json").path)
     }
 
+    static func conversationsExist(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> Bool {
+        try await readData(
+            forKey: key, relativeName: "conversations.json", coordinator: coordinator) != nil
+    }
+
     /// Raw conversations.json bytes for a document, or nil if none.
     static func loadConversationsData(forKey key: String) -> Data? {
         try? Data(contentsOf: readPath(forKey: key, relativeName: "conversations.json"))
+    }
+
+    static func loadConversationsData(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> Data? {
+        try await readData(
+            forKey: key, relativeName: "conversations.json", coordinator: coordinator)
     }
 
     /// Atomically write conversations.json. Throws on write failure (user data) —
@@ -202,11 +396,27 @@ enum DocumentDataStore {
         try writeAtomic(data, to: path, label: "conversations")
     }
 
+    static func saveConversationsData(
+        forKey key: String, data: Data, coordinator: StorageCoordinator
+    ) async throws {
+        try await replaceData(
+            data, forKey: key, relativeName: "conversations.json",
+            coordinator: coordinator)
+    }
+
     /// Delete conversations.json (delete-means-delete; §8). Best-effort — a
     /// missing file is already the desired end state. Skips an iCloud-evicted
     /// copy so an empty save can't delete real chat that hasn't downloaded.
     static func removeConversations(forKey key: String) {
         removeSyncedFile(forKey: key, relativeName: "conversations.json")
+    }
+
+    static func removeConversations(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async {
+        try? await removeData(
+            forKey: key, relativeName: "conversations.json", coordinator: coordinator,
+            refuseUnavailable: true)
     }
 
     // MARK: - Folder lifecycle
@@ -229,10 +439,111 @@ enum DocumentDataStore {
         return false
     }
 
+    static func hasDataFiles(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> Bool {
+        try await withAccess(coordinator: coordinator) { access in
+            let directory = documentDir(forKey: key, root: access.documentsRoot)
+            let active = try await access.store.list(directory, suffix: nil)
+            if active.contains(where: { $0.name != "meta.json" }) { return true }
+            guard let fallbackRoot = access.fallbackRoot else { return false }
+            return try await DirectLibraryFileStore().list(
+                documentDir(forKey: key, root: fallbackRoot), suffix: nil
+            ).contains(where: { $0.name != "meta.json" })
+        }
+    }
+
     /// Remove the whole document folder when it holds no data files (§8).
     static func pruneEmptyDocumentDir(forKey key: String) {
         guard !hasDataFiles(forKey: key) else { return }
         try? FileManager.default.removeItem(at: documentDir(forKey: key))
+    }
+
+    static func pruneEmptyDocumentDir(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async {
+        guard (try? await hasDataFiles(forKey: key, coordinator: coordinator)) == false
+        else { return }
+        try? await withAccess(coordinator: coordinator) { access in
+            try await access.store.remove(
+                documentDir(forKey: key, root: access.documentsRoot))
+            if let fallbackRoot = access.fallbackRoot {
+                try? await DirectLibraryFileStore().remove(
+                    documentDir(forKey: key, root: fallbackRoot))
+            }
+        }
+    }
+
+    // MARK: - Bundle-imported attachments
+
+    static func listAttachmentNames(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> [String] {
+        try await withAccess(coordinator: coordinator) { access in
+            let activeDirectory = documentDir(forKey: key, root: access.documentsRoot)
+                .appendingPathComponent("attachments", isDirectory: true)
+            let active = try await access.store.list(activeDirectory, suffix: nil).map(\.name)
+            guard let fallbackRoot = access.fallbackRoot else { return active }
+            let fallback = try await DirectLibraryFileStore().list(
+                documentDir(forKey: key, root: fallbackRoot)
+                    .appendingPathComponent("attachments", isDirectory: true),
+                suffix: nil).map(\.name)
+            return Array(Set(active + fallback)).sorted()
+        }
+    }
+
+    static func loadAttachments(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws -> [(name: String, data: Data)] {
+        let names = try await listAttachmentNames(forKey: key, coordinator: coordinator)
+        var attachments: [(name: String, data: Data)] = []
+        for name in names {
+            if let data = try await readData(
+                forKey: key, relativeName: "attachments/\(name)",
+                coordinator: coordinator)
+            {
+                attachments.append((name, data))
+            }
+        }
+        return attachments
+    }
+
+    static func saveAttachment(
+        forKey key: String,
+        name: String,
+        data: Data,
+        coordinator: StorageCoordinator
+    ) async throws {
+        try await replaceData(
+            data, forKey: key, relativeName: "attachments/\(name)",
+            coordinator: coordinator)
+    }
+
+    /// Read one attachment through the active storage boundary. Live Scratchpad
+    /// panes use this to stage bytes in their own resolver; an iCloud documents
+    /// URL never escapes upward into a `FileManager` read.
+    static func loadAttachment(
+        forKey key: String,
+        name: String,
+        coordinator: StorageCoordinator
+    ) async throws -> Data? {
+        try await readData(
+            forKey: key, relativeName: "attachments/\(name)",
+            coordinator: coordinator)
+    }
+
+    /// Remove one attachment through the active storage boundary. The live
+    /// Scratchpad calls this only after a newer scratchpad.md no longer refers
+    /// to the attachment, so a failed removal is a recoverable orphan rather
+    /// than missing note data.
+    static func removeAttachment(
+        forKey key: String,
+        name: String,
+        coordinator: StorageCoordinator
+    ) async {
+        try? await removeData(
+            forKey: key, relativeName: "attachments/\(name)",
+            coordinator: coordinator, refuseUnavailable: true)
     }
 
     // MARK: - iCloud placeholders (evicted synced files)
@@ -347,6 +658,66 @@ enum DocumentDataStore {
         return out
     }
 
+    static func listDocuments(
+        coordinator: StorageCoordinator,
+        documentAccess: DocumentAccessResolver = .live
+    ) async -> [DocumentDataEntry] {
+        (try? await withAccess(coordinator: coordinator) { access in
+            var keys = Set(try await access.store.list(
+                access.documentsRoot, suffix: nil).map(\.name))
+            if let fallbackRoot = access.fallbackRoot {
+                keys.formUnion(try await DirectLibraryFileStore().list(
+                    fallbackRoot, suffix: nil).map(\.name))
+            }
+            var entries: [DocumentDataEntry] = []
+            for key in keys.sorted() {
+                let directory = documentDir(forKey: key, root: access.documentsRoot)
+                let activeFiles = try await access.store.list(directory, suffix: nil)
+                var files = Dictionary(uniqueKeysWithValues: activeFiles.map { ($0.name, $0) })
+                if let fallbackRoot = access.fallbackRoot {
+                    for entry in try await DirectLibraryFileStore().list(
+                        documentDir(forKey: key, root: fallbackRoot), suffix: nil)
+                    where files[entry.name] == nil {
+                        files[entry.name] = entry
+                    }
+                }
+                let meta: Meta? = if let data = try await readData(
+                    forKey: key, relativeName: "meta.json", coordinator: coordinator)
+                {
+                    try? JSONDecoder().decode(Meta.self, from: data)
+                } else {
+                    nil
+                }
+                let sourceExists: Bool = {
+                    guard let meta else { return true }
+                    if meta.kind == DocumentKind.web.rawValue { return true }
+                    return documentAccess.sourceExists(
+                        key: key, lastKnownPath: meta.lastKnownPath)
+                }()
+                var notes = files["scratchpad.md"]?.byteSize ?? 0
+                let activeAttachments = try await access.store.list(
+                    directory.appendingPathComponent("attachments", isDirectory: true),
+                    suffix: nil)
+                var attachments = Dictionary(uniqueKeysWithValues:
+                    activeAttachments.map { ($0.name, $0) })
+                if let fallbackRoot = access.fallbackRoot {
+                    for entry in try await DirectLibraryFileStore().list(
+                        documentDir(forKey: key, root: fallbackRoot)
+                            .appendingPathComponent("attachments", isDirectory: true),
+                        suffix: nil) where attachments[entry.name] == nil {
+                        attachments[entry.name] = entry
+                    }
+                }
+                notes += attachments.values.compactMap(\.byteSize).reduce(0, +)
+                entries.append(DocumentDataEntry(
+                    key: key, meta: meta, notesBytes: notes,
+                    conversationBytes: files["conversations.json"]?.byteSize ?? 0,
+                    sourceExists: sourceExists))
+            }
+            return entries
+        }) ?? []
+    }
+
     // MARK: - Home-screen search inventory
 
     /// One `documents/<key>/` folder as the home screen's search index sees it:
@@ -384,6 +755,46 @@ enum DocumentDataStore {
         return out
     }
 
+    /// Coordinated home-search inventory. Production passes the workspace's
+    /// shared coordinator, so an iCloud library is discovered through metadata
+    /// queries and its meta bytes are read through `SyncedContainer`. The same
+    /// path remains direct FileManager-backed I/O in local/custom modes and
+    /// under `rootDirectoryOverride`.
+    static func listDocumentMetas(
+        coordinator: StorageCoordinator
+    ) async throws -> [DocumentMetaEntry] {
+        try await withAccess(coordinator: coordinator) { access in
+            let direct = DirectLibraryFileStore()
+            var keys = Set(try await access.store.list(
+                access.documentsRoot, suffix: nil).map(\.name))
+            if let fallbackRoot = access.fallbackRoot {
+                keys.formUnion(try await direct.list(fallbackRoot, suffix: nil).map(\.name))
+            }
+
+            var entries: [DocumentMetaEntry] = []
+            for key in keys.sorted() {
+                let activeDirectory = documentDir(forKey: key, root: access.documentsRoot)
+                var fileNames = Set(try await access.store.list(
+                    activeDirectory, suffix: nil).map(\.name))
+                if let fallbackRoot = access.fallbackRoot {
+                    fileNames.formUnion(try await direct.list(
+                        documentDir(forKey: key, root: fallbackRoot), suffix: nil).map(\.name))
+                }
+                guard fileNames.contains("meta.json"),
+                      let data = try await readData(
+                        forKey: key, relativeName: "meta.json", access: access),
+                      let meta = try? JSONDecoder().decode(Meta.self, from: data)
+                else { continue }
+                entries.append(DocumentMetaEntry(
+                    key: key,
+                    meta: meta,
+                    hasUserData: fileNames.contains("scratchpad.md")
+                        || fileNames.contains("conversations.json")))
+            }
+            return entries
+        }
+    }
+
     /// scratchpad.md + everything under attachments/ (the note's full footprint).
     static func notesBytes(forKey key: String) -> Int64 {
         fileSize(scratchpadPath(forKey: key)) + directorySize(at: attachmentsDir(forKey: key))
@@ -402,6 +813,26 @@ enum DocumentDataStore {
         pruneEmptyDocumentDir(forKey: key)
     }
 
+    static func deleteNotes(forKey key: String, coordinator: StorageCoordinator) async {
+        try? await deleteNotesSafely(forKey: key, coordinator: coordinator)
+    }
+
+    /// Throwing delete used inside Scratchpad's exclusive write lane. The note
+    /// is removed from active and fallback roots before attachments are touched;
+    /// a fallback failure is surfaced so callers never announce a clean delete
+    /// while an older copy can still reappear.
+    static func deleteNotesSafely(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws {
+        try await removeData(
+            forKey: key, relativeName: "scratchpad.md", coordinator: coordinator,
+            refuseUnavailable: false)
+        try await removeData(
+            forKey: key, relativeName: "attachments", coordinator: coordinator,
+            refuseUnavailable: false)
+        await pruneEmptyDocumentDir(forKey: key, coordinator: coordinator)
+    }
+
     /// Delete conversations.json, then prune a now-empty folder. Explicit
     /// Storage-pane delete: unlike `removeConversations` (which spares an evicted
     /// placeholder so an empty in-app save can't clobber undownloaded chat), this
@@ -411,11 +842,37 @@ enum DocumentDataStore {
         pruneEmptyDocumentDir(forKey: key)
     }
 
+    static func deleteConversation(forKey key: String, coordinator: StorageCoordinator) async {
+        try? await removeData(
+            forKey: key, relativeName: "conversations.json", coordinator: coordinator,
+            refuseUnavailable: false)
+        await pruneEmptyDocumentDir(forKey: key, coordinator: coordinator)
+    }
+
     /// Delete the whole `documents/<key>/` folder — meta, notes, attachments and
     /// chat. The caller separately drops the text-cache entry (the actor owns it)
     /// and the web snapshot artifacts (WebLibrary owns those).
     static func deleteAll(forKey key: String) {
         try? FileManager.default.removeItem(at: documentDir(forKey: key))
+    }
+
+    static func deleteAll(forKey key: String, coordinator: StorageCoordinator) async {
+        try? await deleteAllSafely(forKey: key, coordinator: coordinator)
+    }
+
+    /// Throwing variant used by coordinated destructive actions. Callers must
+    /// not re-enable an editor until both active and fallback copies are gone.
+    static func deleteAllSafely(
+        forKey key: String, coordinator: StorageCoordinator
+    ) async throws {
+        try await withAccess(coordinator: coordinator) { access in
+            try await access.store.remove(
+                documentDir(forKey: key, root: access.documentsRoot))
+            if let fallbackRoot = access.fallbackRoot {
+                try await DirectLibraryFileStore().remove(
+                    documentDir(forKey: key, root: fallbackRoot))
+            }
+        }
     }
 
     // MARK: - Relink (orphaned entry -> moved source)
@@ -434,9 +891,30 @@ enum DocumentDataStore {
         try writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
     }
 
+    static func relink(
+        forKey key: String, newPath: String, coordinator: StorageCoordinator
+    ) async throws {
+        guard var meta = try await loadMeta(forKey: key, coordinator: coordinator) else {
+            throw DocumentAccessError.missingMetadata(key)
+        }
+        meta.lastKnownPath = newPath
+        meta.lastOpened = WebLibrary.rfc3339Now()
+        try await replaceData(
+            WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
+            relativeName: "meta.json", coordinator: coordinator)
+    }
+
     static func restoreMeta(_ meta: Meta, forKey key: String) throws {
         let data = try WebLibrary.jsonEncoderPretty.encode(meta)
         try writeAtomic(data, to: metaPath(forKey: key), label: "document meta rollback")
+    }
+
+    static func restoreMeta(
+        _ meta: Meta, forKey key: String, coordinator: StorageCoordinator
+    ) async throws {
+        try await replaceData(
+            WebLibrary.jsonEncoderPretty.encode(meta), forKey: key,
+            relativeName: "meta.json", coordinator: coordinator)
     }
 
     // MARK: - Rename
@@ -463,6 +941,24 @@ enum DocumentDataStore {
         guard let data = try? WebLibrary.jsonEncoderPretty.encode(meta) else { return false }
         do {
             try writeAtomic(data, to: metaPath(forKey: key), label: "document meta")
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    static func setTitle(
+        forKey key: String, title: String?, coordinator: StorageCoordinator
+    ) async -> Bool {
+        do {
+            guard var meta = try await loadMeta(forKey: key, coordinator: coordinator)
+            else { return false }
+            let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            meta.title = trimmed.isEmpty ? nil : trimmed
+            let data = try WebLibrary.jsonEncoderPretty.encode(meta)
+            try await replaceData(
+                data, forKey: key, relativeName: "meta.json", coordinator: coordinator)
             return true
         } catch {
             return false
@@ -516,6 +1012,193 @@ enum DocumentDataStore {
         guard oldKey != newKey else { return }
         moveOrMergeDirectory(
             from: documentDir(forKey: oldKey), into: documentDir(forKey: newKey))
+    }
+
+    /// Coordinated path-hash → durable-id rekey. The class-B schema is small
+    /// and fixed, so copying its known files through `LibraryFileStore` is both
+    /// safer and simpler than exposing a recursive filesystem walk above the
+    /// seam. Destination meta is canonical; other collisions use the newest
+    /// metadata timestamp and never overwrite an unreadable/not-downloaded file.
+    @discardableResult
+    static func rekey(
+        from oldKey: String,
+        to newKey: String,
+        coordinator: StorageCoordinator
+    ) async -> Bool {
+        guard oldKey != newKey else { return true }
+        return await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+            forKeys: [oldKey, newKey]
+        ) {
+            await rekeyExclusively(
+                from: oldKey, to: newKey, coordinator: coordinator)
+        }
+    }
+
+    private static func rekeyExclusively(
+        from oldKey: String,
+        to newKey: String,
+        coordinator: StorageCoordinator
+    ) async -> Bool {
+        do {
+            return try await withAccess(coordinator: coordinator) { access in
+                let source = documentDir(forKey: oldKey, root: access.documentsRoot)
+                let destination = documentDir(forKey: newKey, root: access.documentsRoot)
+                let direct = DirectLibraryFileStore()
+                let fallbackSource = access.fallbackRoot.map {
+                    documentDir(forKey: oldKey, root: $0)
+                }
+                let fallbackDestination = access.fallbackRoot.map {
+                    documentDir(forKey: newKey, root: $0)
+                }
+
+                var sourceEntries = Dictionary(uniqueKeysWithValues:
+                    try await access.store.list(source, suffix: nil).map { ($0.name, $0) })
+                if let fallbackSource {
+                    for entry in try await direct.list(fallbackSource, suffix: nil)
+                    where sourceEntries[entry.name] == nil {
+                        sourceEntries[entry.name] = entry
+                    }
+                }
+                var destinationEntries = Dictionary(uniqueKeysWithValues:
+                    try await access.store.list(destination, suffix: nil).map { ($0.name, $0) })
+                if let fallbackDestination {
+                    for entry in try await direct.list(fallbackDestination, suffix: nil)
+                    where destinationEntries[entry.name] == nil {
+                        destinationEntries[entry.name] = entry
+                    }
+                }
+
+                // Scratchpads are never newest-wins. Reconcile both active and
+                // fallback copies on each side first, write the full recovery
+                // result to the active durable key, verify it, then remove the
+                // hidden fallback/source copies that could otherwise overwrite
+                // it when a pending relocation resumes.
+                let sourceNoteURL = source.appendingPathComponent("scratchpad.md")
+                let fallbackSourceNoteURL = fallbackSource?.appendingPathComponent("scratchpad.md")
+                let destinationNoteURL = destination.appendingPathComponent("scratchpad.md")
+                let fallbackDestinationNoteURL = fallbackDestination?
+                    .appendingPathComponent("scratchpad.md")
+                let activeSourceNote = try await access.store.read(sourceNoteURL)
+                let fallbackSourceNote: Data?
+                if let fallbackSourceNoteURL {
+                    fallbackSourceNote = try await direct.read(fallbackSourceNoteURL)
+                } else {
+                    fallbackSourceNote = nil
+                }
+                let sourceNote: Data? = switch (activeSourceNote, fallbackSourceNote) {
+                case let (active?, fallback?):
+                    mergeScratchpadsPreservingBoth(destination: active, source: fallback)
+                case let (active?, nil): active
+                case let (nil, fallback?): fallback
+                case (nil, nil): nil
+                }
+                let activeDestinationNote = try await access.store.read(destinationNoteURL)
+                let fallbackDestinationNote: Data?
+                if let fallbackDestinationNoteURL {
+                    fallbackDestinationNote = try await direct.read(fallbackDestinationNoteURL)
+                } else {
+                    fallbackDestinationNote = nil
+                }
+                let destinationNote: Data? = switch (
+                    activeDestinationNote, fallbackDestinationNote
+                ) {
+                case let (active?, fallback?):
+                    mergeScratchpadsPreservingBoth(destination: active, source: fallback)
+                case let (active?, nil): active
+                case let (nil, fallback?): fallback
+                case (nil, nil): nil
+                }
+                let mergedNote: Data? = switch (destinationNote, sourceNote) {
+                case let (destination?, source?):
+                    mergeScratchpadsPreservingBoth(destination: destination, source: source)
+                case let (destination?, nil): destination
+                case let (nil, source?): source
+                case (nil, nil): nil
+                }
+                if let mergedNote, mergedNote != activeDestinationNote {
+                    try await access.store.replace(destinationNoteURL, with: mergedNote)
+                }
+                if let mergedNote {
+                    guard try await access.store.read(destinationNoteURL) == mergedNote else {
+                        throw LibraryFileError.io("Failed to verify rekeyed Scratchpad")
+                    }
+                    try await access.store.remove(sourceNoteURL)
+                    if let fallbackSourceNoteURL { try await direct.remove(fallbackSourceNoteURL) }
+                    if let fallbackDestinationNoteURL {
+                        try await direct.remove(fallbackDestinationNoteURL)
+                    }
+                }
+
+                var relativeNames = sourceEntries.keys.filter {
+                    $0 != "attachments" && $0 != "scratchpad.md"
+                }
+                let sourceAttachments = try await access.store.list(
+                    source.appendingPathComponent("attachments", isDirectory: true),
+                    suffix: nil)
+                var attachmentEntries = Dictionary(uniqueKeysWithValues:
+                    sourceAttachments.map { ($0.name, $0) })
+                if let fallbackSource {
+                    for entry in try await direct.list(
+                        fallbackSource.appendingPathComponent("attachments", isDirectory: true),
+                        suffix: nil) where attachmentEntries[entry.name] == nil {
+                        attachmentEntries[entry.name] = entry
+                    }
+                }
+                relativeNames += attachmentEntries.keys.map { "attachments/\($0)" }
+
+                for relative in relativeNames.sorted() {
+                    let sourceURL = source.appendingPathComponent(relative)
+                    let fallbackURL = fallbackSource?.appendingPathComponent(relative)
+                    var sourceData = try await access.store.read(sourceURL)
+                    if sourceData == nil, let fallbackURL {
+                        sourceData = try await direct.read(fallbackURL)
+                    }
+                    guard let sourceData else { continue }
+                    let destinationURL = destination.appendingPathComponent(relative)
+                    let destinationData = try await access.store.read(destinationURL)
+                    if destinationData != nil {
+                        if relative == "meta.json" { continue }
+                        let name = (relative as NSString).lastPathComponent
+                        let sourceEntry = relative.hasPrefix("attachments/")
+                            ? attachmentEntries[name] : sourceEntries[name]
+                        let destinationDirectory = relative.hasPrefix("attachments/")
+                            ? destination.appendingPathComponent("attachments", isDirectory: true)
+                            : destination
+                        if destinationEntries[name] == nil || relative.hasPrefix("attachments/") {
+                            destinationEntries[name] = try await access.store.list(
+                                destinationDirectory, suffix: nil).first { $0.name == name }
+                        }
+                        guard (sourceEntry?.contentModifiedAt ?? .distantPast)
+                                > (destinationEntries[name]?.contentModifiedAt ?? .distantPast)
+                        else { continue }
+                    }
+                    try await access.store.replace(destinationURL, with: sourceData)
+                }
+
+                for relative in relativeNames {
+                    try await access.store.remove(source.appendingPathComponent(relative))
+                }
+                try await access.store.remove(source)
+                if let fallbackSource { try await direct.remove(fallbackSource) }
+                return true
+            }
+        } catch {
+            return false
+        }
+    }
+
+    private static func mergeScratchpadsPreservingBoth(
+        destination: Data,
+        source: Data
+    ) -> Data {
+        guard destination != source else { return destination }
+        guard !destination.isEmpty else { return source }
+        guard !source.isEmpty else { return destination }
+        let recovered = String(decoding: source, as: UTF8.self)
+        let marker = "\n\n---\n\n## Recovered notes from before document identity changed\n\n"
+        let existing = String(decoding: destination, as: UTF8.self)
+        guard !existing.contains(marker + recovered) else { return destination }
+        return Data((existing + marker + recovered).utf8)
     }
 
     /// Move `src` folder to `dst`, merging file-by-file (newest modification

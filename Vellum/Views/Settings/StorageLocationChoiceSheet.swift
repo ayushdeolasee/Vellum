@@ -3,9 +3,8 @@ import SwiftUI
 
 // First-launch storage-location choice (and the shared apply/relocate runner
 // Settings reuses). The choice is explicit about the tradeoff: iCloud syncs
-// everything (offline copies AND highlights/notes/reading positions); a custom
-// folder holds only the offline copies while reading state stays local; This
-// iPad keeps the pre-existing app-container layout.
+// offline copies, highlights, Scratchpad notes and images, AI conversations,
+// and reading positions. Local/custom modes keep class-B data device-local.
 //
 // iOS adaptation (parity plan decision #5): iCloud resolves through the app's
 // ubiquity container and is only offered when it resolves; a custom folder is
@@ -69,9 +68,7 @@ enum WebStorageRelocator {
         // pending marker as "the previous location is still unavailable".
         let generation = relocationGeneration
         await enqueue {
-            await coordinator.performExclusiveStorageOperation {
-                WebStorageMigrator.sweepAtLaunch()
-            }
+            await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
         }.value
         if isResuming, generation == relocationGeneration {
             if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
@@ -132,10 +129,17 @@ enum WebStorageRelocator {
         }
 
         enqueue {
-            let moved = await coordinator.performExclusiveStorageOperation(
+            let moved = await coordinator.performExclusiveStorageRelocation(
+                from: source,
+                to: destination,
                 reconfigureAfter: true
-            ) {
-                WebStorageMigrator.relocate(from: source, to: destination)
+            ) { sourceContext, destinationContext in
+                guard let sourceContext, let destinationContext else { return false }
+                return await WebStorageMigrator.relocate(
+                    from: source,
+                    to: destination,
+                    sourceStore: sourceContext.fileStore,
+                    destinationStore: destinationContext.fileStore)
             }
             await MainActor.run {
                 NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
@@ -212,7 +216,7 @@ struct StorageLocationChoiceSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where should Vellum keep your library?")
                     .font(.title2.weight(.semibold))
-                Text("Vellum stores offline copies of web pages, plus your highlights, notes, and reading positions. You can change this anytime in Settings ▸ Storage.")
+                Text(StorageLocationCopy.introduction(on: device))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -222,9 +226,10 @@ struct StorageLocationChoiceSheet: View {
                 title: "Use iCloud Drive",
                 badge: icloudAvailable ? "Recommended" : nil,
                 systemImage: "icloud",
-                description: icloudAvailable
-                    ? "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your devices."
-                    : "iCloud Drive isn't available on this \(device). Sign in to iCloud and turn on iCloud Drive to use this option.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .icloud,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
             ) {
@@ -237,7 +242,10 @@ struct StorageLocationChoiceSheet: View {
                 title: "Choose a Folder…",
                 badge: nil,
                 systemImage: "folder",
-                description: "Offline copies go in a folder you pick in Files. Your highlights, notes, AI conversations, and reading positions stay on this \(device) and won't sync.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .custom,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: false,
                 identifier: "storageChoice.custom"
             ) {
@@ -250,7 +258,10 @@ struct StorageLocationChoiceSheet: View {
                 title: "Keep on This \(device)",
                 badge: nil,
                 systemImage: "internaldrive",
-                description: "Everything stays in Vellum's private app folder. No syncing.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .local,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: false,
                 identifier: "storageChoice.local"
             ) {

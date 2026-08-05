@@ -59,6 +59,46 @@ actor StorageCoordinator {
         var inFlightOperations: Int
     }
 
+    /// A losing synced-file version that Vellum preserved instead of merging.
+    /// The URL is descriptive only; callers recover or delete it through this
+    /// coordinator so an iCloud URL never escapes into direct FileManager I/O.
+    struct ArchivedConflict: Identifiable, Sendable, Equatable, Codable {
+        var archiveURL: URL
+        var originalURL: URL
+        var detectedAt: Date
+
+        var id: URL { archiveURL.standardizedFileURL }
+        var displayName: String { originalURL.lastPathComponent }
+        var archiveName: String { archiveURL.lastPathComponent }
+    }
+
+    enum ArchivedConflictError: Error, Sendable, Equatable {
+        case noLongerAvailable
+    }
+
+    struct ConflictArchiveRegistry: Sendable {
+        var load: @Sendable () -> [ArchivedConflict]
+        var save: @Sendable ([ArchivedConflict]) -> Void
+
+        static let live = ConflictArchiveRegistry(
+            load: {
+                guard let data = UserDefaults.standard.data(
+                    forKey: "vellum.storage.conflictArchives.v1")
+                else { return [] }
+                return (try? JSONDecoder().decode([ArchivedConflict].self, from: data)) ?? []
+            },
+            save: { conflicts in
+                if conflicts.isEmpty {
+                    UserDefaults.standard.removeObject(
+                        forKey: "vellum.storage.conflictArchives.v1")
+                } else if let data = try? JSONEncoder().encode(conflicts) {
+                    UserDefaults.standard.set(
+                        data,
+                        forKey: "vellum.storage.conflictArchives.v1")
+                }
+            })
+    }
+
     enum StorageContext: Sendable {
         case direct(layout: WebStorageLayout)
         case coordinated(container: any SyncedContainer, layout: WebStorageLayout)
@@ -102,6 +142,7 @@ actor StorageCoordinator {
 
     private let rootResolver: @Sendable () async -> URL?
     private let containerFactory: @Sendable () async -> (any SyncedContainer)?
+    private let conflictArchiveRegistry: ConflictArchiveRegistry
 
     private var chosenMode: WebStorageMode?
     private var effectiveMode: WebStorageMode = .local
@@ -126,6 +167,11 @@ actor StorageCoordinator {
     private var pendingOrder: [ConflictKey] = []
     private var inFlightConflict: ConflictKey?
     private var resolvedConflictKeys: Set<ConflictKey> = []
+    private struct ArchivedConflictRecord: Sendable, Equatable {
+        var descriptor: ArchivedConflict
+        var generation: Int
+    }
+    private var archivedConflictRecords: [URL: ArchivedConflictRecord] = [:]
 
     private var inFlightOperations = 0
     private struct QuiescenceWaiter {
@@ -150,18 +196,83 @@ actor StorageCoordinator {
         },
         containerFactory: @escaping @Sendable () async -> (any SyncedContainer)? = {
             await Task.detached(priority: .utility) { ICloudSyncedContainer() }.value
-        }
+        },
+        conflictArchiveRegistry: ConflictArchiveRegistry = .live
     ) {
         self.storeDir = storeDir
         self.modeProvider = modeProvider
         self.effectiveModeProvider = effectiveModeProvider
         self.rootResolver = rootResolver
         self.containerFactory = containerFactory
+        self.conflictArchiveRegistry = conflictArchiveRegistry
         self.layout = .local(storeDir: storeDir)
     }
 
     func currentStatus() -> Status {
         status()
+    }
+
+    /// Preserved versions validated through the current container's metadata
+    /// query. Descriptor URLs are persisted locally so a later coordinator can
+    /// rediscover their synced items without recursively walking iCloud Drive.
+    func archivedConflicts() -> [ArchivedConflict] {
+        archivedConflictRecords.values
+            .filter { $0.generation == storageGeneration }
+            .map(\.descriptor).sorted {
+            if $0.detectedAt != $1.detectedAt { return $0.detectedAt > $1.detectedAt }
+            return $0.archiveURL.absoluteString < $1.archiveURL.absoluteString
+        }
+    }
+
+    /// Make a local recovery copy suitable for the iOS Files export picker.
+    /// Reading the archived bytes remains coordinated; only the new temporary
+    /// destination uses the direct store.
+    func exportArchivedConflict(_ conflict: ArchivedConflict) async throws -> URL {
+        guard let record = archivedConflictRecords[conflict.id],
+              record.generation == storageGeneration,
+              let container = access.container
+        else {
+            throw ArchivedConflictError.noLongerAvailable
+        }
+        try beginOperation(requiresContainer: true)
+        do {
+            let data = try await container.data(
+                at: record.descriptor.archiveURL,
+                materializing: .downloadIfNeeded(timeout: 10))
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Vellum Conflict \(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent(record.descriptor.archiveName)
+            try await DirectLibraryFileStore().replace(destination, with: data)
+            finishOperation()
+            return destination
+        } catch {
+            finishOperation()
+            throw error
+        }
+    }
+
+    /// Permanently remove a preserved version through its originating synced
+    /// container. The row disappears only after the coordinated remove succeeds.
+    func deleteArchivedConflict(_ conflict: ArchivedConflict) async throws {
+        guard let record = archivedConflictRecords[conflict.id],
+              record.generation == storageGeneration,
+              let container = access.container
+        else {
+            throw ArchivedConflictError.noLongerAvailable
+        }
+        try beginOperation(requiresContainer: true)
+        do {
+            try await container.remove(record.descriptor.archiveURL)
+            archivedConflictRecords.removeValue(forKey: conflict.id)
+            forgetArchivedConflict(conflict.id)
+            NotificationCenter.default.post(
+                name: .vellumStorageConflictArchivesChanged,
+                object: nil)
+            finishOperation()
+        } catch {
+            finishOperation()
+            throw error
+        }
     }
 
     /// Join the operation/conflict pass that is active right now. Pending
@@ -201,6 +312,30 @@ actor StorageCoordinator {
             await self.performExclusiveStorageOperationImpl(
                 reconfigureAfter: reconfigureAfter,
                 operation)
+        }
+    }
+
+    /// Lend both sides of a relocation while normal storage admission and
+    /// conflict delivery are closed. Either side may be the coordinated iCloud
+    /// layout; local/custom sides receive the direct adapter. A nil context
+    /// means the requested iCloud container is unavailable, so the caller must
+    /// leave its pending marker intact for a later retry.
+    func performExclusiveStorageRelocation<T: Sendable>(
+        from source: WebStorageLayout,
+        to destination: WebStorageLayout,
+        reconfigureAfter: Bool = false,
+        _ operation: @escaping @Sendable (
+            StorageContext?, StorageContext?
+        ) async -> T
+    ) async -> T {
+        await performExclusiveStorageOperation(reconfigureAfter: reconfigureAfter) {
+            let contexts = await self.relocationContexts(
+                source: source, destination: destination)
+            let result = await operation(contexts.source, contexts.destination)
+            for container in contexts.transientContainers {
+                await container.suspend()
+            }
+            return result
         }
     }
 
@@ -310,6 +445,7 @@ actor StorageCoordinator {
         lifecycle = .starting
         let configuration = await resolveConfiguration(chosenMode: modeProvider())
         install(configuration)
+        await rediscoverArchivedConflicts()
     }
 
     private func resolveConfiguration(chosenMode: WebStorageMode?) async -> ResolvedConfiguration {
@@ -402,6 +538,7 @@ actor StorageCoordinator {
         acceptsCoordinatedOperations = true
         acceptsConflictResolution = true
         lifecycle = .active
+        await rediscoverArchivedConflicts()
         launchConflictDrainIfNeeded()
     }
 
@@ -519,6 +656,41 @@ actor StorageCoordinator {
             await container.suspend()
         }
         install(next)
+        await rediscoverArchivedConflicts()
+    }
+
+    private func relocationContexts(
+        source: WebStorageLayout,
+        destination: WebStorageLayout
+    ) async -> (
+        source: StorageContext?,
+        destination: StorageContext?,
+        transientContainers: [any SyncedContainer]
+    ) {
+        let sourceResult = await storageContext(for: source)
+        if source == destination {
+            return (sourceResult.context, sourceResult.context, sourceResult.transientContainers)
+        }
+        let destinationResult = await storageContext(for: destination)
+        return (
+            sourceResult.context,
+            destinationResult.context,
+            sourceResult.transientContainers + destinationResult.transientContainers)
+    }
+
+    private func storageContext(
+        for requestedLayout: WebStorageLayout
+    ) async -> (context: StorageContext?, transientContainers: [any SyncedContainer]) {
+        guard requestedLayout.requiresCoordination else {
+            return (.direct(layout: requestedLayout), [])
+        }
+        if requestedLayout == layout, let container = access.container {
+            return (.coordinated(container: container, layout: requestedLayout), [])
+        }
+        guard let container = await containerFactory() else { return (nil, []) }
+        return (
+            .coordinated(container: container, layout: requestedLayout),
+            [container])
     }
 
     private func performExclusiveStorageOperationImpl<T: Sendable>(
@@ -545,6 +717,7 @@ actor StorageCoordinator {
                 await container.suspend()
             }
             install(next)
+            await rediscoverArchivedConflicts()
         } else {
             lifecycle = .active
             switch access {
@@ -600,6 +773,13 @@ actor StorageCoordinator {
 
     private func cancelAndJoinRuntimeTasks() async {
         storageGeneration += 1
+        let hadArchivedConflicts = archivedConflictRecords.isEmpty == false
+        archivedConflictRecords.removeAll()
+        if hadArchivedConflicts {
+            NotificationCenter.default.post(
+                name: .vellumStorageConflictArchivesChanged,
+                object: nil)
+        }
         let consumer = consumerTask
         let drain = conflictDrainTask
         consumerTask?.cancel()
@@ -735,7 +915,10 @@ actor StorageCoordinator {
                 resolution = .failure(error)
             }
             if !completeConflict(
-                key: work.key, event: work.event, generation: generation, resolution: resolution
+                key: work.key,
+                event: work.event,
+                generation: generation,
+                resolution: resolution
             ) {
                 break
             }
@@ -775,6 +958,28 @@ actor StorageCoordinator {
         resolution: Result<ConflictResolution, any Error>
     ) -> Bool {
         guard generation == storageGeneration else { return false }
+        if case .success(.keptCurrent(let archivedLosers)) = resolution {
+            for archiveURL in archivedLosers {
+                let descriptor = ArchivedConflict(
+                    archiveURL: archiveURL,
+                    originalURL: event.url,
+                    detectedAt: event.detectedAt)
+                archivedConflictRecords[descriptor.id] = ArchivedConflictRecord(
+                    descriptor: descriptor,
+                    generation: generation)
+            }
+            if archivedLosers.isEmpty == false {
+                rememberArchivedConflicts(archivedLosers.map { archiveURL in
+                    ArchivedConflict(
+                        archiveURL: archiveURL,
+                        originalURL: event.url,
+                        detectedAt: event.detectedAt)
+                })
+                NotificationCenter.default.post(
+                    name: .vellumStorageConflictArchivesChanged,
+                    object: nil)
+            }
+        }
         inFlightConflict = nil
         switch resolution {
         case .success(.deferred):
@@ -928,4 +1133,86 @@ actor StorageCoordinator {
         }
         return String(describing: error)
     }
+
+    // MARK: - Conflict archive rediscovery
+
+    private func rediscoverArchivedConflicts() async {
+        guard layout.requiresCoordination,
+              let container = access.container
+        else { return }
+        let candidates = conflictArchiveRegistry.load().filter {
+            Self.isLegitimateConflictArchive($0, in: layout)
+        }
+        var discovered: [URL: ArchivedConflictRecord] = [:]
+        for descriptor in candidates {
+            do {
+                let items = try await container.list(
+                    descriptor.archiveURL.deletingLastPathComponent(),
+                    matching: SyncedItemFilter(namePrefix: descriptor.archiveName))
+                guard items.contains(where: {
+                    $0.url.standardizedFileURL == descriptor.archiveURL.standardizedFileURL
+                }) else { continue }
+                discovered[descriptor.id] = ArchivedConflictRecord(
+                    descriptor: descriptor,
+                    generation: storageGeneration)
+            } catch {
+                // Metadata may be temporarily unavailable. Keep the durable
+                // descriptor and retry on the next foreground/reconfigure.
+                continue
+            }
+        }
+        guard discovered != archivedConflictRecords else { return }
+        archivedConflictRecords = discovered
+        NotificationCenter.default.post(
+            name: .vellumStorageConflictArchivesChanged,
+            object: nil)
+    }
+
+    private func rememberArchivedConflicts(_ conflicts: [ArchivedConflict]) {
+        var persisted: [URL: ArchivedConflict] = [:]
+        for conflict in conflictArchiveRegistry.load() {
+            persisted[conflict.id] = conflict
+        }
+        for conflict in conflicts { persisted[conflict.id] = conflict }
+        conflictArchiveRegistry.save(Array(persisted.values))
+    }
+
+    private func forgetArchivedConflict(_ id: URL) {
+        conflictArchiveRegistry.save(
+            conflictArchiveRegistry.load().filter { $0.id != id })
+    }
+
+    private static func isDescendant(_ candidate: URL, of root: URL) -> Bool {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let candidateComponents = candidate.standardizedFileURL.pathComponents
+        guard candidateComponents.count > rootComponents.count else { return false }
+        return candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents)
+    }
+
+    private static func isLegitimateConflictArchive(
+        _ conflict: ArchivedConflict,
+        in layout: WebStorageLayout
+    ) -> Bool {
+        let archiveURL = conflict.archiveURL.standardizedFileURL
+        let originalURL = conflict.originalURL.standardizedFileURL
+        let conflictsDirectory = archiveURL.deletingLastPathComponent()
+        guard conflictsDirectory.lastPathComponent == "conflicts",
+              conflictsDirectory.deletingLastPathComponent().standardizedFileURL
+                == originalURL.deletingLastPathComponent().standardizedFileURL,
+              archiveURL.lastPathComponent.hasPrefix(
+                originalURL.deletingPathExtension().lastPathComponent + ".")
+        else { return false }
+
+        if let indexPath = layout.indexPath,
+           originalURL == indexPath.standardizedFileURL {
+            return true
+        }
+        return [layout.recordsDir, layout.archivesDir, layout.documentsDir, layout.positionsDir]
+            .contains { isDescendant(originalURL, of: $0) }
+    }
+}
+
+extension Notification.Name {
+    static let vellumStorageConflictArchivesChanged = Notification.Name(
+        "vellumStorageConflictArchivesChanged")
 }

@@ -214,7 +214,8 @@ struct DocumentAccessResolver: Sendable {
     func relink(
         key: String,
         isDocIdKeyed: Bool,
-        to url: URL
+        to url: URL,
+        coordinator: StorageCoordinator? = nil
     ) async -> Result<Void, DocumentAccessError> {
         var stagedURL: URL?
         do {
@@ -228,15 +229,30 @@ struct DocumentAccessResolver: Sendable {
             }
             let bookmarkData = try adapter.makeBookmark(for: local.url, access: .local)
             let previousStore = store.entry(forKey: key)
-            guard let previousMeta = DocumentDataStore.loadMeta(forKey: key) else {
+            let previousMeta: DocumentDataStore.Meta? = if let coordinator {
+                try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator)
+            } else {
+                DocumentDataStore.loadMeta(forKey: key)
+            }
+            guard let previousMeta else {
                 throw DocumentAccessError.missingMetadata(key)
             }
             do {
-                try DocumentDataStore.relink(forKey: key, newPath: local.url.path)
+                if let coordinator {
+                    try await DocumentDataStore.relink(
+                        forKey: key, newPath: local.url.path, coordinator: coordinator)
+                } else {
+                    try DocumentDataStore.relink(forKey: key, newPath: local.url.path)
+                }
                 do {
                     try store.upsert(key: key, lastKnownPath: local.url.path, bookmarkData: bookmarkData)
                 } catch {
-                    try? DocumentDataStore.restoreMeta(previousMeta, forKey: key)
+                    if let coordinator {
+                        try? await DocumentDataStore.restoreMeta(
+                            previousMeta, forKey: key, coordinator: coordinator)
+                    } else {
+                        try? DocumentDataStore.restoreMeta(previousMeta, forKey: key)
+                    }
                     throw error
                 }
             } catch {
