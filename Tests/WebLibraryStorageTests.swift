@@ -74,6 +74,56 @@ final class WebLibraryStorageTests: XCTestCase {
         Calendar.current.date(byAdding: .month, value: -months, to: .now) ?? .now
     }
 
+    private func coordinatedStorage(
+        root: URL? = nil,
+        container: FakeSyncedContainer = FakeSyncedContainer()
+    ) async -> (WebLibraryStorage, StorageCoordinator, FakeSyncedContainer, WebStorageLayout) {
+        let cloudRoot = root ?? tempDir.appendingPathComponent("cloud/Vellum", isDirectory: true)
+        let coordinator = StorageCoordinator(
+            storeDir: WebLibrary.storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { cloudRoot },
+            containerFactory: { container })
+        await coordinator.start()
+        let layout = WebStorageLayout.pretty(
+            root: cloudRoot,
+            recordsInRoot: true,
+            localStoreDir: WebLibrary.storeDir)
+        return (WebLibraryStorage(coordinator: coordinator), coordinator, container, layout)
+    }
+
+    private func archiveFixture(url: String = "https://example.com/archive") throws
+        -> (ArchiveManifest, String, [CapturedAsset], Data, [Annotation]) {
+        let pagesJson = try WebArchive.encodePagesJson([WebPageText(number: 1, text: "hello")])
+        let asset = CapturedAsset(
+            name: "a0.css",
+            url: "https://example.com/a.css",
+            contentType: "text/css",
+            bytes: Data("body{}".utf8))
+        let annotation = Annotation(
+            id: "a1",
+            type: .highlight,
+            pageNumber: 1,
+            color: "#fde68a",
+            content: "kept",
+            positionData: nil,
+            createdAt: "2026-08-04T00:00:00Z",
+            updatedAt: "2026-08-04T00:00:00Z")
+        let html = "<html><body>Hello</body></html>"
+        let manifest = WebArchive.buildManifest(
+            url: url,
+            title: "Archive",
+            pageCount: 1,
+            lastPage: nil,
+            loadingPolicy: "live-first",
+            snapshotHtml: html,
+            pagesJson: pagesJson,
+            assets: [asset],
+            assetsSkipped: 0)
+        return (manifest, html, [asset], pagesJson, [annotation])
+    }
+
     // MARK: - Explicit save
 
     // Opening no longer saves; annotating does — and it must set savedAt so the
@@ -272,5 +322,193 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertNil(WebLibrary.parseRfc3339(nil))
         XCTAssertNil(WebLibrary.parseRfc3339(""))
         XCTAssertNil(WebLibrary.parseRfc3339("not a date"))
+    }
+
+    // MARK: - C4a coordinated storage
+
+    func testGatewayDirectRecordUsesLegacyFormatAndAtomicPath() async throws {
+        let url = "https://example.com/direct-byte-compat"
+        let key = WebLibrary.pageKey(url)
+        let expectedTitle: String? = "Direct"
+        let expectedSaved = true
+        let expectedSavedAt: String? = "2026-08-04T00:00:00Z"
+
+        let storage = WebLibraryStorage()
+        try await storage.mutateRecord(url: url, key: key) { record in
+            record.title = expectedTitle
+            record.saved = expectedSaved
+            record.savedAt = expectedSavedAt
+        }
+
+        let written = WebLibrary.recordPath(forKey: key)
+        let writtenData = try Data(contentsOf: written)
+        let record = try JSONDecoder().decode(WebPageRecord.self, from: writtenData)
+        XCTAssertEqual(record.title, expectedTitle)
+        XCTAssertEqual(record.saved, expectedSaved)
+        XCTAssertEqual(record.savedAt, expectedSavedAt)
+        let json = String(decoding: writtenData, as: UTF8.self)
+        XCTAssertTrue(json.contains("https://example.com/direct-byte-compat"))
+        XCTAssertTrue(json.contains("\n  \""), "direct writes keep the legacy pretty-printed JSON format")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: written.appendingPathExtension("tmp").path))
+    }
+
+    func testCoordinatedMutationDoesNotOverwriteUnreadableRecord() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/corrupt"
+        let key = WebLibrary.pageKey(url)
+        let recordURL = layout.recordsDir.appendingPathComponent("\(key).json")
+        let corrupt = Data("not-json".utf8)
+        container.seed(recordURL, data: corrupt)
+
+        do {
+            try await storage.mutateRecord(url: url, key: key) { $0.saved = true }
+            XCTFail("expected corrupt synced record to refuse replacement")
+        } catch {
+            XCTAssertEqual(container.peek(recordURL), corrupt)
+            XCTAssertEqual(container.coordinatedWriteCount, 0)
+        }
+    }
+
+    func testCoordinatedRecordMutationUsesContainerOnly() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/coordinated"
+        let key = WebLibrary.pageKey(url)
+
+        try await storage.mutateRecord(url: url, key: key) { record in
+            record.saved = true
+            record.title = "Coordinated"
+        }
+
+        let recordURL = layout.recordsDir.appendingPathComponent("\(key).json")
+        XCTAssertNil(try? Data(contentsOf: recordURL), "iCloud writes must not hit raw filesystem paths")
+        XCTAssertNotNil(container.peek(recordURL))
+        XCTAssertEqual(container.coordinatedWriteCount, 1)
+        XCTAssertEqual(container.forReplacingWriteCount, 1)
+        XCTAssertEqual(container.directoryEnumerationCount, 0)
+        XCTAssertEqual(container.existenceCheckCount, 0)
+    }
+
+    func testCoordinatedListIsCurrentOnlyAndDoesNotMaterialize() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let currentURL = "https://example.com/current"
+        let staleURL = "https://example.com/stale"
+        let legacyURL = "https://example.com/legacy"
+        for (url, readiness) in [(currentURL, ItemReadiness.current), (staleURL, .downloaded)] {
+            let key = WebLibrary.pageKey(url)
+            var record = WebPageRecord(url: url)
+            record.saved = true
+            record.savedAt = url
+            let data = try WebLibrary.jsonEncoderPretty.encode(record)
+            container.seed(
+                layout.recordsDir.appendingPathComponent("\(key).json"),
+                data: data,
+                readiness: readiness)
+        }
+        var legacy = WebPageRecord(url: legacyURL)
+        legacy.saved = true
+        legacy.savedAt = legacyURL
+        try WebLibrary.saveRecord(
+            legacy,
+            at: WebLibrary.storeDir.appendingPathComponent(
+                "\(WebLibrary.pageKey(legacyURL)).json"))
+        container.seed(
+            layout.indexPath!,
+            data: try WebLibrary.jsonEncoderPretty.encode(WebArchiveIndex.Contents()),
+            readiness: .downloaded)
+
+        let saved = try await storage.listSaved()
+
+        XCTAssertEqual(Set(saved.map(\.url)), Set([currentURL, legacyURL]))
+        XCTAssertGreaterThan(container.metadataQueryCount, 0)
+        XCTAssertEqual(container.materializationCount, 0)
+    }
+
+    func testExplicitRecordLoadMaterializesDownloadedItem() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/download"
+        let key = WebLibrary.pageKey(url)
+        var record = WebPageRecord(url: url)
+        record.saved = true
+        container.seed(
+            layout.recordsDir.appendingPathComponent("\(key).json"),
+            data: try WebLibrary.jsonEncoderPretty.encode(record),
+            readiness: .downloaded)
+
+        let loaded = await storage.loadRecord(forKey: key)
+
+        XCTAssertEqual(loaded?.url, url)
+        XCTAssertEqual(container.materializationCount, 1)
+    }
+
+    func testCoordinatedIndexCollisionUsesMetadataList() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/collision"
+        let key = WebLibrary.pageKey(url)
+        var record = WebPageRecord(url: url)
+        record.title = "Same Title"
+        container.seed(
+            layout.recordsDir.appendingPathComponent("\(key).json"),
+            data: try WebLibrary.jsonEncoderPretty.encode(record))
+        container.seed(
+            layout.archivesDir.appendingPathComponent("Same Title.vellumweb"),
+            data: Data("occupied".utf8))
+
+        let name = try await storage.reserveManagedArchiveName(forKey: key)
+
+        XCTAssertEqual(name, "Same Title 2.vellumweb")
+        XCTAssertGreaterThanOrEqual(container.metadataQueryCount, 1)
+        XCTAssertEqual(container.directoryEnumerationCount, 0)
+    }
+
+    func testCoordinatedManagedArchiveBytesMatchEncoder() async throws {
+        let (storage, _, container, layout) = await coordinatedStorage()
+        let url = "https://example.com/archive"
+        let key = WebLibrary.pageKey(url)
+        var record = WebPageRecord(url: url)
+        record.title = "Archive"
+        container.seed(
+            layout.recordsDir.appendingPathComponent("\(key).json"),
+            data: try WebLibrary.jsonEncoderPretty.encode(record))
+        let (manifest, html, assets, pagesJson, annotations) = try archiveFixture(url: url)
+        let written = try await storage.writeManagedArchive(
+            forKey: key,
+            manifest: manifest,
+            snapshotHtml: html,
+            assets: assets,
+            pagesJson: pagesJson,
+            annotations: annotations)
+
+        let archiveURL = layout.archivesDir.appendingPathComponent("Archive.vellumweb")
+        let stored = try XCTUnwrap(container.peek(archiveURL))
+        XCTAssertEqual(written.bytes, stored.count)
+        XCTAssertGreaterThan(stored.count, 0)
+    }
+
+    func testConcurrentCoordinatedMutationsDoNotLoseAnnotations() async throws {
+        let (storage, _, _, _) = await coordinatedStorage()
+        let url = "https://example.com/race"
+        let key = WebLibrary.pageKey(url)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for id in ["a", "b", "c", "d"] {
+                group.addTask {
+                    try await storage.mutateRecord(url: url, key: key) { record in
+                        record.annotations.append(Annotation(
+                            id: id,
+                            type: .note,
+                            pageNumber: 1,
+                            color: "#fde68a",
+                            content: id,
+                            positionData: nil,
+                            createdAt: "2026-08-04T00:00:00Z",
+                            updatedAt: "2026-08-04T00:00:00Z"))
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let record = await storage.loadRecord(forKey: key)
+        XCTAssertEqual(Set(record?.annotations.map(\.id) ?? []), Set(["a", "b", "c", "d"]))
     }
 }

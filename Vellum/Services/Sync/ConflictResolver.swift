@@ -1,9 +1,7 @@
 import Foundation
 
-/// The injected merge hook. Detection is what the seam ships; a real content
-/// merge arrives later and slots in here without a line of detection code
-/// changing. `reading` hands the resolver each version's bytes, so a merge
-/// implementation is a function over `Data` and never has to import
+/// The injected merge hook. `reading` hands the resolver each version's bytes,
+/// so merge policy stays a function over `Data` and never has to import
 /// `NSFileVersion`.
 protocol ConflictResolver: Sendable {
     func resolve(
@@ -16,10 +14,9 @@ protocol ConflictResolver: Sendable {
 /// version aside to `<dir>/conflicts/<name>.<versionID>.<ext>`, and reports
 /// them archived so the caller can mark them resolved.
 ///
-/// It performs NO content merge — that is deliberate and asserted by the test
-/// suite. A literal no-op resolver would leave conflicts unresolved until the
-/// system garbage-collects the losing versions, which is a silent drop; this is
-/// the cleanup half that TN2336 concedes is the minimum bar.
+/// Web sidecars merge user-owned fields and annotations. Unknown JSON and every
+/// other file type keep the conservative policy: preserve each losing version
+/// verbatim before marking the conflict resolved.
 struct PreserveLosersConflictResolver: ConflictResolver {
     /// Where a losing version's bytes are copied. Injected so the container can
     /// route the copy back through coordination instead of writing behind it.
@@ -33,6 +30,12 @@ struct PreserveLosersConflictResolver: ConflictResolver {
         _ event: ConflictEvent,
         reading: @Sendable (ConflictVersion) async throws -> Data
     ) async throws -> ConflictResolution {
+        if event.url.pathExtension == "json",
+           let merged = try await mergeWebPageRecord(event, reading: reading) {
+            try await archive(event.url, merged)
+            return .merged(event.url)
+        }
+
         var archived: [URL] = []
         for version in event.losingVersions {
             let data = try await reading(version)
@@ -41,6 +44,53 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             archived.append(destination)
         }
         return .keptCurrent(archivedLosers: archived)
+    }
+
+    private func mergeWebPageRecord(
+        _ event: ConflictEvent,
+        reading: @Sendable (ConflictVersion) async throws -> Data
+    ) async throws -> Data? {
+        let decoder = JSONDecoder()
+        guard let currentVersion = event.currentVersion else { return nil }
+        let currentBytes = try await reading(currentVersion)
+        guard var merged = try? decoder.decode(WebPageRecord.self, from: currentBytes) else {
+            return nil
+        }
+
+        for version in event.losingVersions {
+            let bytes = try await reading(version)
+            guard let loser = try? decoder.decode(WebPageRecord.self, from: bytes) else {
+                return nil
+            }
+            mergeWebPageRecord(&merged, loser)
+        }
+        return try WebLibrary.jsonEncoderPretty.encode(merged)
+    }
+
+    private func mergeWebPageRecord(_ current: inout WebPageRecord, _ incoming: WebPageRecord) {
+        if current.url.isEmpty { current.url = incoming.url }
+        current.saved = current.saved || incoming.saved
+        current.savedAt = current.savedAt ?? incoming.savedAt
+        current.title = current.title ?? incoming.title
+        current.pageCount = current.pageCount ?? incoming.pageCount
+        current.lastPage = current.lastPage ?? incoming.lastPage
+        if current.loadingPolicy != "snapshot-only",
+           incoming.loadingPolicy == "snapshot-only" {
+            current.loadingPolicy = "snapshot-only"
+        } else {
+            current.loadingPolicy = current.loadingPolicy ?? incoming.loadingPolicy
+        }
+        WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
+        current.annotations.sort { lhs, rhs in
+            if lhs.pageNumber != rhs.pageNumber {
+                return lhs.pageNumber < rhs.pageNumber
+            }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            return lhs.id < rhs.id
+        }
+        // `openedAt` is volatile recency state; keep the current winner's value.
     }
 
     static func archiveURL(for url: URL, version: ConflictVersion) -> URL {

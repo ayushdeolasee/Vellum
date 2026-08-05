@@ -211,6 +211,55 @@ struct SyncedContainerConflictTests {
         if case .merged = resolution { Issue.record("the default resolver must not merge") }
     }
 
+    @Test("Web sidecar conflicts merge user data without importing volatile recency")
+    func webSidecarConflictMergesUserData() async throws {
+        let container = FakeSyncedContainer()
+        let target = url("page.json")
+        let pageURL = "https://example.com/article"
+        var current = WebPageRecord(url: pageURL)
+        current.title = "Current title"
+        current.openedAt = "current-open"
+        current.annotations = [Annotation(
+            id: "shared", type: .note, pageNumber: 1, color: "#fde68a",
+            content: "old", positionData: nil,
+            createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z")]
+        var loser = WebPageRecord(url: pageURL)
+        loser.saved = true
+        loser.savedAt = "2026-08-02T00:00:00Z"
+        loser.openedAt = "loser-open"
+        loser.loadingPolicy = "snapshot-only"
+        loser.annotations = [
+            Annotation(
+                id: "shared", type: .note, pageNumber: 1, color: "#fde68a",
+                content: "new", positionData: nil,
+                createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-03T00:00:00Z"),
+            Annotation(
+                id: "other", type: .highlight, pageNumber: 2, color: "#fde68a",
+                content: "kept", positionData: nil,
+                createdAt: "2026-08-02T00:00:00Z", updatedAt: "2026-08-02T00:00:00Z")
+        ]
+        container.seed(target, data: try WebLibrary.jsonEncoderPretty.encode(current))
+        container.injectConflict(
+            at: target,
+            versions: [Self.current, Self.loser],
+            payloads: ["v-loser": try WebLibrary.jsonEncoderPretty.encode(loser)])
+
+        let event = ConflictEvent(
+            url: target, detectedAt: .now, versions: [Self.current, Self.loser])
+        let resolution = try await container.resolveConflict(event)
+        let merged = try JSONDecoder().decode(
+            WebPageRecord.self, from: #require(container.peek(target)))
+
+        #expect(resolution == .merged(target))
+        #expect(merged.saved)
+        #expect(merged.savedAt == loser.savedAt)
+        #expect(merged.title == current.title)
+        #expect(merged.openedAt == current.openedAt)
+        #expect(merged.loadingPolicy == "snapshot-only")
+        #expect(merged.annotations.count == 2)
+        #expect(merged.annotations.first(where: { $0.id == "shared" })?.content == "new")
+    }
+
     @Test("Two conflicts on different files are reported as two independent events")
     func conflictsAreIndependentPerFile() async {
         let container = FakeSyncedContainer()

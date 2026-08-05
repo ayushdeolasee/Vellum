@@ -417,14 +417,23 @@ enum WebArchive {
         pagesJson: Data,
         annotations: [Annotation]
     ) throws -> Int {
-        let parent = dest.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        } catch {
-            throw SessionServiceError.io(
-                "Failed to create destination dir: \(error.localizedDescription)")
-        }
+        let zipData = try encodeArchive(
+            manifest: manifest,
+            snapshotHtml: snapshotHtml,
+            assets: assets,
+            pagesJson: pagesJson,
+            annotations: annotations)
+        try writeArchiveBytes(zipData, to: dest)
+        return zipData.count
+    }
 
+    static func encodeArchive(
+        manifest: ArchiveManifest,
+        snapshotHtml: String,
+        assets: [CapturedAsset],
+        pagesJson: Data,
+        annotations: [Annotation]
+    ) throws -> Data {
         let annotationsJson: Data
         do {
             annotationsJson = try WebLibrary.jsonEncoderCompact.encode(annotations)
@@ -460,6 +469,17 @@ enum WebArchive {
         } catch {
             throw SessionServiceError.io("Failed to write archive: \(error.localizedDescription)")
         }
+        return zipData
+    }
+
+    static func writeArchiveBytes(_ zipData: Data, to dest: URL) throws {
+        let parent = dest.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        } catch {
+            throw SessionServiceError.io(
+                "Failed to create destination dir: \(error.localizedDescription)")
+        }
 
         // Unique per operation: concurrent writers to the same destination
         // must not share a temp file.
@@ -479,7 +499,6 @@ enum WebArchive {
             try? FileManager.default.removeItem(at: tmp)
             throw SessionServiceError.io("Failed to move archive into place: rename failed")
         }
-        return zipData.count
     }
 
     /// Only bare file names are allowed for assets (zip-slip guard).

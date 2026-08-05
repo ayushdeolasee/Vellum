@@ -131,6 +131,7 @@ struct VellumApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
+                    await workspace.startStorageCoordinator()
                     await workspace.integrations.start()
                     await workspace.integrations.prefetchOfflineCopies()
                     // Launch-time TTL eviction of derived data (issue #37 PR B /

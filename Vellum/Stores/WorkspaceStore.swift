@@ -381,6 +381,9 @@ final class WorkspaceStore {
         self.positions = positions
         self.storageCoordinator = storageCoordinator
         self.documentAccess = documentAccess
+        if let manager = sessions as? DocumentSessionManager {
+            manager.webBackend.storage = WebLibraryStorage(coordinator: storageCoordinator)
+        }
         let catalog = OpenRouterCatalog()
         let auth = ChatGPTAuth()
         let settingsAi = AiStore()

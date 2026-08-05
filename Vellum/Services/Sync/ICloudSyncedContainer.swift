@@ -134,7 +134,14 @@ actor ICloudSyncedContainer: SyncedContainer {
 
     func list(_ directory: URL, matching filter: SyncedItemFilter) async throws -> [SyncedItem] {
         guard !isSuspended else { throw SyncedContainerError.unavailable }
+        await startup.value
         let watcher = self.watcher
+        let deadline = clock.now().addingTimeInterval(Self.gatheringGrace)
+        while clock.now() < deadline,
+              !(await MainActor.run { watcher.hasFinishedGathering }) {
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !isSuspended else { throw SyncedContainerError.unavailable }
+        }
         let items = await MainActor.run { watcher.items(in: directory) }
         return items.filter(filter.matches).sorted { $0.name < $1.name }
     }

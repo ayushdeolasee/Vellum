@@ -59,6 +59,18 @@ actor StorageCoordinator {
         var inFlightOperations: Int
     }
 
+    enum StorageContext: Sendable {
+        case direct(layout: WebStorageLayout)
+        case coordinated(container: any SyncedContainer, layout: WebStorageLayout)
+
+        var layout: WebStorageLayout {
+            switch self {
+            case .direct(let layout), .coordinated(_, let layout):
+                return layout
+            }
+        }
+    }
+
     private enum QuiescenceWaitResult: Sendable {
         case quiescent
         case timedOut
@@ -84,6 +96,7 @@ actor StorageCoordinator {
         var chosenMode: WebStorageMode?
         var effectiveMode: WebStorageMode
         var access: StorageAccess
+        var layout: WebStorageLayout
         var availability: Availability
     }
 
@@ -95,6 +108,7 @@ actor StorageCoordinator {
     private var lifecycle: Lifecycle = .idle
     private var availability: Availability = .direct
     private var access: StorageAccess = .unavailable
+    private var layout: WebStorageLayout
     private var acceptsCoordinatedOperations = false
     private var acceptsConflictResolution = false
     private var containerIsSuspended = false
@@ -143,6 +157,7 @@ actor StorageCoordinator {
         self.effectiveModeProvider = effectiveModeProvider
         self.rootResolver = rootResolver
         self.containerFactory = containerFactory
+        self.layout = .local(storeDir: storeDir)
     }
 
     func currentStatus() -> Status {
@@ -199,6 +214,30 @@ actor StorageCoordinator {
         try beginOperation(requiresContainer: false)
         do {
             let value = try await operation()
+            finishOperation()
+            return value
+        } catch {
+            finishOperation()
+            throw error
+        }
+    }
+
+    /// C4 storage adapters enter here for every async web-library operation.
+    /// The returned layout is the one installed with the current lifecycle
+    /// generation, so a reconfigure cannot lend a container from one root while
+    /// the caller derives paths from another.
+    func withStorageContext<T: Sendable>(
+        _ operation: @Sendable (StorageContext) async throws -> T
+    ) async throws -> T {
+        try beginOperation(requiresContainer: false)
+        let context: StorageContext
+        if let container = access.container {
+            context = .coordinated(container: container, layout: layout)
+        } else {
+            context = .direct(layout: layout)
+        }
+        do {
+            let value = try await operation(context)
             finishOperation()
             return value
         } catch {
@@ -267,32 +306,48 @@ actor StorageCoordinator {
                 mode: .icloud, storeDir: storeDir, icloudRoot: root) { container }
             switch access {
             case .coordinated:
+                guard let root else {
+                    return ResolvedConfiguration(
+                        chosenMode: chosenMode,
+                        effectiveMode: .local,
+                        access: access,
+                        layout: .local(storeDir: storeDir),
+                        availability: .degradedToLocal(.iCloudUnavailable))
+                }
+                let layout = WebStorageLayout.pretty(
+                    root: root, recordsInRoot: true, localStoreDir: storeDir)
                 return ResolvedConfiguration(
                     chosenMode: chosenMode,
                     effectiveMode: .icloud,
                     access: access,
+                    layout: layout,
                     availability: .coordinated)
             case .direct:
+                let layout = WebStorageLayout.resolve(mode: .icloud, storeDir: storeDir)
                 return ResolvedConfiguration(
                     chosenMode: chosenMode,
                     effectiveMode: .icloud,
                     access: access,
+                    layout: layout,
                     availability: .direct)
             case .unavailable:
                 return ResolvedConfiguration(
                     chosenMode: chosenMode,
                     effectiveMode: .local,
                     access: access,
+                    layout: .local(storeDir: storeDir),
                     availability: .degradedToLocal(.iCloudUnavailable))
             }
         case .custom:
             let access = StorageAccess.resolve(
                 mode: .custom, storeDir: storeDir, icloudRoot: nil) { nil }
             let effectiveMode = effectiveModeProvider()
+            let layout = WebStorageLayout.resolve(mode: effectiveMode, storeDir: storeDir)
             return ResolvedConfiguration(
                 chosenMode: chosenMode,
                 effectiveMode: effectiveMode,
                 access: access,
+                layout: layout,
                 availability: effectiveMode == .custom
                     ? .direct : .degradedToLocal(.customFolderUnavailable))
         case .local:
@@ -301,6 +356,7 @@ actor StorageCoordinator {
                 effectiveMode: .local,
                 access: StorageAccess.resolve(
                     mode: .local, storeDir: storeDir, icloudRoot: nil) { nil },
+                layout: .local(storeDir: storeDir),
                 availability: .direct)
         case nil:
             return ResolvedConfiguration(
@@ -308,6 +364,7 @@ actor StorageCoordinator {
                 effectiveMode: .local,
                 access: StorageAccess.resolve(
                     mode: .local, storeDir: storeDir, icloudRoot: nil) { nil },
+                layout: .local(storeDir: storeDir),
                 availability: .degradedToLocal(.noStorageChoice))
         }
     }
@@ -453,6 +510,7 @@ actor StorageCoordinator {
         chosenMode = configuration.chosenMode
         effectiveMode = configuration.effectiveMode
         access = configuration.access
+        layout = configuration.layout
         availability = configuration.availability
         lastError = nil
         switch configuration.access {
@@ -482,6 +540,7 @@ actor StorageCoordinator {
             && availability == configuration.availability
             && access.root == configuration.access.root
             && access.isCoordinated == configuration.access.isCoordinated
+            && layout == configuration.layout
     }
 
     private func cancelAndJoinRuntimeTasks() async {
@@ -501,9 +560,16 @@ actor StorageCoordinator {
     // MARK: - Operations
 
     private func beginOperation(requiresContainer: Bool) throws {
-        guard acceptsCoordinatedOperations else {
-            throw lifecycle == .suspended || lifecycle == .backgrounding
-                ? OperationError.suspended : OperationError.unavailable
+        if requiresContainer || access.isCoordinated {
+            guard acceptsCoordinatedOperations else {
+                throw lifecycle == .suspended || lifecycle == .backgrounding
+                    ? OperationError.suspended : OperationError.unavailable
+            }
+        } else {
+            guard lifecycle == .active else {
+                throw lifecycle == .suspended || lifecycle == .backgrounding
+                    ? OperationError.suspended : OperationError.unavailable
+            }
         }
         if requiresContainer, access.container == nil {
             throw OperationError.unavailable
@@ -570,9 +636,13 @@ actor StorageCoordinator {
         case .custom:
             let nextAccess = StorageAccess.resolve(
                 mode: .custom, storeDir: storeDir, icloudRoot: nil) { nil }
-            return effectiveMode == effectiveModeProvider()
+            let nextEffectiveMode = effectiveModeProvider()
+            let nextLayout = WebStorageLayout.resolve(
+                mode: nextEffectiveMode, storeDir: storeDir)
+            return effectiveMode == nextEffectiveMode
                 && access.root == nextAccess.root
                 && access.isCoordinated == nextAccess.isCoordinated
+                && layout == nextLayout
         case .local:
             let nextAccess = StorageAccess.resolve(
                 mode: .local, storeDir: storeDir, icloudRoot: nil) { nil }

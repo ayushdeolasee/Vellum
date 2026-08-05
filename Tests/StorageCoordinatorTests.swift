@@ -400,6 +400,42 @@ struct StorageCoordinatorTests {
         #expect(container.presenterRemovals == 1)
     }
 
+    @Test("Background joins an active storage-context lease before suspend")
+    func backgroundDrainsStorageContextBeforeSuspend() async {
+        let storeDir = scratch("storage-context-drain")
+        let root = scratch("storage-context-root")
+        let container = FakeSyncedContainer()
+        let gate = AsyncGate()
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(
+            chosenMode: .icloud,
+            storeDir: storeDir,
+            factory: { container },
+            effectiveMode: { .icloud })
+        await coordinator.start()
+
+        let operation = Task {
+            try? await coordinator.withStorageContext { _ in
+                await gate.enterAndWait()
+            }
+        }
+        await gate.waitUntilEntered()
+
+        let background = Task { await coordinator.background() }
+        #expect(container.isSuspended == false)
+        await gate.release()
+        let outcome = await background.value
+        await operation.value
+
+        #expect(outcome.drained)
+        #expect(container.isSuspended)
+    }
+
     @Test("Conflict event between quiescence and suspend is parked until foreground")
     func conflictBetweenQuiescenceAndSuspendIsParked() async {
         let storeDir = scratch("storage-transition-event")
@@ -492,6 +528,69 @@ struct StorageCoordinatorTests {
         #expect(resolverTwo.seenCount == 1)
     }
 
+    @Test("Reconfigure keeps a storage-context lease on one root and container")
+    func reconfigureKeepsStorageContextLeaseStable() async throws {
+        let storeDir = scratch("storage-context-reconfigure")
+        let rootOne = scratch("storage-context-root-one")
+        let rootTwo = scratch("storage-context-root-two")
+        let state = StorageModeState(mode: .icloud, root: rootOne)
+        let first = FakeSyncedContainer()
+        let second = FakeSyncedContainer()
+        let factory = ContainerSequence([first, second])
+        let gate = AsyncGate()
+        defer {
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: rootOne)
+            try? FileManager.default.removeItem(at: rootTwo)
+        }
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { state.mode },
+            effectiveModeProvider: { state.mode ?? .local },
+            rootResolver: { state.root },
+            containerFactory: { factory.next() })
+        await coordinator.start()
+
+        let leased = Task {
+            try await coordinator.withStorageContext { context in
+                await gate.enterAndWait()
+                switch context {
+                case .direct:
+                    return (false, context.layout)
+                case .coordinated(let container, let layout):
+                    return ((container as? FakeSyncedContainer) === first, layout)
+                }
+            }
+        }
+        await gate.waitUntilEntered()
+        state.set(root: rootTwo)
+        let reconfigure = Task { await coordinator.reconfigure() }
+        await waitUntil { await coordinator.currentStatus().inFlightOperations == 1 }
+        #expect(first.isSuspended == false)
+
+        await gate.release()
+        let leasedResult = try await leased.value
+        await reconfigure.value
+        let currentResult = try await coordinator.withStorageContext { context in
+            switch context {
+            case .direct:
+                return (false, context.layout)
+            case .coordinated(let container, let layout):
+                return ((container as? FakeSyncedContainer) === second, layout)
+            }
+        }
+
+        #expect(leasedResult.0)
+        #expect(leasedResult.1.recordsDir == rootOne
+            .appendingPathComponent(".vellum", isDirectory: true)
+            .appendingPathComponent("records", isDirectory: true))
+        #expect(first.isSuspended)
+        #expect(currentResult.0)
+        #expect(currentResult.1.recordsDir == rootTwo
+            .appendingPathComponent(".vellum", isDirectory: true)
+            .appendingPathComponent("records", isDirectory: true))
+    }
+
     @Test("Reconfigure is a no-op for the same effective iCloud access")
     func reconfigureNoopsForSameEffectiveAccess() async {
         let storeDir = scratch("storage-reconfigure-noop")
@@ -516,6 +615,34 @@ struct StorageCoordinatorTests {
         #expect(factory.callCount == 1)
         #expect(!container.isSuspended)
         #expect(await coordinator.currentStatus().availability == .coordinated)
+    }
+
+    @Test("Reconfigure follows a changed custom archive root")
+    func reconfigureTracksCustomFolderChanges() async throws {
+        let storeDir = scratch("storage-custom-reconfigure")
+        let firstRoot = scratch("storage-custom-one")
+        let secondRoot = scratch("storage-custom-two")
+        WebStorageSettings.customRootOverride = firstRoot
+        defer {
+            WebStorageSettings.customRootOverride = nil
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: firstRoot)
+            try? FileManager.default.removeItem(at: secondRoot)
+        }
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .custom },
+            effectiveModeProvider: { .custom },
+            containerFactory: { nil })
+        await coordinator.start()
+        let first = try await coordinator.withStorageContext { $0.layout.archivesDir }
+
+        WebStorageSettings.customRootOverride = secondRoot
+        await coordinator.reconfigure()
+        let second = try await coordinator.withStorageContext { $0.layout.archivesDir }
+
+        #expect(first == firstRoot.appendingPathComponent("Web Pages", isDirectory: true))
+        #expect(second == secondRoot.appendingPathComponent("Web Pages", isDirectory: true))
     }
 
     @Test("WorkspaceStore owns and forwards coordinator lifecycle")
