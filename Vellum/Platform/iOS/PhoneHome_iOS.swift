@@ -56,6 +56,7 @@ struct PhoneHome_iOS: View {
     @Environment(\.palette) private var palette
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var actions: HomeLibraryActions_iOS
     @State private var continueReading: [ContinueReadingItem] = []
@@ -156,15 +157,17 @@ struct PhoneHome_iOS: View {
 
     // MARK: - Header
 
-    /// Wordmark plus the two things Home is the entry point for when no document
-    /// is open: the tab switcher and Settings. Help lives in the switcher-free
-    /// half of Settings' reach, so it is offered from the first-run hero and
-    /// from the reader's More menu (P5) rather than taking a third slot here.
+    /// Wordmark plus Home's persistent actions: Add PDF, the tab switcher when
+    /// documents are open, and Settings. Help stays in the first-run hero and
+    /// the reader's More menu (P5) rather than crowding this primary pod.
     private var header: some View {
         HStack(spacing: 8) {
             Wordmark(size: 30)
             Spacer(minLength: 12)
             GlassToolPod(label: "Library") {
+                GlassToolButton(system: "doc.badge.plus", label: "Add PDF", action: onOpen)
+                    .accessibilityIdentifier("phone.home.addPdf")
+
                 // Only when there is something to switch to. Home IS the
                 // no-documents state, so an always-present Tabs button would be
                 // a control whose only honest answer is "nothing".
@@ -205,7 +208,7 @@ struct PhoneHome_iOS: View {
         let count = appStore.tabs.count
         if count > 0 {
             Text("\(count)")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.bold())
                 .monospacedDigit()
                 .foregroundStyle(palette.primaryForeground)
                 .padding(.horizontal, 4)
@@ -249,10 +252,11 @@ struct PhoneHome_iOS: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 16))
                 .foregroundStyle(palette.mutedForeground)
+                .accessibilityHidden(true)
 
             TextField("Search your library — or paste a link", text: $store.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 16))
+                .font(.body)
                 .foregroundStyle(palette.foreground)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -273,7 +277,7 @@ struct PhoneHome_iOS: View {
                         .foregroundStyle(palette.mutedForeground)
                         // The whole trailing slot, not the 16pt glyph — the
                         // hit-target rule the toolbar buttons follow.
-                        .frame(width: 36, height: 44)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -283,7 +287,7 @@ struct PhoneHome_iOS: View {
         }
         .padding(.leading, HomeLayout.rowInset)
         .padding(.trailing, store.query.isEmpty ? HomeLayout.rowInset : 4)
-        .frame(height: 52)
+        .frame(minHeight: 52)
         .glassEffect(.regular, in: .capsule)
         .overlay {
             Capsule().strokeBorder(
@@ -292,59 +296,76 @@ struct PhoneHome_iOS: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
-    /// Filters, then sort. A horizontal scroller rather than the iPad's
-    /// space-between row: four chips and a sort menu do not fit across 390pt,
-    /// and a wrapped second line would make the header taller than the first
-    /// result.
+    /// Filters, then sort. Accessibility sizes move sort onto its own row so
+    /// “Recently opened” is visible rather than stranded beyond the horizontal
+    /// filter viewport.
+    @ViewBuilder
     private var filterScroller: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(HomeSearchFilter.allCases, id: \.self) { option in
-                    HomeFilterChip(label: option.label, isSelected: store.filter == option) {
-                        store.filter = option
-                    }
-                    .accessibilityIdentifier("phone.home.filter.\(option.label)")
-                }
-
-                Divider().frame(height: 18).padding(.horizontal, 2)
-
-                if store.isSearching {
-                    Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
-                        .font(.system(size: 12))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.mutedForeground)
-                        .accessibilityIdentifier("phone.home.resultCount")
-                } else {
-                    sortMenu
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 0) {
+                ScrollView(.horizontal) { filterChips }
+                    .scrollIndicators(.hidden)
+                sortOrResult
+                    .padding(.leading, 4)
+            }
+        } else {
+            ScrollView(.horizontal) {
+                HStack(spacing: 5) {
+                    filterChips
+                    Divider()
+                        .frame(height: 18)
+                        .accessibilityHidden(true)
+                    sortOrResult
                 }
             }
-            .padding(.horizontal, HomeLayout.rowInset - Self.gutter)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
+    }
+
+    private var filterChips: some View {
+        HStack(spacing: 5) {
+            ForEach(HomeSearchFilter.allCases, id: \.self) { option in
+                HomeFilterChip(label: option.label, isSelected: store.filter == option) {
+                    store.filter = option
+                }
+                .accessibilityIdentifier("phone.home.filter.\(option.label)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sortOrResult: some View {
+        if store.isSearching {
+            Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityIdentifier("phone.home.resultCount")
+        } else {
+            sortMenu
+        }
     }
 
     private var sortMenu: some View {
-        Menu {
+        Menu(store.sort.label, systemImage: "arrow.up.arrow.down") {
             Picker("Sort by", selection: $store.sort) {
                 ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
                     Text(option.label).tag(option)
                 }
             }
             .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12))
-                Text(store.sort.label)
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .frame(height: 32)
-            .contentShape(Rectangle())
         }
+        .labelStyle(.titleAndIcon)
+        .font(.caption.weight(.medium))
+        .lineLimit(1)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
         .foregroundStyle(palette.mutedForeground)
+        .accessibilityLabel("Sort by \(store.sort.label)")
         .accessibilityIdentifier("phone.home.sort")
     }
 
@@ -415,13 +436,13 @@ struct PhoneHome_iOS: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                 Text("Continue Reading")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .textCase(.uppercase)
                     .kerning(0.4)
                 Text("\(continueReading.count)")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.caption.weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(palette.mutedForeground.opacity(0.7))
                 Spacer(minLength: 0)
@@ -455,21 +476,24 @@ struct PhoneHome_iOS: View {
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(palette.mutedForeground)
                 .padding(.bottom, 4)
+                .accessibilityHidden(true)
 
             if store.isSearching {
                 Text("No matches for “\(store.trimmedQuery)”")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(palette.foreground)
+                    .multilineTextAlignment(.center)
                 Text("Search matches titles, filenames, and web addresses. Try fewer words.")
-                    .font(.system(size: 12))
+                    .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
                     .multilineTextAlignment(.center)
             } else {
                 Text("Nothing in \(store.filter.label) yet")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(palette.foreground)
+                    .multilineTextAlignment(.center)
                 Text("Open a PDF or add a webpage and it will show up here.")
-                    .font(.system(size: 12))
+                    .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
                     .multilineTextAlignment(.center)
             }
@@ -491,7 +515,7 @@ struct PhoneHome_iOS: View {
             // say so rather than letting the user conclude the document is gone.
             ForEach(store.failures, id: \.self) { failure in
                 Label(failure, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 11))
+                    .font(.footnote)
                     .foregroundStyle(palette.destructive)
                     .multilineTextAlignment(.center)
             }
@@ -554,12 +578,12 @@ struct PhoneHome_iOS: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "questionmark.circle")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                 Text("How Vellum works")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
             .foregroundStyle(palette.mutedForeground)
-            .frame(height: 44)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -571,7 +595,7 @@ struct PhoneHome_iOS: View {
     private var errorBanner: some View {
         if let error = appStore.error {
             Text(error)
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(palette.destructive)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 12)
@@ -721,6 +745,7 @@ private struct ContinueReadingRow_iOS: View {
     let open: () -> Void
 
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: open) {
@@ -735,32 +760,47 @@ private struct ContinueReadingRow_iOS: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(palette.foreground)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         .truncationMode(.middle)
 
-                    HStack(spacing: 5) {
-                        if !item.progressLabel.isEmpty {
-                            Text(item.progressLabel)
-                        }
-                        if !item.progressLabel.isEmpty, item.deviceLabel != nil {
-                            Text("·").accessibilityHidden(true)
-                        }
-                        if let device = item.deviceLabel {
-                            Text(device)
+                    Group {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            VStack(alignment: .leading, spacing: 2) {
+                                if !item.progressLabel.isEmpty {
+                                    Text(item.progressLabel)
+                                }
+                                if let device = item.deviceLabel {
+                                    Text(device)
+                                }
+                            }
+                        } else {
+                            HStack(spacing: 5) {
+                                if !item.progressLabel.isEmpty {
+                                    Text(item.progressLabel)
+                                }
+                                if !item.progressLabel.isEmpty, item.deviceLabel != nil {
+                                    Text("·").accessibilityHidden(true)
+                                }
+                                if let device = item.deviceLabel {
+                                    Text(device)
+                                }
+                            }
                         }
                     }
-                    .font(.system(size: 12))
+                    .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 }
 
                 Spacer(minLength: 8)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(palette.mutedForeground)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.mutedForeground)
+                }
             }
             .padding(.horizontal, HomeLayout.rowInset)
             .padding(.vertical, 8)

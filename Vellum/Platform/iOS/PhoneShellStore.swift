@@ -113,6 +113,17 @@ final class PhoneShellStore {
         workspace.sidebarTab
     }
 
+    /// Changes the visible panel without changing whether the sheet is open.
+    ///
+    /// The switcher lives inside an already-presented sheet, so its buttons mean
+    /// only "show this panel". Keeping this separate from `revealInspector`
+    /// prevents a tab choice from being coupled to presentation geometry or a
+    /// detent transition.
+    func selectInspectorTab(_ tab: WorkspaceStore.SidebarTab) {
+        guard app.document != nil else { return }
+        workspace.sidebarTab = tab
+    }
+
     /// The ink controller the inspector's Handwriting section reads — the live
     /// tab's own, taken straight off its runtime.
     ///
@@ -164,8 +175,8 @@ final class PhoneShellStore {
     }
 
     /// Returns to the document. Chrome comes back visible: arriving at a
-    /// document with no chrome would leave no visible way back to Home, and the
-    /// tap-to-reveal gesture that fixes that is not discoverable.
+    /// document with no chrome would leave only the compact reveal handle and no
+    /// visible way back to Home.
     func showReader() {
         switcherPresented = false
         chromeVisible = true
@@ -190,8 +201,12 @@ final class PhoneShellStore {
 
     // MARK: - Chrome
 
-    func toggleChrome() {
-        chromeVisible.toggle()
+    func hideChrome() {
+        chromeVisible = false
+    }
+
+    func showChrome() {
+        chromeVisible = true
     }
 
     func setChrome(_ visible: Bool) {

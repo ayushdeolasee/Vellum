@@ -541,6 +541,7 @@ struct GlassToolButton: View {
     let label: String
     var active = false
     var tint: Color? = nil
+    var disabled = false
     let action: () -> Void
 
     @Environment(\.palette) private var palette
@@ -578,6 +579,8 @@ struct GlassToolButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(ToolbarPressStyle())
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
         .accessibilityLabel(label)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
@@ -959,12 +962,22 @@ private struct TabOverview_iOS: View {
 // MARK: - Sidebar content (hosted by the adaptive inspector)
 
 struct SidebarContent_iOS: View {
+    enum Presentation: Equatable {
+        case column
+        case phoneSheet
+    }
+
     /// The focused pane's ink controller, from the registry — nil only in the
     /// instant before that pane has appeared, so the Handwriting section just
     /// skips rendering rather than holding a stale controller.
     var ink: InkController_iOS?
+    var presentation: Presentation = .column
+    var onTabSelected: ((WorkspaceStore.SidebarTab) -> Void)? = nil
 
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(AppStore.self) private var app
+    @Environment(AnnotationStore.self) private var annotations
+    @Environment(ScratchpadStore.self) private var scratchpad
     @Environment(\.palette) private var palette
 
     // "Has this tab ever been revealed?" latches. The sidebar is open by
@@ -991,11 +1004,12 @@ struct SidebarContent_iOS: View {
     @State private var hasShownScratchpad = false
 
     var body: some View {
+        let handwritingPages = pagesWithHandwriting()
         VStack(spacing: 0) {
-            InspectorTabSwitcher(selection: Binding(
-                get: { workspace.sidebarTab },
-                set: { workspace.sidebarTab = $0 }
-            ))
+            InspectorTabSwitcher(
+                selection: Binding(
+                    get: { workspace.sidebarTab },
+                    set: { selectTab($0) }))
             .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
             .padding(.vertical, InspectorLayout.switcherVerticalPadding)
             Divider()
@@ -1014,18 +1028,51 @@ struct SidebarContent_iOS: View {
             // bodies are what dragged WebKit and the AI renderer into launch.
             ZStack {
                 panel(.annotations) {
-                    VStack(spacing: 0) {
-                        if let ink {
-                            InkPagesSection_iOS(ink: ink)
+                    if presentation == .phoneSheet,
+                       annotations.annotations.isEmpty,
+                       handwritingPages.isEmpty {
+                        ContentUnavailableView {
+                            Label("No annotations yet", systemImage: "highlighter")
+                        } description: {
+                            Text("Select text to highlight it, or start a sticky note on the page.")
+                        } actions: {
+                            Button("Start a sticky note", systemImage: "note.text") {
+                                app.setMode(.note)
+                                workspace.setInspectorPresented(false)
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
-                        AnnotationSidebar()
+                        .accessibilityIdentifier("phone.inspector.annotations.empty")
+                    } else {
+                        VStack(spacing: 0) {
+                            InkPagesSection_iOS(pages: handwritingPages)
+                            AnnotationSidebar()
+                        }
                     }
                 }
                 if hasShownAi {
                     panel(.ai) { AiPanel_iOS() }
                 }
                 if hasShownScratchpad {
-                    panel(.scratchpad) { ScratchpadPanel() }
+                    panel(.scratchpad) {
+                        ScratchpadPanel()
+                            .overlay {
+                                if presentation == .phoneSheet,
+                                   scratchpad.text.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                   ).isEmpty {
+                                    ContentUnavailableView(
+                                        "Start a scratchpad",
+                                        systemImage: "note.text",
+                                        description: Text(
+                                            "Tap anywhere to keep free-form notes with this document."
+                                        ))
+                                    .allowsHitTesting(false)
+                                    .accessibilityIdentifier("phone.inspector.scratchpad.empty")
+                                }
+                            }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1047,6 +1094,44 @@ struct SidebarContent_iOS: View {
             }
         }
         .background(palette.surface)
+    }
+
+    /// Mounts a lazy panel in the same update that selects it, then forwards
+    /// the phone-specific selection action. This avoids a transient blank panel
+    /// and keeps tab selection independent from sheet presentation.
+    private func selectTab(_ tab: WorkspaceStore.SidebarTab) {
+        switch tab {
+        case .annotations:
+            break
+        case .ai:
+            hasShownAi = true
+        case .scratchpad:
+            hasShownScratchpad = true
+        }
+        if let onTabSelected {
+            onTabSelected(tab)
+        } else {
+            workspace.sidebarTab = tab
+        }
+    }
+
+    /// Derive the handwriting summary once per body evaluation. The previous
+    /// empty-state check and section each walked every PDF page independently.
+    private func pagesWithHandwriting() -> [Int] {
+        guard let ink,
+              app.document?.kind == .pdf,
+              let document = ink.pdfController?.document
+        else { return [] }
+
+        _ = ink.drawingVersion
+        return (0..<document.pageCount).compactMap { index in
+            let pageNumber = index + 1
+            if let hasStrokes = ink.inkProvider.cachedStrokes(forPage: pageNumber) {
+                return hasStrokes ? pageNumber : nil
+            }
+            guard let page = document.page(at: index) else { return nil }
+            return PdfInk.hasInk(on: page) ? pageNumber : nil
+        }
     }
 
     /// Wraps a sidebar panel so only the active tab is visible, hit-testable,
@@ -1071,34 +1156,16 @@ struct SidebarContent_iOS: View {
 /// as native /Ink in the PDF), so this section derives straight from the
 /// display document.
 private struct InkPagesSection_iOS: View {
-    var ink: InkController_iOS
+    var pages: [Int]
 
     @Environment(AppStore.self) private var appStore
     @Environment(\.palette) private var palette
 
-    private var pagesWithInk: [Int] {
-        // drawingVersion ties this computed list to live stroke edits.
-        _ = ink.drawingVersion
-        guard appStore.document?.kind == .pdf,
-              let document = ink.pdfController?.document else { return [] }
-        return (0..<document.pageCount).compactMap { index in
-            let pageNumber = index + 1
-            // A cached canvas is the live source of truth for its page; only fall
-            // back to the display document's native ink when no canvas exists yet.
-            if let hasStrokes = ink.inkProvider.cachedStrokes(forPage: pageNumber) {
-                return hasStrokes ? pageNumber : nil
-            }
-            guard let page = document.page(at: index) else { return nil }
-            return PdfInk.hasInk(on: page) ? pageNumber : nil
-        }
-    }
-
     var body: some View {
-        let pages = pagesWithInk
         if !pages.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Handwriting")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption.bold())
                     .foregroundStyle(palette.mutedForeground)
                     .textCase(.uppercase)
                     .padding(.horizontal, 4)
@@ -1113,12 +1180,12 @@ private struct InkPagesSection_iOS: View {
                                         .font(.system(size: 11))
                                         .foregroundStyle(palette.primary)
                                     Text("p. \(page)")
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(.caption.weight(.medium))
                                         .monospacedDigit()
                                         .foregroundStyle(palette.foreground)
                                 }
                                 .padding(.horizontal, 12)
-                                .frame(height: 34)
+                                .frame(minWidth: 44, minHeight: 44)
                                 .background(palette.muted, in: Capsule())
                                 .overlay(Capsule().strokeBorder(palette.border))
                                 .contentShape(Capsule())

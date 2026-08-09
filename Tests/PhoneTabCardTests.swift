@@ -1,6 +1,8 @@
 #if os(iOS)
 import Foundation
+import SwiftUI
 import Testing
+import UIKit
 
 @testable import Vellum
 
@@ -126,22 +128,44 @@ struct PhoneTabCardTests {
                 == "example.com/post")
     }
 
+    @Test("Repeated instances of one source receive distinct, non-persisted ordinals")
+    func duplicateSourcesAreDistinguishable() {
+        let sharedURL = "https://example.com/post"
+        let tabs = [
+            tab(id: "first", document: web(url: sharedURL, title: "A Post")),
+            tab(id: "other", document: web(url: "https://example.com/other", title: "A Post")),
+            tab(id: "second", document: web(url: sharedURL, title: "A Post")),
+        ]
+
+        let cards = PhoneTabCardBuilder.cards(
+            tabs: tabs, activeTabId: "first", isResident: { _ in false })
+
+        #expect(cards.map(\.duplicateLabel) == ["Duplicate 1 of 2", nil, "Duplicate 2 of 2"])
+        #expect(cards[0].title == cards[2].title)
+        #expect(cards[0].subtitle == cards[2].subtitle)
+    }
+
     @Test("The page label appears only for PDFs whose page count is known")
     func pageLabelIsPdfOnlyAndOnlyWhenKnown() {
         var pdfTab = tab(id: "1", document: pdf(path: "/docs/A.pdf", title: "A"))
         pdfTab.currentPage = 7
         pdfTab.numPages = 210
         #expect(PhoneTabCardBuilder.pageLabel(for: pdfTab) == "7 / 210")
+        #expect(PhoneTabCardBuilder.previewPageNumber(for: pdfTab) == 7)
+        #expect(PhoneTabCardBuilder.thumbnailPath(for: pdfTab) == "/docs/A.pdf")
 
         // Mid-open: "1 / 0" is a number that is simply wrong.
         var opening = pdfTab
         opening.numPages = 0
         #expect(PhoneTabCardBuilder.pageLabel(for: opening) == nil)
+        #expect(PhoneTabCardBuilder.previewPageNumber(for: opening) == nil)
 
         // A webpage has no pages.
         var webTab = tab(id: "2", document: web(url: "https://example.com/post"))
         webTab.numPages = 3
         #expect(PhoneTabCardBuilder.pageLabel(for: webTab) == nil)
+        #expect(PhoneTabCardBuilder.previewPageNumber(for: webTab) == nil)
+        #expect(PhoneTabCardBuilder.thumbnailPath(for: webTab) == nil)
 
         #expect(PhoneTabCardBuilder.pageLabel(for: tab(id: "3", document: nil)) == nil)
     }
@@ -194,6 +218,35 @@ struct PhoneTabCardTests {
         #expect(cards.allSatisfy { !$0.isResident })
     }
 
+    @Test("Tab card labels grow rather than staying tiny at accessibility sizes")
+    func cardLabelsRespondToDynamicType() throws {
+        let card = try #require(
+            PhoneTabCardBuilder.cards(
+                tabs: [tab(
+                    id: "dynamic-type",
+                    document: pdf(
+                        path: "/docs/a-long-source-name.pdf",
+                        title: "A deliberately long document title for layout"))],
+                activeTabId: "dynamic-type",
+                isResident: { _ in false })
+                .first)
+
+        let normal = cardHeight(card, dynamicTypeSize: .large)
+        let accessible = cardHeight(card, dynamicTypeSize: .accessibility5)
+        #expect(
+            accessible > normal,
+            "tab card labels are not responding to the user's Dynamic Type setting")
+    }
+
+    @Test("Accessibility text switches the tab grid to one readable column")
+    func accessibilityLayoutUsesOneColumn() {
+        #expect(PhoneTabSwitcherLayout.columnCount(for: .large) == 2)
+        #expect(PhoneTabSwitcherLayout.columnCount(for: .accessibility1) == 1)
+        #expect(PhoneTabSwitcherLayout.columnCount(for: .accessibility5) == 1)
+        #expect(PhoneTabSwitcherLayout.accessibilityPreviewHeight <= 160)
+        #expect(PhoneTabSwitcherLayout.minimumBarHeight >= PhoneChromeLayout.buttonSide)
+    }
+
     // MARK: - Fixtures
 
     private func tab(id: String, document: DocumentInfo?) -> PdfTab {
@@ -215,6 +268,26 @@ struct PhoneTabCardTests {
 
     private func web(url: String, title: String? = nil) -> DocumentInfo {
         DocumentInfo(kind: .web, pdfPath: url, title: title, pageCount: nil, lastPage: nil)
+    }
+
+    private func cardHeight(
+        _ card: PhoneTabCard,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> CGFloat {
+        let width: CGFloat = 336
+        let host = UIHostingController(
+            rootView: PhoneTabCardView(
+                card: card,
+                palette: .light,
+                thumbnailRevision: 0,
+                loadThumbnail: { nil },
+                open: {},
+                close: {})
+                .dynamicTypeSize(dynamicTypeSize))
+        host.view.frame = CGRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
+        return host.sizeThatFits(
+            in: CGSize(width: width, height: UIView.layoutFittingCompressedSize.height)
+        ).height
     }
 }
 #endif

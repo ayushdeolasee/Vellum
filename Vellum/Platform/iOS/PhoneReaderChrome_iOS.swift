@@ -3,14 +3,14 @@ import SwiftUI
 
 // The iPhone reader's chrome (#153 P5): two floating glass capsule bars over a
 // full-bleed document, a legibility scrim behind them, and an immersive mode
-// that is simply the absence of both.
+// that reduces them to one explicit reveal handle.
 //
 // The iPad's `PdfToolbar_iOS` is a docked row that OWNS a strip of the pane; on
 // a 390pt screen a docked row is a tax paid on every page. So the phone floats
 // its controls instead, in the same `GlassToolPod` / `GlassToolButton` language
 // (the 44pt slot and the 48pt capsule are the iPad's numbers and are not
 // re-derived here — see `PdfChrome_iOS`'s geometry note), and gets the strip
-// back the moment the reader taps the page.
+// back when the reader explicitly hides the controls.
 
 // MARK: - Geometry
 
@@ -175,7 +175,7 @@ struct PhoneChromeScrim: View {
 
 // MARK: - Top bar
 
-/// Back to Home, and the document's name.
+/// Back to Home, the document's name, and an explicit immersive-mode control.
 ///
 /// The title is here rather than in the bottom bar because it is the one piece
 /// of chrome that answers "where am I", and it pairs with the control that
@@ -198,26 +198,38 @@ struct PhoneReaderTopBar: View {
 
             titleCapsule
 
-            Spacer(minLength: 0)
+            GlassToolPod(label: "Reader controls") {
+                GlassToolButton(
+                    system: "arrow.down.right.and.arrow.up.left",
+                    label: "Hide reader controls"
+                ) {
+                    app.hideFind()
+                    shell.hideChrome()
+                }
+                .accessibilityIdentifier("phone.reader.hideChrome")
+            }
         }
         .padding(.horizontal, PhoneChromeLayout.edgeInset)
         .padding(.top, PhoneChromeLayout.barEdgeGap)
     }
 
-    /// `.middle` truncation, not `.tail`: phone-sized titles are dominated by
+    /// The equal-width pods on either side make this capsule geometrically
+    /// centered, rather than merely placed after the Back button. `.middle`
+    /// truncation, not `.tail`: phone-sized titles are dominated by
     /// long PDF filenames and article headlines whose distinguishing half is at
     /// the END ("Attention Is All You Need — Revised.pdf"). Dropping the middle
     /// keeps both ends, which is what makes two similar documents tellable
     /// apart at 200pt.
     private var titleCapsule: some View {
         Text(title)
-            .font(.system(size: 15, weight: .medium))
+            .font(.subheadline.weight(.medium))
             .foregroundStyle(palette.foreground)
             .lineLimit(1)
             .truncationMode(.middle)
+            .minimumScaleFactor(0.75)
             .padding(.horizontal, 14)
             .frame(height: PhoneChromeLayout.capsuleHeight)
-            .frame(maxWidth: 240)
+            .frame(maxWidth: .infinity)
             .glassEffect(.regular, in: .capsule)
             .accessibilityIdentifier("phone.reader.title")
             .accessibilityLabel(title.isEmpty ? "Untitled document" : title)
@@ -331,8 +343,12 @@ struct PhoneReaderBottomBar: View {
     private var positionPod: some View {
         if isWeb {
             PhoneGlassToolPod(label: "Page history") {
-                GlassToolButton(system: "arrow.left", label: "Back") { webHistory(-1) }
-                GlassToolButton(system: "arrow.right", label: "Forward") { webHistory(1) }
+                GlassToolButton(
+                    system: "arrow.left", label: "Back", disabled: !canGoBack
+                ) { webHistory(-1) }
+                GlassToolButton(
+                    system: "arrow.right", label: "Forward", disabled: !canGoForward
+                ) { webHistory(1) }
             }
         } else {
             PhoneGlassToolPod(label: "Page navigation") {
@@ -341,7 +357,7 @@ struct PhoneReaderBottomBar: View {
                     showPageJump = true
                 } label: {
                     Text("\(app.currentPage) / \(app.numPages)")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(palette.foreground)
                         .lineLimit(1)
@@ -411,7 +427,7 @@ struct PhoneReaderBottomBar: View {
     /// minus the split items and the ink toggle, plus the three things the phone
     /// has nowhere else to put: Help, Settings and Close Document.
     private var moreMenu: some View {
-        Menu {
+        Menu("More actions", systemImage: "ellipsis") {
             Button {
                 app.findVisible ? app.hideFind() : app.showFind()
             } label: { Label("Find", systemImage: "magnifyingglass") }
@@ -481,16 +497,27 @@ struct PhoneReaderBottomBar: View {
                     shell.didCloseTab()
                 }
             } label: { Label("Close Document", systemImage: "xmark") }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(palette.foreground)
-                .frame(width: PhoneChromeLayout.buttonSide, height: PhoneChromeLayout.buttonSide)
-                .contentShape(Rectangle())
         }
+        .labelStyle(.iconOnly)
+        .font(.title3.weight(.medium))
+        .foregroundStyle(palette.foreground)
+        .frame(width: PhoneChromeLayout.buttonSide, height: PhoneChromeLayout.buttonSide)
+        .contentShape(Rectangle())
         .accessibilityLabel("More actions")
         .accessibilityIdentifier("phone.reader.more")
     }
+
+    private var activeWebController: WebViewerController_iOS? {
+        guard let tabId = app.activeTabId,
+              let runtime = workspace.existingLiveTabRuntime(for: tabId),
+              !runtime.isEvicted,
+              runtime.webController.hasWebView
+        else { return nil }
+        return runtime.webController
+    }
+
+    private var canGoBack: Bool { activeWebController?.canGoBack ?? false }
+    private var canGoForward: Bool { activeWebController?.canGoForward ?? false }
 
     /// In-page history for web tabs — same channel both other toolbars use.
     private func webHistory(_ delta: Int) {

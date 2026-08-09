@@ -201,7 +201,7 @@ struct AiPanel_iOS: View {
                 .font(.system(size: 15))
                 .foregroundStyle(active ? palette.primary : palette.mutedForeground)
                 .opacity(disabled ? 0.4 : 1)
-                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
                 .background {
                     if active { Circle().fill(palette.primary.opacity(0.16)) }
                 }
@@ -761,18 +761,17 @@ struct AiPanel_iOS: View {
                     perform: handleAttachmentDrop
                 )
 
-            Button(action: submit) {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 15))
-                    .frame(width: 40, height: 40)
-                    .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
-                    .foregroundStyle(palette.primaryForeground)
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            .opacity(canSend ? 1 : 0.4)
-            .accessibilityLabel("Send message")
-            .accessibilityIdentifier("aiPanel.send")
+            Button("Send message", systemImage: "paperplane.fill", action: submit)
+                .labelStyle(.iconOnly)
+                .font(.system(size: 15))
+                .frame(width: 48, height: 48)
+                .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
+                .foregroundStyle(palette.primaryForeground)
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .opacity(canSend ? 1 : 0.4)
+                .accessibilityLabel("Send message")
+                .accessibilityIdentifier("aiPanel.send")
         }
     }
 
@@ -817,7 +816,7 @@ struct AiPanel_iOS: View {
             Image(systemName: "plus")
                 .font(.system(size: 15))
                 .foregroundStyle(palette.mutedForeground)
-                .frame(width: 40, height: 40)
+                .frame(width: 48, height: 48)
                 .contentShape(RoundedRectangle(cornerRadius: Radius.md))
         }
         .menuStyle(.button)

@@ -363,6 +363,9 @@ final class WebViewerController_iOS: NSObject {
     // after in-tab navigation replaces the document.
     private(set) var initCount = 0
     private(set) var isOffline = false
+    /// Observable history state for phone/iPad toolbar disabled states.
+    private(set) var canGoBack = false
+    private(set) var canGoForward = false
     private(set) var selection: WebSelection?
     private(set) var popoverPosition: CGPoint?
     /// The selection pinned while the selection popover's note field is open.
@@ -724,6 +727,11 @@ final class WebViewerController_iOS: NSObject {
     func goForward() {
         guard webView.canGoForward else { return }
         webView.goForward()
+    }
+
+    private func updateHistoryAvailability(_ webView: WKWebView) {
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
     }
 
     func reload() {
@@ -1665,6 +1673,18 @@ extension WebViewerController_iOS: WKScriptMessageHandler {
 }
 
 extension WebViewerController_iOS: WKNavigationDelegate, WKUIDelegate {
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        updateHistoryAvailability(webView)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        updateHistoryAvailability(webView)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        updateHistoryAvailability(webView)
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction

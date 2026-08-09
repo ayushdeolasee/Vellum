@@ -1,6 +1,8 @@
 #if os(iOS)
 import Foundation
+import SwiftUI
 import Testing
+import UIKit
 
 @testable import Vellum
 
@@ -90,22 +92,24 @@ struct PhoneShellStateTests {
         #expect(shell.switcherPresented == false)
     }
 
-    @Test("Chrome comes back visible on every arrival at the reader")
+    @Test(
+        "Chrome has explicit hide and reveal actions and resets on reader arrival",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/187"))
     func chromeResetsVisibleOnEveryRouteChangeToReader() async throws {
         let (shell, app) = try await makeShell()
         await app.openFile(path: "/tmp/phone-chrome.pdf")
         shell.didOpenDocument()
         #expect(shell.chromeVisible)
 
-        shell.toggleChrome()
+        shell.hideChrome()
         #expect(shell.chromeVisible == false)
-        shell.setChrome(true)
+        shell.showChrome()
         #expect(shell.chromeVisible)
         shell.setChrome(false)
 
         // Immersive is per-visit, not a preference: arriving at a document with
-        // no chrome leaves no visible way back to Home, and tap-to-reveal is
-        // not discoverable.
+        // no chrome leaves only the compact reveal handle and no visible way
+        // back to Home.
         shell.showHome()
         shell.showReader()
         #expect(shell.chromeVisible)
@@ -230,6 +234,24 @@ struct PhoneShellStateTests {
         let workspace = makeWorkspace()
         let shell = PhoneShellStore(workspace: workspace)
         return (shell, workspace.focusedPane.app)
+    }
+}
+
+@MainActor
+@Suite("Phone reader chrome hit testing")
+struct PhoneReaderChromeHitTestingTests {
+    @Test("The immersive reveal control only owns its visible button")
+    func revealControlLeavesTheDocumentTouchable() {
+        let host = UIHostingController(rootView: ChromeRevealControl_iOS(
+            isActive: true,
+            chromeVisible: false,
+            action: {}))
+        host.loadViewIfNeeded()
+        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        host.view.layoutIfNeeded()
+
+        #expect(host.view.hitTest(CGPoint(x: 100, y: 422), with: nil) == nil)
+        #expect(host.view.hitTest(CGPoint(x: 352, y: 422), with: nil) != nil)
     }
 }
 

@@ -20,6 +20,15 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(workspace.settingsSection, .storage)
     }
 
+    #if os(iOS)
+    func testPhoneSettingsRoutesStorageAndIntegrationsThroughActionableMoreRows() {
+        XCTAssertEqual(SettingsPhoneTab(section: .storage), .more)
+        XCTAssertEqual(SettingsPhoneTab(section: .integrations), .more)
+        XCTAssertEqual(SettingsNavigationDestination(section: .storage), .storage)
+        XCTAssertEqual(SettingsNavigationDestination(section: .integrations), .integrations)
+    }
+    #endif
+
     // One group from main's copy of this file is deliberately absent.
     //
     // `testUpdateCheckerIsWorkspaceOwnedAndAutomaticCheckIsClaimedOnce` is a

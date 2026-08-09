@@ -11,8 +11,27 @@ struct SettingsView: View {
     /// AI…", a Storage warning — can route to the right tab instead of dumping
     /// the reader on General and making them find it.
     @Environment(WorkspaceStore.self) private var workspace
+    #if os(iOS)
+    @State private var phoneTab: SettingsPhoneTab = .general
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
 
     var body: some View {
+        #if os(iOS)
+        phoneSettings
+        .onAppear {
+            phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
+        }
+        .onChange(of: workspace.settingsSection) { _, section in
+            phoneTab = SettingsPhoneTab(section: section)
+        }
+        .onChange(of: phoneTab) { _, tab in
+            if let section = tab.settingsSection {
+                workspace.settingsSection = section
+            }
+        }
+        .accessibilityIdentifier("settings.content")
+        #else
         @Bindable var workspace = workspace
         TabView(selection: $workspace.settingsSection) {
             GeneralSettingsTab()
@@ -40,13 +59,136 @@ struct SettingsView: View {
                 .tag(WorkspaceStore.SettingsSection.integrations)
         }
         .accessibilityIdentifier("settings.content")
-        #if os(macOS)
-        // Fixed-width settings window on macOS; on iPad the sheet fills its
-        // presentation and the TabView renders as a bottom tab bar.
+        // Fixed-width settings window on macOS.
         .frame(width: 480)
         #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var phoneSettings: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 0) {
+                phoneTabContent
+                Divider()
+                accessibilityTabBar
+            }
+        } else {
+            TabView(selection: $phoneTab) {
+                SettingsTabNavigation { GeneralSettingsTab() }
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                    .tag(SettingsPhoneTab.general)
+                SettingsTabNavigation { ReadingSettingsTab() }
+                    .tabItem { Label("Reading", systemImage: "text.book.closed") }
+                    .tag(SettingsPhoneTab.reading)
+                SettingsTabNavigation { AnnotationsSettingsTab() }
+                    .tabItem { Label("Annotations", systemImage: "highlighter") }
+                    .tag(SettingsPhoneTab.annotations)
+                SettingsTabNavigation { AiSettingsTab() }
+                    .tabItem { Label("AI", systemImage: "sparkles") }
+                    .tag(SettingsPhoneTab.ai)
+                MoreSettingsNavigation()
+                    .tabItem { Label("More", systemImage: "ellipsis") }
+                    .tag(SettingsPhoneTab.more)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var phoneTabContent: some View {
+        switch phoneTab {
+        case .general: SettingsTabNavigation { GeneralSettingsTab() }
+        case .reading: SettingsTabNavigation { ReadingSettingsTab() }
+        case .annotations: SettingsTabNavigation { AnnotationsSettingsTab() }
+        case .ai: SettingsTabNavigation { AiSettingsTab() }
+        case .more: MoreSettingsNavigation()
+        }
+    }
+
+    private var accessibilityTabBar: some View {
+        HStack(spacing: 8) {
+            ForEach(SettingsPhoneTab.allCases, id: \.self) { tab in
+                Button {
+                    phoneTab = tab
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: tab.symbol)
+                            .font(.title3)
+                        Text(tab.title)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                    }
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(
+                            tab == phoneTab ? Color.accentColor.opacity(0.14) : .clear,
+                            in: RoundedRectangle(cornerRadius: 10))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tab == phoneTab ? Color.accentColor : .secondary)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(tab == phoneTab ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier("settings.tab.\(tab.title.lowercased())")
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+    #endif
 }
+
+#if os(iOS)
+enum SettingsPhoneTab: Hashable, CaseIterable {
+    case general
+    case reading
+    case annotations
+    case ai
+    case more
+
+    init(section: WorkspaceStore.SettingsSection) {
+        switch section {
+        case .general: self = .general
+        case .reading: self = .reading
+        case .annotations: self = .annotations
+        case .ai: self = .ai
+        case .storage, .integrations: self = .more
+        }
+    }
+
+    var settingsSection: WorkspaceStore.SettingsSection? {
+        switch self {
+        case .general: .general
+        case .reading: .reading
+        case .annotations: .annotations
+        case .ai: .ai
+        case .more: nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .reading: "Reading"
+        case .annotations: "Annotations"
+        case .ai: "AI"
+        case .more: "More"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .reading: "text.book.closed"
+        case .annotations: "highlighter"
+        case .ai: "sparkles"
+        case .more: "ellipsis"
+        }
+    }
+}
+#endif
 
 // MARK: - General
 
@@ -69,14 +211,23 @@ private struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #else
         .scrollDisabled(true)
+        #endif
     }
 
     private var systemFooter: String {
         #if os(macOS)
         "System follows macOS and updates live when you change appearance in Control Center."
         #else
-        "System follows iPadOS and updates live when you change appearance in Control Center."
+        switch ShellIdiom_iOS.current {
+        case .phone:
+            "System follows iOS and updates live when you change your iPhone’s appearance in Control Center."
+        case .pad:
+            "System follows iPadOS and updates live when you change your iPad’s appearance in Control Center."
+        }
         #endif
     }
 
@@ -109,10 +260,15 @@ private struct ReadingSettingsTab: View {
                 ) {
                     Text("Sidebar text size")
                 } minimumValueLabel: {
-                    Text("A").font(.system(size: 10))
+                    Text("A")
+                        .font(.caption)
+                        .accessibilityHidden(true)
                 } maximumValueLabel: {
-                    Text("A").font(.system(size: 16))
+                    Text("A")
+                        .font(.title3)
+                        .accessibilityHidden(true)
                 }
+                .accessibilityValue("\(Int(workspace.sidebarFontSize)) points")
                 LabeledContent("Current size") {
                     Text("\(Int(workspace.sidebarFontSize)) pt")
                         .foregroundStyle(.secondary)
@@ -156,7 +312,11 @@ private struct ReadingSettingsTab: View {
             #endif
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #else
         .scrollDisabled(true)
+        #endif
     }
 
     private var fontSizeBinding: Binding<Double> {
@@ -192,7 +352,11 @@ private struct AnnotationsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #else
         .scrollDisabled(true)
+        #endif
     }
 
     private func swatch(_ color: HighlightColor) -> some View {
@@ -209,6 +373,8 @@ private struct AnnotationsSettingsTab: View {
                         lineWidth: selected ? 2.5 : 1
                     )
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(color.name)
@@ -292,7 +458,11 @@ private struct AiSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #else
         .scrollDisabled(true)
+        #endif
         .onChange(of: aiStore.settings.provider) { _, _ in validationState = .idle }
         .onChange(of: aiStore.activeModelName) { _, _ in validationState = .idle }
         .onChange(of: aiStore.apiKeyBinding.wrappedValue) { _, _ in validationState = .idle }

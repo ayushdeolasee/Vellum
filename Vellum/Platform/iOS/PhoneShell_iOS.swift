@@ -263,17 +263,15 @@ private struct PhoneShellRoot_iOS: View {
             LiveTabStack_iOS(app: pane.app)
                 .ignoresSafeArea()
 
-            // Never in the touch path (see `ChromeTapCatcher_iOS`) — it is a
-            // window-level recognizer plus a geometry probe, which is why it can
-            // sit above the viewer without taking anything from it.
-            ChromeTapCatcher_iOS(
+            // Immersive reading keeps one explicit, system-safe way to restore
+            // the bars. This consumes only its own 44pt button instead of
+            // observing every tap delivered to PDFKit or WebKit.
+            ChromeRevealControl_iOS(
                 isActive: !shell.switcherPresented,
                 chromeVisible: shell.chromeVisible
             ) {
-                shell.toggleChrome()
+                shell.showChrome()
             }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
 
             PhoneReaderChrome_iOS(
                 shell: shell,

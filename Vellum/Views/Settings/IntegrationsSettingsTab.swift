@@ -44,6 +44,9 @@ struct IntegrationsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #endif
         // No `.frame(height: 460)`: on iPad the settings sheet fills its own
         // presentation, and pinning a height would strand the last row.
         .sheet(item: $connectProvider) { ConnectServiceSheet(provider: $0) }

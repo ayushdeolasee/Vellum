@@ -70,7 +70,10 @@ struct PhoneInspectorSheet_iOS: View {
     @State private var detent: PresentationDetent = .medium
 
     var body: some View {
-        SidebarContent_iOS(ink: ink)
+        SidebarContent_iOS(
+            ink: ink,
+            presentation: .phoneSheet,
+            onTabSelected: shell.selectInspectorTab)
             .environment(workspace)
             .environment(pane.app)
             .environment(pane.annotations)

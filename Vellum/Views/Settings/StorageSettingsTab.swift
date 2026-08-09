@@ -95,6 +95,9 @@ struct StorageSettingsTab: View {
             removeStoredDataSection
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #endif
         .task {
             refreshSettings()
             await reload()
@@ -372,6 +375,7 @@ struct StorageSettingsTab: View {
                 }
             }
             .disabled(isCleaningUp || StorageHousekeeping.evictionCutoff() == nil)
+            .accessibilityLabel("Run Cleanup Now")
             .accessibilityIdentifier("storage.runCleanup")
             if let cleanupResult {
                 Text(cleanupResult)

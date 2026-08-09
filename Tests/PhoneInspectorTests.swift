@@ -116,6 +116,26 @@ struct PhoneInspectorTests {
         #expect(fixture.shell.inspectorTab == .scratchpad)
     }
 
+    @Test(
+        "Selecting a tab changes only the visible panel",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/185"))
+    func tabSelectionIsIndependentOfPresentation() async throws {
+        let fixture = InspectorFixture()
+        try await fixture.openPdf()
+
+        fixture.shell.selectInspectorTab(.ai)
+        #expect(fixture.shell.inspectorTab == .ai)
+        #expect(fixture.shell.inspectorPresented == false)
+
+        fixture.shell.setInspectorPresented(true)
+
+        for tab in WorkspaceStore.SidebarTab.allCases {
+            fixture.shell.selectInspectorTab(tab)
+            #expect(fixture.shell.inspectorTab == tab)
+            #expect(fixture.shell.inspectorPresented)
+        }
+    }
+
     @Test("SwiftUI's dismissal write-back on the way to Home preserves the chosen panel")
     func dismissalWriteBackIsIgnoredOffTheReader() async throws {
         let fixture = InspectorFixture()
