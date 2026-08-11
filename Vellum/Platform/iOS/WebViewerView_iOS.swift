@@ -47,7 +47,7 @@ struct WebViewerView_iOS: View {
         if hasActivated || isActive || controller.isAttached {
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
-                    WebViewRepresentable_iOS(controller: controller)
+                    WebViewRepresentable_iOS(controller: controller, isActive: isActive)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     // Drag-to-crop region snapshot. The scrim intercepts the
@@ -330,8 +330,12 @@ final class VellumWebView: WKWebView, VellumShortcutResponder {
 /// NSViewRepresentable — no AppKit involved.
 private struct WebViewRepresentable_iOS: UIViewRepresentable {
     let controller: WebViewerController_iOS
+    let isActive: Bool
 
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(\.readerChromeScrollAction) private var readerChromeScrollAction
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> VellumWebView {
         // The controller has owned its `WKWebView` outright since this file was
@@ -347,10 +351,45 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
         webView.onShortcut = { [workspace] action in
             VellumShortcutRouter.perform(action, workspace: workspace)
         }
+        context.coordinator.configure(
+            scrollView: webView.scrollView,
+            action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
+            controller: controller)
         return webView
     }
 
-    func updateUIView(_ uiView: VellumWebView, context: Context) {}
+    func updateUIView(_ uiView: VellumWebView, context: Context) {
+        context.coordinator.configure(
+            scrollView: uiView.scrollView,
+            action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
+            controller: controller)
+    }
+
+    static func dismantleUIView(_ uiView: VellumWebView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator {
+        private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
+
+        func configure(
+            scrollView: UIScrollView,
+            action: ReaderChromeScrollAction,
+            controller: WebViewerController_iOS
+        ) {
+            chromeScrollObserver.configure(
+                scrollView: scrollView,
+                action: action,
+                sourceInteractionBlocked: { [weak controller] in
+                    controller?.blocksAutomaticChromeChanges ?? true
+                })
+        }
+
+        func detach() {
+            chromeScrollObserver.detach()
+        }
+    }
 }
 
 // MARK: - Controller (the WebViewer bridge logic, iOS)
@@ -394,6 +433,18 @@ final class WebViewerController_iOS: NSObject {
             guard highlightEditor?.id != oldValue?.id else { return }
             pushSelectedHighlight()
         }
+    }
+
+    /// A direct pan that begins as selection, note, or annotation interaction
+    /// is reserved for that work and cannot also change phone chrome.
+    var blocksAutomaticChromeChanges: Bool {
+        guard let app, let mountTabId, app.activeTabId == mountTabId else { return true }
+        return selection != nil
+            || selectionNoteDraft != nil
+            || noteComposer != nil
+            || contextMenu != nil
+            || noteViewer != nil
+            || highlightEditor != nil
     }
 
     @ObservationIgnored private weak var app: AppStore?

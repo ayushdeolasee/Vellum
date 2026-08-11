@@ -3,14 +3,14 @@ import SwiftUI
 
 // The iPhone reader's chrome (#153 P5): two floating glass capsule bars over a
 // full-bleed document, a legibility scrim behind them, and an immersive mode
-// that reduces them to one explicit reveal handle.
+// driven by document taps and directional scrolling, with no reveal affordance.
 //
 // The iPad's `PdfToolbar_iOS` is a docked row that OWNS a strip of the pane; on
 // a 390pt screen a docked row is a tax paid on every page. So the phone floats
 // its controls instead, in the same `GlassToolPod` / `GlassToolButton` language
 // (the 44pt slot and the 48pt capsule are the iPad's numbers and are not
 // re-derived here — see `PdfChrome_iOS`'s geometry note), and gets the strip
-// back when the reader explicitly hides the controls.
+// back after deliberate travel toward later content.
 
 // MARK: - Geometry
 
@@ -32,6 +32,9 @@ enum PhoneChromeLayout {
 
     /// Gap between two capsules in the same bar.
     static let podGap: CGFloat = 8
+
+    /// One-button GlassToolPod width: 44pt target + 4pt padding per side.
+    static let singleButtonPodWidth: CGFloat = buttonSide + 8
 
     /// Distance from the screen edge to the outermost capsule.
     static let edgeInset: CGFloat = 8
@@ -175,7 +178,8 @@ struct PhoneChromeScrim: View {
 
 // MARK: - Top bar
 
-/// Back to Home, the document's name, and an explicit immersive-mode control.
+/// Back to Home and the document's name. Chrome visibility is driven by direct
+/// document interaction, so this bar carries no dedicated Hide button.
 ///
 /// The title is here rather than in the bottom bar because it is the one piece
 /// of chrome that answers "where am I", and it pairs with the control that
@@ -198,24 +202,20 @@ struct PhoneReaderTopBar: View {
 
             titleCapsule
 
-            GlassToolPod(label: "Reader controls") {
-                GlassToolButton(
-                    system: "arrow.down.right.and.arrow.up.left",
-                    label: "Hide reader controls"
-                ) {
-                    app.hideFind()
-                    shell.hideChrome()
-                }
-                .accessibilityIdentifier("phone.reader.hideChrome")
-            }
+            // Mirror the one-button Home pod without adding a control. A
+            // flexible Spacer has zero intrinsic width here and shifts the
+            // title toward the trailing edge.
+            Color.clear
+                .frame(
+                    width: PhoneChromeLayout.singleButtonPodWidth,
+                    height: PhoneChromeLayout.capsuleHeight)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, PhoneChromeLayout.edgeInset)
         .padding(.top, PhoneChromeLayout.barEdgeGap)
     }
 
-    /// The equal-width pods on either side make this capsule geometrically
-    /// centered, rather than merely placed after the Back button. `.middle`
-    /// truncation, not `.tail`: phone-sized titles are dominated by
+    /// `.middle` truncation, not `.tail`: phone-sized titles are dominated by
     /// long PDF filenames and article headlines whose distinguishing half is at
     /// the END ("Attention Is All You Need — Revised.pdf"). Dropping the middle
     /// keeps both ends, which is what makes two similar documents tellable
@@ -410,7 +410,7 @@ struct PhoneReaderBottomBar: View {
                 // P7 mounts the `.fullScreenCover` bound to this flag; the
                 // wiring is final either way, so it lands with the button it
                 // belongs to rather than being rediscovered a packet later.
-                shell.switcherPresented = true
+                shell.presentSwitcher()
             }
             .accessibilityIdentifier("phone.reader.tabs")
 

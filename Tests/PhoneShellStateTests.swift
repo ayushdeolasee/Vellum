@@ -1,6 +1,5 @@
 #if os(iOS)
 import Foundation
-import SwiftUI
 import Testing
 import UIKit
 
@@ -81,43 +80,152 @@ struct PhoneShellStateTests {
         await app.openFile(path: "/tmp/phone-switcher.pdf")
         shell.didOpenDocument()
 
-        shell.switcherPresented = true
+        shell.presentSwitcher()
         shell.didOpenDocument()
         #expect(shell.switcherPresented == false)
 
         // And leaving for Home closes it too: a full-screen cover left up
         // would stack over the screen that replaced the one it covered.
-        shell.switcherPresented = true
+        shell.presentSwitcher()
         shell.showHome()
         #expect(shell.switcherPresented == false)
+
+        // Plain Done/system dismissal is also a fresh reader arrival.
+        shell.showReader()
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 20, sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.ended)
+        shell.presentSwitcher()
+        shell.setSwitcherPresented(false)
+        #expect(shell.chromeVisible)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 8, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "switcher return cleared partial travel")
+    }
+
+    @Test("A document tap toggles bars while blocked interactions do not")
+    func documentTapTogglesChrome() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-tap.pdf")
+        shell.didOpenDocument()
+
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(!shell.chromeVisible)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: true))
+        #expect(shell.chromeVisible, "selection and note interactions keep their chrome state")
     }
 
     @Test(
-        "Chrome has explicit hide and reveal actions and resets on reader arrival",
-        .bug("https://github.com/ayushdeolasee/Vellum/issues/187"))
-    func chromeResetsVisibleOnEveryRouteChangeToReader() async throws {
+        "Direct later/reverse travel hides and reveals both bars at 28 points",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/192"))
+    func scrollTravelDrivesChromeAtThreshold() async throws {
         let (shell, app) = try await makeShell()
         await app.openFile(path: "/tmp/phone-chrome.pdf")
         shell.didOpenDocument()
-        #expect(shell.chromeVisible)
 
-        shell.hideChrome()
-        #expect(shell.chromeVisible == false)
-        shell.showChrome()
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 27, sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.ended)
         #expect(shell.chromeVisible)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 1, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible == false, "short direct pans accumulate")
+        shell.handleReaderScroll(.ended)
+        #expect(shell.chromeVisible == false, "hidden controls remain hidden at rest")
+
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: -28, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+    }
+
+    @Test("Tiny reversals are jitter; deliberate direction changes reset accumulated travel")
+    func chromeTravelHandlesDirectionChanges() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-direction.pdf")
+        shell.didOpenDocument()
+
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 20, sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: -2, sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 8, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible == false)
+
+        shell.showReader()
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 20, sourceInteractionBlocked: false))
+        for _ in 0..<4 {
+            shell.handleReaderScroll(.changed(deltaY: -1, sourceInteractionBlocked: false))
+        }
+        shell.handleReaderScroll(.changed(deltaY: 24, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "repeated tiny samples eventually form a real reversal")
+    }
+
+    @Test("PDFKit's document responder is selection, not keyboard input")
+    func pdfDocumentTextInputDoesNotFreezeChrome() {
+        let pdfView = VellumPDFView()
+        let pdfDocumentResponder = UITextView()
+        pdfView.addSubview(pdfDocumentResponder)
+
+        #expect(PhoneShellStore.isPDFDocumentSurfaceResponder(pdfDocumentResponder))
+        #expect(!PhoneShellStore.isPDFDocumentSurfaceResponder(UITextView()))
+    }
+
+    @Test("A blocked interaction freezes its whole pan and always-show prevents hiding")
+    func safeguardsFreezeAutomaticChrome() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-safeguards.pdf")
+        shell.didOpenDocument()
+
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: true))
+        shell.handleReaderScroll(.changed(deltaY: 100, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "selection/note work owns the complete gesture")
+        shell.handleReaderScroll(.ended)
+
+        shell.setChrome(false)
+        app.showFind()
+        shell.findPresentationChanged(isVisible: true)
+        #expect(shell.chromeVisible, "Find cannot open inside invisible chrome")
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 100, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "Find freezes automatic chrome")
+        shell.handleReaderScroll(.ended)
+        app.hideFind()
+
+        app.setMode(.note)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 100, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "sticky-note placement freezes automatic chrome")
+        shell.handleReaderScroll(.ended)
+        app.setMode(.view)
+
+        shell.updateAlwaysShowReaderControls(true)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 100, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "always-show also blocks tap-to-hide")
+    }
+
+    @Test("Every reader navigation arrival restores controls and clears partial travel")
+    func chromeResetsVisibleOnEveryRouteChangeToReader() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-arrival.pdf")
+        shell.didOpenDocument()
         shell.setChrome(false)
 
-        // Immersive is per-visit, not a preference: arriving at a document with
-        // no chrome leaves only the compact reveal handle and no visible way
-        // back to Home.
         shell.showHome()
         shell.showReader()
         #expect(shell.chromeVisible)
-
-        shell.setChrome(false)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 20, sourceInteractionBlocked: false))
         shell.showHome()
         shell.didOpenDocument()
-        #expect(shell.chromeVisible)
+        shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
+        shell.handleReaderScroll(.changed(deltaY: 8, sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible, "arrival discarded the previous visit’s partial travel")
     }
 
     // MARK: - The inspector (D2 / D3)
@@ -234,24 +342,6 @@ struct PhoneShellStateTests {
         let workspace = makeWorkspace()
         let shell = PhoneShellStore(workspace: workspace)
         return (shell, workspace.focusedPane.app)
-    }
-}
-
-@MainActor
-@Suite("Phone reader chrome hit testing")
-struct PhoneReaderChromeHitTestingTests {
-    @Test("The immersive reveal control only owns its visible button")
-    func revealControlLeavesTheDocumentTouchable() {
-        let host = UIHostingController(rootView: ChromeRevealControl_iOS(
-            isActive: true,
-            chromeVisible: false,
-            action: {}))
-        host.loadViewIfNeeded()
-        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
-        host.view.layoutIfNeeded()
-
-        #expect(host.view.hitTest(CGPoint(x: 100, y: 422), with: nil) == nil)
-        #expect(host.view.hitTest(CGPoint(x: 352, y: 422), with: nil) != nil)
     }
 }
 

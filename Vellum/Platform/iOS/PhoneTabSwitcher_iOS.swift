@@ -212,7 +212,7 @@ struct PhoneTabSwitcher_iOS: View {
     }
 
     private var doneButton: some View {
-        Button("Done") { shell.switcherPresented = false }
+        Button("Done") { shell.setSwitcherPresented(false) }
             .font(.body.bold())
             .foregroundStyle(palette.primary)
             .frame(

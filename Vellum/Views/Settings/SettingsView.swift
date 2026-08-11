@@ -244,6 +244,8 @@ private struct GeneralSettingsTab: View {
 private struct ReadingSettingsTab: View {
     @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
+    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey)
+    private var alwaysShowReaderControls = false
     @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
     @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
     @AppStorage(InkController_iOS.autoHideSidebarKey) private var autoHideSidebarWhileInking = true
@@ -283,6 +285,21 @@ private struct ReadingSettingsTab: View {
             }
 
             #if os(iOS)
+            if ShellIdiom_iOS.current == .phone {
+                Section {
+                    Toggle(
+                        "Always show reader controls",
+                        isOn: $alwaysShowReaderControls)
+                        .accessibilityIdentifier("settings.reader.alwaysShowControls")
+                } header: {
+                    Text("Reader")
+                } footer: {
+                    Text("Keeps the iPhone reader’s top and bottom bars visible while you scroll. Assistive navigation also enables this behavior automatically.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
                 Toggle("Two-finger double-tap adds a note", isOn: $twoFingerNoteTap)
             } header: {

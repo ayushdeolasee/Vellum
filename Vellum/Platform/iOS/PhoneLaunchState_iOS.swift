@@ -16,8 +16,8 @@ enum PhoneLaunchState: String, Sendable, Hashable, CaseIterable {
     case home
     /// The document, chrome up.
     case reader
-    /// The document, chrome down — the immersive reading state that normally
-    /// costs a tap on the page.
+    /// The document, chrome down — the immersive reading state reached by a
+    /// document tap or by scrolling toward later content.
     case immersive
     /// The document with the inspector sheet presented, on whatever panel the
     /// workspace last selected.

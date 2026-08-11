@@ -92,6 +92,13 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     var isNoteMode: Bool { app?.mode == .note }
 
+    /// Native scrolling may dismiss these transient surfaces, but a pan that
+    /// STARTED as selection/note work must never also change phone chrome.
+    var blocksAutomaticChromeChanges: Bool {
+        guard let app, let tabId, app.activeTabId == tabId else { return true }
+        return selection != nil || contextMenu != nil || highlightResize != nil
+    }
+
     // MARK: - Lifecycle
 
     func adopt(
