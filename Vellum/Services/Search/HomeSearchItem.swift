@@ -77,6 +77,8 @@ struct HomeSearchBadges: OptionSet, Hashable, Sendable {
     static let notes = HomeSearchBadges(rawValue: 1 << 2)
     /// A PDF whose file is no longer where we last saw it.
     static let missing = HomeSearchBadges(rawValue: 1 << 3)
+    /// Imported through Capture and not yet opened on this device.
+    static let capturedUnread = HomeSearchBadges(rawValue: 1 << 4)
 }
 
 /// Pre-folded text for one item, computed once when the corpus is built so a

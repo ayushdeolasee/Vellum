@@ -69,6 +69,11 @@ extension Notification.Name {
     /// scratchpad + conversation so the freshly-merged notes/chat replace stale
     /// live state instead of being clobbered by its next flush. (vellum:sidecar-imported)
     static let vellumDocumentSidecarImported = Notification.Name("vellum.sidecar-imported")
+    /// Posted before a workspace-backed bundle import mutates class-B data. A
+    /// live Scratchpad cancels its debounce synchronously; the importer then
+    /// joins the shared write lane before publishing imported bytes.
+    static let vellumDocumentSidecarWillImport = Notification.Name(
+        "vellum.sidecar-will-import")
     /// Broadcast after the Storage pane deletes a document's notes and/or chat on
     /// disk (userInfo["keys"]: [String]; userInfo["notes"]/["chat"]: Bool). A pane
     /// showing that document must clear the matching in-memory state WITHOUT

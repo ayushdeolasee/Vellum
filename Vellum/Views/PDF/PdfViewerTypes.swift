@@ -24,6 +24,19 @@ struct PdfContextMenuState {
     var pageHeight: Double
 }
 
+extension EnvironmentValues {
+    /// How the PDF viewer under this subtree picks its scale (issue #152).
+    ///
+    /// The default is `.free`, which is the behaviour every viewer has always
+    /// had; only a shell that KNOWS it is drawing a phone-shaped reader raises
+    /// it to `.fitWidth`. It is an injected mode rather than a size-class read
+    /// inside the viewer on purpose: an iPad in Slide Over is compact-width too
+    /// and must keep the absolute-zoom behaviour it has always had, so the
+    /// decision belongs at the one place that already distinguishes the two
+    /// (`RootShell_iOS`).
+    @Entry var pdfZoomMode: PdfZoomMode = .free
+}
+
 /// Positions content so its bottom-center sits at `point` — the CSS
 /// `translate(-50%, -100%)` used by the selection and highlight-edit popovers.
 struct AnchoredAbove<Content: View>: View {

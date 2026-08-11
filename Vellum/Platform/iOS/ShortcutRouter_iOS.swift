@@ -60,12 +60,35 @@ enum VellumShortcutRouter {
             return
         }
 
+        // Pane management is gated on the workspace's own capability rather than
+        // on a size class (#153 D4/D6). `VellumCommands_iOS` already omits these
+        // items on a single-pane workspace, but the menu is not the only way in:
+        // a `UIKeyCommand` installed on a document surface never consulted a
+        // menu, and an iPad's persisted layout can hand a phone a workspace that
+        // still remembers being split. `WorkspaceStore` no-ops the split calls
+        // anyway; refusing here means the chord reads as unbound rather than as
+        // broken.
+        guard VellumShortcutCatalog.isAvailable(action, in: workspace.layout) else { return }
+
         let pane = workspace.focusedPane
         let app = pane.app
 
         switch action {
         // MARK: File
         case .newTab:
+            // On the phone a "new tab" is a trip to Home, never a start tab
+            // (#153 D1). Home is a ROUTE there: the current tab stays active, so
+            // its residency pin survives and coming back is instant — whereas
+            // `newStartTab()` would push an empty document leaf into a pane tree
+            // whose shell has no tab strip to escape it with.
+            //
+            // A notification rather than a call because the route lives in
+            // `PhoneShellStore`, which the router has no handle on — same
+            // channel discipline as `.vellumOpenFile` below.
+            guard workspace.layout == .splitScreen else {
+                NotificationCenter.default.post(name: .vellumShowHome, object: nil)
+                return
+            }
             app.newStartTab()
 
         case .openFile:

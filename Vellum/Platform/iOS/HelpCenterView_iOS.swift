@@ -69,7 +69,7 @@ struct HelpCenterView_iOS: View {
                 // thing that would make the search feel slow.
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(results) { topic in
-                        row(topic)
+                        HelpTopicRow_iOS(topic: topic)
                     }
                 }
                 .padding(20)
@@ -78,35 +78,54 @@ struct HelpCenterView_iOS: View {
         }
     }
 
-    private func row(_ topic: HelpTopic) -> some View {
+    private func openWalkthrough() {
+        pendingWalkthrough = true
+        dismiss()
+    }
+}
+
+/// A single measurable row so focused layout tests can verify that Help really
+/// grows with Dynamic Type without presenting the entire navigation sheet.
+struct HelpTopicRow_iOS: View {
+    let topic: HelpTopic
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: topic.symbol)
-                .font(.system(size: 14))
+                .font(.body)
                 .foregroundStyle(.tint)
                 // Same fixed gutter as the walkthrough's bullets, so titles
                 // line up down the list whatever each symbol's width is.
-                .frame(width: 18, alignment: .center)
+                .frame(minWidth: 24, alignment: .center)
                 .padding(.top, 1)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(topic.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.foreground)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        topicTitle(topic)
 
-                    if let shortcut = topic.shortcut {
-                        Keycap(keys: shortcut)
+                        if let shortcut = topic.shortcut {
+                            HelpKeycap(keys: shortcut)
+                        }
+
+                        Spacer(minLength: 0)
                     }
 
-                    Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: 6) {
+                        topicTitle(topic)
+                        if let shortcut = topic.shortcut {
+                            HelpKeycap(keys: shortcut)
+                        }
+                    }
                 }
 
                 Text(topic.summary)
-                    .font(.system(size: 12))
+                    .font(.body)
                     .foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
-                    .lineSpacing(2)
             }
         }
         .padding(14)
@@ -123,9 +142,35 @@ struct HelpCenterView_iOS: View {
         .accessibilityIdentifier("help.topic.\(topic.id)")
     }
 
-    private func openWalkthrough() {
-        pendingWalkthrough = true
-        dismiss()
+    private func topicTitle(_ topic: HelpTopic) -> some View {
+        Text(topic.title)
+            .font(.headline)
+            .foregroundStyle(palette.foreground)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The shared keycap has a fixed desktop-oriented point size. Help uses this
+/// semantic version so the shortcut remains legible and can move under its
+/// title when accessibility text no longer fits on one line.
+private struct HelpKeycap: View {
+    let keys: String
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Text(keys)
+            .font(.caption.monospaced())
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(palette.muted, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(palette.borderStrong)
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard shortcut \(keys)")
     }
 }
 #endif

@@ -74,6 +74,7 @@ struct HomeResultRow: View {
     let removals: [(removal: HomeSearchRemoval, action: () -> Void)]
 
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: open) {
@@ -81,26 +82,42 @@ struct HomeResultRow: View {
                 icon
 
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+                    if dynamicTypeSize.isAccessibilitySize {
                         Text(item.title)
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(palette.foreground)
-                            .lineLimit(1)
+                            .lineLimit(3)
                             .truncationMode(.middle)
                         HomeBadgeStrip(badges: item.badges)
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(item.title)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(palette.foreground)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            HomeBadgeStrip(badges: item.badges)
+                        }
                     }
                     Text(item.subtitle)
-                        .font(.system(size: 12))
+                        .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         .truncationMode(.middle)
+
+                    if dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
+                        Text(item.detail)
+                            .font(.footnote)
+                            .monospacedDigit()
+                            .foregroundStyle(palette.mutedForeground)
+                    }
                 }
 
                 Spacer(minLength: 12)
 
-                if !item.detail.isEmpty {
+                if !dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
                     Text(item.detail)
-                        .font(.system(size: 12))
+                        .font(.footnote)
                         .monospacedDigit()
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(1)
@@ -122,7 +139,7 @@ struct HomeResultRow: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
-        .accessibilityValue(item.subtitle)
+        .accessibilityValue(accessibilityValue)
         // Reached by long-press on iPad, which is the standard affordance for
         // destructive row actions.
         .contextMenu {
@@ -142,6 +159,13 @@ struct HomeResultRow: View {
                 }
             }
         }
+    }
+
+    private var accessibilityValue: String {
+        if item.badges.contains(.capturedUnread) {
+            return "New, not yet opened. \(item.subtitle)"
+        }
+        return item.subtitle
     }
 
     private var icon: some View {
@@ -166,6 +190,16 @@ struct HomeBadgeStrip: View {
 
     var body: some View {
         HStack(spacing: 5) {
+            if badges.contains(.capturedUnread) {
+                Text("New")
+                    .font(.caption.bold())
+                    .foregroundStyle(palette.primaryForeground)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(palette.primary, in: Capsule())
+                    .fixedSize()
+                    .accessibilityLabel("New, not yet opened")
+            }
             badge(.missing, "exclamationmark.triangle.fill", "File not found at its last known location",
                   tint: palette.destructive)
             badge(.saved, "bookmark.fill", "Saved to your library", tint: palette.gold)
@@ -180,7 +214,7 @@ struct HomeBadgeStrip: View {
     ) -> some View {
         if badges.contains(flag) {
             Image(systemName: symbol)
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(tint ?? palette.mutedForeground)
                 .accessibilityLabel(help)
         }
@@ -198,6 +232,7 @@ struct HomeLinkActionRow: View {
     let open: () -> Void
 
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: open) {
@@ -212,12 +247,12 @@ struct HomeLinkActionRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Open this webpage")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(palette.foreground)
                     Text(url)
-                        .font(.system(size: 12))
+                        .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         .truncationMode(.middle)
                 }
 
@@ -227,8 +262,10 @@ struct HomeLinkActionRow: View {
                 // Hidden from VoiceOver: this row is a single button whose
                 // label already says what ↩ does, and `Keycap` would otherwise
                 // add a second "Keyboard shortcut" element inside it.
-                Keycap(keys: "↩")
-                    .accessibilityHidden(true)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Keycap(keys: "↩")
+                        .accessibilityHidden(true)
+                }
             }
             .padding(.horizontal, HomeLayout.rowInset)
             .padding(.vertical, 8)
@@ -255,13 +292,13 @@ struct HomeSectionHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: section.systemImage)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption.weight(.semibold))
             Text(section.title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.caption.weight(.semibold))
                 .textCase(.uppercase)
                 .kerning(0.4)
             Text("\(count)")
-                .font(.system(size: 11, weight: .medium))
+                .font(.caption.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(palette.mutedForeground.opacity(0.7))
             Spacer(minLength: 0)
@@ -292,16 +329,18 @@ struct HomeFilterChip: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 12, weight: .medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(
                     SelectionStyle.foreground(palette, selected: isSelected, hovering: false))
-                .padding(.horizontal, 12)
-                // 26pt is a mouse target; 32 is the smallest that is honest on
-                // a touch screen without making the chip row look like buttons.
-                .frame(height: 32)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 7)
                 .selectionSurface(
                     selected: isSelected, hovering: false, in: Capsule(), palette: palette)
-                .contentShape(Capsule())
+                // The capsule stays visually compact; the transparent outer
+                // frame supplies the full touch target.
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)

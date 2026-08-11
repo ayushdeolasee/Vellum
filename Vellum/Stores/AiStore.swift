@@ -594,7 +594,9 @@ final class AiStore {
     func addLocalMessage(role: AiRole, content: String, id: String? = nil) -> String {
         let message = AiPersistence.makeMessage(role: role, content: content, id: id)
         messages.append(message)
-        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        AiPersistence.saveConversation(
+            for: app?.document, messages: messages,
+            coordinator: app?.workspace?.storageCoordinator)
         return message.id
     }
 
@@ -605,7 +607,9 @@ final class AiStore {
             next.content = content
             return next
         }
-        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        AiPersistence.saveConversation(
+            for: app?.document, messages: messages,
+            coordinator: app?.workspace?.storageCoordinator)
     }
 
     func setThinkingState(_ thinking: Bool) {
@@ -880,8 +884,15 @@ final class AiStore {
     }
 
     /// Restore the persisted conversation for a document (or reset when nil).
-    func loadConversationForDocument(_ document: DocumentInfo?) {
-        messages = AiPersistence.loadConversation(for: document)
+    func loadConversationForDocument(
+        _ document: DocumentInfo?, coordinator: StorageCoordinator? = nil
+    ) async {
+        if let coordinator {
+            messages = await AiPersistence.loadConversation(
+                for: document, coordinator: coordinator)
+        } else {
+            messages = AiPersistence.loadConversation(for: document)
+        }
         activity = .idle
         streamingMessageId = nil
         composerReferences = []
@@ -916,7 +927,9 @@ final class AiStore {
         let transaction = AiConversationClearTransaction(
             document: document, sessionId: sessionId, removedMessages: messages)
         cancelActiveRequest()
-        AiPersistence.saveConversation(for: document, messages: [])
+        AiPersistence.saveConversation(
+            for: document, messages: [],
+            coordinator: app?.workspace?.storageCoordinator)
         messages = []
         error = nil
         return transaction
@@ -930,7 +943,9 @@ final class AiStore {
         let current = AiPersistence.loadConversation(for: document)
         let currentIds = Set(current.map(\.id))
         let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
-        AiPersistence.saveConversation(for: document, messages: restored)
+        AiPersistence.saveConversation(
+            for: document, messages: restored,
+            coordinator: app?.workspace?.storageCoordinator)
         if isShowing(transaction, document: document) {
             cancelActiveRequest()
             // Read back rather than showing `restored`: the save applies the
@@ -951,7 +966,9 @@ final class AiStore {
         let removedIds = Set(transaction.removedMessages.map(\.id))
         let remaining = AiPersistence.loadConversation(for: document)
             .filter { !removedIds.contains($0.id) }
-        AiPersistence.saveConversation(for: document, messages: remaining)
+        AiPersistence.saveConversation(
+            for: document, messages: remaining,
+            coordinator: app?.workspace?.storageCoordinator)
         if isShowing(transaction, document: document) {
             cancelActiveRequest()
             messages = remaining
@@ -1152,7 +1169,9 @@ final class AiStore {
         }
         let documentForPersist = app.document ?? documentAtStart
         let messagesWithUser = Array(messages.dropLast())
-        AiPersistence.saveConversation(for: documentForPersist, messages: messagesWithUser)
+        AiPersistence.saveConversation(
+            for: documentForPersist, messages: messagesWithUser,
+            coordinator: app.workspace?.storageCoordinator)
 
         // Image inputs: the auto page snapshot first, then any snapshot the user
         // explicitly attached as a reference.
@@ -1321,7 +1340,9 @@ final class AiStore {
             let completed = AiPersistence.limitedMessages(messagesWithUser + [
                 assistantMessage
             ])
-            AiPersistence.saveConversation(for: documentForPersist, messages: completed)
+            AiPersistence.saveConversation(
+                for: documentForPersist, messages: completed,
+                coordinator: app.workspace?.storageCoordinator)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed
                 activity = .idle
@@ -1343,7 +1364,9 @@ final class AiStore {
             let failed = messagesWithUser + [
                 AiPersistence.makeMessage(role: .assistant, content: content, id: assistantId)
             ]
-            AiPersistence.saveConversation(for: documentForPersist, messages: failed)
+            AiPersistence.saveConversation(
+                for: documentForPersist, messages: failed,
+                coordinator: app.workspace?.storageCoordinator)
             if app.activeTabId == sessionIdAtStart {
                 messages = failed
                 activity = .idle

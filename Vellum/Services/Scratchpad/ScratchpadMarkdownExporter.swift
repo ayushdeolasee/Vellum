@@ -420,8 +420,7 @@ enum ScratchpadMarkdownExporter {
         guard isSymbolicLink(at: sourceURL, fileManager: fileManager) == false else {
             return false
         }
-        let roots = [attachmentsDirectory, ScratchpadAttachmentStore.activeDirectory,
-                     ScratchpadAttachmentStore.directory].compactMap { $0 }
+        let roots = [attachmentsDirectory, ScratchpadAttachmentStore.directory].compactMap { $0 }
         return roots.contains { root in
             contains(sourceURL, within: root)
         }

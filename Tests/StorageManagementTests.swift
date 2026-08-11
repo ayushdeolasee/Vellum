@@ -286,7 +286,7 @@ final class StorageManagementTests: XCTestCase {
 
     private struct BlobEntry: Codable { var key: String; var text: String }
 
-    func testScratchpadLegacyListAndRemove() throws {
+    func testScratchpadLegacyListAndRemove() async throws {
         let entries = [
             BlobEntry(key: "/tmp/a.pdf", text: "note a"),
             BlobEntry(key: "/tmp/b.pdf", text: "longer note b"),
@@ -297,7 +297,7 @@ final class StorageManagementTests: XCTestCase {
         XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])
         XCTAssertEqual(listed.first { $0.key == "/tmp/a.pdf" }?.bytes, "note a".utf8.count)
 
-        ScratchpadPersistence.removeLegacyEntry(key: "/tmp/a.pdf")
+        await ScratchpadPersistence.removeLegacyEntry(key: "/tmp/a.pdf")
         let after = ScratchpadPersistence.listLegacyEntries()
         XCTAssertEqual(after.map(\.key), ["/tmp/b.pdf"])
     }

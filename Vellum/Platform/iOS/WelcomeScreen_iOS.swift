@@ -33,34 +33,37 @@ struct WelcomeLibrary_iOS: View {
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var store = HomeSearchStore()
+    @State private var store: HomeSearchStore
+
+    /// `store` is injectable so a shell that unmounts this screen can keep the
+    /// corpus alive across visits (the phone's Home is a route, not a tab — see
+    /// `PhoneShellRoot_iOS.homeSearch`). Defaulted to nil, so both iPad call
+    /// sites keep their own screen-owned store and behave exactly as before.
+    init(
+        onOpen: @escaping () -> Void,
+        onAddWebpage: @escaping () -> Void,
+        compact: Bool = false,
+        store: HomeSearchStore? = nil
+    ) {
+        self.onOpen = onOpen
+        self.onAddWebpage = onAddWebpage
+        self.compact = compact
+        let corpus = store ?? HomeSearchStore()
+        _store = State(initialValue: corpus)
+        _actions = State(initialValue: HomeLibraryActions_iOS(store: corpus))
+    }
+
     /// Which library the screen is showing: the local one, or a connected
     /// read-later account's. Reset to `.library` when the account being browsed
     /// is disconnected — see the `connectedProviders` change handler.
     @State private var source: HomeSource = .library
-    /// The row whose rename sheet is open, if any.
-    @State private var renamingItem: HomeSearchItem?
-    /// The removal waiting on its confirmation dialog, if any.
-    @State private var confirmingRemoval: PendingRemoval?
-    /// Title for the confirmation, held separately and never cleared on
-    /// dismissal: `confirmingRemoval` goes nil the instant the dialog starts
-    /// closing, and reading it for the title (which is evaluated outside
-    /// `presenting:`) would blank the heading mid-animation while the buttons
-    /// and message still render.
-    @State private var confirmingTitle = ""
-    /// The most recent undoable recents removal, shown as a toast.
-    @State private var undoableRemoval: HomeRecentRemovalTransaction?
+    /// Rename sheet, removal confirmation, undo toast and the `UndoManager`
+    /// registrations — all four extracted to `HomeLibraryActions_iOS` in #153 P4
+    /// so the phone Home drives exactly the same orchestration.
+    @State private var actions: HomeLibraryActions_iOS
     @State private var showSettings = false
     @State private var showHelp = false
     @FocusState private var searchFocused: Bool
-
-    /// A destructive removal held back until the user confirms it. Carries the
-    /// row as well as the action so the dialog can name what it is about to
-    /// un-save.
-    private struct PendingRemoval {
-        let item: HomeSearchItem
-        let removal: HomeSearchRemoval
-    }
 
     /// The calm first-run hero, shown only once we KNOW there is nothing to
     /// browse — never while the first load is still in flight, or the screen
@@ -174,45 +177,12 @@ struct WelcomeLibrary_iOS: View {
             source = .library
             searchFocused = true
         }
-        .onDisappear {
-            // `registerUndo(withTarget:)` does NOT retain its target, and this
-            // screen owns `store` as `@State` — opening a document swaps the
-            // whole view out and deallocates it. Leaving the registration in
-            // place would leave a dead target on the undo stack, and an "Undo
-            // Remove from Recent" entry in a reader that has no recents list on
-            // screen. The undo's session is this screen's lifetime, so it
-            // leaves with it.
-            undoManager?.removeAllActions(withTarget: store)
-        }
-        .sheet(item: $renamingItem) { item in
-            RenameDocumentSheet_iOS(
-                currentTitle: item.title,
-                // `subtitle` is the filename for a PDF and host+path for a
-                // page — exactly what the row falls back to with no override.
-                fallbackName: item.subtitle,
-                commit: { newTitle in
-                    Task { await store.rename(item, to: newTitle) }
-                })
-        }
+        // The rename sheet, the removal confirmation, the undo toast and the
+        // `onDisappear` that drops this screen's undo registrations. The toast
+        // stays bottom-trailing, where it was before the extraction.
+        .homeLibraryPresentations(actions)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
         .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
-        .confirmationDialog(
-            Text(confirmingTitle),
-            isPresented: Binding(
-                get: { confirmingRemoval != nil },
-                set: { if !$0 { confirmingRemoval = nil } }),
-            titleVisibility: .visible,
-            presenting: confirmingRemoval
-        ) { pending in
-            Button(pending.removal.confirmLabel, role: .destructive) {
-                performRemoval(pending.item, from: pending.removal)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { pending in
-            if let message = pending.removal.confirmationMessage {
-                Text(message)
-            }
-        }
     }
 
     // MARK: - Library layout
@@ -255,7 +225,6 @@ struct WelcomeLibrary_iOS: View {
                 resultList
             }
         }
-        .overlay(alignment: .bottomTrailing) { undoToast }
         // Progress and failures for a read-later PDF opened from a SEARCH
         // result. `ExternalLibraryList_iOS` floats this itself, so it is only
         // added under the library list — without it, tapping a Readwise PDF row
@@ -553,8 +522,9 @@ struct WelcomeLibrary_iOS: View {
                                     isSelected: store.selectedId == item.id,
                                     open: { open(item) },
                                     share: shareTarget(for: item),
-                                    rename: renameAction(for: item),
-                                    removals: removalActions(for: item)
+                                    rename: actions.renameAction(for: item),
+                                    removals: actions.removalActions(
+                                        for: item, undoManager: undoManager)
                                 )
                                 .id(item.id)
                             }
@@ -654,7 +624,11 @@ struct WelcomeLibrary_iOS: View {
             VStack(spacing: compact ? 24 : 36) {
                 VStack(spacing: 12) {
                     Wordmark(size: compact ? 40 : 60)
-                    Text("AI-powered reading for iPad")
+                    // Derived from the idiom rather than hard-coded (#153 P4):
+                    // one binary serves both device families, and this screen
+                    // is still reachable on a phone through `PaneView_iOS`'s
+                    // compact start tab.
+                    Text(PhoneHome_iOS.tagline)
                         .font(compact ? .headline : .title3)
                         .foregroundStyle(palette.mutedForeground)
                 }
@@ -717,45 +691,6 @@ struct WelcomeLibrary_iOS: View {
         }
     }
 
-    // MARK: - Undo toast
-
-    /// iPad has no Edit ▸ Undo without a hardware keyboard, so the undo the
-    /// store registers would be reachable only by shake-to-undo or ⌘Z. This
-    /// toast is the primary affordance; the `UndoManager` registration in
-    /// `performRemoval` stays, so both routes drive the same transaction.
-    @ViewBuilder
-    private var undoToast: some View {
-        if let transaction = undoableRemoval {
-            HStack(spacing: 12) {
-                Text("Removed from Recent")
-                    .font(.system(size: 13))
-                    .foregroundStyle(palette.foreground)
-                Button("Undo") {
-                    guard store.undoRecentRemoval(transaction) else { return }
-                    undoableRemoval = nil
-                    Task { await store.load() }
-                }
-                .font(.system(size: 13, weight: .semibold))
-                .accessibilityIdentifier("welcome.undoRemoval")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(palette.border)
-            }
-            .shadow(radius: 8, y: 2)
-            .padding(20)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .accessibilityIdentifier("welcome.removalToast")
-            .task(id: transaction) {
-                try? await Task.sleep(for: .seconds(6))
-                guard !Task.isCancelled else { return }
-                withAnimation { undoableRemoval = nil }
-            }
-        }
-    }
-
     // MARK: - Actions
 
     /// Routed through the root scene rather than presented here: the
@@ -797,19 +732,20 @@ struct WelcomeLibrary_iOS: View {
             openExternal(external)
             return
         }
-        switch item.target {
+        // The moved-PDF and reinstalled-container rules now live in
+        // `HomeOpenResolver` (#153 P4), which the phone Home shares — they are
+        // both invisible until they misfire, which is precisely why they must
+        // not exist twice.
+        switch HomeOpenResolver.intent(
+            for: item.target, resolveExisting: DocumentImport.resolveExistingPath
+        ) {
         case .url(let url):
             Task { await appStore.openUrl(url) }
-        case .file(let path, let recordedPath):
-            // A moved PDF re-resolved to a new path: drop the stale recents
-            // entry so the re-record on open can't leave a duplicate (§7).
-            if path != recordedPath {
-                _ = RecentFilesService.remove(path: recordedPath)
+        case .file(let path, let staleRecentPath):
+            if let staleRecentPath {
+                _ = RecentFilesService.remove(path: staleRecentPath)
             }
-            // Resolve against the current container so a recent recorded before
-            // a reinstall still opens (its path's container UUID may differ).
-            let resolved = DocumentImport.resolveExistingPath(path) ?? path
-            Task { await appStore.openFiles(paths: [resolved]) }
+            Task { await appStore.openFiles(paths: [path]) }
         }
     }
 
@@ -845,59 +781,6 @@ struct WelcomeLibrary_iOS: View {
     private func shareTarget(for item: HomeSearchItem) -> String? {
         guard item.canRevealInFinder, case .file(let path, _) = item.target else { return nil }
         return path
-    }
-
-    /// Context-menu actions are built here rather than inline in the row's
-    /// argument list: a ternary between a closure literal and `nil` gives the
-    /// type checker no way to resolve the closure's own body.
-    private func renameAction(for item: HomeSearchItem) -> (() -> Void)? {
-        guard store.canRename(item) else { return nil }
-        return { renamingItem = item }
-    }
-
-    private func removalActions(
-        for item: HomeSearchItem
-    ) -> [(removal: HomeSearchRemoval, action: () -> Void)] {
-        store.removalOptions(for: item).map { removal in
-            // The closure is annotated rather than inferred so the type checker
-            // resolves its body independently of the surrounding `map`.
-            let action: () -> Void = {
-                // Issue #103: neither removal used to stop for anything. The
-                // irreversible one now asks; the reversible one still fires on
-                // the tap and offers undo (see `performRemoval`).
-                if removal.requiresConfirmation {
-                    confirmingTitle = removal.confirmationTitle(for: item.title)
-                    confirmingRemoval = PendingRemoval(item: item, removal: removal)
-                } else {
-                    performRemoval(item, from: removal)
-                }
-            }
-            return (removal, action)
-        }
-    }
-
-    /// Do the removal and, when it produced something undoable, put it on the
-    /// undo stack and raise the toast.
-    private func performRemoval(_ item: HomeSearchItem, from removal: HomeSearchRemoval) {
-        switch removal {
-        case .recent:
-            // Registered synchronously, before the reload: `load()` rebuilds the
-            // whole corpus, and a ⌘Z landing during it would pop whatever was on
-            // the stack beforehand instead of this removal.
-            let transaction = store.removeFromRecent(item)
-            if let transaction {
-                // SwiftUI only supplies `\.undoManager` where the environment
-                // supports it; without one the removal simply stands. The toast
-                // is offered either way.
-                if let undoManager {
-                    registerRecentRemovalUndo(transaction, store: store, undoManager: undoManager)
-                }
-                withAnimation { undoableRemoval = transaction }
-            }
-            Task { await store.load() }
-        case .saved:
-            Task { await store.removeFromSaved(item) }
-        }
     }
 }
 
@@ -1032,36 +915,4 @@ struct HomeSourceSwitcher_iOS: View {
     }
 }
 
-// MARK: - Session undo
-
-// Each step registers its counterpart, so ⌘Z / ⇧⌘Z alternate for as long as the
-// screen lives. A step that reports `false` — the entry came back, or was never
-// there — ends the chain rather than registering a counterpart that would
-// silently do nothing.
-
-@MainActor
-private func registerRecentRemovalUndo(
-    _ transaction: HomeRecentRemovalTransaction,
-    store: HomeSearchStore,
-    undoManager: UndoManager
-) {
-    undoManager.registerUndo(withTarget: store) { target in
-        guard target.undoRecentRemoval(transaction) else { return }
-        registerRecentRemovalRedo(transaction, store: target, undoManager: undoManager)
-    }
-    undoManager.setActionName("Remove from Recent")
-}
-
-@MainActor
-private func registerRecentRemovalRedo(
-    _ transaction: HomeRecentRemovalTransaction,
-    store: HomeSearchStore,
-    undoManager: UndoManager
-) {
-    undoManager.registerUndo(withTarget: store) { target in
-        guard target.redoRecentRemoval(transaction) else { return }
-        registerRecentRemovalUndo(transaction, store: target, undoManager: undoManager)
-    }
-    undoManager.setActionName("Remove from Recent")
-}
 #endif

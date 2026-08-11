@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import XCTest
 
@@ -40,6 +41,12 @@ final class HelpTopicSearchTests: XCTestCase {
         XCTAssertEqual(HelpTopic.search("llm").map(\.id), ["ai-setup"])
         // Likewise "eviction", which is retention's keyword and nobody's prose.
         XCTAssertEqual(HelpTopic.search("eviction").map(\.id), ["retention"])
+    }
+
+    func testPhoneWorkflowsAreDiscoverable() {
+        XCTAssertEqual(HelpTopic.search("phone chrome").map(\.id), ["phone-reader"])
+        XCTAssertEqual(HelpTopic.search("share extension").map(\.id), ["safari-share"])
+        XCTAssertTrue(HelpTopic.search("Continue Reading").map(\.id).contains("phone-home"))
     }
 
     func testSearchIsCaseInsensitive() {
@@ -170,5 +177,30 @@ final class HelpTopicContentTests: XCTestCase {
         XCTAssertTrue(
             storage?.footnote?.contains("Vellum Help") ?? false,
             "the walkthrough's closing footnote no longer points at the Help centre")
+    }
+}
+
+@MainActor
+final class HelpCenterDynamicTypeTests: XCTestCase {
+    func testTopicRowsGrowAtTheLargestAccessibilitySize() {
+        let topic = HelpTopic.all[0]
+        let width: CGFloat = 320
+
+        func height(at size: DynamicTypeSize) -> CGFloat {
+            let host = UIHostingController(
+                rootView: HelpTopicRow_iOS(topic: topic)
+                    .environment(\.palette, .light)
+                    .tint(ThemePalette.light.primary)
+                    .dynamicTypeSize(size))
+            host.view.frame = CGRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
+            return host.sizeThatFits(
+                in: CGSize(width: width, height: UIView.layoutFittingCompressedSize.height)
+            ).height
+        }
+
+        XCTAssertGreaterThan(
+            height(at: .accessibility5),
+            height(at: .large),
+            "Help topic text is not responding to the user's Dynamic Type setting")
     }
 }

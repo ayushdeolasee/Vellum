@@ -180,7 +180,10 @@ private struct PaneShell_iOS: View {
     var body: some View {
         Group {
             if !workspace.isSplit && focused.app.tabs.isEmpty {
-                WelcomeLibrary_iOS(onOpen: onOpenFile, onAddWebpage: onAddWebpage)
+                WelcomeLibrary_iOS(
+                    onOpen: onOpenFile,
+                    onAddWebpage: onAddWebpage,
+                    store: focused.homeSearch)
             } else {
                 PaneTreeView(node: workspace.root)
             }

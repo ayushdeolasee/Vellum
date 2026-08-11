@@ -92,6 +92,13 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     var isNoteMode: Bool { app?.mode == .note }
 
+    /// Native scrolling may dismiss these transient surfaces, but a pan that
+    /// STARTED as selection/note work must never also change phone chrome.
+    var blocksAutomaticChromeChanges: Bool {
+        guard let app, let tabId, app.activeTabId == tabId else { return true }
+        return selection != nil || contextMenu != nil || highlightResize != nil
+    }
+
     // MARK: - Lifecycle
 
     func adopt(
@@ -275,9 +282,15 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             app?.setZoom(clamped)
             return
         }
-        guard abs(clamped - Double(pdfView.scaleFactor)) >= 0.0001 else { return }
-        pdfView.scaleFactor = CGFloat(clamped)
-        app?.setZoom(clamped)
+        // Bounded by the view's own range, not just the app-wide one: fit-width
+        // reading (issue #152) raises `minScaleFactor` to the fit scale, and the
+        // zoom-out button must respect that floor exactly like a pinch does.
+        // The two ranges coincide on iPad, so nothing changes there.
+        let bounded = min(
+            Double(pdfView.maxScaleFactor), max(Double(pdfView.minScaleFactor), clamped))
+        guard abs(bounded - Double(pdfView.scaleFactor)) >= 0.0001 else { return }
+        pdfView.scaleFactor = CGFloat(bounded)
+        app?.setZoom(bounded)
         scheduleVisiblePagesRecompute()
         bumpGeometry()
     }

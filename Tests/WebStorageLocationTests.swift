@@ -27,7 +27,7 @@ final class WebStorageLocationTests: XCTestCase {
         WebLibrary.layoutOverride = nil
         WebStorageSettings.modeOverride = nil
         WebStorageSettings.customRootOverride = nil
-        WebStorageSettings.icloudDriveRootOverride = nil
+        VellumUbiquityContainerRoot.resetCacheForTests()
         WebStorageSettings.autoSavePagesOverride = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
@@ -55,7 +55,9 @@ final class WebStorageLocationTests: XCTestCase {
 
     func testEffectiveModeDegradesToLocalWhenRootsMissing() {
         WebStorageSettings.modeOverride = .icloud
-        WebStorageSettings.icloudDriveRootOverride = tempDir.appendingPathComponent("nonexistent")
+        VellumUbiquityContainerRoot.resetCacheForTests()
+        VellumUbiquityContainerRoot.rootLookupOverride = { _ in nil }
+        WebStorageSettings.resolveICloudRoot(environment: [:])
         XCTAssertEqual(WebStorageSettings.effectiveMode, .local)
         XCTAssertTrue(WebStorageSettings.modeIsDegraded)
 
@@ -191,7 +193,7 @@ final class WebStorageLocationTests: XCTestCase {
         try Data("html".utf8).write(to: storeDir.appendingPathComponent("\(keyA).snapshot.html"))
 
         WebLibrary.layoutOverride = prettyLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: prettyLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
 
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(
@@ -216,7 +218,7 @@ final class WebStorageLocationTests: XCTestCase {
         XCTAssertEqual(WebLibrary.listSaved().count, 1)
 
         // Idempotent: running again with nothing to move is a clean no-op.
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: prettyLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
     }
 
     func testRelocatePrettyBackToLocalRestoresHashedNames() throws {
@@ -224,10 +226,10 @@ final class WebStorageLocationTests: XCTestCase {
         try Data(repeating: 1, count: 64)
             .write(to: storeDir.appendingPathComponent("\(keyA).vellumweb"))
         WebLibrary.layoutOverride = prettyLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: prettyLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
 
         WebLibrary.layoutOverride = localLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: prettyLayout, to: localLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: prettyLayout, to: localLayout))
 
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(atPath: storeDir.appendingPathComponent("\(keyA).json").path))
@@ -260,7 +262,7 @@ final class WebStorageLocationTests: XCTestCase {
         live.saved = true
         try WebLibrary.saveRecord(live, at: WebLibrary.recordPath(forKey: key))
 
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: prettyLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
         let kept = WebLibrary.loadRecord(at: WebLibrary.recordPath(forKey: key))
         XCTAssertEqual(kept?.title, "Live", "destination fields win on conflict")
         XCTAssertEqual(kept?.saved, true)
@@ -280,7 +282,7 @@ final class WebStorageLocationTests: XCTestCase {
         try Data(repeating: 1, count: 64)
             .write(to: storeDir.appendingPathComponent("\(key).vellumweb"))
         WebLibrary.layoutOverride = prettyLayout
-        XCTAssertTrue(WebStorageMigrator.relocate(from: localLayout, to: prettyLayout))
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
         let indexPath = try XCTUnwrap(prettyLayout.indexPath)
         XCTAssertNotNil(WebArchiveIndex.fileName(forKey: key, at: indexPath))
 

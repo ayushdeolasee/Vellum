@@ -26,6 +26,17 @@ struct IntegrationsSettingsTab: View {
                 Text("Connected services refresh when stale. Sync Now performs a complete authoritative traversal.")
             }
 
+            Section {
+                Toggle("Download for offline reading", isOn: Binding(
+                    get: { integrations.offlineReadingEnabled },
+                    set: { integrations.setOfflineReading($0) }))
+                    .accessibilityIdentifier("integrations.offlineReading")
+            } header: {
+                Text("Offline reading")
+            } footer: {
+                Text("Articles and PDFs from your read-later queue are downloaded in the background so they open without a connection. A downloaded copy is kept for 14 days; reading it starts another 14, and annotating it keeps it for good.")
+            }
+
             Section("Read-later services") {
                 ForEach(IntegrationProvider.allCases) { provider in
                     providerRow(provider)
@@ -33,6 +44,9 @@ struct IntegrationsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #endif
         // No `.frame(height: 460)`: on iPad the settings sheet fills its own
         // presentation, and pinning a height would strand the last row.
         .sheet(item: $connectProvider) { ConnectServiceSheet(provider: $0) }

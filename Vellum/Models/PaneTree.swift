@@ -22,16 +22,20 @@ final class PaneModel: Identifiable {
     /// Per-pane like the AI store: the scratchpad note is scoped to whichever
     /// document this pane is showing, so two panes hold two independent notes.
     let scratchpad: ScratchpadStore
+    let homeSearch: HomeSearchStore
 
     init(
         id: String = "pane-" + UUID().uuidString.lowercased(),
         sessions: SessionService,
         teardowns: TabTeardownRegistry = TabTeardownRegistry(),
+        documentAccess: DocumentAccessResolver = .live,
         openRouterCatalog: OpenRouterCatalog,
-        chatgptAuth: ChatGPTAuth
+        chatgptAuth: ChatGPTAuth,
+        storageCoordinator: StorageCoordinator? = nil,
+        webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
         self.id = id
-        let app = AppStore(sessions: sessions, teardowns: teardowns)
+        let app = AppStore(sessions: sessions, teardowns: teardowns, documentAccess: documentAccess)
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
         ai.app = app
@@ -41,9 +45,10 @@ final class PaneModel: Identifiable {
         self.app = app
         self.annotations = annotations
         self.ai = ai
-        let scratchpad = ScratchpadStore()
+        let scratchpad = ScratchpadStore(coordinator: storageCoordinator)
         scratchpad.app = app
         self.scratchpad = scratchpad
+        self.homeSearch = HomeSearchStore(storage: webLibraryStorage)
     }
 }
 

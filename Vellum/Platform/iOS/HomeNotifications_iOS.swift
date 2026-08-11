@@ -15,6 +15,16 @@ extension Notification.Name {
     /// only sensible reading of the chord.
     static let vellumFocusHomeSearch = Notification.Name("vellum.focus-home-search")
 
+    /// Asks the phone shell to route to Home (#153 P8). Posted by the shortcut
+    /// router when ⌘T arrives on a single-pane workspace, where "new tab" has no
+    /// tab strip to put a start tab in and Home is what the chord means instead.
+    ///
+    /// A notification because the route lives in `PhoneShellStore`, which the
+    /// router — shared with the iPad, and reachable from a `UIKeyCommand` on a
+    /// document surface — has no handle on. The iPad shell simply never listens,
+    /// which is also why the router never posts it there.
+    static let vellumShowHome = Notification.Name("vellum.show-home")
+
     /// Asks the root scene to present the searchable Help centre. macOS opens a
     /// `Window` scene for this; iOS has no extra scenes, so it is a sheet
     /// presented from the app root — which is why this has to travel as a

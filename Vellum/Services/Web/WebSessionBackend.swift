@@ -17,6 +17,12 @@ private let defaultNoteColor = "#fde68a"
 
 @MainActor
 final class WebSessionBackend {
+    var storage: WebLibraryStorage
+
+    init(storage: WebLibraryStorage = WebLibraryStorage()) {
+        self.storage = storage
+    }
+
     /// Open (or create) a webpage session for a raw URL. Re-invoking with an
     /// existing session id rebinds that tab to a new URL (in-tab navigation);
     /// the replaced session needs no teardown (web close is a no-op flush).
@@ -34,24 +40,19 @@ final class WebSessionBackend {
         // nonisolated statics over plain String/URL values, so there is no
         // actor-isolated state here — do NOT hoist them back to the main actor
         // "for convenience".
+        let storage = storage
         let opened = try await Task.detached(priority: .userInitiated) {
             let normalized = try WebUrl.normalize(url)
-            let recordPath = WebLibrary.recordPath(forKey: WebLibrary.pageKey(normalized))
 
-            // Read + touch + rewrite the sidecar off the main thread, serialized
-            // per key via withRecord so a concurrent session for the same page
-            // can't clobber this open (or vice versa). The lock is keyed by
-            // record path, not by calling thread, so serialization is unchanged
-            // by moving the path computation in here.
-            let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
-                record.url = normalized
-                record.openedAt = WebLibrary.rfc3339Now()
-                return record
-            }
+            // Read only: opening a page is reading-position state now, and that
+            // lives in PositionStore. Do not rewrite the shared annotation
+            // sidecar just because a tab opened.
+            let record = await storage.loadRecord(forKey: WebLibrary.pageKey(normalized))
+                ?? WebPageRecord(url: normalized)
             return (normalized: normalized, record: record)
         }.value
 
-        return WebDocumentSession(url: opened.normalized, record: opened.record)
+        return WebDocumentSession(url: opened.normalized, record: opened.record, storage: storage)
     }
 
     /// Open a `.vellumweb` archive: install its snapshot locally, merge its
@@ -75,10 +76,10 @@ final class WebSessionBackend {
         // resolve + FileManager probes. Those are nonisolated String/URL
         // computations, so keeping them off @MainActor is free — don't move
         // them back out just to have `normalized` in scope for the return.
+        let storage = storage
         let opened = try await Task.detached(priority: .userInitiated) {
             let normalized = try WebUrl.normalize(imported.manifest.url)
             let key = WebLibrary.pageKey(normalized)
-            let recordPath = WebLibrary.recordPath(forKey: key)
 
             try WebArchive.installArchiveDir(
                 key: key,
@@ -86,9 +87,8 @@ final class WebSessionBackend {
                 assets: imported.assets,
                 manifest: imported.manifest)
 
-            let record = try WebLibrary.withRecord(url: normalized, recordPath: recordPath) { record in
+            let record = try await storage.mutateRecord(url: normalized, key: key) { record in
                 record.url = normalized
-                record.openedAt = WebLibrary.rfc3339Now()
 
                 // Merge archive metadata without clobbering local reading state.
                 if record.title == nil {
@@ -116,19 +116,21 @@ final class WebSessionBackend {
             return (normalized: normalized, record: record)
         }.value
 
-        return WebDocumentSession(url: opened.normalized, record: opened.record)
+        return WebDocumentSession(url: opened.normalized, record: opened.record, storage: storage)
     }
 
     func listSavedWebpages() async throws -> [WebLibraryEntry] {
-        await Task.detached(priority: .userInitiated) {
-            WebLibrary.listSaved()
-        }.value
+        try await storage.listSaved()
     }
 
     func removeSavedWebpage(url: String) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            try WebLibrary.removeSaved(rawUrl: url)
-        }.value
+        let normalized = try WebUrl.normalize(url)
+        let key = WebLibrary.pageKey(normalized)
+        try await storage.mutateRecord(url: normalized, key: key) { record in
+            record.saved = false
+            record.savedAt = nil
+        }
+        await storage.removeLocalSnapshots(forKey: key)
     }
 }
 
@@ -145,14 +147,11 @@ final class WebDocumentSession: DocumentSession {
     /// DocumentInfo captured at open time (mirrors the Rust command's return).
     private let openInfo: DocumentInfo
     private let io: WebDocumentIO
+    private let storage: WebLibraryStorage
 
-    /// Resolved per operation, NOT cached: a storage-location switch mid-
-    /// session must not leave this session writing to (and resurrecting) the
-    /// old location after the migration sweep moved its record.
-    private var recordPath: URL { WebLibrary.recordPath(forKey: key) }
-
-    init(url: String, record: WebPageRecord) {
+    init(url: String, record: WebPageRecord, storage: WebLibraryStorage = WebLibraryStorage()) {
         self.url = url
+        self.storage = storage
         key = WebLibrary.pageKey(url)
         snapshotPath = WebLibrary.snapshotPath(forKey: key)
         openInfo = DocumentInfo(
@@ -162,7 +161,7 @@ final class WebDocumentSession: DocumentSession {
             pageCount: record.pageCount,
             lastPage: record.lastPage,
             docId: key)
-        io = WebDocumentIO(url: url, key: key)
+        io = WebDocumentIO(url: url, key: key, storage: storage)
     }
 
     var info: DocumentInfo { openInfo }
@@ -219,7 +218,8 @@ final class WebDocumentSession: DocumentSession {
         // retaining that record, so expose offline availability only when a
         // real local/managed snapshot remains.
         let saved = await io.isSaved()
-        return saved && WebLibrary.hasLocalSnapshot(forKey: key)
+        let hasSnapshot = await storage.hasLocalSnapshot(forKey: key)
+        return saved && hasSnapshot
     }
 
     // MARK: - Archiving
@@ -245,20 +245,14 @@ final class WebDocumentSession: DocumentSession {
         // Resolve after the record exists (openWebDocument already wrote it),
         // so the pretty filename can come from the page title; do it off-main —
         // it may read the record and touch the index file.
-        let dest = await Task.detached(priority: .userInitiated) {
-            WebLibrary.managedArchiveDestination(forKey: localKey)
-        }.value
-        _ = try await writeWebArchive(pages: pages, dest: dest)
+        _ = try await writeManagedWebArchive(pages: pages)
         if WebStorageSettings.autoSavePages {
             let localUrl = url
-            let localRecordPath = recordPath
-            try await Task.detached(priority: .userInitiated) {
-                try WebLibrary.withRecord(url: localUrl, recordPath: localRecordPath) { record in
-                    guard !record.saved else { return }
-                    record.saved = true
-                    record.savedAt = record.savedAt ?? WebLibrary.rfc3339Now()
-                }
-            }.value
+            try await storage.mutateRecord(url: localUrl, key: localKey) { record in
+                guard !record.saved else { return }
+                record.saved = true
+                record.savedAt = record.savedAt ?? WebLibrary.rfc3339Now()
+            }
         }
         return true
     }
@@ -267,8 +261,23 @@ final class WebDocumentSession: DocumentSession {
     /// and write a `.vellumweb` to `dest` atomically. Shared by the explicit
     /// export and the automatic on-open archiver (commands.rs write_web_archive).
     private func writeWebArchive(pages: [WebPageText], dest: URL) async throws -> VellumwebExportSummary {
+        try await buildAndWriteWebArchive(pages: pages, destination: .external(dest))
+    }
+
+    private enum ArchiveDestination {
+        case external(URL)
+        case managed
+    }
+
+    private func writeManagedWebArchive(pages: [WebPageText]) async throws -> VellumwebExportSummary {
+        try await buildAndWriteWebArchive(pages: pages, destination: .managed)
+    }
+
+    private func buildAndWriteWebArchive(
+        pages: [WebPageText],
+        destination: ArchiveDestination
+    ) async throws -> VellumwebExportSummary {
         let localKey = key
-        let localRecordPath = recordPath
 
         // Best available snapshot: live capture > installed archive dir >
         // plain saved snapshot (assets skipped when offline).
@@ -300,9 +309,7 @@ final class WebDocumentSession: DocumentSession {
 
         // Load the record only now — after the fetch/snapshot capture above — so
         // annotation edits made during that window are included in the archive.
-        let record = await Task.detached(priority: .userInitiated) {
-            WebLibrary.loadRecord(at: localRecordPath)
-        }.value
+        let record = await storage.loadRecord(forKey: localKey)
 
         var pageCount = record?.pageCount
         if !pages.isEmpty {
@@ -337,19 +344,32 @@ final class WebDocumentSession: DocumentSession {
         let assetCount = captured.assets.count
         let assetsSkipped = captured.skipped
         let snapshot = captured
-        let bytes = try await Task.detached(priority: .userInitiated) {
-            try WebArchive.writeArchive(
-                to: dest,
+        let written: (path: String, bytes: Int)
+        switch destination {
+        case .external(let dest):
+            let bytes = try await Task.detached(priority: .userInitiated) {
+                try WebArchive.writeArchive(
+                    to: dest,
+                    manifest: manifest,
+                    snapshotHtml: snapshot.html,
+                    assets: snapshot.assets,
+                    pagesJson: pagesJson,
+                    annotations: annotations)
+            }.value
+            written = (dest.path, bytes)
+        case .managed:
+            written = try await storage.writeManagedArchive(
+                forKey: localKey,
                 manifest: manifest,
                 snapshotHtml: snapshot.html,
                 assets: snapshot.assets,
                 pagesJson: pagesJson,
                 annotations: annotations)
-        }.value
+        }
 
         return VellumwebExportSummary(
-            path: dest.path,
-            bytes: bytes,
+            path: written.path,
+            bytes: written.bytes,
             assetCount: assetCount,
             assetsSkipped: assetsSkipped)
     }
@@ -363,18 +383,16 @@ final class WebDocumentSession: DocumentSession {
 actor WebDocumentIO {
     let url: String
     let key: String
+    private let storage: WebLibraryStorage
 
-    /// Resolved per operation so a storage-location switch mid-session
-    /// redirects the very next write instead of resurrecting the old path.
-    private var recordPath: URL { WebLibrary.recordPath(forKey: key) }
-
-    init(url: String, key: String) {
+    init(url: String, key: String, storage: WebLibraryStorage = WebLibraryStorage()) {
         self.url = url
         self.key = key
+        self.storage = storage
     }
 
-    func annotations(pageNumber: Int?) -> [Annotation] {
-        let record = WebLibrary.loadRecord(forKey: key) ?? WebPageRecord(url: url)
+    func annotations(pageNumber: Int?) async -> [Annotation] {
+        let record = await storage.loadRecord(forKey: key) ?? WebPageRecord(url: url)
         let list: [Annotation]
         if let pageNumber {
             list = record.annotations.filter { $0.pageNumber == pageNumber }
@@ -384,7 +402,7 @@ actor WebDocumentIO {
         return Annotation.sortedForDisplay(list)
     }
 
-    func createAnnotation(_ input: CreateAnnotationInput, storedHighlightColor: String) throws -> Annotation {
+    func createAnnotation(_ input: CreateAnnotationInput, storedHighlightColor: String) async throws -> Annotation {
         let now = WebLibrary.rfc3339Now()
         let defaultColor: String?
         switch input.type {
@@ -406,7 +424,7 @@ actor WebDocumentIO {
             positionData: input.positionData,
             createdAt: createdAt,
             updatedAt: createdAt)
-        try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
+        try await storage.mutateRecord(url: url, key: key) { record in
             record.annotations.append(annotation)
             // Annotating is user investment: promote the page into the saved
             // library so explicit-save semantics can never strand highlights or
@@ -419,8 +437,8 @@ actor WebDocumentIO {
         return annotation
     }
 
-    func updateAnnotation(_ input: UpdateAnnotationInput) throws -> Bool {
-        try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool {
+        try await storage.mutateRecord(url: url, key: key) { record in
             guard let index = record.annotations.firstIndex(where: { $0.id == input.id }) else {
                 return false
             }
@@ -448,16 +466,16 @@ actor WebDocumentIO {
         }
     }
 
-    func deleteAnnotation(id: String) throws -> Bool {
-        try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
+    func deleteAnnotation(id: String) async throws -> Bool {
+        try await storage.mutateRecord(url: url, key: key) { record in
             let before = record.annotations.count
             record.annotations.removeAll { $0.id == id }
             return record.annotations.count != before
         }
     }
 
-    func setMetadata(key: String, value: String) throws {
-        try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
+    func setMetadata(key: String, value: String) async throws {
+        try await storage.mutateRecord(url: url, key: self.key) { record in
             switch key {
             case "title":
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -474,17 +492,17 @@ actor WebDocumentIO {
         }
     }
 
-    func setSaved(_ saved: Bool) throws {
-        try WebLibrary.withRecord(url: url, recordPath: recordPath) { record in
+    func setSaved(_ saved: Bool) async throws {
+        try await storage.mutateRecord(url: url, key: key) { record in
             record.saved = saved
             record.savedAt = saved ? WebLibrary.rfc3339Now() : nil
         }
         if !saved {
-            WebLibrary.removeLocalSnapshots(forKey: key)
+            await storage.removeLocalSnapshots(forKey: key)
         }
     }
 
-    func isSaved() -> Bool {
-        WebLibrary.loadRecord(forKey: key)?.saved ?? false
+    func isSaved() async -> Bool {
+        await storage.loadRecord(forKey: key)?.saved ?? false
     }
 }

@@ -20,6 +20,16 @@ final class WalkthroughSettingsTests: XCTestCase {
         super.setUp()
         priorValue = UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey)
         UserDefaults.standard.removeObject(forKey: WalkthroughSettings.seenKey)
+        // `removeObject` clears the app's OWN defaults domain and nothing else.
+        // A simulator that has had `defaults write com.ayushdeolasee.vellum
+        // walkthrough.seen -bool true` run against it — the usual way to skip
+        // the first-run sheets before taking a screenshot — also holds the key
+        // device-wide, where it outlives an uninstall and still answers
+        // `bool(forKey:)` after the removal above. Shadow it with an explicit
+        // false so these tests measure the flag rather than the machine.
+        if UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey) != nil {
+            UserDefaults.standard.set(false, forKey: WalkthroughSettings.seenKey)
+        }
     }
 
     override func tearDown() {

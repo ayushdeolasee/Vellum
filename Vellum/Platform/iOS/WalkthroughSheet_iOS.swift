@@ -27,6 +27,8 @@ import SwiftUI
 struct WalkthroughSheet_iOS: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @State private var index = 0
     /// Direction of the last page change, so the outgoing and incoming pages
@@ -37,25 +39,23 @@ struct WalkthroughSheet_iOS: View {
 
     // MARK: - Metrics
     //
-    // The sheet's fixed geometry, named once here so `WalkthroughLayoutTests`
-    // can assert against the real numbers rather than re-typing them. The two
-    // chrome bars get explicit heights so the space left for a page is exactly
-    // derivable — otherwise the title bar sizes itself to whatever is in it,
-    // and adding a control silently takes points away from every page while the
-    // layout test fails pointing at the copy instead of at the cause.
+    // The sheet's bounds and minimum chrome geometry, named once here so
+    // `WalkthroughLayoutTests` can measure the real views rather than re-typing
+    // layout constants. The bars have minimums, not fixed heights: accessibility
+    // text is allowed to reflow and the page area scrolls in the remaining room.
 
-    /// Fixed content width. A reading-width column; wider makes the bullets
-    /// scan badly, narrower makes every one of them wrap. This is the content
-    /// width inside the form sheet, not a window width — the sheet owns its
-    /// own outer size via `.presentationDetents`.
+    /// Maximum content width. iPad gets the intended reading column; compact
+    /// phones accept their sheet's narrower proposal instead of forcing a
+    /// 640-point view off both screen edges.
     static let sheetWidth: CGFloat = 640
     /// Backstop on the sheet's height. Past this the page area scrolls rather
     /// than growing — see `pageContent`.
     static let maxSheetHeight: CGFloat = 720
-    /// 44pt is below the iOS touch target once the close button lives in it.
-    static let titleBarHeight: CGFloat = 52
-    /// Likewise for Skip / Back / Next, which are `.md` here rather than `.sm`.
-    static let footerHeight: CGFloat = 60
+    /// Minimum chrome heights. Both regions may grow when Dynamic Type or a
+    /// narrow phone makes their content reflow.
+    static let minimumTitleBarHeight: CGFloat = 52
+    static let minimumFooterHeight: CGFloat = 60
+    static let controlSide: CGFloat = 44
     /// Height of each of the two rules between the chrome and the page.
     ///
     /// Pinned rather than left to `Divider()`'s intrinsic size, and this is not
@@ -66,9 +66,6 @@ struct WalkthroughSheet_iOS: View {
     /// the failure mode the explicit bar heights above exist to prevent, so the
     /// dividers get the same treatment: pinned, named, and scale-independent.
     static let dividerHeight: CGFloat = 1
-    /// Title bar + footer + the two dividers between them and the page.
-    static var chromeHeight: CGFloat { titleBarHeight + footerHeight + dividerHeight * 2 }
-
     private var page: WalkthroughPage { pages[index] }
     private var isFirst: Bool { index == 0 }
     private var isLast: Bool { index == pages.count - 1 }
@@ -81,7 +78,7 @@ struct WalkthroughSheet_iOS: View {
             Divider().frame(height: Self.dividerHeight)
             footer
         }
-        .frame(width: Self.sheetWidth)
+        .frame(maxWidth: Self.sheetWidth)
         .frame(maxHeight: Self.maxSheetHeight)
         // No explicit background: take the system sheet material, like
         // StorageLocationChoiceSheet does. Painting palette.surface here made
@@ -126,47 +123,97 @@ struct WalkthroughSheet_iOS: View {
     /// Persistent identity + orientation strip. Naming the step count up front
     /// answers "how long is this?" before the user has to guess from the dots.
     private var titleBar: some View {
-        HStack(spacing: 8) {
-            Wordmark(size: 14)
-            Text("Walkthrough")
-                .font(.system(size: 12))
-                .foregroundStyle(palette.mutedForeground)
-
-            Spacer(minLength: 12)
-
-            Text("\(index + 1) of \(pages.count)")
-                .font(.system(size: 11).monospacedDigit())
-                .foregroundStyle(palette.mutedForeground)
-
-            // The only dismiss affordance present on EVERY page. The footer's
-            // Skip button cannot own this: it is hidden on the last page, which
-            // is exactly where a reader who wants out has no other exit.
-            IconButton(help: "Close the walkthrough", action: { dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                walkthroughIdentity
+                Spacer(minLength: 12)
+                stepCount
+                closeButton
             }
-            .keyboardShortcut(.cancelAction)
-            .accessibilityIdentifier("walkthrough.close")
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    wordmark
+                    Spacer(minLength: 12)
+                    closeButton
+                }
+                HStack(spacing: 8) {
+                    Text("Walkthrough")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.mutedForeground)
+                    Spacer(minLength: 12)
+                    stepCount
+                }
+            }
         }
         .padding(.horizontal, 20)
-        // Pinned rather than padded: the page area's height is the sheet's
-        // height minus the chrome, so the chrome must not float.
-        .frame(height: Self.titleBarHeight)
+        .padding(.vertical, 4)
+        .frame(minHeight: Self.minimumTitleBarHeight)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
+    private var walkthroughIdentity: some View {
+        HStack(spacing: 8) {
+            wordmark
+            Text("Walkthrough")
+                .font(.subheadline)
+                .foregroundStyle(palette.mutedForeground)
+        }
+    }
+
+    private var wordmark: some View {
+        HStack(spacing: 0) {
+            Text("Vellum").foregroundStyle(palette.foreground)
+            Text(".").foregroundStyle(palette.primary)
+        }
+        .font(.headline.bold())
+        .fontDesign(.serif)
+        .lineLimit(1)
+        .accessibilityHidden(true)
+    }
+
+    private var stepCount: some View {
+        Text("\(index + 1) of \(pages.count)")
+            .font(.subheadline.monospacedDigit())
+            .foregroundStyle(palette.mutedForeground)
+            .lineLimit(1)
+    }
+
+    /// The only dismiss affordance present on every page. Its visible glyph can
+    /// scale while the interactive frame remains at least 44×44pt.
+    private var closeButton: some View {
+        Button("Close the walkthrough", systemImage: "xmark") { dismiss() }
+            .labelStyle(.iconOnly)
+            .font(.body.weight(.medium))
+            .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityIdentifier("walkthrough.close")
+    }
+
+    @ViewBuilder
     private var pageContent: some View {
-        // Scrolls, but only when the content genuinely does not fit. A fixed
-        // box with `.clipped()` would mean a page one line too tall silently
-        // loses that line — no scroll indicator, no warning. A longer
-        // translation or a larger Dynamic Type size is enough to trigger it.
+        // At normal sizes the scroll view adopts the tallest page so the sheet
+        // opens at its natural compact height. Accessibility text must instead
+        // accept the height offered by the phone; its content then scrolls
+        // inside that bound rather than making the sheet taller than the screen.
+        if dynamicTypeSize.isAccessibilitySize || verticalSizeClass == .compact {
+            // Accessibility text and short landscape screens must accept the
+            // offered height so the persistent title/footer remain reachable.
+            walkthroughPages
+        } else {
+            walkthroughPages
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var walkthroughPages: some View {
         ScrollView(.vertical) {
             ZStack(alignment: .topLeading) {
                 // Every page is laid out here, but only the current one is
-                // drawn. The hidden copies still take part in sizing, so this
-                // ZStack adopts the height of the TALLEST page and holds it —
-                // which is what keeps the footer buttons from jumping as you
-                // page through. Sizing to the real content instead of a
-                // constant means copy edits can't outgrow the sheet.
+                // drawn. The hidden copies keep the footer stable at the height
+                // of the tallest page.
                 ForEach(pages) { item in
                     WalkthroughPageBody(page: item)
                         .hidden()
@@ -174,9 +221,6 @@ struct WalkthroughSheet_iOS: View {
                 }
 
                 WalkthroughPageBody(page: page)
-                    // Re-identify on the page slug so SwiftUI treats each page
-                    // as a new view and actually runs the transition, rather
-                    // than cross-fading text in place.
                     .id(page.id)
                     .transition(
                         .asymmetric(
@@ -187,54 +231,73 @@ struct WalkthroughSheet_iOS: View {
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        // No rubber-banding on pages that already fit, so the scroll only shows
-        // itself when it is actually doing something.
         .scrollBounceBehavior(.basedOnSize)
-        // Take the ZStack's height instead of greedily filling whatever is
-        // offered. On macOS `NSHostingView.fittingSize` resolves a bare
-        // ScrollView to its content; UIKit's `sizeThatFits` does not — the
-        // ScrollView reports no intrinsic height at all, so without this the
-        // sheet collapses to just its two chrome bars and the "size to the
-        // tallest page" contract silently stops holding. The outer
-        // `.frame(maxHeight:)` still clamps it, which is what re-enables real
-        // scrolling once the tallest page passes the backstop.
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
-            if !isLast {
-                TextButton(variant: .ghost, size: .md) { dismiss() } label: {
-                    Text("Skip")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                if !isLast {
+                    skipButton
                 }
-                .accessibilityIdentifier("walkthrough.skip")
+
+                Spacer(minLength: 12)
+
+                pageIndicator
+
+                Spacer(minLength: 12)
+
+                backButton
+                nextButton
             }
 
-            Spacer(minLength: 12)
-
-            pageIndicator
-
-            Spacer(minLength: 12)
-
-            TextButton(variant: .secondary, size: .md, disabled: isFirst) {
-                go(to: index - 1)
-            } label: {
-                Text("Back")
+            VStack(spacing: 4) {
+                pageIndicator
+                HStack(spacing: 12) {
+                    if !isLast {
+                        skipButton
+                    }
+                    Spacer(minLength: 12)
+                    backButton
+                    nextButton
+                }
             }
-            .accessibilityIdentifier("walkthrough.back")
-
-            TextButton(variant: .primary, size: .md) {
-                if isLast { dismiss() } else { go(to: index + 1) }
-            } label: {
-                Text(isLast ? "Done" : "Next")
-            }
-            // Return advances, and finishes on the last page — the whole
-            // walkthrough is reachable from a keyboard.
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("walkthrough.next")
         }
         .padding(.horizontal, 20)
-        .frame(height: Self.footerHeight)
+        .padding(.vertical, 4)
+        .frame(minHeight: Self.minimumFooterHeight)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var skipButton: some View {
+        Button("Skip") { dismiss() }
+            .font(.body)
+            .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("walkthrough.skip")
+    }
+
+    private var backButton: some View {
+        Button("Back") { go(to: index - 1) }
+            .font(.body)
+            .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+            .buttonStyle(.glass)
+            .disabled(isFirst)
+            .accessibilityIdentifier("walkthrough.back")
+    }
+
+    private var nextButton: some View {
+        Button(isLast ? "Done" : "Next") {
+            if isLast { dismiss() } else { go(to: index + 1) }
+        }
+        .font(.body.bold())
+        .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+        .buttonStyle(.glassProminent)
+        // Return advances, and finishes on the last page — the whole
+        // walkthrough is reachable from a keyboard.
+        .keyboardShortcut(.defaultAction)
+        .accessibilityIdentifier("walkthrough.next")
     }
 
     /// Dots double as direct navigation — someone reopening this from the Help
@@ -253,9 +316,8 @@ struct WalkthroughSheet_iOS: View {
                         // schemes (#d6cdbb / #45413a), so it reads in each.
                         .fill(isCurrent ? palette.primary : palette.borderStrong)
                         .frame(width: isCurrent ? 18 : 6, height: 6)
-                        // -12 rather than main's -6: a 6pt dot needs a real
-                        // finger-sized hit area, not a cursor-sized one.
-                        .contentShape(Capsule().inset(by: -12))
+                        .frame(width: Self.controlSide, height: Self.controlSide)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(item.title)
@@ -297,23 +359,24 @@ struct WalkthroughPageBody: View {
                 // Same glass tile as the home screen's hero, one size down —
                 // the walkthrough should read as the same room as the app.
                 Image(systemName: page.symbol)
-                    .font(.system(size: 20, weight: .regular))
+                    .font(.title3)
                     .foregroundStyle(.tint)
-                    .frame(width: 44, height: 44)
+                    .padding(10)
+                    .frame(minWidth: 44, minHeight: 44)
                     .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
                     .accessibilityHidden(true)
 
                 Text(page.title)
-                    .font(.system(size: 21, weight: .semibold))
+                    .font(.title2.bold())
                     .foregroundStyle(palette.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
             }
 
             Text(page.summary)
-                .font(.system(size: 13))
+                .font(.body)
                 .foregroundStyle(palette.mutedForeground)
                 .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(2)
 
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(page.points) { point in
@@ -323,7 +386,7 @@ struct WalkthroughPageBody: View {
 
             if let footnote = page.footnote {
                 Text(footnote)
-                    .font(.system(size: 12))
+                    .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -335,30 +398,60 @@ struct WalkthroughPageBody: View {
     }
 
     private func bullet(_ point: WalkthroughPoint) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: point.symbol)
-                .font(.system(size: 13))
+                .font(.body)
                 .foregroundStyle(.tint)
                 // Fixed gutter so every line of body text starts on the same
                 // vertical, whatever each symbol's intrinsic width happens to be.
-                .frame(width: 18, alignment: .center)
+                .frame(minWidth: 24, alignment: .center)
                 .accessibilityHidden(true)
 
-            // Text and keycap share a line and wrap together, so a trailing
-            // shortcut sits at the end of the sentence rather than pinned to
-            // the far right of the sheet where it reads as a separate column.
-            Text(point.text)
-                .font(.system(size: 13))
-                .foregroundStyle(palette.foreground)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(2)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    pointText(point)
+                    if let shortcut = point.shortcut {
+                        WalkthroughKeycap(keys: shortcut)
+                    }
+                    Spacer(minLength: 0)
+                }
 
-            if let shortcut = point.shortcut {
-                Keycap(keys: shortcut)
+                VStack(alignment: .leading, spacing: 6) {
+                    pointText(point)
+                    if let shortcut = point.shortcut {
+                        WalkthroughKeycap(keys: shortcut)
+                    }
+                }
             }
-
-            Spacer(minLength: 0)
         }
+    }
+
+    private func pointText(_ point: WalkthroughPoint) -> some View {
+        Text(point.text)
+            .font(.body)
+            .foregroundStyle(palette.foreground)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct WalkthroughKeycap: View {
+    let keys: String
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        Text(keys)
+            .font(.caption.monospaced())
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(palette.muted, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(palette.borderStrong)
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard shortcut \(keys)")
     }
 }
 #endif

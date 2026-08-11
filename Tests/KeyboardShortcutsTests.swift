@@ -118,6 +118,79 @@ final class KeyboardShortcutsTests: XCTestCase {
         }
     }
 
+    // MARK: - Compact (single-pane) gating
+
+    /// The rows a `.singlePane` workspace does not offer, in table order (#153
+    /// P8). Pinned as its own golden list rather than as a sixth column on every
+    /// row above, because the interesting claim is a closed set: these four and
+    /// nothing else. A future shortcut that quietly grew a layout dependency
+    /// fails `testSinglePaneDropsExactlyTheSplitRows` below.
+    private var splitScreenOnly: [VellumShortcutAction] {
+        [.splitRight, .splitDown, .mergePanes, .closePane]
+    }
+
+    func testSplitCommandsAreTheOnlyLayoutGatedRows() {
+        let gated = VellumShortcutCatalog.all.map(\.action).filter(\.requiresSplitScreen)
+        XCTAssertEqual(
+            gated, splitScreenOnly,
+            "The set of pane-management commands changed. Every other shortcut must mean "
+                + "the same thing on both idioms — one binary serves an iPhone and an iPad.")
+    }
+
+    func testSplitScreenOffersTheWholeTable() {
+        // The iPad path is behaviour-identical: gating is subtractive and the
+        // subtraction is empty here.
+        XCTAssertEqual(
+            VellumShortcutCatalog.all(in: .splitScreen).map(\.action),
+            VellumShortcutCatalog.all.map(\.action))
+        for shortcut in VellumShortcutCatalog.all {
+            XCTAssertTrue(VellumShortcutCatalog.isAvailable(shortcut.action, in: .splitScreen))
+        }
+    }
+
+    func testSinglePaneDropsExactlyTheSplitRows() {
+        let compact = VellumShortcutCatalog.all(in: .singlePane).map(\.action)
+        let expected = VellumShortcutCatalog.all.map(\.action)
+            .filter { !splitScreenOnly.contains($0) }
+
+        XCTAssertEqual(
+            compact, expected,
+            "A single-pane workspace lost (or kept) the wrong commands. Order matters too: "
+                + "the menu is built from this list.")
+        for action in splitScreenOnly {
+            XCTAssertFalse(
+                VellumShortcutCatalog.isAvailable(action, in: .singlePane),
+                "\(action.identifier) has no second pane to act on — the ⌘-hold HUD must not "
+                    + "advertise a chord that does nothing.")
+        }
+    }
+
+    func testTheCatalogItselfIsIdiomIndependent() {
+        // The gate is a PROJECTION of the table, never a shorter table. Both
+        // dispatch surfaces ask `isAvailable`; the golden rows above stay the
+        // Mac's rows, which is what keeps the iPad honest.
+        XCTAssertEqual(VellumShortcutCatalog.all.count, expected.count)
+        XCTAssertNotNil(VellumShortcutCatalog[.splitRight])
+    }
+
+    func testEveryTabAndDocumentCommandSurvivesOnAPhone() {
+        // The chords a phone genuinely runs: nothing about a single pane makes
+        // find, zoom, navigation, tab switching or the panel reveals meaningless,
+        // and a gate that over-reached would silently unbind a working keyboard.
+        let survivors: [VellumShortcutAction] = [
+            .newTab, .openFile, .addWebpage, .closeTab, .save,
+            .find, .findNext, .findPrevious, .dismiss,
+            .zoomIn, .zoomOut, .actualSize, .toggleInspector,
+            .showSidebarTab(.ai), .previousTab, .nextTab, .showTab(1),
+            .bookmarkPage, .toggleNoteMode, .showHelp,
+        ]
+        for action in survivors {
+            XCTAssertTrue(
+                VellumShortcutCatalog.isAvailable(action, in: .singlePane),
+                "\(action.identifier) is not a pane command and must survive on a phone.")
+        }
+    }
+
     func testEveryActionIsBoundExactlyOnce() {
         let identifiers = VellumShortcutCatalog.all.map(\.action.identifier)
         XCTAssertEqual(

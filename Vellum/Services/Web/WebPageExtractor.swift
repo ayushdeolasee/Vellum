@@ -751,6 +751,12 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     /// resolve, so these cannot collide with a real site's own hosts/paths.
     static let assetHost = "assets.vellum.invalid"
     static let snapshotHost = "snapshot.vellum.invalid"
+    private let storage: WebLibraryStorage
+
+    init(storage: WebLibraryStorage = WebLibraryStorage()) {
+        self.storage = storage
+        super.init()
+    }
 
     /// Build the reader URL for a target page. The mapping keeps the real
     /// authority/path/query so in-page routers see the address they were
@@ -825,8 +831,9 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         activeTasks.insert(id)
         let request = urlSchemeTask.request
         Task { @MainActor [weak self] in
-            let response = await Self.handleRequest(request)
-            guard let self, self.activeTasks.contains(id) else { return }
+            guard let self else { return }
+            let response = await self.handleRequest(request)
+            guard self.activeTasks.contains(id) else { return }
             self.activeTasks.remove(id)
             let url = request.url ?? URL(string: "\(Self.scheme)://\(Self.snapshotHost)/")!
             guard let http = HTTPURLResponse(
@@ -847,25 +854,25 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     // MARK: Routing
 
-    private static func handleRequest(_ request: URLRequest) async -> WebProxyResponse {
+    private func handleRequest(_ request: URLRequest) async -> WebProxyResponse {
         guard let url = request.url, let host = url.host?.lowercased() else {
             return .html(404, "<h1>Invalid request</h1>")
         }
 
         // Reserved authorities first: archive assets and the explicit
         // offline-snapshot fallback.
-        if host == assetHost {
-            return serveArchiveAsset(
+        if host == Self.assetHost {
+            return Self.serveArchiveAsset(
                 rest: String(url.path.dropFirst()),
                 requestOrigin: request.value(forHTTPHeaderField: "Origin"))
         }
-        if host == snapshotHost {
+        if host == Self.snapshotHost {
             return await serveSnapshotFallback(key: String(url.path.dropFirst()))
         }
 
         // Everything else is the page authority: map the truthful proxy URL
         // back to the real page URL.
-        guard let rawUrl = realUrl(from: url) else {
+        guard let rawUrl = Self.realUrl(from: url) else {
             return .html(404, "<h1>Invalid request</h1>")
         }
 
@@ -894,13 +901,13 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         // Sidecar state drives snapshot refresh and the loading policy.
         let key = WebLibrary.pageKey(pageUrl)
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
-        let record = await WebLibrary.loadRecordForServing(forKey: key)
+        let record = await storage.loadRecord(forKey: key)
         let recordSaved = record?.saved ?? false
         let snapshotOnly = record?.loadingPolicy == "snapshot-only"
 
         // Pinned-snapshot policy (from an imported archive): don't hit the
         // network at all when the installed snapshot is available.
-        if snapshotOnly, let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+        if snapshotOnly, let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
         }
 
@@ -920,7 +927,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                 } else {
                     let effectiveKey = WebLibrary.pageKey(effectiveUrl)
-                    let effectiveRecord = await WebLibrary.loadRecordForServing(forKey: effectiveKey)
+                    let effectiveRecord = await storage.loadRecord(forKey: effectiveKey)
                     if effectiveRecord?.saved == true {
                         WebFetch.writeSnapshotAtomic(
                             path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
@@ -938,7 +945,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         } catch {
             // Offline / link-rot fallback: prefer the self-contained
             // .vellumweb snapshot, then the plain saved snapshot.
-            if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+            if let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
                 return response
             }
             if let html = try? String(contentsOf: snapshotFile, encoding: .utf8) {
@@ -1005,13 +1012,13 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     /// Explicit snapshot request (navigation-failure fallback): installed
     /// archive snapshot first, then the plain saved snapshot, else Vellum's
     /// own error page — the webview must never end up on WebKit's native one.
-    private static func serveSnapshotFallback(key: String) async -> WebProxyResponse {
+    private func serveSnapshotFallback(key: String) async -> WebProxyResponse {
         guard !key.isEmpty, key.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
             return .html(404, "<h1>Snapshot not found</h1>")
         }
-        let record = await WebLibrary.loadRecordForServing(forKey: key)
+        let record = await storage.loadRecord(forKey: key)
         let pageUrl = record?.url ?? ""
-        if let response = serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+        if let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
         }
         if let html = try? String(

@@ -610,7 +610,8 @@ final class VellumBundleTests: XCTestCase {
     }
 
     /// `.vellum` is a container, not a document: it is staged into tmp/ so it
-    /// never litters the visible library, while a PDF still lands there.
+    /// never litters the visible library, while a PDF is copied into the local
+    /// library before any long-lived session opens.
     func testImportPickedStagesBundlesInTemporaryDirectory() throws {
         let bundleSource = scratch.appendingPathComponent("shared.vellum")
         try Data("not really a bundle".utf8).write(to: bundleSource)
@@ -636,8 +637,9 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertEqual(
             URL(fileURLWithPath: bundlePath).deletingLastPathComponent().lastPathComponent
                 .hasPrefix("vellum-import-"), true)
-        XCTAssertTrue(pdfPath.hasPrefix(DocumentImport.libraryDirectory.path),
-                      "a picked PDF is still copied into the writable library")
+        XCTAssertTrue(pdfPath.hasPrefix(DocumentImport.libraryDirectory.path + "/"))
+        XCTAssertNotEqual(pdfPath, pdfSource.path, "a picked PDF must not open in place")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pdfPath))
     }
 
     /// Re-importing an updated bundle for a document already in the library

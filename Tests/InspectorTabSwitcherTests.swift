@@ -10,8 +10,8 @@ import XCTest
 //
 //   * `maximumWidth` is 560, not 700. 700 pt is over half the width of an 11"
 //     iPad in portrait and nearly the whole of a Split View pane.
-//   * `switcherHeight` is 36, not 30, which makes `headerHeight` 52 rather than
-//     46. A 30 pt segment is well under the 44 pt HIG touch target.
+//   * `switcherHeight` is 44, not 30. The Button itself owns the HIG touch
+//     target; padding around a smaller control does not enlarge its AX frame.
 //
 // Everything else — the 280 floor, the 360 ideal, the three breakpoints, the
 // identifier convention — is shared with main, on purpose: they are the numbers
@@ -78,12 +78,9 @@ final class InspectorTabSwitcherTests: XCTestCase {
         }
     }
 
-    /// The header's height is a TOUCH-TARGET fact on iPad, which is why the
-    /// switcher is 36 pt here and 30 pt on macOS. A 30 pt segment is well under
-    /// the 44 pt HIG minimum; 36 pt of control inside 8 pt of vertical padding
-    /// gives a 52 pt row, and the segment picks up the rest of its reach from
-    /// the `.contentShape(Rectangle())` inside its label — which is what makes
-    /// the whole segment tappable rather than just the glyph.
+    /// The header's height is a TOUCH-TARGET fact on iOS. The segment itself is
+    /// 44pt; the surrounding padding positions it but does not count toward the
+    /// Button's accessibility frame.
     ///
     /// (Main names this `…IsTheStripTheCatcherMustCover` because there the
     /// number is a drop-routing fact: `SidebarDropRoutingTests` aims at the
@@ -91,9 +88,9 @@ final class InspectorTabSwitcherTests: XCTestCase {
     /// so there is no catcher this number serves and the name would send the
     /// next reader looking for one that does not exist.)
     func testHeaderHeightMatchesTheSwitcherPlusItsInset() {
-        XCTAssertEqual(InspectorLayout.switcherHeight, 36)
+        XCTAssertEqual(InspectorLayout.switcherHeight, 44)
         XCTAssertEqual(InspectorLayout.switcherVerticalPadding, 8)
-        XCTAssertEqual(InspectorLayout.headerHeight, 52)
+        XCTAssertEqual(InspectorLayout.headerHeight, 60)
         // Stated as the relationship too, so a padding change cannot leave the
         // two literals above quietly inconsistent.
         XCTAssertEqual(

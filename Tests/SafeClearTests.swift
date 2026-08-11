@@ -4,16 +4,8 @@ import XCTest
 // Clear is destructive, so it has to be reversible: these tests pin the Undo/
 // Redo contract for both the AI conversation and the scratchpad note, plus the
 // attachment-GC rules that make a scratchpad Undo able to put image bytes back.
-//
-// Two tests from main's suite are deliberately absent on the iPad branch
-// (`dc3ac525`): `testAiClearFollowsSameSessionStampForUndoAndRedo` and
-// `testScratchpadClearFollowsSameSessionStampForUndoRedoAndAttachments`. They
-// assert that a clear survives the document acquiring a durable /VellumDocId
-// mid-transaction and rekeying its storage. The iPad's scratchpad is still
-// keyed by `document.pdfPath` in a UserDefaults blob, so there is no rekey to
-// survive — see the "scratchpad onto DocumentDataStore" follow-up notes in
-// `ScratchpadStore.currentDocument(for:)` and `ScratchpadPersistence`. Restore
-// both tests with that migration, not before.
+// These tests intentionally construct a coordinator-free ScratchpadStore to
+// retain coverage of the direct local compatibility path.
 
 @MainActor
 final class SafeClearTests: XCTestCase {
@@ -30,7 +22,6 @@ final class SafeClearTests: XCTestCase {
         // These seams are process-global (#102), so claim all three on the way in
         // as well as releasing them on the way out — this suite must not inherit
         // an attachment directory from whatever ran before it.
-        ScratchpadAttachmentStore.activeDirectory = nil
         // The pending-attachment registry and its grace period are process-global
         // for the same reason. The grace period is the one that matters — a test
         // here sets it to 0, and leaving it there would stop every later suite's
@@ -54,7 +45,6 @@ final class SafeClearTests: XCTestCase {
         scratchpadStores.removeAll()
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
         ScratchpadAttachmentStore.resetPending()
         ScratchpadAttachmentStore.pendingGracePeriod = savedGracePeriod
         try? FileManager.default.removeItem(at: root)
@@ -79,13 +69,8 @@ final class SafeClearTests: XCTestCase {
 
     /// Ask for an attachment sweep and wait for it.
     ///
-    /// Main prunes inline from `ScratchpadPersistence.save(forKey:schemeText:)`,
-    /// because there a note owns its own `attachments/` folder. The iPad keeps
-    /// one flat pool shared by every document, so a save cannot know what the
-    /// other notes still reference — the sweep hangs off `loadForDocument`
-    /// instead, over the whole persisted corpus. Re-loading the same document is
-    /// therefore how a test says "a sweep runs here", and joining
-    /// `attachmentSweepTask` (`60b7617e`) is how it stops racing one.
+    /// The coordinator-free compatibility path still sweeps the legacy flat
+    /// pool on load; joining the task keeps that sweep deterministic.
     private func sweepAttachments(_ store: ScratchpadStore, _ document: DocumentInfo) async {
         store.loadForDocument(document)
         await store.attachmentSweepTask?.value
@@ -95,7 +80,7 @@ final class SafeClearTests: XCTestCase {
         let store = AiStore()
         store.app = app
         let documentA = await open("/tmp/safe-clear-a-\(UUID().uuidString).pdf")
-        store.loadConversationForDocument(documentA)
+        await store.loadConversationForDocument(documentA)
         store.addLocalMessage(role: .user, content: "old question", id: "old-question")
         store.addLocalMessage(role: .assistant, content: "old answer", id: "old-answer")
 
@@ -108,7 +93,7 @@ final class SafeClearTests: XCTestCase {
 
         XCTAssertTrue(store.undoClear(transaction))
         let documentB = await open("/tmp/safe-clear-b-\(UUID().uuidString).pdf")
-        store.loadConversationForDocument(documentB)
+        await store.loadConversationForDocument(documentB)
         store.addLocalMessage(role: .user, content: "B stays visible", id: "b-message")
         XCTAssertTrue(store.redoClear(transaction))
         XCTAssertEqual(store.messages.map(\.content), ["B stays visible"])
@@ -258,17 +243,23 @@ final class SafeClearTests: XCTestCase {
     /// still happen, while one released too early deletes bytes the note is
     /// about to point at and leaves a broken image.
     func testPendingExemptionLapsesSoAnAbandonedAttachmentIsStillCollected() async throws {
+        ScratchpadAttachmentStore.resetPending()
         ScratchpadAttachmentStore.pendingGracePeriod = 0
         let store = makeScratchpadStore()
         let document = await open("/tmp/pending-lapse-\(UUID().uuidString).pdf")
         store.loadForDocument(document)
-        let dropped = try dropImageHoldingItsReference(store)
+        let id = try XCTUnwrap(ScratchpadAttachmentStore.save(
+            data: Data([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]),
+            fileExtension: "png"))
+        let attachment = try XCTUnwrap(ScratchpadAttachmentStore.fileURL(for: id))
+        ScratchpadAttachmentStore.markPending(id)
 
-        // The reference never lands — the editor went away mid-round-trip.
-        store.flush()
+        // Model an editor disappearing before it queues or lands the markdown.
+        // `addImage` is intentionally not used: its queued insertion is part of
+        // the next immediate flush, so that attachment would be referenced.
         await sweepAttachments(store, document)
         XCTAssertFalse(
-            exists(dropped.attachment),
+            exists(attachment),
             "an attachment past its grace period is collectable like any orphan")
     }
 
