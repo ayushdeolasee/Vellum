@@ -77,7 +77,7 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "phone-reader",
             title: "Use the iPhone reader",
             symbol: "iphone",
-            summary: "Tap the page indicator to jump in a PDF. The bottom bar also holds bookmarks, the sticky-note tool, the inspector, open documents, and More actions.",
+            summary: "Tap the document to show or hide both reader bars. Scrolling toward later content also hides them, and a brief reverse scroll reveals them. The bottom bar holds page navigation, bookmarks, notes, the inspector, tabs, and More actions.",
             shortcut: nil,
             keywords: ["phone", "chrome", "page", "toolbar", "controls", "jump"]),
         HelpTopic(

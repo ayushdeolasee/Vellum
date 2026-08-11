@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import UIKit
 
 /// Where the phone shell currently is. Home is a ROUTE, not a tab (#153 D1):
 /// going Home leaves the current tab active in `AppStore`, so its residency pin
@@ -41,12 +42,28 @@ final class PhoneShellStore {
     /// so route changes can close it — SwiftUI presentations that outlive the
     /// screen underneath them are how a phone shell ends up with two things on
     /// screen claiming to be "current".
-    var switcherPresented = false
+    private(set) var switcherPresented = false
 
     /// Whether the reader chrome (top/bottom capsules) is showing. Immersive
     /// reading is the absence of chrome, not a separate route, so this is plain
     /// shell state rather than a third `PhoneRoute` case.
     private(set) var chromeVisible = true
+
+    /// About one thumb-width of deliberate page travel. The native adapters
+    /// send points, so PDF and web readers share the exact same threshold.
+    static let chromeTravelThreshold: CGFloat = 28
+    private static let chromeJitterTolerance: CGFloat = 3
+
+    private enum ScrollDirection {
+        case later
+        case earlier
+    }
+
+    private var scrollDirection: ScrollDirection?
+    private var accumulatedScrollTravel: CGFloat = 0
+    private var pendingReverseTravel: CGFloat = 0
+    private var scrollGestureFrozen = false
+    private var alwaysShowReaderControls = false
 
     /// D3 — the compact default for `sidebarOpen` is `false`.
     ///
@@ -113,6 +130,17 @@ final class PhoneShellStore {
         workspace.sidebarTab
     }
 
+    /// Changes the visible panel without changing whether the sheet is open.
+    ///
+    /// The switcher lives inside an already-presented sheet, so its buttons mean
+    /// only "show this panel". Keeping this separate from `revealInspector`
+    /// prevents a tab choice from being coupled to presentation geometry or a
+    /// detent transition.
+    func selectInspectorTab(_ tab: WorkspaceStore.SidebarTab) {
+        guard app.document != nil else { return }
+        workspace.sidebarTab = tab
+    }
+
     /// The ink controller the inspector's Handwriting section reads — the live
     /// tab's own, taken straight off its runtime.
     ///
@@ -156,18 +184,35 @@ final class PhoneShellStore {
 
     // MARK: - Routing
 
+    func presentSwitcher() {
+        switcherPresented = true
+    }
+
+    /// Handles interactive/system dismissal as well as the switcher's Done
+    /// button. Returning to an already-mounted reader is still a navigation
+    /// arrival, so it restores controls and discards pre-switcher travel.
+    func setSwitcherPresented(_ isPresented: Bool) {
+        guard switcherPresented != isPresented else { return }
+        switcherPresented = isPresented
+        if !isPresented, route == .reader {
+            resetChromeScrollGesture()
+            chromeVisible = true
+        }
+    }
+
     func showHome() {
         // The switcher is a full-screen cover over the reader; leaving the
         // reader with it still presented would stack it over Home.
         switcherPresented = false
+        resetChromeScrollGesture()
         route = .home
     }
 
-    /// Returns to the document. Chrome comes back visible: arriving at a
-    /// document with no chrome would leave no visible way back to Home, and the
-    /// tap-to-reveal gesture that fixes that is not discoverable.
+    /// Every navigation arrival starts with stable, visible controls. Automatic
+    /// hiding only begins after a fresh direct document scroll on this visit.
     func showReader() {
         switcherPresented = false
+        resetChromeScrollGesture()
         chromeVisible = true
         route = .reader
     }
@@ -188,14 +233,155 @@ final class PhoneShellStore {
         showHome()
     }
 
-    // MARK: - Chrome
+    // MARK: - Document-driven chrome
 
-    func toggleChrome() {
-        chromeVisible.toggle()
+    /// Find is rendered inside the chrome. A hardware shortcut can open it
+    /// while bars are hidden, so presentation must reveal the field before it
+    /// takes keyboard focus (which then freezes automatic changes).
+    func findPresentationChanged(isVisible: Bool) {
+        guard isVisible else { return }
+        resetChromeScrollGesture()
+        chromeVisible = true
     }
 
+    /// Applies the persisted Settings → Reader preference live. Enabling it
+    /// while controls are hidden reveals them immediately.
+    func updateAlwaysShowReaderControls(_ enabled: Bool) {
+        alwaysShowReaderControls = enabled
+        resetChromeScrollGesture()
+        if enabled { chromeVisible = true }
+    }
+
+    /// Called for VoiceOver/Switch Control status changes. Stable-control
+    /// navigation is behaviorally equivalent to the preference while active.
+    func accessibilityRequirementDidChange() {
+        resetChromeScrollGesture()
+        if Self.assistiveNavigationRequiresStableControls {
+            chromeVisible = true
+        }
+    }
+
+    /// Consumes normalized, direct vertical travel from PDFKit or WebKit. A
+    /// blocked source freezes the WHOLE pan, so a selection that is cleared by
+    /// the first few points cannot cause the tail of that same gesture to hide
+    /// controls unexpectedly.
+    func handleReaderScroll(_ event: ReaderChromeScrollEvent) {
+        switch event {
+        case .tapped(let sourceInteractionBlocked):
+            resetChromeScrollGesture()
+            guard !sourceInteractionBlocked, !automaticChromeChangesBlocked else { return }
+            chromeVisible.toggle()
+
+        case .began(let sourceInteractionBlocked):
+            scrollGestureFrozen = sourceInteractionBlocked || automaticChromeChangesBlocked
+            if scrollGestureFrozen { resetChromeScrollProgress() }
+
+        case .changed(let deltaY, let sourceInteractionBlocked):
+            if sourceInteractionBlocked || automaticChromeChangesBlocked {
+                scrollGestureFrozen = true
+                resetChromeScrollProgress()
+            }
+            guard !scrollGestureFrozen else { return }
+            accumulateReaderTravel(deltaY)
+
+        case .ended:
+            // Keep valid partial travel across finger lifts: "accumulated"
+            // scrolling can be two short direct pans. Only the per-pan freeze
+            // latch ends here.
+            scrollGestureFrozen = false
+
+        case .reset:
+            resetChromeScrollGesture()
+        }
+    }
+
+    /// Kept for the DEBUG launch-state screenshot hook and direct state tests.
+    /// Runtime reader UI has no explicit hide/reveal action.
     func setChrome(_ visible: Bool) {
+        guard visible || !automaticChromeChangesBlocked else {
+            chromeVisible = true
+            return
+        }
         chromeVisible = visible
+        resetChromeScrollGesture()
+    }
+
+    private var automaticChromeChangesBlocked: Bool {
+        alwaysShowReaderControls
+            || Self.assistiveNavigationRequiresStableControls
+            || route != .reader
+            || switcherPresented
+            || inspectorPresented
+            || app.findVisible
+            || app.mode != .view
+            || textInputFocusRequiresStableChrome
+    }
+
+    /// PDFKit's private `PDFDocumentView` conforms to `UITextInput` so it can
+    /// host native selection, even when nobody is typing. Treating that as a
+    /// keyboard field freezes every PDF pan. Real editors (Find, note text,
+    /// webpage inputs) are outside `VellumPDFView` and remain blocked.
+    private var textInputFocusRequiresStableChrome: Bool {
+        guard VellumKeyboardFocus.isTextInputFirstResponder else { return false }
+        return !Self.isPDFDocumentSurfaceResponder(UIResponder.vellumCurrentFirstResponder)
+    }
+
+    /// Testable ancestry check for PDFKit's private text-input responder.
+    static func isPDFDocumentSurfaceResponder(_ responder: UIResponder?) -> Bool {
+        guard let view = responder as? UIView else { return false }
+        var ancestor: UIView? = view
+        while let current = ancestor {
+            if current is VellumPDFView { return true }
+            ancestor = current.superview
+        }
+        return false
+    }
+
+    private static var assistiveNavigationRequiresStableControls: Bool {
+        UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning
+    }
+
+    private func accumulateReaderTravel(_ deltaY: CGFloat) {
+        guard abs(deltaY) > 0.01 else { return }
+        let nextDirection: ScrollDirection = deltaY > 0 ? .later : .earlier
+        let travel = abs(deltaY)
+
+        if let scrollDirection, scrollDirection != nextDirection {
+            // Accumulate the deadband, not just each sample: repeated 1-point
+            // samples eventually become a deliberate reversal rather than
+            // being ignored forever.
+            pendingReverseTravel += travel
+            guard pendingReverseTravel > Self.chromeJitterTolerance else { return }
+            self.scrollDirection = nextDirection
+            accumulatedScrollTravel = pendingReverseTravel
+            pendingReverseTravel = 0
+        } else {
+            scrollDirection = nextDirection
+            pendingReverseTravel = 0
+            accumulatedScrollTravel += travel
+        }
+
+        guard accumulatedScrollTravel >= Self.chromeTravelThreshold else { return }
+        switch nextDirection {
+        case .later where chromeVisible:
+            chromeVisible = false
+        case .earlier where !chromeVisible:
+            chromeVisible = true
+        default:
+            break
+        }
+        resetChromeScrollProgress()
+    }
+
+    private func resetChromeScrollProgress() {
+        scrollDirection = nil
+        accumulatedScrollTravel = 0
+        pendingReverseTravel = 0
+    }
+
+    private func resetChromeScrollGesture() {
+        resetChromeScrollProgress()
+        scrollGestureFrozen = false
     }
 }
 #endif

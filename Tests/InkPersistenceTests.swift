@@ -455,6 +455,32 @@ final class InkPersistenceTests: XCTestCase {
             "ink survived a failed write and landed on the retry")
     }
 
+    @MainActor
+    func testInactiveInkOverlayContainerPassesPageTouchesThrough() {
+        let canvas = InkPageCanvas_iOS()
+        canvas.isUserInteractionEnabled = false
+        let container = InkOverlayContainer_iOS(canvas: canvas)
+        container.frame = CGRect(x: 0, y: 0, width: 300, height: 500)
+        container.layoutIfNeeded()
+
+        XCTAssertNil(
+            container.hitTest(CGPoint(x: 150, y: 250), with: nil),
+            "the transparent overlay must not swallow PDFKit text-selection touches")
+    }
+
+    @MainActor
+    func testActiveInkOverlayContainerStillRoutesTouchesToCanvas() {
+        let canvas = InkPageCanvas_iOS()
+        canvas.isUserInteractionEnabled = true
+        let container = InkOverlayContainer_iOS(canvas: canvas)
+        container.frame = CGRect(x: 0, y: 0, width: 300, height: 500)
+        container.layoutIfNeeded()
+
+        let hit = container.hitTest(CGPoint(x: 150, y: 250), with: nil)
+        XCTAssertNotNil(hit, "ink mode must keep delivering page touches to PencilKit")
+        XCTAssertFalse(hit === container, "the wrapper itself never owns a page touch")
+    }
+
     /// The debounce must fire on its own — nothing in the app calls
     /// `flushPendingInk` on a timer, so if the scheduled write never ran, ink
     /// would only ever reach disk via an explicit flush.

@@ -63,6 +63,16 @@ final class InkOverlayContainer_iOS: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// PDFKit installs this container directly over the page. While ink mode is
+    /// off, `applyPolicy` disables the canvas so text selection belongs to the
+    /// PDFView underneath; a plain transparent UIView would still hit-test as
+    /// itself and swallow those page touches. Only return a descendant hit —
+    /// never the otherwise-empty wrapper.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let k = max(canvas.superSample, 1)

@@ -1,5 +1,9 @@
 #if os(iOS)
+import PDFKit
+import QuickLookThumbnailing
 import SwiftUI
+import UIKit
+import WebKit
 
 /// Geometry for the tab switcher, in one place so the grid, the cards and the
 /// bar cannot drift apart (and so a later thumbnail pass — P9 — has one aspect
@@ -13,10 +17,12 @@ enum PhoneTabSwitcherLayout {
     static let columnGap: CGFloat = 14
     static let rowGap: CGFloat = 18
 
-    /// Width ÷ height of a card's preview. Portrait, close to a page's 1 / √2 —
-    /// the placeholder is typographic today and a page thumbnail tomorrow, and
-    /// the shape should not change when that lands.
+    /// Width ÷ height of a card's preview. Portrait, close to a page's 1 / √2,
+    /// so PDF thumbnails and webpage snapshots share one stable card shape.
     static let previewAspect: CGFloat = 0.72
+    /// Accessibility layouts prioritize the readable card identity below the
+    /// image. A bounded crop survives both portrait and short landscape screens.
+    static let accessibilityPreviewHeight: CGFloat = 160
 
     /// Corner radius of a preview. The largest token in the scale: at 180pt
     /// wide a card wants to read as a sheet of paper, not as a table row.
@@ -32,8 +38,13 @@ enum PhoneTabSwitcherLayout {
     /// actually needs.
     static let closeDisc: CGFloat = 24
 
-    /// Height of the opaque bottom bar, excluding the home indicator's inset.
-    static let barHeight: CGFloat = 52
+    /// Minimum height of the opaque bottom bar, excluding the home indicator's
+    /// inset. It grows when Dynamic Type needs a second row.
+    static let minimumBarHeight: CGFloat = 52
+
+    static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
+        dynamicTypeSize.isAccessibilitySize ? 1 : 2
+    }
 }
 
 /// The Safari-style tab switcher (#153 P7).
@@ -44,11 +55,12 @@ enum PhoneTabSwitcherLayout {
 ///
 /// ## Two rules this screen exists to honour
 ///
-/// **It must not allocate.** With a phone-sized residency budget (hot 2,
-/// resident 3) the switcher is the one surface that sees every tab at once, and
-/// asking `WorkspaceStore.liveTabRuntime(for:)` per card would mint a runtime
-/// for each of them. Residency is asked through `existingLiveTabRuntime(for:)`
-/// plus `residency.isResident(tabId:)` — both pure reads.
+/// **It must not allocate reader state.** With a phone-sized residency budget
+/// (hot 2, resident 3) the switcher is the one surface that sees every tab at
+/// once, and asking `WorkspaceStore.liveTabRuntime(for:)` per card would mint a
+/// runtime for each of them. Residency is asked through
+/// `existingLiveTabRuntime(for:)` plus `residency.isResident(tabId:)` — both
+/// pure reads. Only visible cards allocate their bounded thumbnail bitmap.
 ///
 /// **The bar is opaque, not glass.** Every other floating surface on the phone
 /// is a glass capsule over a document, because there is a document under it
@@ -56,6 +68,8 @@ enum PhoneTabSwitcherLayout {
 /// glass over it would blur the cards into the control that acts on them. So:
 /// `palette.surface`, a hairline divider, and the bottom safe area filled.
 struct PhoneTabSwitcher_iOS: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// The shell, for the three transitions this screen can cause: open a tab,
     /// go Home, dismiss. It owns `switcherPresented`, so the screen never
     /// dismisses itself by any other route.
@@ -97,11 +111,13 @@ struct PhoneTabSwitcher_iOS: View {
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: Self.columns, spacing: PhoneTabSwitcherLayout.rowGap) {
+            LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
                 ForEach(cards) { card in
                     PhoneTabCardView(
                         card: card,
                         palette: palette,
+                        thumbnailRevision: thumbnailRevision(for: card),
+                        loadThumbnail: { await thumbnail(for: card) },
                         open: { open(card) },
                         close: { close(card) })
                 }
@@ -125,10 +141,13 @@ struct PhoneTabSwitcher_iOS: View {
         .accessibilityIdentifier("phone.tabs")
     }
 
-    private static let columns = [
-        GridItem(.flexible(), spacing: PhoneTabSwitcherLayout.columnGap),
-        GridItem(.flexible(), spacing: PhoneTabSwitcherLayout.columnGap),
-    ]
+    /// Two page-like cards at normal sizes; one readable card when accessibility
+    /// text would otherwise crush the title and close control into half a phone.
+    private var columns: [GridItem] {
+        return Array(
+            repeating: GridItem(.flexible(), spacing: PhoneTabSwitcherLayout.columnGap),
+            count: PhoneTabSwitcherLayout.columnCount(for: dynamicTypeSize))
+    }
 
     // MARK: - Actions
 
@@ -162,42 +181,20 @@ struct PhoneTabSwitcher_iOS: View {
     private var bottomBar: some View {
         ZStack {
             HStack(spacing: 12) {
-                Text(countLabel)
-                    .font(.system(size: 13))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.mutedForeground)
-                    .accessibilityIdentifier("phone.tabs.count")
+                countText
                 Spacer(minLength: 8)
-                Button("Done") { shell.switcherPresented = false }
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(palette.primary)
-                    .frame(minWidth: PhoneChromeLayout.buttonSide,
-                           minHeight: PhoneChromeLayout.buttonSide)
-                    .contentShape(Rectangle())
-                    .accessibilityIdentifier("phone.tabs.done")
+                doneButton
             }
 
-            // Centred independently of the two labels beside it, so a
-            // three-digit count cannot nudge it off centre.
-            Button {
-                // Home, never `newStartTab()` (D1). A start tab would grow a
-                // leaf in the pane tree and a fourth card here that opens
-                // nothing; Home is the phone's new-document surface.
-                shell.showHome()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(palette.primary)
-                    .frame(width: PhoneChromeLayout.buttonSide,
-                           height: PhoneChromeLayout.buttonSide)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open another document")
-            .accessibilityIdentifier("phone.tabs.new")
+            // Keep the compact system-style plus at every text size. Its
+            // VoiceOver label carries the full action without turning the
+            // bottom bar into a multi-line panel that covers the cards.
+            newDocumentButton
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
-        .frame(height: PhoneTabSwitcherLayout.barHeight)
+        .padding(.vertical, 4)
+        .frame(minHeight: PhoneTabSwitcherLayout.minimumBarHeight)
         .background(alignment: .top) {
             Rectangle()
                 .fill(palette.border)
@@ -206,33 +203,132 @@ struct PhoneTabSwitcher_iOS: View {
         .background(palette.surface.ignoresSafeArea(edges: .bottom))
     }
 
+    private var countText: some View {
+        Text(countLabel)
+            .font(.subheadline)
+            .monospacedDigit()
+            .foregroundStyle(palette.mutedForeground)
+            .accessibilityIdentifier("phone.tabs.count")
+    }
+
+    private var doneButton: some View {
+        Button("Done") { shell.setSwitcherPresented(false) }
+            .font(.body.bold())
+            .foregroundStyle(palette.primary)
+            .frame(
+                minWidth: PhoneChromeLayout.buttonSide,
+                minHeight: PhoneChromeLayout.buttonSide)
+            .contentShape(Rectangle())
+            .accessibilityIdentifier("phone.tabs.done")
+    }
+
+    private var newDocumentButton: some View {
+        Button {
+            // Home, never `newStartTab()` (D1). A start tab would grow a
+            // leaf in the pane tree and a fourth card here that opens
+            // nothing; Home is the phone's new-document surface.
+            shell.showHome()
+        } label: {
+            Image(systemName: "plus")
+                .font(.title3.weight(.medium))
+                .frame(
+                    width: PhoneChromeLayout.buttonSide,
+                    height: PhoneChromeLayout.buttonSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(palette.primary)
+        .accessibilityLabel("Open another document")
+        .accessibilityIdentifier("phone.tabs.new")
+    }
+
     private var countLabel: String {
         let count = app.tabs.count
         return count == 1 ? "1 tab" : "\(count) tabs"
+    }
+
+    // MARK: - Thumbnails
+
+    /// Changes when a resident reader finishes loading or a webpage navigates,
+    /// causing a visible card's thumbnail task to retry with fresh content.
+    private func thumbnailRevision(for card: PhoneTabCard) -> Int {
+        guard let runtime = workspace.existingLiveTabRuntime(for: card.id),
+              !runtime.isEvicted else { return 0 }
+        switch card.kind {
+        case .pdf:
+            if case .loaded = runtime.pdfLoadState { return 1 }
+            return 0
+        case .web:
+            return runtime.webController.hasWebView ? runtime.webController.initCount : 0
+        case nil:
+            return 0
+        }
+    }
+
+    /// Prefer the exact page/view already held by a resident runtime. The
+    /// side-effect-free guards are important: `existingLiveTabRuntime` never
+    /// creates a runtime, and `hasWebView` is checked before touching the lazy
+    /// `webView` property. A cold PDF asks Quick Look for a file thumbnail; a
+    /// cold webpage keeps the lightweight URL preview because rendering it
+    /// would require allocating a WKWebView and loading the page.
+    private func thumbnail(for card: PhoneTabCard) async -> UIImage? {
+        if let runtime = workspace.existingLiveTabRuntime(for: card.id),
+           !runtime.isEvicted {
+            switch card.kind {
+            case .pdf:
+                if case .loaded(let document) = runtime.pdfLoadState,
+                   document.pageCount > 0,
+                   let page = document.page(
+                    at: min(max((card.previewPageNumber ?? 1) - 1, 0), document.pageCount - 1)) {
+                    return page.thumbnail(
+                        of: CGSize(width: 360, height: 500), for: .cropBox)
+                }
+            case .web:
+                guard runtime.webController.hasWebView else { break }
+                let webView = runtime.webController.webView
+                guard webView.bounds.width >= 4, webView.bounds.height >= 4 else { break }
+                let configuration = WKSnapshotConfiguration()
+                configuration.rect = webView.bounds
+                return try? await webView.takeSnapshot(configuration: configuration)
+            case nil:
+                break
+            }
+        }
+
+        guard let path = card.thumbnailPath else { return nil }
+        let request = QLThumbnailGenerator.Request(
+            fileAt: URL(fileURLWithPath: path),
+            size: CGSize(width: 360, height: 500),
+            scale: 1,
+            representationTypes: .thumbnail)
+        return try? await QLThumbnailGenerator.shared
+            .generateBestRepresentation(for: request)
+            .uiImage
     }
 
     /// Only reachable for a beat: `didCloseTab()` routes Home the moment the
     /// last tab goes. It exists so that beat is not a blank screen.
     private var emptyState: some View {
         Text("No open documents")
-            .font(.system(size: 15))
+            .font(.body)
             .foregroundStyle(palette.mutedForeground)
     }
 }
 
-/// One card: a typographic preview, the ring when it is current, a close
-/// affordance, and two lines of label beneath.
-///
-/// The preview is deliberately text, not a screenshot. P9 may put a real
-/// thumbnail behind it; until then a title set large on paper-coloured stock
-/// identifies a document better than a grey rectangle would, and it costs
-/// nothing for an evicted tab — which is precisely the tab a screenshot cannot
-/// be produced for.
-private struct PhoneTabCardView: View {
+/// One card: a lazy document thumbnail when one can be produced without
+/// creating native reader state, the ring when it is current, a close
+/// affordance, and an adaptive label beneath.
+struct PhoneTabCardView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let card: PhoneTabCard
     let palette: ThemePalette
+    let thumbnailRevision: Int
+    let loadThumbnail: () async -> UIImage?
     let open: () -> Void
     let close: () -> Void
+
+    @State private var thumbnail: UIImage?
 
     /// The current tab is never drawn as needing a reload. It is the document
     /// the reader is showing; `LiveTabStack_iOS.shouldRender` guarantees it is
@@ -248,32 +344,60 @@ private struct PhoneTabCardView: View {
         }
     }
 
-    var body: some View {
-        Button(action: open) {
-            VStack(alignment: .leading, spacing: 8) {
-                preview
-                label
-            }
-        }
-        .buttonStyle(.plain)
-        // Outside the button rather than inside its label: a button nested in
-        // another button's label is not reliably tappable on iOS, and this way
-        // the close target sits above the card's own hit area.
-        .overlay(alignment: .topTrailing) { closeButton }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("phone.tabs.card")
-        .accessibilityLabel(card.title)
-        .accessibilityValue(
-            [card.subtitle, card.isCurrent ? "Current document" : "",
-             showsReloadNote ? "Reloads on open" : ""]
-                .filter { !$0.isEmpty }
-                .joined(separator: ", "))
+    private var thumbnailIdentity: String {
+        "\(card.id):\(card.thumbnailPath ?? card.subtitle):\(card.previewPageNumber ?? 0):\(card.isResident):\(thumbnailRevision)"
     }
 
+    private var accessibilityTitle: String {
+        [card.title, card.duplicateLabel ?? ""]
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: open) {
+                VStack(alignment: .leading, spacing: 8) {
+                    preview
+                    label
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("phone.tabs.card")
+            .accessibilityLabel(accessibilityTitle)
+            .accessibilityValue(
+                [card.subtitle, card.isCurrent ? "Current document" : "",
+                 showsReloadNote ? "Reloads on open" : ""]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ", "))
+
+            // A sibling, not a Button overlay. SwiftUI folds controls inside a
+            // Button's overlay into the parent's accessibility element even
+            // though touch still works; sibling placement keeps Close exposed.
+            closeButton
+        }
+        .task(id: thumbnailIdentity) {
+            thumbnail = nil
+            let loaded = await loadThumbnail()
+            guard !Task.isCancelled else { return }
+            thumbnail = loaded
+        }
+    }
+
+    @ViewBuilder
     private var preview: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            previewSurface
+                .frame(height: PhoneTabSwitcherLayout.accessibilityPreviewHeight)
+        } else {
+            previewSurface
+                .aspectRatio(PhoneTabSwitcherLayout.previewAspect, contentMode: .fit)
+        }
+    }
+
+    private var previewSurface: some View {
         RoundedRectangle(cornerRadius: PhoneTabSwitcherLayout.cardCorner)
             .fill(palette.surface)
-            .aspectRatio(PhoneTabSwitcherLayout.previewAspect, contentMode: .fit)
             .overlay { previewContent }
             .clipShape(RoundedRectangle(cornerRadius: PhoneTabSwitcherLayout.cardCorner))
             .overlay {
@@ -284,28 +408,70 @@ private struct PhoneTabCardView: View {
                             ? PhoneTabSwitcherLayout.ringWidth
                             : PhoneTabSwitcherLayout.edgeWidth)
             }
-            // The whole preview is tappable, including the gaps between its
-            // glyph and its text.
             .contentShape(RoundedRectangle(cornerRadius: PhoneTabSwitcherLayout.cardCorner))
     }
 
     private var previewContent: some View {
-        VStack(spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 24, weight: .light))
-                .foregroundStyle(palette.mutedForeground)
-
-            Text(card.title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(palette.foreground)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .truncationMode(.middle)
+        ZStack(alignment: .bottomLeading) {
+            if let thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            } else {
+                fallbackPreview
+            }
 
             if let pageLabel = card.pageLabel {
                 Text(pageLabel)
-                    .font(.system(size: 11))
-                    .monospacedDigit()
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(palette.foreground)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(8)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// Cold webpages intentionally stop here: creating a WKWebView to render a
+    /// card would defeat tab residency. The source-shaped browser tile is still
+    /// more useful than repeating the title because it foregrounds the host and
+    /// path that distinguish one article from another.
+    private var fallbackPreview: some View {
+        VStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.largeTitle.weight(.light))
+                .foregroundStyle(palette.mutedForeground)
+
+            Text(card.subtitle)
+                .font(.subheadline)
+                .foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .truncationMode(.middle)
+        }
+        .padding()
+    }
+
+    private var label: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(card.title)
+                .font(card.isCurrent ? .headline.bold() : .headline)
+                .foregroundStyle(palette.foreground)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .truncationMode(.middle)
+            Text(card.subtitle)
+                .font(.subheadline)
+                .foregroundStyle(palette.mutedForeground)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .truncationMode(.middle)
+
+            if let duplicateLabel = card.duplicateLabel {
+                Label(duplicateLabel, systemImage: "square.on.square")
+                    .font(.caption)
                     .foregroundStyle(palette.mutedForeground)
             }
 
@@ -315,30 +481,9 @@ private struct PhoneTabCardView: View {
                 // document again. `LiveTabHost_iOS` shows "Restoring tab…" for
                 // the moment that takes.
                 Label("Reloads on open", systemImage: "arrow.clockwise")
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(palette.mutedForeground)
-                    .labelStyle(.titleAndIcon)
             }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
-        // Dimmed as a whole, so "this one is not loaded" reads before any of
-        // the text does.
-        .opacity(showsReloadNote ? 0.55 : 1)
-    }
-
-    private var label: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(card.title)
-                .font(.system(size: 12, weight: card.isCurrent ? .semibold : .medium))
-                .foregroundStyle(palette.foreground)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text(card.subtitle)
-                .font(.system(size: 10))
-                .foregroundStyle(palette.mutedForeground)
-                .lineLimit(1)
-                .truncationMode(.middle)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 2)
@@ -358,7 +503,7 @@ private struct PhoneTabCardView: View {
                         width: PhoneTabSwitcherLayout.closeDisc,
                         height: PhoneTabSwitcherLayout.closeDisc)
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.caption.bold())
                     .foregroundStyle(palette.mutedForeground)
             }
             .frame(
@@ -366,10 +511,9 @@ private struct PhoneTabCardView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Pulled up and out so the disc straddles the card's corner rather than
-        // covering the first line of its title.
-        .offset(x: 10, y: -10)
-        .accessibilityLabel("Close \(card.title)")
+        // Keep the full 44pt target inside this card so it cannot overlap the
+        // adjacent card or extend beyond the screen gutter.
+        .accessibilityLabel("Close \(accessibilityTitle)")
         .accessibilityIdentifier("phone.tabs.close")
     }
 }

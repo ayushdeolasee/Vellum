@@ -34,6 +34,22 @@ struct PhoneTabCard: Identifiable, Equatable, Sendable {
     /// for PDFs whose page count is not known yet.
     let pageLabel: String?
 
+    /// The current 1-based PDF page. A resident PDF can render this page from
+    /// its existing `PDFDocument`; a cold PDF falls back to Quick Look's file
+    /// thumbnail. Webpages and start tabs have no page number.
+    let previewPageNumber: Int?
+
+    /// Filesystem path used only for a cold PDF's Quick Look thumbnail. Merely
+    /// carrying the path is free: the lazy grid asks Quick Look only for cards
+    /// that are actually on screen, and never creates a live-tab runtime.
+    let thumbnailPath: String?
+
+    /// Ordinal shown when the workspace contains the same document more than
+    /// once. This is intentionally derived from current tab order rather than
+    /// persisted; it distinguishes identical title/source pairs without adding
+    /// a second identity system.
+    let duplicateLabel: String?
+
     /// The tab the reader is showing. Exactly one card carries this, and it is
     /// the one that gets the ring.
     let isCurrent: Bool
@@ -73,13 +89,17 @@ enum PhoneTabCardBuilder {
         activeTabId: String?,
         isResident: (String) -> Bool
     ) -> [PhoneTabCard] {
-        tabs.map { tab in
+        let duplicateLabels = duplicateLabels(for: tabs)
+        return tabs.map { tab in
             PhoneTabCard(
                 id: tab.id,
                 title: title(for: tab),
                 subtitle: subtitle(for: tab),
                 kind: tab.document?.kind,
                 pageLabel: pageLabel(for: tab),
+                previewPageNumber: previewPageNumber(for: tab),
+                thumbnailPath: thumbnailPath(for: tab),
+                duplicateLabel: duplicateLabels[tab.id],
                 isCurrent: tab.id == activeTabId,
                 isResident: isResident(tab.id))
         }
@@ -124,6 +144,46 @@ enum PhoneTabCardBuilder {
         guard let document = tab.document, document.kind != .web else { return nil }
         guard tab.numPages > 0 else { return nil }
         return "\(tab.currentPage) / \(tab.numPages)"
+    }
+
+    static func previewPageNumber(for tab: PdfTab) -> Int? {
+        guard tab.document?.kind == .pdf, tab.numPages > 0 else { return nil }
+        return min(max(tab.currentPage, 1), tab.numPages)
+    }
+
+    static func thumbnailPath(for tab: PdfTab) -> String? {
+        guard let document = tab.document,
+              document.kind == .pdf,
+              !document.pdfPath.isEmpty
+        else { return nil }
+        return document.pdfPath
+    }
+
+    /// Labels repeated instances of the same source in their current visual
+    /// order. `docId` wins when available so a moved PDF still counts as the
+    /// same document; otherwise the document kind and source URI are the stable
+    /// identity already stored by `DocumentInfo`.
+    private static func duplicateLabels(for tabs: [PdfTab]) -> [String: String] {
+        let keys = tabs.map(duplicateKey(for:))
+        let totals = keys.reduce(into: [String: Int]()) { counts, key in
+            counts[key, default: 0] += 1
+        }
+        var positions: [String: Int] = [:]
+        var labels: [String: String] = [:]
+
+        for (tab, key) in zip(tabs, keys) where totals[key, default: 0] > 1 {
+            positions[key, default: 0] += 1
+            labels[tab.id] = "Duplicate \(positions[key, default: 0]) of \(totals[key, default: 0])"
+        }
+        return labels
+    }
+
+    private static func duplicateKey(for tab: PdfTab) -> String {
+        guard let document = tab.document else { return "start" }
+        if let docId = document.docId, !docId.isEmpty {
+            return "\(document.kind.rawValue):id:\(docId)"
+        }
+        return "\(document.kind.rawValue):source:\(document.pdfPath)"
     }
 }
 #endif

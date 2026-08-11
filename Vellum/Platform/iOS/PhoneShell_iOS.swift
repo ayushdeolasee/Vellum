@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 /// The compact-width (iPhone) shell (#153).
 ///
@@ -47,6 +48,8 @@ private struct PhoneShellRoot_iOS: View {
 
     @State private var addWebpagePresented = false
     @State private var isImporting = false
+    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey)
+    private var alwaysShowReaderControls = false
 
     /// A one-shot request to put the keyboard in Home's search field, raised
     /// when ⌘F arrives with nothing to find (#153 P8).
@@ -193,6 +196,24 @@ private struct PhoneShellRoot_iOS: View {
             .onChange(of: colorScheme, initial: true) { _, scheme in
                 themeStore.systemAppearanceChanged(isDark: scheme == .dark)
             }
+            .onChange(of: alwaysShowReaderControls, initial: true) { _, enabled in
+                shell.updateAlwaysShowReaderControls(enabled)
+            }
+            .onChange(of: pane.app.findVisible) { _, isVisible in
+                shell.findPresentationChanged(isVisible: isVisible)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIAccessibility.voiceOverStatusDidChangeNotification)
+            ) { _ in
+                shell.accessibilityRequirementDidChange()
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIAccessibility.switchControlStatusDidChangeNotification)
+            ) { _ in
+                shell.accessibilityRequirementDidChange()
+            }
             // Safety net for opens the shell did not initiate: a Files-app
             // hand-off that raced the route, a restored session at launch, ⌘O,
             // later widgets and Spotlight. Home's own actions call
@@ -235,7 +256,7 @@ private struct PhoneShellRoot_iOS: View {
             onAddWebpage: { addWebpagePresented = true },
             onShowTabs: {
                 guard !pane.app.tabs.isEmpty else { return }
-                shell.switcherPresented = true
+                shell.presentSwitcher()
             },
             onDocumentOpened: { shell.didOpenDocument() })
     }
@@ -261,19 +282,14 @@ private struct PhoneShellRoot_iOS: View {
     private var readerRoute: some View {
         ZStack {
             LiveTabStack_iOS(app: pane.app)
+                // The shared PDF/web viewers see a no-op action on iPad. Only
+                // the phone shell installs the policy callback.
+                .environment(
+                    \.readerChromeScrollAction,
+                    ReaderChromeScrollAction(handler: { event in
+                        shell.handleReaderScroll(event)
+                    }))
                 .ignoresSafeArea()
-
-            // Never in the touch path (see `ChromeTapCatcher_iOS`) — it is a
-            // window-level recognizer plus a geometry probe, which is why it can
-            // sit above the viewer without taking anything from it.
-            ChromeTapCatcher_iOS(
-                isActive: !shell.switcherPresented,
-                chromeVisible: shell.chromeVisible
-            ) {
-                shell.toggleChrome()
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
 
             PhoneReaderChrome_iOS(
                 shell: shell,
@@ -335,7 +351,7 @@ private struct PhoneShellRoot_iOS: View {
     private var switcherPresented: Binding<Bool> {
         Binding(
             get: { shell.switcherPresented },
-            set: { shell.switcherPresented = $0 }
+            set: { shell.setSwitcherPresented($0) }
         )
     }
 
@@ -424,7 +440,7 @@ private struct PhoneShellRoot_iOS: View {
             shell.revealInspector(shell.inspectorTab)
         case .tabs:
             shell.showReader()
-            shell.switcherPresented = true
+            shell.presentSwitcher()
         }
     }
     #endif

@@ -30,11 +30,9 @@ enum InspectorLayout {
     /// Inset applied to the switcher inside the inspector column.
     static let switcherHorizontalPadding: CGFloat = 12
     static let switcherVerticalPadding: CGFloat = 8
-    /// 36 on iPad, not macOS's 30. A 30 pt segment is well under the 44 pt HIG
-    /// touch target; 36 pt of control inside 8 pt of vertical padding gives a
-    /// 52 pt row, and the segment gets the rest of its reach from the
-    /// `.contentShape(Rectangle())` inside its label.
-    static let switcherHeight: CGFloat = 36
+    /// A real 44pt segment. Padding around a Button does not enlarge that
+    /// Button's accessibility frame, so the control itself owns the HIG floor.
+    static let switcherHeight: CGFloat = 44
 
     /// Height of the inspector's header row — the control plus its inset,
     /// stopping above the divider. On iPad this is a layout fact only: main's
@@ -161,9 +159,7 @@ struct InspectorTabSwitcher: View {
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
                 Button {
-                    withAnimation(.snappy) {
-                        selection = tab
-                    }
+                    selection = tab
                 } label: {
                     Group {
                         if showTitles {

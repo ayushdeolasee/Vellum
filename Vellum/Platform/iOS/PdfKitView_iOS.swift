@@ -176,6 +176,26 @@ final class VellumPDFView: PDFView, VellumShortcutResponder {
     }
 }
 
+/// Vellum's empty-page note recognizer participates in a failure relationship
+/// with PDFKit's native text-selection recognizers. Rejecting a text touch from
+/// `UIGestureRecognizerDelegate.shouldReceive` is not enough for that setup:
+/// the recognizer can remain `.possible`, leaving every native recognizer that
+/// requires it to fail waiting until the finger lifts. Failing synchronously in
+/// `touchesBegan` releases PDFKit immediately, so long-press-and-drag selection
+/// starts normally while empty-area presses still wait for the note gesture.
+private final class EmptyAreaLongPressRecognizer: UILongPressGestureRecognizer {
+    var shouldReceiveTouch: ((UITouch) -> Bool)?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = touches.first,
+              shouldReceiveTouch?(touch) ?? true else {
+            state = .failed
+            return
+        }
+        super.touchesBegan(touches, with: event)
+    }
+}
+
 struct PdfKitView_iOS: UIViewRepresentable {
     let controller: PdfViewerControlleriOS
     let document: PDFDocument
@@ -188,6 +208,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
     @Environment(AppStore.self) private var app
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.palette) private var palette
+    @Environment(\.readerChromeScrollAction) private var readerChromeScrollAction
     /// `.fitWidth` only under the compact phone shell; `.free` everywhere else,
     /// including an iPad in Slide Over. See `RootShell_iOS`.
     @Environment(\.pdfZoomMode) private var zoomMode
@@ -195,6 +216,8 @@ struct PdfKitView_iOS: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
 
     func makeUIView(context: Context) -> PDFView {
+        context.coordinator.updateChromeScrollAction(
+            isActive ? readerChromeScrollAction : ReaderChromeScrollAction())
         // Live tabs: the PDFView belongs to the tab's `LiveTabRuntime` and
         // outlives this host, so a remount (tab dragged to another pane, a warm
         // tab coming back, or two hosts transiently claiming one tab during
@@ -248,6 +271,8 @@ struct PdfKitView_iOS: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
+        context.coordinator.updateChromeScrollAction(
+            isActive ? readerChromeScrollAction : ReaderChromeScrollAction())
         uiView.backgroundColor = UIColor(palette.well)
         // Both of these also cover the adopted-view path in `makeUIView`, where
         // a tab that moved between panes or shells has to be told which pane's
@@ -301,10 +326,18 @@ struct PdfKitView_iOS: UIViewRepresentable {
         private weak var scrollView: UIScrollView?
         private var observers: [NSObjectProtocol] = []
         private var offsetObservation: NSKeyValueObservation?
+        private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
+        private var readerChromeScrollAction = ReaderChromeScrollAction()
 
         init(controller: PdfViewerControlleriOS, ink: InkController_iOS) {
             self.controller = controller
             self.ink = ink
+        }
+
+        func updateChromeScrollAction(_ action: ReaderChromeScrollAction) {
+            readerChromeScrollAction = action
+            guard let scrollView else { return }
+            configureChromeObserver(for: scrollView)
         }
 
         func attach(to view: PDFView) {
@@ -319,13 +352,20 @@ struct PdfKitView_iOS: UIViewRepresentable {
             tap.delegate = self
             view.addGestureRecognizer(tap)
 
-            // Receives only empty-area presses (shouldReceive gate) and cancels
-            // the touch when it fires, so PDFView's native long-press can't
-            // snap-select the nearest word underneath the "Add note here" pill.
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(longPressed(_:)))
+            // Receives only empty-area presses (the subclass fails immediately
+            // on text) and cancels the touch when it fires, so PDFView's native
+            // long-press can't snap-select the nearest word underneath the
+            // "Add note here" pill.
+            let longPress = EmptyAreaLongPressRecognizer(
+                target: self, action: #selector(longPressed(_:)))
             longPress.minimumPressDuration = 0.35
             longPress.cancelsTouchesInView = true
             longPress.delegate = self
+            longPress.shouldReceiveTouch = { [weak self, weak view] touch in
+                guard let self, let view else { return false }
+                return self.controller.isEmptyPageArea(
+                    atTopLeft: touch.location(in: view))
+            }
             view.addGestureRecognizer(longPress)
             noteLongPress = longPress
 
@@ -387,10 +427,12 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
         private func observeScroll(_ scroll: UIScrollView) {
             scrollView = scroll
+            configureChromeObserver(for: scroll)
             // Make PDFKit's internal long-presses (nearest-word selection) wait
-            // for ours to fail. On text presses ours never receives the touch
-            // (shouldReceive gate) so natives run immediately; on empty-area
-            // presses ours recognizes and the natives stay blocked.
+            // for ours to fail. On text presses `EmptyAreaLongPressRecognizer`
+            // enters `.failed` synchronously from `touchesBegan`, releasing the
+            // native recognizers immediately; on empty-area presses ours
+            // recognizes and the natives stay blocked.
             // cancelsTouchesInView can't do this — touch cancellation stops
             // view delivery, not other gesture recognizers.
             if let ours = noteLongPress, let view {
@@ -404,6 +446,15 @@ struct PdfKitView_iOS: UIViewRepresentable {
                 }
             }
             controller.layoutChanged()
+        }
+
+        private func configureChromeObserver(for scroll: UIScrollView) {
+            chromeScrollObserver.configure(
+                scrollView: scroll,
+                action: readerChromeScrollAction,
+                sourceInteractionBlocked: { [weak self] in
+                    self?.controller.blocksAutomaticChromeChanges ?? true
+                })
         }
 
         private var noteLongPress: UILongPressGestureRecognizer?
@@ -450,24 +501,12 @@ struct PdfKitView_iOS: UIViewRepresentable {
             true
         }
 
-        nonisolated func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldReceive touch: UITouch
-        ) -> Bool {
-            // The long-press only takes empty-area touches; on/near text it
-            // must not receive at all so the native selection engages cleanly.
-            guard gestureRecognizer is UILongPressGestureRecognizer else { return true }
-            return MainActor.assumeIsolated {
-                guard let view = self.view else { return false }
-                return self.controller.isEmptyPageArea(atTopLeft: touch.location(in: view))
-            }
-        }
-
         func detach() {
             for observer in observers { NotificationCenter.default.removeObserver(observer) }
             observers = []
             offsetObservation?.invalidate()
             offsetObservation = nil
+            chromeScrollObserver.detach()
             // The PDFView is NOT released here. It belongs to the tab's
             // `LiveTabRuntime`, not to this host: nil'ing the controller's
             // reference on dismantle is what used to make every remount rebuild
