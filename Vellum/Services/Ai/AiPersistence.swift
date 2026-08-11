@@ -8,6 +8,15 @@ import Foundation
 // cache with a coalesced 200 ms flush drained on quit. The legacy path-keyed
 // UserDefaults blob (`conversationsKey`) is now a read-only migration source —
 // a document's entry is folded into its folder on first load and removed.
+//
+// iPad-only addition (no macOS counterpart): both the legacy-blob reader and the
+// folder layer carry a filename-based recovery for the sandbox data-container
+// UUID changing across a reinstall or OS update. See
+// `migrateLegacyIfNeeded(document:key:)` and
+// `recoverContainerRelocatedConversation(document:key:)` — without them every
+// conversation belonging to an UNSTAMPED PDF would silently disappear the first
+// time the container UUID rolls, because both the legacy blob's keys and the
+// path-hash storage key are derived from an absolute path that no longer exists.
 enum AiPersistence {
     static let settingsKey = "research-reader-ai-settings-v1"
     /// Legacy path-keyed conversation blob — migration read source only.
@@ -41,6 +50,13 @@ enum AiPersistence {
     private struct ConversationEntry: Sendable {
         var key: String
         var messages: [AiMessage]
+    }
+
+    private struct FlushEntry: Sendable {
+        var key: String
+        var messages: [AiMessage]
+        var document: DocumentInfo?
+        var coordinator: StorageCoordinator?
     }
 
     /// Last value synced with the Keychain per account this launch, so the
@@ -165,14 +181,121 @@ enum AiPersistence {
     /// Confined to the main actor — every caller (AiStore, PaneView) already is.
     @MainActor private static var cache: [String: [AiMessage]] = [:]
 
+    /// Coordinator captured from the document-load boundary. Keeping it per key
+    /// lets the existing coalesced save API stay synchronous while its actual
+    /// class-B write remains async and participates in lifecycle draining.
+    @MainActor private static var coordinators: [String: StorageCoordinator] = [:]
+    @MainActor private static var documents: [String: DocumentInfo] = [:]
+
+    /// Cold-load path for production. Direct test/local callers may continue to
+    /// use the synchronous overload below, but a workspace-backed load always
+    /// enters the coordinator before consulting `documents/<key>`.
+    @MainActor static func loadConversation(
+        for document: DocumentInfo?, coordinator: StorageCoordinator
+    ) async -> [AiMessage] {
+        guard let document, let key = storageKey(for: document) else { return [] }
+        coordinators[key] = coordinator
+        documents[key] = document
+        await migrateToCurrentStorageKeyIfNeeded(
+            document: document, key: key, coordinator: coordinator)
+        if let cached = cache[key], unavailableKeys.contains(key) == false { return cached }
+        // Messages composed while the remote file was unavailable stay only in
+        // memory. They are merged after an authoritative reload; they must never
+        // turn into a blind replacement merely because readiness later flips.
+        let pendingLocal = unavailableKeys.contains(key) ? cache[key] : nil
+
+        let data: Data?
+        do {
+            data = try await DocumentDataStore.loadConversationsData(
+                forKey: key, coordinator: coordinator)
+        } catch let error as LibraryFileError {
+            // Not downloaded, stale, or unreadable are all non-authoritative
+            // empties. Protect the file from the clear-on-empty path and retry
+            // on the next cold load instead of caching a phantom blank chat.
+            unavailableKeys.insert(key)
+            if case .notDownloaded = error {
+                NSLog("[Vellum] AI conversation for \(key) is not downloaded; leaving remote bytes untouched")
+            }
+            return []
+        } catch {
+            unavailableKeys.insert(key)
+            return []
+        }
+
+        guard let data, !data.isEmpty else {
+            // Preserve the lazy UserDefaults migration without stepping outside
+            // the coordinated boundary for its destination write.
+            if let migrated = await migrateLegacyIfNeeded(
+                document: document, key: key, coordinator: coordinator)
+            {
+                return acceptAuthoritativeConversation(
+                    migrated, pendingLocal: pendingLocal, key: key)
+            }
+            return acceptAuthoritativeConversation(
+                [], pendingLocal: pendingLocal, key: key)
+        }
+        guard let decoded = decodeMessages(data) else {
+            undecodableKeys.insert(key)
+            return []
+        }
+        if decoded.dropped > 0 {
+            NSLog("[Vellum] Dropped \(decoded.dropped) undecodable message(s) while reading the AI conversation for \(key)")
+        }
+        let loaded = limitedMessages(decoded.messages)
+        undecodableKeys.remove(key)
+        return acceptAuthoritativeConversation(
+            loaded, pendingLocal: pendingLocal, key: key)
+    }
+
+    @MainActor private static func acceptAuthoritativeConversation(
+        _ remote: [AiMessage],
+        pendingLocal: [AiMessage]?,
+        key: String
+    ) -> [AiMessage] {
+        unavailableKeys.remove(key)
+        undecodableKeys.remove(key)
+        guard let pendingLocal else {
+            cache[key] = remote
+            return remote
+        }
+
+        // Same policy as bundle/conflict merging: local wins an id collision,
+        // union everything else, chronological order, then apply storage caps.
+        var byID: [String: AiMessage] = [:]
+        for message in remote where byID[message.id] == nil { byID[message.id] = message }
+        for message in pendingLocal { byID[message.id] = message }
+        let merged = limitedMessages(byID.values.sorted { $0.createdAt < $1.createdAt })
+        cache[key] = merged
+        if merged != remote {
+            dirtyKeys.insert(key)
+            scheduleFlush()
+        }
+        return merged
+    }
+
     @MainActor static func loadConversation(for document: DocumentInfo?) -> [AiMessage] {
         guard let document, let key = storageKey(for: document) else { return [] }
-        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        if coordinators[key] != nil {
+            migrateCachedToCurrentStorageKeyIfNeeded(document: document, key: key)
+        } else {
+            migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        }
         if let cached = cache[key] { return cached }
         // First load this session: fold in any legacy blob entry, then read the
         // folder file (which the migration just wrote, if there was one).
         if !DocumentDataStore.conversationsExist(forKey: key) {
             migrateLegacyIfNeeded(document: document, key: key)
+        }
+        // iPad-only, and the folder-layer half of the same problem the legacy
+        // migration solves: once a conversation has been folded into a folder,
+        // its key is a sha256 of an absolute path that a container-UUID change
+        // kills. Recover the folder by filename before concluding "no chat".
+        if !DocumentDataStore.conversationsExist(forKey: key) {
+            recoverContainerRelocatedConversation(document: document, key: key)
+            // The recovery moves the write-behind cache along with the folder, so
+            // a save made under the dead key that has not flushed yet lives only
+            // in memory — there may be nothing on disk to re-read.
+            if let cached = cache[key] { return cached }
         }
         // Bytes on disk that yielded no readable message at all. Same reasoning
         // as the iCloud case below: the empty is OURS, not the user's, so it
@@ -203,14 +326,41 @@ enum AiPersistence {
     /// a new conversation over a file we cannot show them.
     @MainActor private static var undecodableKeys: Set<String> = []
 
-    @MainActor static func saveConversation(for document: DocumentInfo?, messages: [AiMessage]) {
+    /// Keys whose current bytes were refused by the coordinated seam (most
+    /// importantly `.notDownloaded`). Empty saves cannot mean delete for them.
+    @MainActor private static var unavailableKeys: Set<String> = []
+
+    @MainActor static func saveConversation(
+        for document: DocumentInfo?,
+        messages: [AiMessage],
+        coordinator: StorageCoordinator? = nil
+    ) {
         guard let document, let key = storageKey(for: document) else { return }
-        migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        if let coordinator { coordinators[key] = coordinator }
+        documents[key] = document
+        if coordinators[key] != nil {
+            // The coordinated load/flush paths own the on-disk rekey. A save is
+            // synchronous, so it may only move the in-memory write-behind state;
+            // touching the folder directly here would bypass the lifecycle gate.
+            migrateCachedToCurrentStorageKeyIfNeeded(document: document, key: key)
+        } else {
+            migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
+        }
         let limited = limitedMessages(messages)
+        if unavailableKeys.contains(key) {
+            if limited.isEmpty {
+                NSLog("[Vellum] Skipping empty AI conversation write for \(key): its current iCloud bytes have not been read")
+                return
+            }
+            cache[key] = limited
+            NSLog("[Vellum] Holding AI conversation edits for \(key) in memory until the current iCloud conversation can be reloaded and merged")
+            return
+        }
         // Refuse to let an empty result overwrite a file we simply failed to
         // read (#90). Returning without caching or dirtying leaves the on-disk
         // bytes intact for a build that can decode them.
-        if limited.isEmpty, undecodableKeys.contains(key) {
+        if limited.isEmpty,
+           undecodableKeys.contains(key) || unavailableKeys.contains(key) {
             NSLog("[Vellum] Skipping empty AI conversation write for \(key): its stored chat could not be decoded, so the file is left on disk")
             return
         }
@@ -220,7 +370,7 @@ enum AiPersistence {
         // so recents can re-resolve the document by its docId later. The actual
         // conversations.json write is deferred to the coalesced flush; meta is a
         // single tiny stamp. An empty list is the delete signal — no stamp (§6).
-        if !limited.isEmpty {
+        if !limited.isEmpty, coordinators[key] == nil {
             try? DocumentDataStore.touch(document: document, force: true)
         }
         dirtyKeys.insert(key)
@@ -262,11 +412,16 @@ enum AiPersistence {
             // serialized — a later snapshot can never overtake an earlier one.
             while true {
                 let revision = flushRevision
-                let snapshot = dirtyKeys.map { ConversationEntry(key: $0, messages: cache[$0] ?? []) }
+                let snapshot = dirtyKeys.map {
+                    FlushEntry(
+                        key: $0, messages: cache[$0] ?? [], document: documents[$0],
+                        coordinator: coordinators[$0])
+                }
                 dirtyKeys.removeAll()
-                let failed = await Task.detached(priority: .utility) { () -> [String] in
-                    snapshot.filter { !flushConversation($0) }.map(\.key)
-                }.value
+                var failed: [String] = []
+                for entry in snapshot where await !flushConversation(entry) {
+                    failed.append(entry.key)
+                }
                 // Re-mark any key whose write failed so its data is retried, never
                 // dropped — a disk-full flush must NOT report success (data loss).
                 for key in failed { dirtyKeys.insert(key) }
@@ -299,7 +454,39 @@ enum AiPersistence {
     /// clearConversation's hard-delete contract keeps working (§8). Returns false
     /// when a non-empty conversation could not be written (encode or disk error),
     /// so the caller keeps the key dirty for a retry instead of losing the data.
-    private static func flushConversation(_ entry: ConversationEntry) -> Bool {
+    private static func flushConversation(_ entry: FlushEntry) async -> Bool {
+        if let coordinator = entry.coordinator {
+            if entry.messages.isEmpty {
+                await DocumentDataStore.removeConversations(
+                    forKey: entry.key, coordinator: coordinator)
+                await DocumentDataStore.pruneEmptyDocumentDir(
+                    forKey: entry.key, coordinator: coordinator)
+                return true
+            }
+            guard let data = try? JSONEncoder().encode(entry.messages) else { return false }
+            do {
+                if let document = entry.document,
+                   let docId = document.docId, docId.isEmpty == false
+                {
+                    let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+                    if pathKey != entry.key,
+                       await DocumentDataStore.rekey(
+                            from: pathKey, to: entry.key, coordinator: coordinator) == false
+                    {
+                        return false
+                    }
+                }
+                if let document = entry.document {
+                    try await DocumentDataStore.touch(
+                        document: document, force: true, coordinator: coordinator)
+                }
+                try await DocumentDataStore.saveConversationsData(
+                    forKey: entry.key, data: data, coordinator: coordinator)
+                return true
+            } catch {
+                return false
+            }
+        }
         if entry.messages.isEmpty {
             DocumentDataStore.removeConversations(forKey: entry.key)
             DocumentDataStore.pruneEmptyDocumentDir(forKey: entry.key)
@@ -409,6 +596,7 @@ enum AiPersistence {
         // us, so any "couldn't decode it" verdict is about bytes that no longer
         // exist. The next load re-reads and re-decides.
         undecodableKeys.remove(key)
+        unavailableKeys.remove(key)
     }
 
     /// Keep the main-actor write-behind state aligned with an on-disk rekey.
@@ -422,14 +610,23 @@ enum AiPersistence {
         if dirtyKeys.remove(oldKey) != nil {
             dirtyKeys.insert(newKey)
         }
-        // The undecodable file moves with the folder, so its protection must
-        // too. When the source carried no such verdict, drop any the DESTINATION
-        // held: the rekey merge may have just replaced its conversations.json,
-        // and a stale flag there would silently swallow a later user Clear.
+        if let coordinator = coordinators.removeValue(forKey: oldKey) {
+            coordinators[newKey] = coordinator
+        }
+        if let document = documents.removeValue(forKey: oldKey) {
+            documents[newKey] = document
+        }
+        // A source verdict follows the folder. Do not clear a destination
+        // verdict merely because the source has none: this helper is called on
+        // every save for stamped documents, including repeated no-op migrations.
+        // Clearing here would turn an unreadable/not-downloaded destination into
+        // an apparently authoritative cache and allow a blind overwrite. A
+        // successful authoritative load clears either verdict below.
         if undecodableKeys.remove(oldKey) != nil {
             undecodableKeys.insert(newKey)
-        } else {
-            undecodableKeys.remove(newKey)
+        }
+        if unavailableKeys.remove(oldKey) != nil {
+            unavailableKeys.insert(newKey)
         }
     }
 
@@ -445,6 +642,28 @@ enum AiPersistence {
         guard pathKey != key else { return }
         migrateCachedConversation(from: pathKey, to: key)
         DocumentDataStore.rekey(from: pathKey, to: key)
+    }
+
+    @MainActor private static func migrateCachedToCurrentStorageKeyIfNeeded(
+        document: DocumentInfo, key: String
+    ) {
+        guard let docId = document.docId, !docId.isEmpty else { return }
+        let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+        guard pathKey != key else { return }
+        migrateCachedConversation(from: pathKey, to: key)
+    }
+
+    @MainActor private static func migrateToCurrentStorageKeyIfNeeded(
+        document: DocumentInfo,
+        key: String,
+        coordinator: StorageCoordinator
+    ) async {
+        guard let docId = document.docId, !docId.isEmpty else { return }
+        let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+        guard pathKey != key else { return }
+        migrateCachedConversation(from: pathKey, to: key)
+        _ = await DocumentDataStore.rekey(
+            from: pathKey, to: key, coordinator: coordinator)
     }
 
     static func makeMessage(
@@ -477,6 +696,37 @@ enum AiPersistence {
 
     // MARK: - Legacy migration (UserDefaults blob -> conversations.json)
 
+    @MainActor private static func migrateLegacyIfNeeded(
+        document: DocumentInfo,
+        key: String,
+        coordinator: StorageCoordinator
+    ) async -> [AiMessage]? {
+        let legacyKey = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !legacyKey.isEmpty else { return nil }
+        var entries = readConversations()
+        var index = entries.firstIndex(where: { $0.key == legacyKey })
+        if index == nil, document.kind == .pdf {
+            let filename = (legacyKey as NSString).lastPathComponent
+            if filename.lowercased().hasSuffix(".pdf") {
+                index = entries.firstIndex {
+                    ($0.key as NSString).lastPathComponent == filename
+                }
+            }
+        }
+        guard let index else { return nil }
+        let messages = entries[index].messages
+        do {
+            let data = try JSONEncoder().encode(messages)
+            try await DocumentDataStore.saveConversationsData(
+                forKey: key, data: data, coordinator: coordinator)
+        } catch {
+            return nil
+        }
+        entries.remove(at: index)
+        writeConversations(entries)
+        return messages
+    }
+
     /// Fold this document's entry out of the legacy path-keyed blob into its
     /// folder: write conversations.json, then rewrite the blob without the entry
     /// (§7 lazy migration). The blob read path stays intact for every other
@@ -487,7 +737,21 @@ enum AiPersistence {
         let legacyKey = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !legacyKey.isEmpty else { return }
         var entries = readConversations()
-        guard let index = entries.firstIndex(where: { $0.key == legacyKey }) else { return }
+        var index = entries.firstIndex(where: { $0.key == legacyKey })
+        if index == nil, document.kind == .pdf {
+            // iPad-only: a reinstall/OS update changes the data-container UUID, so
+            // every absolute path key written by the previous installation is dead.
+            // Imported PDFs have unique filenames in Vellum's library, so recover by
+            // filename. Web keys are URLs and must stay exact — a web URL whose path
+            // happens to end in .pdf must never claim a local PDF's conversation.
+            let filename = (legacyKey as NSString).lastPathComponent
+            if filename.lowercased().hasSuffix(".pdf") {
+                index = entries.firstIndex {
+                    ($0.key as NSString).lastPathComponent == filename
+                }
+            }
+        }
+        guard let index else { return }
         do {
             let data = try JSONEncoder().encode(entries[index].messages)
             try DocumentDataStore.saveConversationsData(forKey: key, data: data)
@@ -496,6 +760,58 @@ enum AiPersistence {
         }
         entries.remove(at: index)
         writeConversations(entries)
+    }
+
+    // MARK: - Container relocation recovery (iPad-only)
+
+    /// iPad-only. An app reinstall or an OS update changes the sandbox
+    /// data-container UUID, so every absolute path a previous installation
+    /// persisted is dead. An UNSTAMPED PDF's storage key is a sha256 of exactly
+    /// that path, which makes its `documents/<key>/` folder unreachable even
+    /// though the file — now under the new container, same bytes, same name — is
+    /// the same document. Imported PDFs have unique filenames inside Vellum's
+    /// library, so find the stranded folder by filename and rekey it onto the
+    /// current key (`rekey` merges rather than clobbers if both exist).
+    ///
+    /// Deliberately narrow, because a false positive hands one document's chat to
+    /// another:
+    ///   - **PDFs only.** Web keys are URLs and must stay exact: a web URL whose
+    ///     path happens to end in `.pdf` must never claim a local PDF's chat.
+    ///   - **Unstamped documents only.** A PDF carrying a `/VellumDocId` keys by
+    ///     that id, which is container-independent and needs no recovery;
+    ///     `migrateToCurrentStorageKeyIfNeeded` owns that migration instead.
+    ///   - **The candidate folder must itself be path-hash-keyed**, i.e. its key
+    ///     is the sha256 of its own recorded `last_known_path`. That keeps a
+    ///     canonical docId folder from ever being dragged down onto a path hash.
+    ///   - **The candidate's recorded path must no longer resolve.** A file that
+    ///     is still there is a different document that merely shares a name, not
+    ///     a relocated one.
+    /// Ties break on the most recently opened candidate (`last_opened` is RFC3339,
+    /// so a lexicographic compare is chronological).
+    ///
+    /// Runs at most once per document per session: the caller caches whatever it
+    /// reads afterwards, empty included, so a fruitless scan is not repeated on
+    /// every tab switch.
+    @MainActor private static func recoverContainerRelocatedConversation(
+        document: DocumentInfo, key: String
+    ) {
+        guard document.kind == .pdf, document.docId?.isEmpty ?? true else { return }
+        let filename = (document.pdfPath as NSString).lastPathComponent
+        guard filename.lowercased().hasSuffix(".pdf") else { return }
+        let fileManager = FileManager.default
+        let candidates = DocumentDataStore.listDocumentMetas().filter { entry in
+            entry.key != key
+                && entry.meta.kind == DocumentKind.pdf.rawValue
+                && (entry.meta.lastKnownPath as NSString).lastPathComponent == filename
+                && entry.key == DocumentIdentity.sha256Hex(entry.meta.lastKnownPath)
+                && !fileManager.fileExists(atPath: entry.meta.lastKnownPath)
+        }
+        guard let match = candidates.max(by: { $0.meta.lastOpened < $1.meta.lastOpened })
+        else { return }
+        // Order matters: move the write-behind state first so an in-flight flush
+        // queued under the dead key lands in the new folder, not the old one.
+        migrateCachedConversation(from: match.key, to: key)
+        DocumentDataStore.rekey(from: match.key, to: key)
     }
 
     // MARK: - Orphaned legacy blobs (Storage pane "Not yet migrated")

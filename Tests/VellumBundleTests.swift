@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import UniformTypeIdentifiers
 @testable import Vellum
 
 // Coverage for the `.vellum` bundle codec (VellumBundle) and its sidecar-install
@@ -8,6 +9,10 @@ import CoreGraphics
 // conversation merged, hash-tamper detection, zip-slip rejection, the
 // conversations-excluded-by-default path, and version-2 rejection. Drives
 // VellumBundle + DocumentDataStore directly, never the UI panels.
+//
+// The last section is iPad-only: the intake and import pieces packet 2 rebuilt
+// (Files-app types, tmp/ staging, the library destination policy, and the
+// two-phase split that lets the codec keep its synchronous merge resolver).
 
 @MainActor
 final class VellumBundleTests: XCTestCase {
@@ -584,6 +589,139 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertThrowsError(try VellumBundle.read(at: url)) { error in
             XCTAssertTrue("\(error)".lowercased().contains("too many entries"))
         }
+    }
+
+    // MARK: - iPad-only: the pieces this packet rebuilt rather than copied
+
+    /// The bundle type is offered by the picker, so a `.vellum` in Files is
+    /// tappable and a share-sheet "Open in Vellum" is offered.
+    func testOpenableTypesIncludesBundleAndWebArchive() {
+        let identifiers = DocumentImport.openableTypes.map(\.identifier)
+        XCTAssertTrue(identifiers.contains(UTType.pdf.identifier))
+        XCTAssertTrue(identifiers.contains("com.vellum.webarchive"))
+        XCTAssertTrue(identifiers.contains("com.vellum.bundle"))
+        // Every declared type resolves — `exportedAs` would have trapped
+        // otherwise, but assert the extension binding too, since that is what
+        // actually decides whether Files offers the file.
+        let bundleType = UTType(exportedAs: "com.vellum.bundle")
+        XCTAssertEqual(bundleType.preferredFilenameExtension, "vellum")
+        XCTAssertEqual(
+            UTType(exportedAs: "com.vellum.webarchive").preferredFilenameExtension, "vellumweb")
+    }
+
+    /// `.vellum` is a container, not a document: it is staged into tmp/ so it
+    /// never litters the visible library, while a PDF is copied into the local
+    /// library before any long-lived session opens.
+    func testImportPickedStagesBundlesInTemporaryDirectory() throws {
+        let bundleSource = scratch.appendingPathComponent("shared.vellum")
+        try Data("not really a bundle".utf8).write(to: bundleSource)
+        let pdfSource = scratch.appendingPathComponent("picked.pdf")
+        try makeRealPdfData().write(to: pdfSource)
+
+        let paths = DocumentImport.importPicked([bundleSource, pdfSource])
+        XCTAssertEqual(paths.count, 2)
+
+        let bundlePath = try XCTUnwrap(paths.first { $0.hasSuffix(".vellum") })
+        let pdfPath = try XCTUnwrap(paths.first { $0.hasSuffix(".pdf") })
+        addTeardownBlock {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: bundlePath).deletingLastPathComponent())
+            try? FileManager.default.removeItem(atPath: pdfPath)
+        }
+
+        let tmpRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        XCTAssertTrue(bundlePath.hasPrefix(tmpRoot),
+                      "a bundle is unpacked and discarded — it must not join the library")
+        XCTAssertFalse(bundlePath.hasPrefix(DocumentImport.libraryDirectory.path))
+        // Its own directory, so the import can delete the whole staging area.
+        XCTAssertEqual(
+            URL(fileURLWithPath: bundlePath).deletingLastPathComponent().lastPathComponent
+                .hasPrefix("vellum-import-"), true)
+        XCTAssertTrue(pdfPath.hasPrefix(DocumentImport.libraryDirectory.path + "/"))
+        XCTAssertNotEqual(pdfPath, pdfSource.path, "a picked PDF must not open in place")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pdfPath))
+    }
+
+    /// Re-importing an updated bundle for a document already in the library
+    /// overwrites that copy instead of creating "paper 2.pdf"; a DIFFERENT
+    /// document with the same filename gets a unique name.
+    func testBundleDestinationReusesMatchingDocIdAndUniquifiesOtherwise() throws {
+        let filename = "bundle-dest-\(UUID().uuidString.lowercased()).pdf"
+        let library = DocumentImport.libraryDirectory
+        let existing = library.appendingPathComponent(filename)
+        try makeRealPdfData().write(to: existing)
+        let docId = "aaaaaaaa-1111-2222-3333-444444444444"
+        try PdfMetadata.stampDocumentId(atPath: existing.path, id: docId)
+        addTeardownBlock {
+            for url in (try? FileManager.default.contentsOfDirectory(
+                at: library, includingPropertiesForKeys: nil)) ?? []
+            where url.lastPathComponent.hasPrefix("bundle-dest-") {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        // Same document: the existing library copy is reused, not duplicated.
+        XCTAssertEqual(
+            DocumentImport.bundleDestination(documentFile: filename, docId: docId)
+                .standardizedFileURL,
+            existing.standardizedFileURL)
+
+        // Different document, same filename: a unique name instead of a clobber.
+        let other = DocumentImport.bundleDestination(
+            documentFile: filename, docId: "bbbbbbbb-1111-2222-3333-444444444444")
+        XCTAssertNotEqual(other.standardizedFileURL, existing.standardizedFileURL)
+        XCTAssertEqual(other.deletingLastPathComponent().standardizedFileURL,
+                       library.standardizedFileURL)
+
+        // Nothing there yet: the plain name.
+        let fresh = "bundle-dest-\(UUID().uuidString.lowercased()).pdf"
+        XCTAssertEqual(
+            DocumentImport.bundleDestination(documentFile: fresh, docId: docId)
+                .standardizedFileURL,
+            library.appendingPathComponent(fresh).standardizedFileURL)
+    }
+
+    /// The whole iOS import minus the alert: read → write to the library →
+    /// resolve the key → install, with the conflict resolver pinned. Asserting
+    /// it against `importVellumBundleCore` is what keeps the two-phase split
+    /// (which exists only because a UIAlertController can't run modally) from
+    /// drifting away from main's single-phase core.
+    func testTwoPhaseImportMatchesImportVellumBundleCore() async throws {
+        let real = makeRealPdfData()
+        let docId = DocumentIdentity.byteHash(real)
+        let content = VellumBundle.Content(
+            kind: .pdf, docId: docId, documentFile: "two-phase.pdf",
+            documentData: real, title: "Two Phase",
+            scratchpad: "imported note", attachments: [], conversations: nil)
+        let bundleURL = scratch.appendingPathComponent("two-phase.vellum")
+        try VellumBundle.write(content, to: bundleURL)
+        let imported = try VellumBundle.read(at: bundleURL)
+
+        // Phase 1 + an awaited decision + phase 2, exactly as importVellumBundle
+        // sequences them on iOS.
+        let splitDest = scratch.appendingPathComponent("split-written.pdf")
+        let key = try await AppStore.writeImportedDocument(imported, to: splitDest)
+        let decision = VellumBundle.ScratchpadDecision.keepLocal
+        let split = try AppStore.finishImportedBundle(
+            imported, to: splitDest, key: key) { _ in decision }
+
+        XCTAssertEqual(key, docId)
+        XCTAssertEqual(split.path, splitDest.path)
+        XCTAssertTrue(split.failedAttachments.isEmpty)
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "imported note")
+
+        // The unsplit core, into a fresh destination + a fresh sidecar root.
+        DocumentDataStore.rootDirectoryOverride = base.appendingPathComponent("documents-core")
+        let coreDest = scratch.appendingPathComponent("core-written.pdf")
+        let core = try await AppStore.importVellumBundleCore(
+            imported, to: coreDest) { _ in decision }
+
+        XCTAssertEqual(core.path, coreDest.path)
+        XCTAssertEqual(core.failedAttachments, split.failedAttachments)
+        XCTAssertEqual(PdfMetadata.documentId(atPath: coreDest.path), key,
+                       "both paths must resolve the same storage key")
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "imported note")
+        XCTAssertEqual(try Data(contentsOf: coreDest), try Data(contentsOf: splitDest))
     }
 
     // MARK: - Helpers

@@ -109,10 +109,10 @@ struct MarkdownMessage: View {
     @ViewBuilder
     private func mathBlockView(_ latex: String) -> some View {
         if let rendered = MathRenderer.render(
-            latex: latex, fontSize: baseSize + 2, color: NSColor(textColor), display: true
+            latex: latex, fontSize: baseSize + 2, color: PlatformColor(textColor), display: true
         ) {
             // Wide equations scale down to the bubble instead of overflowing.
-            Image(nsImage: rendered.image)
+            Image(platformImage: rendered.image)
                 .resizable()
                 .scaledToFit()
                 .frame(
@@ -148,13 +148,13 @@ struct MarkdownMessage: View {
                 result = Text("\(result)\(Text(attributed))")
             case .math(let latex):
                 if let rendered = MathRenderer.render(
-                    latex: latex, fontSize: baseSize, color: NSColor(textColor), display: false
+                    latex: latex, fontSize: baseSize, color: PlatformColor(textColor), display: false
                 ) {
                     // VoiceOver reads the LaTeX source; the image itself carries
                     // no text, and it's interpolated into a Text run so a SwiftUI
                     // .accessibilityLabel can't reach it.
-                    rendered.image.accessibilityDescription = latex
-                    let math = Text(Image(nsImage: rendered.image))
+                    rendered.image.setAccessibilityDescription(latex)
+                    let math = Text(Image(platformImage: rendered.image))
                         .baselineOffset(-rendered.descent)
                     result = Text("\(result)\(math)")
                 } else {

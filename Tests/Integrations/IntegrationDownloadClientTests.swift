@@ -1,5 +1,5 @@
-import AppKit
 import Foundation
+import UIKit
 import Testing
 @testable import Vellum
 
@@ -27,8 +27,10 @@ extension StubbedTransportSuites { @Suite(.serialized) struct IntegrationDownloa
 
     @Test func thumbnailMetadataRejectsImagesAboveThePixelLimit() async throws {
         let root = try IntegrationTemporaryRoot.make(); defer { try? FileManager.default.removeItem(at: root) }
-        let representation = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        OversizedThumbnailURLProtocol.payload = try #require(representation.representation(using: .png, properties: [:]))
+        // A real 2x2 PNG, so the metadata probe sees 4 pixels against the
+        // maximumPixelCount of 3. `pngData` returns non-optional Data.
+        OversizedThumbnailURLProtocol.payload = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2))
+            .pngData { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [OversizedThumbnailURLProtocol.self]
         let cache = IntegrationThumbnailCache(root: root, session: URLSession(configuration: configuration), maximumPixelCount: 3)

@@ -1,11 +1,11 @@
 import SwiftUI
 
 enum InspectorLayout {
-    // The one definition of the inspector's resize envelope. `ContentView`
+    // The one definition of the inspector's resize envelope. `PaneShell_iOS`
     // hands these straight to `.inspectorColumnWidth(min:ideal:max:)` and
     // `WorkspaceStore.rememberSidebarWidth` clamps to the same numbers, so a
-    // second copy would either reject widths AppKit can legitimately produce or
-    // remember ones it immediately overrides.
+    // second copy would either reject widths the host can legitimately produce
+    // or remember ones it immediately overrides.
     //
     // Owned here rather than on `WorkspaceStore` for isolation reasons: the
     // store is `@MainActor`, so its statics are main-actor-isolated and cannot
@@ -16,7 +16,11 @@ enum InspectorLayout {
     // rows are too cramped to use.
     static let minimumWidth: CGFloat = 280
     static let idealWidth: CGFloat = 360
-    static let maximumWidth: CGFloat = 700
+    /// iPad ceiling: 560, not macOS's 700. 700 pt is over half the width of an
+    /// 11" iPad in portrait and nearly all of a Split View pane. 560 is exactly
+    /// the envelope `ContentView_iOS` already shipped, so pinning it here is not
+    /// a user-visible regression — it just gives that number one owner.
+    static let maximumWidth: CGFloat = 560
 
     /// Full titles fit comfortably at the default inspector width. At the
     /// minimum width, icons keep every destination visible without truncation.
@@ -26,13 +30,15 @@ enum InspectorLayout {
     /// Inset applied to the switcher inside the inspector column.
     static let switcherHorizontalPadding: CGFloat = 12
     static let switcherVerticalPadding: CGFloat = 8
-    static let switcherHeight: CGFloat = 30
+    /// A real 44pt segment. Padding around a Button does not enlarge that
+    /// Button's accessibility frame, so the control itself owns the HIG floor.
+    static let switcherHeight: CGFloat = 44
 
     /// Height of the inspector's header row — the control plus its inset,
-    /// stopping above the divider. Named because it is a drop-routing fact, not
-    /// only a layout one: this row (plus the 1pt divider below it, so 47pt of
-    /// dead strip in all) was NOT a drag target until `SidebarPanelStack` took
-    /// ownership of the header and brought it under the catcher (issue #101).
+    /// stopping above the divider. On iPad this is a layout fact only: main's
+    /// version of this comment is about the AppKit `SidebarDropCatcher`, which
+    /// the iPad deliberately does not port (it keeps its iOS-native drop
+    /// rebuild), so do not go looking for a catcher this number serves.
     static var headerHeight: CGFloat { switcherHeight + switcherVerticalPadding * 2 }
 
     /// The narrowest width the switcher can actually be handed: the column
@@ -40,8 +46,8 @@ enum InspectorLayout {
     /// `presentation(for:)` must still keep all three destinations laid out
     /// side by side here — see `InspectorTabSwitcherTests`. The `.menu`
     /// fallback below therefore should not be reachable in a normal window; it
-    /// is kept only for the case where AppKit squeezes the column past its own
-    /// stated minimum, so that a stranded user still has a way to switch.
+    /// is kept only for the case where the host squeezes the column past its
+    /// own stated minimum, so that a stranded user still has a way to switch.
     static var narrowestContentWidth: CGFloat {
         minimumWidth - switcherHorizontalPadding * 2
     }
@@ -79,13 +85,12 @@ extension WorkspaceStore.SidebarTab: Identifiable {
     }
 
     /// Stem of the `sidebarTab.*` automation identifier. The case name, NOT
-    /// `title`: `UITests/ScratchpadSnapshotUITests` looks up
-    /// `sidebarTab.scratchpad`, and lowercase is the convention
-    /// `GlassSegmentedPicker` documented — but that control interpolated the
-    /// display label, so it actually emitted `sidebarTab.Scratchpad` and the
-    /// existing lookup could never match. Deriving the identifier from the case
-    /// rather than the visible title also means renaming a panel cannot
-    /// silently break automation.
+    /// `title`: lowercase is the convention `GlassSegmentedPicker` documented —
+    /// but that control interpolated the display label, so on iPad it actually
+    /// emitted `sidebarTab.Annotations` and anything automating the sidebar
+    /// could never match. Deriving the identifier from the case rather than the
+    /// visible title also means renaming a panel cannot silently break
+    /// automation.
     var accessibilityIdentifierStem: String {
         switch self {
         case .annotations: "annotations"
@@ -97,7 +102,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
     /// The full identifier each destination control carries, in every layout.
     var accessibilityIdentifier: String { "sidebarTab.\(accessibilityIdentifierStem)" }
 
-    /// Digit of the shortcut that reveals this panel from the View menu.
+    /// Digit of the shortcut that reveals this panel.
     ///
     /// Numbered in `allCases` order, so the shortcut matches the left-to-right
     /// order of the switcher itself rather than an independent list that could
@@ -110,25 +115,27 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         }
     }
 
-    /// ⌥⌘, not plain ⌘: ⌘1…⌘9 already switch TABS from the Navigate menu (#83),
-    /// and a tab is the thing most users reach for first. ⌥⌘ is also the prefix
-    /// the neighbouring inspector commands already use — ⌥⌘S toggles the
-    /// inspector, ⌥⌘\ and ⌥⌘J drive the splits.
+    /// ⌥⌘, not plain ⌘: ⌘1…⌘9 already switch TABS (#83), and a tab is the thing
+    /// most users reach for first. ⌥⌘ is also the prefix the neighbouring
+    /// inspector commands already use — ⌥⌘S toggles the inspector, ⌥⌘\ and ⌥⌘J
+    /// drive the splits.
     static let shortcutModifiers: EventModifiers = [.command, .option]
 }
 
 /// Responsive navigation for the inspector's three persistent panels.
 ///
-/// This intentionally lives inside the inspector instead of its window toolbar:
-/// AppKit may collapse toolbar items into an overflow menu at narrow window
-/// widths, and the synthesized overflow previously exposed only one section.
-/// Keeping the control here guarantees that all destinations remain reachable.
+/// This intentionally lives inside the inspector instead of the toolbar: the
+/// toolbar may collapse items into an overflow menu at narrow widths, and the
+/// synthesized overflow previously exposed only one section. Keeping the
+/// control here guarantees that all destinations remain reachable.
 struct InspectorTabSwitcher: View {
     @Binding var selection: WorkspaceStore.SidebarTab
 
     @Environment(\.palette) private var palette
     /// Hovered segment, so an unselected one can preview the selection surface
-    /// the way the annotation filter chips and Home rows do.
+    /// the way the annotation filter chips and Home rows do. Kept on iPad
+    /// because `.onHover` fires for a trackpad or Magic Mouse pointer — it is a
+    /// real iPad affordance, not dead macOS code.
     @State private var hovering: WorkspaceStore.SidebarTab?
 
     var body: some View {
@@ -152,9 +159,7 @@ struct InspectorTabSwitcher: View {
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
                 Button {
-                    withAnimation(.snappy) {
-                        selection = tab
-                    }
+                    selection = tab
                 } label: {
                     Group {
                         if showTitles {
@@ -167,13 +172,14 @@ struct InspectorTabSwitcher: View {
                                 .labelStyle(.iconOnly)
                         }
                     }
-                    // `.buttonStyle(.plain)` hit-tests a macOS button against
-                    // its label's own rendered content, not against any
-                    // frame/contentShape chained onto the Button itself —
-                    // that outer chain (the previous placement) only affects
-                    // layout. Expanding and shaping the hit target here,
-                    // inside the label, is what actually grows the clickable
-                    // region to the full pill instead of just the glyph.
+                    // KEEP THIS PLACEMENT. On macOS `.buttonStyle(.plain)`
+                    // hit-tests against the label's rendered content, so the
+                    // expanding frame has to be inside the label closure to
+                    // widen the tap target. UIKit's hit test is frame-based and
+                    // would forgive the outer placement — but the whole-segment
+                    // target is a touch requirement here too, and keeping the
+                    // two platforms structurally identical is what stops the
+                    // next port from re-introducing #112.
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                 }
@@ -184,25 +190,11 @@ struct InspectorTabSwitcher: View {
                 // picker this control replaced used the fill and edge.
                 //
                 // NOT `.quaternary` / `.separator`: those resolve from the color
-                // scheme rather than from our palette, which is what sent
-                // `Keycap` to `palette.muted`/`borderStrong` in #70. Being
-                // precise about what that buys here, because the fill alone
-                // does not carry it: `SelectionStyle.fill` is only
-                // `primary.opacity(0.16)`, which against this track measures
-                // ~1.28:1 in light — no better than the quaternary it replaces.
-                // The signal comes from the other two. The label goes from
-                // near-black to `palette.primary` (7.35:1 on `muted` in light,
-                // 3.86:1 in dark) and the edge from `.separator` to a 45%
-                // primary stroke (1.56:1 → 2.15:1). Selected now reads as
-                // *indigo*, in both schemes, rather than as a slightly
-                // different shade of the surrounding grey.
+                // scheme rather than from our palette, which disappears on the
+                // parchment palette. Selected reads as *indigo*, in both
+                // schemes, rather than as a slightly different shade of grey.
                 .foregroundStyle(
                     SelectionStyle.foreground(palette, selected: isSelected, hovering: isHovering))
-                // The expanding `frame`/`contentShape` pair that used to sit
-                // here now lives inside the label (see above), which is the
-                // only placement that actually widens the hit target. The
-                // Button still fills its segment because of it, so the
-                // selection surface below covers the whole pill.
                 .selectionSurface(
                     selected: isSelected, hovering: isHovering, in: Capsule(), palette: palette)
                 .onHover { hovering = $0 ? tab : nil }
@@ -237,7 +229,10 @@ struct InspectorTabSwitcher: View {
             Label(selection.title, systemImage: selection.systemImage)
                 .frame(maxWidth: .infinity)
         }
-        .menuStyle(.borderlessButton)
+        // `.borderlessButton` is macOS-only; `.button` + `.plain` is the iOS
+        // equivalent that keeps the label from acquiring a bordered chrome.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .accessibilityLabel("Inspector section")
         .accessibilityValue(selection.title)
         .accessibilityIdentifier("sidebarTab.menu")

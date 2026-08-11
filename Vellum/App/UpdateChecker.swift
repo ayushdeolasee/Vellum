@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Foundation
 import Observation
@@ -103,3 +104,5 @@ final class UpdateChecker {
         var errorDescription: String? { "Failed to check for updates" }
     }
 }
+
+#endif  // os(macOS) — iPad reference; see Platform/iOS

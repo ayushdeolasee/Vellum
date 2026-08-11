@@ -1,6 +1,12 @@
 import XCTest
 @testable import Vellum
 
+// Clear is destructive, so it has to be reversible: these tests pin the Undo/
+// Redo contract for both the AI conversation and the scratchpad note, plus the
+// attachment-GC rules that make a scratchpad Undo able to put image bytes back.
+// These tests intentionally construct a coordinator-free ScratchpadStore to
+// retain coverage of the direct local compatibility path.
+
 @MainActor
 final class SafeClearTests: XCTestCase {
     private var root: URL!
@@ -16,7 +22,6 @@ final class SafeClearTests: XCTestCase {
         // These seams are process-global (#102), so claim all three on the way in
         // as well as releasing them on the way out — this suite must not inherit
         // an attachment directory from whatever ran before it.
-        ScratchpadAttachmentStore.activeDirectory = nil
         // The pending-attachment registry and its grace period are process-global
         // for the same reason. The grace period is the one that matters — a test
         // here sets it to 0, and leaving it there would stop every later suite's
@@ -32,26 +37,50 @@ final class SafeClearTests: XCTestCase {
 
     override func tearDown() async throws {
         await AiPersistence.awaitPendingFlush()
+        // Drain every sweep this test armed before the next one installs its own
+        // attachment directory: `collectGarbage` resolves `directory` when it
+        // runs, so a sweep that outlived its test would scan the NEXT test's
+        // pool with this test's reference set (#111).
+        for store in scratchpadStores { await store.attachmentSweepTask?.value }
+        scratchpadStores.removeAll()
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
         ScratchpadAttachmentStore.resetPending()
         ScratchpadAttachmentStore.pendingGracePeriod = savedGracePeriod
         try? FileManager.default.removeItem(at: root)
     }
 
     private var savedGracePeriod: TimeInterval = 60
+    private var scratchpadStores: [ScratchpadStore] = []
 
     private func open(_ path: String) async -> DocumentInfo {
         await app.openFile(path: path)
         return app.document!
     }
 
+    /// A scratchpad store wired to this suite's `AppStore` and registered so
+    /// tearDown can drain its background attachment sweeps.
+    private func makeScratchpadStore() -> ScratchpadStore {
+        let store = ScratchpadStore()
+        store.app = app
+        scratchpadStores.append(store)
+        return store
+    }
+
+    /// Ask for an attachment sweep and wait for it.
+    ///
+    /// The coordinator-free compatibility path still sweeps the legacy flat
+    /// pool on load; joining the task keeps that sweep deterministic.
+    private func sweepAttachments(_ store: ScratchpadStore, _ document: DocumentInfo) async {
+        store.loadForDocument(document)
+        await store.attachmentSweepTask?.value
+    }
+
     func testAiUndoRedoIsDocumentScopedAndPreservesNewMessages() async throws {
         let store = AiStore()
         store.app = app
         let documentA = await open("/tmp/safe-clear-a-\(UUID().uuidString).pdf")
-        store.loadConversationForDocument(documentA)
+        await store.loadConversationForDocument(documentA)
         store.addLocalMessage(role: .user, content: "old question", id: "old-question")
         store.addLocalMessage(role: .assistant, content: "old answer", id: "old-answer")
 
@@ -64,7 +93,7 @@ final class SafeClearTests: XCTestCase {
 
         XCTAssertTrue(store.undoClear(transaction))
         let documentB = await open("/tmp/safe-clear-b-\(UUID().uuidString).pdf")
-        store.loadConversationForDocument(documentB)
+        await store.loadConversationForDocument(documentB)
         store.addLocalMessage(role: .user, content: "B stays visible", id: "b-message")
         XCTAssertTrue(store.redoClear(transaction))
         XCTAssertEqual(store.messages.map(\.content), ["B stays visible"])
@@ -77,8 +106,7 @@ final class SafeClearTests: XCTestCase {
     }
 
     func testScratchpadUndoRestoresAttachmentBytesAndRedoPreservesNewWork() async throws {
-        let store = ScratchpadStore()
-        store.app = app
+        let store = makeScratchpadStore()
         let document = await open("/tmp/safe-note-\(UUID().uuidString).pdf")
         store.loadForDocument(document)
         let bytes = Data([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
@@ -89,25 +117,26 @@ final class SafeClearTests: XCTestCase {
 
         let transaction = try XCTUnwrap(store.clearText())
         store.flush()
+        await sweepAttachments(store, document)
         XCTAssertFalse(FileManager.default.fileExists(atPath: attachment.path))
         store.text = "new work"
         store.flush()
 
         let restoration = try XCTUnwrap(store.undoClear(transaction))
         XCTAssertTrue(store.text.hasSuffix("new work"))
-        let restoredAttachment = try XCTUnwrap(
-            ScratchpadAttachmentStore.fileURL(
-                for: id, preferredDir: DocumentDataStore.attachmentsDir(forKey: transaction.key)))
+        // The iPad keeps one flat attachment pool, so the restored bytes land
+        // back in the same directory they were saved to.
+        let restoredAttachment = try XCTUnwrap(ScratchpadAttachmentStore.fileURL(for: id))
         XCTAssertEqual(try Data(contentsOf: restoredAttachment), bytes)
 
         XCTAssertTrue(store.redoClear(restoration))
         XCTAssertEqual(store.text, "new work")
+        await sweepAttachments(store, document)
         XCTAssertFalse(FileManager.default.fileExists(atPath: restoredAttachment.path))
     }
 
     func testScratchpadUndoForADoesNotReplaceVisibleB() async throws {
-        let store = ScratchpadStore()
-        store.app = app
+        let store = makeScratchpadStore()
         let documentA = await open("/tmp/safe-note-a-\(UUID().uuidString).pdf")
         store.loadForDocument(documentA)
         store.text = "A note"
@@ -121,91 +150,13 @@ final class SafeClearTests: XCTestCase {
         XCTAssertNotNil(store.undoClear(transaction))
         XCTAssertEqual(store.text, "B note")
         try await Task.sleep(for: .milliseconds(550))
-        XCTAssertEqual(ScratchpadPersistence.load(forKey: transaction.key), "A note")
+        XCTAssertEqual(ScratchpadPersistence.load(for: transaction.key), "A note")
+        // The iPad's scratchpad is keyed by the document's path, not by the
+        // doc-ID storage key packet 1 introduced for the folder-backed stores.
         XCTAssertEqual(
             ScratchpadPersistence.load(
-                forKey: DocumentIdentity.storageKey(for: documentB)),
+                for: try XCTUnwrap(ScratchpadPersistence.documentKey(documentB))),
             "B note")
-    }
-
-    func testAiClearFollowsSameSessionStampForUndoAndRedo() async throws {
-        sessions.opensUnstampedPdfs = true
-        let store = AiStore()
-        store.app = app
-        let original = await open("/tmp/safe-clear-unstamped-ai-\(UUID().uuidString).pdf")
-        XCTAssertNil(original.docId)
-        let oldKey = DocumentIdentity.storageKey(for: original)
-        store.loadConversationForDocument(original)
-        store.addLocalMessage(role: .user, content: "old question", id: "old-question")
-        let transaction = try XCTUnwrap(store.clearConversation())
-
-        // This is the first post-clear work path: it stamps the already-open
-        // PDF and moves active persistence to the stable doc-ID key.
-        let sessionId = try XCTUnwrap(app.activeTabId)
-        await app.syncDocumentId(sessionId: sessionId)
-        let stamped = try XCTUnwrap(app.document)
-        let stampedKey = try XCTUnwrap(stamped.docId)
-        XCTAssertNotEqual(stampedKey, oldKey)
-        store.loadConversationForDocument(stamped)
-        store.addLocalMessage(role: .user, content: "new work", id: "new-work")
-
-        XCTAssertTrue(store.undoClear(transaction))
-        XCTAssertEqual(store.messages.map(\.content), ["old question", "new work"])
-        await AiPersistence.awaitPendingFlush()
-        XCTAssertEqual(AiPersistence.loadConversation(for: stamped).map(\.content), ["old question", "new work"])
-        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: stampedKey))
-        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: oldKey))
-
-        XCTAssertTrue(store.redoClear(transaction))
-        XCTAssertEqual(store.messages.map(\.content), ["new work"])
-        await AiPersistence.awaitPendingFlush()
-        XCTAssertEqual(AiPersistence.loadConversation(for: stamped).map(\.content), ["new work"])
-        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: stampedKey))
-        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: oldKey))
-    }
-
-    func testScratchpadClearFollowsSameSessionStampForUndoRedoAndAttachments() async throws {
-        sessions.opensUnstampedPdfs = true
-        let store = ScratchpadStore()
-        store.app = app
-        let original = await open("/tmp/safe-clear-unstamped-note-\(UUID().uuidString).pdf")
-        XCTAssertNil(original.docId)
-        let oldKey = DocumentIdentity.storageKey(for: original)
-        store.loadForDocument(original)
-        let bytes = Data([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
-        let id = try XCTUnwrap(ScratchpadAttachmentStore.save(data: bytes, fileExtension: "png"))
-        store.text = "old note\n\n![image](vellum-scratchpad://\(id))"
-        store.flush()
-        let transaction = try XCTUnwrap(store.clearText())
-        store.text = "new work"
-        store.flush()
-
-        // Simulate the first post-clear write acquiring the durable ID before
-        // Undo is invoked; the store must rekey the note and sidecar bytes.
-        let sessionId = try XCTUnwrap(app.activeTabId)
-        await app.syncDocumentId(sessionId: sessionId)
-        let stamped = try XCTUnwrap(app.document)
-        let stampedKey = try XCTUnwrap(stamped.docId)
-        XCTAssertNotEqual(stampedKey, oldKey)
-        let oldAttachment = DocumentDataStore.attachmentsDir(forKey: oldKey)
-            .appendingPathComponent("\(id).png")
-        let stampedAttachment = DocumentDataStore.attachmentsDir(forKey: stampedKey)
-            .appendingPathComponent("\(id).png")
-
-        let restoration = try XCTUnwrap(store.undoClear(transaction))
-        XCTAssertEqual(store.text, "old note\n\n![image](vellum-scratchpad://\(id))\n\nnew work")
-        XCTAssertEqual(ScratchpadPersistence.load(forKey: stampedKey), store.text)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: stampedAttachment.path))
-        XCTAssertEqual(try Data(contentsOf: stampedAttachment), bytes)
-        XCTAssertFalse(DocumentDataStore.scratchpadExists(forKey: oldKey))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: oldAttachment.path))
-
-        XCTAssertTrue(store.redoClear(restoration))
-        XCTAssertEqual(store.text, "new work")
-        XCTAssertEqual(ScratchpadPersistence.load(forKey: stampedKey), "new work")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stampedAttachment.path))
-        XCTAssertFalse(DocumentDataStore.scratchpadExists(forKey: oldKey))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: oldAttachment.path))
     }
 
     // MARK: - Attachment GC vs. an in-flight markdown reference (#105)
@@ -242,13 +193,14 @@ final class SafeClearTests: XCTestCase {
     /// snapshot cutoff cannot tell it from an orphan — the file is older than
     /// the sweep, not newer. Marking it pending at write time is what keeps it.
     func testAttachmentSurvivesASaveFiredBeforeItsReferenceLands() async throws {
-        let store = ScratchpadStore()
-        store.app = app
-        store.loadForDocument(await open("/tmp/pending-gc-\(UUID().uuidString).pdf"))
+        let store = makeScratchpadStore()
+        let document = await open("/tmp/pending-gc-\(UUID().uuidString).pdf")
+        store.loadForDocument(document)
         let dropped = try dropImageHoldingItsReference(store)
 
-        // The debounced save fires inside the window.
+        // The debounced save fires inside the window, and a sweep with it.
         store.flush()
+        await sweepAttachments(store, document)
         XCTAssertTrue(
             exists(dropped.attachment),
             "an attachment whose reference is still in flight must not be collected")
@@ -256,6 +208,7 @@ final class SafeClearTests: XCTestCase {
         // The round trip completes; the note now points at it.
         store.text = dropped.markdown
         store.flush()
+        await sweepAttachments(store, document)
         XCTAssertTrue(exists(dropped.attachment))
     }
 
@@ -263,19 +216,21 @@ final class SafeClearTests: XCTestCase {
     /// saved text the attachment is settled, and from then on ordinary
     /// reachability governs it: deleting the reference collects the bytes.
     func testSettledAttachmentIsCollectedOnceItsReferenceIsRemoved() async throws {
-        let store = ScratchpadStore()
-        store.app = app
-        store.loadForDocument(await open("/tmp/pending-settle-\(UUID().uuidString).pdf"))
+        let store = makeScratchpadStore()
+        let document = await open("/tmp/pending-settle-\(UUID().uuidString).pdf")
+        store.loadForDocument(document)
         let dropped = try dropImageHoldingItsReference(store)
 
         // Reference lands and is saved — this is what settles it.
         store.text = dropped.markdown
         store.flush()
+        await sweepAttachments(store, document)
         XCTAssertTrue(exists(dropped.attachment))
 
         // The user deletes the image from the note.
         store.text = "no image here"
         store.flush()
+        await sweepAttachments(store, document)
         XCTAssertFalse(
             exists(dropped.attachment),
             "a settled attachment the note no longer references is ordinary garbage")
@@ -288,17 +243,51 @@ final class SafeClearTests: XCTestCase {
     /// still happen, while one released too early deletes bytes the note is
     /// about to point at and leaves a broken image.
     func testPendingExemptionLapsesSoAnAbandonedAttachmentIsStillCollected() async throws {
+        ScratchpadAttachmentStore.resetPending()
         ScratchpadAttachmentStore.pendingGracePeriod = 0
-        let store = ScratchpadStore()
-        store.app = app
-        store.loadForDocument(await open("/tmp/pending-lapse-\(UUID().uuidString).pdf"))
-        let dropped = try dropImageHoldingItsReference(store)
+        let store = makeScratchpadStore()
+        let document = await open("/tmp/pending-lapse-\(UUID().uuidString).pdf")
+        store.loadForDocument(document)
+        let id = try XCTUnwrap(ScratchpadAttachmentStore.save(
+            data: Data([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]),
+            fileExtension: "png"))
+        let attachment = try XCTUnwrap(ScratchpadAttachmentStore.fileURL(for: id))
+        ScratchpadAttachmentStore.markPending(id)
 
-        // The reference never lands — the editor went away mid-round-trip.
-        store.flush()
+        // Model an editor disappearing before it queues or lands the markdown.
+        // `addImage` is intentionally not used: its queued insertion is part of
+        // the next immediate flush, so that attachment would be referenced.
+        await sweepAttachments(store, document)
         XCTAssertFalse(
-            exists(dropped.attachment),
+            exists(attachment),
             "an attachment past its grace period is collectable like any orphan")
+    }
+
+    /// A sweep collects against a reference set captured at some moment, and it
+    /// can run after that moment — `pruneOrphanedAttachments` hands the work to
+    /// a background task. An attachment written in that gap is absent from the
+    /// set but is not garbage, and deleting it leaves a broken image in the note.
+    ///
+    /// Relocated here from `DocumentDataStoreTests` (`1d9d4469`) and rewritten
+    /// for the iPad's global-pool `collectGarbage` (packet 6 §4.5).
+    func testGCSparesAttachmentsWrittenAfterTheReferenceSnapshot() throws {
+        let dir = ScratchpadAttachmentStore.directory
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let old = dir.appendingPathComponent("old.jpg")
+        try Data([1]).write(to: old)
+
+        // Everything already on disk predates the snapshot; the new file does not.
+        let referencedAsOf = Date()
+        let fresh = dir.appendingPathComponent("fresh.jpg")
+        try Data([2]).write(to: fresh)
+
+        ScratchpadAttachmentStore.collectGarbage(
+            referencedIds: [], referencedAsOf: referencedAsOf)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path),
+                       "an attachment older than the snapshot is still collected")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path),
+                      "an attachment written after the snapshot belongs to a later edit")
     }
 
     func testEmptyClearsAreNoOps() {

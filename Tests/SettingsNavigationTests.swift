@@ -1,6 +1,11 @@
 import XCTest
+
 @testable import Vellum
 
+/// Pins #70's settings routing: which tab the Settings sheet opens on is
+/// workspace state, so a caller that presents Settings for a reason — Home's
+/// gear button, "Configure AI…", a Storage warning — can land the reader on the
+/// right tab instead of on General.
 @MainActor
 final class SettingsNavigationTests: XCTestCase {
     func testWorkspaceDefaultsToGeneralSettingsAndCanRouteToAi() {
@@ -15,16 +20,26 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(workspace.settingsSection, .storage)
     }
 
-    func testUpdateCheckerIsWorkspaceOwnedAndAutomaticCheckIsClaimedOnce() {
-        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
-        let sameChecker = workspace.updateChecker
-
-        XCTAssertTrue(workspace.updateChecker === sameChecker)
-        XCTAssertFalse(workspace.didStartAutomaticUpdateCheck)
-        XCTAssertTrue(workspace.claimAutomaticUpdateCheck())
-        XCTAssertTrue(workspace.didStartAutomaticUpdateCheck)
-        XCTAssertFalse(workspace.claimAutomaticUpdateCheck())
+    #if os(iOS)
+    func testPhoneSettingsRoutesStorageAndIntegrationsThroughActionableMoreRows() {
+        XCTAssertEqual(SettingsPhoneTab(section: .storage), .more)
+        XCTAssertEqual(SettingsPhoneTab(section: .integrations), .more)
+        XCTAssertEqual(SettingsNavigationDestination(section: .storage), .storage)
+        XCTAssertEqual(SettingsNavigationDestination(section: .integrations), .integrations)
     }
+    #endif
+
+    // One group from main's copy of this file is deliberately absent.
+    //
+    // `testUpdateCheckerIsWorkspaceOwnedAndAutomaticCheckIsClaimedOnce` is a
+    // PERMANENT drop: it asserts `workspace.updateChecker` /
+    // `didStartAutomaticUpdateCheck` / `claimAutomaticUpdateCheck()`, and a
+    // Sparkle-style self-updater is meaningless in an App Store app.
+    //
+    // The AI-validation tests below were deferred while `AiSettings` had no
+    // iPad home. The AI packet has since landed
+    // `AiSettings.isConfigured(chatGPTSignedIn:)`, so they are restored
+    // verbatim from main.
 
     func testApiKeyProvidersRequireCredentialsAndModels() {
         let providers: [(

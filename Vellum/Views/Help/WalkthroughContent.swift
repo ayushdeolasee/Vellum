@@ -58,16 +58,21 @@ extension WalkthroughPage {
                     text: "Open a PDF from disk, or paste an article URL to read it here.",
                     shortcut: "⌘O"),
                 WalkthroughPoint(
-                    symbol: "rectangle.split.2x1",
-                    text: "Split the window to read two documents at once. Tabs drag between panes.",
-                    shortcut: "⌘\\"),
+                    symbol: "magnifyingglass",
+                    text:
+                        "On iPhone, Home searches your library and Continue Reading returns to "
+                        + "your last saved position."),
+                WalkthroughPoint(
+                    symbol: "square.on.square",
+                    text:
+                        "On iPhone, the card switcher moves between open documents. On iPad, tabs "
+                        + "can also be split into panes."),
                 WalkthroughPoint(
                     symbol: "sidebar.right",
-                    text: "The inspector on the right has three tabs: Annotations, AI, and Scratchpad.",
+                    text:
+                        "Annotations, AI, and Scratchpad live in the inspector: a pull-up sheet on "
+                        + "iPhone and a side panel on iPad.",
                     shortcut: "⌘⌥S"),
-                WalkthroughPoint(
-                    symbol: "clock",
-                    text: "The start page keeps what you've read recently next to the pages you've saved."),
             ]
         ),
 
@@ -93,7 +98,7 @@ extension WalkthroughPage {
                     text: "Select text to highlight it, or turn the selection into a note."),
                 WalkthroughPoint(
                     symbol: "note.text",
-                    text: "Press N for note mode, then click anywhere on the page to drop a sticky note.",
+                    text: "Press N for note mode, then tap anywhere on the page to drop a sticky note.",
                     shortcut: "N"),
                 WalkthroughPoint(
                     symbol: "bookmark",
@@ -122,7 +127,7 @@ extension WalkthroughPage {
                     text: "LaTeX renders inline, in your notes and in AI replies alike."),
                 WalkthroughPoint(
                     symbol: "camera.viewfinder",
-                    text: "Snapshot a region of the page into your notes, or drop in an image from Finder."),
+                    text: "Snapshot a region of the page into your notes, or drop in an image from Files."),
                 // The "sharing the AI conversation is a separate checkbox, off
                 // by default" sentence was cut here. It is still true and still
                 // documented in the Help centre's export topic, where someone
@@ -152,7 +157,7 @@ extension WalkthroughPage {
             // naming Settings ▸ AI is both true and where the banner lands.
             summary:
                 "Vellum ships no model of its own — you bring your own account, and nothing from "
-                + "your documents leaves this Mac until you do. Set it up in Settings ▸ AI.",
+                + "your documents leaves this device until you do. Set it up in Settings ▸ AI.",
             points: [
                 // Leads with "optional" on purpose. This is the page most
                 // likely to make a new reader think they have hit a paywall or
@@ -263,11 +268,12 @@ extension WalkthroughPage {
                 WalkthroughPoint(
                     symbol: "icloud",
                     text:
-                        "Your library can live in iCloud Drive, in a folder you choose, or only on this Mac."),
+                        "Choose local storage or a folder you control. The iCloud choice stays "
+                        + "disabled until a signed build enables its iCloud entitlement."),
             ],
             footnote:
-                "Reopen this any time from Help ▸ Vellum Walkthrough. For a searchable list of "
-                + "every feature and shortcut, open Help ▸ Vellum Help (⌘?)."
+                "Reopen this from How Vellum works on Home, or Help ▸ Vellum Walkthrough where "
+                + "the Help menu is available. For a searchable reference, open Vellum Help."
         ),
     ]
 }

@@ -51,12 +51,27 @@ struct PaneDropDelegate: DropDelegate {
     }
 
     func dropEntered(info: DropInfo) {
-        MainActor.assumeIsolated { activeZone = DropZone.at(info.location, in: size) }
+        MainActor.assumeIsolated {
+            activeZone = DropZone.at(info.location, in: size)
+            noteDragActivity()
+        }
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        MainActor.assumeIsolated { activeZone = DropZone.at(info.location, in: size) }
+        MainActor.assumeIsolated {
+            activeZone = DropZone.at(info.location, in: size)
+            noteDragActivity()
+        }
         return DropProposal(operation: .move)
+    }
+
+    /// On iOS the workspace's drag watchdog needs periodic proof the drag is
+    /// still alive (macOS polls the mouse button instead).
+    @MainActor
+    private func noteDragActivity() {
+        #if os(iOS)
+        workspace.noteDragActivity()
+        #endif
     }
 
     func dropExited(info: DropInfo) {

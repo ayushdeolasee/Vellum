@@ -63,11 +63,18 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
 
     init(
         load: @escaping @Sendable () -> [RecentDocument] = { RecentFilesService.getRecent() },
-        resolvePath: @escaping @Sendable (RecentDocument) -> String = {
-            RecentFilesService.resolvedPath(for: $0)
+        // iPad: the container UUID in a stored path changes across reinstalls, so
+        // fall back to the same-named file in the current library directory before
+        // giving up. `RecentFilesService.resolvedPath` still runs first — it is the
+        // docId-based re-resolve for a MOVED document (design §7) — and this only
+        // rescues the path when that answer no longer exists on disk.
+        resolvePath: @escaping @Sendable (RecentDocument) -> String = { entry in
+            let byIdentity = RecentFilesService.resolvedPath(for: entry)
+            guard entry.kind == .pdf else { return byIdentity }
+            return DocumentImport.resolveExistingPath(byIdentity) ?? byIdentity
         },
         fileExists: @escaping @Sendable (String) -> Bool = {
-            FileManager.default.fileExists(atPath: $0)
+            DocumentImport.resolveExistingPath($0) != nil
         }
     ) {
         self.load = load
@@ -127,25 +134,37 @@ struct SavedWebpagesSearchProvider: HomeSearchProvider {
     let id = "webpages"
     let displayName = "Saved webpages"
 
-    private let load: @Sendable () -> [WebLibraryEntry]
+    private let load: @Sendable () async throws -> [WebLibraryEntry]
+    private let isCapturedUnread: @Sendable (String) async -> Bool
 
     /// Reads `WebLibrary` directly rather than going through
     /// `SessionService.listSavedWebpages()`: that method's only job is to hop
     /// the same call off the main thread, and this provider is already off it.
-    init(load: @escaping @Sendable () -> [WebLibraryEntry] = { WebLibrary.listSaved() }) {
+    init(load: @escaping @Sendable () async throws -> [WebLibraryEntry] = {
+        WebLibrary.listSaved()
+    }, isCapturedUnread: @escaping @Sendable (String) async -> Bool = { key in
+        CapturedUnreadLedger.shared.isUnread(forKey: key)
+    }) {
         self.load = load
+        self.isCapturedUnread = isCapturedUnread
     }
 
     func items(matching _: String) async throws -> [HomeSearchItem] {
         let now = Date()
-        return load().map { entry in
+        let entries = try await load()
+        var items: [HomeSearchItem] = []
+        items.reserveCapacity(entries.count)
+        for entry in entries {
             let name = RecentFilesService.webpageDisplayName(for: entry.url)
             let title = HomeSearchItemBuilder.title(entry.title, fallback: name)
             let date = WebLibrary.parseRfc3339(entry.savedAt)
             var badges: HomeSearchBadges = [.saved]
             if entry.hasSnapshot { badges.insert(.offline) }
+            if await isCapturedUnread(WebLibrary.pageKey(entry.url)) {
+                badges.insert(.capturedUnread)
+            }
 
-            return HomeSearchItem(
+            items.append(HomeSearchItem(
                 id: "\(id):\(entry.url)",
                 identity: HomeSearchItemBuilder.identity(entry.url, kind: .web),
                 section: .webpages,
@@ -165,8 +184,9 @@ struct SavedWebpagesSearchProvider: HomeSearchProvider {
                     extra: "saved webpage"),
                 // Web documents key on the sha256 of their normalized URL,
                 // which is exactly what `WebLibrary.pageKey` computes.
-                storageKey: WebLibrary.pageKey(entry.url))
+                storageKey: WebLibrary.pageKey(entry.url)))
         }
+        return items
     }
 }
 
@@ -181,13 +201,11 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
     let id = "library"
     let displayName = "Library"
 
-    private let load: @Sendable () -> [DocumentDataStore.DocumentMetaEntry]
+    private let load: @Sendable () async throws -> [DocumentDataStore.DocumentMetaEntry]
     private let fileExists: @Sendable (String) -> Bool
 
     init(
-        load: @escaping @Sendable () -> [DocumentDataStore.DocumentMetaEntry] = {
-            DocumentDataStore.listDocumentMetas()
-        },
+        load: @escaping @Sendable () async throws -> [DocumentDataStore.DocumentMetaEntry],
         fileExists: @escaping @Sendable (String) -> Bool = {
             FileManager.default.fileExists(atPath: $0)
         }
@@ -196,9 +214,28 @@ struct LibraryDocumentsSearchProvider: HomeSearchProvider {
         self.fileExists = fileExists
     }
 
+    init(
+        coordinator: StorageCoordinator,
+        fileExists: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.fileExists(atPath: $0)
+        }
+    ) {
+        self.init(
+            load: { try await DocumentDataStore.listDocumentMetas(coordinator: coordinator) },
+            fileExists: fileExists)
+    }
+
+    init(
+        fileExists: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.fileExists(atPath: $0)
+        }
+    ) {
+        self.init(load: { DocumentDataStore.listDocumentMetas() }, fileExists: fileExists)
+    }
+
     func items(matching _: String) async throws -> [HomeSearchItem] {
         let now = Date()
-        return load().compactMap { entry -> HomeSearchItem? in
+        return try await load().compactMap { entry -> HomeSearchItem? in
             let meta = entry.meta
             let isWeb = meta.kind == DocumentKind.web.rawValue
             let kind: DocumentKind = isWeb ? .web : .pdf

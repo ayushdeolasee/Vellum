@@ -65,13 +65,16 @@ enum WebLibrary {
 
     /// The app-data dir the Rust app used: `~/Library/Application Support/<bundle id>`.
     static var appDataDir: URL {
-        if let root = UITestLaunchConfiguration.storageRoot {
-            return root.appendingPathComponent("Application Support", isDirectory: true)
-        }
-        let base = FileManager.default.urls(
+        let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+        ).first
+        #if os(macOS)
+        let base = applicationSupport ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
+        #else
+        // iOS always provides an in-container Application Support directory.
+        let base = applicationSupport ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        #endif
         let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"
         return base.appendingPathComponent(bundleId, isDirectory: true)
     }
@@ -206,13 +209,13 @@ enum WebLibrary {
 
     // MARK: - Record persistence
 
-    static let jsonEncoderPretty: JSONEncoder = {
+    nonisolated(unsafe) static let jsonEncoderPretty: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         return encoder
     }()
 
-    static let jsonEncoderCompact: JSONEncoder = {
+    nonisolated(unsafe) static let jsonEncoderCompact: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         return encoder
@@ -350,7 +353,7 @@ enum WebLibrary {
         rfc3339Formatter.string(from: Date())
     }
 
-    private static let rfc3339Formatter: DateFormatter = {
+    nonisolated(unsafe) private static let rfc3339Formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
@@ -545,14 +548,20 @@ enum WebLibrary {
     /// opened before `cutoff`. Only ever deletes the derived artifacts — the
     /// sidecar record (reading state) always survives, and a record with no
     /// parseable timestamp is never evicted.
-    static func evictStaleUnsavedSnapshots(olderThan cutoff: Date, excludingUrls: Set<String>) {
+    static func evictStaleUnsavedSnapshots(
+        olderThan cutoff: Date,
+        excludingUrls: Set<String>,
+        lastOpened: (@Sendable (String) async -> Date?)? = nil
+    ) async {
         for file in allRecordFiles() {
             // An unreadable (e.g. evicted) record is never grounds for
             // eviction — loadRecord returning nil skips the page entirely.
             guard let record = loadRecord(at: file),
                   !record.saved, record.annotations.isEmpty,
                   !excludingUrls.contains(record.url),
-                  let opened = parseRfc3339(record.openedAt) ?? parseRfc3339(record.savedAt),
+                  let opened = await lastOpened?(record.url)
+                    ?? parseRfc3339(record.openedAt)
+                    ?? parseRfc3339(record.savedAt),
                   opened < cutoff
             else { continue }
             removeLocalSnapshots(forKey: pageKey(record.url))
@@ -595,7 +604,10 @@ enum WebLibrary {
         return total
     }
 
-    private static func snapshotArtifactsSize(forKey key: String) -> Int64 {
+    /// Internal, not private: the read-later prefetcher records the size of the
+    /// offline copy it just installed (`retention.json`'s `offline_bytes`), and
+    /// that number must be measured the same way the Storage pane measures it.
+    static func snapshotArtifactsSize(forKey key: String) -> Int64 {
         let fm = FileManager.default
         var total: Int64 = 0
         let attributes = try? fm.attributesOfItem(atPath: snapshotPath(forKey: key).path)

@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Pencil ink on web pages — implementation plan</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --surface: #ffffff;
+    --ink: #1d1c1a;
+    --muted: #6b675f;
+    --accent: #b4530a;
+    --accent-soft: #fdf0e4;
+    --border: #e6e2da;
+    --code-bg: #f3f1ec;
+    --good: #2e7d4f;
+    --good-soft: #e8f4ec;
+    --warn: #9a6700;
+    --warn-soft: #fdf6e3;
+    --reject: #a13a2e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614;
+      --surface: #201f1c;
+      --ink: #e8e5df;
+      --muted: #9d988e;
+      --accent: #e8874a;
+      --accent-soft: #2e2118;
+      --border: #35322c;
+      --code-bg: #262420;
+      --good: #6fbf8e;
+      --good-soft: #1c2b22;
+      --warn: #d9a94b;
+      --warn-soft: #2b2515;
+      --reject: #d0705f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 24px 96px; }
+  header.doc { border-bottom: 2px solid var(--border); padding-bottom: 24px; margin-bottom: 40px; }
+  .kicker {
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 0 0 8px;
+  }
+  h1 { font-size: 32px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); margin: 0; max-width: 62ch; }
+  h2 {
+    font-size: 22px;
+    margin: 56px 0 16px;
+    padding-top: 8px;
+    letter-spacing: -0.01em;
+  }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 0 0 14px; max-width: 72ch; }
+  a { color: var(--accent); }
+  code {
+    font: 0.88em/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+  ul, ol { padding-left: 24px; margin: 0 0 14px; }
+  li { margin-bottom: 8px; max-width: 70ch; }
+  li > ul { margin-top: 8px; }
+  .callout {
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    margin: 20px 0;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .convention {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 20px 0 0;
+    color: var(--muted);
+    font-size: 14.5px;
+  }
+  .options { display: grid; gap: 14px; margin: 20px 0; }
+  .option {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .option.chosen { border-color: var(--good); box-shadow: 0 0 0 1px var(--good); }
+  .option h3 { margin: 0 0 6px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .option p { margin: 0; color: var(--muted); font-size: 15px; }
+  .tag {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: 99px;
+    padding: 2px 10px;
+    white-space: nowrap;
+  }
+  .tag.chosen { background: var(--good-soft); color: var(--good); }
+  .tag.rejected { background: var(--code-bg); color: var(--reject); }
+  ol.decisions { counter-reset: d; list-style: none; padding-left: 0; }
+  ol.decisions > li {
+    counter-increment: d;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px 16px 58px;
+    position: relative;
+    margin-bottom: 12px;
+    max-width: none;
+  }
+  ol.decisions > li::before {
+    content: counter(d);
+    position: absolute;
+    left: 18px; top: 16px;
+    width: 26px; height: 26px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  ol.decisions strong.title { display: block; margin-bottom: 4px; }
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 18px;
+  }
+  .phase h3 { margin: 0 0 4px; font-size: 18px; }
+  .phase .meta { color: var(--muted); font-size: 13.5px; margin-bottom: 12px; }
+  .gate {
+    background: var(--good-soft);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14.5px;
+    margin-top: 12px;
+  }
+  .gate strong { color: var(--good); }
+  .limit {
+    background: var(--warn-soft);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    font-size: 15px;
+    max-width: none;
+  }
+  .limit strong { color: var(--warn); }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  nav.toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin: 28px 0 0;
+    font-size: 15px;
+  }
+  nav.toc ol { margin: 8px 0 0; columns: 2; column-gap: 32px; }
+  nav.toc li { margin-bottom: 6px; break-inside: avoid; }
+  nav.toc a { text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  @media (max-width: 620px) { nav.toc ol { columns: 1; } }
+  footer { margin-top: 64px; color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+
+<header class="doc">
+  <p class="kicker">Vellum · ipad-app · 2026-07-16</p>
+  <h1>Apple Pencil ink on web pages</h1>
+  <p class="subtitle">Draw with Apple Pencil directly on web pages in the iPad reader, with the same
+  tool palette, feel, and persistence guarantees as the existing PDF ink feature. Polish bar is
+  <strong>GoodNotes</strong>: PencilKit-native latency, pressure, tilt, crisp strokes at zoom, no lost ink ever.</p>
+
+  <nav class="toc">
+    <strong>Contents</strong>
+    <ol>
+      <li><a href="#hard">Why this is genuinely hard</a></li>
+      <li><a href="#approaches">Approaches considered</a></li>
+      <li><a href="#decisions">Design decisions</a></li>
+      <li><a href="#limits">Accepted limitations</a></li>
+      <li><a href="#phases">Phases 0–5</a></li>
+      <li><a href="#estimates">Estimates</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+
+  <p class="convention">Build convention (same as the parity plan): each phase builds + tests green on
+  <code>platform=iOS Simulator,name=iPad Pro 13-inch (M5)</code>, then commit.
+  <code>xcodegen generate</code> after any project.yml/file-list change — never hand-edit pbxproj.</p>
+</header>
+
+<h2 id="hard"><span class="num">1</span>Why this is genuinely hard (read this first)</h2>
+
+<p>The PDF ink stack works because PDF pages are <strong>fixed geometry</strong>: a page is always
+612×792&nbsp;pt, PDFKit tells us exactly where each page sits on screen
+(<code>PDFPageOverlayViewProvider</code>), and a stroke stored in page coordinates is valid forever.
+None of that is true for web pages:</p>
+
+<ol>
+  <li><strong>No pages, one giant scrolling document.</strong> The web view is a single continuous DOM
+  document that scrolls via WKWebView's native <code>UIScrollView</code>. Vellum's "pages" are virtual
+  (~3600-char text chunks) — text constructs, not geometry.</li>
+  <li><strong>Layout is not stable.</strong> Pages reflow after load (hydration, lazy images, web fonts),
+  on rotation/split-screen (viewport width change re-wraps every line), and on SPA re-renders. A stroke
+  stored at <code>y&nbsp;=&nbsp;14,200px</code> points at different <em>content</em> after any of these.
+  The existing highlight system dodges this by storing <strong>no geometry at all</strong> — highlights
+  are text-quote anchors (offset + prefix/suffix) fuzzily re-resolved by JS after every reflow
+  (<code>resolveHighlight</code>, <code>WebContentScript.swift:654</code>). Ink is pure geometry with no
+  text to re-anchor to. Bridging that gap is the core design problem.</li>
+  <li><strong>Two independent zoom systems.</strong> Toolbar zoom is <code>webView.pageZoom</code> (CSS
+  zoom — changes layout size). Native pinch is <code>scrollView.zoomScale</code> / VisualViewport (visual
+  magnification — layout unchanged). The overlay must track both
+  (<code>WebViewerView_iOS.swift:1219-1224</code> already composes <code>app.zoom * visualScale</code>
+  for popover math).</li>
+</ol>
+
+<h2 id="approaches"><span class="num">2</span>Approaches considered</h2>
+
+<div class="options">
+  <div class="option">
+    <h3>A · JS canvas inside the DOM <span class="tag rejected">Rejected</span></h3>
+    <p>Draw via Pointer Events into a <code>&lt;canvas&gt;</code> element. Perfect scroll/reflow anchoring
+    potential, but loses everything that makes Pencil feel right — PencilKit's Metal-latched low latency,
+    predicted touches, pressure/tilt ink models, the eraser modes, system undo gesture, and the entire
+    existing tool palette. Fails the GoodNotes bar.</p>
+  </div>
+  <div class="option">
+    <h3>B · Freeze the page to PDF <span class="tag rejected">Rejected as primary</span></h3>
+    <p><code>WKWebView.createPDF</code>, then reuse the PDF ink stack wholesale. Maximal reuse and layout
+    stability, but kills the live page (links, video, find; existing text-anchored highlights live in a
+    different document identity). Could become a future "annotate as PDF" export mode.</p>
+  </div>
+  <div class="option chosen">
+    <h3>C · Native PencilKit overlay above the WKWebView, scroll-synced <span class="tag chosen">Chosen</span></h3>
+    <p>Full reuse of the proven ink feel + palette; the cost is that <em>we</em> own scroll/zoom/reflow
+    synchronization — which is tractable, as the design below shows.</p>
+  </div>
+</div>
+
+<h2 id="decisions"><span class="num">3</span>Design decisions</h2>
+
+<ol class="decisions">
+  <li>
+    <strong class="title">One viewport-sized <code>PKCanvasView</code>, not per-page/banded canvases.</strong>
+    <code>PKCanvasView</code> <em>is</em> a <code>UIScrollView</code>: give it <code>contentSize</code> = the
+    full web document size and sync its <code>contentOffset</code> with the web view's. PencilKit tiles its
+    rendering internally (this is how Notes does unbounded canvases), so a 200,000&nbsp;pt-tall drawing
+    surface is fine — we never create a giant UIView. One canvas ⇒ one <code>PKDrawing</code>, one
+    <code>undoManager</code>, no stroke-crosses-band problem. The canvas mounts as a sibling view above the
+    <code>WKWebView</code> inside <code>WebViewRepresentable_iOS</code>'s container (below the SwiftUI
+    popover layer).
+  </li>
+  <li>
+    <strong class="title">Scroll sync is bidirectional, mode-dependent, via KVO.</strong>
+    <ul>
+      <li>Ink <strong>inactive</strong>: canvas <code>isUserInteractionEnabled = false</code> (all touches
+      pass to the page, exactly like PDF's <code>applyPolicy</code>); KVO on
+      <code>webView.scrollView.contentOffset</code> drives <code>canvas.contentOffset</code> in the same
+      runloop turn — no visible lag.</li>
+      <li>Ink <strong>active</strong>: the canvas sits on top and becomes the scroller. With
+      <code>drawingPolicy = .pencilOnly</code>, pencil draws and fingers pan the canvas's own scroll view;
+      we mirror <code>canvas.contentOffset</code> back into <code>webView.scrollView.contentOffset</code>
+      (which fires the page's JS scroll events naturally, so virtual-page tracking /
+      <code>reportScroll</code> keep working untouched).</li>
+      <li>An <code>isSyncing</code> reentrancy flag prevents feedback loops. Nobody replaces the web view's
+      <code>scrollView.delegate</code> (WebKit owns it) — KVO only.</li>
+    </ul>
+  </li>
+  <li>
+    <strong class="title">Stroke coordinate space: zoom-1 CSS-pixel document space.</strong>
+    Everything persisted is normalized to <code>pageZoom == 1</code>. At runtime the canvas operates in
+    "zoomed document space" (CSS px × pageZoom): when toolbar zoom changes we rescale the live
+    <code>PKDrawing</code> by <code>newZoom/oldZoom</code> and re-apply the tool at the scaled width — the
+    exact <code>setSuperSample</code>/<code>scaleDrawing</code> trick from
+    <code>InkOverlayProvider_iOS.swift:218-234</code>, which also means strokes re-rasterize at the new
+    size and stay <strong>crisp at zoom for free</strong> (toolbar zoom is discrete, so no mid-gesture
+    rescale problem).
+  </li>
+  <li>
+    <strong class="title">Native pinch (<code>zoomScale</code>) is view-transform-only, never folded into stored coordinates.</strong>
+    KVO on <code>scrollView.zoomScale</code> + <code>contentOffset</code> applies a matching
+    <code>CGAffineTransform</code> to the canvas so ink tracks the pinch (briefly bilinear-scaled
+    mid-gesture, same as PDF mid-pinch). Deep-zoom crispness via a super-sample bump after pinch settles
+    is a Phase&nbsp;5 enhancement, not MVP.
+  </li>
+  <li>
+    <strong class="title">Persistence: a separate <code>&lt;key&gt;.ink.json</code> sidecar — NOT a field inside <code>WebPageRecord</code>.</strong>
+    Critical cross-device gotcha: the macOS app re-encodes <code>&lt;key&gt;.json</code> on every
+    annotation edit with its own Codable model; Codable silently drops unknown fields on encode, so an
+    <code>ink</code> field added only on iPad would be <strong>deleted by the Mac</strong> the next time
+    it touches a synced record (iCloud storage mode). A separate file the Mac never opens is immune.
+<pre><code>{
+  "version": 1,
+  "url": "&lt;normalized url&gt;",
+  "updated_at": "&lt;rfc3339&gt;",
+  "layout": { "content_width": 980, "doc_height": 42000 },
+  "clusters": [
+    {
+      "id": "&lt;uuid&gt;",
+      "drawing": "&lt;base64 PKDrawing, zoom-1 CSS px, cluster-local origin&gt;",
+      "bounds": { "x": ..., "y": ..., "w": ..., "h": ... },
+      "anchor": {            // Phase 3; null in MVP
+        "start_offset": 18234,
+        "prefix": "…", "suffix": "…",
+        "rect": { "x": ..., "y": ..., "w": ..., "h": ... }
+      }
+    }
+  ]
+}</code></pre>
+    Clusters are <strong>derived data</strong>: at save time, strokes are grouped by spatial proximity from
+    the single live <code>PKDrawing</code>; at load time, cluster drawings are translated (per re-anchor)
+    and merged back into one drawing. MVP writes one cluster with a null anchor; the format doesn't change
+    when Phase&nbsp;3 lands.
+  </li>
+  <li>
+    <strong class="title">Write path mirrors PDF ink's hard-won rules.</strong>
+    700&nbsp;ms per-document debounce; atomic tmp→rename; all I/O on an actor off the main thread
+    (<code>WebInkIO</code>, following <code>WebDocumentIO</code>'s pattern in
+    <code>WebSessionBackend.swift:328</code>); a <code>flushPendingInkAndWait()</code> called when ink mode
+    turns off, on tab close, and from the same scene-background hook the PDF flush uses (last stroke can
+    never be lost to suspension). Per-path <code>NSLock</code> via the <code>WebLibrary.recordLock</code>
+    pattern so ink writes can't race the record writes.
+  </li>
+  <li>
+    <strong class="title">First stroke promotes the page to <code>saved</code>.</strong>
+    Same auto-save-on-annotate behavior as <code>WebDocumentIO.createAnnotation</code>
+    (<code>WebSessionBackend.swift:347</code>), so an inked page always has an offline snapshot — the
+    layout the ink was drawn against is never unrecoverable.
+  </li>
+  <li>
+    <strong class="title">Reflow strategy is phased.</strong>
+    <ul>
+      <li><strong>MVP (Phase&nbsp;2): absolute document coordinates + layout fingerprint</strong>
+      (<code>content_width</code>). Honest baseline: ink is correct as long as layout width matches; the
+      auto-snapshot from decision&nbsp;7 makes that the common case for saved pages. If current width ≠
+      stored width, still render (best effort).</li>
+      <li><strong>Phase&nbsp;3: text-anchored clusters.</strong> New content-script command
+      <code>anchor-at-point {docX, docY}</code> returns the nearest text position (raw offset +
+      prefix/suffix, reusing the <code>capture-position</code> machinery in
+      <code>WebContentScript.swift</code>) plus that anchor's current document rect. Each cluster stores
+      its anchor + the rect at capture time. On <code>init</code>, <code>relayout</code> (the existing
+      ResizeObserver/fonts/MutationObserver hooks), and width change, Swift batch-re-resolves all anchors
+      and <strong>translates</strong> each cluster by (newRect − oldRect). Vertical drift — the dominant
+      reflow effect — is fully corrected; horizontal is usually stable within a text column. This is
+      exactly how highlights already survive reflow, applied at cluster granularity. Unresolvable anchors
+      fall back to stored coordinates.</li>
+    </ul>
+  </li>
+  <li>
+    <strong class="title">Ink tool core is extracted, not duplicated.</strong>
+    <code>InkController_iOS</code> splits:
+    <ul>
+      <li><code>InkToolState</code> (shared, <code>@Observable</code>): tool/color/width-slot state,
+      <code>InkWidthSettings</code> UserDefaults blob, <code>pkTool(widthScale:)</code> construction,
+      eraser mode, finger-drawing toggle, pencil double-tap preference handling.</li>
+      <li>A small <code>InkPaletteHost</code> protocol (isActive, undo/redo/canUndo/canRedo,
+      clearCurrentPage, done) adopted by both the PDF controller and the new
+      <code>WebInkController_iOS</code>, so <code>InkToolPalette_iOS</code> renders either untouched.</li>
+      <li>PDF behavior must be byte-for-byte identical after the refactor
+      (<code>Tests/InkPersistenceTests.swift</code> + manual regression pass gate Phase&nbsp;1).</li>
+    </ul>
+  </li>
+  <li>
+    <strong class="title">Ink mode is modal, like PDF.</strong>
+    While active the canvas intercepts all touches: links, text selection, and note interactions are inert
+    (matches both the PDF implementation and GoodNotes). Entering ink mode dismisses open popovers and
+    auto-collapses the sidebar (reuse the <code>isActive</code> didSet behavior,
+    <code>InkController_iOS.swift:90-117</code>). Two-finger-tap undo comes free from PencilKit.
+    <code>UIPencilInteraction</code> attaches to the web container view (mirroring the
+    always-mounted-PDFView rationale, <code>PdfKitView_iOS.swift:51-54</code>) and routes through the same
+    <code>PencilDoubleTapAction</code> preference.
+  </li>
+  <li>
+    <strong class="title">Canvas pinned <code>overrideUserInterfaceStyle = .light</code>, same as PDF</strong>
+    (<code>InkOverlayProvider_iOS.swift:135</code>): PencilKit dynamically inverts some ink colors in dark
+    mode, but a web page's own theme is independent of the system theme — pinning light keeps ink WYSIWYG
+    against whatever the page renders.
+  </li>
+</ol>
+
+<h2 id="limits"><span class="num">4</span>Known, accepted limitations</h2>
+<p>Document in-app expectations; don't fight them.</p>
+
+<div class="limit"><strong>Fixed/sticky elements:</strong> ink lives in <em>document scroll space</em> —
+strokes over <code>position: fixed</code>/sticky headers separate from them on scroll; strokes over
+internally-scrolling iframes/subregions don't track that inner scroll. (GoodNotes never faces this; no
+web-ink product solves it without freezing the page.)</div>
+<div class="limit"><strong>Changed live content:</strong> a live page whose content changed since inking
+(news homepage) can only be best-effort re-anchored; the saved snapshot (decision&nbsp;7) preserves
+ground truth.</div>
+<div class="limit"><strong>Mid-pinch rendering:</strong> ink is bilinear-scaled until the gesture settles
+(PDF behaves the same; Notes too).</div>
+
+<h2 id="phases"><span class="num">5</span>Phases</h2>
+
+<div class="phase">
+  <h3>Phase 0 — Spike</h3>
+  <p class="meta">½ day · throwaway branch · validates the 3 load-bearing assumptions</p>
+  <ul>
+    <li><code>PKCanvasView</code> with a very large <code>contentSize</code> (~300k&nbsp;pt) — confirm
+    memory stays flat while scrolling/drawing (PencilKit tile behavior).</li>
+    <li>KVO on <code>WKWebView.scrollView.contentOffset</code> + programmatic offset writes — confirm
+    WebKit doesn't fight it and JS scroll events fire on programmatic sets.</li>
+    <li><code>scrollView.zoomScale</code> KVO during native pinch — confirm it tracks VisualViewport's
+    <code>visualScale</code> 1:1 on iPadOS 26 (they should be the same quantity; the plan's transform math
+    assumes it).</li>
+  </ul>
+  <div class="gate"><strong>Abort criteria:</strong> if (1) fails → fall back to banded canvases (design
+  decision&nbsp;1 revisited); if (2) fails → sync via the existing JS scroll messages instead (higher
+  latency, still workable).</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 1 — Ink core refactor</h3>
+  <p class="meta">~1 day · PDF must not change behavior</p>
+  <ul>
+    <li>New <code>Vellum/Platform/iOS/InkToolState.swift</code>: extract
+    tool/color/width/eraser/finger-toggle/double-tap state + <code>pkTool(widthScale:)</code> from
+    <code>InkController_iOS.swift</code> (lines 9-83, 310-332 territory).</li>
+    <li>New <code>InkPaletteHost</code> protocol; <code>InkToolPalette_iOS.swift</code> generalized to it;
+    <code>PdfChrome_iOS</code> toggle unchanged.</li>
+    <li><code>InkController_iOS</code> adopts both, delegating state to <code>InkToolState</code>. No
+    persistence-path changes.</li>
+    <li><code>InkRegistry_iOS</code> (in <code>PaneView_iOS.swift:16-28</code>) keyed to hold either
+    controller kind (the palette host protocol).</li>
+  </ul>
+  <div class="gate"><strong>Gate:</strong> build + <code>InkPersistenceTests</code> green + manual PDF ink
+  regression on simulator (draw/erase/undo/zoom/persist/restart).</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Web ink MVP</h3>
+  <p class="meta">~3-4 days · the bulk: overlay, sync, persistence, chrome</p>
+  <ul>
+    <li>New <code>Vellum/Platform/iOS/WebInkController_iOS.swift</code> (<code>@Observable</code>,
+    <code>InkPaletteHost</code>): owns the canvas, activation lifecycle, debounced persist, flush hooks.</li>
+    <li>New <code>Vellum/Platform/iOS/WebInkOverlay_iOS.swift</code>: the <code>PKCanvasView</code>
+    subclass + container; scroll sync both directions (decision&nbsp;2); <code>contentSize</code> tracking
+    via KVO on <code>webView.scrollView.contentSize</code> (native — no JS needed for doc height);
+    pageZoom rescale (decision&nbsp;3); native-pinch transform tracking (decision&nbsp;4); light-mode pin.</li>
+    <li><code>WebViewRepresentable_iOS</code> (in <code>WebViewerView_iOS.swift</code>): mount overlay
+    above web view; attach <code>UIPencilInteraction</code>; expose controller to the SwiftUI layer.</li>
+    <li>Web chrome: ink toggle button (mirror <code>PdfChrome_iOS.swift:136-140</code>), palette overlay
+    pinned bottom like <code>PdfViewerView_iOS.swift:63-68</code>; entering ink mode dismisses
+    selection/note popovers.</li>
+    <li>New <code>Vellum/Services/Web/WebInkStore.swift</code>: <code>WebInkRecord</code> Codable (format
+    in decision&nbsp;5), <code>WebInkIO</code> actor, path resolution through
+    <code>WebStorageLayout</code> (records dir, all three modes), atomic writes, per-path lock.</li>
+    <li>Load on document open (after <code>handleInit</code>); save debounced; flush on
+    deactivate/tab-close/scene-background (hook where PDF's <code>flushPendingInkAndWait</code> is
+    called); first stroke → promote <code>saved</code>.</li>
+    <li>Undo/redo/clear wired through canvas <code>undoManager</code> + <code>drawingVersion</code> bump
+    (same observation trick, <code>InkController_iOS.swift:178-205</code>).</li>
+    <li>Tests: <code>WebInkPersistenceTests.swift</code> — record round-trip, zoom-1 normalization
+    invariant (draw at zoom 1.5 → stored CSS px identical to zoom 1.0 equivalent), debounce/flush
+    behavior, promote-to-saved.</li>
+  </ul>
+  <div class="gate"><strong>Gate:</strong> simulator QA (finger drawing auto-enables in Simulator, as PDF
+  does) on a long real article: draw → scroll (ink tracks) → zoom (crisp) → pinch (tracks) → kill app →
+  relaunch → ink restored at correct positions.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Reflow resilience (anchored clusters)</h3>
+  <p class="meta">~2-3 days · JS + clustering + re-anchor</p>
+  <ul>
+    <li>Content script (<code>WebContentScript.swift</code>): add <code>anchor-at-point</code> and batch
+    <code>resolve-anchors</code> commands (reuse <code>rangeFromRaw</code>/<code>resolveHighlight</code>
+    internals); add an <code>ink-anchors-shifted</code> report wired into the existing
+    <code>relayout</code> (ResizeObserver / fonts.ready / MutationObserver, lines 2020-2079) and the
+    2000&nbsp;ms hydration re-init.</li>
+    <li>Swift: spatial clustering of strokes at save time (proximity threshold, tuned ~48 CSS px);
+    per-cluster anchor capture on stroke commit; re-anchor pass translating clusters on
+    init/relayout/width-change; fall back to stored coordinates when an anchor doesn't resolve.</li>
+    <li>Rotation/split-screen: viewport width change triggers the same re-anchor pass once layout settles
+    (piggyback on the existing settle machinery — the 400&nbsp;ms / 1200&nbsp;ms re-check pattern used by
+    scroll restore).</li>
+    <li>Tests: clustering determinism; anchor round-trip against a fixture HTML page loaded in a test web
+    view; translation math.</li>
+  </ul>
+  <div class="gate"><strong>Gate:</strong> article inked in portrait stays attached to its paragraphs in
+  landscape and in 50/50 split-screen; ink on a hydration-heavy page (e.g. a React docs page) lands
+  correctly after reload.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Ecosystem integration</h3>
+  <p class="meta">~2 days</p>
+  <ul>
+    <li><code>.vellumweb</code> archives (<code>WebArchive.swift</code>): add optional <code>ink.json</code>
+    entry + manifest sha256. Verify old readers skip unknown manifest entries before keeping
+    <code>formatVersion = 1</code>; bump to 2 only if they hard-fail. Import merges by cluster id, newer
+    <code>updated_at</code> wins (mirror <code>mergeAnnotations</code>,
+    <code>WebArchive.swift:677-698</code>).</li>
+    <li><code>WebStorageMigrator</code> (<code>WebStorage.swift:452-625</code>): move
+    <code>&lt;key&gt;.ink.json</code> alongside records in local↔iCloud↔custom relocations;
+    <code>adoptRecordFile</code>-style newer-wins merge for raced copies.</li>
+    <li>AI/region capture (<code>captureRegionImage</code>/<code>capturePageImage</code>,
+    <code>WebViewerView_iOS.swift:744-814</code>): composite the ink via
+    <code>PKDrawing.image(from:scale:)</code> over <code>takeSnapshot</code> output so what the model sees
+    matches what the user sees.</li>
+    <li>Sidebar: "Handwriting" section for web docs (mirror <code>InkPagesSection_iOS</code> in
+    <code>PdfChrome_iOS.swift</code>) — jump list of clusters, mapped to virtual pages via cluster anchor
+    <code>start_offset</code> → page number; tap scrolls to cluster bounds.</li>
+    <li>Settings: nothing new expected — double-tap + finger-draw + width settings are already shared via
+    <code>InkToolState</code>.</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h3>Phase 5 — Hardening + on-device QA</h3>
+  <p class="meta">~1-2 days</p>
+  <ul>
+    <li>Memory audit: very long pages (50k+ px), many clusters, repeated zoom-rescales (rescale allocates
+    a new PKDrawing — watch peaks).</li>
+    <li>Deep-zoom crispness enhancement if warranted: super-sample bump (K = ceil of settled zoomScale,
+    capped 4) after pinch settles — direct port of the PDF trick.</li>
+    <li>Edge sweep: <code>pageshow</code> back/forward cache restore; web-content-process crash → snapshot
+    fallback path (<code>loadSnapshotFallback</code>) must reload ink too; offline snapshot vs live page
+    must resolve to the same ink record (same normalized-URL key — verify the snapshot's proxy URL
+    normalizes identically); YouTube-facade pages; find-in-page overlay under ink.</li>
+    <li>On-device checklist (needs a real Pencil — Simulator can't verify these): latency/ProMotion feel,
+    pressure/tilt response, barrel double-tap, palm rejection while resting hand, scribble
+    non-interference, split-screen + Stage Manager resize while ink mode is active.</li>
+  </ul>
+</div>
+
+<h2 id="estimates"><span class="num">6</span>Estimates (rough, sequential)</h2>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Phase</th><th>Scope</th></tr></thead>
+  <tbody>
+    <tr><td class="num">0</td><td>½ day spike</td></tr>
+    <tr><td class="num">1</td><td>~1 day (refactor + regression)</td></tr>
+    <tr><td class="num">2</td><td>~3-4 days (the bulk: overlay, sync, persistence, chrome)</td></tr>
+    <tr><td class="num">3</td><td>~2-3 days (JS + clustering + re-anchor)</td></tr>
+    <tr><td class="num">4</td><td>~2 days</td></tr>
+    <tr><td class="num">5</td><td>~1-2 days</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="open"><span class="num">7</span>Open questions (decide during Phase 0/2, defaults chosen)</h2>
+
+<ol>
+  <li><strong>Should toolbar zoom stay enabled while ink mode is active?</strong> Default: yes (rescale is
+  cheap and discrete). Native pinch while actively inking: default <strong>disabled</strong> (pencil
+  draws, fingers pan — matching PDF, where PDFView pinch still works but ink canvases only pan); revisit
+  if it feels limiting.</li>
+  <li><strong>Cluster granularity for the sidebar jump list</strong> — per cluster vs per virtual page.
+  Default: per cluster, grouped by page header.</li>
+  <li><strong>Whether macOS should ever <em>render</em> web ink (read-only).</strong> Out of scope here;
+  the sidecar format is deliberately platform-neutral so it stays possible.</li>
+</ol>
+
+<footer>Vellum ipad-app branch · plan authored 2026-07-16 · companion to IPAD-PORT-PLAN / IPAD-PARITY-PLAN</footer>
+
+</main>
+</body>
+</html>

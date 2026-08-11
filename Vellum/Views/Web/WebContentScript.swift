@@ -830,10 +830,12 @@ enum WebContentScript {
       // Viewport coords of the marker so the app shell can anchor the note
       // viewer popover next to it.
       var box = marker.getBoundingClientRect();
+      var vp = visualPointPayload(box.left + box.width / 2, box.top);
       post("annotation-click", {
         id: note.id,
-        x: box.left + box.width / 2,
-        y: box.top,
+        x: vp.x,
+        y: vp.y,
+        visualScale: vp.visualScale,
       });
     });
     root.appendChild(marker);
@@ -845,8 +847,8 @@ enum WebContentScript {
 
   var RESIZE_COLOR = "#2563eb"; // blue-600, matches the PDF viewer handles
   var RESIZE_BAR_W = 3;
-  var RESIZE_KNOB = 11;
-  var RESIZE_PAD = 10; // extra hit slop around the knob
+  var RESIZE_KNOB = 14;
+  var RESIZE_PAD = 30; // 44px touch target around the compact visual knob
   // The two live handle elements while a highlight is selected. Persisting them
   // lets a drag reposition the handles in place (layoutResizeHandle) instead of
   // recreating them every frame — recreating the grabbed handle mid-drag is
@@ -908,7 +910,8 @@ enum WebContentScript {
     var outer = document.createElement("div");
     outer.setAttribute("data-vellum-resize", edge);
     outer.style.cssText =
-      "position:absolute;pointer-events:auto;cursor:grab;z-index:2147483647;";
+      "position:absolute;pointer-events:auto;touch-action:none;cursor:grab;" +
+      "z-index:2147483647;";
 
     var bar = document.createElement("div");
     bar.style.cssText =
@@ -925,10 +928,10 @@ enum WebContentScript {
 
     layoutResizeHandle(outer, edge, rect);
 
-    outer.addEventListener("mousedown", function (e) {
+    outer.addEventListener("pointerdown", function (e) {
       e.preventDefault();
       e.stopPropagation();
-      beginResize(edge);
+      beginResize(edge, e.pointerId);
     });
     return outer;
   }
@@ -1056,7 +1059,7 @@ enum WebContentScript {
   // of its handles) begins a resize of the nearest edge instead — no text
   // selection can start. Capture phase + stopPropagation so it also pre-empts
   // the per-handle listener (no double beginResize) and the link/click paths.
-  function onSelectedHighlightMouseDown(e) {
+  function onSelectedHighlightPointerDown(e) {
     if (selectedHighlightId === null || resizing || noteMode || e.button !== 0) return;
     var rects = [];
     for (var i = 0; i < highlightHitRects.length; i++) {
@@ -1082,10 +1085,10 @@ enum WebContentScript {
     var dEnd = Math.hypot(docX - (last.left + last.width), docY - (last.top + last.height / 2));
     e.preventDefault();
     e.stopPropagation();
-    beginResize(dStart <= dEnd ? "start" : "end");
+    beginResize(dStart <= dEnd ? "start" : "end", e.pointerId);
   }
 
-  function beginResize(edge) {
+  function beginResize(edge, pointerId) {
     if (!selectedHighlightRange || selectedHighlightId === null) return;
     resizing = true;
     resizeState = {
@@ -1094,14 +1097,16 @@ enum WebContentScript {
       start: selectedHighlightRange.start,
       end: selectedHighlightRange.end,
       anchorOffset: edge === "start" ? selectedHighlightRange.end : selectedHighlightRange.start,
+      pointerId: pointerId,
     };
     setResizeLock(true);
-    document.addEventListener("mousemove", onResizeMove, true);
-    document.addEventListener("mouseup", onResizeUp, true);
+    document.addEventListener("pointermove", onResizeMove, true);
+    document.addEventListener("pointerup", onResizeUp, true);
+    document.addEventListener("pointercancel", onResizeCancel, true);
   }
 
   function onResizeMove(e) {
-    if (!resizeState) return;
+    if (!resizeState || e.pointerId !== resizeState.pointerId) return;
     e.preventDefault();
     // Belt-and-suspenders: drop any selection the browser managed to start
     // before the guards took hold.
@@ -1152,9 +1157,25 @@ enum WebContentScript {
     drawResizePreview();
   }
 
-  function onResizeUp() {
-    document.removeEventListener("mousemove", onResizeMove, true);
-    document.removeEventListener("mouseup", onResizeUp, true);
+  function removeResizePointerListeners() {
+    document.removeEventListener("pointermove", onResizeMove, true);
+    document.removeEventListener("pointerup", onResizeUp, true);
+    document.removeEventListener("pointercancel", onResizeCancel, true);
+  }
+
+  function onResizeCancel(e) {
+    if (!resizeState || e.pointerId !== resizeState.pointerId) return;
+    removeResizePointerListeners();
+    setResizeLock(false);
+    resizeState = null;
+    resizePreview = null;
+    resizing = false;
+    renderHighlights();
+  }
+
+  function onResizeUp(e) {
+    if (!resizeState || e.pointerId !== resizeState.pointerId) return;
+    removeResizePointerListeners();
     setResizeLock(false);
     var state = resizeState;
     resizeState = null;
@@ -1379,15 +1400,56 @@ enum WebContentScript {
   }
 
   var scrollTicking = false;
+  var scrollIdleTimer = null;
+  var lastDismissPostAt = 0;
+  var lastScrollReportAt = 0;
+  var scrollTrailingTimer = null;
+  // Viewport reporting drives the page-number readout and the bookmark star,
+  // and each call forces layout once per resolved bookmark. Neither consumer
+  // needs anything close to the 120Hz a ProMotion scroll delivers.
+  var SCROLL_REPORT_MS = 66;
+  // The app shell dismisses viewport-anchored transient UI on "viewport-scrolled".
+  // It is ALMOST idempotent — a note composer younger than 0.4s is deliberately
+  // kept — so this cannot be a pure leading-edge post: during one long fling the
+  // composer would age past its grace period with no further event to dismiss
+  // it, and would sit pinned while the content scrolled out from under it.
+  // Re-posting a few times a second preserves that behavior at ~1/50th the
+  // wakeups of the per-frame post this replaces.
+  var SCROLL_DISMISS_MS = 400;
+
   function onScroll() {
+    var dismissNow = Date.now();
+    if (dismissNow - lastDismissPostAt >= SCROLL_DISMISS_MS) {
+      lastDismissPostAt = dismissNow;
+      post("viewport-scrolled");
+    }
+    // Re-arm on the resting position too, so a gesture that ends inside the
+    // window still leaves the shell with a final dismissal.
+    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = setTimeout(function () {
+      scrollIdleTimer = null;
+      lastDismissPostAt = Date.now();
+      post("viewport-scrolled");
+    }, SCROLL_DISMISS_MS);
+
     if (scrollTicking) return;
     scrollTicking = true;
     requestAnimationFrame(function () {
       scrollTicking = false;
-      // Unconditional (reportScroll dedupes): the app shell hides the
-      // selection popover, whose position is viewport-anchored.
-      post("viewport-scrolled");
-      reportScroll(false);
+      var now = Date.now();
+      var since = now - lastScrollReportAt;
+      if (since >= SCROLL_REPORT_MS) {
+        lastScrollReportAt = now;
+        reportScroll(false);
+      } else if (!scrollTrailingTimer) {
+        // Always report the resting position, even when the gesture ends inside
+        // the throttle window.
+        scrollTrailingTimer = setTimeout(function () {
+          scrollTrailingTimer = null;
+          lastScrollReportAt = Date.now();
+          reportScroll(false);
+        }, SCROLL_REPORT_MS - since);
+      }
     });
   }
 
@@ -1401,12 +1463,18 @@ enum WebContentScript {
   // Selection reporting
   // ------------------------------------------------------------------
 
+  // Signature of the last posted selection, so the touch path (debounced
+  // selectionchange) and the mouse path (mouseup) never double-post one
+  // selection to the app shell.
+  var lastSelectionKey = null;
+
   function reportSelection() {
-    // A handle drag ends in a mouseup too; don't let it clear the selection or
-    // dismiss the highlight's edit popover.
+    // A resize also changes/clears the native selection internally. Keep those
+    // transient events from dismissing the selected highlight's editor.
     if (resizing) return;
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      lastSelectionKey = null;
       post("selection-cleared");
       return;
     }
@@ -1424,14 +1492,25 @@ enum WebContentScript {
     if (start === null || end === null || end <= start) return;
 
     var mapped = [];
+    // During native pinch zoom, getClientRects() is relative to the layout
+    // viewport while SwiftUI overlays the visual viewport. Remove its pan offset
+    // here and send its scale so the native bridge can map CSS px to view points.
+    var visual = window.visualViewport;
+    var visualLeft = visual ? visual.offsetLeft : 0;
+    var visualTop = visual ? visual.offsetTop : 0;
+    var visualScale = visual && isFinite(visual.scale) ? visual.scale : 1;
     for (var i = 0; i < rects.length && i < 60; i++) {
       mapped.push({
-        x: rects[i].left,
-        y: rects[i].top,
+        x: rects[i].left - visualLeft,
+        y: rects[i].top - visualTop,
         width: rects[i].width,
         height: rects[i].height,
       });
     }
+
+    var key = start + ":" + end + ":" + text;
+    if (key === lastSelectionKey) return;
+    lastSelectionKey = key;
 
     var ctx = quoteContext(start, end);
     post("selection", {
@@ -1440,6 +1519,7 @@ enum WebContentScript {
       end: end,
       pageNumber: pageForRaw(start),
       rects: mapped,
+      visualScale: visualScale,
       prefix: ctx.prefix,
       suffix: ctx.suffix,
     });
@@ -1449,11 +1529,40 @@ enum WebContentScript {
     setTimeout(reportSelection, 30);
   });
 
+  // Touch selection (iPad long-press + handle drags) never fires mouseup, so
+  // report from the selectionchange stream there. Mouse platforms keep the
+  // mouseup-only flow (no popover mid-drag); the key dedupe above makes the
+  // overlap harmless either way.
+  var touchSelection = "ontouchstart" in window;
+
+  // Leading edge: the handles keep emitting selectionchange while they settle,
+  // which would push a pure debounce out to multiple seconds — throttle so the
+  // popover appears promptly, and let the debounced pass below finalize.
+  var lastTouchReport = 0;
+  if (touchSelection) {
+    document.addEventListener("selectionchange", function () {
+      if (resizing) return;
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      var now = Date.now();
+      if (now - lastTouchReport > 300) {
+        lastTouchReport = now;
+        reportSelection();
+      }
+    });
+  }
+
   document.addEventListener(
     "selectionchange",
     debounce(function () {
+      if (resizing) return;
       var sel = window.getSelection();
-      if (!sel || sel.isCollapsed) post("selection-cleared");
+      if (!sel || sel.isCollapsed) {
+        lastSelectionKey = null;
+        post("selection-cleared");
+      } else if (touchSelection) {
+        reportSelection();
+      }
     }, 200)
   );
 
@@ -1504,6 +1613,21 @@ enum WebContentScript {
     };
   }
 
+  // Visual-viewport correction for point payloads sent to the app shell:
+  // strip the pan offset and report the scale so the native side can map
+  // layout CSS px into view points. The scale carries BOTH the Safari-style
+  // page zoom (viewScale shrinks the layout viewport and renders it scaled
+  // back up) and any live pinch; on macOS (pageZoom) it is always 1.
+  function visualPointPayload(x, y) {
+    var visual = window.visualViewport;
+    var scale = visual && isFinite(visual.scale) && visual.scale > 0 ? visual.scale : 1;
+    return {
+      x: x - (visual ? visual.offsetLeft : 0),
+      y: y - (visual ? visual.offsetTop : 0),
+      visualScale: scale,
+    };
+  }
+
   document.addEventListener(
     "click",
     function (e) {
@@ -1513,8 +1637,10 @@ enum WebContentScript {
 
       var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
       if (!anchor) return; // stay in note mode
-      anchor.x = e.clientX;
-      anchor.y = e.clientY;
+      var vp = visualPointPayload(e.clientX, e.clientY);
+      anchor.x = vp.x;
+      anchor.y = vp.y;
+      anchor.visualScale = vp.visualScale;
       post("note-placed", anchor);
     },
     true
@@ -1558,10 +1684,14 @@ enum WebContentScript {
       e.stopImmediatePropagation();
       // Viewport coords of the clicked rect so the app shell can anchor the
       // popover above it (the highlight's first rect may be off screen).
+      var vp = visualPointPayload(
+        hit.left - window.scrollX + hit.width / 2,
+        hit.top - window.scrollY);
       post("annotation-click", {
         id: hit.id,
-        x: hit.left - window.scrollX + hit.width / 2,
-        y: hit.top - window.scrollY,
+        x: vp.x,
+        y: vp.y,
+        visualScale: vp.visualScale,
       });
     },
     true
@@ -1574,11 +1704,13 @@ enum WebContentScript {
     function (e) {
       var anchor = noteAnchorAtPoint(e.clientX, e.clientY);
       e.preventDefault();
-      var payload = { x: e.clientX, y: e.clientY, found: !!anchor };
+      var vp = visualPointPayload(e.clientX, e.clientY);
+      var payload = { x: vp.x, y: vp.y, visualScale: vp.visualScale, found: !!anchor };
       if (anchor) {
         for (var k in anchor) payload[k] = anchor[k];
-        payload.x = e.clientX;
-        payload.y = e.clientY;
+        payload.x = vp.x;
+        payload.y = vp.y;
+        payload.visualScale = vp.visualScale;
       }
       post("context-menu", payload);
     },
@@ -1682,13 +1814,12 @@ enum WebContentScript {
       case "set-selected-highlight": {
         var nextId = d.id != null ? String(d.id) : null;
         if (nextId !== selectedHighlightId) {
+          removeResizePointerListeners();
+          resizePreview = null;
+          resizeState = null;
+          resizing = false;
+          setResizeLock(false);
           selectedHighlightId = nextId;
-          if (nextId === null) {
-            resizePreview = null;
-            resizeState = null;
-            resizing = false;
-            setResizeLock(false);
-          }
           renderHighlights();
         }
         break;
@@ -1941,8 +2072,8 @@ enum WebContentScript {
     initialize(true);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", relayout);
-    // Grab-anywhere-on-the-selected-highlight resize (see the function comment).
-    document.addEventListener("mousedown", onSelectedHighlightMouseDown, true);
+    // Pointer events cover mouse, trackpad, Pencil, and direct touch on iPad.
+    document.addEventListener("pointerdown", onSelectedHighlightPointerDown, true);
 
     // Back/forward can restore this page from WebKit's page cache, where
     // user scripts don't re-run: without a fresh init the shell keeps the
@@ -1966,12 +2097,67 @@ enum WebContentScript {
     // on subtree mutations, ignoring our own overlay churn. Observing the
     // documentElement survives full <body> replacement.
     if (window.MutationObserver) {
-      var remap = debounce(function () {
+      // A remap re-walks the entire DOM, rebuilds a per-character index of the
+      // whole page, and tears down and re-lays-out every highlight. On a page
+      // with a live region — a clock, a ticker, a video timestamp, a chat feed —
+      // mutations never stop, so a fixed 600ms debounce meant paying that
+      // forever at ~1.7Hz for as long as the tab stayed open.
+      //
+      // So: throttle rather than debounce, and let the interval adapt. A page
+      // that churns straight through a remap gets backed off geometrically; a
+      // page that had gone quiet — the SPA route change this observer exists for
+      // — keeps the responsive floor.
+      var REMAP_MIN_MS = 600;
+      // Ceiling on the backoff. This is also the worst case for how long a
+      // highlight can sit stale on a page that both re-renders AND churns
+      // continuously, so it stays modest rather than maximally thrifty.
+      var REMAP_MAX_MS = 5000;
+      // Quiet period after which the next mutation is treated as a fresh burst
+      // rather than continued churn. A FIXED constant, deliberately: scaling it
+      // off the current delay meant a page already backed off to REMAP_MAX_MS
+      // needed 2x that much silence to recover, so an SPA route change on a
+      // chatty page — exactly what this observer exists for — would remap at
+      // the 5s ceiling instead of the floor.
+      var REMAP_RESET_MS = 1500;
+      var remapDelay = REMAP_MIN_MS;
+      var remapTimer = null;
+      var lastRemapAt = 0;
+      var remapWhenVisible = false;
+
+      function runRemap() {
+        remapTimer = null;
+        lastRemapAt = Date.now();
+        // Nothing here is on screen while the page is hidden, so skip it and
+        // catch up on visibilitychange. NB: an inactive tab's web view is torn
+        // down rather than hidden, so in practice this fires for app
+        // backgrounding — where WebKit already throttles us — and is a
+        // belt-and-braces guard rather than a measured win.
+        if (document.visibilityState === "hidden") {
+          remapWhenVisible = true;
+          return;
+        }
         initialize(false); // resends init only if the text changed >15%
         pageTops = null;
         renderHighlights();
         reportScroll(true);
-      }, 600);
+      }
+
+      function remap() {
+        if (remapTimer) return; // already queued — it will see this mutation too
+        var quietFor = Date.now() - lastRemapAt;
+        remapDelay =
+          quietFor > REMAP_RESET_MS
+            ? REMAP_MIN_MS
+            : Math.min(remapDelay * 2, REMAP_MAX_MS);
+        remapTimer = setTimeout(runRemap, remapDelay);
+      }
+
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState !== "visible" || !remapWhenVisible) return;
+        remapWhenVisible = false;
+        lastRemapAt = 0; // becoming visible is not "churn" — remap promptly
+        remap();
+      });
       // Our own transient drag chrome (the resize shield + user-select lock
       // style) is added/removed on document.body/head during a drag; those
       // mutations must not trigger a re-extract that rebuilds the handles

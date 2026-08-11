@@ -114,16 +114,26 @@ enum PdfMetadata {
     /// the sidecar just installed under the manifest's id. Stamping the manifest
     /// id now makes the reopen key match.
     ///
-    /// Mirrors `PdfDocumentIO`'s lazy stamp exactly (loadForMutation → PDFKit
-    /// serialize → single doc_id Info increment → atomic-write of the
-    /// increment-patched bytes). It deliberately does NOT reload through
-    /// PDFDocument before writing: production never round-trips a custom Info key
-    /// through `dataRepresentation()`, and CGPDF reads the increment-appended
+    /// iPadOS 26's PDFKit serializer drops custom Info keys, so a
+    /// normalize-then-stamp round trip would erase /VellumLastPage and
+    /// friends. The increment is a pure byte append, so try it against the
+    /// file's own bytes first; only fall back to PDFKit normalization when
+    /// the file's xref shape defeats ClassicPdfFile.
+    ///
+    /// It deliberately does NOT reload through PDFDocument before writing:
+    /// production never round-trips a custom Info key through
+    /// `dataRepresentation()`, and CGPDF reads the increment-appended
     /// /VellumDocId back correctly, so this is the proven-readable form. No
     /// page-text cache refresh — a just-written file has no cache entry. Throws on
     /// any parse/serialize/write failure so the caller can fall back to its prior
     /// behavior.
     static func stampDocumentId(atPath path: String, id: String) throws {
+        if let original = try? PdfDocumentLoader.readFile(path),
+           let stamped = try? setMetadataIncrement(
+               normalizedData: original, entries: [(key: "doc_id", value: id)]) {
+            try PdfAtomicWriter.save(stamped, toPath: path)
+            return
+        }
         let (document, _) = try PdfDocumentLoader.loadForMutation(path: path)
         guard let normalized = document.dataRepresentation() else {
             throw SessionServiceError.io("Failed to stamp document id: PDFKit produced no data")

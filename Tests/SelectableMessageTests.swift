@@ -1,132 +1,122 @@
-import XCTest
-import AppKit
 import SwiftUI
+import UIKit
+import XCTest
 @testable import Vellum
 
-// Reproduces the "reference text → send → crash" path at the layer most likely
-// to fault: the AppKit selectable-message renderer + its self-sizing.
+// iOS-native rebuild of macOS's SelectableMessageText tests (#129 packet 5 §I.3,
+// applied by packet 9 §3.4). Exercises the same layer most likely to fault: the
+// attributed-markdown renderer shared by the selectable assistant bubble, plus
+// the read-only UITextView's self-sizing — and, since #51/#64, the hugging
+// bubble's width behaviour across the panel's whole width range.
+//
+// Two structural swaps run through the whole file:
+//   * `MessageContainerView` (an AppKit wrapper around an NSTextView) has no
+//     iPad counterpart: `SelectableTextView` IS the UITextView, and carries the
+//     `attributed` / `appliedContent` / `appliedMathWidth` state main keeps on
+//     the wrapper. Assertions move onto it unchanged.
+//   * `NSHostingView` + `NSWindow` + `layoutSubtreeIfNeeded()` becomes
+//     `UIHostingController` + `sizeThatFits(in:)` / `layoutIfNeeded()`
+//     (packet 9 §4.1: off-screen is fine, no window is needed on iOS). That also
+//     removes main's `onGeometryChange` + `RunLoop.run(until:)` measurement,
+//     which only existed because AppKit reports geometry after the layout pass
+//     commits; `sizeThatFits(in:)` answers synchronously with the size SwiftUI
+//     settled on for that proposal.
+//
+// Main's reentrancy tests (`testHostedInWindowLaysOutWithoutReentrancyCrash`,
+// `testRerenderWithDifferentMathContentUpdatesAppliedContent` mounted in an
+// NSWindow) are deliberately absent: they pin AppKit's
+// "-ensureLayoutForTextContainer while already performing layout" crash, which
+// has no iOS analogue. The invariant they protect — that a re-render with
+// different math replaces the typeset attachment — is kept below as
+// `testDifferentMathContentRendersDistinctAttachments`, and the measurement is
+// non-reentrant by construction here (`SelectableTextView.size(forWidth:)`
+// measures on a throwaway layout manager, never the live view).
 @MainActor
 final class SelectableMessageTests: XCTestCase {
+    private let richContent = """
+    # Heading
+
+    Here is a paragraph with **bold**, *italic*, `code`, and math $d\\sin\\theta = 2\\lambda$.
+
+    - item one
+    - item two
+
+    1. first
+    2. second
+
+    > a quote
+
+    ```
+    let x = 1
+    ```
+    """
+
     func testRendererProducesAttributedString() {
-        let content = """
-        # Heading
-
-        Here is a paragraph with **bold**, *italic*, `code`, and math $d\\sin\\theta = 2\\lambda$.
-
-        - item one
-        - item two
-
-        1. first
-        2. second
-
-        > a quote
-
-        ```
-        let x = 1
-        ```
-        """
         let attributed = AiAttributedRenderer.attributedString(
-            for: content, color: .labelColor, secondary: .secondaryLabelColor)
+            for: richContent, color: .label, secondary: .secondaryLabel)
         XCTAssertGreaterThan(attributed.length, 0)
     }
 
-    func testContainerHeightIsFiniteForVariousWidths() {
-        let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
+    func testSizeThatFitsIsFiniteForVariousWidths() {
+        let view = SelectableTextView()
+        view.isScrollEnabled = false
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
         let content = "The quick brown fox jumps over the lazy dog, again and again and again."
         let attributed = AiAttributedRenderer.attributedString(
-            for: content,
-            color: .labelColor, secondary: .secondaryLabelColor)
-        container.setAttributed(attributed, content: content, color: .labelColor, secondary: .secondaryLabelColor)
-        for width in [1.0, 40.0, 80.0, 200.0, 248.0] as [CGFloat] {
-            let height = container.height(forWidth: width)
+            for: content, color: .label, secondary: .secondaryLabel)
+        view.setAttributed(attributed, content: content, color: .label, secondary: .secondaryLabel)
+        for width in [1.0, 40.0, 80.0, 200.0, 300.0] as [CGFloat] {
+            let height = view.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
             XCTAssertTrue(height.isFinite, "height was not finite at width \(width): \(height)")
             XCTAssertGreaterThanOrEqual(height, 0)
         }
     }
 
-    /// Mounts the representable in a real NSHostingView and forces an AppKit
-    /// layout pass. This drives SwiftUI's `sizeThatFits(_:nsView:context:)` from
-    /// INSIDE AppKit layout — the condition under which measuring on the live
-    /// text view crashed ("-ensureLayoutForTextContainer while already
-    /// performing layout"). Must not crash.
-    func testHostedInWindowLaysOutWithoutReentrancyCrash() {
-        let view = SelectableMessageText(
-            content: "# Reply\n\nThe path difference equals **two wavelengths**: $d\\sin\\theta = 2\\lambda$.\n\n- one\n- two",
-            color: .primary,
-            secondary: .secondary,
-            onQuote: { _ in }
-        )
-        let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(x: 0, y: 0, width: 248, height: 400)
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 500),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
-        window.contentView?.layoutSubtreeIfNeeded()
-        // Second pass with a different width to exercise re-measurement.
-        hosting.frame = NSRect(x: 0, y: 0, width: 200, height: 400)
-        hosting.layoutSubtreeIfNeeded()
-        XCTAssertTrue(hosting.fittingSize.height.isFinite)
-    }
-
     func testEmptyContentDoesNotCrash() {
-        let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
-        container.setAttributed(AiAttributedRenderer.attributedString(
-            for: "", color: .labelColor, secondary: .secondaryLabelColor),
-            content: "", color: .labelColor, secondary: .secondaryLabelColor)
-        let height = container.height(forWidth: 248)
+        let view = SelectableTextView()
+        view.setAttributed(
+            AiAttributedRenderer.attributedString(for: "", color: .label, secondary: .secondaryLabel),
+            content: "", color: .label, secondary: .secondaryLabel)
+        let height = view.sizeThatFits(CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude)).height
         XCTAssertTrue(height.isFinite)
-        container.updateQuoteButton()
+        XCTAssertEqual(view.appliedContent, "")
     }
 
-    /// The early-return in `updateNSView` compares the raw `content` input
-    /// rather than the rendered output string. That distinction matters
-    /// because math spans typeset to a single NSTextAttachment whose
-    /// contribution to `textStorage.string` is one U+FFFC placeholder no
-    /// matter what the LaTeX inside says — an output-string comparison would
-    /// have called "$a$" → "$b$" a no-op and left the stale equation on
-    /// screen. Drives the real SwiftUI update path (not a direct
-    /// `setAttributed` call) so it exercises `updateNSView` itself.
-    func testRerenderWithDifferentMathContentUpdatesAppliedContent() {
-        let hosting = NSHostingView(rootView: SelectableMessageText(
-            content: "$a$", color: .primary, secondary: .secondary, onQuote: { _ in }
-        ))
-        hosting.frame = NSRect(x: 0, y: 0, width: 248, height: 200)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
+    func testSetAttributedTracksAppliedContent() {
+        let view = SelectableTextView()
+        let attributed = AiAttributedRenderer.attributedString(
+            for: richContent, color: .label, secondary: .secondaryLabel)
+        view.setAttributed(attributed, content: richContent, color: .label, secondary: .secondaryLabel)
+        XCTAssertEqual(view.appliedContent, richContent)
+        XCTAssertEqual(view.appliedColor, UIColor.label)
+    }
 
-        guard let container = Self.firstSubview(of: MessageContainerView.self, in: hosting) else {
-            return XCTFail("could not locate MessageContainerView in the hosted hierarchy")
-        }
-        XCTAssertEqual(container.appliedContent, "$a$")
-        let firstAttributed = container.attributed
-
-        hosting.rootView = SelectableMessageText(
-            content: "$b$", color: .primary, secondary: .secondary, onQuote: { _ in }
-        )
-        hosting.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(container.appliedContent, "$b$")
+    /// A change in math content must produce a distinct attributed string even
+    /// though both typeset to the same U+FFFC attachment placeholder — the panel
+    /// compares raw `content` (not the rendered string) to decide when to
+    /// repaint, so the renderer output must actually differ (invariant #7).
+    func testDifferentMathContentRendersDistinctAttachments() {
+        let a = AiAttributedRenderer.attributedString(for: "$a$", color: .label, secondary: .secondaryLabel)
+        let b = AiAttributedRenderer.attributedString(for: "$b$", color: .label, secondary: .secondaryLabel)
+        XCTAssertGreaterThan(a.length, 0)
+        XCTAssertGreaterThan(b.length, 0)
         XCTAssertFalse(
-            firstAttributed.isEqual(to: container.attributed),
-            "re-render with a different equation must replace the typeset attachment"
-        )
+            a.isEqual(to: b),
+            "re-render with a different equation must replace the typeset attachment")
     }
 
-    /// `sizeThatFits` used to clamp the bubble to a hard 248pt, so dragging the
-    /// resizable sidebar wider only grew the empty gutter beside a reply (#51).
-    /// The ceiling now comes from `maxWidth`, which the panel derives from the
-    /// live transcript width — a wider bubble must actually be laid out wider,
-    /// and the same text must therefore wrap onto fewer lines.
-    func testBubbleGrowsPastTheOldFixedCapWhenGivenAWiderMaxWidth() throws {
+    // MARK: - The hugging bubble (#51 / #64)
+
+    /// `sizeThatFits` used to clamp the bubble to a hard cap, so widening the
+    /// panel — a split-view drag or a rotation on iPad — only grew the empty
+    /// gutter beside a reply (#51). The ceiling now comes from `maxWidth`, which
+    /// the panel derives from the live transcript width, so a wider bubble must
+    /// actually be laid out wider and the same text must wrap onto fewer lines.
+    func testBubbleGrowsPastTheOldFixedCapWhenGivenAWiderMaxWidth() {
         let content = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 6)
-        let narrow = try measureBubble(content: content, width: 248)
-        let wide = try measureBubble(content: content, width: 520)
+        let narrow = measureBubble(content: content, width: 248)
+        let wide = measureBubble(content: content, width: 520)
 
         // Not equality with the cap: the bubble hugs, so a wrapped paragraph
         // stops at the last word that fit rather than at the cap exactly.
@@ -141,13 +131,13 @@ final class SelectableMessageTests: XCTestCase {
     /// means "within about one word of the cap", never the cap to the point.
     private static let wordBreakSlack: CGFloat = 60
 
-    /// The point of hugging (#51 review): at a 700pt sidebar the cap is ~650pt,
-    /// and returning the cap regardless of content painted "Yes." across the
-    /// whole of it. Same cap, two lengths, wildly different bubbles.
-    func testShortReplyHugsWhileALongOneStillFillsTheColumn() throws {
+    /// The point of hugging (#51 review): at a wide panel the cap is ~650pt, and
+    /// returning the cap regardless of content painted "Yes." across the whole
+    /// of it. Same cap, two lengths, wildly different bubbles.
+    func testShortReplyHugsWhileALongOneStillFillsTheColumn() {
         let cap: CGFloat = 520
-        let short = try measureBubble(content: "Yes.", width: cap)
-        let long = try measureBubble(
+        let short = measureBubble(content: "Yes.", width: cap)
+        let long = measureBubble(
             content: String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 6),
             width: cap)
 
@@ -162,9 +152,9 @@ final class SelectableMessageTests: XCTestCase {
     func testHuggingNeverClipsTypesetMath() throws {
         let latex = "$$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
         for cap in [120, 520] as [CGFloat] {
-            let bubble = try measureBubble(content: latex, width: cap)
+            let bubble = measureBubble(content: latex, width: cap)
             let attributed = AiAttributedRenderer.attributedString(
-                for: latex, color: .labelColor, secondary: .secondaryLabelColor,
+                for: latex, color: .label, secondary: .secondaryLabel,
                 mathMaxWidth: max(cap, 80))
             let equation = try XCTUnwrap(Self.firstAttachmentWidth(in: attributed))
             XCTAssertGreaterThanOrEqual(bubble.width + 1, equation, "equation clipped at cap \(cap)")
@@ -174,13 +164,13 @@ final class SelectableMessageTests: XCTestCase {
 
     /// Display math is rasterized into the attributed string against the
     /// bubble's width, so the renderer has to be told that width up front —
-    /// otherwise equations stay pinned to the old 240pt cap in a wide sidebar.
+    /// otherwise equations stay pinned to the old 240pt cap in a wide panel.
     func testDisplayMathScalesWithTheBubbleWidth() throws {
         let latex = "$$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
         let narrow = AiAttributedRenderer.attributedString(
-            for: latex, color: .labelColor, secondary: .secondaryLabelColor, mathMaxWidth: 40)
+            for: latex, color: .label, secondary: .secondaryLabel, mathMaxWidth: 40)
         let wide = AiAttributedRenderer.attributedString(
-            for: latex, color: .labelColor, secondary: .secondaryLabelColor, mathMaxWidth: 480)
+            for: latex, color: .label, secondary: .secondaryLabel, mathMaxWidth: 480)
 
         let narrowWidth = try XCTUnwrap(Self.firstAttachmentWidth(in: narrow), "expected typeset math")
         let wideWidth = try XCTUnwrap(Self.firstAttachmentWidth(in: wide), "expected typeset math")
@@ -189,84 +179,96 @@ final class SelectableMessageTests: XCTestCase {
     }
 
     /// The width only feeds the math rasterizer, so a reply with no equations
-    /// renders byte-identically at every width. Dragging the sidebar changes
-    /// `maxWidth` on every frame for every bubble in the transcript, so if the
-    /// early return in `updateNSView` doesn't hold here the drag re-parses the
-    /// whole transcript's markdown once per frame. Object identity is the
-    /// check: a re-render always installs a fresh NSAttributedString.
+    /// renders byte-identically at every width. A split-view drag or a rotation
+    /// changes `maxWidth` on every frame for every bubble in the transcript, so
+    /// if the early return in `updateUIView` doesn't hold here the drag
+    /// re-parses the whole transcript's markdown once per frame. Object identity
+    /// is the check: a re-render always installs a fresh NSAttributedString.
     func testWidthOnlyUpdateSkipsRerenderForAReplyWithNoMath() throws {
         let content = "A plain reply with **bold** and `code` but no equations at all."
-        let hosting = try mountedBubble(content: content, maxWidth: 248, frameWidth: 520)
-        let container = try XCTUnwrap(Self.firstSubview(of: MessageContainerView.self, in: hosting))
-        let before = container.attributed
+        let host = mountedBubble(content: content, maxWidth: 248, frameWidth: 520)
+        let view = try XCTUnwrap(Self.firstSubview(of: SelectableTextView.self, in: host.view))
+        let before = view.attributed
 
-        hosting.rootView = SelectableMessageText(
+        host.rootView = SelectableMessageText(
             content: content, color: .primary, secondary: .secondary,
-            maxWidth: 520, onQuote: { _ in }
-        )
-        hosting.layoutSubtreeIfNeeded()
+            maxWidth: 520, onQuote: { _ in })
+        Self.relayout(host)
 
         XCTAssertTrue(
-            before === container.attributed,
-            "a width-only change must not re-render a reply that has no math to rescale"
-        )
+            before === view.attributed,
+            "a width-only change must not re-render a reply that has no math to rescale")
     }
 
     /// The counterpart: the skip above must not swallow the case it exists for.
     /// A reply that DID typeset an equation has to be re-rendered when the
-    /// width changes, or the sidebar is left showing a stale, undersized image.
+    /// width changes, or the panel is left showing a stale, undersized image.
     func testWidthOnlyUpdateRerendersAReplyThatContainsMath() throws {
         let content = "The Gaussian integral: $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
-        let hosting = try mountedBubble(content: content, maxWidth: 100, frameWidth: 520)
-        let container = try XCTUnwrap(Self.firstSubview(of: MessageContainerView.self, in: hosting))
-        let before = container.attributed
-        XCTAssertEqual(container.appliedMathWidth, 100)
+        let host = mountedBubble(content: content, maxWidth: 100, frameWidth: 520)
+        let view = try XCTUnwrap(Self.firstSubview(of: SelectableTextView.self, in: host.view))
+        let before = view.attributed
+        XCTAssertEqual(view.appliedMathWidth, 100)
 
-        hosting.rootView = SelectableMessageText(
+        host.rootView = SelectableMessageText(
             content: content, color: .primary, secondary: .secondary,
-            maxWidth: 520, onQuote: { _ in }
-        )
-        hosting.layoutSubtreeIfNeeded()
+            maxWidth: 520, onQuote: { _ in })
+        Self.relayout(host)
 
-        XCTAssertFalse(before === container.attributed, "a wider bubble must re-typeset the equation")
-        XCTAssertEqual(container.appliedMathWidth, 520)
+        XCTAssertFalse(before === view.attributed, "a wider bubble must re-typeset the equation")
+        XCTAssertEqual(view.appliedMathWidth, 520)
     }
 
-    /// Mount the representable and force a layout pass, leaving it hosted in a
-    /// window so `updateNSView` runs on subsequent `rootView` swaps.
+    // MARK: - Helpers
+
+    /// The size SwiftUI settles on for a bubble capped at `width`. Main reads
+    /// the mounted `MessageContainerView`'s bounds after an AppKit layout pass;
+    /// `sizeThatFits(in:)` is the same question asked directly, and it runs the
+    /// representable's own `sizeThatFits(_:uiView:context:)` — the code under
+    /// test — rather than whatever the parent stretched the view to afterwards.
+    private func measureBubble(content: String, width: CGFloat) -> CGSize {
+        let host = UIHostingController(rootView: SelectableMessageText(
+            content: content, color: .primary, secondary: .secondary,
+            maxWidth: width, onQuote: { _ in }))
+        return host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+
+    /// Mount the representable and force a layout pass, so `updateUIView` runs
+    /// on subsequent `rootView` swaps against the same live text view.
+    ///
+    /// Unlike the pure measurements above, this one needs a real (off-screen,
+    /// scene-less, never-shown) `UIWindow`: SwiftUI only instantiates a
+    /// `UIViewRepresentable`'s UIView once the hosting controller's view is in a
+    /// window, and these two tests assert on that live view's identity.
     private func mountedBubble(
         content: String, maxWidth: CGFloat, frameWidth: CGFloat
-    ) throws -> NSHostingView<SelectableMessageText> {
-        let hosting = NSHostingView(rootView: SelectableMessageText(
+    ) -> UIHostingController<SelectableMessageText> {
+        let host = UIHostingController(rootView: SelectableMessageText(
             content: content, color: .primary, secondary: .secondary,
-            maxWidth: maxWidth, onQuote: { _ in }
-        ))
-        hosting.frame = NSRect(x: 0, y: 0, width: frameWidth, height: 600)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: frameWidth + 40, height: 700),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
-        return hosting
+            maxWidth: maxWidth, onQuote: { _ in }))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: frameWidth, height: 600))
+        window.rootViewController = host
+        window.isHidden = false
+        windows.append(window)
+        Self.relayout(host)
+        return host
     }
 
-    /// Mount the representable at `width` and report the size AppKit actually
-    /// gave the text container.
-    private func measureBubble(content: String, width: CGFloat) throws -> CGSize {
-        let hosting = NSHostingView(rootView: SelectableMessageText(
-            content: content, color: .primary, secondary: .secondary,
-            maxWidth: width, onQuote: { _ in }
-        ))
-        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 600)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 700),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
-        let container = try XCTUnwrap(
-            Self.firstSubview(of: MessageContainerView.self, in: hosting),
-            "could not locate MessageContainerView in the hosted hierarchy")
-        return container.bounds.size
+    /// Windows created by `mountedBubble`, kept alive for the length of the test
+    /// and torn down after it.
+    private var windows: [UIWindow] = []
+
+    override func tearDown() async throws {
+        for window in windows {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        windows = []
+    }
+
+    private static func relayout(_ host: UIViewController) {
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
     }
 
     private static func firstAttachmentWidth(in attributed: NSAttributedString) -> CGFloat? {
@@ -282,18 +284,13 @@ final class SelectableMessageTests: XCTestCase {
         return found
     }
 
-    private static func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
+    fileprivate static func firstSubview<T: UIView>(of type: T.Type, in root: UIView) -> T? {
         if let match = root as? T { return match }
         for subview in root.subviews {
             if let match = firstSubview(of: type, in: subview) { return match }
         }
         return nil
     }
-}
-
-/// Captures a size out of a SwiftUI geometry callback.
-private final class SizeBox {
-    var size: CGSize = .zero
 }
 
 // The SwiftUI half of the hugging bubble. `MarkdownMessage` renders user
@@ -313,7 +310,7 @@ final class MarkdownMessageWidthTests: XCTestCase {
     }
 
     /// The AI panel's user bubbles opt out, so a short message stops at its text
-    /// instead of painting a tinted bar across the sidebar.
+    /// instead of painting a tinted bar across the panel.
     func testOptingOutHugsTheContent() {
         let size = measure(offered: 400) {
             MarkdownMessage(content: "Hi", textColor: .primary, fillsAvailableWidth: false)
@@ -362,15 +359,11 @@ final class MarkdownMessageWidthTests: XCTestCase {
     /// than `maxWidth`, the proposal has to win.
     ///
     /// This is reachable in the panel, not theoretical. `bubbleMaxWidth` floors
-    /// its column at 160pt, so while the inspector is collapsing — or any other
+    /// its column at 160pt, so while the panel is collapsing — or any other
     /// moment SwiftUI proposes less than the last measured transcript width —
     /// the derived cap is larger than the room actually on offer. If the cap
     /// passed its own `maxWidth` down regardless, the bubble would be laid out
-    /// wider than the sidebar and clip against the trailing edge.
-    ///
-    /// Verified to bite: with `cap(for:)` mutated to `return maxWidth`, this
-    /// fails (measures ~300 against a 200pt offer) and every other layout test
-    /// still passes.
+    /// wider than the panel and clip against the trailing edge.
     func testBubbleWidthCapNeverExceedsANarrowerProposal() {
         let narrow = measure(offered: 200) {
             BubbleWidthCap(maxWidth: 300) {
@@ -386,54 +379,44 @@ final class MarkdownMessageWidthTests: XCTestCase {
     }
 
     /// Size SwiftUI actually settles on for `content` when it is offered
-    /// `width` points. Hosted in an off-screen window that is never ordered on
-    /// screen, so nothing is launched, shown or focused.
+    /// `width` points. Hosted off-screen: nothing is launched, shown or focused.
     private func measure(offered width: CGFloat, @ViewBuilder _ content: () -> some View) -> CGSize {
-        let box = SizeBox()
-        let hosting = NSHostingView(
-            rootView: content()
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { box.size = $0 }
-        )
-        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 400)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 500),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
-        // The geometry callback lands after the layout pass commits.
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        return box.size
+        UIHostingController(rootView: content())
+            .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
     }
 }
 
-// The width the whole feature hangs off: `AiPanel` measures the transcript with
-// `onGeometryChange` and derives each bubble's cap from it (#51). That
+// The width the whole feature hangs off: `AiPanel_iOS` measures the transcript
+// with `onGeometryChange` and derives each bubble's cap from it (#51). That
 // measurement is a raw SwiftUI geometry value, so it has to survive the sizes
-// SwiftUI hands back before/around a real layout pass as well as the two ends
-// of the sidebar's 240…700pt range.
+// SwiftUI hands back before/around a real layout pass as well as the two ends of
+// the panel's 240…700pt range.
+//
+// `AiPanel.` → `AiPanel_iOS.` throughout: the iPad's panel is an iOS-native
+// rebuild and owns these statics (packet 5 §F.4), the same rename
+// `AiTranscriptFollowTests` carries.
 @MainActor
 final class AiPanelBubbleWidthTests: XCTestCase {
-    /// No geometry pass yet (0), and the values a collapsing/animating
-    /// inspector can produce, all fall back to the pre-resize 272pt rather than
-    /// laying a bubble out at zero — or, for an infinite column, silently
-    /// switching off the equation downscaling that `mathMaxWidth` drives.
+    /// No geometry pass yet (0), and the values a collapsing/animating panel can
+    /// produce, all fall back to the pre-resize 272pt rather than laying a
+    /// bubble out at zero — or, for an infinite column, silently switching off
+    /// the equation downscaling that `mathMaxWidth` drives.
     func testDegenerateMeasurementsFallBackToTheFixedWidth() {
         for contentWidth in [0, -1, -600, .nan, .infinity, -.infinity] as [CGFloat] {
             XCTAssertEqual(
-                AiPanel.bubbleMaxWidth(for: .assistant, contentWidth: contentWidth), 272,
-                "degenerate content width \(contentWidth) should fall back"
-            )
+                AiPanel_iOS.bubbleMaxWidth(for: .assistant, contentWidth: contentWidth), 272,
+                "degenerate content width \(contentWidth) should fall back")
         }
     }
 
-    /// The two ends of the resizable inspector, minus the transcript's 12pt
+    /// The two ends of the panel's width range, minus the transcript's 12pt
     /// insets. The narrow end is the case the feature must not make worse: a
-    /// 240pt sidebar has to stay at least as usable as the old fixed layout.
+    /// 240pt panel has to stay at least as usable as the old fixed layout.
     func testBubbleWidthsAtTheSidebarExtremes() {
-        XCTAssertEqual(AiPanel.bubbleMaxWidth(for: .assistant, contentWidth: 216), 216)
-        XCTAssertEqual(AiPanel.bubbleMaxWidth(for: .user, contentWidth: 216), 200)
-        XCTAssertEqual(AiPanel.bubbleMaxWidth(for: .assistant, contentWidth: 676), 676)
-        XCTAssertEqual(AiPanel.bubbleMaxWidth(for: .user, contentWidth: 676), 676 * 0.82, accuracy: 0.01)
+        XCTAssertEqual(AiPanel_iOS.bubbleMaxWidth(for: .assistant, contentWidth: 216), 216)
+        XCTAssertEqual(AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: 216), 200)
+        XCTAssertEqual(AiPanel_iOS.bubbleMaxWidth(for: .assistant, contentWidth: 676), 676)
+        XCTAssertEqual(AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: 676), 676 * 0.82, accuracy: 0.01)
     }
 
     /// Sweep the whole range: a bubble may never exceed the column it sits in
@@ -442,8 +425,8 @@ final class AiPanelBubbleWidthTests: XCTestCase {
     func testBubbleNeverExceedsItsColumnAcrossTheSidebarRange() {
         for sidebar in stride(from: CGFloat(240), through: CGFloat(700), by: CGFloat(10)) {
             let column = sidebar - 24
-            let assistant = AiPanel.bubbleMaxWidth(for: .assistant, contentWidth: column)
-            let user = AiPanel.bubbleMaxWidth(for: .user, contentWidth: column)
+            let assistant = AiPanel_iOS.bubbleMaxWidth(for: .assistant, contentWidth: column)
+            let user = AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: column)
             XCTAssertEqual(assistant, column, "assistant should take the full column at \(sidebar)pt")
             XCTAssertGreaterThan(user, 0, "user bubble collapsed at \(sidebar)pt")
             XCTAssertLessThanOrEqual(user, assistant, "user bubble overflowed the column at \(sidebar)pt")
@@ -455,7 +438,7 @@ final class AiPanelBubbleWidthTests: XCTestCase {
 // `messageRow`, so nothing about the bubble's own layout constrains them. They
 // used to carry a hardcoded `.frame(maxWidth: 272)` — correct while the bubble
 // was a fixed 272pt, silently wrong once #64 made `bubbleMaxWidth` scale with
-// the resizable sidebar. These pin the two together.
+// the panel. These pin the two together.
 @MainActor
 final class SentReferenceChipsWidthTests: XCTestCase {
     /// Four mixed-width chips, enough to force a wrap at any realistic cap.
@@ -482,46 +465,31 @@ final class SentReferenceChipsWidthTests: XCTestCase {
         .environment(\.palette, .dark)
     }
 
-    /// The regression the merge of #64 into this branch would otherwise have
-    /// shipped: offered far more room than the cap, the chips must wrap at the
-    /// cap rather than running out to the full transcript width.
-    ///
-    /// Verified to bite: restoring the old hardcoded `.frame(maxWidth: 272)`
-    /// fails this (measures ~272 against a 200pt cap).
+    /// The regression the merge of #64 would otherwise have shipped: offered far
+    /// more room than the cap, the chips must wrap at the cap rather than
+    /// running out to the full transcript width.
     func testChipsWrapAtTheCapNotTheOfferedWidth() {
         let size = measureChips(offered: 600, cap: 200)
-        XCTAssertLessThanOrEqual(
-            size.width, 201, "chips overflowed the bubble's cap")
+        XCTAssertLessThanOrEqual(size.width, 201, "chips overflowed the bubble's cap")
         XCTAssertGreaterThan(
             size.height, 20, "four chips capped at 200pt should have wrapped onto several lines")
     }
 
     /// A chips row may never be wider than the user bubble it labels, anywhere
-    /// in the sidebar's 240…700pt range — including the narrow end, where the
-    /// old 272pt literal was WIDER than the whole user column (200pt).
+    /// in the panel's 240…700pt range — including the narrow end, where the old
+    /// 272pt literal was WIDER than the whole user column (200pt).
     func testChipsNeverExceedTheUserBubbleAcrossTheSidebarRange() {
         for sidebar in stride(from: CGFloat(240), through: CGFloat(700), by: CGFloat(100)) {
-            let cap = AiPanel.bubbleMaxWidth(for: .user, contentWidth: sidebar - 24)
+            let cap = AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: sidebar - 24)
             let size = measureChips(offered: sidebar, cap: cap)
             XCTAssertLessThanOrEqual(
                 size.width, cap + 1,
-                "chips exceeded the \(cap)pt user bubble at a \(sidebar)pt sidebar")
+                "chips exceeded the \(cap)pt user bubble at a \(sidebar)pt panel")
         }
     }
 
     private func measureChips(offered width: CGFloat, cap: CGFloat) -> CGSize {
-        let box = SizeBox()
-        let hosting = NSHostingView(
-            rootView: chips(maxWidth: cap)
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { box.size = $0 }
-        )
-        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 400)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: width + 40, height: 500),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        return box.size
+        UIHostingController(rootView: chips(maxWidth: cap))
+            .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
     }
 }

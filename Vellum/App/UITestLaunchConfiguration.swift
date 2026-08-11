@@ -1,18 +1,19 @@
 import Foundation
 
-/// Process-boundary configuration for the UI-test runner.
+/// Process-boundary configuration for a UI-test runner.
 ///
-/// The switches are deliberately inert unless `--ui-testing` is present. This
-/// keeps test storage and state deterministic without changing normal launches
-/// or teaching individual feature stores about XCUITest.
+/// The iPad target has no XCUITest bundle today (macOS #87 added one; iOS did
+/// not), so `isEnabled` is always false here and every switch below is inert.
+/// The type is still ported verbatim-in-shape because `WebLibrary.appDataDir`,
+/// `PageTextCache` and `KeychainStore` read it, and because an iOS UI-test
+/// target would need exactly these seams.
 enum UITestLaunchConfiguration {
     static let isEnabled = ProcessInfo.processInfo.arguments.contains("--ui-testing")
 
-    /// The shipping app's UserDefaults domain. UI tests run under the
-    /// `UITesting` build configuration, which gives the app a dedicated bundle
-    /// identifier; if that ever stops being true, the state reset below must
-    /// refuse to run rather than delete a real user's library and settings.
-    private static let productionBundleIdentifier = "com.vellum.app"
+    /// The shipping app's bundle identifier. If a UI-test configuration is ever
+    /// added it must carry a DIFFERENT identifier; the reset below refuses to
+    /// run under the production one rather than wipe a real user's library.
+    private static let productionBundleIdentifier = "com.ayushdeolasee.vellum"
 
     static var storageRoot: URL? {
         guard isEnabled,
@@ -22,24 +23,21 @@ enum UITestLaunchConfiguration {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    /// Runs before any store reads UserDefaults.
+    /// Runs before any store reads UserDefaults. Returns a document path to open.
+    @discardableResult
     static func prepare() -> String? {
         guard isEnabled else { return nil }
 
-        let defaults = UserDefaults.standard
         if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-state"),
            let bundleIdentifier = Bundle.main.bundleIdentifier {
             if bundleIdentifier == productionBundleIdentifier {
-                // Wrong build configuration: this process shares the installed
-                // app's defaults domain. Skip the wipe instead of destroying it.
                 FileHandle.standardError.write(Data("""
                     [UITest] Refusing --ui-test-reset-state: this build uses the \
-                    production bundle identifier \(productionBundleIdentifier). \
-                    Run UI tests with the UITesting configuration.
+                    production bundle identifier \(productionBundleIdentifier).
 
                     """.utf8))
             } else {
-                defaults.removePersistentDomain(forName: bundleIdentifier)
+                UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
             }
         }
 
@@ -64,8 +62,7 @@ enum UITestLaunchConfiguration {
         }
 
         if let root = storageRoot {
-            try? FileManager.default.createDirectory(
-                at: root, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         }
 
         return value(after: "--ui-test-open-document")

@@ -183,14 +183,12 @@ private struct SmallPrimaryButton: View {
 // MARK: - WebNoteComposer
 
 struct WebNoteComposerView: View {
-    /// Text to open pre-filled with — the AI reply behind "Add as note".
-    /// Seeded into `text` at init so the user can still edit or cancel it.
     var initialContent: String = ""
     var onSubmit: (String) -> Void
     var onClose: () -> Void
-    /// Reports edits upward so an unasked-for dismissal (stray click, scroll)
+    /// Reports edits upward so an unasked-for dismissal (stray tap, scroll)
     /// can hand the draft back to the note queue instead of dropping it — see
-    /// `WebViewerController.returnNoteComposerDraft` and issue #92.
+    /// `WebViewerController_iOS.returnNoteComposerDraft` and issue #92.
     var onDraftChange: (String) -> Void = { _ in }
 
     @State private var text: String
@@ -216,7 +214,7 @@ struct WebNoteComposerView: View {
                     Image(systemName: "note.text")
                         .font(.system(size: 13))
                         .foregroundStyle(WebAmber.amber500)
-                    Text(initialContent.isEmpty ? "New note" : "New note from AI reply")
+                    Text("New note")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(palette.mutedForeground)
                 }
@@ -414,7 +412,10 @@ private struct DeleteNoteButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
-                .contentShape(RoundedRectangle(cornerRadius: Radius.sm))
+                // Expand the tap target toward the touch-friendly 44pt
+                // minimum without growing the visible 24pt glyph box — the
+                // header row has room to spare (a Spacer sits to its left).
+                .contentShape(Rectangle().inset(by: -10))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -427,7 +428,6 @@ private struct DeleteNoteButton: View {
 /// The highlight/note popover shown above a text selection. Hangs above and
 /// centered on the anchor point (translate(-50%, -100%)).
 struct WebSelectionPopover: View {
-    var position: CGPoint
     var onHighlight: (String) -> Void
     var onNote: (String) -> Void
     /// Fired as the note field opens, so the controller can pin the selection
@@ -439,7 +439,6 @@ struct WebSelectionPopover: View {
     @Environment(\.palette) private var palette
     @State private var showNoteInput = false
     @State private var noteText = ""
-    @State private var size: CGSize = .zero
     @FocusState private var noteFieldFocused: Bool
 
     var body: some View {
@@ -491,7 +490,9 @@ struct WebSelectionPopover: View {
                         }
                         .focused($noteFieldFocused)
                         .onSubmit(submitNote)
+                        #if os(macOS)
                         .onExitCommand { onClose() }
+                        #endif
                         .onAppear { noteFieldFocused = true }
                     SmallPrimaryButton(title: "Add", action: submitNote)
                 }
@@ -500,14 +501,6 @@ struct WebSelectionPopover: View {
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
-        .onGeometryChange(for: CGSize.self) { proxy in
-            proxy.size
-        } action: { newSize in
-            size = newSize
-        }
-        // translate(-50%, -100%): hangs above and centered on the anchor.
-        .offset(x: position.x - size.width / 2, y: position.y - size.height)
-        .opacity(size == .zero ? 0 : 1)
     }
 
     private func submitNote() {

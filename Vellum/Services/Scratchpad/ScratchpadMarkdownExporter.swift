@@ -211,15 +211,15 @@ enum ScratchpadMarkdownExporter {
 
     static func storageExplanation(mode: WebStorageMode, degraded: Bool) -> String {
         if degraded {
-            return "Scratchpad data is temporarily stored on this Mac because the selected storage location is unavailable. It will not sync until that location is restored."
+            return "Scratchpad data is temporarily stored on this iPad because the selected storage location is unavailable. It will not sync until that location is restored."
         }
         switch mode {
         case .icloud:
             return "Scratchpad data lives in Vellum’s iCloud Drive storage and syncs through iCloud."
         case .custom:
-            return "Scratchpad data stays in Application Support on this Mac. The custom folder contains offline webpages, not scratchpad notes."
+            return "Scratchpad data stays in Application Support on this iPad. The custom folder contains offline webpages, not scratchpad notes."
         case .local:
-            return "Scratchpad data stays in Application Support on this Mac and does not sync."
+            return "Scratchpad data stays in Application Support on this iPad and does not sync."
         }
     }
 
@@ -420,8 +420,7 @@ enum ScratchpadMarkdownExporter {
         guard isSymbolicLink(at: sourceURL, fileManager: fileManager) == false else {
             return false
         }
-        let roots = [attachmentsDirectory, ScratchpadAttachmentStore.activeDirectory,
-                     ScratchpadAttachmentStore.directory].compactMap { $0 }
+        let roots = [attachmentsDirectory, ScratchpadAttachmentStore.directory].compactMap { $0 }
         return roots.contains { root in
             contains(sourceURL, within: root)
         }

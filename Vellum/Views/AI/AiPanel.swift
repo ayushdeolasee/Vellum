@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1205,3 +1206,4 @@ final class SubmitTextView: NSTextView {
         placeholder.draw(at: NSPoint(x: textContainerInset.width, y: textContainerInset.height), withAttributes: attributes)
     }
 }
+#endif  // os(macOS) — iPad reference; see Platform/iOS/AiPanel_iOS.swift

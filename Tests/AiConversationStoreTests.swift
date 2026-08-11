@@ -500,4 +500,43 @@ final class AiConversationStoreTests: XCTestCase {
         // The next load re-reads disk (the empty wasn't cached) and finds the chat.
         XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["recovered"])
     }
+
+    // MARK: - iPad-only: bytes that are not JSON at all (packet 5 §4)
+
+    /// The #90 guard, driven from the other side of the classifier. Every case
+    /// above feeds the loader *well-formed JSON* whose elements don't decode;
+    /// this one writes bytes that aren't JSON at all — the shape a truncated
+    /// write or a half-restored iOS container leaves behind. The empty
+    /// transcript that results is still our failure to read, so the next empty
+    /// save must leave the bytes exactly as they are, and a later real turn must
+    /// still be able to write over them.
+    ///
+    /// iPad-only because the app container's UUID moves across reinstalls, so a
+    /// partially written `conversations.json` is a routine outcome here rather
+    /// than a theoretical one.
+    func testGarbageBytesSurviveAnEmptySaveButYieldToARealOne() async throws {
+        let doc = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: doc)
+        // Not JSON: JSONSerialization fails before it ever sees an element.
+        let garbage = Data([0x00, 0xFF, 0x10, 0x81, 0x7F, 0xC0, 0xC1])
+        try DocumentDataStore.saveConversationsData(forKey: key, data: garbage)
+
+        XCTAssertTrue(AiPersistence.loadConversation(for: doc).isEmpty,
+                      "undecodable bytes read as an empty transcript")
+
+        // The empty in-memory transcript is saved back — the hard-delete path.
+        AiPersistence.saveConversation(for: doc, messages: [])
+        await AiPersistence.awaitPendingFlush()
+
+        XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: key),
+                      "an unreadable conversation must not be deleted by an empty save")
+        XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: key), garbage,
+                       "the original bytes must survive byte-for-byte")
+
+        // A real turn is not suppressed by the earlier failed read.
+        AiPersistence.saveConversation(
+            for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "starting over")])
+        await AiPersistence.awaitPendingFlush()
+        XCTAssertEqual(try fileMessages(forKey: key).map(\.content), ["starting over"])
+    }
 }

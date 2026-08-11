@@ -1,63 +1,234 @@
 import Foundation
 import os
 
-/// Per-document scratchpad notes, persisted to `documents/<key>/scratchpad.md`
-/// via `DocumentDataStore` (class-B user data — see plans/storage-design.html
-/// §4). The on-disk markdown holds RELATIVE image refs (`attachments/<id>.<ext>`)
-/// so a document's folder is portable standard Markdown; the live editor keeps
-/// its `vellum-scratchpad://<id>` scheme URLs, and this type rewrites between the
-/// two forms on load/save.
-///
-/// The legacy UserDefaults blob (`vellum.scratchpad.notes.v1`, path-keyed) is now
-/// a read-only migration source only: a document's entry is folded into its
-/// folder on first load and removed from the blob (§7 lazy migration).
+struct ScratchpadStagedAttachment: Equatable, Sendable {
+    var id: String
+    var name: String
+    var data: Data
+}
+
+/// One serialized write lane per storage key. Imports and destructive Storage
+/// actions invalidate and join the same lane before replacing/removing bytes,
+/// so a save that was already coordinating cannot land afterward and resurrect
+/// stale text.
+actor ScratchpadWriteCoordinator {
+    static let shared = ScratchpadWriteCoordinator()
+
+    private var generations: [String: Int] = [:]
+    private var tails: [String: Task<Void, Never>] = [:]
+
+    func enqueue(
+        forKey key: String,
+        operation: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let generation = generations[key, default: 0]
+        let previous = tails[key]
+        let result = Task<Bool, Never> {
+            await previous?.value
+            guard self.isCurrent(generation, forKey: key) else { return false }
+            return await operation()
+        }
+        tails[key] = Task { _ = await result.value }
+        return await result.value
+    }
+
+    func enqueueCommit(
+        forKey key: String,
+        operation: @escaping @Sendable () async -> String?
+    ) async -> String? {
+        let generation = generations[key, default: 0]
+        let previous = tails[key]
+        let result = Task<String?, Never> {
+            await previous?.value
+            guard self.isCurrent(generation, forKey: key) else { return nil }
+            return await operation()
+        }
+        tails[key] = Task { _ = await result.value }
+        return await result.value
+    }
+
+    /// Invalidate earlier saves and install an exclusive barrier for the whole
+    /// mutation. The barrier is put in every key's lane before this actor first
+    /// suspends, so a save enqueued while `operation` runs waits behind it.
+    func withExclusiveAccess<T: Sendable>(
+        forKeys keys: [String],
+        operation: @escaping @Sendable () async -> T
+    ) async -> T {
+        let keys = Array(Set(keys)).sorted()
+        for key in keys { generations[key, default: 0] &+= 1 }
+        let pending = keys.compactMap { tails[$0] }
+        let result = Task<T, Never> {
+            for task in pending { await task.value }
+            return await operation()
+        }
+        let barrier = Task<Void, Never> { _ = await result.value }
+        for key in keys { tails[key] = barrier }
+        return await result.value
+    }
+
+    func withExclusiveAccess<T: Sendable>(
+        forKeys keys: [String],
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let keys = Array(Set(keys)).sorted()
+        for key in keys { generations[key, default: 0] &+= 1 }
+        let pending = keys.compactMap { tails[$0] }
+        let result = Task<T, Error> {
+            for task in pending { await task.value }
+            return try await operation()
+        }
+        let barrier = Task<Void, Never> { _ = try? await result.value }
+        for key in keys { tails[key] = barrier }
+        return try await result.value
+    }
+
+    func awaitPendingWrites() async {
+        let pending = Array(tails.values)
+        for task in pending { await task.value }
+    }
+
+    private func isCurrent(_ generation: Int, forKey key: String) -> Bool {
+        generations[key, default: 0] == generation
+    }
+}
+
+/// Folder-backed Scratchpad persistence. `vellum.scratchpad.notes.v1` is never
+/// written by live code; it remains only as a lazy, recoverable migration source.
 enum ScratchpadPersistence {
     static let notesKey = "vellum.scratchpad.notes.v1"
     static let maxCharacters = 200_000
+    private static let legacyWriteLaneKey = "legacy:\(notesKey)"
 
-    private struct Entry: Codable {
+    private struct Entry: Codable, Sendable {
         var key: String
         var text: String
     }
 
-    // MARK: - Load / save (folder-backed)
-
-    /// The scheme-form (editor runtime) markdown for `key`, or "" if none.
-    static func load(forKey key: String) -> String {
-        relativeToScheme(DocumentDataStore.loadScratchpad(forKey: key))
+    struct LegacySnapshot: Sendable {
+        var key: String
+        var text: String
+        var attachments: [ScratchpadStagedAttachment]
     }
 
-    /// Persist `schemeText` (editor runtime form) for `key`. Converts image refs
-    /// to portable relative form, prunes attachments the note no longer
-    /// references, and — when the note is empty — deletes scratchpad.md and any
-    /// now-orphaned folder (delete-means-delete, §8). Throws on the write itself.
-    static func save(forKey key: String, schemeText: String) throws {
-        let bounded = String(schemeText.prefix(maxCharacters))
-        let referenced = ScratchpadAttachmentStore.referencedIds(in: bounded)
-        let attachmentDirectory = DocumentDataStore.attachmentsDir(forKey: key)
-        let relative = schemeToRelative(bounded) {
-            ScratchpadAttachmentStore.fileURL(
-                for: $0, preferredDir: attachmentDirectory)?.pathExtension
-        }
-        if relative.isEmpty {
-            DocumentDataStore.removeScratchpad(forKey: key)
-        } else {
-            try DocumentDataStore.saveScratchpad(forKey: key, text: relative)
-        }
-        // Prune attachments the note no longer points at, then drop the folder
-        // entirely if nothing but meta.json is left.
-        ScratchpadAttachmentStore.collectGarbage(
-            in: attachmentDirectory, referencedIds: referenced)
-        DocumentDataStore.pruneEmptyDocumentDir(forKey: key)
+    enum MigrationResult: Sendable {
+        case none
+        case migrated
+        case retainedForRetry(LegacySnapshot)
     }
 
-    // MARK: - Relative <-> scheme image-ref rewrites
+    // MARK: - Coordinated live storage
+
+    static func load(
+        forKey key: String,
+        coordinator: StorageCoordinator
+    ) async throws -> String {
+        relativeToScheme(try await DocumentDataStore.loadScratchpad(
+            forKey: key, coordinator: coordinator))
+    }
+
+    static func save(
+        forKey key: String,
+        document: DocumentInfo,
+        schemeText: String,
+        expectedBaseline: String,
+        attachments: [ScratchpadStagedAttachment],
+        dirtyAttachmentNames: Set<String>,
+        coordinator: StorageCoordinator
+    ) async -> String? {
+        return await ScratchpadWriteCoordinator.shared.enqueueCommit(forKey: key) {
+            do {
+                let durable = relativeToScheme(try await DocumentDataStore.loadScratchpad(
+                    forKey: key, coordinator: coordinator))
+                let committed = mergeConcurrentEdit(
+                    durable: durable,
+                    expectedBaseline: expectedBaseline,
+                    edited: schemeText)
+
+                // Attachment bytes are durable and verified before the markdown
+                // that references them becomes visible at the destination.
+                for attachment in attachments where dirtyAttachmentNames.contains(attachment.name) {
+                    try await DocumentDataStore.saveAttachment(
+                        forKey: key, name: attachment.name, data: attachment.data,
+                        coordinator: coordinator)
+                    guard try await DocumentDataStore.loadAttachment(
+                        forKey: key, name: attachment.name, coordinator: coordinator)
+                        == attachment.data else { return nil }
+                }
+
+                let existingNames = try await DocumentDataStore.listAttachmentNames(
+                    forKey: key, coordinator: coordinator)
+                var extensions = Dictionary(uniqueKeysWithValues: existingNames.map {
+                    (($0 as NSString).deletingPathExtension.lowercased(),
+                     ($0 as NSString).pathExtension)
+                })
+                for attachment in attachments {
+                    extensions[attachment.id.lowercased()] =
+                        (attachment.name as NSString).pathExtension
+                }
+                let referenced = ScratchpadAttachmentStore.referencedIds(in: committed)
+                let relative = schemeToRelative(committed) {
+                    extensions[$0.lowercased()]
+                }
+                if relative.isEmpty {
+                    try await DocumentDataStore.removeScratchpadSafely(
+                        forKey: key, coordinator: coordinator)
+                } else {
+                    try await DocumentDataStore.saveScratchpad(
+                        forKey: key, text: relative, coordinator: coordinator)
+                }
+
+                // Publish the new note first. Attachment cleanup is deliberately
+                // best-effort afterward: an orphan is recoverable; a broken ref is not.
+                let names = try await DocumentDataStore.listAttachmentNames(
+                    forKey: key, coordinator: coordinator)
+                for name in names {
+                    let id = (name as NSString).deletingPathExtension.lowercased()
+                    // A staged image can be flushed before the WebView delivers
+                    // its markdown change (for example, on immediate background).
+                    // Keep attachments written by this save for one cycle; the
+                    // next clean save either sees the reference or collects it.
+                    if !referenced.contains(id), !dirtyAttachmentNames.contains(name) {
+                        await DocumentDataStore.removeAttachment(
+                            forKey: key, name: name, coordinator: coordinator)
+                    }
+                }
+                if relative.isEmpty {
+                    await DocumentDataStore.pruneEmptyDocumentDir(
+                        forKey: key, coordinator: coordinator)
+                } else {
+                    try await DocumentDataStore.touch(
+                        document: document, force: true, coordinator: coordinator)
+                }
+                return committed
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    /// Preserve a pane's complete edit when another pane committed first. The
+    /// explicit recovery block is deliberately used even when both versions
+    /// still contain their common baseline: trying to replace that substring
+    /// again on retry would append the same delta twice. The exact marker/body
+    /// guard makes every retry idempotent.
+    static func mergeConcurrentEdit(
+        durable: String,
+        expectedBaseline: String,
+        edited: String
+    ) -> String {
+        guard durable != expectedBaseline else { return edited }
+        guard durable != edited else { return durable }
+        guard !edited.isEmpty else { return durable }
+        let marker = "\n\n---\n\n## Recovered edit from another Scratchpad pane\n\n"
+        guard !durable.contains(marker + edited) else { return durable }
+        guard !durable.isEmpty else { return edited }
+        return durable + marker + edited
+    }
+
+    // MARK: - Relative <-> live-scheme references
 
     private static let idPattern = "[0-9a-fA-F-]+"
 
-    /// Rewrite persisted relative refs (`attachments/<id>.<ext>` or a bare
-    /// `attachments/<id>`) to the editor's `vellum-scratchpad://<id>` scheme.
-    /// Non-matching text (including malformed refs) is left untouched.
     static func relativeToScheme(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         let pattern = "attachments/(\(idPattern))(?:\\.[A-Za-z0-9]+)?"
@@ -68,109 +239,190 @@ enum ScratchpadPersistence {
             withTemplate: "\(ScratchpadAttachmentStore.scheme)://$1")
     }
 
-    /// Rewrite editor scheme refs (`vellum-scratchpad://<id>`) to the persisted
-    /// relative form. `extensionFor` resolves an id to its on-disk file
-    /// extension; when it returns nil the ref falls back to a bare
-    /// `attachments/<id>` (still portable, still resolvable on reload).
-    static func schemeToRelative(_ text: String, extensionFor: (String) -> String?) -> String {
+    static func schemeToRelative(
+        _ text: String,
+        extensionFor: (String) -> String?
+    ) -> String {
         guard !text.isEmpty else { return text }
         let pattern = "\(ScratchpadAttachmentStore.scheme)://(\(idPattern))"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let ns = text as NSString
         var result = text
-        // Replace back-to-front so earlier match ranges stay valid. Convert the
-        // regex's UTF-16 offsets with `Range(_:in:)`, NOT `String.index(offsetBy:)`
-        // — the latter counts Characters (grapheme clusters), so an emoji before
-        // a ref shifts every subsequent replacement and corrupts the rewrite.
-        // Processing back-to-front keeps `result`'s prefix identical to `text`'s
-        // up to each match, so the UTF-16 offset still maps to the right index.
         for match in regex.matches(
-            in: text, range: NSRange(location: 0, length: ns.length)).reversed() {
+            in: text, range: NSRange(location: 0, length: ns.length)).reversed()
+        {
             guard match.numberOfRanges > 1,
                   let fullRange = Range(match.range(at: 0), in: result) else { continue }
             let id = ns.substring(with: match.range(at: 1))
-            let ext = extensionFor(id)
-            let replacement = ext.map { "attachments/\(id).\($0)" } ?? "attachments/\(id)"
+            let replacement = extensionFor(id).map { "attachments/\(id).\($0)" }
+                ?? "attachments/\(id)"
             result.replaceSubrange(fullRange, with: replacement)
         }
         return result
     }
 
-    // MARK: - Legacy migration (UserDefaults blob -> folder)
+    // MARK: - Lazy legacy migration
 
-    /// If `key`'s folder has no scratchpad.md yet but the legacy blob still
-    /// carries an entry for the document's path, migrate it: move referenced
-    /// attachments out of the global pool into the doc's `attachments/`, write
-    /// scratchpad.md in relative form, and drop the entry from the blob
-    /// (§7). The blob read path stays intact for entries not yet migrated.
-    static func migrateLegacyIfNeeded(document: DocumentInfo, key: String) {
-        guard !DocumentDataStore.scratchpadExists(forKey: key) else { return }
-        let legacyKey = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !legacyKey.isEmpty else { return }
-        var entries = readEntries()
-        guard let index = entries.firstIndex(where: { $0.key == legacyKey }) else { return }
-        let legacyText = entries[index].text
-        let referenced = ScratchpadAttachmentStore.referencedIds(in: legacyText)
-        let destDir = DocumentDataStore.attachmentsDir(forKey: key)
-        // Resolve each ref's extension from the shared pool (fileURL falls back
-        // to it) so we can compute the relative form BEFORE anything is copied —
-        // the attachments still live in the pool at this point.
-        let relative = schemeToRelative(legacyText) {
-            ScratchpadAttachmentStore.fileURL(for: $0, preferredDir: destDir)?.pathExtension
+    static func migrateLegacyIfNeeded(
+        document: DocumentInfo,
+        key: String,
+        coordinator: StorageCoordinator
+    ) async -> MigrationResult {
+        await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+            forKeys: [key, legacyWriteLaneKey]
+        ) {
+            let entries = readEntries()
+            guard let index = legacyIndex(for: document, in: entries) else { return .none }
+            let entry = entries[index]
+            let fallback = (try? legacySnapshot(entry)) ?? LegacySnapshot(
+                key: entry.key, text: entry.text, attachments: [])
+
+            do {
+                let snapshot = try legacySnapshot(entry)
+                var migratedText = snapshot.text
+                var migratedAttachments: [ScratchpadStagedAttachment] = []
+                var namesByStem: [String: String] = [:]
+                for name in try await DocumentDataStore.listAttachmentNames(
+                    forKey: key, coordinator: coordinator)
+                {
+                    let stem = (name as NSString).deletingPathExtension.lowercased()
+                    if namesByStem[stem] == nil { namesByStem[stem] = name }
+                }
+
+                // Existing attachment ids are authoritative. Equal bytes can be
+                // reused; a differing legacy attachment receives a deterministic
+                // recovered id and its legacy markdown is rewritten to point at
+                // that copy, preserving both without overwriting either.
+                for var attachment in snapshot.attachments {
+                    if let existingName = namesByStem[attachment.id.lowercased()] {
+                        let existing = try await DocumentDataStore.loadAttachment(
+                            forKey: key, name: existingName, coordinator: coordinator)
+                        if existing == attachment.data {
+                            attachment.name = existingName
+                        } else {
+                            let recoveredID = DocumentIdentity.sha256Hex(
+                                "legacy-scratchpad:\(entry.key):\(attachment.id):"
+                                    + WebArchive.sha256Hex(attachment.data))
+                            migratedText = migratedText.replacingOccurrences(
+                                of: "\(ScratchpadAttachmentStore.scheme)://\(attachment.id)",
+                                with: "\(ScratchpadAttachmentStore.scheme)://\(recoveredID)")
+                            attachment.id = recoveredID
+                            attachment.name = "\(recoveredID).\((attachment.name as NSString).pathExtension)"
+                        }
+                    }
+
+                    if let existingName = namesByStem[attachment.id.lowercased()] {
+                        guard try await DocumentDataStore.loadAttachment(
+                            forKey: key, name: existingName, coordinator: coordinator)
+                                == attachment.data else {
+                            throw LibraryFileError.io(
+                                "A recovered Scratchpad attachment id is already in use")
+                        }
+                        attachment.name = existingName
+                    } else {
+                        try await DocumentDataStore.saveAttachment(
+                            forKey: key, name: attachment.name, data: attachment.data,
+                            coordinator: coordinator)
+                        guard try await DocumentDataStore.loadAttachment(
+                            forKey: key, name: attachment.name, coordinator: coordinator)
+                                == attachment.data else {
+                            throw LibraryFileError.io(
+                                "Failed to verify a migrated Scratchpad attachment")
+                        }
+                        namesByStem[attachment.id.lowercased()] = attachment.name
+                    }
+                    migratedAttachments.append(attachment)
+                }
+
+                let byID = Dictionary(uniqueKeysWithValues:
+                    migratedAttachments.map { ($0.id.lowercased(), $0) })
+                let legacyRelative = schemeToRelative(migratedText) {
+                    byID[$0.lowercased()].map { ($0.name as NSString).pathExtension }
+                }
+                let destination = try await DocumentDataStore.loadScratchpad(
+                    forKey: key, coordinator: coordinator)
+                let merged = mergeLegacyScratchpad(
+                    destination: destination, legacy: legacyRelative)
+                if !merged.isEmpty, merged != destination {
+                    try await DocumentDataStore.saveScratchpad(
+                        forKey: key, text: merged, coordinator: coordinator)
+                }
+                if !merged.isEmpty {
+                    guard try await DocumentDataStore.loadScratchpad(
+                        forKey: key, coordinator: coordinator) == merged else {
+                        throw LibraryFileError.io("Failed to verify the migrated Scratchpad")
+                    }
+                }
+
+                // The blob and shared pool remain untouched until attachment and
+                // markdown verification both succeed. A partial copy is harmless
+                // and the same deterministic ids make retry idempotent.
+                var updated = entries
+                updated.remove(at: index)
+                writeEntries(updated)
+                if updated.isEmpty {
+                    try? FileManager.default.removeItem(at: ScratchpadAttachmentStore.directory)
+                }
+                return .migrated
+            } catch {
+                return .retainedForRetry(fallback)
+            }
         }
-        if relative.isEmpty {
-            // An empty legacy note carries nothing worth a folder; just drop it.
-            entries.remove(at: index)
-            writeEntries(entries)
-            reclaimLegacyPoolIfBlobEmpty(entries)
-            return
-        }
-        // Order matters: write scratchpad.md FIRST, then copy attachments, then
-        // drop the blob entry. If the note write fails we return having touched
-        // nothing in the doc's folder — so the load path sees an absent note (not
-        // a half-migrated one whose just-copied attachments per-doc GC would
-        // reap), and the blob entry stays for the next open to retry.
-        do {
-            try DocumentDataStore.saveScratchpad(forKey: key, text: relative)
-        } catch {
-            return
-        }
-        ScratchpadAttachmentStore.migrateAttachments(ids: referenced, toDir: destDir)
-        entries.remove(at: index)
-        writeEntries(entries)
-        reclaimLegacyPoolIfBlobEmpty(entries)
     }
 
-    /// Once the legacy blob holds no more path-keyed notes, the shared attachment
-    /// pool can be reclaimed wholesale — migration COPIES attachments into each
-    /// document's folder, so nothing outside the (now empty) blob references it.
-    private static func reclaimLegacyPoolIfBlobEmpty(_ entries: [Entry]) {
-        guard entries.isEmpty else { return }
-        try? FileManager.default.removeItem(at: ScratchpadAttachmentStore.directory)
+    private static func legacyIndex(for document: DocumentInfo, in entries: [Entry]) -> Int? {
+        let path = document.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        if let exact = entries.firstIndex(where: { $0.key == path }) { return exact }
+        guard document.kind == .pdf else { return nil }
+        let filename = (path as NSString).lastPathComponent
+        guard filename.lowercased().hasSuffix(".pdf") else { return nil }
+        let matches = entries.indices.filter {
+            (entries[$0].key as NSString).lastPathComponent == filename
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
-    // MARK: - Orphaned legacy blobs (Storage pane "Not yet migrated")
+    private static func mergeLegacyScratchpad(
+        destination: String,
+        legacy: String
+    ) -> String {
+        guard destination != legacy else { return destination }
+        guard !destination.isEmpty else { return legacy }
+        guard !legacy.isEmpty else { return destination }
+        let marker = "\n\n---\n\n## Recovered notes from an older Scratchpad\n\n"
+        guard !destination.contains(marker + legacy) else { return destination }
+        return destination + marker + legacy
+    }
 
-    /// Every path-keyed note still sitting in the legacy blob — surfaced in the
-    /// Storage pane's orphans section as pre-migration data the user can delete.
-    /// `bytes` is the note's UTF-8 size (the blob holds text only; attachments
-    /// stay in the global pool until the doc is opened and migrated).
+    private static func legacySnapshot(_ entry: Entry) throws -> LegacySnapshot {
+        var attachments: [ScratchpadStagedAttachment] = []
+        for id in ScratchpadAttachmentStore.referencedIds(in: entry.text).sorted() {
+            guard let url = ScratchpadAttachmentStore.fileURL(for: id),
+                  let data = try? Data(contentsOf: url) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            attachments.append(.init(id: id, name: url.lastPathComponent, data: data))
+        }
+        return LegacySnapshot(key: entry.key, text: entry.text, attachments: attachments)
+    }
+
+    // MARK: - Read-only legacy inventory
+
     static func listLegacyEntries() -> [(key: String, bytes: Int)] {
         readEntries().map { (key: $0.key, bytes: $0.text.utf8.count) }
     }
 
-    /// Drop one path-keyed note from the legacy blob (Storage-pane delete).
-    static func removeLegacyEntry(key: String) {
-        var entries = readEntries()
-        entries.removeAll { $0.key == key }
-        writeEntries(entries)
+    static func removeLegacyEntry(key: String) async {
+        await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+            forKeys: [legacyWriteLaneKey]
+        ) {
+            var entries = readEntries()
+            entries.removeAll { $0.key == key }
+            writeEntries(entries)
+        }
     }
 
-    // The legacy blob goes through `AppDefaults` for the same reason the
-    // recents list and the workspace do: two suites seed and DELETE this key to
-    // drive migration coverage, and on `.standard` that is the real user's
-    // pre-folder notes — and a shared domain any other test process can wipe
-    // mid-test (#102).
     private static func readEntries() -> [Entry] {
         guard let data = AppDefaults.current.data(forKey: notesKey),
               let entries = try? JSONDecoder().decode([Entry].self, from: data)
@@ -182,46 +434,70 @@ enum ScratchpadPersistence {
         guard let data = try? JSONEncoder().encode(entries) else { return }
         AppDefaults.current.set(data, forKey: notesKey)
     }
+
+    static func awaitPendingFlush() async {
+        await ScratchpadWriteCoordinator.shared.awaitPendingWrites()
+    }
+
+    // MARK: - Legacy direct compatibility (non-workspace tests/tools only)
+
+    static func documentKey(_ document: DocumentInfo?) -> String? {
+        guard let key = document?.pdfPath.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else { return nil }
+        return key
+    }
+
+    static func load(for key: String) -> String {
+        let entries = readEntries()
+        if let exact = entries.first(where: { $0.key == key })?.text { return exact }
+        let filename = (key as NSString).lastPathComponent
+        guard filename.lowercased().hasSuffix(".pdf") else { return "" }
+        return entries.first {
+            ($0.key as NSString).lastPathComponent == filename
+        }?.text ?? ""
+    }
+
+    static func save(for key: String, text: String) {
+        var entries = readEntries()
+        entries.removeAll { $0.key == key }
+        let bounded = String(text.prefix(maxCharacters))
+        if !bounded.isEmpty { entries.append(Entry(key: key, text: bounded)) }
+        writeEntries(entries)
+    }
+
+    static func persistedTextsSnapshot() -> [String] {
+        readEntries().map(\.text)
+    }
 }
 
-/// Disk-backed store for images snapshotted or dropped into scratchpad notes.
-/// The note text only holds a lightweight `vellum-scratchpad://<id>` reference;
-/// the bytes live under the active document's folder
-/// (`documents/<key>/attachments/`). Saves go to the active document's dir; a
-/// read (`fileURL(for:)`) probes that dir first, then the legacy global pool
-/// (`App Support/scratchpad-attachments`) so pre-migration references still
-/// resolve. The WKWebView scheme handler in ScratchpadPanel resolves every
-/// reference through `fileURL(for:)`, so it keeps working unchanged.
+/// Legacy flat attachment pool. Live panes stage bytes in their own resolver
+/// and persist them under `documents/<key>/attachments`; this remains solely so
+/// old AppDefaults notes can be migrated lazily without losing their images.
 enum ScratchpadAttachmentStore {
     static let scheme = "vellum-scratchpad"
 
-    /// Test-only redirect for the LEGACY global attachment pool so tests never
-    /// read or delete a real user's attachments. Nil in production.
+    /// Test-only redirect for the attachment directory so tests never read or
+    /// delete a real user's attachments. Nil in production.
     nonisolated(unsafe) static var directoryOverride: URL?
 
-    /// The active document's attachments directory — set by `ScratchpadStore`
-    /// on `loadForDocument`. Saves and the primary `fileURL(for:)` probe target
-    /// this; nil (no document loaded) falls back to the legacy pool.
-    nonisolated(unsafe) static var activeDirectory: URL?
-
-    /// The legacy flat pool: pre-retarget attachments and the read fallback.
     static var directory: URL {
         directoryOverride
             ?? WebLibrary.appDataDir.appendingPathComponent(
                 "scratchpad-attachments", isDirectory: true)
     }
 
-    /// Where a new attachment is written: the active document's dir, else the
-    /// legacy pool (no document context — e.g. direct test usage).
-    static var writeDirectory: URL { activeDirectory ?? directory }
-
     /// Persist `data` and return its id (the token used in note markdown), or
     /// nil if the write failed.
-    static func save(data: Data, fileExtension ext: String) -> String? {
+    static func save(
+        data: Data,
+        fileExtension ext: String,
+        in preferredDirectory: URL? = nil
+    ) -> String? {
         let id = UUID().uuidString.lowercased()
-        let dir = writeDirectory
+        let dir = preferredDirectory ?? directory
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true)
             try data.write(to: dir.appendingPathComponent("\(id).\(ext)"))
             return id
         } catch {
@@ -273,12 +549,11 @@ enum ScratchpadAttachmentStore {
     /// reference landed, so ordinary reachability governs it from here — along
     /// with any whose grace period has lapsed. Returns what is still exempt.
     ///
-    /// Keyed by id alone, so this registry spans documents while a sweep is
-    /// scoped to one. That asymmetry is safe in the direction that matters: an
-    /// entry can only ever spare a file, and a sweep only deletes from its own
-    /// directory, so a document can neither reap another's pending attachment
-    /// nor be made to keep a file it has no entry for. Ids are fresh UUIDs, so
-    /// two documents sharing one is not reachable from the write path.
+    /// Keyed by id alone. On iPad every sweep covers the one flat pool, so the
+    /// cross-document asymmetry main documents here does not arise; either way
+    /// an entry can only ever spare a file, never select one for deletion, and
+    /// ids are fresh UUIDs so two documents sharing one is not reachable from
+    /// the write path.
     private static func settlePending(observing referencedIds: Set<String>) -> Set<String> {
         let now = Date()
         return pendingAttachments.withLock { pending in
@@ -293,20 +568,23 @@ enum ScratchpadAttachmentStore {
         pendingAttachments.withLock { $0.removeAll() }
     }
 
-    /// Extensions a saved attachment can carry, probed directly so a lookup is
-    /// O(1) rather than scanning a directory.
+    /// Extensions a saved attachment can carry (`save(data:fileExtension:)`
+    /// only ever writes one of these), probed directly so a lookup is O(1)
+    /// rather than scanning the whole global attachments directory.
     private static let knownExtensions = [
         "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "heic",
     ]
 
-    /// The file backing `id`, probing the active document's dir first and then
-    /// the legacy pool. `preferredDir` overrides the primary probe location
-    /// (used during migration, before `activeDirectory` is switched over).
+    /// The file backing `id` (`<id>.<known-extension>`), if present. Probes the
+    /// candidate extensions instead of listing the directory, so cost is fixed
+    /// no matter how many attachments exist across all documents. `preferredDir`
+    /// is probed ahead of the legacy pool. Production live panes do not use this
+    /// for coordinated roots; they resolve staged bytes through their own store.
     static func fileURL(for id: String, preferredDir: URL? = nil) -> URL? {
         let clean = id.lowercased()
         guard !clean.isEmpty else { return nil }
         var searched = Set<String>()
-        for dir in [preferredDir ?? activeDirectory, directory].compactMap({ $0 }) {
+        for dir in [preferredDir, directory].compactMap({ $0 }) {
             guard searched.insert(dir.path).inserted else { continue }
             for ext in knownExtensions {
                 let url = dir.appendingPathComponent("\(clean).\(ext)")
@@ -331,26 +609,23 @@ enum ScratchpadAttachmentStore {
         return ids
     }
 
-    /// Delete files in `directory` whose id isn't in `referencedIds`. Deletion is
-    /// scoped to one document's attachments dir, so it can never touch another
-    /// document's images. (The pending registry consulted below is *not* so
-    /// scoped — see `settlePending` — but it can only ever spare a file, never
-    /// select one for deletion.)
+    /// Delete attachment files not referenced by any persisted note.
     ///
-    /// `referencedIds` is a snapshot of the note as it read at some moment, and
-    /// this sweep can run later — `pruneOrphanedAttachments` dispatches it to a
-    /// background task, and a debounced save persists text captured earlier. An
+    /// `referencedIds` is a snapshot of the notes as they read at some moment,
+    /// and this sweep can run later — `pruneOrphanedAttachments` dispatches it to
+    /// a background task, and a debounced save persists text captured earlier. An
     /// attachment written in that gap is, correctly, not in the snapshot, but it
     /// is also not garbage: it belongs to an edit the snapshot predates. Passing
     /// the moment the snapshot was taken as `referencedAsOf` keeps the sweep
     /// from reaping it. Without that, dropping an image immediately after
     /// opening a document (which sweeps with an empty reference set) could
-    /// delete the bytes just written and leave a broken reference in the note.
+    /// delete the bytes just written and leave a broken reference in the note
+    /// (#104).
     ///
     /// A file spared this way is not leaked: if it really is an orphan, the next
     /// sweep sees it as older than that snapshot and collects it.
     ///
-    /// The cutoff cannot cover the *other* half of the race (issue #105). When an
+    /// The cutoff cannot cover the *other* half of the race (#105). When an
     /// image is dropped, the bytes are written first and the markdown reference
     /// arrives afterwards, through the editor's WebView round trip. A debounced
     /// save landing in between computes a reference set that is genuinely current
@@ -361,7 +636,7 @@ enum ScratchpadAttachmentStore {
     /// lasts until the first save that observes the reference rather than for a
     /// fixed span.
     static func collectGarbage(
-        in directory: URL, referencedIds: Set<String>, referencedAsOf: Date? = nil
+        referencedIds: Set<String>, referencedAsOf: Date? = nil
     ) {
         let stillPending = settlePending(observing: referencedIds)
         guard let entries = try? FileManager.default.contentsOfDirectory(
@@ -390,30 +665,6 @@ enum ScratchpadAttachmentStore {
         return [values.creationDate, values.contentModificationDate]
             .compactMap { $0 }
             .contains { $0 >= date }
-    }
-
-    /// Copy the given ids' files from the legacy global pool into `dir` (lazy
-    /// migration). COPY, not move: the pool is shared, so a second still-unmigrated
-    /// note referencing the same id must still find it there. The whole pool is
-    /// reclaimed at once by `ScratchpadPersistence.migrateLegacyIfNeeded` when the
-    /// legacy blob goes empty (nothing can reference it anymore). A file already
-    /// present at the destination is left as-is.
-    static func migrateAttachments(ids: Set<String>, toDir dir: URL) {
-        guard !ids.isEmpty else { return }
-        let fm = FileManager.default
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        for id in ids {
-            let clean = id.lowercased()
-            for ext in knownExtensions {
-                let src = directory.appendingPathComponent("\(clean).\(ext)")
-                guard fm.fileExists(atPath: src.path) else { continue }
-                let dest = dir.appendingPathComponent("\(clean).\(ext)")
-                if !fm.fileExists(atPath: dest.path) {
-                    try? fm.copyItem(at: src, to: dest)
-                }
-                break
-            }
-        }
     }
 
     /// MIME type inferred from a file's extension.

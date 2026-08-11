@@ -2,16 +2,32 @@ import Testing
 @testable import Vellum
 
 // The open-tab residency policy (issue #52, retuned by the repo owner's request
-// on PR #67). A tab is HOT — mounted and rendered — while it is among the 5 most
-// recently used and inside 10 minutes; WARM — resident but not drawn — after
-// that; and evicted entirely at 30 minutes idle, when a ceiling is exceeded, or
-// when the system reports memory pressure.
+// on PR #67, then retuned again for iPad by parity #129). A tab is HOT —
+// mounted and rendered — while it is among the 3 most recently used and inside
+// 10 minutes; WARM — resident but not drawn — after that; and evicted entirely
+// at 30 minutes idle, when a ceiling is exceeded, or when the system reports
+// memory pressure.
+//
+// THE NUMBERS ARE NOT MAIN'S. The two WINDOWS (10 / 30 minutes) are the owner's
+// request and are unchanged, but both COUNT ceilings are lower here: iPadOS
+// enforces a hard per-app footprint and jetsams rather than swapping, so macOS's
+// 5 hot / 8 resident / 2-under-pressure would be a crash, not a guardrail.
+// `makeManager`'s `tabLimit` default is `TabResidencyManager.residentTabLimit`
+// (4), and every test that counts tabs counts against `.hotTabLimit` (3),
+// `.residentTabLimit` or `.pressureTabLimit` (1) rather than against a literal,
+// so the next retune cannot silently turn a boundary test into a tautology.
+// `theCeilingsAreTheiPadNumbersNotTheMacOnes` is the one place that does spell
+// them out, which is what makes the retune itself a deliberate edit.
 //
 // Every test drives a `ManualResidencyClock`, so "thirty minutes later" costs
 // nothing, and builds the manager with `automaticMaintenance: false` so no
 // background sweeper or memory-pressure source can race the assertions —
 // `sweep()` and `handleMemoryPressure(_:)` are called explicitly instead. The
-// two tests that specifically care about the background machinery opt back in.
+// three tests that specifically care about the background machinery opt back
+// in. On iOS a manager with `automaticMaintenance: true` also registers for
+// `UIApplication.didReceiveMemoryWarningNotification`; that is inert in a test
+// process and nothing here asserts on it — the escalation logic behind it is
+// driven directly through `noteMemoryWarning()` instead.
 
 /// Test clock: time only moves when the test moves it.
 @MainActor
@@ -51,7 +67,7 @@ private final class FakeResident: TabResidentResource {
 private func makeManager(
     clock: ManualResidencyClock,
     hotLimit: Int = TabResidencyManager.hotTabLimit,
-    tabLimit: Int = 8,
+    tabLimit: Int = TabResidencyManager.residentTabLimit,
     byteBudget: Int = Int.max
 ) -> TabResidencyManager {
     TabResidencyManager(
@@ -64,11 +80,15 @@ private func makeManager(
         automaticMaintenance: false)
 }
 
-/// The three numbers from the owner's request on PR #67, so a test that
-/// exercises a boundary reads as the boundary rather than as arithmetic.
+/// The two windows from the owner's request on PR #67, so a test that exercises
+/// a boundary reads as the boundary rather than as arithmetic. Unchanged on
+/// iPad. There is deliberately no file-scope `hotTabLimit` twin of main's: the
+/// counts are read from `TabResidencyManager` inside the test bodies instead,
+/// both because a global `let` cannot initialize itself from a main-actor
+/// isolated static and because a second copy of a retuned number is exactly what
+/// the retune would forget to update.
 private let hotWindow: Duration = .seconds(10 * 60)
 private let retentionWindow: Duration = .seconds(30 * 60)
-private let hotTabLimit = 5
 
 // Stand-ins for the two panes of a split window. The manager keys its
 // "which tab is on screen" table by the pane's `AppStore` identity, so a test
@@ -151,13 +171,32 @@ struct TabResidencyTests {
         #expect(resource.releaseCount == 1)
     }
 
-    // MARK: - The hot tier (5 tabs / 10 minutes)
+    // MARK: - The hot tier (3 tabs / 10 minutes on iPad)
+
+    /// The iPad retune, pinned with literals. These two numbers are the whole
+    /// difference between this suite and main's, and both are load-bearing: a
+    /// hot tab keeps a live `PDFView`/`WKWebView` in the window's layout and
+    /// display cycle, and a resident one keeps a parsed `PDFDocument` and a web
+    /// content process alive against a hard per-app footprint. Restoring
+    /// macOS's 5 / 8 here is a jetsam, so it has to be a deliberate edit.
+    @Test func theCeilingsAreTheiPadNumbersNotTheMacOnes() {
+        #expect(TabResidencyManager.hotTabLimit == 3)
+        #expect(TabResidencyManager.residentTabLimit == 4)
+        // The hot set has to fit inside residency, or a tab could be asked to
+        // render after it had been evicted.
+        #expect(TabResidencyManager.hotTabLimit < TabResidencyManager.residentTabLimit)
+        // Under pressure only the tab on screen is worth keeping.
+        #expect(TabResidencyManager.pressureTabLimit == 1)
+        // The windows are the owner's request on PR #67 and did NOT change.
+        #expect(TabResidencyManager.hotWindow == hotWindow)
+        #expect(TabResidencyManager.retentionWindow == retentionWindow)
+    }
 
     @Test func theMostRecentlyUsedTabsUpToTheHotLimitAreRendered() {
         let clock = ManualResidencyClock()
         let manager = makeManager(clock: clock)
         var resources: [String: FakeResident] = [:]
-        for index in 0..<hotTabLimit {
+        for index in 0..<TabResidencyManager.hotTabLimit {
             let resource = FakeResident()
             resources["tab-\(index)"] = resource
             manager.markActive(tabId: "tab-\(index)", owner: pane)
@@ -165,17 +204,22 @@ struct TabResidencyTests {
             clock.advance(by: .seconds(30))
         }
 
-        #expect(manager.hotTabIds.count == hotTabLimit)
+        #expect(manager.hotTabIds.count == TabResidencyManager.hotTabLimit)
         for resource in resources.values { #expect(resource.tier == .hot) }
     }
 
-    @Test func aSixthTabDemotesTheLeastRecentlyUsedOutOfTheHotSet() {
+    /// Main calls this `aSixthTabDemotes…` because its hot set is 5. Named off
+    /// the limit rather than off a count so the iPad retune to 3 did not leave
+    /// the name lying about what the test does.
+    @Test func oneTabPastTheHotLimitDemotesTheLeastRecentlyUsedOutOfTheHotSet() {
         let clock = ManualResidencyClock()
         let manager = makeManager(clock: clock)
         var resources: [String: FakeResident] = [:]
-        // Six tabs, half a minute apart, so all six are inside the 10-minute
-        // window and only the size of the hot set can decide.
-        for index in 0...hotTabLimit {
+        // One tab more than the hot set holds, half a minute apart, so every one
+        // of them is inside the 10-minute window and only the SIZE of the hot
+        // set can decide. `hotTabLimit + 1` is also exactly `residentTabLimit`,
+        // so nothing here is close to the eviction ceiling either.
+        for index in 0...TabResidencyManager.hotTabLimit {
             let resource = FakeResident()
             resources["tab-\(index)"] = resource
             manager.markActive(tabId: "tab-\(index)", owner: pane)
@@ -189,8 +233,10 @@ struct TabResidencyTests {
         #expect(resources["tab-0"]?.tier == .warm)
         #expect(resources["tab-0"]?.releaseCount == 0)
         #expect(manager.isResident(tabId: "tab-0"))
-        #expect(manager.residentTabCount == hotTabLimit + 1)
-        for index in 1...hotTabLimit { #expect(resources["tab-\(index)"]?.tier == .hot) }
+        #expect(manager.residentTabCount == TabResidencyManager.hotTabLimit + 1)
+        for index in 1...TabResidencyManager.hotTabLimit {
+            #expect(resources["tab-\(index)"]?.tier == .hot)
+        }
     }
 
     @Test func aTabStaysRenderedRightUpToTheHotWindow() {
@@ -348,8 +394,10 @@ struct TabResidencyTests {
     }
 
     @Test func aPinnedTabSpendsOneOfTheHotSlots() {
-        // "the previous 5 tabs" in a single-pane window means the one you are on
-        // plus four behind it — not five behind it.
+        // "the previous N tabs" in a single-pane window means the one you are on
+        // plus N-1 behind it — not N behind it. `hotLimit: 2` is a local
+        // override rather than the shipped 3 so the boundary needs exactly three
+        // tabs to reach, whatever the shipped number becomes.
         let clock = ManualResidencyClock()
         let manager = makeManager(clock: clock, hotLimit: 2)
         let older = FakeResident()
@@ -473,10 +521,14 @@ struct TabResidencyTests {
 
     @Test func tabCeilingEvictsLeastRecentlyActiveFirst() {
         let clock = ManualResidencyClock()
-        let manager = makeManager(clock: clock, tabLimit: 2)
+        // One under the shipped ceiling, so the test needs `residentTabLimit`
+        // tabs to trip it and keeps testing the ceiling rather than a literal.
+        let limit = TabResidencyManager.residentTabLimit - 1
+        let manager = makeManager(clock: clock, tabLimit: limit)
         var resources: [String: FakeResident] = [:]
-        // Visit three tabs a minute apart, ending on "c".
-        for tabId in ["a", "b", "c"] {
+        // Visit `limit + 1` tabs a minute apart, ending on the last.
+        let tabIds = (0..<(limit + 1)).map { "tab-\($0)" }
+        for tabId in tabIds {
             let resource = FakeResident()
             resources[tabId] = resource
             manager.markActive(tabId: tabId, owner: pane)
@@ -484,9 +536,10 @@ struct TabResidencyTests {
             clock.advance(by: .seconds(60))
         }
 
-        #expect(manager.sweep() == ["a"])
-        #expect(resources["a"]?.releaseCount == 1)
-        #expect(manager.residentTabIds == ["b", "c"])
+        // The oldest goes first, and only as far as the ceiling requires.
+        #expect(manager.sweep() == [tabIds[0]])
+        #expect(resources[tabIds[0]]?.releaseCount == 1)
+        #expect(manager.residentTabIds == Set(tabIds.dropFirst()))
     }
 
     @Test func tabCeilingNeverEvictsThePinnedTab() {
@@ -542,9 +595,10 @@ struct TabResidencyTests {
 
     @Test func enforcingCeilingsDoesNotApplyTheRetentionWindow() {
         let clock = ManualResidencyClock()
-        // Room to spare, so only the two-hour window could evict anything —
-        // and the ceiling pass must not be the thing that applies it.
-        let manager = makeManager(clock: clock, tabLimit: 8)
+        // Room to spare (one resident against the shipped ceiling), so only the
+        // retention window could evict anything — and the ceiling pass must not
+        // be the thing that applies it.
+        let manager = makeManager(clock: clock)
         let resource = FakeResident()
         manager.store(resource, tabId: "a")
 
@@ -609,21 +663,33 @@ struct TabResidencyTests {
         #expect(resources[0].releaseCount == 1)
     }
 
+    /// `.warning` is raised routinely, and iPadOS raises it more freely than
+    /// macOS does. Treating it like `.critical` would make the whole feature
+    /// evaporate under normal load, so the most recently used tabs — as many as
+    /// `pressureTabLimit` allows — must stay warm rather than going to zero.
+    ///
+    /// The surviving SET is asserted, not just the count: main keeps two here
+    /// because macOS budgets `pressureTabLimit = 2`; the iPad budgets 1, so the
+    /// survivor is the single most recent. Deriving it from the constant means
+    /// the assertion still describes "the most recent ones survive" if the
+    /// budget moves again.
     @Test func memoryPressureWarningKeepsAWarmSetRatherThanDroppingEverything() {
-        // `.warning` is raised routinely on a busy Mac. Treating it like
-        // `.critical` would make the whole feature evaporate under normal load,
-        // so a couple of recently used tabs must stay warm.
         let clock = ManualResidencyClock()
         let manager = makeManager(clock: clock)
-        for index in 0..<4 {
+        let count = TabResidencyManager.pressureTabLimit + 3
+        for index in 0..<count {
             manager.store(FakeResident(), tabId: "tab-\(index)")
             clock.advance(by: .seconds(60))
         }
 
         manager.handleMemoryPressure(.warning)
 
+        let survivors = (count - TabResidencyManager.pressureTabLimit..<count)
+            .map { "tab-\($0)" }
         #expect(manager.residentTabCount == TabResidencyManager.pressureTabLimit)
-        #expect(manager.residentTabIds == ["tab-2", "tab-3"])
+        #expect(manager.residentTabIds == Set(survivors))
+        // The distinguishing half: `.critical` would have left nothing at all.
+        #expect(!manager.residentTabIds.isEmpty)
     }
 
     @Test func criticalMemoryPressureEvictsEverythingButTheTabOnScreen() {
@@ -642,6 +708,85 @@ struct TabResidencyTests {
         #expect(background.releaseCount == 1)
     }
 
+    // MARK: - The iOS memory-warning seam (no macOS counterpart)
+
+    // `handleMemoryPressure(_:)` above takes a severity. iOS does not supply
+    // one: `UIApplication.didReceiveMemoryWarningNotification` is a single
+    // undifferentiated signal, and the step after it is jetsam rather than swap.
+    // `noteMemoryWarning()` is the mapping — first warning is `.warning`, a
+    // second one inside `pressureEscalationWindow` is `.critical` — and it is
+    // iPad-only code, so these three tests have no equivalent in main's suite.
+    //
+    // All three run WITHOUT a pinned tab on purpose. With a pane pinning a tab,
+    // `pressureTabLimit == 1` means the pinned tab is the only survivor at
+    // `.warning` too, so the two levels become indistinguishable; unpinned, the
+    // difference is "the most recent tab survives" versus "nothing does", which
+    // is exactly the distinction the escalation exists to make.
+
+    @Test func aSingleMemoryWarningAppliesTheTightCeilingsRatherThanDroppingEverything() {
+        let clock = ManualResidencyClock()
+        let manager = makeManager(clock: clock)
+        var resources: [String: FakeResident] = [:]
+        for tabId in ["a", "b", "c"] {
+            let resource = FakeResident()
+            resources[tabId] = resource
+            manager.store(resource, tabId: tabId)
+            clock.advance(by: .seconds(30))
+        }
+
+        let evicted = manager.noteMemoryWarning()
+
+        // Least-recently-active first, and only down to `pressureTabLimit`.
+        #expect(evicted == ["a", "b"])
+        #expect(manager.residentTabIds == ["c"])
+        #expect(resources["c"]?.releaseCount == 0)
+    }
+
+    @Test func aSecondMemoryWarningInsideTheEscalationWindowDropsEverythingOffScreen() {
+        // The first warning did not buy enough headroom, so the second one stops
+        // being polite. This is the branch that keeps a busy iPad off the jetsam
+        // list.
+        let clock = ManualResidencyClock()
+        let manager = makeManager(clock: clock)
+        let survivor = FakeResident()
+        manager.store(FakeResident(), tabId: "a")
+        clock.advance(by: .seconds(30))
+        manager.store(survivor, tabId: "b")
+
+        #expect(manager.noteMemoryWarning() == ["a"])
+        #expect(manager.residentTabIds == ["b"])
+
+        clock.advance(by: TabResidencyManager.pressureEscalationWindow - .seconds(1))
+
+        #expect(manager.noteMemoryWarning() == ["b"])
+        #expect(manager.residentTabIds.isEmpty)
+        #expect(survivor.releaseCount == 1)
+    }
+
+    @Test func aSecondMemoryWarningAfterTheEscalationWindowIsTreatedAsTheFirstAgain() {
+        // A device that raises one warning every few minutes is not in trouble;
+        // escalating on it would delete the warm tier outright. The window is
+        // inclusive at the far end — exactly `pressureEscalationWindow` later is
+        // already "a new episode".
+        let clock = ManualResidencyClock()
+        let manager = makeManager(clock: clock)
+        manager.store(FakeResident(), tabId: "a")
+        clock.advance(by: .seconds(30))
+        manager.store(FakeResident(), tabId: "b")
+
+        #expect(manager.noteMemoryWarning() == ["a"])
+        #expect(manager.residentTabIds == ["b"])
+
+        clock.advance(by: TabResidencyManager.pressureEscalationWindow)
+        let reopened = FakeResident()
+        manager.store(reopened, tabId: "c")
+
+        // `.warning` again, not `.critical`: the most recent tab survives.
+        #expect(manager.noteMemoryWarning() == ["b"])
+        #expect(manager.residentTabIds == ["c"])
+        #expect(reopened.releaseCount == 0)
+    }
+
     // MARK: - The shared sweeper
 
     @Test func sweeperRunsOnlyWhileSomethingIsResident() {
@@ -651,7 +796,7 @@ struct TabResidencyTests {
         let manager = TabResidencyManager(
             clock: clock,
             retention: TabResidencyManager.retentionWindow,
-            tabLimit: 8,
+            tabLimit: TabResidencyManager.residentTabLimit,
             byteBudget: Int.max,
             automaticMaintenance: true)
         #expect(!manager.isSweeping)
@@ -668,7 +813,7 @@ struct TabResidencyTests {
         let manager = TabResidencyManager(
             clock: clock,
             retention: TabResidencyManager.retentionWindow,
-            tabLimit: 8,
+            tabLimit: TabResidencyManager.residentTabLimit,
             byteBudget: Int.max,
             automaticMaintenance: true)
         manager.store(FakeResident(), tabId: "a")

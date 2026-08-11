@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import PDFKit
 
-struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool }
+struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true }
 
 actor IntegrationsSyncEngine {
     private let credentials: any IntegrationCredentials
@@ -15,6 +15,15 @@ actor IntegrationsSyncEngine {
     private let maximumPDFBytes: Int
     private var inFlight: [IntegrationProvider: (id: UUID, mode: IntegrationSyncMode, task: Task<ProviderSnapshot, Error>)] = [:]
     private var downloadTasks: [String: (id: UUID, task: Task<ExternalOpenRoute, Error>)] = [:]
+    /// Item ids currently being removed by retention. A download cannot register
+    /// while its id is in this set, so cancellation + deletion is one barrier
+    /// rather than an await across which a replacement transfer can appear.
+    private var removingDownloads: Set<String> = []
+    /// Short lease bridging “return the existing file URL” to the reader adding
+    /// that path to the workspace's open-document set. Retention refuses the
+    /// item during this window; after it expires the open-path gate owns it.
+    private var openingProtectionUntil: [String: Date] = [:]
+    private static let openingProtectionWindow: TimeInterval = 30
     private var transitioningProviders: Set<IntegrationProvider> = []
     /// Identifies the walks this engine instance started. A tentative walk
     /// tagged with anything else was left behind by a previous launch, and
@@ -55,10 +64,11 @@ actor IntegrationsSyncEngine {
             if let token = await credentials.credential(for: provider), Self.fingerprint(token) == fingerprint { connected.insert(provider) }
             else { authenticationRequired.insert(provider) }
         }
-        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled)
+        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled)
     }
 
     func setAutoRefreshEnabled(_ enabled: Bool) { preferences.autoRefreshEnabled = enabled }
+    func setOfflineReadingEnabled(_ enabled: Bool) { preferences.offlineReadingEnabled = enabled }
     func validate(provider: IntegrationProvider, candidate: String) async throws { let token = candidate.trimmingCharacters(in: .whitespacesAndNewlines); guard !token.isEmpty else { throw IntegrationError.invalidCredential }; try await validateToken(token, provider) }
 
     func connect(provider: IntegrationProvider, candidate: String) async throws -> ProviderSnapshot {
@@ -197,15 +207,108 @@ actor IntegrationsSyncEngine {
     /// again rather than opened from a copy nothing would ever refresh.
     func existingRoute(for item: ReadLaterItem) async -> ExternalOpenRoute? { if let url = try? await cache.currentDownload(provider: item.provider, itemID: item.vendorID, revision: Self.revision(item)) { return .file(url) }; return nil }
 
+    /// Existing route for a user open. Presence probes use `existingRoute`
+    /// without a lease; only handing the URL to a reader protects it.
+    func acquireExistingRoute(for item: ReadLaterItem) async -> ExternalOpenRoute? {
+        while true {
+            while removingDownloads.contains(item.id) {
+                if Task.isCancelled { return nil }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            let route = await existingRoute(for: item)
+            // `existingRoute` awaits the cache actor. Removal may have begun in
+            // that suspension; retry behind its barrier rather than leasing a
+            // URL that is already being deleted.
+            if removingDownloads.contains(item.id) { continue }
+            guard let route else { return nil }
+            openingProtectionUntil[item.id] = now().addingTimeInterval(
+                Self.openingProtectionWindow)
+            return route
+        }
+    }
+
     func download(_ item: ReadLaterItem, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {
-        guard transitioningProviders.contains(item.provider) == false else { throw IntegrationError.staleGeneration }
-        if let existing = await existingRoute(for: item) { return existing }
+        while true {
+            while removingDownloads.contains(item.id) {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard transitioningProviders.contains(item.provider) == false else {
+                throw IntegrationError.staleGeneration
+            }
+            let existing = await existingRoute(for: item)
+            if removingDownloads.contains(item.id) { continue }
+            if let existing { return existing }
+            break
+        }
         if let current = downloadTasks[item.id] { return try await current.task.value }
         let metadata = preferences.metadata(for: item.provider); guard metadata.enabled else { throw IntegrationError.disconnected }
         let id = UUID()
         let task = Task { try await self.runDownload(item, id: id, generation: metadata.generation, fingerprint: metadata.accountFingerprint ?? "", progress: progress) }
         downloadTasks[item.id] = (id: id, task: task)
         return try await task.value
+    }
+
+    /// Background autopull's entry into the download path (#157). Deliberately
+    /// `download` itself rather than a parallel implementation: prefetching and
+    /// opening must share the byte cap, the PDF validation, the revision-guarded
+    /// reuse of an existing copy, the generation guards AND the per-item dedup —
+    /// so a prefetch already in flight is what an open joins instead of racing.
+    func prefetch(_ item: ReadLaterItem) async throws -> ExternalOpenRoute {
+        try await download(item, progress: { _ in })
+    }
+
+    /// Retention's counterpart to `prefetch`: drop a downloaded copy. Refuses
+    /// while the file is open in a tab (same rule `disconnect` enforces), and
+    /// cancels an in-flight download of the same item first so a transfer can't
+    /// re-install the bytes moments after the sweep removed them.
+    func removeDownloadedCopy(for item: ReadLaterItem, openDocumentPaths: Set<String>) async -> Bool {
+        await removeDownloadedCopy(provider: item.provider, itemID: item.vendorID, openDocumentPaths: openDocumentPaths)
+    }
+
+    /// Id-only deletion is valid only when PDF artifacts actually exist. An
+    /// article uses a URL-derived web-archive key that cannot be recovered from
+    /// its provider id; reporting a missing PDF as success would forget its
+    /// retention entry while leaving those bytes behind.
+    func downloadedCopyURL(provider: IntegrationProvider, itemID: String) async -> URL? {
+        await cache.existingDownloadURL(provider: provider, itemID: itemID)
+    }
+
+    func removeDownloadedCopyIfPresent(
+        provider: IntegrationProvider, itemID: String, openDocumentPaths: Set<String>
+    ) async -> Bool {
+        let key = "\(provider.rawValue):\(itemID)"
+        if downloadTasks[key] == nil {
+            guard await cache.hasDownloadArtifacts(provider: provider, itemID: itemID) else {
+                return false
+            }
+        }
+        return await removeDownloadedCopy(
+            provider: provider, itemID: itemID, openDocumentPaths: openDocumentPaths)
+    }
+
+    func removeDownloadedCopy(provider: IntegrationProvider, itemID: String, openDocumentPaths: Set<String>) async -> Bool {
+        let key = "\(provider.rawValue):\(itemID)"
+        if let protectedUntil = openingProtectionUntil[key] {
+            if protectedUntil > now() { return false }
+            openingProtectionUntil[key] = nil
+        }
+        guard removingDownloads.insert(key).inserted else { return false }
+        defer { removingDownloads.remove(key) }
+
+        if let entry = downloadTasks[key] {
+            entry.task.cancel()
+            downloadTasks[key] = nil
+            _ = await entry.task.result
+        }
+        guard let url = try? await cache.downloadURL(provider: provider, itemID: itemID) else {
+            return false
+        }
+        let normalizedOpenPaths = Set(openDocumentPaths.map(Self.normalizedPath))
+        guard !normalizedOpenPaths.contains(Self.normalizedPath(url.path)) else { return false }
+        let removed = await cache.deleteDownload(provider: provider, itemID: itemID)
+        if removed { RecentFilesService.remove(paths: [url.path]) }
+        return removed
     }
 
     private func runDownload(_ item: ReadLaterItem, id: UUID, generation: Int, fingerprint: String, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {

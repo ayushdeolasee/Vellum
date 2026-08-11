@@ -99,11 +99,11 @@ struct CreateAnnotationInput: Sendable {
     var color: String?
     var content: String?
     var positionData: PositionData?
-    /// Client-assigned id for optimistic creation: the store renders the
-    /// annotation immediately under this id and the backend persists it under
-    /// the same id, so an immediate drag/edit targets the right record. When
-    /// nil, the backend mints its own id (legacy behavior).
+    /// Optional caller-supplied identity so the UI can render an annotation
+    /// optimistically (before the disk write finishes) and the persisted record
+    /// carries the same id/timestamp. Nil lets the backend generate them.
     var id: String?
+    var createdAt: String?
 }
 
 struct UpdateAnnotationInput: Sendable {
@@ -139,12 +139,13 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     /// DocumentIdentity.
     var docId: String? = nil
     /// Security-scoped bookmark for `pdfPath` (PDFs only), minted the moment the
-    /// document is opened while read access is guaranteed. Defense-in-depth
-    /// alongside stable code signing: durably grants access to files outside
-    /// the app's own container so a relaunch can regain access to a restored
-    /// tab without depending solely on TCC's per-identity grant. Optional so
-    /// data written before this field existed (or web docs, which never carry
-    /// one) decodes cleanly; readers must fall back to `pdfPath` when nil.
+    /// document is opened while read access is guaranteed. On iOS this is
+    /// MANDATORY, not defense-in-depth: the app is sandboxed, a
+    /// UIDocumentPicker URL's access does not survive relaunch, and the app
+    /// container's UUID changes across reinstalls — so a saved raw path can stop
+    /// resolving even for a file that is still there. Optional so data written
+    /// before this field existed (and web docs, which never carry one) decodes
+    /// cleanly; readers must fall back to `pdfPath` when nil.
     var bookmarkData: Data? = nil
 
     enum CodingKeys: String, CodingKey {

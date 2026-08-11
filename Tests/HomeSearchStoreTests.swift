@@ -390,13 +390,15 @@ struct HomeRemovalGuardTests {
     }
 }
 
-// MARK: - Home source switcher
-
 /// The home screen's source switcher (Library | connected read-later accounts).
 /// Only the two pure rules are pinned here — which options exist, and what
 /// happens to the selection when an account goes away — because those are the
 /// parts that decide whether a reader can end up stranded in front of a list
 /// that no longer has anything behind it.
+///
+/// Packet 3 deferred this suite because `IntegrationProvider` did not exist on
+/// iPad yet; Stage I lands both the type and the switcher, so it is ported here
+/// unchanged from main.
 @Suite("Home source switcher")
 struct HomeSourceTests {
     @Test("With nothing connected the switcher has one option, so it never appears")

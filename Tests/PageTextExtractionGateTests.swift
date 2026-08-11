@@ -11,11 +11,26 @@ import XCTest
 // returning an empty string — which is exactly what `PDFPage.string` does on an
 // image-only page (measured at ~0.02 ms, i.e. the recognition PDFKit starts is
 // still running after the call returns).
+//
+// Cases 1-8 are main's, unchanged — the gate itself needed no iOS adaptation.
+// Cases 9-10 are the iPad's, covering the `offMain:` overload the iPad adds for
+// its detached 1→N walk (#129 packet 7 §2.1); nothing in main's suite exercises
+// it, and getting it wrong is how the walk quietly climbs back onto the main
+// actor.
 
 @MainActor
 final class PageTextExtractionGateTests: XCTestCase {
 
     /// Main-actor scratchpad recording the order bodies actually ran in.
+    ///
+    /// The one adaptation to main's file: `@MainActor` is explicit here. A
+    /// nested type does not inherit the enclosing class's global actor, and
+    /// case (9) below captures a `Recorder` inside the `offMain:` overload's
+    /// `@Sendable` body — which under Swift 6 language mode requires the
+    /// captured type to be `Sendable`. Global-actor-isolated classes are
+    /// implicitly `Sendable`, so stating the isolation this class already had in
+    /// practice is enough; nothing about cases (1)-(8) changes.
+    @MainActor
     private final class Recorder {
         private(set) var entries: [String] = []
         func log(_ name: String) -> String {
@@ -173,5 +188,38 @@ final class PageTextExtractionGateTests: XCTestCase {
         XCTAssertLessThan(
             ContinuousClock.now - started, .milliseconds(10),
             "skipping a cached page should cost nothing")
+    }
+
+    // MARK: - iPad: the off-main-body overload (#129 packet 7 §2.1)
+
+    // (9) iPad: the off-main-body overload holds the same single slot, so a
+    // detached walk and a main-actor locator can never both be reading.
+    func testOffMainBodiesShareTheSameSlotAsSynchronousOnes() async {
+        let gate = PageTextExtractionGate()
+        await primeCooldown(on: gate)
+        let recorder = Recorder()
+
+        let holder = Task {
+            await gate.extractText(priority: .background, offMain: {
+                await MainActor.run { recorder.log("holder") }
+            })
+        }
+        await Task.yield()
+        let queued = Task { await gate.extractText(priority: .onDemand) { recorder.log("onDemand") } }
+
+        _ = await holder.value
+        _ = await queued.value
+        XCTAssertEqual(recorder.entries, ["holder", "onDemand"])
+        XCTAssertEqual(gate.queueDepth, 0)
+    }
+
+    // (10) …and the pacing contract is identical across the two overloads: an
+    // empty result from an off-main body still paces the next caller.
+    func testOffMainEmptyResultPacesTheNextExtraction() async {
+        let gate = PageTextExtractionGate()
+        _ = await gate.extractText(priority: .background, offMain: { "" })
+        let started = ContinuousClock.now
+        _ = await gate.extractText(priority: .onDemand) { "page text" }
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(10))
     }
 }

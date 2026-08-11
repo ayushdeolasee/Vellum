@@ -10,7 +10,11 @@ struct PaneTreeView: View {
     var body: some View {
         switch node {
         case .leaf(let pane):
+            #if os(macOS)
             PaneView(pane: pane)
+            #else
+            PaneView_iOS(pane: pane)
+            #endif
         case .split(let id, let direction, let children, let sizes):
             SplitContainer(id: id, direction: direction, children: children, sizes: sizes)
         }
@@ -26,7 +30,12 @@ private struct SplitContainer: View {
     @Environment(WorkspaceStore.self) private var workspace
     @State private var dragBaseline: [Double]?
 
+    #if os(iOS)
+    // Fingers need a fatter seam than a pointer does.
+    private let dividerThickness: CGFloat = 14
+    #else
     private let dividerThickness: CGFloat = 8
+    #endif
     private let minPane: CGFloat = 240
 
     var body: some View {
@@ -44,7 +53,7 @@ private struct SplitContainer: View {
                             height: direction == .vertical ? lengths[index] : nil)
 
                     if index < children.count - 1 {
-                        PaneDivider(direction: direction)
+                        PaneDivider(direction: direction, thickness: dividerThickness)
                             .gesture(dividerGesture(index: index, available: available))
                             .onTapGesture(count: 2) { resetPair(around: index) }
                     }
@@ -100,6 +109,7 @@ private struct SplitContainer: View {
 /// the SplitContainer, which owns the geometry.
 private struct PaneDivider: View {
     let direction: SplitDirection
+    let thickness: CGFloat
 
     @Environment(\.palette) private var palette
     @State private var hovering = false
@@ -114,10 +124,12 @@ private struct PaneDivider: View {
                     height: direction == .vertical ? 2 : nil)
         }
         .frame(
-            width: direction == .horizontal ? 8 : nil,
-            height: direction == .vertical ? 8 : nil)
+            width: direction == .horizontal ? thickness : nil,
+            height: direction == .vertical ? thickness : nil)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        #if os(macOS)
         .pointerStyle(direction == .horizontal ? .columnResize : .rowResize)
+        #endif
     }
 }

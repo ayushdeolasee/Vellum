@@ -1,11 +1,16 @@
-import AppKit
+import SwiftUI
 import SwiftMath
 
-// Shared LaTeX rendering for the AI chat bubbles. Both message renderers — the
-// SwiftUI `MarkdownMessage` (user bubbles) and the AppKit-backed
-// `SelectableMessageText` (assistant bubbles) — hand math spans here and get
-// back a typeset image plus the baseline metrics needed to sit it on the
-// surrounding text line.
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+// Shared LaTeX rendering for the AI chat bubbles. The message renderers hand
+// math spans here and get back a typeset image plus the baseline metrics needed
+// to sit it on the surrounding text line. Cross-platform: NSImage/NSColor on
+// AppKit, UIImage/UIColor on UIKit (see Platform.swift for the type aliases).
 
 /// One piece of an inline-markdown string after splitting out math spans.
 enum MathSegment: Equatable {
@@ -17,7 +22,7 @@ enum MathSegment: Equatable {
 @MainActor
 enum MathRenderer {
     struct Rendered {
-        let image: NSImage
+        let image: PlatformImage
         /// Distance from the image's bottom edge down to the math baseline, so
         /// text hosts can offset the image and keep `x` level with prose.
         let descent: CGFloat
@@ -42,14 +47,14 @@ enum MathRenderer {
 
     /// Render a LaTeX string (no delimiters) to an image. Returns nil when the
     /// source fails to parse, so callers can fall back to styled plain text.
-    static func render(latex: String, fontSize: CGFloat, color: NSColor, display: Bool) -> Rendered? {
-        let trimmed = normalizeCommands(latex.trimmingCharacters(in: .whitespacesAndNewlines))
+    static func render(latex: String, fontSize: CGFloat, color: PlatformColor, display: Bool) -> Rendered? {
+        let trimmed = latex.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         // Resolve dynamic (catalog/appearance) colors to concrete sRGB so the
         // cache key can't alias a light-mode render into dark mode.
-        let resolved = color.usingColorSpace(.sRGB) ?? color
-        let key = "\(display ? "D" : "T")|\(fontSize)|\(resolved.description)|\(trimmed)" as NSString
+        let resolved = resolvedColor(color)
+        let key = "\(display ? "D" : "T")|\(fontSize)|\(colorKey(resolved))|\(trimmed)" as NSString
         if let hit = cache.object(forKey: key) { return hit.rendered }
 
         // SwiftMath 1.7.3 keeps its typesetter internal, so build the display
@@ -66,16 +71,29 @@ enum MathRenderer {
         label.latex = trimmed
         guard label.error == nil, label.mathList != nil else { return nil }
 
+        // NSView exposes the fitted content as `fittingSize`; MTMathUILabel's
+        // UIView backing computes the same value through `intrinsicContentSize`.
+        #if os(macOS)
         let fitted = label.fittingSize
+        #else
+        let fitted = label.intrinsicContentSize
+        #endif
         guard fitted.width > 0, fitted.height > 0, fitted.width.isFinite, fitted.height.isFinite else { return nil }
         // The label clamps very short content to half the font size when
         // centering; matching that clamp keeps the baseline math exact.
         let size = CGSize(width: ceil(fitted.width), height: ceil(max(fitted.height, fontSize / 2)))
         label.frame = CGRect(origin: .zero, size: size)
+        // Force the layout pass that typesets `displayList` at the frame size.
+        #if os(macOS)
         label.layout()
+        #else
+        label.setNeedsLayout()
+        label.layoutIfNeeded()
+        #endif
         guard let line = label.displayList else { return nil }
         let descent = line.descent
 
+        #if os(macOS)
         // Handler-based NSImage re-draws the display list at the destination
         // context's scale, so the math stays vector-crisp on retina.
         let image = NSImage(size: size, flipped: false) { _ in
@@ -85,35 +103,40 @@ enum MathRenderer {
             context.restoreGState()
             return true
         }
+        #else
+        // UIGraphicsImageRenderer draws at the trait scale, so the math stays
+        // vector-crisp on retina. Its context is top-left/y-down; SwiftMath's
+        // display list expects a bottom-left/y-up (Core Text) context, so flip.
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            let context = ctx.cgContext
+            context.saveGState()
+            context.translateBy(x: 0, y: size.height)
+            context.scaleBy(x: 1, y: -1)
+            line.draw(context)
+            context.restoreGState()
+        }
+        #endif
+
         let rendered = Rendered(image: image, descent: descent)
         cache.setObject(CachedRender(rendered), forKey: key)
         return rendered
     }
 
-    /// Rewrite LaTeX commands SwiftMath 1.7.3 does not implement into the
-    /// equivalent it does. A single unknown command fails the WHOLE equation —
-    /// `label.error` is set, `render` returns nil, and the bubble falls back to
-    /// showing raw monospaced LaTeX source. `\dots` is the one models reach for
-    /// constantly (it is the modern spelling `\ldots` in text position), and it
-    /// is why two of the equations in issue #57's sample reply rendered as
-    /// literal `x_1, x_2, x_3, \dots`.
-    ///
-    /// The negative lookahead keeps `\dotsb`/`\dotsc`/… from being mangled, and
-    /// requiring the backslash immediately before `dots` leaves `\ldots` and
-    /// `\cdots` — both of which SwiftMath already understands — untouched.
-    nonisolated private static let dotsRegex: NSRegularExpression? =
-        try? NSRegularExpression(pattern: #"\\dots(?![a-zA-Z])"#)
+    // MARK: - Platform color helpers
 
-    nonisolated private static func normalizeCommands(_ latex: String) -> String {
-        // Cheap guard: the substring test skips the regex for the ~all of
-        // equations that don't use the command.
-        guard latex.contains("\\dots"), let regex = dotsRegex else { return latex }
-        return regex.stringByReplacingMatches(
-            in: latex,
-            range: NSRange(location: 0, length: (latex as NSString).length),
-            withTemplate: #"\\ldots"#
-        )
+    #if os(macOS)
+    private static func resolvedColor(_ color: PlatformColor) -> PlatformColor {
+        color.usingColorSpace(.sRGB) ?? color
     }
+    private static func colorKey(_ color: PlatformColor) -> String { color.description }
+    #else
+    private static func resolvedColor(_ color: PlatformColor) -> PlatformColor { color }
+    private static func colorKey(_ color: PlatformColor) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return "\(r),\(g),\(b),\(a)"
+    }
+    #endif
 
     /// Compiled once: `segments(in:)` runs on every streamed delta, so building
     /// the fixed pattern per call would be pure overhead. `nonisolated` because

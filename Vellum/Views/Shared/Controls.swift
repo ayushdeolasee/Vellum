@@ -22,8 +22,9 @@ struct IconButton<Icon: View>: View {
     @Environment(\.palette) private var palette
     @State private var hovering = false
 
+    @ViewBuilder
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             icon()
                 .frame(width: size.side, height: size.side)
                 .background(background)
@@ -35,8 +36,14 @@ struct IconButton<Icon: View>: View {
         .disabled(disabled)
         .opacity(disabled && variant == .ghost ? 0.3 : (disabled ? 0.5 : 1))
         .onHover { hovering = $0 }
-        .help(help ?? "")
-        .accessibilityLabel(help ?? "")
+
+        if let help, !help.isEmpty {
+            button
+                .help(help)
+                .accessibilityLabel(help)
+        } else {
+            button
+        }
     }
 
     private var background: AnyShapeStyle {
@@ -63,7 +70,7 @@ enum TextButtonSize {
     case sm, md, lg
     var height: CGFloat { switch self { case .sm: 28; case .md: 36; case .lg: 44 } }
     var paddingX: CGFloat { switch self { case .sm: 10; case .md: 14; case .lg: 20 } }
-    var fontSize: CGFloat { switch self { case .sm: 12; case .md: 14; case .lg: 14 } }
+    var font: Font { switch self { case .sm: .footnote; case .md, .lg: .subheadline } }
     var gap: CGFloat { switch self { case .sm: 6; case .md: 8; case .lg: 8 } }
 }
 
@@ -79,7 +86,7 @@ struct TextButton<Content: View>: View {
     var body: some View {
         let button = Button(action: action) {
             HStack(spacing: size.gap) { label() }
-                .font(.system(size: size.fontSize, weight: .medium))
+                .font(size.font.weight(.medium))
                 .padding(.horizontal, size.paddingX / 2)
                 .frame(minHeight: size.height - 12)
         }
@@ -104,7 +111,7 @@ struct TextButton<Content: View>: View {
 
 /// A keyboard shortcut rendered as a physical key — monospaced glyphs on a
 /// faint slab with a hairline edge. Used wherever the UI teaches a shortcut
-/// (the welcome screen's ⌘O hint, the walkthrough's bullets) so a shortcut
+/// (the home screen's ⌘F hint, the walkthrough's bullets) so a shortcut
 /// always reads as a key rather than as more prose.
 struct Keycap: View {
     let keys: String
@@ -113,7 +120,7 @@ struct Keycap: View {
 
     var body: some View {
         Text(keys)
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(.caption2, design: .monospaced))
             .foregroundStyle(palette.foreground)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -136,17 +143,26 @@ struct Keycap: View {
 }
 
 /// The Vellum wordmark. Set in the serif display face — the one place the
-/// "parchment" identity is allowed to speak loudly. Render at the real point
-/// size: scaling it up with scaleEffect rasterizes the small glyphs and
-/// produces a blurry bitmap.
+/// "parchment" identity is allowed to speak loudly. The custom face scales with
+/// Dynamic Type up to the largest standard size, then stops: this is decorative
+/// branding, and letting accessibility sizes enlarge it further fragments the
+/// word instead of making functional content easier to read.
 struct Wordmark: View {
     var size: CGFloat = 15
 
     @Environment(\.palette) private var palette
 
     var body: some View {
-        Text("\(Text("Vellum").foregroundStyle(palette.foreground))\(Text(".").foregroundStyle(palette.primary))")
-            .font(.custom("Iowan Old Style", size: size).weight(.semibold))
+        (Text("Vellum").foregroundStyle(palette.foreground)
+            + Text(".").foregroundStyle(palette.primary))
+            .font(
+                .custom("Iowan Old Style", size: size, relativeTo: .title)
+                    .weight(.semibold))
             .kerning(-0.2 * size / 15)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .allowsTightening(true)
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            .accessibilityHidden(true)
     }
 }

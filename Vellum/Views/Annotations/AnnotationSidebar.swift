@@ -162,8 +162,8 @@ struct AnnotationSidebar: View {
         }
     }
 
+    // Store already keeps pin/page/created order; filter only by type.
     private var filteredAnnotations: [Annotation] {
-        // Store already keeps pin/page/created order; filter only by type.
         guard let filter else { return annotationStore.annotations }
         return annotationStore.annotations.filter { $0.type == filter }
     }
@@ -330,12 +330,13 @@ private struct AnnotationRow: View {
                         }
                         .focused(editFieldFocused)
                         .onSubmit(onSaveEdit)
+                        #if os(macOS)
                         .onExitCommand(perform: onCancelEdit)
+                        #endif
                         .padding(.top, 4)
                 } else if let content = annotation.content, !content.isEmpty {
-                    // Markdown + LaTeX like the AI chat; lineLimit propagates to
-                    // each rendered block so long notes stay row-sized.
-                    MarkdownMessage(content: content, textColor: palette.foreground, baseSize: fontSize)
+                    Text(content)
+                        .font(.system(size: fontSize))
                         .foregroundStyle(palette.foreground)
                         .lineLimit(3)
                         .padding(.top, 4)
@@ -347,48 +348,49 @@ private struct AnnotationRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Bookmarks have no content to double-click until a title exists,
-            // so they get an explicit edit affordance next to the trash.
+            // Bookmarks have no content to double-tap until a title exists, so
+            // they get an explicit edit affordance next to the trash. Touch has
+            // no hover, so it stays visible whenever the row is on screen.
             if annotation.type == .bookmark, !editing {
                 let hasTitle = annotation.content?.isEmpty == false
                 Button(action: onStartEdit) {
                     Image(systemName: "pencil")
                         .font(.system(size: 14))
-                        .frame(width: 22, height: 22)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(palette.mutedForeground)
-                .opacity(hovering || selected ? 1 : 0)
                 .help(hasTitle ? "Edit bookmark title" : "Add bookmark title")
                 .accessibilityLabel(hasTitle ? "Edit bookmark title" : "Add bookmark title")
                 .accessibilityIdentifier("annotationRow.editTitle")
             }
 
             // Pin is a sibling control (not nested under the row tap) so it
-            // never also navigates — same pattern as ModelSelector stars.
+            // never also navigates.
             Button(action: onTogglePin) {
                 Image(systemName: annotation.pinned ? "pin.fill" : "pin")
                     .font(.system(size: 13))
-                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(annotation.pinned ? palette.primary : palette.mutedForeground)
-            .opacity(hovering || selected || annotation.pinned ? 1 : 0)
             .help(annotation.pinned ? "Unpin annotation" : "Pin annotation to top")
             .accessibilityLabel(annotation.pinned ? "Unpin annotation" : "Pin annotation")
+            .accessibilityAddTraits(annotation.pinned ? [.isButton, .isSelected] : .isButton)
             .accessibilityIdentifier("annotationRow.pin")
 
+            // Always visible with a 44 pt target: `.onHover` never fires for a
+            // finger, so hover-gating would make this unreachable on iPad.
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 14))
-                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(palette.mutedForeground)
-            .opacity(hovering || selected ? 1 : 0)
             .help("Delete annotation")
             .accessibilityLabel("Delete annotation")
             .accessibilityIdentifier("annotationRow.delete")
@@ -405,6 +407,10 @@ private struct AnnotationRow: View {
         .onHover { hovering = $0 }
         .contextMenu {
             Button(annotation.pinned ? "Unpin" : "Pin to Top", action: onTogglePin)
+            if annotation.type == .bookmark {
+                Button(annotation.content?.isEmpty == false ? "Edit Title" : "Add Title",
+                       action: onStartEdit)
+            }
             Button("Delete", role: .destructive, action: onDelete)
         }
     }

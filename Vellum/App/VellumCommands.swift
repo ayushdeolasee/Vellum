@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -361,3 +362,4 @@ struct VellumCommands: Commands {
         if let appStore { Task { await appStore.openFiles(paths: paths) } }
     }
 }
+#endif  // os(macOS) — iPad reference; see Platform/iOS
