@@ -1,17 +1,32 @@
-The codex-cli computer-use is much better, since we are building a desktop application I want you to use codex-cli to verify your work. Make sure that whatever changes you've made or asked your sub-agents to make are giving the correct behaviour.   
-Additionally instead absolutely required prefer spinning up Sonnet, Opus or Codex models. I would like it if you do not spin up a bunch of Fable models since they use up a bunch of tokens. 
+# Things to look out for
 
-## Picking the right models for workflows and subagents
+## Project shape and build ownership
+- This worktree is the macOS app on `main`. Do not port iPad/iPhone code or change their product decisions unless the task explicitly targets those branches.
+- `project.yml` is the source of truth for Xcode targets, files, build settings, and entitlements. After adding, removing, or retargeting Swift files, run `xcodegen generate`; never hand-edit `Vellum.xcodeproj/project.pbxproj`.
+- Keep derived data isolated per worktree. A successful build is not a launch or UI verification; state which level was actually exercised.
+- Before touching iCloud signing or entitlements, check GitHub issue #149. The current free Personal Team deliberately has no iCloud entitlement; do not add one speculatively.
 
-Rankings, higher = better. Cost reflects what I actually pay (OpenAI has really generous limits although I am using the 20 dollar plan so do not use it unless necessary), not list price. Intelligence is how hard a problem you can hand the model unsupervised. Taste covers UI/UX, code quality, API design, and copy.
-How to apply:
-- These are defaults, not limits. You have standing permission to override them: if a cheaper model's output doesn't meet the bar, rerun or redo the work with a smarter model without asking. Judge the output, not the price tag. Escalating costs less than shipping mediocre work.
-- Cost is a tie-breaker only; when axes conflict for anything that ships, intelligence > taste > cost.
-- Bulk/mechanical work (clear-spec implementation, data analysis, migrations): gpt-5.5 - it's effectively free.
-- Anything user-facing (UI, copy, API design) needs taste ≥ 7.
-- Reviews of plans/implementations: fable-5 or opus-4.8, optionally gpt-5.5 as an extra independent perspective.
-- Never use Haiku.
-- Mechanics: gpt-5.5 is only reachable through the Codex CLI - 'codex exec' / 'codex review' (my ~/.codex/config.toml defaults to gpt-5.5). Use the codex-implementation, codex-review, and codex-computer-use skills; for work they don't cover (investigation, data analysis), run 'codex exec -s read-only' directly with a self-contained prompt.
-- Codex models (sonnet-5, opus-4.8, fable-5) run via the Agent/Workflow model parameter.
-Using gpt-5.5 inside workflows and subagents (the model parameter only takes Codex models, so use a wrapper):
-- Spawn a thin Codex wrapper agent with 'model: 'sonnet', effort: 'low' whose prompt instructs it to write a self-contained codex prompt, run 'codex exec' via Bash, and return
+## Test isolation and persistent state
+- Tests must never write the user's real preferences, Keychain, document library, or attachment storage. Use `AppDefaults`/`TestEnvironment`, `KeychainStore.withBackend`, and `DocumentDataStore.rootDirectoryOverride` (or the established seam for that subsystem), then restore them in `defer`/teardown on every path.
+- Do not introduce new `UserDefaults.standard` access in app services. It makes tests and UI-test reset state leak into the live app; route app defaults through `AppDefaults`.
+- Treat global overrides and singleton backends as serialized test resources. Do not run tests that mutate the same override in parallel, and do not leave background work outstanding after a test.
+
+## Document lifecycle and destructive operations
+- A document's stable `docId` is its storage identity. On rename, import, or path-to-docId promotion, preserve and rekey all associated state together: metadata, conversations, scratchpad, and attachments. Do not create another path-keyed side store.
+- Before closing, replacing, renaming, importing, or deleting a document, drain the resource's registered teardown/persistence tasks. Re-check that the document is still current after awaiting; these paths have previously raced with imports and background saves.
+- Make destructive actions recoverable or explicitly confirmed, and preserve drafts across incidental sheet/window dismissal. Do not silently clear user content just because a transient view was dismissed.
+
+## PDFKit and AI extraction
+- Every `PDFPage.string`/page-text extraction must go through `PageTextExtractionGate`, including background indexing, on-demand AI tools, and search. The gate serializes access and gives interactive work priority; bypassing it can crash Live Text/ANE.
+- Keep extraction and file I/O off the main actor. The UI must receive only the final state update, and stale/cancelled results must not be persisted or applied to a newly selected document.
+
+## Main-thread hygiene
+- Never run blocking work on `@MainActor` before the first `await`. Hop off first (`Task.detached` or a non-main actor), then come back for state updates. A slow or unmounted volume must never freeze the UI.
+- UI state changes the user asked for apply immediately. Slow persistence runs behind them in a background task.
+- Every fire-and-forget `Task` doing persistence must be joinable: keep the handle, register it somewhere quit paths and tests can drain (`await`) it. Never `Task.detached { ... }` and drop the handle.
+- Moving work off the critical path creates race windows. Before starting a new operation on a resource, await any pending background work on that same resource.
+- Any `isLoading`-style flag that gates UI must be released on every exit path, and use a generation token if attempts can overlap. A wedged flag is a silent lockout.
+
+## SwiftUI hit targets and interaction
+- To make a `.plain`-style `Button` clickable beyond its glyph, `.frame(...)` + `.contentShape(Rectangle())` must go inside the label closure (frame first). Applied outside the button they change layout only, not the hit region.
+- Same trap: `Spacer`/transparent padding inside a tappable area needs `.contentShape(Rectangle())` or clicks fall through.
