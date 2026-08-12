@@ -270,8 +270,12 @@ actor IntegrationsSyncEngine {
     /// article uses a URL-derived web-archive key that cannot be recovered from
     /// its provider id; reporting a missing PDF as success would forget its
     /// retention entry while leaving those bytes behind.
-    func downloadedCopyURL(provider: IntegrationProvider, itemID: String) async -> URL? {
-        await cache.existingDownloadURL(provider: provider, itemID: itemID)
+    func downloadedCopyURLs(provider: IntegrationProvider, itemID: String) async -> [URL] {
+        await cache.downloadURLs(provider: provider, itemID: itemID)
+    }
+
+    func downloadedCopyURLs(for item: ReadLaterItem) async -> [URL] {
+        await downloadedCopyURLs(provider: item.provider, itemID: item.vendorID)
     }
 
     func removeDownloadedCopyIfPresent(
@@ -301,14 +305,24 @@ actor IntegrationsSyncEngine {
             downloadTasks[key] = nil
             _ = await entry.task.result
         }
-        guard let url = try? await cache.downloadURL(provider: provider, itemID: itemID) else {
-            return false
-        }
+        let urls = await cache.downloadURLs(provider: provider, itemID: itemID)
+        guard !urls.isEmpty else { return false }
         let normalizedOpenPaths = Set(openDocumentPaths.map(Self.normalizedPath))
-        guard !normalizedOpenPaths.contains(Self.normalizedPath(url.path)) else { return false }
+        guard urls.allSatisfy({ !normalizedOpenPaths.contains(Self.normalizedPath($0.path)) }) else { return false }
         let removed = await cache.deleteDownload(provider: provider, itemID: itemID)
-        if removed { RecentFilesService.remove(paths: [url.path]) }
+        if removed { RecentFilesService.remove(paths: Set(urls.map(\.path))) }
         return removed
+    }
+
+    func pendingPreviousRevisionURL(for item: ReadLaterItem) async -> URL? {
+        try? await cache.pendingPreviousRevisionURL(
+            provider: item.provider, itemID: item.vendorID)
+    }
+
+    func acknowledgeRevisionWarning(for item: ReadLaterItem, previousRevisionURL: URL) async {
+        try? await cache.acknowledgeRevisionWarning(
+            provider: item.provider, itemID: item.vendorID,
+            previousRevisionURL: previousRevisionURL)
     }
 
     private func runDownload(_ item: ReadLaterItem, id: UUID, generation: Int, fingerprint: String, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {
@@ -420,7 +434,9 @@ actor IntegrationsSyncEngine {
             try await Task.detached(priority: .userInitiated) { try Self.validatePDF(at: downloaded) }.value
             try ensureCurrent(item.provider, generation, fingerprint)
             let manifest = IntegrationsCache.DownloadManifest(provider: item.provider, itemID: item.vendorID, revision: Self.revision(item))
-            return .file(try await cache.installDownload(temporaryURL: downloaded, manifest: manifest))
+            let installation = try await cache.installDownload(
+                temporaryURL: downloaded, manifest: manifest)
+            return .file(installation.currentURL)
         } catch { try? FileManager.default.removeItem(at: downloaded); throw error }
     }
 

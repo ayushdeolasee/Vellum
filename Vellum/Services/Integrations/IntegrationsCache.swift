@@ -3,10 +3,40 @@ import Foundation
 
 actor IntegrationsCache {
     struct SnapshotEnvelope: Codable, Sendable { static let currentVersion = 3; let version: Int; var snapshot: ProviderSnapshot }
+    struct PreservedRevision: Codable, Hashable, Sendable {
+        let revision: String?
+        let fileName: String
+    }
     /// What an installed PDF is a copy *of*. `revision` is the item's server
     /// revision at install time and is read back on every open, so an item the
     /// service has since replaced is re-downloaded instead of reused forever.
-    struct DownloadManifest: Codable, Hashable, Sendable { let provider: IntegrationProvider; let itemID: String; let revision: String? }
+    /// Optional fields keep manifests written by older builds readable: those
+    /// builds always stored the active bytes at the legacy `<item-key>.pdf`.
+    struct DownloadManifest: Codable, Hashable, Sendable {
+        let provider: IntegrationProvider
+        let itemID: String
+        let revision: String?
+        var fileName: String?
+        var preservedRevisions: [PreservedRevision]?
+        var revisionWarningPending: Bool?
+
+        init(
+            provider: IntegrationProvider, itemID: String, revision: String?,
+            fileName: String? = nil, preservedRevisions: [PreservedRevision]? = nil,
+            revisionWarningPending: Bool? = nil
+        ) {
+            self.provider = provider
+            self.itemID = itemID
+            self.revision = revision
+            self.fileName = fileName
+            self.preservedRevisions = preservedRevisions
+            self.revisionWarningPending = revisionWarningPending
+        }
+    }
+    struct DownloadInstallation: Hashable, Sendable {
+        let currentURL: URL
+        let preservedRevisionURL: URL?
+    }
     struct StagedPath: Sendable { let original: URL; let staged: URL }
     struct DisconnectStaging: Sendable { let directory: URL; let paths: [StagedPath] }
     enum LoadResult: Sendable { case missing, snapshot(ProviderSnapshot), corrupt }
@@ -55,6 +85,8 @@ actor IntegrationsCache {
         try save(snapshot)
     }
     func downloadsDirectory(provider: IntegrationProvider) throws -> URL { let url = providerDirectory(provider).appendingPathComponent("downloads", isDirectory: true); try fileManager.createDirectory(at: url, withIntermediateDirectories: true); return url }
+    /// The path used by manifests written before revision preservation. Kept as
+    /// an internal compatibility seam and for tests that stage legacy state.
     func downloadURL(provider: IntegrationProvider, itemID: String) throws -> URL { try downloadsDirectory(provider: provider).appendingPathComponent(Self.downloadKey(provider: provider, itemID: itemID) + ".pdf") }
     func manifestURL(provider: IntegrationProvider, itemID: String) throws -> URL { try downloadsDirectory(provider: provider).appendingPathComponent(Self.downloadKey(provider: provider, itemID: itemID) + ".json") }
 
@@ -63,43 +95,99 @@ actor IntegrationsCache {
     /// reusing one on existence alone pins the reader to a version the service
     /// replaced days ago, and no later sync would ever dislodge it.
     func currentDownload(provider: IntegrationProvider, itemID: String, revision: String?) throws -> URL? {
-        let url = try downloadURL(provider: provider, itemID: itemID)
-        guard fileManager.fileExists(atPath: url.path), manifest(provider: provider, itemID: itemID)?.revision == revision else { return nil }
+        guard let manifest = manifest(provider: provider, itemID: itemID),
+              manifest.revision == revision else { return nil }
+        let url = try downloadURL(for: manifest)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
         return url
     }
 
-    /// Installs a freshly downloaded PDF, replacing a stale copy in place.
-    /// An existing copy of the *same* revision means two downloads raced, so
-    /// that stays an `existingDownload` error rather than pointless rewriting.
-    func installDownload(temporaryURL: URL, manifest newManifest: DownloadManifest) throws -> URL {
-        let destination = try downloadURL(provider: newManifest.provider, itemID: newManifest.itemID)
-        if fileManager.fileExists(atPath: destination.path) {
-            guard manifest(provider: newManifest.provider, itemID: newManifest.itemID)?.revision != newManifest.revision else { throw IntegrationError.existingDownload }
-            _ = try fileManager.replaceItemAt(destination, withItemAt: temporaryURL)
-        } else {
-            try fileManager.moveItem(at: temporaryURL, to: destination)
+    /// Installs every server revision at an immutable path, then atomically
+    /// advances the manifest. The old path is never rewritten or removed, so a
+    /// user's embedded annotations remain recoverable and an already-open tab
+    /// cannot have its backing file changed underneath PDFKit.
+    func installDownload(temporaryURL: URL, manifest requested: DownloadManifest) throws -> DownloadInstallation {
+        let oldManifest = manifest(provider: requested.provider, itemID: requested.itemID)
+        if let oldManifest, oldManifest.revision == requested.revision,
+           fileManager.fileExists(atPath: try downloadURL(for: oldManifest).path) {
+            throw IntegrationError.existingDownload
         }
-        do { try JSONEncoder.integrations.encode(newManifest).write(to: try manifestURL(provider: newManifest.provider, itemID: newManifest.itemID), options: .atomic) }
-        catch { try? fileManager.removeItem(at: destination); throw error }
-        return destination
+
+        let directory = try downloadsDirectory(provider: requested.provider)
+        let destination = directory.appendingPathComponent(
+            Self.revisionFileName(
+                provider: requested.provider, itemID: requested.itemID,
+                revision: requested.revision))
+        try fileManager.moveItem(at: temporaryURL, to: destination)
+
+        var preserved = oldManifest?.preservedRevisions ?? []
+        var preservedURL: URL?
+        if let oldManifest {
+            let oldURL = try downloadURL(for: oldManifest)
+            if fileManager.fileExists(atPath: oldURL.path), oldURL != destination {
+                let record = PreservedRevision(
+                    revision: oldManifest.revision, fileName: oldURL.lastPathComponent)
+                preserved.removeAll { $0.fileName == record.fileName }
+                preserved.append(record)
+                preservedURL = oldURL
+            }
+        }
+
+        let installedManifest = DownloadManifest(
+            provider: requested.provider,
+            itemID: requested.itemID,
+            revision: requested.revision,
+            fileName: destination.lastPathComponent,
+            preservedRevisions: preserved.isEmpty ? nil : preserved,
+            revisionWarningPending: preservedURL == nil ? nil : true)
+        do {
+            try writeManifest(installedManifest)
+        } catch {
+            // The old manifest and every old revision are still intact. Remove
+            // only the uncommitted new bytes so a failed metadata write cannot
+            // turn into either data loss or an ambiguous active revision.
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
+        return DownloadInstallation(
+            currentURL: destination, preservedRevisionURL: preservedURL)
+    }
+
+    func pendingPreviousRevisionURL(provider: IntegrationProvider, itemID: String) throws -> URL? {
+        guard let manifest = manifest(provider: provider, itemID: itemID),
+              manifest.revisionWarningPending == true,
+              let previous = manifest.preservedRevisions?.last else { return nil }
+        let url = try revisionURL(
+            fileName: previous.fileName, provider: provider, itemID: itemID)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func acknowledgeRevisionWarning(
+        provider: IntegrationProvider, itemID: String, previousRevisionURL: URL
+    ) throws {
+        guard var manifest = manifest(provider: provider, itemID: itemID),
+              manifest.revisionWarningPending == true,
+              manifest.preservedRevisions?.last?.fileName == previousRevisionURL.lastPathComponent
+        else { return }
+        manifest.revisionWarningPending = false
+        try writeManifest(manifest)
     }
 
     /// Whether an id names real download artifacts. The id-only retention path
     /// uses this to distinguish a vanished PDF (reclaimable by provider/id)
     /// from an article whose URL-keyed archive cannot be reconstructed.
     func existingDownloadURL(provider: IntegrationProvider, itemID: String) -> URL? {
-        guard let pdf = try? downloadURL(provider: provider, itemID: itemID),
+        guard let manifest = manifest(provider: provider, itemID: itemID),
+            let pdf = try? downloadURL(for: manifest),
             fileManager.fileExists(atPath: pdf.path)
         else { return nil }
         return pdf
     }
 
     func hasDownloadArtifacts(provider: IntegrationProvider, itemID: String) -> Bool {
-        guard let manifest = try? manifestURL(provider: provider, itemID: itemID) else {
-            return existingDownloadURL(provider: provider, itemID: itemID) != nil
-        }
-        return existingDownloadURL(provider: provider, itemID: itemID) != nil
-            || fileManager.fileExists(atPath: manifest.path)
+        let manifestExists = (try? manifestURL(provider: provider, itemID: itemID))
+            .map { fileManager.fileExists(atPath: $0.path) } ?? false
+        return manifestExists || !downloadURLs(provider: provider, itemID: itemID).isEmpty
     }
 
     /// Deletes one installed copy and its manifest — the retention sweep's
@@ -108,23 +196,31 @@ actor IntegrationsCache {
     /// as the caller is concerned, while a file that refused to go keeps the
     /// item tracked for the next sweep.
     func deleteDownload(provider: IntegrationProvider, itemID: String) -> Bool {
-        guard let pdf = try? downloadURL(provider: provider, itemID: itemID) else { return false }
-        if fileManager.fileExists(atPath: pdf.path) {
-            try? fileManager.removeItem(at: pdf)
-        }
+        let downloads = downloadURLs(provider: provider, itemID: itemID)
+        for pdf in downloads { try? fileManager.removeItem(at: pdf) }
         if let manifest = try? manifestURL(provider: provider, itemID: itemID),
             fileManager.fileExists(atPath: manifest.path)
         {
             try? fileManager.removeItem(at: manifest)
         }
-        return !fileManager.fileExists(atPath: pdf.path)
+        return downloadURLs(provider: provider, itemID: itemID).isEmpty
     }
 
     func downloadByteSize(provider: IntegrationProvider, itemID: String) -> Int {
-        guard let url = try? downloadURL(provider: provider, itemID: itemID),
+        downloadURLs(provider: provider, itemID: itemID).reduce(0) { total, url in
             let attributes = try? fileManager.attributesOfItem(atPath: url.path)
-        else { return 0 }
-        return (attributes[.size] as? NSNumber)?.intValue ?? 0
+            return total + ((attributes?[.size] as? NSNumber)?.intValue ?? 0)
+        }
+    }
+
+    func downloadURLs(provider: IntegrationProvider, itemID: String) -> [URL] {
+        guard let directory = try? downloadsDirectory(provider: provider) else { return [] }
+        let key = Self.downloadKey(provider: provider, itemID: itemID)
+        return contents(of: directory).filter {
+            $0.pathExtension.lowercased() == "pdf"
+                && ($0.lastPathComponent == key + ".pdf"
+                    || $0.lastPathComponent.hasPrefix(key + "-"))
+        }
     }
 
     func managedDownloadURLs(provider: IntegrationProvider) -> [URL] {
@@ -183,6 +279,28 @@ actor IntegrationsCache {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(DownloadManifest.self, from: data)
     }
+    private func downloadURL(for manifest: DownloadManifest) throws -> URL {
+        guard let fileName = manifest.fileName else {
+            return try downloadURL(provider: manifest.provider, itemID: manifest.itemID)
+        }
+        return try revisionURL(
+            fileName: fileName, provider: manifest.provider, itemID: manifest.itemID)
+    }
+    private func revisionURL(
+        fileName: String, provider: IntegrationProvider, itemID: String
+    ) throws -> URL {
+        let key = Self.downloadKey(provider: provider, itemID: itemID)
+        guard fileName == (fileName as NSString).lastPathComponent,
+              fileName.hasPrefix(key + "-"),
+              fileName.lowercased().hasSuffix(".pdf")
+        else { throw IntegrationError.invalidResponse }
+        return try downloadsDirectory(provider: provider).appendingPathComponent(fileName)
+    }
+    private func writeManifest(_ manifest: DownloadManifest) throws {
+        try JSONEncoder.integrations.encode(manifest).write(
+            to: try manifestURL(provider: manifest.provider, itemID: manifest.itemID),
+            options: .atomic)
+    }
     private func decodeSnapshot(at url: URL) -> DecodeResult {
         guard let data = try? Data(contentsOf: url) else { return .absent }
         let decoder = JSONDecoder()
@@ -206,4 +324,10 @@ actor IntegrationsCache {
     /// nothing here benefits from a stable key order.
     private static var snapshotEncoder: JSONEncoder { let value = JSONEncoder(); value.dateEncodingStrategy = .iso8601; value.outputFormatting = [.withoutEscapingSlashes]; return value }
     static func downloadKey(provider: IntegrationProvider, itemID: String) -> String { SHA256.hash(data: Data("\(provider.rawValue):\(itemID)".utf8)).map { String(format: "%02x", $0) }.joined() }
+    private static func revisionFileName(provider: IntegrationProvider, itemID: String, revision: String?) -> String {
+        let key = downloadKey(provider: provider, itemID: itemID)
+        let revisionKey = SHA256.hash(data: Data((revision ?? "unknown").utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
+        return "\(key)-\(revisionKey)-\(UUID().uuidString.lowercased()).pdf"
+    }
 }

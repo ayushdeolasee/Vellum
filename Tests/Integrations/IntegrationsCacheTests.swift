@@ -89,7 +89,11 @@ struct IntegrationsCacheTests {
         #expect(FileManager.default.fileExists(atPath: partFile.path) == false)
     }
 
-    @Test func installReplacesAStaleCopyButRejectsARepeatOfTheSameRevision() async throws {
+    @Test(
+        "Installing a provider revision preserves the user's previous PDF",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/164")
+    )
+    func installPreservesAStaleCopyButRejectsARepeatOfTheSameRevision() async throws {
         let root = try IntegrationTemporaryRoot.make()
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = IntegrationsCache(root: root)
@@ -97,7 +101,7 @@ struct IntegrationsCacheTests {
         try Data("%PDF-first".utf8).write(to: first)
         let installed = try await cache.installDownload(temporaryURL: first, manifest: .init(provider: .raindrop, itemID: "item", revision: "r1"))
 
-        #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r1") == installed)
+        #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r1") == installed.currentURL)
         #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r2") == nil)
 
         let duplicate = try await cache.temporaryDownloadURL(provider: .raindrop, itemID: "item")
@@ -108,11 +112,37 @@ struct IntegrationsCacheTests {
 
         let refreshed = try await cache.temporaryDownloadURL(provider: .raindrop, itemID: "item")
         try Data("%PDF-second".utf8).write(to: refreshed)
-        let replaced = try await cache.installDownload(temporaryURL: refreshed, manifest: .init(provider: .raindrop, itemID: "item", revision: "r2"))
+        let replacement = try await cache.installDownload(temporaryURL: refreshed, manifest: .init(provider: .raindrop, itemID: "item", revision: "r2"))
 
-        #expect(replaced == installed)
-        #expect(String(decoding: try Data(contentsOf: replaced), as: UTF8.self) == "%PDF-second")
+        #expect(replacement.currentURL != installed.currentURL)
+        #expect(replacement.preservedRevisionURL == installed.currentURL)
+        #expect(String(decoding: try Data(contentsOf: installed.currentURL), as: UTF8.self) == "%PDF-first")
+        #expect(String(decoding: try Data(contentsOf: replacement.currentURL), as: UTF8.self) == "%PDF-second")
         #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r1") == nil)
+        #expect(try await cache.currentDownload(provider: .raindrop, itemID: "item", revision: "r2") == replacement.currentURL)
+        #expect(try await cache.pendingPreviousRevisionURL(provider: .raindrop, itemID: "item") == installed.currentURL)
+
+        let newest = try await cache.temporaryDownloadURL(provider: .raindrop, itemID: "item")
+        try Data("%PDF-third".utf8).write(to: newest)
+        let third = try await cache.installDownload(
+            temporaryURL: newest,
+            // Providers can roll back to an older revision identifier. That
+            // must not reuse and overwrite the user's first r1 file.
+            manifest: .init(provider: .raindrop, itemID: "item", revision: "r1"))
+        try await cache.acknowledgeRevisionWarning(
+            provider: .raindrop, itemID: "item",
+            previousRevisionURL: installed.currentURL)
+        #expect(try await cache.pendingPreviousRevisionURL(provider: .raindrop, itemID: "item") == replacement.currentURL)
+        try await cache.acknowledgeRevisionWarning(
+            provider: .raindrop, itemID: "item",
+            previousRevisionURL: replacement.currentURL)
+        #expect(try await cache.pendingPreviousRevisionURL(provider: .raindrop, itemID: "item") == nil)
+        #expect(FileManager.default.fileExists(atPath: installed.currentURL.path))
+        #expect(FileManager.default.fileExists(atPath: third.currentURL.path))
+        #expect(third.currentURL != installed.currentURL)
+        #expect(try await cache.currentDownload(
+            provider: .raindrop, itemID: "item", revision: "r1") == third.currentURL)
+        #expect(await cache.downloadURLs(provider: .raindrop, itemID: "item").count == 3)
     }
 
     @Test func downloadArtifactPresenceDistinguishesPDFsFromUnknownArticleIDs() async throws {

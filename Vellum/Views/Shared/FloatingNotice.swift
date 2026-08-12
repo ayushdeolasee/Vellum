@@ -6,6 +6,8 @@ struct FloatingNotice: View {
     let isActive: Bool
     var isSuccess: Bool = false
     var accessibilityID: String = "integrations.downloadNotice"
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
     let dismiss: () -> Void
 
     @Environment(\.palette) private var palette
@@ -16,6 +18,11 @@ struct FloatingNotice: View {
                 Image(systemName: symbol).foregroundStyle(tint)
                 Text(message).font(.system(size: 12)).foregroundStyle(palette.foreground).lineLimit(2)
                 Spacer(minLength: 8)
+                if let actionTitle, let action {
+                    Button(actionTitle, action: action)
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
                 // The frame and contentShape must live INSIDE the label: on a
                 // .plain button, applied outside they change layout only and the
                 // hit region stays the bare glyph (root CLAUDE.md hit-target rule).

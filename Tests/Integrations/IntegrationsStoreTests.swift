@@ -86,6 +86,73 @@ struct IntegrationsStoreTests {
         #expect(store.connectedProviders.contains(.readwise))
     }
 
+    @Test(
+        "Opening a new revision offers the preserved copy once",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/164")
+    )
+    func openingANewRevisionOffersThePreservedCopyOnce() async throws {
+        let root = try IntegrationTemporaryRoot.make()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteName = "Vellum.IntegrationsStoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw IntegrationTestFixtureError.couldNotCreateUserDefaults
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let token = "token"
+        let fingerprint = integrationFingerprint(token)
+        let preferences = IntegrationPreferences(defaults: defaults)
+        preferences.autoRefreshEnabled = false
+        preferences.persist(
+            .init(enabled: true, generation: 1, accountFingerprint: fingerprint),
+            for: .readwise)
+        let item = try makeIntegrationItem(
+            provider: .readwise, id: "revised-pdf",
+            updatedAt: Date(timeIntervalSince1970: 1_700_003_600), kind: .pdf,
+            pdfRetrieval: .readwiseItem(id: "revised-pdf"))
+        let cache = IntegrationsCache(root: root)
+        try await cache.save(.init(
+            provider: .readwise, accountFingerprint: fingerprint,
+            connectionGeneration: 1, items: [item],
+            collections: ReadwiseClient.locationCollections,
+            committedBoundary: item.updatedAt, tentativePagination: nil,
+            lastSuccessfulSync: item.updatedAt, lastFullSweep: nil,
+            skippedRecordCount: 0))
+        let first = try await cache.temporaryDownloadURL(
+            provider: .readwise, itemID: item.vendorID)
+        try Data("%PDF-previous".utf8).write(to: first)
+        let firstInstallation = try await cache.installDownload(
+            temporaryURL: first,
+            manifest: .init(
+                provider: .readwise, itemID: item.vendorID, revision: "old"))
+        let second = try await cache.temporaryDownloadURL(
+            provider: .readwise, itemID: item.vendorID)
+        try Data("%PDF-current".utf8).write(to: second)
+        let currentRevision = ISO8601DateFormatter.integrationString(from: item.updatedAt)
+        let secondInstallation = try await cache.installDownload(
+            temporaryURL: second,
+            manifest: .init(
+                provider: .readwise, itemID: item.vendorID, revision: currentRevision))
+        let engine = IntegrationsSyncEngine(
+            credentials: InMemoryIntegrationCredentials([.readwise: token]),
+            cache: cache,
+            preferences: try makeIntegrationPreferences(suiteName: suiteName),
+            readwise: ScriptedReadwiseService(),
+            raindrop: ScriptedRaindropService())
+        let store = IntegrationsStore(engine: engine)
+        await store.start()
+
+        #expect(try await store.route(for: item) == .file(secondInstallation.currentURL))
+        #expect(store.previousRevisionURL(for: item.id) == firstInstallation.currentURL)
+        #expect(store.downloads[item.id]?.message.contains("previous copy") == true)
+        #expect(store.readLaterItem(forOpenDocumentPath: firstInstallation.currentURL.path) == item)
+        #expect(store.takePreviousRevision(for: item.id) == firstInstallation.currentURL)
+        #expect(store.previousRevisionURL(for: item.id) == nil)
+        await store.awaitQuiescence()
+        #expect(try await cache.pendingPreviousRevisionURL(
+            provider: item.provider, itemID: item.vendorID) == nil)
+        #expect(FileManager.default.fileExists(atPath: firstInstallation.currentURL.path))
+    }
+
     @Test func missingCredentialAtLaunchKeepsCachedProviderAvailableForReconnect() async throws {
         let root = try IntegrationTemporaryRoot.make()
         defer { try? FileManager.default.removeItem(at: root) }

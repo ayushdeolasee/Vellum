@@ -1,7 +1,13 @@
 import CryptoKit
 import Foundation
 import ImageIO
+#if os(macOS)
+import AppKit
+typealias IntegrationThumbnailImage = NSImage
+#else
 import UIKit
+typealias IntegrationThumbnailImage = UIImage
+#endif
 
 actor IntegrationThumbnailCache {
     private let root: URL
@@ -42,9 +48,9 @@ actor IntegrationThumbnailCache {
     /// downsampled to `maximumThumbnailPixelSize` so a 4000px hero image doesn't
     /// sit in memory to fill a 34pt well.
     ///
-    /// `sending` because `UIImage` isn't Sendable — this instance is created
+    /// `sending` because the platform image type isn't Sendable — this instance is created
     /// here, never stored, and never touched again once handed back.
-    func image(for candidate: URL?) async -> sending UIImage? {
+    func image(for candidate: URL?) async -> sending IntegrationThumbnailImage? {
         guard let url = await imageURL(for: candidate) else { return nil }
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -59,7 +65,11 @@ actor IntegrationThumbnailCache {
         // `maximumThumbnailPixelSize` and the row applies
         // `.resizable().scaledToFill()` inside a fixed frame. `UIScreen.main.scale`
         // would be wrong here anyway — it is main-actor-bound and deprecated.
+#if os(macOS)
+        return NSImage(cgImage: cgImage, size: .zero)
+#else
         return UIImage(cgImage: cgImage)
+#endif
     }
 
     /// Enough for the library well at 3x, with headroom. The iPad rows are
@@ -81,7 +91,11 @@ actor IntegrationThumbnailCache {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], let width = properties[kCGImagePropertyPixelWidth] as? NSNumber, let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return false }
         let (pixels, overflow) = width.int64Value.multipliedReportingOverflow(by: height.int64Value)
         guard !overflow, width.intValue > 0, height.intValue > 0, pixels > 0, pixels <= Int64(maximumPixelCount) else { return false }
+#if os(macOS)
+        return NSImage(data: data) != nil
+#else
         return UIImage(data: data) != nil
+#endif
     }
     static func key(_ url: URL) -> String { SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined() }
 }
