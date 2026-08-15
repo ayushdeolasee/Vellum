@@ -1,7 +1,11 @@
 import AuthenticationServices
 import Foundation
 import Observation
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 /// Tokens minted by the "Sign in with ChatGPT" OAuth flow, persisted as a JSON
 /// blob in the Keychain. Mirrors the Codex CLI's stored auth (access + refresh +
@@ -94,6 +98,9 @@ final class ChatGPTAuth {
         guard let authorizeURL = Self.authorizeURL(pkce: pkce, state: state, redirectURI: redirectURI) else {
             throw AuthError.tokenExchangeFailed("could not build authorization URL")
         }
+        #if os(macOS)
+        NSWorkspace.shared.open(authorizeURL)
+        #else
         // iOS: opening the authorize URL in Safari would background the app and
         // suspend the loopback NWListener. ASWebAuthenticationSession presents the
         // page in an in-app browser, so the app stays foreground and the listener
@@ -117,6 +124,7 @@ final class ChatGPTAuth {
             UIApplication.shared.open(authorizeURL, options: [:], completionHandler: nil)
         }
         defer { webSession.cancel() }
+        #endif
 
         let callback = try await server.waitForCallback()
         guard callback.state == state else { throw AuthError.stateMismatch }
@@ -318,6 +326,7 @@ private extension JSONDecoder {
 /// Anchors the in-app `ASWebAuthenticationSession` to the app's key window so it
 /// presents over the foreground scene (kept alive so the loopback listener does
 /// not get suspended). Retained by `signIn` for the session's lifetime.
+#if os(iOS)
 private final class AuthPresentationAnchorProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         UIApplication.shared.connectedScenes
@@ -327,3 +336,4 @@ private final class AuthPresentationAnchorProvider: NSObject, ASWebAuthenticatio
             ?? ASPresentationAnchor()
     }
 }
+#endif

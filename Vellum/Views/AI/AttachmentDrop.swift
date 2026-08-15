@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import UniformTypeIdentifiers
 
@@ -165,3 +166,4 @@ enum AttachmentDrop {
         }
     }
 }
+#endif

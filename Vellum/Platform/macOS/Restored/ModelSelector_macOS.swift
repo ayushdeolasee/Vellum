@@ -1,10 +1,6 @@
-#if os(iOS)
-import SwiftUI
-#if os(iOS)
-import UIKit
-#else
+#if os(macOS)
 import AppKit
-#endif
+import SwiftUI
 
 /// One selectable model, unified across providers. Built-in provider models
 /// carry no pricing/context metadata; OpenRouter models carry all of it.
@@ -54,7 +50,7 @@ enum ToolsFilter: String, CaseIterable, Identifiable {
 
 /// Searchable, sortable, pinnable model picker. Replaces the plain `Picker`
 /// across every provider; scales to OpenRouter's large catalog. Presented as a
-/// popover so it works both inside the AI side panel and the Settings sheet.
+/// popover so it works both inside the AI side panel and the Settings window.
 struct ModelSelector: View {
     let options: [AiModelOption]
     @Binding var selection: String
@@ -89,55 +85,22 @@ struct ModelSelector: View {
     var body: some View {
         Button {
             onOpen?()
-#if os(iOS)
-            // Dismiss the keyboard before presenting: an API-key field above this
-            // control is typically first responder, and letting its keyboard tear
-            // down in the same runloop turn as the popover present races the
-            // presentation. Resign focus first, then present on the next turn.
-            UIApplication.shared.sendAction(
-                #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-#else
-            // AppKit's completion overlay has the same teardown race as the iOS
-            // keyboard when the API-key field is focused.
+            // If a text field is focused (typically the API-key SecureField
+            // above this control), its system autofill/completion overlay tears
+            // down in the same runloop turn as this click. Presenting the
+            // popover in that turn races the teardown inside AppKit's
+            // ViewBridge and aborts the app (NSRemoteView "expected (null)"
+            // assertion). Resign focus first, then present on the next turn.
             NSApp.keyWindow?.makeFirstResponder(nil)
-#endif
             DispatchQueue.main.async { isPresented = true }
         } label: {
             triggerLabel
         }
         .buttonStyle(.plain)
-#if os(iOS)
-        // A model catalog is a browsing surface, not a small contextual menu.
-        // The desktop-sized popover was constrained by the iPad inspector and
-        // could extend below the screen. A large sheet gives search, every
-        // filter, and the scrollable model list a stable safe-area-aware home.
-        .sheet(isPresented: $isPresented) {
-            modelBrowser
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-                .presentationContentInteraction(.scrolls)
-        }
-#else
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            selectorContent.frame(width: 400, height: 470)
-        }
-#endif
-    }
-
-#if os(iOS)
-    private var modelBrowser: some View {
-        NavigationStack {
-            selectorContent
-                .navigationTitle("Choose Model")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { isPresented = false }
-                    }
-                }
+            popover.frame(width: 400, height: 470)
         }
     }
-#endif
 
     private var selectedOption: AiModelOption? {
         options.first { $0.id == selection }
@@ -160,12 +123,8 @@ struct ModelSelector: View {
         }
         .font(.system(size: 12))
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-#if os(iOS)
-        .frame(minHeight: 44)
-#endif
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 6).fill(palette.surface)
         )
@@ -174,9 +133,9 @@ struct ModelSelector: View {
         )
     }
 
-    // MARK: - Model browser
+    // MARK: - Popover
 
-    private var selectorContent: some View {
+    private var popover: some View {
         VStack(spacing: 0) {
             header
             Divider()
@@ -217,12 +176,10 @@ struct ModelSelector: View {
                     .font(.system(size: 11))
                     .foregroundStyle(palette.mutedForeground)
                 // Empty label + prompt so grouped-Form styling (inherited by the
-                // popover in the Settings sheet) can't render "Search models"
+                // popover in the Settings window) can't render "Search models"
                 // as a trailing form label.
                 TextField("", text: $query, prompt: Text("Search models"))
                     .textFieldStyle(.plain)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if isLoading {
@@ -231,9 +188,6 @@ struct ModelSelector: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-#if os(iOS)
-            .frame(minHeight: 44)
-#endif
             .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
 
@@ -253,15 +207,12 @@ struct ModelSelector: View {
                     Image(systemName: ascending ? "arrow.up" : "arrow.down")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(palette.foreground)
-#if os(iOS)
-                        .frame(width: 44, height: 44)
-#else
-                        .frame(width: 30, height: 28)
-#endif
+                        .frame(width: 26, height: 22)
                         .background(RoundedRectangle(cornerRadius: 6).fill(palette.surfaceMuted))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help(ascending ? "Sorted low → high" : "Sorted high → low")
             }
 
             if !availableProviders.isEmpty {
@@ -299,6 +250,7 @@ struct ModelSelector: View {
                 active: providerFilter != nil
             )
         }
+        .menuStyle(.borderlessButton)
         .fixedSize()
     }
 
@@ -316,6 +268,7 @@ struct ModelSelector: View {
                 active: imageFilter != .all
             )
         }
+        .menuStyle(.borderlessButton)
         .fixedSize()
     }
 
@@ -333,6 +286,7 @@ struct ModelSelector: View {
                 active: toolsFilter != .all
             )
         }
+        .menuStyle(.borderlessButton)
         .fixedSize()
     }
 
@@ -356,9 +310,6 @@ struct ModelSelector: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(freeOnly ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
             )
-#if os(iOS)
-            .frame(minHeight: 44)
-#endif
         }
         .buttonStyle(.plain)
         .fixedSize()
@@ -393,9 +344,6 @@ struct ModelSelector: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(active ? palette.primary.opacity(0.4) : palette.border, lineWidth: 1)
         )
-#if os(iOS)
-        .frame(minHeight: 44)
-#endif
     }
 
     private var emptyState: some View {
@@ -452,13 +400,8 @@ struct ModelSelector: View {
                 togglePin(option.id)
             } label: {
                 Image(systemName: isPinned ? "star.fill" : "star")
-                    .font(.system(size: 13))
+                    .font(.system(size: 11))
                     .foregroundStyle(isPinned ? Color.yellow : palette.mutedForeground)
-#if os(iOS)
-                    .frame(width: 44, height: 44)
-#else
-                    .frame(width: 30, height: 30)
-#endif
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -485,9 +428,6 @@ struct ModelSelector: View {
                     }
                 }
                 .contentShape(Rectangle())
-#if os(iOS)
-                .frame(minHeight: 44)
-#endif
             }
             .buttonStyle(.plain)
         }

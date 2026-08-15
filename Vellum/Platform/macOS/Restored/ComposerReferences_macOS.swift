@@ -1,9 +1,5 @@
-#if os(iOS)
 #if os(macOS)
 import AppKit
-#else
-import UIKit
-#endif
 import SwiftUI
 
 // Chips shown above the composer input for each attached reference (selected
@@ -36,6 +32,7 @@ private struct ReferenceChip: View {
     let onRemove: () -> Void
 
     @Environment(\.palette) private var palette
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -50,10 +47,12 @@ private struct ReferenceChip: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(palette.mutedForeground)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Circle())
+                    .frame(width: 14, height: 14)
+                    .background(hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .onHover { hovering = $0 }
             .accessibilityLabel("Remove reference")
         }
         .padding(.leading, 4)
@@ -65,8 +64,8 @@ private struct ReferenceChip: View {
 
     @ViewBuilder
     private var leading: some View {
-        if let image = reference.image, let uiImage = decoded(image) {
-            Image(uiImage: uiImage)
+        if let image = reference.image, let nsImage = decoded(image) {
+            Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 24, height: 24)
@@ -79,9 +78,9 @@ private struct ReferenceChip: View {
         }
     }
 
-    private func decoded(_ snapshot: AiPageImageSnapshot) -> UIImage? {
+    private func decoded(_ snapshot: AiPageImageSnapshot) -> NSImage? {
         guard let data = Data(base64Encoded: snapshot.base64Data) else { return nil }
-        return UIImage(data: data)
+        return NSImage(data: data)
     }
 }
 #endif

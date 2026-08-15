@@ -548,4 +548,4 @@ private struct WindowAccessor: NSViewRepresentable {
         DispatchQueue.main.async { [weak nsView] in onWindow(nsView?.window) }
     }
 }
-#endif  // os(macOS) — iPad reference; see Platform/iOS
+#endif

@@ -11,6 +11,8 @@ struct PdfOverlayStack: View {
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
+    @Environment(AiStore.self) private var aiStore
+    @Environment(ScratchpadStore.self) private var scratchpadStore
     @Environment(\.palette) private var palette
 
     /// One per-page overlay layer with its frame resolved. Frames are computed
@@ -45,17 +47,36 @@ struct PdfOverlayStack: View {
             // exactly one placement fires). Sits below annotation overlays so
             // sticky pills keep their own cursor and drag behavior.
             if app.mode == .note {
+                // No SwiftUI `.pointerStyle` here: note mode uses a custom "+"
+                // NSCursor (NSCursor.addNote) asserted by PdfKitView's mouse
+                // monitor across the whole viewer, which a `.pointerStyle` on
+                // this overlay would override with a plain crosshair.
                 Color.clear
                     .contentShape(Rectangle())
-                    .pointerStyle(.rectSelection) // crosshair-style pointer
                     .onTapGesture(coordinateSpace: .local) { location in
                         controller.handleNoteOverlayClick(atTopLeft: location)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            // Drag-to-crop region snapshot. Sits above the page layers so its
+            // marquee owns the drag; a full-viewer hit-testable scrim means
+            // PdfKitView's mouse monitors ignore these events (they hit-test
+            // into this SwiftUI overlay, not the PDFView). The crop goes to
+            // whichever panel armed the mode (AppStore.regionCaptureTarget).
+            if app.mode == .snapshotRegion {
+                RegionCaptureOverlay { rect in
+                    captureRegion(rect)
+                    app.setMode(.view)
+                } onCancel: {
+                    // Plain click or tiny wobble: back out of capture mode
+                    // without a warning — the user changed their mind.
+                    app.setMode(.view)
+                }
+                .zIndex(60)
+            }
 
             ForEach(pageOverlays, id: \.pageNumber) { overlay in
-                HighlightLayer(annotations: overlay.annotations, zoom: scale)
+                HighlightLayer(annotations: overlay.annotations, zoom: scale, controller: controller)
                     .frame(
                         width: overlay.frame.width, height: overlay.frame.height,
                         alignment: .topLeading)
@@ -84,6 +105,30 @@ struct PdfOverlayStack: View {
         .clipped()
     }
 
+    /// Hand the finished crop to whichever panel armed the capture. The AI path
+    /// stays silent on a miss (it just re-arms nothing); the scratchpad path
+    /// warns, since its button is the one the user pressed to get here.
+    private func captureRegion(_ rect: CGRect) {
+        switch app.regionCaptureTarget {
+        case .ai:
+            // A region crop always lands on a page (capturePageRegion bails
+            // otherwise), so the snapshot's optional page is always populated here.
+            if let snapshot = controller.capturePageRegion(viewerRect: rect),
+               let page = snapshot.pageNumber {
+                aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
+            }
+        case .scratchpad:
+            if let capture = controller.capturePageRegionData(viewerRect: rect) {
+                let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
+                scratchpadStore.addImage(capture, label: label)
+            } else {
+                // Drag missed a page or was too small to crop — tell the user
+                // rather than silently reverting to view mode.
+                scratchpadStore.warnRegionCaptureFailed()
+            }
+        }
+    }
+
     private var pageOverlays: [PageOverlay] {
         overlayPages.compactMap { pageNumber in
             let annotations = annotationStore.annotationsForPage(pageNumber)
@@ -107,7 +152,89 @@ struct PdfOverlayStack: View {
     }
 }
 
-// AnchoredAbove moved to PdfViewerTypes.swift (cross-platform).
+/// Drag-to-crop overlay for `.snapshotRegion` mode: draws a dashed marquee and
+/// reports the final rectangle (viewer top-left coordinates) on release. A
+/// plain click or a sub-threshold wobble calls `onCancel` instead, so the
+/// capture mode never gets stuck behind the scrim.
+struct RegionCaptureOverlay: View {
+    let onCapture: (CGRect) -> Void
+    let onCancel: () -> Void
+
+    /// Drags smaller than this in either dimension are treated as an
+    /// accidental click and cancel the capture instead of cropping.
+    private static let minimumCaptureSize: CGFloat = 4
+    @Environment(\.palette) private var palette
+    @State private var start: CGPoint?
+    @State private var current: CGPoint?
+
+    private var rect: CGRect? {
+        guard let start, let current else { return nil }
+        return CGRect(
+            x: min(start.x, current.x), y: min(start.y, current.y),
+            width: abs(current.x - start.x), height: abs(current.y - start.y))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(0.08)
+                .contentShape(Rectangle())
+            if let rect {
+                Rectangle()
+                    .fill(palette.primary.opacity(0.12))
+                    .overlay {
+                        Rectangle().strokeBorder(
+                            palette.primary,
+                            style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .pointerStyle(.rectSelection)
+        .gesture(
+            // minimumDistance of 0 so even a plain click ends the gesture and
+            // reaches the cancel path below — with a positive threshold a bare
+            // click never fires onEnded and the overlay stays up forever.
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    if start == nil { start = value.startLocation }
+                    current = value.location
+                }
+                .onEnded { value in
+                    let final = rect
+                    start = nil
+                    current = nil
+                    if let final,
+                       final.width >= Self.minimumCaptureSize,
+                       final.height >= Self.minimumCaptureSize {
+                        onCapture(final)
+                    } else {
+                        onCancel()
+                    }
+                }
+        )
+    }
+}
+
+/// Positions content so its bottom-center sits at `point` — the CSS
+/// `translate(-50%, -100%)` used by both popovers.
+struct AnchoredAbove<Content: View>: View {
+    var point: CGPoint
+    @ViewBuilder var content: () -> Content
+
+    @State private var size: CGSize = .zero
+
+    var body: some View {
+        content()
+            .onGeometryChange(for: CGSize.self) { proxy in
+                proxy.size
+            } action: { newSize in
+                size = newSize
+            }
+            .offset(x: point.x - size.width / 2, y: point.y - size.height)
+    }
+}
 
 /// Right-click context menu: single "Add note here" row.
 struct PdfContextMenuView: View {
@@ -143,5 +270,4 @@ struct PdfContextMenuView: View {
         .fixedSize()
     }
 }
-
-#endif  // os(macOS) — iPad reference; see Platform/iOS
+#endif

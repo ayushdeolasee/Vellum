@@ -1,6 +1,10 @@
 import Foundation
 import ImageIO
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 import UniformTypeIdentifiers
 
 /// Normalize arbitrary image bytes — a file dropped on the AI panel, or one
@@ -21,6 +25,58 @@ import UniformTypeIdentifiers
 /// reachable via OpenRouter and OpenCode Zen) and sits comfortably under the
 /// OpenAI and Gemini limits.
 func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapshot? {
+#if os(macOS)
+    guard let rep = NSBitmapImageRep(data: data) else { return nil }
+    let sourceWidth = rep.pixelsWide, sourceHeight = rep.pixelsHigh
+    guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+
+    let longest = max(sourceWidth, sourceHeight)
+    let scale = longest > maxSide ? Double(maxSide) / Double(longest) : 1
+    let width = max(1, Int((Double(sourceWidth) * scale).rounded()))
+    let height = max(1, Int((Double(sourceHeight) * scale).rounded()))
+    let hasAlpha = rep.hasAlpha
+
+    guard let out = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+        isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ), let context = NSGraphicsContext(bitmapImageRep: out) else { return nil }
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    context.imageInterpolation = .high
+    let target = NSRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+    if !hasAlpha {
+        NSColor.white.setFill()
+        target.fill()
+    }
+    rep.draw(
+        in: target, from: .zero, operation: hasAlpha ? .copy : .sourceOver,
+        fraction: 1, respectFlipped: true, hints: nil)
+    NSGraphicsContext.restoreGraphicsState()
+
+    var encoded: Data?
+    var mediaType = "image/png"
+    if hasAlpha {
+        encoded = out.representation(using: .png, properties: [:])
+    } else {
+        mediaType = "image/jpeg"
+        encoded = out.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+    }
+    if let current = encoded, current.count > 4 * 1_024 * 1_024,
+       let smaller = out.representation(using: .jpeg, properties: [.compressionFactor: 0.6]) {
+        encoded = smaller
+        mediaType = "image/jpeg"
+    }
+
+    guard let bytes = encoded else { return nil }
+    return AiPageImageSnapshot(
+        pageNumber: nil,
+        base64Data: bytes.base64EncodedString(),
+        mediaType: mediaType,
+        width: width,
+        height: height)
+#else
     // Decode the first frame through ImageIO so animated GIFs / multi-page
     // TIFFs collapse to a single frame and we can inspect the pixel dimensions
     // and alpha up front without paying for a full UIImage decode twice.
@@ -82,4 +138,5 @@ func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapsho
         width: width,
         height: height
     )
+#endif
 }

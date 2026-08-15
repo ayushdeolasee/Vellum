@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import SwiftUI
 
@@ -54,3 +55,4 @@ struct WebHighlightEditorState {
     var point: CGPoint
     var openedAt: Date
 }
+#endif

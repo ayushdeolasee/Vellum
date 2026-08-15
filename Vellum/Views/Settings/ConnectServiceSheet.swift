@@ -1,5 +1,10 @@
+#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 /// Token-paste connection sheet for a read-later provider.
 ///
@@ -123,3 +128,4 @@ struct ConnectServiceSheet: View {
         }
     }
 }
+#endif

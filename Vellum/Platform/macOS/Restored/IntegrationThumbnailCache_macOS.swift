@@ -1,12 +1,8 @@
-#if os(iOS)
+#if os(macOS)
+import AppKit
 import CryptoKit
 import Foundation
 import ImageIO
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 actor IntegrationThumbnailCache {
     private let root: URL
@@ -42,14 +38,14 @@ actor IntegrationThumbnailCache {
     }
 
     /// A decoded, row-sized image. Callers on the main actor must use this
-    /// rather than `imageURL` + `UIImage(contentsOfFile:)`: the file read and
-    /// the ImageIO decode both happen here, inside the actor, and the result is
+    /// rather than `imageURL` + `NSImage(contentsOf:)`: the file read and the
+    /// ImageIO decode both happen here, inside the actor, and the result is
     /// downsampled to `maximumThumbnailPixelSize` so a 4000px hero image doesn't
     /// sit in memory to fill a 34pt well.
     ///
-    /// `sending` because `UIImage` isn't Sendable — this instance is created
+    /// `sending` because `NSImage` isn't Sendable — this instance is created
     /// here, never stored, and never touched again once handed back.
-    func image(for candidate: URL?) async -> sending UIImage? {
+    func image(for candidate: URL?) async -> sending NSImage? {
         guard let url = await imageURL(for: candidate) else { return nil }
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -60,16 +56,10 @@ actor IntegrationThumbnailCache {
             kCGImageSourceThumbnailMaxPixelSize: Self.maximumThumbnailPixelSize,
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        // Scale 1 is correct: the CGImage is already downsampled to
-        // `maximumThumbnailPixelSize` and the row applies
-        // `.resizable().scaledToFill()` inside a fixed frame. `UIScreen.main.scale`
-        // would be wrong here anyway — it is main-actor-bound and deprecated.
-        return UIImage(cgImage: cgImage)
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    /// Enough for the library well at 3x, with headroom. The iPad rows are
-    /// taller than the Mac's 34pt well, but 256px still covers a 44–52pt well
-    /// at 3x and raising it costs memory per row.
+    /// Enough for the 34pt library well at 3x, with headroom.
     private static let maximumThumbnailPixelSize = 256
 
     func removeUnreferenced(keeping urls: Set<URL>) {
@@ -86,7 +76,7 @@ actor IntegrationThumbnailCache {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], let width = properties[kCGImagePropertyPixelWidth] as? NSNumber, let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return false }
         let (pixels, overflow) = width.int64Value.multipliedReportingOverflow(by: height.int64Value)
         guard !overflow, width.intValue > 0, height.intValue > 0, pixels > 0, pixels <= Int64(maximumPixelCount) else { return false }
-        return UIImage(data: data) != nil
+        return NSImage(data: data) != nil
     }
     static func key(_ url: URL) -> String { SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined() }
 }

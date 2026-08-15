@@ -173,6 +173,18 @@ final class WorkspaceStore {
     /// document; only its `settings` are used. Changes broadcast to every pane.
     let settingsAi: AiStore
 
+    #if os(macOS)
+    /// App-wide updater state shared by Home and the app menu.
+    let updateChecker = UpdateChecker()
+    private(set) var didStartAutomaticUpdateCheck = false
+
+    func checkForUpdatesAutomatically() async {
+        guard !didStartAutomaticUpdateCheck else { return }
+        didStartAutomaticUpdateCheck = true
+        await updateChecker.check(silent: true)
+    }
+    #endif
+
     /// Window-wide, shared by every pane's AiStore: the OpenRouter model catalog
     /// (fetched once, capability lookups) and the ChatGPT-subscription OAuth
     /// session (sign-in state + token refresh).

@@ -1,5 +1,10 @@
+#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 /// A secure text field with an eye toggle that reveals the value in plaintext.
 /// Used for API-key entry so users can verify what they pasted.
@@ -114,3 +119,4 @@ private struct SecureTextFieldRep: UIViewRepresentable {
         }
     }
 }
+#endif

@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(macOS)
 import Foundation
 
 // The split-screen layout model. A window shows a recursive tree of panes; each
@@ -36,18 +36,19 @@ final class PaneModel: Identifiable {
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
         self.id = id
-        let app = AppStore(sessions: sessions, teardowns: teardowns, documentAccess: documentAccess)
+        let app = AppStore(
+            sessions: sessions, teardowns: teardowns, documentAccess: documentAccess)
         let annotations = AnnotationStore(app: app)
         let ai = AiStore()
         ai.app = app
         ai.annotationStore = annotations
         ai.openRouterCatalog = openRouterCatalog
         ai.chatgptAuth = chatgptAuth
+        let scratchpad = ScratchpadStore(coordinator: storageCoordinator)
+        scratchpad.app = app
         self.app = app
         self.annotations = annotations
         self.ai = ai
-        let scratchpad = ScratchpadStore(coordinator: storageCoordinator)
-        scratchpad.app = app
         self.scratchpad = scratchpad
         self.homeSearch = HomeSearchStore(storage: webLibraryStorage)
     }

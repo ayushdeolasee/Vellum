@@ -1,6 +1,18 @@
 import Foundation
 import Observation
 import PDFKit
+#if os(macOS)
+import AppKit
+import UniformTypeIdentifiers
+#endif
+
+private func resolveExistingDocumentPath(_ path: String) -> String? {
+    #if os(iOS)
+    DocumentImport.resolveExistingPath(path)
+    #else
+    FileManager.default.fileExists(atPath: path) ? path : nil
+    #endif
+}
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -683,7 +695,7 @@ final class AppStore {
                     opened = try await documentAccess.restoreSavedPDF(
                         savedDocument,
                         sessionId: sessionId,
-                        resolveExistingPath: DocumentImport.resolveExistingPath
+                        resolveExistingPath: resolveExistingDocumentPath
                     ) { [sessions] path, sessionId in
                         try await sessions.openFile(path: path, sessionId: sessionId)
                     } close: { [sessions] sessionId in
@@ -1324,6 +1336,93 @@ final class AppStore {
         // that could not be installed.
         if !result.failedAttachments.isEmpty {
             await BundleImportPrompts_iOS.failedAttachments(result.failedAttachments)
+        }
+        return result.path
+    }
+    #else
+    /// Import a `.vellum` bundle after the user chooses where its document lands.
+    private func importVellumBundle(bundlePath: String) async throws -> String? {
+        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = manifest.documentFile
+        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
+            panel.allowedContentTypes = [archive]
+        } else if kind == .pdf {
+            panel.allowedContentTypes = [.pdf]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+
+        await awaitTeardowns(ofDocumentAt: destination.path)
+        let key = try await Self.writeImportedDocument(imported, to: destination)
+
+        let coordinator = workspace?.storageCoordinator
+        var decision = VellumBundle.ScratchpadDecision.keepLocal
+        let hasDifferentScratchpad: Bool
+        if let incoming = imported.scratchpad, !incoming.isEmpty {
+            if let coordinator {
+                let exists = try await DocumentDataStore.scratchpadExists(
+                    forKey: key, coordinator: coordinator)
+                let current: String?
+                if exists {
+                    current = try await DocumentDataStore.loadScratchpad(
+                        forKey: key, coordinator: coordinator)
+                } else {
+                    current = nil
+                }
+                hasDifferentScratchpad = exists && current != incoming
+            } else {
+                hasDifferentScratchpad = DocumentDataStore.scratchpadExists(forKey: key)
+                    && DocumentDataStore.loadScratchpad(forKey: key) != incoming
+            }
+        } else {
+            hasDifferentScratchpad = false
+        }
+        if hasDifferentScratchpad {
+            let title = imported.manifest.title ?? "this document"
+            let alert = NSAlert()
+            alert.messageText = "Notes already exist for \(title)"
+            alert.informativeText =
+                "This document already has notes on this Mac. Keep the notes you have, "
+                + "or replace them with the imported notes? Your highlights and reading "
+                + "position are not affected either way."
+            alert.addButton(withTitle: "Keep My Notes")
+            alert.addButton(withTitle: "Use Imported Notes")
+            decision = alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+        }
+        let resolvedDecision = decision
+        let resolveConflict: @Sendable (String) -> VellumBundle.ScratchpadDecision = {
+            _ in resolvedDecision
+        }
+
+        let result: (path: String, failedAttachments: [String])
+        if let coordinator {
+            result = try await Self.finishImportedBundle(
+                imported,
+                to: destination,
+                key: key,
+                coordinator: coordinator,
+                resolveScratchpadConflict: resolveConflict)
+        } else {
+            result = try Self.finishImportedBundle(
+                imported,
+                to: destination,
+                key: key,
+                resolveScratchpadConflict: resolveConflict)
+        }
+
+        if !result.failedAttachments.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Some images couldn't be imported"
+            alert.informativeText =
+                "These attachments couldn't be saved, so their references may appear "
+                + "broken in the imported notes:\n"
+                + result.failedAttachments.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
         return result.path
     }

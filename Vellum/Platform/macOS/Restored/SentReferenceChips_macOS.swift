@@ -1,10 +1,5 @@
-#if os(iOS)
-import SwiftUI
 #if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
+import SwiftUI
 
 // The transcript half of the reference-chip UI (issue #58).
 //
@@ -15,15 +10,11 @@ import UIKit
 // block — so a sent prompt used to leave no trace of the context it carried.
 //
 // `SentReferenceChips` renders the same visual language, read-only, next to the
-// user bubble it belongs to, with the excerpt one tap away.
+// user bubble it belongs to, with the excerpt one click away.
 //
 // The chip's icon/label vocabulary lives here as an `AiReference` extension so
 // both rows speak it; putting it on the model keeps the two chip views from
 // drifting into two different names for the same reference.
-//
-// iPad deviations from the macOS original: UIKit image decode, no hover state
-// (there is no pointer to hover with), and the chip carries extra invisible
-// vertical padding so the tap target clears 30pt without growing the pill.
 
 extension AiReference {
     /// SF Symbol for this reference's kind.
@@ -77,10 +68,10 @@ extension AiReference {
 /// Differs from the composer's `ReferenceChipRow` in three ways, each forced by
 /// where it sits: no × (the message is already on the wire), no inline
 /// thumbnails (the persisted references carry no pixels — see
-/// `AiReference.strippingImageData` — and the full-size preview is one tap
+/// `AiReference.strippingImageData` — and the full-size preview is one click
 /// away anyway), and it wraps instead of scrolling horizontally, because a
-/// horizontal ScrollView nested in the transcript would swallow drag gestures
-/// meant for the transcript itself.
+/// horizontal ScrollView nested in the transcript would swallow trackpad
+/// scrolls meant for the transcript itself.
 struct SentReferenceChips: View {
     let references: [AiReference]
     /// Scroll the reader to a page a reference points at. Called only for
@@ -93,7 +84,7 @@ struct SentReferenceChips: View {
     /// for a message restored from an earlier run.
     let previewData: (AiReference) -> Data?
     /// The width the chips wrap at — the same cap the bubble below them uses
-    /// (`AiPanel_iOS.bubbleMaxWidth(for:contentWidth:)`), passed in rather than
+    /// (`AiPanel.bubbleMaxWidth(for:contentWidth:)`), passed in rather than
     /// hardcoded. It used to be a literal 272, which was the bubble's fixed
     /// width until #64 made bubbles scale with the resizable sidebar; left
     /// alone it would pin the chips at 272 while a wide sidebar grew the bubble
@@ -119,6 +110,7 @@ private struct SentReferenceChip: View {
     let previewData: (AiReference) -> Data?
 
     @Environment(\.palette) private var palette
+    @State private var hovering = false
     @State private var detailShown = false
 
     var body: some View {
@@ -136,20 +128,19 @@ private struct SentReferenceChip: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(
-                .quaternary.opacity(0.35),
+                .quaternary.opacity(hovering ? 0.6 : 0.35),
                 in: RoundedRectangle(cornerRadius: Radius.sm))
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.sm)
                     .strokeBorder(palette.border.opacity(0.7))
             }
-            // The pill itself is ~18pt tall — a mouse target, not a finger one.
-            // Pad it out to a 30pt tap target *outside* the background so the
-            // chip keeps the Mac's visual size, and shape the padded area so a
-            // tap in the invisible strip still hits the button.
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            // Without this the button's tappable area is only the glyphs, and a
+            // click in the chip's padding does nothing.
+            .contentShape(RoundedRectangle(cornerRadius: Radius.sm))
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(reference.chipKindName)
         .accessibilityLabel("\(reference.chipKindName): \(reference.chipLabel)")
         .accessibilityHint(
             reference.image == nil ? "Show the referenced text" : "Show a preview of the image")
@@ -161,7 +152,7 @@ private struct SentReferenceChip: View {
                 // chip in the transcript: base64-decoding a ~200 KB page
                 // snapshot per chip on every transcript render would be wasted
                 // work for popovers that are mostly never opened.
-                preview: previewData(reference).flatMap(UIImage.init(data:)),
+                preview: previewData(reference).flatMap(NSImage.init(data:)),
                 onGoToPage: { page in
                     // Dismiss first: leaving a popover open over a page the
                     // reader just scrolled away from is disorienting.
@@ -169,10 +160,6 @@ private struct SentReferenceChip: View {
                     onGoToPage(page)
                 }
             )
-            // In a compact split-view width iPadOS would promote this popover to
-            // a sheet, which loses the "this chip, right here" attachment the
-            // whole affordance depends on. Keep it anchored.
-            .presentationCompactAdaptation(.popover)
         }
     }
 }
@@ -197,7 +184,7 @@ private struct SentReferenceChip: View {
 private struct SentReferenceDetail: View {
     let reference: AiReference
     /// Decoded pixels, or nil when this reference is no longer previewable.
-    let preview: UIImage?
+    let preview: NSImage?
     let onGoToPage: (Int) -> Void
 
     @Environment(\.palette) private var palette
@@ -265,7 +252,7 @@ private struct SentReferenceDetail: View {
     @ViewBuilder
     private var imageBody: some View {
         if let preview {
-            Image(uiImage: preview)
+            Image(nsImage: preview)
                 .resizable()
                 // A page snapshot is taller than it is wide and a region crop can
                 // be any shape, so fit inside the box rather than filling it —
@@ -329,7 +316,7 @@ private struct SentReferenceDetail: View {
             // pixels, so its popover shows the "preview unavailable" branch.
             previewData: { _ in nil },
             // The user-bubble cap for this preview's 300pt column.
-            maxWidth: AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: 300)
+            maxWidth: AiPanel.bubbleMaxWidth(for: .user, contentWidth: 300)
         )
         // The single-chip case, which must hug the trailing edge like the bubble.
         SentReferenceChips(
@@ -337,7 +324,7 @@ private struct SentReferenceDetail: View {
                 text: "Green light is largely reflected.", messageId: "a1"))],
             onGoToPage: { _ in },
             previewData: { _ in nil },
-            maxWidth: AiPanel_iOS.bubbleMaxWidth(for: .user, contentWidth: 300)
+            maxWidth: AiPanel.bubbleMaxWidth(for: .user, contentWidth: 300)
         )
     }
     .frame(width: 300, alignment: .trailing)

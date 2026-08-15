@@ -1,4 +1,8 @@
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 import Foundation
 import Observation
 
@@ -310,7 +314,15 @@ final class IntegrationsStore {
     /// A ready-to-draw thumbnail. The fetch, the file read AND the decode all
     /// happen inside the cache actor, so a library row never blocks the main
     /// actor on disk I/O or ImageIO.
-    func thumbnailImage(for item: ReadLaterItem) async -> UIImage? { await thumbnails.image(for: item.thumbnailURL) }
+    #if os(macOS)
+    func thumbnailImage(for item: ReadLaterItem) async -> NSImage? {
+        await thumbnails.image(for: item.thumbnailURL)
+    }
+    #else
+    func thumbnailImage(for item: ReadLaterItem) async -> UIImage? {
+        await thumbnails.image(for: item.thumbnailURL)
+    }
+    #endif
     func dismissDownloadNotice(_ id: ReadLaterItem.ID) { downloads[id] = nil }
 
     // MARK: - Moving items between collections

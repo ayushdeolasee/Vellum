@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// Disconnect confirmation for a read-later provider, with the optional
@@ -70,3 +71,4 @@ struct DisconnectServiceSheet: View {
         }
     }
 }
+#endif
