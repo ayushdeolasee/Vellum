@@ -31,7 +31,6 @@ final class PaneModel: Identifiable {
         teardowns: TabTeardownRegistry = TabTeardownRegistry(),
         documentAccess: DocumentAccessResolver = .live,
         openRouterCatalog: OpenRouterCatalog,
-        chatgptAuth: ChatGPTAuth,
         storageCoordinator: StorageCoordinator? = nil,
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
@@ -43,7 +42,6 @@ final class PaneModel: Identifiable {
         ai.app = app
         ai.annotationStore = annotations
         ai.openRouterCatalog = openRouterCatalog
-        ai.chatgptAuth = chatgptAuth
         let scratchpad = ScratchpadStore(coordinator: storageCoordinator)
         scratchpad.app = app
         self.app = app

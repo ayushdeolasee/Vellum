@@ -62,7 +62,7 @@ struct AiUsage: Codable, Equatable, Sendable {
         return parsed
     }
 
-    /// Responses API `response.usage` object (OpenAI, ChatGPT Codex backend).
+    /// OpenAI Responses API `response.usage` object.
     static func fromResponses(_ usage: [String: Any]) -> AiUsage {
         let inputDetails = usage["input_tokens_details"] as? [String: Any] ?? [:]
         let outputDetails = usage["output_tokens_details"] as? [String: Any] ?? [:]

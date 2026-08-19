@@ -173,16 +173,6 @@ extension WalkthroughPage {
                     text:
                         "Paste an API key for Gemini, the OpenAI API, OpenRouter, OpenCode Zen, "
                         + "or OpenCode Go."),
-                // Not "the OpenAI API": ChatGPTAuth replicates the Codex CLI
-                // login against OpenAI's own auth server and talks to the
-                // ChatGPT Codex backend, so this bills against a ChatGPT
-                // subscription rather than against API credit. Reviewed and
-                // reworded to say so.
-                WalkthroughPoint(
-                    symbol: "person.crop.circle.badge.checkmark",
-                    text:
-                        "Or choose \"ChatGPT (Codex)\" and sign in through your browser to use an "
-                        + "existing ChatGPT subscription instead of an API key."),
             ]
         ),
 

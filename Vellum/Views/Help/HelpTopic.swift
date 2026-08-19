@@ -157,11 +157,10 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "ai-setup",
             title: "Connect an AI model",
             symbol: "sparkles",
-            // The five key-based providers plus the one OAuth provider, named
-            // exactly as AiProviderOption.all labels them.
-            summary: "Everything else in Vellum works without this. In Settings ▸ AI, paste a key for Gemini, the OpenAI API, OpenRouter, OpenCode Zen or OpenCode Go, or sign in to \"ChatGPT (Codex)\" through your browser to use an existing ChatGPT subscription.",
+            // Provider names match AiProviderOption.all.
+            summary: "Everything else in Vellum works without this. In Settings ▸ AI, paste a key for Gemini, the OpenAI API, OpenRouter, OpenCode Zen or OpenCode Go.",
             shortcut: nil,
-            keywords: ["provider", "api key", "gemini", "openai", "openrouter", "opencode", "chatgpt", "codex", "model", "llm"]),
+            keywords: ["provider", "api key", "gemini", "openai", "openrouter", "opencode", "model", "llm"]),
         HelpTopic(
             id: "ai-context",
             title: "What the AI is sent",

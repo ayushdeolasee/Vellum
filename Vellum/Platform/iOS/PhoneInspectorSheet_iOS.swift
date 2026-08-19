@@ -29,8 +29,8 @@ import SwiftUI
 /// The list is not decoration; it is exactly what the subtree reads:
 /// `WorkspaceStore` (the switcher's selection, and `AnnotationSidebar`),
 /// `AppStore`/`AnnotationStore`/`AiStore`/`ScratchpadStore` (the pane triple
-/// plus its app), `OpenRouterCatalog` + `ChatGPTAuth` (the AI panel's model
-/// picker and sign-in state), and the palette/scheme/tint trio that every
+/// plus its app), `OpenRouterCatalog` (the AI panel's model picker), and the
+/// palette/scheme/tint trio that every
 /// other presentation in this app re-states.
 struct PhoneInspectorSheet_iOS: View {
     /// The shell, for the one piece of state the sheet's *content* needs that
@@ -80,7 +80,6 @@ struct PhoneInspectorSheet_iOS: View {
             .environment(pane.ai)
             .environment(pane.scratchpad)
             .environment(workspace.openRouterCatalog)
-            .environment(workspace.chatgptAuth)
             .environment(\.palette, themeStore.palette)
             .preferredColorScheme(themeStore.colorScheme)
             .tint(themeStore.palette.primary)
