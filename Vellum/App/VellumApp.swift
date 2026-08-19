@@ -111,7 +111,7 @@ struct VellumApp: App {
         uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         // The first keychain read of a launch is a full vault load plus the
         // legacy migration — hundreds of milliseconds, reachable synchronously
-        // from @MainActor callers (AI keys, ChatGPT auth, integration tokens).
+        // from @MainActor callers (AI keys and integration tokens).
         // Warm it on a background queue here, after the UI-test configuration
         // has had its say, so no main-actor read ever pays for it.
         KeychainStore.prewarm()
@@ -232,7 +232,6 @@ struct VellumApp: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -253,7 +252,6 @@ struct VellumApp: App {
                 .environment(workspace.integrations)
                 .environment(workspace.settingsAi)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

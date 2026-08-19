@@ -12,8 +12,6 @@ enum AiModelCatalog {
         "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
         "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
     ]
-    /// Slugs valid on the ChatGPT-subscription Codex backend.
-    static let chatgpt = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
     /// Models on the OpenCode **Zen** gateway: proprietary flagships plus the
     /// open-weight and free models Zen also hosts. See `opencodeGo` for the
     /// separate Go gateway.
@@ -72,7 +70,7 @@ enum AiModelCatalog {
         case .openrouter: catalog?.model(for: model)?.supportsVision ?? true
         case .opencode, .opencodeGo: opencodeSupportsVision(model)
         // Every model in these built-in catalogs is multimodal.
-        case .gemini, .openai, .chatgpt: true
+        case .gemini, .openai: true
         }
     }
 
@@ -80,7 +78,6 @@ enum AiModelCatalog {
         switch provider {
         case .gemini: gemini
         case .openai: openAI
-        case .chatgpt: chatgpt
         case .opencode: opencode
         case .opencodeGo: opencodeGo
         case .openrouter: []
@@ -137,17 +134,13 @@ struct AiSettingsPanel: View {
                 .labelsHidden()
             }
 
-            if aiStore.settings.provider == .chatgpt {
-                field("Account") { ChatGPTSignInControl() }
-            } else {
-                field(aiStore.keyFieldLabel) {
-                    RevealableSecureField(
-                        accessibilityLabel: aiStore.keyFieldLabel,
-                        placeholder: aiStore.keyFieldPlaceholder,
-                        text: aiStore.apiKeyBinding
-                    )
-                        .id(aiStore.settings.provider)
-                }
+            field(aiStore.keyFieldLabel) {
+                RevealableSecureField(
+                    accessibilityLabel: aiStore.keyFieldLabel,
+                    placeholder: aiStore.keyFieldPlaceholder,
+                    text: aiStore.apiKeyBinding
+                )
+                    .id(aiStore.settings.provider)
             }
 
             field("Model") {
@@ -236,53 +229,9 @@ struct AiProviderOption: Identifiable {
         .init(provider: .gemini, label: "Gemini"),
         .init(provider: .openai, label: "OpenAI API"),
         .init(provider: .openrouter, label: "OpenRouter"),
-        .init(provider: .chatgpt, label: "ChatGPT (Codex)"),
         .init(provider: .opencode, label: "OpenCode Zen"),
         .init(provider: .opencodeGo, label: "OpenCode Go"),
     ]
-}
-
-/// Sign-in / signed-in / sign-out control for the ChatGPT-subscription OAuth
-/// provider, shared by both AI settings hosts. Replaces the API-key field, since
-/// this provider authenticates via the browser rather than a pasted key.
-struct ChatGPTSignInControl: View {
-    @Environment(ChatGPTAuth.self) private var auth
-    @Environment(\.palette) private var palette
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if auth.isSignedIn {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                    Text(auth.accountLabel ?? "Signed in").lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Button("Sign out") { auth.signOut() }
-                        .buttonStyle(.borderless)
-                }
-            } else {
-                Button {
-                    error = nil
-                    Task {
-                        do { try await auth.signIn() }
-                        catch { self.error = error.localizedDescription }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        if auth.isAuthorizing { ProgressView().controlSize(.small) }
-                        Text(auth.isAuthorizing ? "Waiting for browser…" : "Sign in with ChatGPT")
-                    }
-                }
-                .disabled(auth.isAuthorizing)
-            }
-            if let error {
-                Text(error)
-                    .font(.system(size: 10))
-                    .foregroundStyle(palette.gold)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
 }
 
 // MARK: - Shared AI settings plumbing
@@ -331,7 +280,6 @@ extension AiStore {
                 case .gemini: self.settings.model
                 case .openai: self.settings.openaiModel
                 case .openrouter: self.settings.openrouterModel
-                case .chatgpt: self.settings.chatgptModel
                 case .opencode: self.settings.opencodeModel
                 case .opencodeGo: self.settings.opencodeGoModel
                 }
@@ -342,7 +290,6 @@ extension AiStore {
                 case .gemini: settings.model = value
                 case .openai: settings.openaiModel = value
                 case .openrouter: settings.openrouterModel = value
-                case .chatgpt: settings.chatgptModel = value
                 case .opencode: settings.opencodeModel = value
                 case .opencodeGo: settings.opencodeGoModel = value
                 }

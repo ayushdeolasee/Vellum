@@ -10,7 +10,7 @@ struct AiPromptParameters {
 /// tail (PR A.5). Providers that place an Anthropic-style `cache_control`
 /// breakpoint (OpenRouter, OpenCode Zen) send `stable` and `volatile` as
 /// separate content parts with the breakpoint on their boundary; providers
-/// without a breakpoint API (Gemini, OpenAI, ChatGPT) send `joined`.
+/// without a breakpoint API (Gemini and OpenAI) send `joined`.
 struct AiUserPrompt {
     /// "### Document Context" header + the session-stable context block.
     var stable: String

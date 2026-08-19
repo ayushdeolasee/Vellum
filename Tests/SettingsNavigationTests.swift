@@ -37,9 +37,7 @@ final class SettingsNavigationTests: XCTestCase {
     // Sparkle-style self-updater is meaningless in an App Store app.
     //
     // The AI-validation tests below were deferred while `AiSettings` had no
-    // iPad home. The AI packet has since landed
-    // `AiSettings.isConfigured(chatGPTSignedIn:)`, so they are restored
-    // verbatim from main.
+    // iPad home. The AI packet has since landed, so they are restored from main.
 
     func testApiKeyProvidersRequireCredentialsAndModels() {
         let providers: [(
@@ -60,17 +58,17 @@ final class SettingsNavigationTests: XCTestCase {
             settings[keyPath: modelPath] = "model"
             settings[keyPath: keyPath] = " \n "
             XCTAssertFalse(
-                settings.isConfigured(chatGPTSignedIn: true),
+                settings.isConfigured(),
                 "\(provider) should reject whitespace-only credentials")
 
             settings[keyPath: keyPath] = "credential"
             XCTAssertTrue(
-                settings.isConfigured(chatGPTSignedIn: false),
+                settings.isConfigured(),
                 "\(provider) should accept a credential with a selected model")
 
             settings[keyPath: modelPath] = " \n "
             XCTAssertFalse(
-                settings.isConfigured(chatGPTSignedIn: true),
+                settings.isConfigured(),
                 "\(provider) should reject a missing model")
         }
     }
@@ -81,17 +79,6 @@ final class SettingsNavigationTests: XCTestCase {
         settings.openrouterApiKey = "sk-or-test"
         settings.openrouterModel = ""
 
-        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: false))
-    }
-
-    func testChatGPTConfigurationUsesSignInStateAndModel() {
-        var settings = AiSettings()
-        settings.provider = .chatgpt
-
-        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: false))
-        XCTAssertTrue(settings.isConfigured(chatGPTSignedIn: true))
-
-        settings.chatgptModel = " "
-        XCTAssertFalse(settings.isConfigured(chatGPTSignedIn: true))
+        XCTAssertFalse(settings.isConfigured())
     }
 }

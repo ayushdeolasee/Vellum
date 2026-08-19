@@ -345,7 +345,7 @@ final class AiPipelineTests: XCTestCase {
     /// picked "High" and got *no* reasoning. Every gpt-5 id the pickers actually
     /// ship has to resolve an explicit mode to something.
     func testEveryShippedGpt5ModelHonoursAnExplicitMode() {
-        let shipped = AiModelCatalog.openAI + AiModelCatalog.chatgpt + AiModelCatalog.opencode
+        let shipped = AiModelCatalog.openAI + AiModelCatalog.opencode
         for model in Set(shipped).filter({ $0.hasPrefix("gpt-5") }).sorted() {
             XCTAssertNotNil(
                 OpenAIClient.supportedReasoningEffort(model: model, requested: "high"),
@@ -541,8 +541,7 @@ final class AiPipelineTests: XCTestCase {
     func testTokenLimitDropsQueuedFunctionCallsInsteadOfRunningThem() async throws {
         var deltas: [String] = []
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true), provider: "OpenAI",
-            throwsOnUnexpectedIncomplete: true,
+            toolCallFixture(truncated: true),
             onEvent: { if case .textDelta(let delta) = $0 { deltas.append(delta) } })
         // Fixture sanity: the model really did queue a call before the cutoff,
         // and the text it streamed was forwarded live on the way through.
@@ -550,7 +549,7 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertTrue(turn.hitTokenLimit)
         XCTAssertEqual(deltas, ["Let me check page 4"])
 
-        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: false) {
+        switch try OpenAIClient.turnOutcome(turn, hasPriorActions: false) {
         case .runTools:
             XCTFail("a truncated response must not run its queued function calls")
         case .finish(let reply):
@@ -564,11 +563,10 @@ final class AiPipelineTests: XCTestCase {
     /// the same call still runs it, so the tool loop keeps working.
     func testQueuedFunctionCallsStillRunWhenTheResponseWasNotTruncated() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: false), provider: "OpenAI",
-            throwsOnUnexpectedIncomplete: true, onEvent: { _ in })
+            toolCallFixture(truncated: false), onEvent: { _ in })
         XCTAssertFalse(turn.hitTokenLimit)
 
-        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: false) {
+        switch try OpenAIClient.turnOutcome(turn, hasPriorActions: false) {
         case .finish:
             XCTFail("a completed response must still run its queued function calls")
         case .runTools(let queued):
@@ -580,22 +578,20 @@ final class AiPipelineTests: XCTestCase {
     }
 
     /// A cutoff that streamed no text at all, on the FIRST turn, still reaches
-    /// the error the no-calls path has always produced — named for the calling
-    /// provider, since the two Responses clients share this decision.
+    /// the error the no-calls path has always produced.
     func testTokenLimitWithNoTextAndNoPriorWorkErrorsRatherThanRunningTools() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true, text: ""), provider: "ChatGPT",
-            throwsOnUnexpectedIncomplete: false, onEvent: { _ in })
+            toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
         XCTAssertEqual(turn.calls.count, 1)
         XCTAssertTrue(turn.text.isEmpty)
 
         XCTAssertThrowsError(
-            try OpenAIClient.turnOutcome(turn, provider: "ChatGPT", hasPriorActions: false)
+            try OpenAIClient.turnOutcome(turn, hasPriorActions: false)
         ) { error in
             guard case AiClientError.message(let message) = error else {
                 return XCTFail("expected an AiClientError.message, got \(error)")
             }
-            XCTAssertTrue(message.hasPrefix("ChatGPT hit the output-token limit"))
+            XCTAssertTrue(message.hasPrefix("OpenAI hit the output-token limit"))
         }
     }
 
@@ -606,10 +602,9 @@ final class AiPipelineTests: XCTestCase {
     /// results kept, instead of throwing them away with an error.
     func testTokenLimitKeepsWorkDoneByEarlierTurnsInsteadOfThrowing() async throws {
         let turn = try await OpenAIClient.consumeTurn(
-            toolCallFixture(truncated: true, text: ""), provider: "OpenAI",
-            throwsOnUnexpectedIncomplete: true, onEvent: { _ in })
+            toolCallFixture(truncated: true, text: ""), onEvent: { _ in })
 
-        switch try OpenAIClient.turnOutcome(turn, provider: "OpenAI", hasPriorActions: true) {
+        switch try OpenAIClient.turnOutcome(turn, hasPriorActions: true) {
         case .runTools:
             XCTFail("a truncated response must not run its queued function calls")
         case .finish(let reply):
@@ -618,11 +613,8 @@ final class AiPipelineTests: XCTestCase {
         }
     }
 
-    /// The one behavioural difference between the two Responses clients is now a
-    /// parameter, not a second copy of the loop. The direct client surfaces a
-    /// non-token cutoff (the `content_filter` path that was dead code before
-    /// #86); the Codex-backed one finalizes silently, as it always has.
-    func testNonTokenIncompleteReasonSurfacesOnlyWhereTheClientAsksForIt() async throws {
+    /// A non-token cutoff surfaces the reason instead of finalizing silently.
+    func testNonTokenIncompleteReasonSurfaces() async throws {
         let filtered = """
         event: response.incomplete
         data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}
@@ -631,20 +623,13 @@ final class AiPipelineTests: XCTestCase {
 
         do {
             _ = try await OpenAIClient.consumeTurn(
-                fixture(), provider: "OpenAI", throwsOnUnexpectedIncomplete: true,
-                onEvent: { _ in })
+                fixture(), onEvent: { _ in })
             XCTFail("the direct client must surface a non-token cutoff")
         } catch {
             XCTAssertTrue(
                 error.localizedDescription.contains("content_filter"),
                 "the direct client must name the reason it stopped for")
         }
-
-        let tolerated = try await OpenAIClient.consumeTurn(
-            fixture(), provider: "ChatGPT", throwsOnUnexpectedIncomplete: false,
-            onEvent: { _ in })
-        XCTAssertFalse(tolerated.hitTokenLimit)
-        XCTAssertTrue(tolerated.calls.isEmpty)
     }
 
     // MARK: - §4 Usage parsing
@@ -1277,78 +1262,6 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertNotNil(body["contents"])
         XCTAssertNotNil(body["tools"])
         XCTAssertEqual(Self.geminiConfig(.high, "gemini-3-flash-preview")["temperature"] as? Double, 0.2)
-    }
-
-    // MARK: - §5 ChatGPT output budget (#96)
-
-    private static func chatGPTBody(_ mode: AiThinkingMode, _ model: String) -> [String: Any] {
-        ChatGPTClient.requestBody(
-            model: model, systemPrompt: "system", input: [], thinkingMode: mode,
-            sessionIdAtStart: "tab-1")
-    }
-
-    /// The #96 regression: every mode got a flat 8192, so High spent most of one
-    /// shared budget on reasoning tokens and had no more room left for the
-    /// answer than Instant did. The cap now scales through the same table the
-    /// direct OpenAI client uses.
-    func testChatGPTOutputBudgetScalesWithThinkingMode() {
-        XCTAssertEqual(Self.chatGPTBody(.low, "gpt-5.5")["max_output_tokens"] as? Int, 8192)
-        XCTAssertEqual(Self.chatGPTBody(.medium, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
-        XCTAssertEqual(Self.chatGPTBody(.high, "gpt-5.5")["max_output_tokens"] as? Int, 32768)
-        // Auto omits the effort, so the server picks; budget it mid-range for
-        // the same reason #95 did on the direct client.
-        XCTAssertEqual(Self.chatGPTBody(.auto, "gpt-5.5")["max_output_tokens"] as? Int, 16384)
-        XCTAssertNil(Self.chatGPTBody(.auto, "gpt-5.5")["reasoning"])
-    }
-
-    /// The fix only ever raises a cap. Instant on the four slugs whose `minimal`
-    /// resolves to effort `none` would otherwise *drop* to the table's 4096, and
-    /// `none` spends no reasoning tokens — so that reduction would come straight
-    /// out of visible answer length, reintroducing this issue's own symptom on
-    /// the one mode nobody reported it for.
-    func testChatGPTNoModeLosesAnswerRoom() {
-        for model in AiModelCatalog.chatgpt {
-            for mode in AiThinkingMode.allCases {
-                let cap = Self.chatGPTBody(mode, model)["max_output_tokens"] as? Int ?? 0
-                XCTAssertGreaterThanOrEqual(
-                    cap, 8192, "\(model)/\(mode) budgets less than the flat cap it replaced")
-            }
-        }
-        XCTAssertEqual(
-            (Self.chatGPTBody(.instant, "gpt-5.5")["reasoning"] as? [String: Any])?["effort"] as? String,
-            "none")
-        XCTAssertEqual(Self.chatGPTBody(.instant, "gpt-5.5")["max_output_tokens"] as? Int, 8192)
-    }
-
-    /// Above the floor, the cap follows the effort *resolved* for the model
-    /// rather than the one requested — so a slug whose vocabulary bumps the
-    /// user's choice up or down gets a budget that matches what it will do.
-    func testChatGPTBudgetFollowsTheResolvedEffort() {
-        for model in AiModelCatalog.chatgpt {
-            for mode in AiThinkingMode.allCases {
-                let body = Self.chatGPTBody(mode, model)
-                let effort = (body["reasoning"] as? [String: Any])?["effort"] as? String
-                XCTAssertEqual(
-                    body["max_output_tokens"] as? Int,
-                    max(8192, OpenAIClient.maxOutputTokens(forEffort: effort, reasoning: true)),
-                    "\(model)/\(mode) budget must match the effort it sends")
-            }
-        }
-        // The codex slug has neither "none" nor "minimal", so Instant resolves
-        // up to "low" where the others resolve down to "none".
-        XCTAssertEqual(
-            (Self.chatGPTBody(.instant, "gpt-5.3-codex")["reasoning"] as? [String: Any])?["effort"] as? String,
-            "low")
-    }
-
-    /// The rest of the ChatGPT turn payload is untouched by #96.
-    func testChatGPTRequestBodyKeepsItsTurnPayload() {
-        let body = Self.chatGPTBody(.medium, "gpt-5.5")
-        XCTAssertEqual(body["prompt_cache_key"] as? String, "vellum-tab-1")
-        XCTAssertEqual(body["stream"] as? Bool, true)
-        XCTAssertEqual(body["store"] as? Bool, false)
-        XCTAssertEqual(body["instructions"] as? String, "system")
-        XCTAssertNotNil(body["tools"])
     }
 
     /// Bytes for a blank bitmap in PNG, as a stand-in for a dropped file. The

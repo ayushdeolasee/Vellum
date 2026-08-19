@@ -178,7 +178,6 @@ struct VellumApp_iOS: App {
                 .environment(workspace.integrations)
                 .environment(inkRegistry)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

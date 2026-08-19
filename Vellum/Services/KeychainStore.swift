@@ -164,7 +164,7 @@ enum KeychainStore {
     /// The first `get` of a launch does a full keychain read plus a legacy
     /// enumeration/migration and possibly a commit — hundreds of milliseconds,
     /// and potentially a password prompt — and it is reachable synchronously
-    /// from `@MainActor` callers (`AiPersistence.readKey`, `ChatGPTAuth`), i.e.
+    /// from `@MainActor` callers such as `AiPersistence.readKey`, i.e.
     /// it can block the UI. Call this once at startup to move that work onto a
     /// background thread. Safe to call any number of times (the load is cached
     /// and serialized on `lock`), and a no-op under test, where the vault is
@@ -175,7 +175,18 @@ enum KeychainStore {
             defer { lock.unlock() }
             guard !usesTestStoreLocked else { return }
             _ = loadVaultLocked()
+            purgeRemovedCredentialsLocked()
         }
+    }
+
+    /// Removes credentials for providers that the app no longer supports.
+    private static func purgeRemovedCredentialsLocked() {
+        let account = "chatgpt-tokens"
+        let key = vaultKey(account, service)
+        if cache?.entries[key] != nil {
+            _ = commitLocked([key: nil])
+        }
+        backendLocked.legacyDelete(account, service)
     }
 
     private static func vaultKey(_ account: String, _ service: String) -> String {
@@ -489,7 +500,5 @@ enum KeychainStore {
         static let openrouter = "openrouter"
         static let opencode = "opencode"
         static let opencodeGo = "opencode-go"
-        /// JSON blob of the ChatGPT OAuth tokens (access/refresh/id/account id).
-        static let chatgptTokens = "chatgpt-tokens"
     }
 }

@@ -62,7 +62,7 @@ struct AiPanel_iOS: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !aiStore.settings.isConfigured(chatGPTSignedIn: workspace.chatgptAuth.isSignedIn) {
+            if !aiStore.settings.isConfigured() {
                 configureAiBanner
             }
             if settingsOpen {
