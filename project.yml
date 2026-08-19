@@ -105,7 +105,7 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        ENABLE_HARDENED_RUNTIME: "NO"
+        ENABLE_HARDENED_RUNTIME: "YES"
         ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
