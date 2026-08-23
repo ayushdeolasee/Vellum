@@ -1,0 +1,111 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.00000,0.00000,0.00000,1.00000",
+      "display-p3:0.27380,0.32799,0.75000,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "Untitled.png",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.27,
+            "translation-in-points" : [
+              0,
+              127.67311505649383
+            ]
+          }
+        },
+        {
+          "image-name" : "Untitled.png",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.27,
+            "translation-in-points" : [
+              0,
+              30.48193762896409
+            ]
+          }
+        },
+        {
+          "image-name" : "Untitled.png",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.27,
+            "translation-in-points" : [
+              0,
+              -67.35024897173935
+            ]
+          }
+        },
+        {
+          "image-name" : "Untitled.png",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.27,
+            "translation-in-points" : [
+              0,
+              -159.74108751911444
+            ]
+          }
+        },
+        {
+          "image-name" : "Untitled.png",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.27,
+            "translation-in-points" : [
+              0,
+              -250.9282372153314
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "blend-mode" : "lighten",
+          "fill" : {
+            "solid" : "display-p3:0.04792,0.10899,0.20194,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "Untitled.svg",
+          "name" : "Untitled",
+          "position" : {
+            "scale" : 0.25,
+            "translation-in-points" : [
+              0.08562499999993634,
+              0.015750000000025466
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

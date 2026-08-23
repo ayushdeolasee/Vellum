@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -25,9 +26,8 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             guard let workspace = Self.workspace else { return .terminateNow }
             let leaves = workspace.root.allLeaves()
             let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
-            // Persist the split layout, and every pane's pending scratchpad
-            // edit (each pane owns its own note), before tearing down sessions.
-            workspace.saveNow()
+            // Persist every pane's pending scratchpad edit (each pane owns its
+            // own note) before tearing down sessions.
             for leaf in leaves { leaf.scratchpad.flush() }
             guard hasTabs else {
                 // No open tabs, but a conversation or page-text write saved just
@@ -38,12 +38,14 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // conversations.json / cache write always lands. Both awaits are
                 // no-ops when nothing is pending.
                 Task { @MainActor in
+                    await workspace.saveNowAfterPendingPositionRecords()
                     // A tab closed moments ago finishes its metadata write and
                     // session close behind the UI (AppStore.closeTab); it is no
                     // longer in `tabs`, so nothing else here would await it.
                     // Drained via the workspace registry, not per pane: a close
                     // that collapsed its pane left no leaf to ask.
                     await workspace.tabTeardowns.awaitAll()
+                    await workspace.positions.flush()
                     await PageTextPersister.awaitInFlightFlushes()
                     await AiPersistence.awaitPendingFlush()
                     // Read-later work the user started behind the UI — the
@@ -57,16 +59,20 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateLater
             }
             Task { @MainActor in
+                await workspace.saveNowAfterPendingPositionRecords()
                 // Tabs closed moments ago finish their metadata write and
                 // session close behind the UI (AppStore.closeTab) and are no
                 // longer in `tabs`, so the loop below would miss them. Drained
                 // via the workspace registry, not per pane: a close that
                 // collapsed its pane left no leaf to ask.
                 await workspace.tabTeardowns.awaitAll()
+                await workspace.flushOpenTabPositions(markClosed: true)
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
-                        try? await workspace.sessions.setDocumentMetadata(
-                            sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                        if tab.document?.kind == .pdf {
+                            try? await workspace.sessions.setDocumentMetadata(
+                                sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
+                        }
                     }
                 }
                 // Metadata rewrites PDFs and changes their validation hashes.
@@ -105,14 +111,22 @@ struct VellumApp: App {
         uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         // The first keychain read of a launch is a full vault load plus the
         // legacy migration — hundreds of milliseconds, reachable synchronously
-        // from @MainActor callers (AI keys, ChatGPT auth, integration tokens).
+        // from @MainActor callers (AI keys and integration tokens).
         // Warm it on a background queue here, after the UI-test configuration
         // has had its say, so no main-actor read ever pays for it.
         KeychainStore.prewarm()
         let theme = ThemeStore()
         let sessions = DocumentSessionManager()
-        let integrations = IntegrationsStore(engine: IntegrationsSyncEngine())
-        let workspace = WorkspaceStore(sessions: sessions, integrations: integrations)
+        let storageCoordinator = StorageCoordinator()
+        let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
+        let integrations = IntegrationsStore(
+            engine: IntegrationsSyncEngine(),
+            webLibraryStorage: webLibraryStorage)
+        let workspace = WorkspaceStore(
+            sessions: sessions,
+            integrations: integrations,
+            storageCoordinator: storageCoordinator,
+            webLibraryStorage: webLibraryStorage)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         VellumAppDelegate.workspace = workspace
@@ -125,7 +139,9 @@ struct VellumApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task {
+                    await workspace.startStorageCoordinator()
                     await workspace.integrations.start()
+                    await workspace.integrations.prefetchOfflineCopies()
                     // Launch-time TTL eviction of derived data (issue #37 PR B /
                     // issue #29): the extracted-text cache, plus web-snapshot
                     // artifacts for pages the user never saved or annotated.
@@ -146,6 +162,7 @@ struct VellumApp: App {
                             .map { DocumentIdentity.storageKey(for: $0) })
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
+                    let positions = workspace.positions
                     Task.detached(priority: .background) {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
@@ -153,12 +170,16 @@ struct VellumApp: App {
                         // so it can't run concurrently with a location change
                         // the user makes in the first-launch sheet below. The
                         // sweep runs regardless of the retention policy.
-                        await WebStorageRelocator.sweepAtLaunch()
+                        await WebStorageRelocator.sweepAtLaunch(
+                            coordinator: workspace.storageCoordinator)
                         // TTL eviction of derived data, using the user's chosen
                         // retention window (Settings ▸ Storage ▸ Housekeeping;
                         // "Never" skips it). Excludes currently-open documents.
                         await StorageHousekeeping.runCleanup(
-                            openPdfKeys: openKeys, openWebUrls: openWebUrls)
+                            openPdfKeys: openKeys,
+                            openWebUrls: openWebUrls,
+                            webLastOpened: { await positions.lastOpenedForWebURL($0) },
+                            webStorage: workspace.webLibraryStorage)
                     }
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the
@@ -211,7 +232,6 @@ struct VellumApp: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -232,7 +252,6 @@ struct VellumApp: App {
                 .environment(workspace.integrations)
                 .environment(workspace.settingsAi)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
@@ -258,3 +277,4 @@ struct VellumApp: App {
         .defaultSize(width: 640, height: 660)
     }
 }
+#endif  // os(macOS) — iPad reference; see Platform/iOS

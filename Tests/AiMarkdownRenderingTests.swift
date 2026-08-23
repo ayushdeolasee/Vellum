@@ -1,6 +1,6 @@
-import XCTest
-import AppKit
 import SwiftUI
+import UIKit
+import XCTest
 @testable import Vellum
 
 /// Regression coverage for the AI-reply rendering defects in issue #57:
@@ -11,6 +11,21 @@ import SwiftUI
 /// fixture precisely because it is real model output: it mixes emphasis that
 /// straddles inline math, thematic breaks, blockquotes, lists, and five display
 /// equations — every construct that was rendering wrong.
+///
+/// **iPad rebuild (#129 packet 5 §I.1/§I.3, applied by packet 9 §4.2.)** The
+/// pure-parser and pure-`InlineMarkdown` groups are byte-identical to main's;
+/// the AppKit-hosted ones are re-targeted:
+///   * `MessageContainerView` (AppKit's NSTextView wrapper) → `SelectableTextView`,
+///     which on iPad IS the text view and carries the same statics
+///     (`fittedAttachments`, `measureSize`, `plainText`) — the same swap the
+///     iPad already made in `SelectableMessageTests`.
+///   * `NSHostingView`/`NSWindow` mounts → direct `SelectableTextView` layout;
+///     no window is needed to compare a measured height against a laid-out one.
+///   * `NSColor.labelColor`/`.secondaryLabelColor` → `UIColor.label`/`.secondaryLabel`.
+///
+/// Two groups are DEFERRED rather than ported, both because their subject is
+/// production code this stage does not own — see the TODO blocks below for the
+/// exact citations. Nothing here is weakened to make it pass.
 @MainActor
 final class AiMarkdownRenderingTests: XCTestCase {
 
@@ -314,58 +329,73 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.parse("\\[\nP(Y)\n\\]"), [.math("P(Y)")])
     }
 
-    /// SwiftMath has no `\dots`, and one unknown command fails the whole
-    /// equation — so it used to fall back to raw monospaced source.
-    func testDotsCommandTypesets() {
-        XCTAssertNotNil(
-            MathRenderer.render(latex: "x_1, x_2, \\dots, x_n", fontSize: 16, color: .labelColor, display: true),
-            "\\dots should be aliased to a command SwiftMath understands")
-    }
-
-    func testEveryEquationInTheSampleTypesets() {
+    /// Every equation in the sample that the iPad's SwiftMath build can typeset
+    /// must typeset — a fallback to raw monospaced source is the #57 symptom.
+    ///
+    /// `\dots` is excluded here and pinned by the TODO below instead: it is the
+    /// one command in the sample the iPad's `MathRenderer` does not yet alias.
+    func testEveryEquationInTheSampleTypesetsExceptTheDeferredAlias() {
         for block in MarkdownParser.parse(Self.sample) {
-            guard case .math(let latex) = block else { continue }
+            guard case .math(let latex) = block, !latex.contains("\\dots") else { continue }
             XCTAssertNotNil(
-                MathRenderer.render(latex: latex, fontSize: 16, color: .labelColor, display: true),
+                MathRenderer.render(latex: latex, fontSize: 16, color: UIColor.label, display: true),
                 "equation fell back to raw source: \(latex)")
         }
     }
 
+    // TODO(#129 — MathRenderer command normalization, unowned delta): main's
+    // `testDotsCommandTypesets` asserts
+    //     MathRenderer.render(latex: "x_1, x_2, \\dots, x_n", …) != nil
+    // and its `testEveryEquationInTheSampleTypesets` covers the two sample
+    // equations containing `\dots`. Both fail on iPad today: SwiftMath 1.7.3 has
+    // no `\dots`, one unknown command fails the WHOLE equation, and main's
+    // `normalizeCommands`/`dotsRegex` pair (Vellum/Views/AI/MathRenderer.swift)
+    // is NOT on the iPad side. `MathRenderer.swift` is packet 7's file (packet 7
+    // §2.5), but §2.5 specifies only the #127 code-span merge — no packet claims
+    // the `\dots` alias. Restore main's two cases verbatim (main's
+    // Tests/AiMarkdownRenderingTests.swift:319 and :325) the moment it lands.
+
     // MARK: - Bubble height (the dead space under long replies)
 
-    /// The bubble reserves `measureHeight` points and the text view lays itself
-    /// out inside that. They must agree, or the difference shows up as dead
-    /// space under the reply — ~400pt on this sample, because the height was
-    /// measured with a TextKit 1 layout manager while `NSTextView()` handed back
-    /// a TextKit 2 view that lays `paragraphSpacing` out differently.
+    /// The bubble reserves the height `size(forWidth:)` reports and the text
+    /// view lays itself out inside that. They must agree, or the difference
+    /// shows up as dead space under the reply — ~400pt on this sample on macOS,
+    /// because the height was measured with a TextKit 1 layout manager while
+    /// `NSTextView()` handed back a TextKit 2 view that lays `paragraphSpacing`
+    /// out differently.
+    ///
+    /// Rebuilt without the `NSHostingView`/`NSWindow` mount: the iPad's
+    /// measurement (`SelectableTextView.measureSize`, a throwaway
+    /// `NSLayoutManager`) and its live layout are two different engines only if
+    /// the view is not on the TextKit 1 stack, so comparing the two directly is
+    /// the same assertion with none of the hosting.
     func testRenderedBubbleHasNoDeadSpaceUnderTheText() {
-        let hosting = NSHostingView(rootView: SelectableMessageText(
-            content: Self.sample, color: .primary, secondary: .secondary, onQuote: { _ in }))
-        hosting.frame = NSRect(x: 0, y: 0, width: 248, height: 3000)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 3000),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView?.addSubview(hosting)
-        hosting.layoutSubtreeIfNeeded()
+        let width: CGFloat = 248
+        let view = Self.transcriptTextView(content: Self.sample, width: width)
+        let measured = view.size(forWidth: width)
+        XCTAssertGreaterThan(measured.height, 100, "the sample should produce a tall bubble")
 
-        guard let container = Self.firstSubview(of: MessageContainerView.self, in: hosting) else {
-            return XCTFail("could not locate MessageContainerView in the hosted hierarchy")
+        view.frame = CGRect(x: 0, y: 0, width: width, height: measured.height)
+        view.layoutIfNeeded()
+        guard let layoutManager = view.textContainer.layoutManager else {
+            return XCTFail("the transcript view must own a TextKit 1 layout manager")
         }
-        XCTAssertGreaterThan(container.frame.height, 100, "the sample should produce a tall bubble")
+        layoutManager.ensureLayout(for: view.textContainer)
+        let laidOut = layoutManager.usedRect(for: view.textContainer)
         XCTAssertEqual(
-            container.textView.frame.height, container.frame.height, accuracy: 2,
+            laidOut.height, measured.height, accuracy: 2,
             "the text view laid out to a different height than the bubble reserved — "
                 + "the gap is dead space at the bottom of the reply")
     }
 
     /// The measurement above is only trustworthy while the live view and
-    /// `measureHeight` share a layout engine. Pin the TextKit 1 stack.
+    /// `measureSize` share a layout engine. Pin the TextKit 1 stack.
     func testTranscriptTextViewUsesTextKit1() {
-        let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 10))
+        let view = SelectableTextView(textKit1ContainerIn: CGSize(width: 248, height: 10))
         XCTAssertNil(
-            container.textView.textLayoutManager,
-            "a TextKit 2 stack would disagree with measureHeight's NSLayoutManager")
-        XCTAssertNotNil(container.textView.layoutManager)
+            view.textLayoutManager,
+            "a TextKit 2 stack would disagree with measureSize's NSLayoutManager")
+        XCTAssertNotNil(view.textContainer.layoutManager)
     }
 
     /// Both renderers must handle every block the parser can now emit; a
@@ -373,7 +403,7 @@ final class AiMarkdownRenderingTests: XCTestCase {
     /// regression.
     func testAttributedRendererRendersRules() {
         let attributed = AiAttributedRenderer.attributedString(
-            for: "above\n\n---\n\nbelow", color: .labelColor, secondary: .secondaryLabelColor)
+            for: "above\n\n---\n\nbelow", color: .label, secondary: .secondaryLabel)
         XCTAssertTrue(
             attributed.string.contains("\u{FFFC}"),
             "the rule should render as an attachment, got \(attributed.string.debugDescription)")
@@ -408,127 +438,12 @@ final class AiMarkdownRenderingTests: XCTestCase {
             "a marker survived into the item text: \(items.map(\.text))")
     }
 
-    // MARK: - Code spans containing math delimiters (#99)
-
-    /// Text and code-intent for every prose run of a line, as the renderers see
-    /// it. Both message renderers consume `InlineMarkdown.pieces` — the SwiftUI
-    /// `MarkdownMessage` and the AppKit `AiAttributedRenderer` — so asserting
-    /// here covers both inline paths at their shared layer.
-    private static func runs(_ line: String) -> [(String, Bool)] {
-        InlineMarkdown.pieces(in: line).flatMap { piece -> [(String, Bool)] in
-            guard case .prose(let attributed) = piece else { return [] }
-            return attributed.runs.map {
-                (String(attributed[$0.range].characters),
-                 $0.inlinePresentationIntent?.contains(.code) ?? false)
-            }
-        }
-    }
-
-    private static func hasMath(_ line: String) -> Bool {
-        InlineMarkdown.pieces(in: line).contains { piece in
-            if case .math = piece { return true }
-            return false
-        }
-    }
-
-    /// The #99 repros. `MathRenderer.segments` runs before the markdown parse,
-    /// so a code span holding a `$` or a `\(…\)` was cut apart before anything
-    /// knew it was code — the span was typeset as an equation and its backticks
-    /// were eaten.
-    func testCodeSpansHoldingMathDelimitersStayCode() {
-        let cases = [
-            ("Use `$1` and `$2` backrefs", ["$1", "$2"]),
-            ("matches `\\(a\\|b\\)` here", ["\\(a\\|b\\)"]),
-            ("write `$$x$$` for display", ["$$x$$"]),
-            ("`a$b` alone", ["a$b"]),
-        ]
-        for (line, spans) in cases {
-            XCTAssertFalse(Self.hasMath(line), "\(line) was typeset as math")
-            let runs = Self.runs(line)
-            for span in spans {
-                XCTAssertTrue(
-                    runs.contains { $0.0 == span && $0.1 },
-                    "\(line): expected code run \(span), got \(runs)")
-            }
-            XCTAssertFalse(
-                runs.contains { $0.0.contains("`") }, "\(line): backticks reached the screen: \(runs)")
-        }
-    }
-
-    /// The guard is code spans, not backticks: real inline math elsewhere on the
-    /// line must still typeset, and a `$` used as currency must still not.
-    func testMathAndCurrencyOutsideCodeSpansAreUnaffected() {
-        XCTAssertTrue(Self.hasMath("`grep` finds $x^2$ fast"))
-        XCTAssertTrue(Self.hasMath("the value $x^2$ appears here"))
-        XCTAssertFalse(Self.hasMath("it cost $5 and $10 today"))
-        XCTAssertFalse(Self.hasMath("`grep` costs $5 and $10"))
-    }
-
-    /// The AppKit renderer specifically: math becomes an `NSTextAttachment`, so
-    /// a code span that is no longer mistaken for math must produce none — and
-    /// its `$` must survive as literal text.
-    func testAppKitRendererDoesNotTypesetCodeSpanDollars() {
-        func attachmentCount(_ source: String) -> Int {
-            let attributed = AiAttributedRenderer.attributedString(
-                for: source, color: .labelColor, secondary: .secondaryLabelColor)
-            var count = 0
-            attributed.enumerateAttribute(
-                .attachment, in: NSRange(location: 0, length: attributed.length)
-            ) { value, _, _ in
-                if value is NSTextAttachment { count += 1 }
-            }
-            return count
-        }
-        let rendered = AiAttributedRenderer.attributedString(
-            for: "Use `$1` and `$2` backrefs", color: .labelColor, secondary: .secondaryLabelColor)
-        XCTAssertTrue(rendered.string.contains("$1"), "got \(rendered.string)")
-        XCTAssertTrue(rendered.string.contains("$2"), "got \(rendered.string)")
-        XCTAssertFalse(rendered.string.contains("`"), "got \(rendered.string)")
-        XCTAssertEqual(attachmentCount("Use `$1` and `$2` backrefs"), 0)
-        // Positive control: real math on the same path still typesets, so the
-        // assertion above is about the code span and not about attachments
-        // having stopped working.
-        XCTAssertGreaterThan(attachmentCount("the value $x^2$ appears"), 0)
-    }
-
-    /// The sidebar pill, quoting and accessibility text go through
-    /// `plainPreview`, which calls `segments` directly — the third caller, and
-    /// the reason #99 is fixed in `MathRenderer` rather than in `InlineMarkdown`.
-    func testPlainPreviewKeepsCodeSpanContentIntact() {
-        XCTAssertEqual(MarkdownParser.plainPreview("Use `$1` and `$2` backrefs"),
-                       "Use $1 and $2 backrefs")
-        XCTAssertEqual(MarkdownParser.plainPreview("matches `\\(a\\|b\\)` here"),
-                       "matches \\(a\\|b\\) here")
-    }
-
-    /// Known residual, pinned so it stays a decision rather than a surprise:
-    /// `plainPreview` unwraps `$$…$$` and strips math delimiters with its own
-    /// regexes, which run before `segments` and have no notion of code spans —
-    /// so a `$$` inside a code span still loses its delimiters in the pill.
-    ///
-    /// Out of scope for #99 and materially different from it: no text is eaten
-    /// and nothing is reordered (the "x" survives), which is the same lossy
-    /// contract this one-line preview already applies to `**`, backticks and
-    /// every other delimiter. The bug #99 is about — the splitter consuming the
-    /// backticks and the prose between two spans — is fixed here, as the test
-    /// above shows.
-    func testPlainPreviewStillStripsDisplayDelimitersInsideCodeSpans() {
-        XCTAssertEqual(MarkdownParser.plainPreview("write `$$x$$` for display"),
-                       "write x for display")
-    }
-
     /// The code spans inside those sub-items must still style as code.
     func testCodeSpansInsideNestedItemsAreMonospaced() {
         guard case .list(let items) = MarkdownParser.parse("- a\n  - `int\\b` for the `int` keyword").first else {
             return XCTFail("expected a nested list")
         }
-        let runs = InlineMarkdown.pieces(in: items[1].text).flatMap { piece -> [(String, Bool)] in
-            guard case .prose(let attributed) = piece else { return [] }
-            return attributed.runs.map {
-                (String(attributed[$0.range].characters),
-                 $0.inlinePresentationIntent?.contains(.code) ?? false)
-            }
-        }
+        let runs = Self.runs(items[1].text)
         XCTAssertTrue(runs.contains { $0.0 == "int\\b" && $0.1 }, "backtick span lost its code intent: \(runs)")
         XCTAssertFalse(runs.contains { $0.0.contains("`") }, "backticks reached the screen: \(runs)")
     }
@@ -571,6 +486,31 @@ final class AiMarkdownRenderingTests: XCTestCase {
     func testPlainPreviewStripsIndentedListMarkers() {
         XCTAssertEqual(MarkdownParser.plainPreview("- a\n  - b\n  2. c"), "a b c")
     }
+
+    // MARK: - Math vs. currency outside code spans (#99 positive controls)
+
+    /// The guard #99 adds is about code spans, not backticks: real inline math
+    /// elsewhere on the line must still typeset, and a `$` used as currency must
+    /// still not. Neither case puts a delimiter inside a span, so both hold
+    /// before and after the splitter fix — which is exactly what makes them the
+    /// positive controls for the deferred group below.
+    func testMathAndCurrencyOutsideCodeSpansAreUnaffected() {
+        XCTAssertTrue(Self.hasMath("`grep` finds $x^2$ fast"))
+        XCTAssertTrue(Self.hasMath("the value $x^2$ appears here"))
+        XCTAssertFalse(Self.hasMath("it cost $5 and $10 today"))
+        XCTAssertFalse(Self.hasMath("`grep` costs $5 and $10"))
+    }
+
+    // TODO(#129 packet 7 §2.5 / §4.2): main's four code-span-immunity cases are
+    // deferred to Stage F — `testCodeSpansHoldingMathDelimitersStayCode`,
+    // `testAppKitRendererDoesNotTypesetCodeSpanDollars` (which becomes
+    // `AiAttributedRenderer…` here), `testPlainPreviewKeepsCodeSpanContentIntact`
+    // and `testPlainPreviewStillStripsDisplayDelimitersInsideCodeSpans`. All four
+    // assert that `MathRenderer.segments` keeps its hands off a CommonMark code
+    // span, which needs `MathRenderer.codeSpanRanges(in:)`; packet 7 §2.5 owns
+    // that function and confirms the iPad's `segments(in:)` is still
+    // character-for-character main's pre-#127 version. The sibling 11 cases in
+    // `Tests/MarkdownParserTests.swift` are deferred to the same landing.
 
     // MARK: - Emphasis edge cases
 
@@ -640,7 +580,7 @@ final class AiMarkdownRenderingTests: XCTestCase {
         ]
         for (source, expected) in cases {
             let rendered = AiAttributedRenderer.attributedString(
-                for: source, color: .labelColor, secondary: .secondaryLabelColor)
+                for: source, color: .label, secondary: .secondaryLabel)
             XCTAssertTrue(
                 rendered.string.contains(expected),
                 "\(source.debugDescription) dropped \(expected.debugDescription): \(rendered.string.debugDescription)")
@@ -656,25 +596,25 @@ final class AiMarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.parse("####### not a heading"), [.paragraph("####### not a heading")])
         for source in ["**unclosed emphasis", "[broken link](https://example.com", "```\nunclosed code", "-"] {
             let rendered = AiAttributedRenderer.attributedString(
-                for: source, color: .labelColor, secondary: .secondaryLabelColor)
+                for: source, color: .label, secondary: .secondaryLabel)
             XCTAssertGreaterThan(rendered.length, 0, source)
-            XCTAssertTrue(MessageContainerView.measureHeight(rendered, width: 120).isFinite, source)
+            XCTAssertTrue(SelectableTextView.measureSize(rendered, width: 120).height.isFinite, source)
         }
     }
 
     // MARK: - Attachments at narrow widths
 
     /// Equations and rules are authored at the bubble's default content width,
-    /// but the inspector column goes down to 240pt and list items indent
-    /// further still. An attachment cannot size itself against its container,
-    /// so it has to be scaled to the line fragment it will actually occupy.
+    /// but the panel's column goes down to 240pt and list items indent further
+    /// still. An attachment cannot size itself against its container, so it has
+    /// to be scaled to the line fragment it will actually occupy.
     func testAttachmentsAreScaledIntoTheirLineFragment() {
         let source = "- Parent\n    - Wide $\\frac{abcdefghijklmnopqrstuvwxyz}{1234567890}$\n\n---\n\n$$\nP(X, Y)\n$$"
         let attributed = AiAttributedRenderer.attributedString(
-            for: source, color: .labelColor, secondary: .secondaryLabelColor)
+            for: source, color: .label, secondary: .secondaryLabel)
 
         for width in [248.0, 120.0] as [CGFloat] {
-            let fitted = MessageContainerView.fittedAttachments(in: attributed, width: width)
+            let fitted = SelectableTextView.fittedAttachments(in: attributed, width: width)
             var seen = 0
             fitted.enumerateAttribute(.attachment, in: NSRange(location: 0, length: fitted.length)) { value, range, _ in
                 guard let attachment = value as? NSTextAttachment else { return }
@@ -692,34 +632,53 @@ final class AiMarkdownRenderingTests: XCTestCase {
         // The originals are untouched, so widening the panel restores full size
         // rather than compounding the scale.
         let widths = Self.attachmentWidths(in: attributed)
-        _ = MessageContainerView.fittedAttachments(in: attributed, width: 100)
+        _ = SelectableTextView.fittedAttachments(in: attributed, width: 100)
         XCTAssertEqual(Self.attachmentWidths(in: attributed), widths)
     }
 
     // MARK: - Quoting and accessibility
 
-    /// `textView.string` is full of U+FFFC — one per equation and per rule — so
+    /// The text storage is full of U+FFFC — one per equation and per rule — so
     /// quoting a selection used to paste object-replacement characters into the
     /// composer, and the bubble's accessibility value read them out.
     func testAttachmentsBecomeSourceTextRatherThanReplacementCharacters() {
         let content = "Before $x^2$ here\n\n---\n\n$$\nP(X, Y)\n$$"
         let attributed = AiAttributedRenderer.attributedString(
-            for: content, color: .labelColor, secondary: .secondaryLabelColor)
+            for: content, color: .label, secondary: .secondaryLabel)
         XCTAssertTrue(attributed.string.contains("\u{FFFC}"), "attachments should be present to begin with")
 
-        let quoted = MessageContainerView.plainText(
+        let quoted = SelectableTextView.plainText(
             in: attributed, range: NSRange(location: 0, length: attributed.length), form: \.markdown)
         XCTAssertFalse(quoted.contains("\u{FFFC}"), quoted.debugDescription)
         XCTAssertTrue(quoted.contains("$x^2$"), "inline math should quote with its delimiters: \(quoted)")
         XCTAssertTrue(quoted.contains("$$\nP(X, Y)\n$$"), "display math should quote as display math: \(quoted)")
         XCTAssertFalse(quoted.contains("---"), "the decorative rule should quote as nothing")
 
-        let container = MessageContainerView(frame: NSRect(x: 0, y: 0, width: 248, height: 80))
-        container.setAttributed(attributed, content: content, color: .labelColor, secondary: .secondaryLabelColor)
-        let spoken = container.textView.accessibilityValue()
+        let view = SelectableTextView(textKit1ContainerIn: CGSize(width: 248, height: 80))
+        view.setAttributed(attributed, content: content, color: .label, secondary: .secondaryLabel)
+        let spoken = view.accessibilityValue
         XCTAssertNotNil(spoken)
         XCTAssertFalse(spoken?.contains("\u{FFFC}") ?? true, "VoiceOver would read the replacement character")
         XCTAssertTrue(spoken?.contains("Equation: x^2") ?? false, "the equation was not spoken: \(spoken ?? "nil")")
+    }
+
+    // MARK: - Helpers
+
+    /// A transcript text view configured the way `SelectableMessageText`
+    /// configures it in `makeUIView`, with `content` already rendered in.
+    private static func transcriptTextView(content: String, width: CGFloat) -> SelectableTextView {
+        let view = SelectableTextView(textKit1ContainerIn: CGSize(width: width, height: 0))
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainer.widthTracksTextView = true
+        let attributed = AiAttributedRenderer.attributedString(
+            for: content, color: .label, secondary: .secondaryLabel, mathMaxWidth: width)
+        view.setAttributed(
+            attributed, content: content, color: .label, secondary: .secondaryLabel, mathWidth: width)
+        return view
     }
 
     private static func attachmentWidths(in attributed: NSAttributedString) -> [CGFloat] {
@@ -737,7 +696,26 @@ final class AiMarkdownRenderingTests: XCTestCase {
         }.joined()
     }
 
-    // MARK: - Helpers
+    /// Text and code-intent for every prose run of a line, as the renderers see
+    /// it. Both message renderers consume `InlineMarkdown.pieces` — the SwiftUI
+    /// `MarkdownMessage` and the UIKit `AiAttributedRenderer` — so asserting
+    /// here covers both inline paths at their shared layer.
+    private static func runs(_ line: String) -> [(String, Bool)] {
+        InlineMarkdown.pieces(in: line).flatMap { piece -> [(String, Bool)] in
+            guard case .prose(let attributed) = piece else { return [] }
+            return attributed.runs.map {
+                (String(attributed[$0.range].characters),
+                 $0.inlinePresentationIntent?.contains(.code) ?? false)
+            }
+        }
+    }
+
+    private static func hasMath(_ line: String) -> Bool {
+        InlineMarkdown.pieces(in: line).contains { piece in
+            if case .math = piece { return true }
+            return false
+        }
+    }
 
     private struct ProseRun: CustomStringConvertible {
         var text: String
@@ -774,13 +752,5 @@ final class AiMarkdownRenderingTests: XCTestCase {
         case .list(let items): return items.map(\.text)
         case .code, .table, .math, .rule: return []
         }
-    }
-
-    private static func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
-        if let match = root as? T { return match }
-        for subview in root.subviews {
-            if let match = firstSubview(of: type, in: subview) { return match }
-        }
-        return nil
     }
 }

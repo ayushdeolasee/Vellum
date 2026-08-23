@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -418,43 +419,9 @@ private struct TabOverview: View {
     }
 }
 
-enum TabPresentation {
-    static func title(for tab: PdfTab) -> String {
-        guard let document = tab.document else { return "New Tab" }
-        if let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty {
-            return title
-        }
-        return fallbackName(for: tab)
-    }
-
-    /// The name to show when a document carries no title of its own: its file
-    /// name, minus a `.pdf` extension. Lives here — nonisolated, beside the
-    /// other presentation helpers — so both the strip and the overview can use
-    /// it without hopping actors.
-    static func fallbackName(for tab: PdfTab) -> String {
-        guard let document = tab.document else { return "New Tab" }
-        let fallback = document.pdfPath
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? ""
-        if fallback.lowercased().hasSuffix(".pdf") {
-            return String(fallback.dropLast(4))
-        }
-        return fallback.isEmpty ? "Untitled" : fallback
-    }
-
-    static func typeLabel(for tab: PdfTab) -> String {
-        guard let document = tab.document else { return "New Tab" }
-        return document.kind == .web ? "Webpage" : "PDF"
-    }
-
-    static func iconName(for tab: PdfTab) -> String {
-        guard let document = tab.document else { return "plus.square" }
-        return document.kind == .web ? "globe" : "doc.text"
-    }
-}
+// `TabPresentation` used to live here. It moved OUT of this gate — to
+// `Vellum/Views/PDF/TabPresentation.swift` — because the iPad tab strip and the
+// tab overview consume it and this whole file is macOS-only (packet 4 §2.12.1).
 
 private struct MiddleClickView: NSViewRepresentable {
     let action: () -> Void
@@ -506,3 +473,4 @@ private final class MiddleClickNSView: NSView {
     // No deinit cleanup needed: viewDidMoveToWindow(window == nil) removes the
     // monitor when the tab leaves the hierarchy, before deallocation.
 }
+#endif  // os(macOS) — iPad reference; see Platform/iOS

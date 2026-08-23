@@ -30,7 +30,7 @@ struct ReadLaterSearchProvider: HomeSearchProvider {
         // Registered LAST in the provider list, so when the user already has a
         // local copy of an article (recents, saved webpages, library) the
         // local row wins the dedupe and opens offline; this row only exists
-        // for articles that live nowhere else on this Mac.
+        // for articles that live nowhere else on this iPad.
         return await source.items.map { item in
             let url = item.sourceURL.absoluteString
             let name = HomeSearchItemBuilder.host(of: url) ?? url

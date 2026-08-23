@@ -1,11 +1,18 @@
-import AppKit
+#if os(iOS)
 import SwiftUI
 
 // First-launch storage-location choice (and the shared apply/relocate runner
 // Settings reuses). The choice is explicit about the tradeoff: iCloud syncs
-// everything (offline copies AND highlights/notes/reading positions); a custom
-// folder holds only the offline copies while reading state stays local; This
-// Mac keeps the pre-existing Application Support layout.
+// offline copies, highlights, Scratchpad notes and images, AI conversations,
+// and reading positions. Local/custom modes keep class-B data device-local.
+//
+// iOS adaptation (parity plan decision #5): iCloud resolves through the app's
+// ubiquity container and is only offered when it resolves; a custom folder is
+// a security-scoped URL from `UIDocumentPickerViewController` (folder mode).
+// Picking is asynchronous here — the macOS `NSOpenPanel` was modal and returned
+// a path inline; the iPad picker delivers its URL through a callback — so the
+// custom-folder flow persists a security-scoped bookmark once the callback
+// fires, then applies the relocation.
 
 /// Applies a storage-location change: persist the preference, then move the
 /// store in the background. The pending-relocation marker makes an interrupted
@@ -44,7 +51,7 @@ enum WebStorageRelocator {
     /// Awaits its turn on the chain — the first-launch sheet can hand us a new
     /// destination while this is still queued — and awaits completion, since
     /// callers go on to walk the store this sweep is still moving.
-    static func sweepAtLaunch() async {
+    static func sweepAtLaunch(coordinator: StorageCoordinator) async {
         let isResuming = UserDefaults.standard.string(
             forKey: WebStorageSettings.pendingRelocationKey
         ) != nil
@@ -60,7 +67,9 @@ enum WebStorageRelocator {
         // newer move is still running, and would read the *new* request's
         // pending marker as "the previous location is still unavailable".
         let generation = relocationGeneration
-        await enqueue { WebStorageMigrator.sweepAtLaunch() }.value
+        await enqueue {
+            await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
+        }.value
         if isResuming, generation == relocationGeneration {
             if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
                 status = Status(message: "Interrupted storage move recovered successfully.")
@@ -74,14 +83,19 @@ enum WebStorageRelocator {
         }
     }
 
-    static func apply(mode: WebStorageMode, customPath: String? = nil) {
+    static func apply(
+        mode: WebStorageMode,
+        customPath: String? = nil,
+        customBookmark: Data? = nil,
+        coordinator: StorageCoordinator
+    ) {
         let previous = WebStorageSettings.chosenMode ?? .local
         let previousCustomPath = UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
         let sourceReachable = previous == .local || WebStorageSettings.root(for: previous) != nil
 
         WebStorageMigrator.recordPendingRelocation(mode: previous, customPath: previousCustomPath)
-        WebStorageSettings.setMode(mode, customPath: customPath)
+        WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
@@ -103,11 +117,34 @@ enum WebStorageRelocator {
                 message: "The previous location is unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
             )
             NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+            enqueue {
+                _ = await coordinator.performExclusiveStorageOperation(
+                    reconfigureAfter: true) { false }
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .vellumStorageModeChanged, object: nil)
+                }
+            }
             return
         }
 
         enqueue {
-            guard WebStorageMigrator.relocate(from: source, to: destination) else {
+            let moved = await coordinator.performExclusiveStorageRelocation(
+                from: source,
+                to: destination,
+                reconfigureAfter: true
+            ) { sourceContext, destinationContext in
+                guard let sourceContext, let destinationContext else { return false }
+                return await WebStorageMigrator.relocate(
+                    from: source,
+                    to: destination,
+                    sourceStore: sourceContext.fileStore,
+                    destinationStore: destinationContext.fileStore)
+            }
+            await MainActor.run {
+                NotificationCenter.default.post(name: .vellumStorageModeChanged, object: nil)
+            }
+            guard moved else {
                 await MainActor.run {
                     guard generation == relocationGeneration else { return }
                     status = Status(
@@ -128,21 +165,33 @@ enum WebStorageRelocator {
         }
     }
 
-    /// Folder picker for the custom mode; returns the chosen path or nil.
-    static func pickCustomFolder() -> String? {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "Vellum will keep offline copies of your web pages in this folder."
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url.path
+    /// Folder picker for the custom mode. Presents the iPad document picker in
+    /// folder mode; on a pick it mints a security-scoped bookmark for the chosen
+    /// URL, persists it, and applies the relocation. `then` runs after a
+    /// successful apply (dismiss the sheet / refresh Settings); cancel is a
+    /// no-op, leaving the mode unchanged.
+    static func chooseCustomFolder(
+        coordinator: StorageCoordinator,
+        then: @escaping () -> Void
+    ) {
+        DocumentPickerCoordinator_iOS.shared.presentFolderPicker { url in
+            // A picked folder is delivered security-scoped; access it while we
+            // mint the bookmark that lets us re-open it in future sessions.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? url.bookmarkData() else { return }
+            apply(
+                mode: .custom,
+                customPath: url.path,
+                customBookmark: data,
+                coordinator: coordinator)
+            then()
+        }
     }
 }
 
 extension Notification.Name {
+    static let vellumStorageModeChanged = Notification.Name("vellumStorageModeChanged")
     static let vellumStorageRelocationChanged = Notification.Name("vellumStorageRelocationChanged")
 }
 
@@ -151,15 +200,23 @@ extension Notification.Name {
 struct StorageLocationChoiceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
+    @Environment(WorkspaceStore.self) private var workspace
 
     private var icloudAvailable: Bool { WebStorageSettings.icloudVellumRoot != nil }
+
+    /// "iPhone" / "iPad". This sheet is the first thing a new install shows and
+    /// it is the one screen whose whole subject is *where your files live*, so
+    /// naming the wrong device here is worse than cosmetic. One binary serves
+    /// both families (#153 D6), so it asks the idiom oracle rather than
+    /// hard-coding "iPad" the way it did before.
+    private var device: String { ShellIdiom_iOS.current.deviceName }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where should Vellum keep your library?")
                     .font(.title2.weight(.semibold))
-                Text("Vellum stores offline copies of web pages, plus your highlights, notes, and reading positions. You can change this anytime in Settings ▸ Storage.")
+                Text(StorageLocationCopy.introduction(on: device))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -169,13 +226,15 @@ struct StorageLocationChoiceSheet: View {
                 title: "Use iCloud Drive",
                 badge: icloudAvailable ? "Recommended" : nil,
                 systemImage: "icloud",
-                description: icloudAvailable
-                    ? "Everything — offline copies, highlights, notes, AI conversations, and reading positions — lives in iCloud Drive ▸ Vellum and syncs across your Macs."
-                    : "iCloud Drive isn't available on this Mac. Sign in to iCloud and enable iCloud Drive to use this option.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .icloud,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: !icloudAvailable,
                 identifier: "storageChoice.icloud"
             ) {
-                WebStorageRelocator.apply(mode: .icloud)
+                WebStorageRelocator.apply(
+                    mode: .icloud, coordinator: workspace.storageCoordinator)
                 dismiss()
             }
 
@@ -183,29 +242,39 @@ struct StorageLocationChoiceSheet: View {
                 title: "Choose a Folder…",
                 badge: nil,
                 systemImage: "folder",
-                description: "Offline copies go in a folder you pick. Your highlights, notes, AI conversations, and reading positions stay on this Mac and won't sync.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .custom,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: false,
                 identifier: "storageChoice.custom"
             ) {
-                guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                WebStorageRelocator.apply(mode: .custom, customPath: path)
-                dismiss()
+                // Async: the picker's callback applies the change and dismisses.
+                WebStorageRelocator.chooseCustomFolder(
+                    coordinator: workspace.storageCoordinator) { dismiss() }
             }
 
             choiceCard(
-                title: "Keep on This Mac",
+                title: "Keep on This \(device)",
                 badge: nil,
                 systemImage: "internaldrive",
-                description: "Everything stays in Vellum's private app folder. No syncing.",
+                description: StorageLocationCopy.choiceDescription(
+                    for: .local,
+                    iCloudAvailable: icloudAvailable,
+                    deviceName: device),
                 disabled: false,
                 identifier: "storageChoice.local"
             ) {
-                WebStorageRelocator.apply(mode: .local)
+                WebStorageRelocator.apply(
+                    mode: .local, coordinator: workspace.storageCoordinator)
                 dismiss()
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(maxWidth: 520)
+        // The first choice is required — a swipe-dismiss would leave the app in
+        // its no-mode-chosen state and just re-present the sheet next launch.
+        .interactiveDismissDisabled()
         // .contain keeps each option button its own AX element with its own
         // identifier — without it the container id shadows all three buttons
         // (same gotcha as the Storage rows in SettingsView).
@@ -260,3 +329,4 @@ struct StorageLocationChoiceSheet: View {
         .accessibilityIdentifier(identifier)
     }
 }
+#endif

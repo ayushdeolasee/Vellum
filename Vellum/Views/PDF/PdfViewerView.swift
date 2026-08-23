@@ -1,3 +1,4 @@
+#if os(macOS)
 import PDFKit
 import SwiftUI
 
@@ -280,3 +281,4 @@ struct PdfViewerView: View {
     }
 
 }
+#endif

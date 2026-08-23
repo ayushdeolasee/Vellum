@@ -1,11 +1,8 @@
 name: Vellum
-configs:
-  Debug: debug
-  Release: release
-  UITesting: debug
 options:
   bundleIdPrefix: com.vellum
   deploymentTarget:
+    iOS: "26.0"
     macOS: "26.0"
   createIntermediateGroups: true
 packages:
@@ -16,81 +13,32 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: minimal
-    MACOSX_DEPLOYMENT_TARGET: "26.0"
-    # Ad-hoc signing ("-") mints a fresh, anonymous code identity on every
-    # build. macOS TCC keys its Documents/Desktop/Downloads access grants to
-    # that identity, so every rebuild looked like a brand-new app and
-    # re-prompted for folder access. Signing with a real Apple Development
-    # identity + team keeps the identity stable across rebuilds so TCC's
-    # grant sticks. Team 9DCG97VASG (ayush.deolasee@icloud.com) matches the
-    # identity already used by the other Vellum worktrees (ipad-app,
-    # apple-pencil-on-webpages) and other active local projects — swap
-    # DEVELOPMENT_TEAM to PXY5MW3W8Q (pypdeveloper@deolasee.org) if you'd
-    # rather sign with that identity instead.
-    CODE_SIGN_IDENTITY: "Apple Development"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: 9DCG97VASG
     DEAD_CODE_STRIPPING: "YES"
+    TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
 schemes:
-  # The default scheme's test action stays exactly what it was: the hosted unit
-  # suite, in Debug. XCUITests launch and drive the real app, which is far too
-  # slow (and far too intrusive on a developer's desktop) to run on every
-  # `xcodebuild test -scheme Vellum`, so they live in their own scheme below.
   Vellum:
     build:
       targets:
         Vellum: all
+        VellumShare: all
+        VellumWidgets: all
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - VellumTests
-  VellumUITests:
+  Vellum Mac:
     build:
       targets:
-        Vellum: all
-        VellumUITests: [test]
+        VellumMac: all
     run:
-      config: UITesting
-    test:
-      config: UITesting
-      targets:
-        - VellumUITests
+      config: Debug
 targets:
-  VellumUITests:
-    type: bundle.ui-testing
-    platform: macOS
-    sources:
-      - path: UITests
-    dependencies:
-      - target: Vellum
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.uitests
-        GENERATE_INFOPLIST_FILE: "YES"
-        TEST_TARGET_NAME: Vellum
-  VellumTests:
-    type: bundle.unit-test
-    platform: macOS
-    sources:
-      - path: Tests
-        excludes:
-          - Integrations/Fixtures
-      - path: Tests/Integrations/Fixtures
-        type: folder
-        buildPhase: resources
-    dependencies:
-      - target: Vellum
-    settings:
-      base:
-        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
-        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
-        PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.tests
-        GENERATE_INFOPLIST_FILE: "YES"
-        BUNDLE_LOADER: $(TEST_HOST)
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum
-  Vellum:
+  VellumMac:
     type: application
     platform: macOS
     sources:
@@ -99,19 +47,129 @@ targets:
       - package: SwiftMath
     settings:
       base:
-        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
-        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
+        PRODUCT_NAME: Vellum
         PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: "YES"
         ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
-      configs:
-        UITesting:
-          # UserDefaults is keyed by bundle identifier. A dedicated identity
-          # makes `--ui-test-reset-state` incapable of touching real Vellum
-          # preferences while the tests still exercise the production app.
-          PRODUCT_BUNDLE_IDENTIFIER: com.vellum.app.uitesting
+  VellumTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+        excludes:
+          # Bundled below as a folder reference instead of being compiled:
+          # `Tests/Integrations/TestSupport/FixtureLoader.swift` resolves the
+          # JSON fixtures out of the test bundle at runtime, so the
+          # Raindrop/Readwise subdirectory layout has to survive into it.
+          - Integrations/Fixtures
+      - path: Tests/Integrations/Fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Vellum
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Vellum
+        BUNDLE_LOADER: $(TEST_HOST)
+  Vellum:
+    type: application
+    platform: iOS
+    sources:
+      - path: Vellum
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/Info-iOS.plist"
+          # Bundled below as a folder reference so the CodeMirror/KaTeX editor
+          # keeps its directory layout (editor.html's relative `katex.min.css`
+          # and the css's `fonts/*.woff2` only resolve if `katex/` and its
+          # `fonts/` subfolder survive into the app bundle).
+          - "Resources/katex"
+      - path: Vellum/Resources/katex
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: SwiftMath
+      - target: VellumShare
+        embed: true
+      - target: VellumWidgets
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: Vellum/Resources/Info-iOS.plist
+        # App Groups are supported by the free/Personal team and are the only
+        # capability the Safari extension needs. The iCloud entitlement
+        # (Vellum/Vellum-iOS.entitlements) remains intentionally unwired: the
+        # free team cannot provision it. Merge the iCloud keys into this file
+        # only after moving to a paid Apple Developer account.
+        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-AppGroup.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: "NO"
+        SUPPORTS_MACCATALYST: "NO"
+  VellumShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: VellumShare
+        excludes:
+          - "Info.plist"
+          - "VellumShare.entitlements"
+      # Keep the extension's link surface deliberately tiny. In particular it
+      # cannot see WebKit, WebFetch, WebArchive, or any iCloud storage type.
+      - path: Vellum/Services/Capture/CaptureRecord.swift
+      - path: Vellum/Services/Capture/CaptureRecordBuilder.swift
+      - path: Vellum/Services/Capture/CaptureInboxLayout.swift
+      - path: Vellum/Services/Capture/CaptureInboxWriter.swift
+      - path: Vellum/Services/Capture/CaptureBackgroundSession.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.share
+        PRODUCT_NAME: VellumShare
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: VellumShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: VellumShare/VellumShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+        SUPPORTS_MACCATALYST: "NO"
+  VellumWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: VellumWidgets
+        excludes:
+          - "Info.plist"
+          - "VellumWidgets.entitlements"
+      # The extension receives only the compact App Group projection and its
+      # opaque route parser. It cannot link any library, iCloud, or provider
+      # implementation.
+      - path: Vellum/Services/Widgets/VellumWidgetSnapshot.swift
+      - path: Vellum/Services/Widgets/VellumWidgetSnapshotStore.swift
+      - path: Vellum/Services/Widgets/VellumDeepLink.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.widgets
+        PRODUCT_NAME: VellumWidgets
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: VellumWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: VellumWidgets/VellumWidgets.entitlements
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+        SUPPORTS_MACCATALYST: "NO"

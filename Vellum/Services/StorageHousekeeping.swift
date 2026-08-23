@@ -43,25 +43,43 @@ enum StorageHousekeeping {
     /// `listSnapshotStorage` asks iCloud to re-download evicted records as a
     /// side effect). Only "Run Cleanup Now" shows the number, so the launch
     /// sweep leaves it off and gets 0.
+    /// `readLater` is the read-later retention sweep (#157). It runs BEFORE the
+    /// TTL gate below and is unaffected by it: the fourteen-day window on
+    /// prefetched read-later content is a fixed contract, not the
+    /// user-configurable month count that governs derived web/text artifacts, so
+    /// a "Never" retention setting must not switch it off. `openDocumentPaths`
+    /// is what keeps an item currently open in a tab off the chopping block.
     @discardableResult
     static func runCleanup(
         openPdfKeys: Set<String>,
         openWebUrls: Set<String>,
-        measuringReclaimedBytes: Bool = false
+        measuringReclaimedBytes: Bool = false,
+        openDocumentPaths: Set<String> = [],
+        readLater: (any ReadLaterRetentionSweeping)? = nil,
+        now: Date = .now,
+        webLastOpened: (@Sendable (String) async -> Date?)? = nil,
+        webStorage: WebLibraryStorage = WebLibraryStorage()
     ) async -> Int64 {
-        guard let cutoff = evictionCutoff() else { return 0 }
-        let before = measuringReclaimedBytes ? await derivedByteTotal() : 0
+        if let readLater {
+            _ = await readLater.sweepExpiredOfflineCopies(
+                now: now, openDocumentPaths: openDocumentPaths.union(openWebUrls))
+        }
+        guard let cutoff = evictionCutoff(now: now) else { return 0 }
+        let before = measuringReclaimedBytes ? await derivedByteTotal(webStorage: webStorage) : 0
         await PageTextCache.shared.evictStale(olderThan: cutoff, excludingKeys: openPdfKeys)
-        WebLibrary.evictStaleUnsavedSnapshots(olderThan: cutoff, excludingUrls: openWebUrls)
+        await webStorage.evictStaleUnsavedSnapshots(
+            olderThan: cutoff,
+            excludingUrls: openWebUrls,
+            lastOpened: webLastOpened)
         guard measuringReclaimedBytes else { return 0 }
-        let after = await derivedByteTotal()
+        let after = await derivedByteTotal(webStorage: webStorage)
         return max(0, before - after)
     }
 
     /// Total on-disk size of the two evictable stores (class C data).
-    private static func derivedByteTotal() async -> Int64 {
+    private static func derivedByteTotal(webStorage: WebLibraryStorage) async -> Int64 {
         let cache = await PageTextCache.shared.listEntries().reduce(Int64(0)) { $0 + $1.byteSize }
-        let web = WebLibrary.listSnapshotStorage().reduce(Int64(0)) { $0 + $1.byteSize }
+        let web = await webStorage.listSnapshotStorage().reduce(Int64(0)) { $0 + $1.byteSize }
         return cache + web
     }
 }

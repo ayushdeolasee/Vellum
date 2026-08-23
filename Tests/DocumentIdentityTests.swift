@@ -1,6 +1,7 @@
 import XCTest
 import PDFKit
 import CoreGraphics
+import CoreText
 import CryptoKit
 @testable import Vellum
 
@@ -8,6 +9,14 @@ import CryptoKit
 // Services/Pdf/*). Verifies the lazy stamp piggybacks a mutation, that
 // ensureDocumentId is idempotent and degrades gracefully on unwritable files,
 // and that DocumentIdentity.storageKey matches the path-hash convention.
+//
+// iPad port note (parity-129 packet 1 §4): the mutation writes serialize through
+// `PdfFileGate` here, not macOS's per-document `PdfDocumentIO` actor. The gate is
+// a different serialization mechanism with the same contract, so the assertions
+// are unchanged — what is being pinned is that concurrent writers of one file
+// converge on ONE /VellumDocId, which the process-wide `PdfDocIdRegistry`
+// guarantees on both platforms. `PdfSessionCacheKeys` is iPad-only state that the
+// open path registers, so it is reset alongside the registry.
 @MainActor
 final class DocumentIdentityTests: XCTestCase {
     private var tempDir: URL!
@@ -19,11 +28,13 @@ final class DocumentIdentityTests: XCTestCase {
             .appendingPathComponent("vellum-docid-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         PdfDocIdRegistry.reset()
+        PdfSessionCacheKeys.reset()
     }
 
     override func tearDown() async throws {
         retainedDocuments.removeAll()
         PdfDocIdRegistry.reset()
+        PdfSessionCacheKeys.reset()
         if let tempDir {
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -109,6 +120,11 @@ final class DocumentIdentityTests: XCTestCase {
 
     /// ensureDocumentId returns the same id every call and rewrites the file
     /// exactly once (the stamp), including across a fresh session.
+    ///
+    /// iPad: the second call short-circuits on the session's cached
+    /// `resolvedDocId`, and the fresh session's on `info.docId` read at open (with
+    /// `PdfDocIdRegistry.knownStamp` behind both). The mtime/size comparison is
+    /// what pins that none of those paths rewrites the file.
     func testEnsureDocumentIdIdempotentAndWritesOnce() async throws {
         let path = makeTestPdf(name: "ensure-idem")
         let session = try await openSession(path)
@@ -158,10 +174,13 @@ final class DocumentIdentityTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: session.path)), fileData, "file bytes unchanged")
     }
 
-    /// Two independent PdfDocumentIO actors opening the SAME file (the split-pane
-    /// case) must converge on ONE /VellumDocId: the process-wide registry hands
-    /// both stampers the same pending UUID, so their first mutations agree even
-    /// when neither stamp has hit disk yet. The id then round-trips on reopen.
+    /// Two independent sessions opening the SAME file (the split-pane case) must
+    /// converge on ONE /VellumDocId: the process-wide registry hands both stampers
+    /// the same pending UUID, so their first mutations agree even when neither
+    /// stamp has hit disk yet. The id then round-trips on reopen.
+    ///
+    /// iPad: the two writes serialize through the shared `PdfFileGate` instead of
+    /// racing two per-document IO actors. Same contract, same assertions.
     func testSplitPaneStampsConvergeOnOneDocId() async throws {
         let path = makeTestPdf(name: "split-converge")
         // Two sessions on the same canonical path (as two panes would hold).
@@ -170,7 +189,7 @@ final class DocumentIdentityTests: XCTestCase {
         XCTAssertNil(a.info.docId)
         XCTAssertNil(b.info.docId)
 
-        // Both stamp on their first mutation. The IO actor serializes the writes,
+        // Both stamp on their first mutation. `PdfFileGate` serializes the writes,
         // but the ids are drawn from the shared registry, so they must match.
         _ = try await a.createAnnotation(highlight())
         _ = try await b.createAnnotation(highlight(72, 300))

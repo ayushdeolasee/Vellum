@@ -12,8 +12,6 @@ enum AiModelCatalog {
         "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
         "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
     ]
-    /// Slugs valid on the ChatGPT-subscription Codex backend.
-    static let chatgpt = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
     /// Models on the OpenCode **Zen** gateway: proprietary flagships plus the
     /// open-weight and free models Zen also hosts. See `opencodeGo` for the
     /// separate Go gateway.
@@ -72,7 +70,7 @@ enum AiModelCatalog {
         case .openrouter: catalog?.model(for: model)?.supportsVision ?? true
         case .opencode, .opencodeGo: opencodeSupportsVision(model)
         // Every model in these built-in catalogs is multimodal.
-        case .gemini, .openai, .chatgpt: true
+        case .gemini, .openai: true
         }
     }
 
@@ -80,7 +78,6 @@ enum AiModelCatalog {
         switch provider {
         case .gemini: gemini
         case .openai: openAI
-        case .chatgpt: chatgpt
         case .opencode: opencode
         case .opencodeGo: opencodeGo
         case .openrouter: []
@@ -121,7 +118,84 @@ enum AiModelCatalog {
     }
 }
 
-/// Model-row content used by the global Settings window's AI tab.
+struct AiSettingsPanel: View {
+    @Environment(AiStore.self) private var aiStore
+    @Environment(OpenRouterCatalog.self) private var openRouterCatalog
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            field("Provider") {
+                Picker("", selection: aiStore.providerBinding) {
+                    ForEach(AiProviderOption.all) { option in
+                        Text(option.label).tag(option.provider)
+                    }
+                }
+                .labelsHidden()
+            }
+
+            field(aiStore.keyFieldLabel) {
+                RevealableSecureField(
+                    accessibilityLabel: aiStore.keyFieldLabel,
+                    placeholder: aiStore.keyFieldPlaceholder,
+                    text: aiStore.apiKeyBinding
+                )
+                    .id(aiStore.settings.provider)
+            }
+
+            field("Model") {
+                AiModelSelectorField()
+                capabilityWarnings
+            }
+
+            field("Thinking") {
+                Picker("", selection: aiStore.reasoningBinding) {
+                    ForEach(AiThinkingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .labelsHidden()
+            }
+        }
+        .font(.system(size: 12))
+        .padding(12)
+        .background(palette.surfaceMuted)
+        .overlay(alignment: .bottom) { Rectangle().fill(palette.border).frame(height: 1) }
+    }
+
+    private func field<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).foregroundStyle(palette.mutedForeground)
+            content().frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var capabilityWarnings: some View {
+        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
+            if !option.supportsVision {
+                warning(AiCapabilityWarning.noVision)
+            }
+            if !option.supportsTools {
+                warning(AiCapabilityWarning.noTools)
+            }
+        }
+    }
+
+    private func warning(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+            Text(text)
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(palette.gold)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Shared model-row content embedded by both AI settings hosts (the in-panel
+/// `AiSettingsPanel` and the Settings window's `AiSettingsTab`). Each host wraps
+/// it in its own label container so the surrounding layout stays distinct.
 struct AiModelSelectorField: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
@@ -137,13 +211,15 @@ struct AiModelSelectorField: View {
     }
 }
 
-/// Capability-warning strings used by the global AI settings tab.
+/// Capability-warning strings shared by both hosts so the copy never drifts.
+/// Each host renders them with its own styling (custom HStack vs `Label`).
 enum AiCapabilityWarning {
     static let noVision = "This model can't see the page image — answers about page contents may be less accurate."
     static let noTools = "This model can't run navigation, highlight, or note actions."
 }
 
-/// Provider options used by the global AI settings tab.
+/// The provider list shared by both AI settings hosts so the picker never
+/// drifts between the in-panel view and the Settings window.
 struct AiProviderOption: Identifiable {
     let provider: AiProvider
     let label: String
@@ -153,52 +229,9 @@ struct AiProviderOption: Identifiable {
         .init(provider: .gemini, label: "Gemini"),
         .init(provider: .openai, label: "OpenAI API"),
         .init(provider: .openrouter, label: "OpenRouter"),
-        .init(provider: .chatgpt, label: "ChatGPT (Codex)"),
         .init(provider: .opencode, label: "OpenCode Zen"),
         .init(provider: .opencodeGo, label: "OpenCode Go"),
     ]
-}
-
-/// Sign-in / signed-in / sign-out control for the ChatGPT-subscription OAuth
-/// provider in global Settings.
-struct ChatGPTSignInControl: View {
-    @Environment(ChatGPTAuth.self) private var auth
-    @Environment(\.palette) private var palette
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if auth.isSignedIn {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                    Text(auth.accountLabel ?? "Signed in").lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Button("Sign out") { auth.signOut() }
-                        .buttonStyle(.borderless)
-                }
-            } else {
-                Button {
-                    error = nil
-                    Task {
-                        do { try await auth.signIn() }
-                        catch { self.error = error.localizedDescription }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        if auth.isAuthorizing { ProgressView().controlSize(.small) }
-                        Text(auth.isAuthorizing ? "Waiting for browser…" : "Sign in with ChatGPT")
-                    }
-                }
-                .disabled(auth.isAuthorizing)
-            }
-            if let error {
-                Text(error)
-                    .font(.system(size: 10))
-                    .foregroundStyle(palette.gold)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
 }
 
 // MARK: - Shared AI settings plumbing
@@ -247,7 +280,6 @@ extension AiStore {
                 case .gemini: self.settings.model
                 case .openai: self.settings.openaiModel
                 case .openrouter: self.settings.openrouterModel
-                case .chatgpt: self.settings.chatgptModel
                 case .opencode: self.settings.opencodeModel
                 case .opencodeGo: self.settings.opencodeGoModel
                 }
@@ -258,7 +290,6 @@ extension AiStore {
                 case .gemini: settings.model = value
                 case .openai: settings.openaiModel = value
                 case .openrouter: settings.openrouterModel = value
-                case .chatgpt: settings.chatgptModel = value
                 case .opencode: settings.opencodeModel = value
                 case .opencodeGo: settings.opencodeGoModel = value
                 }

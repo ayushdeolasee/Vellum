@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 // Overlay positioning glue over PDFView page coordinates: places per-page
@@ -269,3 +270,4 @@ struct PdfContextMenuView: View {
         .fixedSize()
     }
 }
+#endif

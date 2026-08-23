@@ -44,21 +44,21 @@ final class AnnotationStore {
     private(set) var annotations: [Annotation] = []
     private(set) var isLoading = false
     private(set) var selectedAnnotationId: String?
-    /// Bumped on every non-nil selectAnnotation. The web viewer scrolls on this
-    /// (not on selectedAnnotationId): re-selecting the already-selected
-    /// annotation from the sidebar must still scroll to it, and the id alone
-    /// doesn't change then, so an onChange keyed to it never fires.
+
+    /// Bumped on every *non-nil* `selectAnnotation` (not on
+    /// `selectedAnnotationId`): re-selecting the already-selected annotation
+    /// (e.g. tapping the same sidebar highlight twice) leaves the id unchanged,
+    /// so viewers observe this counter to re-run the scroll-into-view.
     private(set) var selectionRequestCount = 0
 
     /// Registered by the web viewer to capture the current reading position
     /// for a point bookmark (window.__captureWebPosition in the original).
     var captureWebPositionHandler: (() async -> CapturedWebPosition?)?
 
-    /// In-flight optimistic creates keyed by annotation id. update/delete await
-    /// the matching create so the backend record exists before they run — an
-    /// immediate edit/delete after "add note" would otherwise race the create
-    /// and hit a spurious "not found" that reverts the user's change.
-    private var pendingCreates: [String: Task<Void, Never>] = [:]
+    /// Stable-id optimistic rows can be edited immediately, before their first
+    /// full-file write finishes. Mutations await that write before touching the
+    /// backend, while their UI update still happens synchronously.
+    @ObservationIgnored private var pendingCreates: [String: Task<Bool, Never>] = [:]
 
     init(app: AppStore) {
         self.app = app
@@ -91,14 +91,14 @@ final class AnnotationStore {
     func addHighlight(_ input: CreateAnnotationInput) async -> Annotation? {
         var input = input
         input.type = .highlight
-        return create(input, label: "highlight")
+        return await create(input, label: "highlight")
     }
 
     @discardableResult
     func addNote(_ input: CreateAnnotationInput) async -> Annotation? {
         var input = input
         input.type = .note
-        return create(input, label: "note")
+        return await create(input, label: "note")
     }
 
     @discardableResult
@@ -110,7 +110,7 @@ final class AnnotationStore {
             content: nil,
             positionData: positionData
         )
-        return create(input, label: "bookmark")
+        return await create(input, label: "bookmark")
     }
 
     /// Add or remove the bookmark at the current reading position.
@@ -148,8 +148,7 @@ final class AnnotationStore {
 
     func updateAnnotation(_ input: UpdateAnnotationInput) async {
         guard let sessionId = app.activeTabId else { return }
-        // The backend persists the client-assigned id, so update waits for a
-        // matching optimistic create rather than trying to mutate a temp id.
+        let pendingCreate = pendingCreates[input.id]
         // Optimistic update
         annotations = Annotation.sortedForDisplay(annotations.map { annotation in
             guard annotation.id == input.id else { return annotation }
@@ -162,9 +161,7 @@ final class AnnotationStore {
             next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
             return next
         })
-        // Ensure a still-pending optimistic create for this id has landed in the
-        // backend before we try to update it, or the update races to "not found".
-        await awaitPendingCreate(input.id)
+        if let pendingCreate, !(await pendingCreate.value) { return }
         guard app.activeTabId == sessionId else { return }
         do {
             let updated = try await sessions.updateAnnotation(sessionId: sessionId, input: input)
@@ -182,15 +179,16 @@ final class AnnotationStore {
 
     func deleteAnnotation(id: String) async {
         guard let sessionId = app.activeTabId else { return }
+        let pendingCreate = pendingCreates[id]
         // Optimistic delete
-        let previous = annotations
+        let removedIndex = annotations.firstIndex { $0.id == id }
+        let removed = removedIndex.map { annotations[$0] }
+        let wasSelected = selectedAnnotationId == id
         annotations = annotations.filter { $0.id != id }
-        if selectedAnnotationId == id {
+        if wasSelected {
             selectedAnnotationId = nil
         }
-        // Ensure a still-pending optimistic create for this id has landed before
-        // we try to delete it, or the delete races to "not found" and reverts.
-        await awaitPendingCreate(id)
+        if let pendingCreate, !(await pendingCreate.value) { return }
         guard app.activeTabId == sessionId else { return }
         do {
             let deleted = try await sessions.deleteAnnotation(sessionId: sessionId, id: id)
@@ -199,16 +197,23 @@ final class AnnotationStore {
             }
         } catch {
             NSLog("[annotation-store] Failed to delete annotation: \(error)")
-            // Revert on failure
-            if app.activeTabId == sessionId {
-                annotations = previous
+            // Item-scoped rollback: replacing the whole list can clobber an
+            // unrelated create/update that completed while deletion awaited I/O.
+            if app.activeTabId == sessionId,
+               let removed,
+               !annotations.contains(where: { $0.id == id }) {
+                annotations.insert(removed, at: min(removedIndex ?? 0, annotations.count))
+                if wasSelected { selectedAnnotationId = id }
             }
         }
     }
 
-    func selectAnnotation(_ id: String?) {
+    /// Select an annotation in shared UI state. Sidebar-driven selection asks
+    /// the viewer to navigate to the annotation; selection originating inside
+    /// the viewer is already on screen and must not move the viewport again.
+    func selectAnnotation(_ id: String?, scrollIntoView: Bool = true) {
         selectedAnnotationId = id
-        if id != nil { selectionRequestCount &+= 1 }
+        if id != nil, scrollIntoView { selectionRequestCount &+= 1 }
     }
 
     func clearAnnotations() {
@@ -220,70 +225,83 @@ final class AnnotationStore {
         annotations.filter { $0.pageNumber == pageNumber }
     }
 
-    /// Optimistic create: render the annotation immediately under a
-    /// client-assigned id, then persist in the background. Persisting a single
-    /// annotation re-serializes the whole PDF (seconds on a large document), so
-    /// waiting for it before showing the note is what made "add note" feel like
-    /// a multi-second hang. The backend writes under the SAME id, so an
-    /// immediate drag/edit targets the right record; a failed write rolls the
-    /// optimistic annotation back.
-    private func create(_ input: CreateAnnotationInput, label: String) -> Annotation? {
+    private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
-        let id = input.id ?? UUID().uuidString.lowercased()
-        var persistInput = input
-        persistInput.id = id
 
-        let now = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+        // Optimistic create: render the annotation immediately with a stable,
+        // caller-supplied id/timestamp, then persist in the background. Embedding
+        // an annotation is a full read-modify-write of the whole PDF (seconds on
+        // a textbook, off the main thread), so awaiting it before the note/
+        // highlight appeared made the tool look frozen for the whole write.
+        var input = input
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = PdfDates.rfc3339Now()
+        input.id = id
+        input.createdAt = now
         let optimistic = Annotation(
             id: id,
             type: input.type,
             pageNumber: input.pageNumber,
-            color: input.color ?? defaultColor(for: input.type),
+            color: input.color ?? resolvedDefaultColor(for: input.type),
             content: input.content,
             positionData: input.positionData,
             createdAt: now,
             updatedAt: now)
         annotations.append(optimistic)
 
-        let task = Task {
-            defer { pendingCreates[id] = nil }
+        // Persist in the background and return the optimistic record NOW, so the
+        // caller can open the note editor / reset the tool immediately instead of
+        // waiting out the whole-file rewrite.
+        let task = Task { [weak self] () -> Bool in
+            guard let self else { return false }
+            defer { self.pendingCreates[id] = nil }
             do {
-                _ = try await sessions.createAnnotation(sessionId: sessionId, input: persistInput)
+                let saved = try await self.sessions.createAnnotation(
+                    sessionId: sessionId, input: input)
                 // The create just lazily stamped /VellumDocId (first mutation on
                 // an unstamped PDF); surface the resolved id into the in-memory
                 // document so class-B stores can key off it this session.
-                if app.activeTabId == sessionId {
-                    await app.syncDocumentId(sessionId: sessionId)
+                if self.app.activeTabId == sessionId {
+                    await self.app.syncDocumentId(sessionId: sessionId)
                 }
+                guard self.app.activeTabId == sessionId else { return true }
+                // Reconcile in place (same id, so the SwiftUI row/editor is
+                // preserved) with authoritative defaults, without clobbering a
+                // color, text, resize, or web-page move made while I/O awaited.
+                if let index = self.annotations.firstIndex(where: { $0.id == id }) {
+                    let current = self.annotations[index]
+                    var reconciled = saved
+                    if current.color != optimistic.color { reconciled.color = current.color }
+                    if current.content != optimistic.content { reconciled.content = current.content }
+                    if current.positionData != optimistic.positionData {
+                        reconciled.positionData = current.positionData
+                    }
+                    if current.pageNumber != optimistic.pageNumber {
+                        reconciled.pageNumber = current.pageNumber
+                    }
+                    self.annotations[index] = reconciled
+                }
+                return true
             } catch {
                 NSLog("[annotation-store] Failed to create \(label): \(error)")
-                // Roll back the optimistic insert if the write failed and we're
-                // still on the same document.
-                if app.activeTabId == sessionId {
-                    annotations.removeAll { $0.id == id }
-                    if selectedAnnotationId == id { selectedAnnotationId = nil }
+                // Roll back the optimistic insert.
+                if self.app.activeTabId == sessionId {
+                    self.annotations.removeAll { $0.id == id }
+                    if self.selectedAnnotationId == id { self.selectedAnnotationId = nil }
                 }
+                return false
             }
         }
         pendingCreates[id] = task
         return optimistic
     }
 
-    /// Wait for an optimistic create for `id` to finish persisting (no-op if
-    /// none is in flight), so follow-up mutations see the backend record.
-    private func awaitPendingCreate(_ id: String) async {
-        await pendingCreates[id]?.value
-    }
-
-    /// Default render color for a freshly created annotation, matching the
-    /// backend's own defaults so the optimistic copy looks identical to the
-    /// persisted one (notes carry a fixed amber; highlights use the user's
-    /// configured default; bookmarks have no color).
-    private func defaultColor(for type: AnnotationType) -> String? {
+    /// The default color the backend would assign when the caller passes none,
+    /// so the optimistic record matches what persistence writes.
+    private func resolvedDefaultColor(for type: AnnotationType) -> String? {
         switch type {
         case .highlight: return WorkspaceStore.storedDefaultHighlightColor()
-        case .note: return "#fde68a"
-        case .bookmark: return nil
+        case .note, .bookmark: return nil
         }
     }
 }

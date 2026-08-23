@@ -120,6 +120,11 @@ final class HomeSearchStore {
     private(set) var sections: [HomeSearchResultSection] = []
     /// `sections` flattened in display order — the list arrow keys walk.
     private(set) var visibleItems: [HomeSearchItem] = []
+    /// The complete local corpus, before query/filter/sort. The phone's
+    /// Continue Reading section joins cross-device position keys against this
+    /// snapshot so changing the search field cannot make a resumable document
+    /// temporarily unresolvable.
+    private(set) var corpusItems: [HomeSearchItem] = []
     /// True until the first corpus load finishes, so the view can hold off the
     /// empty state instead of flashing "nothing here" on the way in.
     private(set) var isLoading = true
@@ -130,6 +135,7 @@ final class HomeSearchStore {
     private(set) var failures: [String] = []
 
     private let engine: HomeSearchEngine
+    private let webLibraryStorage: WebLibraryStorage
     /// The read-later corpus the engine's provider snapshots. Owned here so
     /// the welcome screen has one seam (`updateReadLater`) between
     /// `IntegrationsStore` and search.
@@ -140,11 +146,15 @@ final class HomeSearchStore {
 
     /// Passing an engine (tests) skips the read-later provider; the default
     /// wires it in last, so a local copy of an article wins the dedupe.
-    init(engine: HomeSearchEngine? = nil) {
+    init(
+        engine: HomeSearchEngine? = nil,
+        storage: WebLibraryStorage = WebLibraryStorage()
+    ) {
         let source = ReadLaterSearchSource()
         readLaterSource = source
+        webLibraryStorage = storage
         self.engine = engine ?? HomeSearchEngine(
-            providers: HomeSearchEngine.defaultProviders()
+            providers: HomeSearchEngine.defaultProviders(storage: storage)
                 + [ReadLaterSearchProvider(source: source)])
     }
 
@@ -203,8 +213,9 @@ final class HomeSearchStore {
     func load() async {
         isLoading = true
         await engine.reload()
+        corpusItems = await engine.corpus
         failures = await engine.failures
-        libraryIsEmpty = await engine.corpus.isEmpty
+        libraryIsEmpty = corpusItems.isEmpty
         isLoading = false
         await refresh()
     }
@@ -316,10 +327,18 @@ final class HomeSearchStore {
     /// confirms first — see `HomeSearchRemoval.requiresConfirmation`.
     func removeFromSaved(_ item: HomeSearchItem) async {
         let url = item.target.openKey
-        // Blocking disk work — same off-main hop `WebSessionBackend` uses.
-        await Task.detached(priority: .userInitiated) {
-            try? WebLibrary.removeSaved(rawUrl: url)
-        }.value
+        guard let normalized = try? WebUrl.normalize(url) else { return }
+        let key = WebLibrary.pageKey(normalized)
+        do {
+            try await webLibraryStorage.mutateRecord(url: normalized, key: key) { record in
+                record.saved = false
+                record.savedAt = nil
+            }
+            await webLibraryStorage.removeLocalSnapshots(forKey: key)
+        } catch {
+            // Keep the offline copy when the synced record cannot be read: it
+            // may contain newer annotations and must not be treated as absent.
+        }
         if selectedId == item.id { selectedId = nil }
         await load()
     }
@@ -358,9 +377,8 @@ final class HomeSearchStore {
         // `apply` reports whether any store accepted the write. Discarded on
         // purpose: the reload below shows whatever actually landed, so there is
         // nothing to tell the user that the refreshed row doesn't already say.
-        _ = await Task.detached(priority: .userInitiated) {
-            DocumentRenameService.apply(target, title: title)
-        }.value
+        _ = await DocumentRenameService.apply(
+            target, title: title, storage: webLibraryStorage)
         await load()
     }
 

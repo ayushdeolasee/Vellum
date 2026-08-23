@@ -81,7 +81,7 @@ struct StickyNoteOverlay: View {
                 .font(.system(size: 12))
                 .foregroundStyle(dark ? Amber.a400 : Amber.a600)
             if let content {
-                Text(MarkdownParser.plainPreview(content))
+                Text(content)
                     .font(.system(size: 12))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -111,8 +111,10 @@ struct StickyNoteOverlay: View {
         )
         .scaleEffect(pillHovering ? 1.05 : 1)
         .onHover { pillHovering = $0 }
-        .help(content.map(MarkdownParser.plainPreview) ?? "Empty note - click to edit, drag to move")
+        .help(content ?? "Empty note - click to edit, drag to move")
+        #if os(macOS)
         .pointerStyle(isDragging ? .grabActive : .grabIdle)
+        #endif
         .gesture(noteDragGesture(onClick: {
             if !isSelected {
                 annotationStore.selectAnnotation(annotation.id)
@@ -158,7 +160,9 @@ struct StickyNoteOverlay: View {
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
+            #if os(macOS)
             .pointerStyle(isDragging ? .grabActive : .grabIdle)
+            #endif
             .gesture(noteDragGesture(onClick: nil))
 
             HStack(spacing: 2) {
@@ -205,7 +209,9 @@ struct StickyNoteOverlay: View {
                             escapeFromEditor()
                             return .handled
                         }
+                        #if os(macOS)
                         .onExitCommand { escapeFromEditor() }
+                        #endif
                     if editText.isEmpty {
                         Text("Type your note...")
                             .font(.system(size: 14))
@@ -232,9 +238,8 @@ struct StickyNoteOverlay: View {
             } else {
                 Group {
                     if let content {
-                        // Notes render the same Markdown + LaTeX as AI replies
-                        // (the AI's addNote and "Add as note" write markdown).
-                        MarkdownMessage(content: content, textColor: dark ? Amber.a100 : Amber.a900)
+                        Text(content)
+                            .font(.system(size: 14))
                             .foregroundStyle(dark ? Amber.a100 : Amber.a900)
                     } else {
                         Text("Click to add note...")
@@ -245,7 +250,9 @@ struct StickyNoteOverlay: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
                 .contentShape(Rectangle())
+                #if os(macOS)
                 .pointerStyle(.horizontalText)
+                #endif
                 .onTapGesture { startEditing() }
             }
         }

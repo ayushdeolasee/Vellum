@@ -9,6 +9,19 @@ import Testing
 // interesting failures are all "some of them agreed". Every store here is
 // redirected to a temp directory or a scratch `UserDefaults` suite, so nothing
 // touches the real library or the real recents list.
+//
+// THE OTHER HALF OF THE CONTRACT, and the one worth stating out loud: a rename
+// changes the document's TITLE and nothing else. It never renames, moves or
+// rewrites the file on disk. Vellum does not own the user's files — a Finder
+// alias, a citation manager, a cloud sync or a link in someone's notes almost
+// certainly points at the real name — and renaming the file would also
+// invalidate the app's own bookkeeping at once, since recents keys on
+// `pdfPath`, `meta.json` records `last_known_path`, and an unstamped PDF's
+// storage key is the sha256 OF ITS PATH. `renameLeavesTheFileOnDiskAlone`
+// below is the guard for that, and it is iPad-native: main has no equivalent,
+// because on iOS the consequences are worse (a `UIDocumentPicker` URL's access
+// does not survive relaunch, so a path that stops resolving is unrecoverable
+// rather than merely annoying).
 
 /// Redirects `DocumentDataStore` and `WebLibrary` at throwaway storage for the
 /// life of one test, and puts them back after. A `class` with a `deinit`
@@ -259,6 +272,51 @@ struct DocumentRenamePersistenceTests {
 
         #expect(DocumentRenameService.apply(target, title: "Renamed"))
         #expect(RecentFilesService.getRecent().first?.title == "Renamed")
+    }
+
+    /// iPad-native (no counterpart in main's suite). The service's whole design
+    /// note is "the title is a label Vellum maintains on top of the file"; this
+    /// is the assertion that says so. It renames a real PDF that is present in
+    /// every store the service writes to — metadata, recents — and then checks
+    /// the file itself: same path, same name, same bytes, and no sibling file
+    /// wearing the new title.
+    @Test("A rename relabels the document and leaves the file on disk alone")
+    func renameLeavesTheFileOnDiskAlone() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vellum-rename-ondisk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("attention-is-all-you-need.pdf")
+        let bytes = Data("%PDF-1.7\n% not a real pdf, and it does not need to be\n".utf8)
+        try bytes.write(to: url)
+
+        let key = "0f0f0f0f"
+        try DocumentDataStore.touch(
+            document: DocumentInfo(
+                kind: .pdf, pdfPath: url.path, title: nil, pageCount: 1, docId: key),
+            force: true)
+        stores.seedRecents([recent(path: url.path, title: nil, docId: key)])
+
+        let target = DocumentRenameService.Target(
+            kind: .pdf, locator: url.path, recordedPath: url.path, storageKey: key)
+        #expect(DocumentRenameService.apply(target, title: "Transformers"))
+
+        // The label moved…
+        #expect(DocumentDataStore.loadMeta(forKey: key)?.title == "Transformers")
+        #expect(RecentFilesService.getRecent().first?.title == "Transformers")
+
+        // …and the file did not.
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                == ["attention-is-all-you-need.pdf"])
+        // The locator every store keys on still resolves, which is the failure
+        // mode renaming the file would have caused.
+        #expect(DocumentDataStore.loadMeta(forKey: key)?.lastKnownPath == url.path)
+        #expect(RecentFilesService.getRecent().first?.pdfPath == url.path)
     }
 
     @Test("A rename with nothing at all to write reports that it wrote nothing")

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -547,3 +548,4 @@ private struct WindowAccessor: NSViewRepresentable {
         DispatchQueue.main.async { [weak nsView] in onWindow(nsView?.window) }
     }
 }
+#endif

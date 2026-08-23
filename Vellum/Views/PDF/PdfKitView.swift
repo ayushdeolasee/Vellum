@@ -1,3 +1,4 @@
+#if os(macOS)
 import PDFKit
 import SwiftUI
 
@@ -398,3 +399,4 @@ struct PdfKitView: NSViewRepresentable {
         }
     }
 }
+#endif

@@ -4,6 +4,27 @@ import PDFKit
 import XCTest
 @testable import Vellum
 
+/// Document-level actions that outlive the gesture that started them: a close's
+/// backend teardown, and the rename that hangs off the same #113 work.
+///
+/// PORT NOTE (parity #129, packet 4 §2.14 / packet 9 Stage 4). main's copy of
+/// this suite is eight tests. Five of them exercise `AppStore.savePdfAs`, which
+/// iPad does not have and is not getting under §2.14 — Save As on macOS is an
+/// `NSSavePanel` that RETARGETS the live tab to a new file, and the iPad's
+/// document actions are "Export a Copy…" (a share sheet that leaves the tab
+/// alone) and Rename (a title override that never touches the file). §2.14
+/// names `AppStore.renameDocument(tabId:title:)` as the iPad's "Save As state"
+/// for exactly that reason, so the Save As group is replaced by the rename
+/// group below rather than dropped silently.
+///
+/// A sixth, `testWebActionIdentityRejectsSameSessionAfterNavigation`, needs
+/// `AppStore.WebDocumentActionIdentity` / `activeWebDocumentActionIdentity()` /
+/// `isCurrentWebDocument(_:)`. Those are not in §2.14's scope and have no owner
+/// on iPad yet (packet 1 §2.17 lists them as belonging to another packet); the
+/// test comes back with them.
+///
+/// The two teardown-race tests are the ones §2.14 exists for and are ported as
+/// they stand.
 @MainActor
 final class DocumentActionsTests: XCTestCase {
     private var tempDirectory: URL!
@@ -23,208 +44,7 @@ final class DocumentActionsTests: XCTestCase {
         }
     }
 
-    func testSaveAsRetargetsExistingTabWithoutLosingWorkspaceState() async throws {
-        let source = tempDirectory.appendingPathComponent("Original.pdf")
-        makePDF(at: source, pages: 3)
-        let destination = tempDirectory.appendingPathComponent("Retargeted.pdf")
-
-        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
-        let originalPane = workspace.focusedPane
-        await originalPane.app.openFile(path: source.path)
-        let originalTabId = try XCTUnwrap(originalPane.app.activeTabId)
-        originalPane.app.setCurrentPage(2)
-        originalPane.app.setZoom(1.7)
-        originalPane.app.setMode(.note)
-        workspace.sidebarOpen = true
-        workspace.sidebarTab = .ai
-
-        // Keep this tab in a split so the test also guards its pane placement.
-        workspace.splitFocused(.horizontal)
-        XCTAssertNotNil(workspace.root.leaf(id: originalPane.id))
-
-        let rebound = try await originalPane.app.savePdfAs(
-            tabId: originalTabId, destination: destination)
-
-        XCTAssertEqual(
-            URL(fileURLWithPath: rebound.pdfPath).lastPathComponent,
-            destination.lastPathComponent)
-        XCTAssertEqual(originalPane.app.activeTabId, originalTabId)
-        XCTAssertEqual(originalPane.app.tabs.count, 1)
-        XCTAssertEqual(originalPane.app.tabs[0].id, originalTabId)
-        XCTAssertEqual(originalPane.app.tabs[0].document?.pdfPath, rebound.pdfPath)
-        XCTAssertEqual(originalPane.app.currentPage, 2)
-        XCTAssertEqual(originalPane.app.zoom, 1.7, accuracy: 0.001)
-        XCTAssertEqual(originalPane.app.mode, .note)
-        XCTAssertNotNil(workspace.root.leaf(id: originalPane.id))
-        XCTAssertEqual(workspace.root.allLeaves().count, 2)
-        XCTAssertTrue(workspace.sidebarOpen)
-        XCTAssertEqual(workspace.sidebarTab, .ai)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
-
-        // Save As stamps and copies the stable id, which is what keeps
-        // document-scoped conversation/scratchpad identity continuous.
-        let sourceId = try XCTUnwrap(PdfMetadata.documentId(atPath: source.path))
-        let destinationId = try XCTUnwrap(PdfMetadata.documentId(atPath: destination.path))
-        XCTAssertEqual(destinationId, sourceId)
-        XCTAssertEqual(rebound.docId, sourceId)
-    }
-
-    /// Retargeting keeps the tab live (issue #52 residency): the host stays
-    /// mounted and `isActive` never changes, so the tab's runtime has to drop
-    /// the document it parsed from the old location and bump the generation the
-    /// viewer's load task keys on. Without this the viewer goes on rendering the
-    /// file the user just saved *away* from.
-    func testSaveAsInvalidatesLiveTabRuntimeSoTheMountedViewerReloads() async throws {
-        let source = tempDirectory.appendingPathComponent("Live.pdf")
-        makePDF(at: source, pages: 2)
-        let destination = tempDirectory.appendingPathComponent("Live Copy.pdf")
-
-        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
-        let pane = workspace.focusedPane
-        await pane.app.openFile(path: source.path)
-        let tabId = try XCTUnwrap(pane.app.activeTabId)
-
-        // Stand in for the mounted viewer having parsed the old location.
-        let runtime = workspace.liveTabRuntime(for: tabId)
-        let parsed = try XCTUnwrap(PDFDocument(url: source))
-        runtime.adoptPreparedPdf(parsed, byteCount: 4096)
-        runtime.pdfLoadState = .loaded(parsed)
-        let generationBefore = runtime.documentGeneration
-
-        _ = try await pane.app.savePdfAs(tabId: tabId, destination: destination)
-
-        XCTAssertNil(runtime.preparedDocument)
-        XCTAssertGreaterThan(runtime.documentGeneration, generationBefore)
-        guard case .idle = runtime.pdfLoadState else {
-            return XCTFail("a retargeted tab must reload instead of keeping the old document")
-        }
-    }
-
-    func testSaveAsToSamePathIsANoOp() async throws {
-        let source = tempDirectory.appendingPathComponent("Same.pdf")
-        makePDF(at: source, pages: 1)
-        let app = AppStore(sessions: DocumentSessionManager())
-        await app.openFile(path: source.path)
-        let tabId = try XCTUnwrap(app.activeTabId)
-        let original = try XCTUnwrap(app.document)
-
-        let result = try await app.savePdfAs(tabId: tabId, destination: source)
-
-        XCTAssertEqual(result, original)
-        XCTAssertEqual(app.activeTabId, tabId)
-        XCTAssertEqual(app.tabs.count, 1)
-        XCTAssertNil(app.document?.docId, "a no-op must not stamp or rewrite the PDF")
-        XCTAssertNil(PdfMetadata.documentId(atPath: source.path))
-    }
-
-    func testSaveAsStampsReadOnlySourceFallbackIdentityIntoWritableCopy() async throws {
-        let lockedDirectory = tempDirectory.appendingPathComponent("read-only", isDirectory: true)
-        try FileManager.default.createDirectory(at: lockedDirectory, withIntermediateDirectories: true)
-        let source = lockedDirectory.appendingPathComponent("Original.pdf")
-        makePDF(at: source, pages: 1)
-        let sourceBytes = try Data(contentsOf: source)
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedDirectory.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDirectory.path) }
-        let destination = tempDirectory.appendingPathComponent("Writable Copy.pdf")
-
-        let app = AppStore(sessions: DocumentSessionManager())
-        await app.openFile(path: source.path)
-        let tabId = try XCTUnwrap(app.activeTabId)
-
-        let rebound = try await app.savePdfAs(tabId: tabId, destination: destination)
-
-        let fallback = DocumentIdentity.byteHash(sourceBytes)
-        XCTAssertEqual(PdfMetadata.documentId(atPath: source.path), nil)
-        XCTAssertEqual(PdfMetadata.documentId(atPath: destination.path), fallback)
-        XCTAssertEqual(rebound.docId, fallback)
-    }
-
-    func testSaveAsRefusesDestinationAlreadyOpenInAnotherPane() async throws {
-        let source = tempDirectory.appendingPathComponent("Source.pdf")
-        let destination = tempDirectory.appendingPathComponent("Open Elsewhere.pdf")
-        makePDF(at: source, pages: 1)
-        makePDF(at: destination, pages: 1)
-
-        let workspace = WorkspaceStore(sessions: DocumentSessionManager())
-        let sourcePane = workspace.focusedPane
-        await sourcePane.app.openFile(path: source.path)
-        let sourceTab = try XCTUnwrap(sourcePane.app.activeTabId)
-        workspace.splitFocused(.horizontal)
-        await workspace.focusedPane.app.openFile(path: destination.path)
-
-        do {
-            _ = try await sourcePane.app.savePdfAs(tabId: sourceTab, destination: destination)
-            XCTFail("Save As must not retarget onto another open tab")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("already open"))
-        }
-        XCTAssertEqual(Self.normalized(sourcePane.app.document?.pdfPath), Self.normalized(source.path))
-        XCTAssertEqual(
-            Self.normalized(workspace.focusedPane.app.document?.pdfPath),
-            Self.normalized(destination.path))
-    }
-
-    func testSaveAsRollbackFailureClosesLastTabAndRetainsHomeError() async throws {
-        let source = tempDirectory.appendingPathComponent("Original.pdf")
-        let destination = tempDirectory.appendingPathComponent("Copy.pdf")
-        makePDF(at: source, pages: 1)
-
-        let sessions = StubSessionService()
-        let sourceInfo = DocumentInfo(
-            kind: .pdf, pdfPath: source.path, title: nil, pageCount: 1, lastPage: nil)
-        var sourceOpenCount = 0
-        sessions.openFileHandler = { path, _ in
-            if path == source.path {
-                sourceOpenCount += 1
-                if sourceOpenCount == 1 { return sourceInfo }
-                throw SessionServiceError.io("injected rollback failure")
-            }
-            XCTAssertEqual(path, destination.path)
-            throw SessionServiceError.io("injected destination reopen failure")
-        }
-        sessions.pdfBytes = try Data(contentsOf: source)
-        sessions.documentId = "test-save-as-id"
-
-        let app = AppStore(sessions: sessions)
-        await app.openFile(path: source.path)
-        let tabId = try XCTUnwrap(app.activeTabId)
-
-        do {
-            _ = try await app.savePdfAs(tabId: tabId, destination: destination)
-            XCTFail("the injected destination and rollback failures must escape")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("tab was closed"))
-        }
-
-        XCTAssertTrue(app.tabs.isEmpty)
-        XCTAssertNil(app.document)
-        XCTAssertTrue(app.error?.contains("tab was closed") == true)
-    }
-
-    /// A Keep Offline task must reject an in-tab navigation even though the
-    /// session id is deliberately retained. The toolbar re-checks this exact
-    /// identity after every await before succeeding or rolling back.
-    func testWebActionIdentityRejectsSameSessionAfterNavigation() async throws {
-        let firstURL = "https://example.com/first"
-        let secondURL = "https://example.com/second"
-        let sessions = StubSessionService()
-        sessions.openWebDocumentHandler = { url, _ in
-            DocumentInfo(
-                kind: .web, pdfPath: url, title: nil, pageCount: 1,
-                lastPage: nil, docId: "web-\(url)")
-        }
-
-        let app = AppStore(sessions: sessions)
-        await app.openUrl(firstURL)
-        let identity = try XCTUnwrap(app.activeWebDocumentActionIdentity())
-
-        _ = await app.webNavigated(tabId: identity.sessionId, url: secondURL)
-
-        XCTAssertEqual(app.activeTabId, identity.sessionId)
-        XCTAssertEqual(app.document?.pdfPath, secondURL)
-        XCTAssertFalse(app.isCurrentWebDocument(identity))
-    }
+    // MARK: - Close teardowns (#113)
 
     /// The reopen-races-teardown guard must work ACROSS panes. Teardowns are
     /// registered workspace-wide: a close in one pane — here one that also
@@ -268,11 +88,15 @@ final class DocumentActionsTests: XCTestCase {
             "the reopen must observe the teardown's last_page write, not pre-teardown bytes")
     }
 
-    /// ⌘Q right after a close that collapsed its pane: the quit path used to
-    /// drain teardowns per leaf, and a collapsed pane has no leaf left to ask —
-    /// its pending write was silently abandoned. The registry outlives the pane
-    /// and the quit path drains it directly.
-    func testQuitDrainCoversTeardownWhosePaneCollapsed() async throws {
+    /// Backgrounding right after a close that collapsed its pane: the flush path
+    /// used to drain teardowns per leaf, and a collapsed pane has no leaf left
+    /// to ask — its pending write was silently abandoned. The registry outlives
+    /// the pane and `flushOnBackground` drains it directly.
+    ///
+    /// (main names this `testQuitDrainCoversTeardownWhosePaneCollapsed`, after
+    /// `applicationShouldTerminate`. iOS has no quit; the scene-background flush
+    /// is the equivalent last chance, and drains the same registry.)
+    func testBackgroundDrainCoversTeardownWhosePaneCollapsed() async throws {
         let file = tempDirectory.appendingPathComponent("Collapsing.pdf")
         makePDF(at: file, pages: 5)
 
@@ -303,6 +127,86 @@ final class DocumentActionsTests: XCTestCase {
         try await gate.inner.closeFile(sessionId: "verify-last-page")
     }
 
+    /// A start tab has no backend session, so closing one must not register a
+    /// teardown — the metadata/close round trips would fire against a session
+    /// id that never existed, and an entry that nothing finishes would stall
+    /// the background drain forever.
+    func testClosingAStartTabRegistersNoTeardown() async throws {
+        let gate = GatedMetadataSessionService()
+        let workspace = WorkspaceStore(sessions: gate)
+        let pane = workspace.focusedPane
+        pane.app.newStartTab()
+        let tabId = try XCTUnwrap(pane.app.activeTabId)
+
+        await pane.app.closeTab(tabId)
+
+        XCTAssertTrue(workspace.tabTeardowns.isEmpty)
+    }
+
+    // MARK: - Rename (#82) — the iPad's "Save As state", see the port note
+
+    func testRenamingAnOpenTabUpdatesTheTabAndTheActiveProjection() async throws {
+        let file = tempDirectory.appendingPathComponent("Original.pdf")
+        makePDF(at: file, pages: 2)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: file.path)
+        let tabId = try XCTUnwrap(app.activeTabId)
+
+        await app.renameDocument(tabId: tabId, title: "  Chapter Four  ")
+
+        XCTAssertEqual(app.document?.title, "Chapter Four", "the title is trimmed before it is stored")
+        XCTAssertEqual(app.tabs.first(where: { $0.id == tabId })?.document?.title, "Chapter Four")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: file.path),
+            "a rename is a label; the file on disk keeps its own name")
+        XCTAssertEqual(
+            URL(fileURLWithPath: try XCTUnwrap(app.document?.pdfPath)).lastPathComponent,
+            "Original.pdf")
+    }
+
+    /// Blank means "stop overriding", not "the title is the empty string" — the
+    /// row falls back to the filename, which is what it showed before anyone
+    /// renamed it. This is what the sheet's "Use original name" button does.
+    func testRenamingToBlankClearsTheOverrideInsteadOfStoringAnEmptyTitle() async throws {
+        let file = tempDirectory.appendingPathComponent("Named.pdf")
+        makePDF(at: file, pages: 1)
+
+        let app = AppStore(sessions: DocumentSessionManager())
+        await app.openFile(path: file.path)
+        let tabId = try XCTUnwrap(app.activeTabId)
+        await app.renameDocument(tabId: tabId, title: "Something")
+        XCTAssertEqual(app.document?.title, "Something")
+
+        await app.renameDocument(tabId: tabId, title: "   ")
+
+        XCTAssertNil(app.document?.title)
+        XCTAssertNil(app.tabs.first(where: { $0.id == tabId })?.document?.title)
+    }
+
+    /// A rename aimed at a tab that closed while the sheet was open — or at a
+    /// start tab, which has no document to name — is dropped rather than
+    /// mis-filed onto whatever is active.
+    func testRenamingATabWithNoDocumentIsANoOp() async throws {
+        let app = AppStore(sessions: DocumentSessionManager())
+        app.newStartTab()
+        let startTabId = try XCTUnwrap(app.activeTabId)
+
+        await app.renameDocument(tabId: startTabId, title: "Ignored")
+        await app.renameDocument(tabId: "no-such-tab", title: "Ignored")
+
+        XCTAssertNil(app.document)
+        XCTAssertNil(app.tabs.first(where: { $0.id == startTabId })?.document)
+    }
+
+    func testRenameNormalizationIsWhatDropsTheOverride() {
+        XCTAssertEqual(DocumentRenameService.normalized("  Paper  "), "Paper")
+        XCTAssertNil(DocumentRenameService.normalized(""))
+        XCTAssertNil(DocumentRenameService.normalized("   \n "))
+    }
+
+    // MARK: - Helpers
+
     /// The session backend reports the filesystem's own path (/private/var/…)
     /// while `FileManager.temporaryDirectory` hands back the /var symlink form,
     /// and Foundation's standardization maps the former onto the latter. Compare
@@ -329,63 +233,6 @@ final class DocumentActionsTests: XCTestCase {
         }
         context.closePDF()
     }
-}
-
-/// Session-service seam for document-action failure paths. The production
-/// manager is deliberately concrete; this lets the tests inject a reopen or
-/// rollback failure without weakening its runtime behavior.
-@MainActor
-private final class StubSessionService: SessionService {
-    var openFileHandler: ((String, String) throws -> DocumentInfo)?
-    var openWebDocumentHandler: ((String, String) throws -> DocumentInfo)?
-    var pdfBytes = Data()
-    var documentId = "stub-document-id"
-
-    func openFile(path: String, sessionId: String) async throws -> DocumentInfo {
-        guard let openFileHandler else {
-            throw SessionServiceError.io("unexpected openFile for \(path)")
-        }
-        return try openFileHandler(path, sessionId)
-    }
-
-    func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo {
-        guard let openWebDocumentHandler else {
-            throw SessionServiceError.io("unexpected openWebDocument for \(url)")
-        }
-        return try openWebDocumentHandler(url, sessionId)
-    }
-
-    func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo {
-        throw SessionServiceError.io("unexpected openVellumwebFile for \(path)")
-    }
-
-    func saveFile(sessionId: String) async throws {}
-    func closeFile(sessionId: String) async throws {}
-    func readPdfBytes(sessionId: String) async throws -> Data { pdfBytes }
-
-    func setWebpageSaved(sessionId: String, saved: Bool) async throws {}
-    func getWebpageSaved(sessionId: String) async throws -> Bool { false }
-    func listSavedWebpages() async throws -> [WebLibraryEntry] { [] }
-    func removeSavedWebpage(url: String) async throws {}
-    func exportVellumweb(
-        sessionId: String, destPath: String, pages: [WebPageText]
-    ) async throws -> VellumwebExportSummary {
-        throw SessionServiceError.io("unexpected exportVellumweb")
-    }
-    func archiveWebpageDefault(
-        sessionId: String, pages: [WebPageText], expectedUrl: String
-    ) async throws -> Bool {
-        throw SessionServiceError.io("unexpected archiveWebpageDefault")
-    }
-
-    func getAnnotations(sessionId: String, pageNumber: Int?) async throws -> [Annotation] { [] }
-    func createAnnotation(sessionId: String, input: CreateAnnotationInput) async throws -> Annotation {
-        throw SessionServiceError.io("unexpected createAnnotation")
-    }
-    func updateAnnotation(sessionId: String, input: UpdateAnnotationInput) async throws -> Bool { false }
-    func deleteAnnotation(sessionId: String, id: String) async throws -> Bool { false }
-    func setDocumentMetadata(sessionId: String, key: String, value: String) async throws {}
-    func ensureDocumentId(sessionId: String) async throws -> String { documentId }
 }
 
 /// The real session manager with one seam: `holdNextMetadataWrite()` parks the

@@ -9,12 +9,25 @@ import SwiftUI
 /// Which end of a highlight a drag handle controls.
 enum HighlightEdge { case start, end }
 
+/// Platform viewer contract used by the shared highlight overlay. The iPad
+/// controller supplies touch resizing; the Mac viewer can opt in independently.
+@MainActor
+protocol HighlightResizeControlling: AnyObject {
+    var highlightResize: (id: String, positionData: PositionData)? { get }
+
+    func previewHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint)
+    func commitHighlightResize(
+        annotation: Annotation, edge: HighlightEdge, toDisplayPoint displayPoint: CGPoint)
+    func cancelHighlightResize()
+}
+
 struct HighlightLayer: View {
     var annotations: [Annotation]
     var zoom: Double
     /// Nil in the web viewer (no PDF page geometry to resize against); when
     /// present, selected highlights grow draggable blue end bars.
-    var controller: PdfViewerController? = nil
+    var controller: (any HighlightResizeControlling)? = nil
 
     @Environment(AnnotationStore.self) private var annotationStore
 
@@ -110,13 +123,15 @@ private struct HighlightResizeHandle: View {
     /// at zoom 1 in page-top-left coordinates.
     let rect: AnnotationRect
     let zoom: Double
-    let controller: PdfViewerController
+    let controller: any HighlightResizeControlling
 
     /// Bar geometry in screen points (kept constant across zoom so the handle
     /// stays grabbable). Position/height still scale with zoom.
     private let barWidth: CGFloat = 3
-    private let knobSize: CGFloat = 11
-    private let hitPadding: CGFloat = 12
+    private let knobSize: CGFloat = 14
+    /// Keep the visible handle compact while meeting iPad's 44-point minimum
+    /// touch target. On macOS this still gives a forgiving mouse target.
+    private let minimumHitSize: CGFloat = 44
 
     private var barHeight: CGFloat { rect.height * zoom }
 
@@ -143,9 +158,16 @@ private struct HighlightResizeHandle: View {
                 .frame(width: knobSize, height: knobSize)
                 .offset(y: edge == .start ? -barHeight / 2 : barHeight / 2)
         }
-        .frame(width: knobSize + hitPadding, height: max(barHeight, knobSize) + knobSize + hitPadding)
+        .frame(
+            width: minimumHitSize,
+            height: max(minimumHitSize, max(barHeight, knobSize) + knobSize))
         .contentShape(Rectangle())
+#if os(macOS)
         .pointerStyle(.grabActive)
+#endif
+        .accessibilityLabel(edge == .start ? "Resize highlight start" : "Resize highlight end")
+        .accessibilityHint("Drag to change the highlighted text")
+        .accessibilityAddTraits(.allowsDirectInteraction)
         .position(x: barCenterX, y: barTopY + barHeight / 2)
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .named(HighlightLayer.coordinateSpaceName))

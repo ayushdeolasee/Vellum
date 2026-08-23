@@ -1,8 +1,18 @@
-import AppKit
 import Foundation
 import Observation
 import PDFKit
+#if os(macOS)
+import AppKit
 import UniformTypeIdentifiers
+#endif
+
+private func resolveExistingDocumentPath(_ path: String) -> String? {
+    #if os(iOS)
+    DocumentImport.resolveExistingPath(path)
+    #else
+    FileManager.default.fileExists(atPath: path) ? path : nil
+    #endif
+}
 
 // Tab + viewport state — port of src/stores/pdf-store.ts plus the shell-level
 // sidebar state from App.tsx. Action semantics mirror the zustand store 1:1.
@@ -30,6 +40,7 @@ final class TabTeardownRegistry {
     /// doing the rewriting.
     private struct Entry {
         let documentPath: String
+        let documentKey: DocumentKey?
         let task: Task<Void, Never>
     }
 
@@ -38,8 +49,11 @@ final class TabTeardownRegistry {
     /// True when no teardown is pending.
     var isEmpty: Bool { entries.isEmpty }
 
-    func register(tabId: String, documentPath: String, task: Task<Void, Never>) {
-        entries[tabId] = Entry(documentPath: documentPath, task: task)
+    func register(tabId: String, document: DocumentInfo, task: Task<Void, Never>) {
+        entries[tabId] = Entry(
+            documentPath: document.pdfPath,
+            documentKey: DocumentPositionService.key(for: document),
+            task: task)
     }
 
     /// Called by each teardown task as its last step.
@@ -47,9 +61,11 @@ final class TabTeardownRegistry {
         entries[tabId] = nil
     }
 
-    /// Await every pending teardown. `applicationShouldTerminate` drains this
-    /// so quitting right after closing a tab still persists its reading
-    /// position — including a tab whose close collapsed its pane.
+    /// Await every pending teardown. The scene-background flush drains this so
+    /// suspending right after closing a tab still persists its reading
+    /// position — including a tab whose close collapsed its pane. (macOS drains
+    /// the same registry from `applicationShouldTerminate`; iOS has no quit, so
+    /// `flushOnBackground` is the equivalent last chance.)
     func awaitAll() async {
         for entry in Array(entries.values) {
             await entry.task.value
@@ -78,6 +94,17 @@ final class TabTeardownRegistry {
             await entry.task.value
         }
     }
+
+    /// Await a teardown by stable document key, used by direct web opens where
+    /// there is no filesystem path to compare. This keeps a close's final
+    /// key-level lifecycle event from landing after a fresh open of the same URL.
+    func awaitTeardowns(forDocumentKey key: DocumentKey) async {
+        guard !entries.isEmpty else { return }
+        let pending = entries.values.filter { $0.documentKey == key }
+        for entry in pending {
+            await entry.task.value
+        }
+    }
 }
 
 @MainActor
@@ -94,10 +121,10 @@ final class AppStore {
     // There used to be a three-entry LRU of parsed `PDFDocument`s here, because
     // switching tabs tore down and rebuilt the viewer. Tabs now keep their whole
     // viewer mounted, and the parsed document lives on the tab's
-    // `LiveTabRuntime` (issue #52). Keeping a second copy here would be actively
-    // harmful: evicting a runtime under memory pressure would free the view but
-    // leave the document alive in the LRU, so the memory the eviction existed to
-    // reclaim would not actually come back. One owner, one lifetime.
+    // `LiveTabRuntime`. Keeping a second copy here would be actively harmful:
+    // evicting a runtime under memory pressure would free the view but leave the
+    // document alive in the LRU, so the memory the eviction existed to reclaim
+    // would not actually come back. One owner, one lifetime.
 
     // Tab state
     private(set) var tabs: [PdfTab] = []
@@ -137,7 +164,8 @@ final class AppStore {
 
     /// Where the active tab's `.snapshotRegion` drag sends its crop. Both the
     /// AI panel and scratchpad arm the same capture mode; `PdfTab` retains the
-    /// value when the user changes tabs mid-gesture.
+    /// value when the user changes tabs mid-gesture. The enum itself is now
+    /// top-level (`Models.swift`) because `PdfTab` carries it.
     private(set) var regionCaptureTarget: RegionCaptureTarget = .ai
 
     /// The window's workspace. One AppStore now backs one *pane*; app-global
@@ -145,14 +173,6 @@ final class AppStore {
     /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
     /// workspace owns the pane which owns this store.
     weak var workspace: WorkspaceStore?
-
-    /// The full identity for an asynchronous webpage action. A tab id by
-    /// itself is not enough: in-page navigation deliberately reuses it while
-    /// rebinding the tab to a different URL.
-    struct WebDocumentActionIdentity: Equatable, Sendable {
-        let sessionId: String
-        let url: String
-    }
 
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
@@ -180,100 +200,71 @@ final class AppStore {
     /// pane's store (see `TabTeardownRegistry`); standalone stores (tests) get
     /// a private one.
     private let teardowns: TabTeardownRegistry
+    private let documentAccess: DocumentAccessResolver
+    private let capturedUnreadLedger: CapturedUnreadLedger
+    @ObservationIgnored private var pendingPositionRecords: [String: PendingPositionRecord] = [:]
+    @ObservationIgnored private var positionRecordTask: Task<Void, Never>?
 
-    init(sessions: SessionService, teardowns: TabTeardownRegistry = TabTeardownRegistry()) {
+    private struct PendingPositionRecord {
+        var document: DocumentInfo
+        var position: ReadingPosition
+    }
+
+    init(
+        sessions: SessionService,
+        teardowns: TabTeardownRegistry = TabTeardownRegistry(),
+        documentAccess: DocumentAccessResolver = .live,
+        capturedUnreadLedger: CapturedUnreadLedger = .shared
+    ) {
         self.sessions = sessions
         self.teardowns = teardowns
+        self.documentAccess = documentAccess
+        self.capturedUnreadLedger = capturedUnreadLedger
     }
 
     // MARK: - Opening documents
-    //
-    // `isLoading` disables EVERY open affordance on the home screen (Open a
-    // PDF…, search results, recents, the URL field). An open that never
-    // finished therefore used to lock the user out of opening anything at all,
-    // for the rest of the session, with nothing on screen explaining why. The
-    // helpers below make that impossible: an attempt owns the flag for a
-    // bounded time, and whatever happens the flag comes back.
-
-    /// How long an open may hold the home screen's loading state before the UI
-    /// is released and the delay surfaced. The work itself is NOT cancelled —
-    /// a slow volume that answers late still opens its document normally.
-    private static let openLoadingCeiling: Duration = .seconds(20)
-
-    /// Identifies the open attempt that currently owns `isLoading`, so a stale
-    /// attempt finishing late cannot clear a newer one's loading state.
-    private var openGeneration = 0
-    private var openWatchdog: Task<Void, Never>?
-
-    /// Take ownership of the loading state for one open attempt.
-    private func beginOpen() -> Int {
-        openGeneration += 1
-        let generation = openGeneration
-        isLoading = true
-        error = nil
-        openWatchdog?.cancel()
-        openWatchdog = Task { [weak self] in
-            try? await Task.sleep(for: Self.openLoadingCeiling)
-            guard !Task.isCancelled else { return }
-            self?.endOpen(
-                generation,
-                error: "Opening is taking longer than expected — the file may be on a slow or "
-                    + "disconnected volume. It will open if it becomes available.")
-        }
-        return generation
-    }
-
-    /// Release the loading state, if this attempt still owns it. Safe to call
-    /// more than once and from either the work or the watchdog.
-    private func endOpen(_ generation: Int, error message: String? = nil) {
-        guard generation == openGeneration, isLoading else { return }
-        isLoading = false
-        openWatchdog?.cancel()
-        openWatchdog = nil
-        if let message { error = message }
-    }
 
     func openFile(path: String) async {
-        let generation = beginOpen()
-        defer { endOpen(generation) }
+        isLoading = true
+        error = nil
         do {
             try await openOneFile(path: path)
-            // The watchdog may have already reported a delay; the open landed,
-            // so retract it rather than leaving a stale warning on screen.
-            if generation == openGeneration { error = nil }
+            isLoading = false
         } catch {
+            isLoading = false
+            routeStorageRecoveryIfNeeded(error)
             self.error = String(describing: error.localizedDescription)
         }
     }
 
     func openFiles(paths: [String]) async {
         guard !paths.isEmpty else { return }
-        let generation = beginOpen()
-        defer { endOpen(generation) }
+        isLoading = true
+        error = nil
         var errors: [String] = []
         for path in paths {
             do {
                 try await openOneFile(path: path)
             } catch {
+                routeStorageRecoveryIfNeeded(error)
                 errors.append("\(path): \(error.localizedDescription)")
             }
         }
-        if !errors.isEmpty {
-            self.error = errors.joined(separator: "\n")
-        } else if generation == openGeneration {
-            error = nil
-        }
+        isLoading = false
+        self.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
     }
 
     func openUrl(_ url: String) async {
-        let generation = beginOpen()
-        defer { endOpen(generation) }
+        isLoading = true
+        error = nil
         do {
+            await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
             let sessionId = UUID().uuidString.lowercased()
             let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
             await adoptOpenedDocument(doc, sessionId: sessionId)
-            if generation == openGeneration { error = nil }
+            isLoading = false
         } catch {
+            isLoading = false
             self.error = error.localizedDescription
         }
     }
@@ -286,11 +277,23 @@ final class AppStore {
             return nil
         }
         do {
+            if let outgoing = tab.document {
+                await workspace?.positions.recordMoved(
+                    document: outgoing,
+                    position: Self.readingPosition(for: tab))
+                if shouldMarkDocumentClosedAfterRemoving(outgoing, excludingTabIds: [tabId]) {
+                    await workspace?.positions.recordClosed(document: outgoing)
+                }
+            }
+            await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
             let doc = try await sessions.openWebDocument(url: url, sessionId: tabId)
             RecentFilesService.record(doc)
+            let resume = await workspace?.positions.resumePosition(for: doc)
+            let page = resume?.page ?? doc.lastPage ?? 1
+            await workspace?.positions.recordOpened(document: doc, tabOrdinal: tabIndex(tabId))
             updateTab(tabId) { tab in
                 tab.document = doc
-                tab.currentPage = doc.lastPage ?? 1
+                tab.currentPage = page
                 tab.numPages = doc.pageCount ?? 0
                 tab.visiblePages = []
                 tab.webVisibleRange = nil
@@ -298,7 +301,7 @@ final class AppStore {
             }
             if activeTabId == tabId {
                 document = doc
-                currentPage = doc.lastPage ?? 1
+                currentPage = page
                 numPages = doc.pageCount ?? 0
                 visiblePages = []
                 webVisibleRange = nil
@@ -309,26 +312,6 @@ final class AppStore {
             self.error = error.localizedDescription
             return nil
         }
-    }
-
-    /// Captures the active webpage before an asynchronous action begins.
-    /// Callers must validate this identity again after every suspension before
-    /// changing visible state or performing a compensating mutation.
-    func activeWebDocumentActionIdentity() -> WebDocumentActionIdentity? {
-        guard let sessionId = activeTabId,
-              let document,
-              document.kind == .web else { return nil }
-        return WebDocumentActionIdentity(sessionId: sessionId, url: document.pdfPath)
-    }
-
-    /// True only while the active tab still represents the exact webpage that
-    /// began the action. This rejects a same-tab URL rebind after an `await`.
-    func isCurrentWebDocument(_ identity: WebDocumentActionIdentity) -> Bool {
-        guard activeTabId == identity.sessionId,
-              let tab = tabs.first(where: { $0.id == identity.sessionId }),
-              let document = tab.document,
-              document.kind == .web else { return false }
-        return document.pdfPath == identity.url
     }
 
     /// Update a tab's document title (reported by the webpage content script).
@@ -343,6 +326,7 @@ final class AppStore {
         if activeTabId == tabId {
             document = doc
         }
+        Task { await workspace?.positions.recordTitle(document: doc, title: trimmed) }
     }
 
     /// Rename the open document from the tab bar.
@@ -356,6 +340,31 @@ final class AppStore {
     /// "go back to the filename".
     ///
     /// The file on disk is untouched; see `DocumentRenameService` for why.
+    ///
+    /// TEARDOWN-RACE AUDIT (#129 Stage J, the counterpart of the guard in
+    /// `importVellumBundleShowingErrors`). No `awaitTeardowns` is needed here,
+    /// and adding one would only serialise a rename behind an unrelated close:
+    ///
+    ///   * A close's teardown writes three things — the PDF's own Info
+    ///     dictionary (`setDocumentMetadata` `last_page`, a full file rewrite),
+    ///     the page-text cache (`flushPdfText`), and the backend session close.
+    ///   * A rename writes three DIFFERENT things — `documents/<key>/meta.json`
+    ///     (`DocumentDataStore.setTitle`, atomic), the recents list in
+    ///     `AppDefaults`, and, for web documents only, the WebLibrary sidecar
+    ///     record. It never opens the document file. Nothing on the teardown
+    ///     path calls `DocumentDataStore.touch`, so meta.json has no second
+    ///     writer here.
+    ///
+    /// For PDFs the two file sets are therefore disjoint. For web documents both
+    /// paths do reach the same sidecar record — the teardown's `last_page` and
+    /// this rename's `title` — but every mutation of it is funnelled through
+    /// `WebLibrary.withRecord`, whose per-record-path `NSLock` serialises the
+    /// read-modify-write. The interleaving that motivated the import guard (a
+    /// whole-file rewrite from stale in-memory bytes) has no analogue.
+    ///
+    /// The same reasoning covers `HomeSearchStore`'s rename, which calls
+    /// `DocumentRenameService.apply` directly for a document that may have no
+    /// open tab at all.
     func renameDocument(tabId: String, title: String) async {
         guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
             return
@@ -370,14 +379,22 @@ final class AppStore {
         // `apply` reports whether it wrote anything. The in-memory update below
         // is what the UI reads either way, so the result is intentionally
         // discarded — named here so it isn't an unused-expression warning.
-        _ = await Task.detached(priority: .userInitiated) {
-            DocumentRenameService.apply(target, title: normalized)
-        }.value
+        if let storage = workspace?.webLibraryStorage {
+            _ = await DocumentRenameService.apply(
+                target, title: normalized, storage: storage)
+        } else {
+            _ = await Task.detached(priority: .userInitiated) {
+                DocumentRenameService.apply(target, title: normalized)
+            }.value
+        }
 
         var updated = document
         updated.title = normalized
         updateTab(tabId) { $0.document = updated }
         if activeTabId == tabId { document_setActive(updated) }
+        if let normalized, !normalized.isEmpty {
+            await workspace?.positions.recordTitle(document: updated, title: normalized)
+        }
     }
 
     /// Split out so `renameDocument` reads as one thought; assigning
@@ -391,8 +408,7 @@ final class AppStore {
     /// off it this session. The stamp itself already happened during the write —
     /// for a just-stamped session the backend returns the id without touching
     /// disk. No-op once the active document already carries an id (web docs are
-    /// always stamped at open, so this never fires for them). PaneDocumentIdentity
-    /// stays path-based, so setting docId does not re-run loadDocumentState.
+    /// always stamped at open, so this never fires for them).
     func syncDocumentId(sessionId: String) async {
         guard let tab = tabs.first(where: { $0.id == sessionId }),
               tab.document?.kind == .pdf, tab.document?.docId == nil else { return }
@@ -407,157 +423,11 @@ final class AppStore {
         }
     }
 
-    /// Save the PDF in `tabId` to a new location while keeping the existing tab
-    /// and backend session identity. Keeping the id stable is important: it is
-    /// also the identity used by the viewer, AI conversation, inspector, and
-    /// split-pane placement.
-    ///
-    /// The destination is written before the session is rebound. If reopening
-    /// the new location fails, the original session is restored so Save As
-    /// cannot strand the live tab.
-    @discardableResult
-    func savePdfAs(tabId: String, destination: URL) async throws -> DocumentInfo {
-        guard let tab = tabs.first(where: { $0.id == tabId }),
-              let source = tab.document,
-              source.kind == .pdf else {
-            throw SessionServiceError.invalidDocument("Save As requires an open PDF")
-        }
-
-        let sourceURL = URL(fileURLWithPath: source.pdfPath).standardizedFileURL
-        let destinationURL = destination.standardizedFileURL
-        if sourceURL == destinationURL {
-            return source
-        }
-        // `/var` and `/private/var` can name the same file on macOS without
-        // URL standardization making the strings equal. Compare filesystem
-        // identities when the destination already exists so choosing the
-        // current file in NSSavePanel remains a true no-op.
-        let sourceIdentifier = try? sourceURL.resourceValues(
-            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        let destinationIdentifier = try? destinationURL.resourceValues(
-            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        if let sourceIdentifier = sourceIdentifier as? NSObject,
-           let destinationIdentifier = destinationIdentifier as? NSObject,
-           sourceIdentifier.isEqual(destinationIdentifier) {
-            return source
-        }
-
-        // Retargeting this tab to a file another tab already owns would leave
-        // two independent backend sessions writing the same PDF. That is
-        // particularly unsafe across panes, where neither tab is necessarily
-        // visible while the other saves. A Save As target must therefore be a
-        // genuinely new document location.
-        let openTabs = workspace?.root.allLeaves().flatMap { $0.app.tabs } ?? tabs
-        if openTabs.contains(where: { other in
-            guard other.id != tabId,
-                  let otherDocument = other.document,
-                  otherDocument.kind == .pdf else { return false }
-            return Self.sameFile(sourceURL: URL(fileURLWithPath: otherDocument.pdfPath), destinationURL: destinationURL)
-        }) {
-            throw SessionServiceError.invalidDocument(
-                "That PDF is already open in another tab. Close it before using Save As."
-            )
-        }
-
-        // Stamp a durable id before copying so document-scoped notes and
-        // conversations follow the PDF to its new location.
-        let preservedDocumentId = try await sessions.ensureDocumentId(sessionId: tabId)
-        await syncDocumentId(sessionId: tabId)
-        try await sessions.saveFile(sessionId: tabId)
-        let bytes = try await sessions.readPdfBytes(sessionId: tabId)
-        // Saving over a file whose tab was just closed: that close's teardown
-        // still holds the old bytes and would rename them over this write.
-        await awaitTeardowns(ofDocumentAt: destinationURL.path)
-        try await Task.detached {
-            try bytes.write(to: destinationURL, options: .atomic)
-        }.value
-
-        // A read-only, unstamped source resolves to a stable byte-hash fallback
-        // rather than a persisted /VellumDocId. Its Save As copy *is* writable,
-        // so stamp that fallback into the destination before reopening it. This
-        // keeps its conversation/scratchpad identity continuous instead of
-        // assigning a fresh id after the source becomes writable by copying.
-        //
-        // Both calls are a full synchronous read + parse (+ atomic rewrite) of
-        // the copy, so they run off the main actor — on it they blocked the UI
-        // for the whole cost of the file, which is seconds on a large PDF.
-        let destinationPath = destinationURL.path
-        try await Task.detached(priority: .userInitiated) {
-            if PdfMetadata.documentId(atPath: destinationPath) == nil {
-                try PdfMetadata.stampDocumentId(atPath: destinationPath, id: preservedDocumentId)
-            }
-        }.value
-
-        try await sessions.closeFile(sessionId: tabId)
-        var rebound: DocumentInfo
-        do {
-            rebound = try await sessions.openFile(path: destinationURL.path, sessionId: tabId)
-            // Fresh bookmark for the new location — the old one (if any) still
-            // points at sourceURL.
-            rebound.bookmarkData = SecurityScopedBookmark.make(for: destinationURL)
-        } catch let reopenError {
-            do {
-                // The original file is untouched, and a successful rollback
-                // restores the exact live tab rather than stranding it.
-                var restored = try await sessions.openFile(path: sourceURL.path, sessionId: tabId)
-                restored.bookmarkData = SecurityScopedBookmark.make(for: sourceURL)
-                updateTab(tabId) { $0.document = restored }
-                if activeTabId == tabId {
-                    document = restored
-                }
-            } catch let rollbackError {
-                // There is no longer a backend for this tab. Remove it rather
-                // than showing a document whose actions will all fail; the
-                // untouched original remains available to reopen from Recents.
-                await closeTab(tabId)
-                let terminalError = SessionServiceError.io(
-                    "Save As wrote the copy but could not reopen it (\(reopenError.localizedDescription)) or restore the original (\(rollbackError.localizedDescription)). The tab was closed; reopen the original file to continue."
-                )
-                // `closeTab` may leave this pane on Home. Keep the terminal
-                // action error on the store so WindowChrome can present it
-                // there as well as above an open document.
-                error = terminalError.localizedDescription
-                throw terminalError
-            }
-            throw reopenError
-        }
-
-        // Retargeting keeps the tab live (issue #52 residency): its host stays
-        // mounted and `isActive` never changes, so the viewer would go on
-        // showing the document it parsed from the old location — and the copy's
-        // bytes differ from the source's anyway once /VellumDocId is stamped
-        // into it. Invalidate the runtime's parsed document so the mounted
-        // viewer re-reads the new file.
-        workspace?.existingLiveTabRuntime(for: tabId)?.invalidateLoadedPdf()
-        updateTab(tabId) { $0.document = rebound }
-        if activeTabId == tabId {
-            document = rebound
-        }
-        RecentFilesService.record(rebound)
-        workspace?.scheduleSave()
-        return rebound
-    }
-
-    private static func sameFile(sourceURL: URL, destinationURL: URL) -> Bool {
-        let source = sourceURL.standardizedFileURL
-        let destination = destinationURL.standardizedFileURL
-        guard source != destination else { return true }
-        let sourceIdentifier = try? source.resourceValues(
-            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        let destinationIdentifier = try? destination.resourceValues(
-            forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
-        guard let sourceIdentifier = sourceIdentifier as? NSObject,
-              let destinationIdentifier = destinationIdentifier as? NSObject else {
-            return false
-        }
-        return sourceIdentifier.isEqual(destinationIdentifier)
-    }
-
     // MARK: - Closing / switching tabs
 
     /// Await every close still finishing its metadata write, text flush, and
-    /// session close. `applicationShouldTerminate` drains this so quitting right
-    /// after closing a tab still persists that tab's reading position.
+    /// session close. The scene-background flush drains this so suspending
+    /// right after closing a tab still persists that tab's reading position.
     func awaitPendingTabTeardowns() async {
         await teardowns.awaitAll()
     }
@@ -567,6 +437,10 @@ final class AppStore {
     /// is workspace-owned.
     private func awaitTeardowns(ofDocumentAt path: String) async {
         await teardowns.awaitTeardowns(ofDocumentAt: path)
+    }
+
+    private func awaitTeardowns(forDocumentKey key: DocumentKey) async {
+        await teardowns.awaitTeardowns(forDocumentKey: key)
     }
 
     func closeFile() async {
@@ -582,71 +456,47 @@ final class AppStore {
     /// full read + parse + serialize + atomic rewrite of the PDF on the IO actor
     /// (~15s on a large document), plus a page-text flush. Awaiting it first
     /// meant the tab sat visibly in the strip for that whole time after the user
-    /// clicked ×, so closing looked broken. Ordering WITHIN the teardown is
-    /// unchanged and still matters: metadata (which changes the file's
-    /// validation hash) → text flush (re-keys the cache to the bytes that will
-    /// reopen) → session close → drop the runtime.
+    /// tapped ×, so closing looked broken.
+    ///
+    /// The teardown registers itself in the workspace-wide registry before it
+    /// starts. The tab is already gone from `tabs`, so nothing else would await
+    /// it: not the scene-background flush's per-tab loop, and not a reopen of
+    /// the same file. The registry (not `self`) is captured for the cleanup —
+    /// closing a split pane's last tab collapses the pane and drops this store,
+    /// and the entry has to outlive it.
     func closeTab(_ tabId: String) async {
         guard let closingIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let closingTab = tabs[closingIndex]
-        // Start tabs carry no backend session — skip the metadata/close round
-        // trips that would otherwise fire against a nonexistent session id.
-        if let closingDocument = closingTab.document {
-            let lastPage = String(closingTab.currentPage)
-            // Resolved now: the runtime is dropped from the workspace at the end
-            // of the teardown, and holding it here keeps it alive until its
-            // pending text has been flushed.
-            let runtime = workspace?.existingLiveTabRuntime(for: tabId)
-            let sessions = self.sessions
-            let workspace = self.workspace
-            // ⌘Q immediately after a close must not lose the reading position:
-            // the tab is already gone from `tabs`, so the quit path's per-tab
-            // metadata loop no longer covers it. The task registers itself in
-            // the workspace-wide teardown registry, which quit drains, and
-            // records its document path so an immediate reopen or overwrite of
-            // the same file — from any pane — waits for it. The registry (not
-            // `self`) is captured for the cleanup: closing a split pane's last
-            // tab collapses the pane and drops this store, and the entry must
-            // outlive it.
-            let teardowns = self.teardowns
-            teardowns.register(
-                tabId: tabId,
-                documentPath: closingDocument.pdfPath,
-                task: Task { [weak workspace] in
-                    try? await sessions.setDocumentMetadata(
-                        sessionId: tabId, key: "last_page", value: lastPage)
-                    await runtime?.flushPdfText()
-                    try? await sessions.closeFile(sessionId: tabId)
-                    workspace?.removeLiveTabRuntime(for: tabId)
-                    teardowns.finish(tabId: tabId)
-                })
-        } else {
-            workspace?.removeLiveTabRuntime(for: tabId)
-        }
+
+        registerTeardown(
+            for: closingTab,
+            markDocumentClosed: shouldMarkDocumentClosedAfterRemoving(
+                closingTab.document,
+                excludingTabIds: [tabId]))
 
         var remaining = tabs
         remaining.removeAll { $0.id == tabId }
         if activeTabId != tabId {
             tabs = remaining
-            workspace?.scheduleSave()
-            return
-        }
-        tabs = remaining
-        if remaining.isEmpty {
-            applyEmptyActiveState()
-            // Closing a pane's last tab collapses the pane when the window is
-            // split; a lone pane stays open on the Welcome screen.
-            workspace?.paneDidEmpty(self)
         } else {
-            let next = remaining[min(closingIndex, remaining.count - 1)]
-            applyActiveState(from: next)
+            tabs = remaining
+            if remaining.isEmpty {
+                applyEmptyActiveState()
+                // Closing a pane's last tab collapses the pane when the window is
+                // split; a lone pane stays open on the Welcome screen.
+                workspace?.paneDidEmpty(self)
+            } else {
+                let next = remaining[min(closingIndex, remaining.count - 1)]
+                applyActiveState(from: next)
+            }
         }
         workspace?.scheduleSave()
     }
 
     /// Close every tab except `tabId`. Keeping this operation in the store makes
     /// the tab-strip context menu and any future native command share the same
-    /// backend-session cleanup semantics as an ordinary close.
+    /// backend-session cleanup semantics as an ordinary close — including the
+    /// teardown registration `closeTab` performs, which these inherit for free.
     func closeOtherTabs(keeping tabId: String) async {
         guard tabs.contains(where: { $0.id == tabId }) else { return }
         let ids = tabs.map(\.id).filter { $0 != tabId }
@@ -682,11 +532,18 @@ final class AppStore {
         // a per-path lock, so duplicate live webpage sessions are safe.
         guard sourceDocument.kind == .web else { return }
 
-        let generation = beginOpen()
-        defer { endOpen(generation) }
+        // Main brackets this in `beginOpen()`/`endOpen(_:)`, its open-watchdog
+        // generation guard. The iPad store has no watchdog yet, so this uses the
+        // same plain `isLoading` bracket every other open on this store uses.
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
         let sessionId = UUID().uuidString.lowercased()
         do {
             // Web only, per the guard above.
+            if let key = DocumentPositionService.key(for: sourceDocument) {
+                await awaitTeardowns(forDocumentKey: key)
+            }
             var opened = try await sessions.openWebDocument(
                 url: sourceDocument.pdfPath, sessionId: sessionId)
             // Keep the title currently visible in the source tab. Web titles in
@@ -722,11 +579,15 @@ final class AppStore {
     func activateTab(_ tabId: String) {
         guard activeTabId != tabId, let tab = tabs.first(where: { $0.id == tabId }) else { return }
         if let current = tabs.first(where: { $0.id == activeTabId }), current.document != nil {
+            recordPosition(for: current)
             let sessionId = current.id
             let page = current.currentPage
+            let kind = current.document?.kind
             Task {
-                try? await sessions.setDocumentMetadata(
-                    sessionId: sessionId, key: "last_page", value: String(page))
+                if kind == .pdf {
+                    try? await sessions.setDocumentMetadata(
+                        sessionId: sessionId, key: "last_page", value: String(page))
+                }
             }
         }
         applyActiveState(from: tab)
@@ -782,12 +643,38 @@ final class AppStore {
         workspace?.scheduleSave()
     }
 
+    /// Discard every tab because the pane itself is going away. The UI must not
+    /// wait on backend teardown, but each live document still needs the same
+    /// final moved/closed + flush lifecycle that an explicit tab close gets.
+    func discardAllTabsForPaneClosure() {
+        let closingTabs = tabs
+        let closingIds = Set(closingTabs.map(\.id))
+        var emittedClosedKeys: Set<DocumentKey> = []
+        for tab in closingTabs {
+            var markClosed = true
+            if let document = tab.document,
+               let key = DocumentPositionService.key(for: document) {
+                let openOutside = workspace?.hasOpenDocument(key: key, excludingTabIds: closingIds)
+                    ?? containsOpenDocument(key: key, excludingTabIds: closingIds)
+                markClosed = !openOutside && !emittedClosedKeys.contains(key)
+                if markClosed { emittedClosedKeys.insert(key) }
+            }
+            registerTeardown(for: tab, markDocumentClosed: markClosed)
+        }
+        tabs = []
+        applyEmptyActiveState()
+    }
+
     /// Rebuild this pane's tabs from persisted descriptors (launch restore).
     /// This deliberately bypasses the regular open path's location
     /// deduplication: two saved web tabs at the same URL are independent live
     /// sessions and must both survive a relaunch. Missing files are skipped;
     /// the saved active index is mapped to its successfully restored tab rather
     /// than used against the compacted `tabs` array.
+    ///
+    /// Start tabs (a nil `document`) are no longer restored — `WorkspaceStore`
+    /// stopped persisting them, so a descriptor without a document is an old
+    /// saved file and its `New Tab` placeholder is not worth resurrecting.
     func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
         var restoredTabIds: [Int: String] = [:]
 
@@ -805,36 +692,28 @@ final class AppStore {
                             url: savedDocument.pdfPath, sessionId: sessionId)
                     }
                 } else {
-                    // Resolve a stored bookmark before falling back to the raw
-                    // path — see SecurityScopedBookmark. Access only needs to
-                    // stay open for the duration of the read that opens the
-                    // file; PDFKit/CGPDF have finished parsing what they need
-                    // by the time `openFile` returns.
-                    var resolvedPath = savedDocument.pdfPath
-                    var resolvedURL: URL?
-                    var bookmarkNeedsRefresh = false
-                    if let bookmarkData = savedDocument.bookmarkData,
-                       let resolved = SecurityScopedBookmark.resolve(bookmarkData) {
-                        resolvedPath = resolved.url.path
-                        resolvedURL = resolved.url
-                        bookmarkNeedsRefresh = resolved.isStale
+                    opened = try await documentAccess.restoreSavedPDF(
+                        savedDocument,
+                        sessionId: sessionId,
+                        resolveExistingPath: resolveExistingDocumentPath
+                    ) { [sessions] path, sessionId in
+                        try await sessions.openFile(path: path, sessionId: sessionId)
+                    } close: { [sessions] sessionId in
+                        try? await sessions.closeFile(sessionId: sessionId)
                     }
-                    let accessStarted = resolvedURL?.startAccessingSecurityScopedResource() ?? false
-                    defer { if accessStarted { resolvedURL?.stopAccessingSecurityScopedResource() } }
-                    opened = try await sessions.openFile(path: resolvedPath, sessionId: sessionId)
-                    opened.bookmarkData = bookmarkNeedsRefresh || savedDocument.bookmarkData == nil
-                        ? SecurityScopedBookmark.make(forPath: resolvedPath)
-                        : savedDocument.bookmarkData
                 }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
                 opened.title = savedDocument.title ?? opened.title
                 RecentFilesService.record(opened)
+                let resume = await workspace?.positions.resumePosition(for: opened)
+                let page = resume?.page ?? descriptor.currentPage
+                await workspace?.positions.recordOpened(document: opened, tabOrdinal: tabs.count)
                 let restoredMode: InteractionMode = descriptor.mode == .snapshotRegion ? .view : descriptor.mode
                 let tab = PdfTab(
                     id: sessionId,
                     document: opened,
-                    currentPage: descriptor.currentPage,
+                    currentPage: page,
                     numPages: opened.pageCount ?? 0,
                     zoom: descriptor.zoom,
                     visiblePages: [],
@@ -844,6 +723,7 @@ final class AppStore {
                 tabs.append(tab)
                 restoredTabIds[descriptorIndex] = sessionId
             } catch {
+                routeStorageRecoveryIfNeeded(error)
                 // One unavailable document must not prevent the rest of the
                 // workspace from restoring. The reconciled tree is saved by
                 // WorkspaceStore after all panes have finished.
@@ -874,11 +754,13 @@ final class AppStore {
         guard currentPage != page else { return }
         currentPage = page
         updateActiveTab { $0.currentPage = page }
+        recordActivePosition()
     }
 
     func setNumPages(_ num: Int) {
         numPages = num
         updateActiveTab { $0.numPages = num }
+        recordActivePosition()
         if let activeTabId {
             Task {
                 try? await sessions.setDocumentMetadata(
@@ -1075,7 +957,8 @@ final class AppStore {
 
     /// Complete a note placement only when its originating session remains the
     /// active note interaction. A delayed save from tab A must never dismiss a
-    /// note interaction the user started after switching to tab B.
+    /// note interaction the user started after switching to tab B — reachable
+    /// on iPad too now that several tabs are mounted at once.
     func finishNotePlacement(forSessionId sessionId: String) {
         guard activeTabId == sessionId, mode == .note else { return }
         setMode(.view)
@@ -1083,34 +966,43 @@ final class AppStore {
 
     /// Capture the active tab's crop destination before returning it to view
     /// mode, which deliberately clears the transient destination.
+    @discardableResult
     func finishRegionCapture() -> RegionCaptureTarget {
         let target = regionCaptureTarget
         setMode(.view)
         return target
     }
 
+    /// Consumed by the viewer when it places a note; nil once used.
+    func consumePendingNoteContent() -> String? {
+        let content = pendingNoteContent
+        pendingNoteContent = nil
+        updateActiveTab { $0.pendingNoteContent = nil }
+        return content
+    }
+
     /// Put an unplaced note draft back on the queue and re-arm placement, so
-    /// the next click on the page offers the same text again.
+    /// the next tap on the page offers the same text again.
     ///
-    /// Issue #92: the web viewer's placement click only opens a composer — the
+    /// Issue #92: the web viewer's placement tap only opens a composer — the
     /// note is not written until the user submits — so between those two steps
     /// the composer holds the *only* copy of a queued AI reply
-    /// (`consumePendingNoteContent` already cleared the store). A stray click,
-    /// a page scroll, a misclicked link, or a tab switch all unmount that
-    /// composer, and the reply used to go with it. The
-    /// PDF viewer has no such window: `PdfSelectionBridge` writes the note on
-    /// the placement click itself. Handing the draft back here closes the gap —
-    /// a misclick now costs one more click instead of the whole reply.
+    /// (`consumePendingNoteContent` already cleared the store). A stray tap, a
+    /// page scroll, a misdirected link, or a tab switch all unmount that
+    /// composer, and the reply used to go with it. The PDF viewer has no such
+    /// window: it writes the note on the placement tap itself. Handing the
+    /// draft back here closes the gap — a mis-tap now costs one more tap
+    /// instead of the whole reply.
+    ///
+    /// Empty (or whitespace-only) drafts are dropped — a plain note-tool
+    /// placement the user tapped away from has nothing worth preserving, and
+    /// re-arming note mode for it would be friction with no payoff.
     ///
     /// Scoped to the originating tab rather than the active one: the dismissal
     /// may be the *reason* the tab is going away (switching tabs unmounts the
     /// composer), and note-placement state travels with the tab anyway, so the
     /// draft is waiting when the user comes back. A late message from a tab
     /// that has since been closed lands nowhere.
-    ///
-    /// Empty (or whitespace-only) drafts are dropped — a plain note-tool
-    /// placement the user clicked away from has nothing worth preserving, and
-    /// re-arming note mode for it would be friction with no payoff.
     func restorePendingNote(_ content: String, forSessionId sessionId: String) {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         // While the tab is the one on screen this is exactly "arm placement
@@ -1126,21 +1018,27 @@ final class AppStore {
         }
     }
 
-    /// Consumed by the viewer when it places a note; nil once used.
-    func consumePendingNoteContent() -> String? {
-        let content = pendingNoteContent
-        pendingNoteContent = nil
-        updateActiveTab { $0.pendingNoteContent = nil }
-        return content
-    }
-
     // MARK: - Internals
 
     private func openOneFile(path: String) async throws {
-        // A `.vellum` bundle unpacks into a document (written where the user
-        // chooses) + its sidecar; then that document opens through the normal
-        // path. Everything else is opened directly.
+        // A `.vellum` bundle unpacks into a document (written into the library)
+        // + its sidecar; then that document opens through the normal path.
+        // Everything else is opened directly.
         if path.lowercased().hasSuffix(".vellum") {
+            #if os(iOS)
+            // A bundle picked from Files is staged into its own tmp/ directory
+            // (see DocumentImport.stagingDestination): it is a container, not a
+            // document, so it must not linger. In a defer so the staging dir is
+            // reclaimed on every exit — a rejected bundle (integrity check,
+            // unsafe entry, newer format) throws before reaching any later
+            // cleanup, and a declined merge prompt returns nil.
+            defer {
+                if path.hasPrefix(FileManager.default.temporaryDirectory.path) {
+                    try? FileManager.default.removeItem(
+                        at: URL(fileURLWithPath: path).deletingLastPathComponent())
+                }
+            }
+            #endif
             guard let documentPath = try await importVellumBundle(bundlePath: path) else { return }
             try await openDocumentFile(path: documentPath)
             return
@@ -1148,20 +1046,41 @@ final class AppStore {
         try await openDocumentFile(path: path)
     }
 
+    private func routeStorageRecoveryIfNeeded(_ error: Error) {
+        guard case DocumentAccessError.unavailable = error else { return }
+        workspace?.settingsSection = .storage
+    }
+
     private func openDocumentFile(path: String) async throws {
+        let isArchive = path.lowercased().hasSuffix(".vellumweb")
         // Close-then-immediately-reopen: a teardown from a preceding close may
         // still be rewriting this exact file. Opening before it lands would
         // restore a stale reading position and lose any write the new session
         // makes before the teardown's atomic rename.
-        await awaitTeardowns(ofDocumentAt: path)
+        //
+        // Anchored here rather than in `openOneFile` so it sees the *document*
+        // path: a `.vellum` open arrives as a bundle container, and awaiting
+        // teardowns on that path would guard a file no session ever held.
+        if isArchive {
+            let key = try await webDocumentKey(inArchiveAt: path)
+            await awaitTeardowns(forDocumentKey: key)
+        } else {
+            await awaitTeardowns(ofDocumentAt: path)
+        }
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
-        let isArchive = path.lowercased().hasSuffix(".vellumweb")
         let doc: DocumentInfo
         if isArchive {
             doc = try await sessions.openVellumwebFile(path: path, sessionId: sessionId)
         } else {
-            doc = try await sessions.openFile(path: path, sessionId: sessionId)
+            doc = try await documentAccess.openPickedPDF(
+                url: URL(fileURLWithPath: path),
+                sessionId: sessionId
+            ) { [sessions] path, sessionId in
+                try await sessions.openFile(path: path, sessionId: sessionId)
+            } close: { [sessions] sessionId in
+                try? await sessions.closeFile(sessionId: sessionId)
+            }
         }
         await adoptOpenedDocument(doc, sessionId: sessionId)
         if isArchive {
@@ -1172,86 +1091,34 @@ final class AppStore {
         }
     }
 
-    /// Import a `.vellum` bundle: verify it, let the user choose where the
-    /// document file lands, then hand off to the panel-free core. Returns nil if
-    /// the user cancels the save panel. The read + write + install work lives in
-    /// `importVellumBundleCore` so it is unit-testable without the panels.
-    private func importVellumBundle(bundlePath: String) async throws -> String? {
-        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
-        let manifest = imported.manifest
-        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
-
-        // Bring the app forward before the modal. When the import is triggered by
-        // `open`/Finder/an Apple event during launch, the app may not yet be
-        // active, and an app-modal panel presented then never comes to front —
-        // the process wedges and the open event times out (-1712) with no panel
-        // shown. Activating first, then runModal on the main actor, matches the
-        // working export flows (exportVellumweb / exportWithNotes).
-        NSApplication.shared.activate(ignoringOtherApps: true)
-
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = manifest.documentFile
-        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
-            panel.allowedContentTypes = [archive]
-        } else if kind == .pdf {
-            panel.allowedContentTypes = [.pdf]
-        }
-        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
-
-        // The core writes the bundle's document bytes to `destination` before
-        // `openDocumentFile` (and its own teardown guard) ever runs. If the
-        // user picked a file whose tab was just closed, wait out that close's
-        // teardown here so its rename cannot clobber the imported bytes.
-        await awaitTeardowns(ofDocumentAt: destination.path)
-
-        let result = try await Self.importVellumBundleCore(imported, to: destination) { title in
-            let alert = NSAlert()
-            alert.messageText = "Notes already exist for \(title)"
-            alert.informativeText =
-                "This document already has notes on this Mac. Keep the notes you have, "
-                + "or replace them with the imported notes? Your highlights and reading "
-                + "position are not affected either way."
-            alert.addButton(withTitle: "Keep My Notes")      // default
-            alert.addButton(withTitle: "Use Imported Notes")
-            return alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
-        }
-
-        // Never a silent success with broken image refs (STAGE F2 #5): name the
-        // attachments that could not be installed.
-        if !result.failedAttachments.isEmpty {
-            let alert = NSAlert()
-            alert.messageText = "Some images couldn't be imported"
-            alert.informativeText =
-                "These attachments couldn't be saved, so their references may appear "
-                + "broken in the imported notes:\n" + result.failedAttachments.joined(separator: "\n")
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
-        return result.path
+    private func webDocumentKey(inArchiveAt path: String) async throws -> DocumentKey {
+        let archiveUrl = URL(fileURLWithPath: path)
+        let manifest = try await Task.detached(priority: .userInitiated) {
+            try WebArchive.readManifest(at: archiveUrl)
+        }.value
+        let normalized = try WebUrl.normalize(manifest.url)
+        return .web(normalizedURL: normalized)
     }
 
-    /// The panel-free import core (STAGE F2 #2): everything an import does EXCEPT
-    /// choosing the destination. Writes the document bytes ATOMICALLY (temp
-    /// sibling + rename(2), never a pre-delete — a crash mid-replace must not lose
-    /// the file that was already there, #3), stamps an unstamped PDF with the
-    /// manifest id, resolves the install key, installs the sidecar under the
-    /// merge rules (§5), drops the AI memory cache + broadcasts a reload so an
-    /// already-open tab picks up the merge instead of clobbering it (#4), stamps
-    /// meta.json, and returns the written path plus any attachments that could
-    /// not be installed (#5). Static + panel-free so tests drive it directly.
+    // MARK: - `.vellum` import
+
+    /// Phase 1 of an import: write the document bytes ATOMICALLY (temp sibling +
+    /// rename(2), never a pre-delete), stamp an unstamped PDF with the manifest
+    /// id, and resolve the storage key the sidecar will install under.
+    /// Split out of `importVellumBundleCore` so iOS can await a merge prompt
+    /// between the two halves — a UIAlertController can't be run modally the
+    /// way `NSAlert.runModal()` can, so the codec's synchronous resolver has to
+    /// be handed a decision that was already made.
     @MainActor
-    @discardableResult
-    static func importVellumBundleCore(
-        _ imported: VellumBundle.Imported,
-        to destination: URL,
-        resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
-    ) async throws -> (path: String, failedAttachments: [String]) {
+    static func writeImportedDocument(
+        _ imported: VellumBundle.Imported, to destination: URL
+    ) async throws -> String {
         let manifest = imported.manifest
         let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
 
-        // Atomic write: stage the bytes in a temp sibling, fsync-free rename over
-        // the destination. Replacing an existing file never deletes it first, so
-        // a failed import leaves the prior file intact.
+        // Atomic write: stage the bytes in a temp sibling, rename over the
+        // destination. Replacing an existing file never deletes it first, so a
+        // failed import leaves the prior file intact.
         let parent = destination.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -1286,8 +1153,8 @@ final class AppStore {
         // The stamp and the key resolution below are each a full synchronous
         // read + parse of the just-written PDF (the stamp also rewrites it), so
         // they share ONE hop off the main actor: on it they blocked the UI for
-        // the file's whole cost right after the save panel closed. Nothing here
-        // touches main-actor state, and no PDFKit/CGPDF value escapes the hop.
+        // the file's whole cost. Nothing here touches main-actor state, and no
+        // PDFKit/CGPDF value escapes the hop.
         //
         // Key resolution: for a PDF, prefer the written file's own /VellumDocId
         // stamp when it differs from the manifest (the file is authoritative).
@@ -1309,39 +1176,271 @@ final class AppStore {
         } else {
             key = manifest.docId
         }
+        return key
+    }
 
+    /// Phase 2: install the sidecar under the merge rules, drop the AI memory
+    /// cache, broadcast the reload, and stamp meta.json.
+    @MainActor
+    static func finishImportedBundle(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        key: String,
+        resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) throws -> (path: String, failedAttachments: [String]) {
         let failedAttachments = try VellumBundle.installSidecar(
             imported, forKey: key, resolveScratchpadConflict: resolveConflict)
 
         // The merge just rewrote conversations.json on disk. The AI memory cache
-        // is authoritative (#48 write-behind), so drop this key's entry now — the
-        // tab about to open (and any pane already showing this doc, via the
+        // is authoritative (write-behind), so drop this key's entry now — the tab
+        // about to open (and any pane already showing this doc, via the
         // broadcast) then re-reads the merge instead of flushing pre-import state
-        // back over it (#4).
+        // back over it.
         AiPersistence.invalidateCachedConversation(forKey: key)
         NotificationCenter.default.post(
             name: .vellumDocumentSidecarImported, object: nil, userInfo: ["key": key])
 
         // Stamp meta.json with the new location (PDFs — web records are managed
         // by the WebLibrary sidecar the normal open path writes).
-        if kind == .pdf {
+        if imported.manifest.kind != "web" {
             let info = DocumentInfo(
-                kind: .pdf, pdfPath: destination.path, title: manifest.title,
+                kind: .pdf, pdfPath: destination.path, title: imported.manifest.title,
                 pageCount: nil, lastPage: nil, docId: key)
             try? DocumentDataStore.touch(document: info)
         }
         return (destination.path, failedAttachments)
     }
 
+    /// Production import path. The document payload is already installed; its
+    /// class-B sidecar must use the workspace's coordinated storage boundary.
+    @MainActor
+    static func finishImportedBundle(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        key: String,
+        coordinator: StorageCoordinator,
+        resolveScratchpadConflict resolveConflict: @escaping @Sendable (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) async throws -> (path: String, failedAttachments: [String]) {
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarWillImport, object: nil,
+            userInfo: ["key": key])
+        let failedAttachments: [String]
+        do {
+            failedAttachments = try await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+                forKeys: [key]
+            ) {
+                try await VellumBundle.installSidecar(
+                    imported, forKey: key, coordinator: coordinator,
+                    resolveScratchpadConflict: resolveConflict)
+            }
+        } catch {
+            // Unfreeze panes and reload the still-authoritative pre-import bytes.
+            NotificationCenter.default.post(
+                name: .vellumDocumentSidecarImported, object: nil,
+                userInfo: ["key": key])
+            throw error
+        }
+
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        NotificationCenter.default.post(
+            name: .vellumDocumentSidecarImported, object: nil, userInfo: ["key": key])
+
+        if imported.manifest.kind != "web" {
+            let info = DocumentInfo(
+                kind: .pdf, pdfPath: destination.path, title: imported.manifest.title,
+                pageCount: nil, lastPage: nil, docId: key)
+            try? await DocumentDataStore.touch(
+                document: info, coordinator: coordinator)
+        }
+        return (destination.path, failedAttachments)
+    }
+
+    /// The panel-free import core, in main's exact shape. Kept so the two-phase
+    /// split above can be asserted against it and can never drift.
+    @MainActor
+    @discardableResult
+    static func importVellumBundleCore(
+        _ imported: VellumBundle.Imported,
+        to destination: URL,
+        resolveScratchpadConflict resolveConflict: (_ title: String) -> VellumBundle.ScratchpadDecision
+    ) async throws -> (path: String, failedAttachments: [String]) {
+        let key = try await writeImportedDocument(imported, to: destination)
+        return try finishImportedBundle(
+            imported, to: destination, key: key, resolveScratchpadConflict: resolveConflict)
+    }
+
+    #if os(iOS)
+    /// Import a `.vellum` bundle: verify it, place the document in the app's
+    /// library, then install the sidecar — pausing between the two for the merge
+    /// prompt when the local note differs. Returns nil if the user cancels.
+    ///
+    /// macOS asks the user where the document lands (NSSavePanel). iOS has no
+    /// save panel and the whole path layer expects writable in-container files,
+    /// so the document lands in `DocumentImport.libraryDirectory` — the same
+    /// place every picked PDF is copied to.
+    private func importVellumBundle(bundlePath: String) async throws -> String? {
+        do {
+            return try await importVellumBundleShowingErrors(bundlePath: bundlePath)
+        } catch {
+            // `openFiles` only collects error strings into `AppStore.error`,
+            // which the iPad shell never renders — so a bundle rejected for
+            // failing its integrity check, carrying an unsafe entry path, or
+            // being written by a newer Vellum would fail silently, which reads
+            // as a broken app. Safe rejection has to be VISIBLE rejection.
+            await BundleImportPrompts_iOS.importFailed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func importVellumBundleShowingErrors(bundlePath: String) async throws -> String? {
+        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let destination = DocumentImport.bundleDestination(
+            documentFile: imported.manifest.documentFile, docId: imported.manifest.docId)
+
+        // Re-importing over a document whose tab was just closed: that tab's
+        // teardown is a full read + atomic rewrite of this exact file, so a
+        // rename(2) landing after ours would put PRE-import bytes back. The
+        // open path guards itself the same way; the import writes first, so it
+        // has to guard too.
+        await awaitTeardowns(ofDocumentAt: destination.path)
+
+        let key = try await Self.writeImportedDocument(imported, to: destination)
+
+        // Resolve the scratchpad conflict BEFORE installSidecar, because the
+        // codec's resolver is synchronous (NSAlert.runModal on the Mac) and an
+        // iOS alert can only be awaited.
+        var decision = VellumBundle.ScratchpadDecision.keepLocal
+        let coordinator = workspace?.storageCoordinator
+        if let incoming = imported.scratchpad, !incoming.isEmpty,
+           let coordinator,
+           try await DocumentDataStore.scratchpadExists(
+                forKey: key, coordinator: coordinator),
+           try await DocumentDataStore.loadScratchpad(
+                forKey: key, coordinator: coordinator) != incoming {
+            decision = await BundleImportPrompts_iOS.scratchpadConflict(
+                title: imported.manifest.title ?? "this document")
+        }
+
+        let result: (path: String, failedAttachments: [String])
+        if let coordinator {
+            let resolvedDecision = decision
+            result = try await Self.finishImportedBundle(
+                imported, to: destination, key: key, coordinator: coordinator
+            ) { _ in resolvedDecision }
+        } else {
+            result = try Self.finishImportedBundle(
+                imported, to: destination, key: key) { _ in decision }
+        }
+
+        // Never a silent success with broken image refs: name the attachments
+        // that could not be installed.
+        if !result.failedAttachments.isEmpty {
+            await BundleImportPrompts_iOS.failedAttachments(result.failedAttachments)
+        }
+        return result.path
+    }
+    #else
+    /// Import a `.vellum` bundle after the user chooses where its document lands.
+    private func importVellumBundle(bundlePath: String) async throws -> String? {
+        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let manifest = imported.manifest
+        let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = manifest.documentFile
+        if kind == .web, let archive = UTType(filenameExtension: "vellumweb") {
+            panel.allowedContentTypes = [archive]
+        } else if kind == .pdf {
+            panel.allowedContentTypes = [.pdf]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+
+        await awaitTeardowns(ofDocumentAt: destination.path)
+        let key = try await Self.writeImportedDocument(imported, to: destination)
+
+        let coordinator = workspace?.storageCoordinator
+        var decision = VellumBundle.ScratchpadDecision.keepLocal
+        let hasDifferentScratchpad: Bool
+        if let incoming = imported.scratchpad, !incoming.isEmpty {
+            if let coordinator {
+                let exists = try await DocumentDataStore.scratchpadExists(
+                    forKey: key, coordinator: coordinator)
+                let current: String?
+                if exists {
+                    current = try await DocumentDataStore.loadScratchpad(
+                        forKey: key, coordinator: coordinator)
+                } else {
+                    current = nil
+                }
+                hasDifferentScratchpad = exists && current != incoming
+            } else {
+                hasDifferentScratchpad = DocumentDataStore.scratchpadExists(forKey: key)
+                    && DocumentDataStore.loadScratchpad(forKey: key) != incoming
+            }
+        } else {
+            hasDifferentScratchpad = false
+        }
+        if hasDifferentScratchpad {
+            let title = imported.manifest.title ?? "this document"
+            let alert = NSAlert()
+            alert.messageText = "Notes already exist for \(title)"
+            alert.informativeText =
+                "This document already has notes on this Mac. Keep the notes you have, "
+                + "or replace them with the imported notes? Your highlights and reading "
+                + "position are not affected either way."
+            alert.addButton(withTitle: "Keep My Notes")
+            alert.addButton(withTitle: "Use Imported Notes")
+            decision = alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+        }
+        let resolvedDecision = decision
+        let resolveConflict: @Sendable (String) -> VellumBundle.ScratchpadDecision = {
+            _ in resolvedDecision
+        }
+
+        let result: (path: String, failedAttachments: [String])
+        if let coordinator {
+            result = try await Self.finishImportedBundle(
+                imported,
+                to: destination,
+                key: key,
+                coordinator: coordinator,
+                resolveScratchpadConflict: resolveConflict)
+        } else {
+            result = try Self.finishImportedBundle(
+                imported,
+                to: destination,
+                key: key,
+                resolveScratchpadConflict: resolveConflict)
+        }
+
+        if !result.failedAttachments.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Some images couldn't be imported"
+            alert.informativeText =
+                "These attachments couldn't be saved, so their references may appear "
+                + "broken in the imported notes:\n"
+                + result.failedAttachments.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+        return result.path
+    }
+    #endif
+
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         var doc = doc
-        // Mint a security-scoped bookmark right now, while the just-completed
-        // open guarantees read access — see SecurityScopedBookmark. Web docs
-        // have no filesystem path to bookmark.
-        if doc.kind == .pdf {
-            doc.bookmarkData = SecurityScopedBookmark.make(forPath: doc.pdfPath)
-        }
+        // This is intentionally device-local. Opening a captured page must not
+        // rewrite its shared WebLibrary sidecar or contend with note saves.
+        await capturedUnreadLedger.markOpened(document: doc)
+        // PDF bookmarks are persisted in the device-local
+        // DocumentAccessBookmarkStore. Keep DocumentInfo free of new bookmark
+        // bytes so workspace JSON stops growing access credentials; the
+        // `bookmarkData` field remains only for decoding old saved tabs.
+        doc.bookmarkData = nil
         RecentFilesService.record(doc)
+        let resume = await workspace?.positions.resumePosition(for: doc)
+        let openingPage = resume?.page ?? doc.lastPage ?? 1
         // Was the active tab a start tab? If so, opening a document from it
         // replaces that tab in place rather than appending a new one. Track it
         // by id, not index — `tabs` can be mutated by other main-actor work
@@ -1356,17 +1455,23 @@ final class AppStore {
             if let activeStartId, activeStartId != existing.id {
                 tabs.removeAll { $0.id == activeStartId }
             }
+            await workspace?.positions.recordOpened(document: doc, tabOrdinal: tabIndex(existing.id))
             activateTab(existing.id)
             return
         }
-        // Reveal the side panel for a genuinely new document. Reopening a
-        // document that is already tabbed above is navigation, not a fresh
-        // open, and must preserve an explicit user choice to hide the panel.
-        workspace?.sidebarOpen = true
+        // A split-screen inspector is a companion column, so a genuinely new
+        // document reveals it. Reopening an already-tabbed document is
+        // navigation and preserves an explicit choice to hide the column. On a
+        // single-pane phone the same state presents
+        // a sheet over the reader; opening a document must not cover it before
+        // the user asks.
+        if workspace?.layout == .splitScreen {
+            workspace?.sidebarOpen = true
+        }
         let tab = PdfTab(
             id: sessionId,
             document: doc,
-            currentPage: doc.lastPage ?? 1,
+            currentPage: openingPage,
             numPages: doc.pageCount ?? 0,
             zoom: 1.0,
             visiblePages: [],
@@ -1379,14 +1484,14 @@ final class AppStore {
         } else {
             tabs.append(tab)
         }
+        await workspace?.positions.recordOpened(document: doc, tabOrdinal: tabIndex(sessionId))
         applyActiveState(from: tab)
         workspace?.scheduleSave()
     }
 
     private func applyActiveState(from tab: PdfTab) {
-        // Note-placement state travels with the tab. Find state does too now
-        // (#71 era), so the incoming tab's query is restored below rather than
-        // reset here.
+        // Note-placement state travels with the tab. Find state does too now,
+        // so the incoming tab's query is restored below rather than reset here.
         pendingNoteContent = tab.pendingNoteContent
         // Pin the incoming tab (never evictable while it is on screen) and
         // restart the outgoing tab's idle countdown from now — it was in use
@@ -1435,5 +1540,113 @@ final class AppStore {
         var tab = tabs[index]
         mutate(&tab)
         tabs[index] = tab
+    }
+
+    private static func readingPosition(for tab: PdfTab) -> ReadingPosition {
+        WorkspaceStore.readingPosition(for: tab)
+    }
+
+    private func recordActivePosition() {
+        guard let activeTabId, let tab = tabs.first(where: { $0.id == activeTabId }) else { return }
+        recordPosition(for: tab)
+    }
+
+    private func recordPosition(for tab: PdfTab) {
+        guard let document = tab.document else { return }
+        pendingPositionRecords[tab.id] = PendingPositionRecord(
+            document: document,
+            position: Self.readingPosition(for: tab))
+        startPositionRecordWorkerIfNeeded()
+    }
+
+    func flushPendingPositionRecords() async {
+        if let positionRecordTask {
+            await positionRecordTask.value
+        }
+    }
+
+    func containsOpenDocument(key: DocumentKey, excludingTabIds: Set<String> = []) -> Bool {
+        tabs.contains { tab in
+            guard !excludingTabIds.contains(tab.id),
+                  let document = tab.document else { return false }
+            return DocumentPositionService.key(for: document) == key
+        }
+    }
+
+    private func shouldMarkDocumentClosedAfterRemoving(
+        _ document: DocumentInfo?,
+        excludingTabIds: Set<String>
+    ) -> Bool {
+        guard let document,
+              let key = DocumentPositionService.key(for: document)
+        else { return document != nil }
+        return !(workspace?.hasOpenDocument(key: key, excludingTabIds: excludingTabIds)
+            ?? containsOpenDocument(key: key, excludingTabIds: excludingTabIds))
+    }
+
+    private func registerTeardown(for tab: PdfTab, markDocumentClosed: Bool) {
+        let pendingPositionRecordTask = positionRecordTask
+        pendingPositionRecords[tab.id] = nil
+        guard let closingDocument = tab.document else {
+            workspace?.removeLiveTabRuntime(for: tab.id)
+            return
+        }
+        let lastPage = String(tab.currentPage)
+        let runtime = workspace?.existingLiveTabRuntime(for: tab.id)
+        let sessions = self.sessions
+        let workspace = self.workspace
+        let positions = workspace?.positions
+        let teardowns = self.teardowns
+        let tabId = tab.id
+        teardowns.register(
+            tabId: tabId,
+            document: closingDocument,
+            task: Task { [weak workspace] in
+                await pendingPositionRecordTask?.value
+                await positions?.recordMoved(
+                    document: closingDocument,
+                    position: Self.readingPosition(for: tab))
+                if markDocumentClosed {
+                    await positions?.recordClosed(document: closingDocument)
+                }
+                await positions?.flush()
+                if closingDocument.kind == .pdf {
+                    try? await sessions.setDocumentMetadata(
+                        sessionId: tabId, key: "last_page", value: lastPage)
+                }
+                await runtime?.flushPdfText()
+                try? await sessions.closeFile(sessionId: tabId)
+                workspace?.removeLiveTabRuntime(for: tabId)
+                teardowns.finish(tabId: tabId)
+            })
+    }
+
+    private func startPositionRecordWorkerIfNeeded() {
+        guard positionRecordTask == nil else { return }
+        positionRecordTask = Task { [weak self] in
+            while true {
+                guard let self else { return }
+                let batch = self.drainPendingPositionRecords()
+                if batch.isEmpty {
+                    self.positionRecordTask = nil
+                    return
+                }
+                for record in batch {
+                    await self.workspace?.positions.recordMoved(
+                        document: record.document,
+                        position: record.position)
+                }
+            }
+        }
+    }
+
+    private func drainPendingPositionRecords() -> [PendingPositionRecord] {
+        let batch = Array(pendingPositionRecords.values)
+        pendingPositionRecords.removeAll()
+        return batch
+    }
+
+    private func tabIndex(_ tabId: String) -> Int? {
+        tabs.firstIndex { $0.id == tabId }
     }
 }

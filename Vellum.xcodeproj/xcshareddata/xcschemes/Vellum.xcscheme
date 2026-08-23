@@ -21,6 +21,34 @@
                ReferencedContainer = "container:Vellum.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A2777796A94ECB5D3412C2DE"
+               BuildableName = "VellumShare.appex"
+               BlueprintName = "VellumShare"
+               ReferencedContainer = "container:Vellum.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "28AB06FA6634E009DA9B6034"
+               BuildableName = "VellumWidgets.appex"
+               BlueprintName = "VellumWidgets"
+               ReferencedContainer = "container:Vellum.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

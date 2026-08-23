@@ -60,6 +60,7 @@ enum StorageInventory {
         documents: [DocumentDataStore.DocumentDataEntry],
         cacheEntries: [PageTextCacheEntry],
         webEntries: [WebLibrary.SnapshotStorageEntry],
+        positionLastOpened: [String: Date] = [:],
         sort: SortOrder = .size
     ) -> [DocumentRow] {
         var docByKey: [String: DocumentDataStore.DocumentDataEntry] = [:]
@@ -110,7 +111,11 @@ enum StorageInventory {
                 key: key,
                 title: resolveTitle(doc: doc, cache: cache, web: web, kind: kind),
                 kind: kind,
-                lastOpened: resolveLastOpened(doc: doc, cache: cache, web: web),
+                lastOpened: resolveLastOpened(
+                    doc: doc,
+                    cache: cache,
+                    web: web,
+                    position: positionLastOpened[key]),
                 sourceExists: resolveSourceExists(doc: doc, cache: cache, web: web, kind: kind),
                 sourcePath: doc?.meta?.lastKnownPath ?? cache?.sourcePath ?? web?.url,
                 isDocIdKeyed: kind == .web || isLikelyDocId(key),
@@ -183,8 +188,10 @@ enum StorageInventory {
     private static func resolveLastOpened(
         doc: DocumentDataStore.DocumentDataEntry?,
         cache: PageTextCacheEntry?,
-        web: WebLibrary.SnapshotStorageEntry?
+        web: WebLibrary.SnapshotStorageEntry?,
+        position: Date?
     ) -> Date? {
+        if let position { return position }
         if let stamp = doc?.meta?.lastOpened, let date = WebLibrary.parseRfc3339(stamp) { return date }
         if let cache { return cache.lastOpened }
         return web?.lastOpened

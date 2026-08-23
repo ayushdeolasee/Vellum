@@ -1,5 +1,14 @@
+#if os(iOS)
 import SwiftUI
 
+/// The Integrations tab of the settings sheet: auto-refresh scheduling plus one
+/// row per read-later provider (connect / sync / reconnect / disconnect).
+///
+/// Touch rebuild of `main:Vellum/Views/Settings/IntegrationsSettingsTab.swift`.
+/// Same information, same store calls, same user-visible strings and the same
+/// accessibility identifiers — only the controls are re-hosted for a finger:
+/// `.menuStyle(.borderlessButton)` does not exist on iOS, and every tappable
+/// affordance needs a 44pt target with the frame INSIDE the label.
 struct IntegrationsSettingsTab: View {
     @Environment(IntegrationsStore.self) private var integrations
     @State private var connectProvider: IntegrationProvider?
@@ -18,6 +27,17 @@ struct IntegrationsSettingsTab: View {
                 Text("Connected services refresh when stale. Sync Now performs a complete authoritative traversal.")
             }
 
+            Section {
+                Toggle("Download for offline reading", isOn: Binding(
+                    get: { integrations.offlineReadingEnabled },
+                    set: { integrations.setOfflineReading($0) }))
+                    .accessibilityIdentifier("integrations.offlineReading")
+            } header: {
+                Text("Offline reading")
+            } footer: {
+                Text("Articles and PDFs from your read-later queue are downloaded in the background so they open without a connection. A downloaded copy is kept for 14 days; reading it starts another 14, and annotating it keeps it for good.")
+            }
+
             Section("Read-later services") {
                 ForEach(IntegrationProvider.allCases) { provider in
                     providerRow(provider)
@@ -25,7 +45,11 @@ struct IntegrationsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 460)
+        #if os(iOS)
+        .contentMargins(.bottom, 32, for: .scrollContent)
+        #endif
+        // No `.frame(height: 460)`: on iPad the settings sheet fills its own
+        // presentation, and pinning a height would strand the last row.
         .sheet(item: $connectProvider) { ConnectServiceSheet(provider: $0) }
         .sheet(item: $disconnectProvider) { DisconnectServiceSheet(provider: $0) }
     }
@@ -51,21 +75,30 @@ struct IntegrationsSettingsTab: View {
                 if state?.isConnected == true {
                     Button("Sync Now") {
                         // Store-owned task: the handle outlives this row, and
-                        // the quit path cancels/drains it with the rest.
+                        // the scene-background drain cancels/joins it with the
+                        // rest of the store's work.
                         integrations.run { await integrations.sync(provider, forceFull: true) }
                     }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
                     .disabled(state?.connection == .syncing)
+
                     Menu {
                         Button("Reconnect…") { connectProvider = provider }
                         Button("Disconnect…", role: .destructive) { disconnectProvider = provider }
                     } label: {
+                        // The frame and contentShape belong INSIDE the label:
+                        // a Menu's hit region is its label's, so sizing the
+                        // Menu itself would leave a glyph-sized tap target.
                         Image(systemName: "ellipsis.circle")
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                     .accessibilityLabel("More options for \(provider.name)")
                 } else {
                     Button("Connect…") { connectProvider = provider }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: 44)
                 }
             }
             if let state, state.isConnected {
@@ -105,3 +138,4 @@ struct IntegrationsSettingsTab: View {
         }
     }
 }
+#endif

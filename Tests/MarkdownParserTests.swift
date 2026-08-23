@@ -316,4 +316,11 @@ final class MarkdownParserTests: XCTestCase {
     func testPlainPreviewStripsBlockMarkers() {
         XCTAssertEqual(MarkdownParser.plainPreview("# H\n- item"), "H item")
     }
+
+    // TODO(#129 packet 7 §4.2): main adds 11 more `MathRenderer.segments` /
+    // `codeSpanRanges` cases here (#127 — code spans vs the math splitter,
+    // escaped `\(`/`\)`, astral-plane offsets, mismatched backtick runs). They
+    // are deferred to Stage F because every one of them needs
+    // `MathRenderer.codeSpanRanges`, which packet 7 §2.5 has not landed yet.
+    // Packet 5 §I.2 owns only the `testLists` change above.
 }

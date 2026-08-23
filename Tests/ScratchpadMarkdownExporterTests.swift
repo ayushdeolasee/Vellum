@@ -12,12 +12,10 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
             withIntermediateDirectories: true
         )
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
     }
 
     override func tearDownWithError() throws {
         ScratchpadAttachmentStore.directoryOverride = nil
-        ScratchpadAttachmentStore.activeDirectory = nil
         try? FileManager.default.removeItem(at: temporaryDirectory)
     }
 
@@ -395,7 +393,7 @@ final class ScratchpadMarkdownExporterTests: XCTestCase {
             ScratchpadMarkdownExporter.storageExplanation(
                 mode: .local,
                 degraded: true
-            ).contains("temporarily stored on this Mac")
+            ).contains("temporarily stored on this iPad")
         )
     }
 

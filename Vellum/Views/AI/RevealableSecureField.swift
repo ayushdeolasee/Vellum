@@ -1,14 +1,30 @@
-import AppKit
+#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// A secure text field with an eye toggle that reveals the value in plaintext.
-/// Used for API-key entry so users can verify what they pasted. Both modes are
-/// autofill-free AppKit fields (see `AutofillFreeKeyField`); swapping between a
-/// stock SwiftUI field and an AppKit one let the system autofill helper attach
-/// to the stock side and crash the app (see below).
+/// Used for API-key entry so users can verify what they pasted.
+///
+/// Backed by a single `UITextField` whose `isSecureTextEntry` flips on the eye
+/// toggle — one field, so toggling reveal never loses the caret or the pasted
+/// value the way swapping a SwiftUI `SecureField` for a `TextField` does.
+///
+/// The reveal state (`isRevealed`) is per-instance `@State`, and every call site
+/// gives this view an `.id(provider)`. Changing provider therefore rebuilds the
+/// view with `isRevealed == false`, so a revealed key never carries over to
+/// another provider's field (never show another provider's key in plaintext).
 struct RevealableSecureField: View {
+    /// VoiceOver name for the field itself. Callers pass the provider-specific
+    /// key label ("Gemini API Key"), so a screen reader announces which
+    /// credential it is sitting in rather than a generic "secure text field".
     let accessibilityLabel: String
     let placeholder: String
+    /// What the eye button calls the thing it reveals. Only "API key" today, but
+    /// the reveal control is not otherwise credential-specific.
     var credentialName = "API key"
     @Binding var text: String
 
@@ -17,106 +33,90 @@ struct RevealableSecureField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            AutofillFreeKeyField(
+            SecureTextFieldRep(
                 placeholder: placeholder,
                 accessibilityLabel: accessibilityLabel,
                 isSecure: !isRevealed,
                 text: $text
             )
-                // The AppKit field class differs per mode; rebuild it on toggle.
-                .id(isRevealed)
-                .controlSize(.small)
+                .frame(height: 30)
 
             Button {
-                // Resign focus before the swap and defer it a turn: replacing
-                // the field while it is first responder can leave the system
-                // autofill overlay attached to a dead field, and AppKit aborts
-                // the app the next time a popover window orders on screen
-                // (NSRemoteView "expected (null)" assertion).
-                NSApp.keyWindow?.makeFirstResponder(nil)
-                DispatchQueue.main.async { isRevealed.toggle() }
+                isRevealed.toggle()
             } label: {
                 Image(systemName: isRevealed ? "eye.slash" : "eye")
-                    .font(.system(size: 12))
+                    .font(.system(size: 14))
                     .foregroundStyle(palette.mutedForeground)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(isRevealed ? "Hide \(credentialName)" : "Show \(credentialName)")
             .accessibilityLabel(isRevealed ? "Hide \(credentialName)" : "Show \(credentialName)")
         }
+        // Field and eye button stay two separate elements inside one container,
+        // so VoiceOver can reach the toggle instead of flattening it into the
+        // field's label.
         .accessibilityElement(children: .contain)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
     }
 }
 
-/// Field classes that opt out of the system Passwords autofill. Stock SwiftUI
-/// fields always spawn the SafariPlatformSupport completion helper on focus
-/// (`.textContentType` does not prevent it — verified via `log stream`), and a
-/// macOS 27 ViewBridge bug in that helper aborts the app whenever a popover
-/// window orders on screen while the helper's remote view is stale (NSRemoteView
-/// "expected (null)" assertion — the model-selector crash). These fields hold
-/// API keys, not login passwords, so autofill is useless here anyway.
-///
-/// The `@objc(_isPasswordAutofillEnabled)` accessors shadow AppKit's private
-/// autofill gate. If a macOS update renames the selector they silently become
-/// inert (never called) — they cannot break.
-private final class NoAutofillSecureTextField: NSSecureTextField {
-    @objc(_isPasswordAutofillEnabled)
-    var isPasswordAutofillEnabled: Bool { false }
-}
-
-private final class NoAutofillTextField: NSTextField {
-    @objc(_isPasswordAutofillEnabled)
-    var isPasswordAutofillEnabled: Bool { false }
-}
-
-/// SwiftUI wrapper for the autofill-free fields, styled to match a small
-/// `.roundedBorder` SwiftUI `TextField`. `isSecure` picks the field class at
-/// creation time — pair a change of it with `.id(...)` so the view is rebuilt.
-private struct AutofillFreeKeyField: NSViewRepresentable {
+/// UITextField wrapper that toggles `isSecureTextEntry` in place. API keys are
+/// not login passwords, so QuickType/autofill/autocorrect are all turned off.
+private struct SecureTextFieldRep: UIViewRepresentable {
     let placeholder: String
     let accessibilityLabel: String
     let isSecure: Bool
     @Binding var text: String
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field: NSTextField = isSecure ? NoAutofillSecureTextField() : NoAutofillTextField()
-        field.placeholderString = placeholder
-        field.setAccessibilityLabel(accessibilityLabel)
-        field.bezelStyle = .roundedBezel
-        field.controlSize = .small
-        field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
-        field.delegate = context.coordinator
-        field.lineBreakMode = .byTruncatingTail
-        // Stretch/shrink with the surrounding HStack instead of sizing to text.
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.placeholder = placeholder
+        field.accessibilityLabel = accessibilityLabel
+        field.font = .systemFont(ofSize: 15)
+        field.autocapitalizationType = .none
+        field.autocorrectionType = .no
+        field.spellCheckingType = .no
+        field.smartQuotesType = .no
+        field.smartDashesType = .no
+        field.smartInsertDeleteType = .no
+        // Keep the system Passwords/keychain helper out of an API-key field.
+        field.textContentType = .none
+        field.clearButtonMode = .whileEditing
+        field.isSecureTextEntry = isSecure
+        field.addTarget(
+            context.coordinator, action: #selector(Coordinator.editingChanged(_:)),
+            for: .editingChanged)
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }
 
-    func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != text {
-            field.stringValue = text
+    func updateUIView(_ field: UITextField, context: Context) {
+        if field.text != text { field.text = text }
+        field.placeholder = placeholder
+        field.accessibilityLabel = accessibilityLabel
+        if field.isSecureTextEntry != isSecure {
+            // Flipping isSecureTextEntry while first responder can drop the whole
+            // string on the next keystroke; re-seat the text to keep it intact.
+            field.isSecureTextEntry = isSecure
+            let existing = field.text
+            field.text = nil
+            field.text = existing
         }
-        field.placeholderString = placeholder
-        field.setAccessibilityLabel(accessibilityLabel)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    final class Coordinator: NSObject {
         private let text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
 
-        init(text: Binding<String>) {
-            self.text = text
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            text.wrappedValue = field.stringValue
+        @objc func editingChanged(_ field: UITextField) {
+            text.wrappedValue = field.text ?? ""
         }
     }
 }
+#endif

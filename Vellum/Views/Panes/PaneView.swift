@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -86,6 +87,10 @@ struct PaneView: View {
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarWillImport)) { note in
+            guard let key = note.userInfo?["key"] as? String else { return }
+            pane.scratchpad.prepareForExternalImport(matchingKey: key)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarImported)) { note in
             // A `.vellum` import merged notes/chat into documents/<key>/ on disk.
             // If THIS pane shows that document, its live scratchpad/AiStore hold
@@ -98,8 +103,11 @@ struct PaneView: View {
                   let document = app.document,
                   DocumentIdentity.storageKey(for: document) == key else { return }
             AiPersistence.invalidateCachedConversation(forKey: key)
-            pane.ai.loadConversationForDocument(document)
-            pane.scratchpad.discardAndReload(for: document)
+            Task {
+                await pane.ai.loadConversationForDocument(
+                    document, coordinator: workspace.storageCoordinator)
+            }
+            Task { await pane.scratchpad.discardAndReload(for: document).value }
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentDataDeleted)) { note in
             // The Storage pane deleted this document's notes/chat on disk. If THIS
@@ -112,7 +120,10 @@ struct PaneView: View {
             if note.userInfo?["chat"] as? Bool == true {
                 // Cache already invalidated by the poster; reload re-reads the now
                 // empty disk without writing.
-                pane.ai.loadConversationForDocument(document)
+                Task {
+                    await pane.ai.loadConversationForDocument(
+                        document, coordinator: workspace.storageCoordinator)
+                }
             }
             if note.userInfo?["notes"] as? Bool == true {
                 pane.scratchpad.discardNotesForExternalDelete(matchingKey: key)
@@ -152,22 +163,17 @@ struct PaneView: View {
     private func loadDocumentState() async {
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
-        pane.scratchpad.clearDocumentContext()
+        await pane.scratchpad.clearDocumentContext().value
         guard let document = app.document else { return }
         await pane.annotations.loadAnnotations()
         guard !Task.isCancelled else { return }
-        // In iCloud mode the document's notes/conversations may be evicted
-        // placeholders — download them off-main before the sync reads below so
-        // they load real bytes rather than degrading to empty.
-        await DocumentDataStore.materializeIfNeeded(
-            forKey: DocumentIdentity.storageKey(for: document))
-        guard !Task.isCancelled else { return }
-        pane.ai.loadConversationForDocument(app.document)
+        await pane.ai.loadConversationForDocument(
+            app.document, coordinator: workspace.storageCoordinator)
         if let tabId = app.activeTabId,
            let runtime = workspace.existingLiveTabRuntime(for: tabId) {
             pane.ai.restorePageTexts(runtime.pageTexts)
         }
-        pane.scratchpad.loadForDocument(app.document)
+        await pane.scratchpad.loadForDocument(app.document).value
     }
 
     private func runAutosave() async {
@@ -370,3 +376,4 @@ private final class PaneFocusNSView: NSView {
         }
     }
 }
+#endif  // os(macOS) — iPad pane view: Platform/iOS/PaneView_iOS.swift

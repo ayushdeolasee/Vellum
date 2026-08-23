@@ -13,8 +13,6 @@ enum AiProvider: String, Codable, Sendable {
     case gemini
     case openai
     case openrouter
-    /// ChatGPT-subscription OAuth (Codex backend); no API key, uses `ChatGPTAuth`.
-    case chatgpt
     /// OpenCode Zen gateway, authenticated with a pasted `sk-…` API key.
     case opencode
     /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
@@ -373,7 +371,6 @@ struct AiSettings: Codable, Equatable, Sendable {
     var openaiApiKey: String = ""
     var openrouterModel: String = ""
     var openrouterApiKey: String = ""
-    var chatgptModel: String = "gpt-5.5"
     var opencodeModel: String = "claude-opus-4-8"
     var opencodeApiKey: String = ""
     var opencodeGoModel: String = "glm-5.2"
@@ -382,7 +379,7 @@ struct AiSettings: Codable, Equatable, Sendable {
     var pinnedModels: [String] = []
     var reasoningEffort: AiThinkingMode = .auto
 
-    func isConfigured(chatGPTSignedIn: Bool) -> Bool {
+    func isConfigured() -> Bool {
         switch provider {
         case .gemini:
             hasValue(apiKey) && hasValue(model)
@@ -390,8 +387,6 @@ struct AiSettings: Codable, Equatable, Sendable {
             hasValue(openaiApiKey) && hasValue(openaiModel)
         case .openrouter:
             hasValue(openrouterApiKey) && hasValue(openrouterModel)
-        case .chatgpt:
-            chatGPTSignedIn && hasValue(chatgptModel)
         case .opencode:
             hasValue(opencodeApiKey) && hasValue(opencodeModel)
         case .opencodeGo:
@@ -458,8 +453,6 @@ final class AiStore {
     weak var annotationStore: AnnotationStore?
     /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
     weak var openRouterCatalog: OpenRouterCatalog?
-    /// Wired in by VellumApp; owns the ChatGPT-subscription OAuth lifecycle.
-    weak var chatgptAuth: ChatGPTAuth?
 
     private(set) var messages: [AiMessage] = []
     /// Current request phase; drives the panel's activity indicator.
@@ -498,20 +491,19 @@ final class AiStore {
     /// snapshot, or an AI-reply quote). Rendered as chips in the composer.
     private(set) var composerReferences: [AiReference] = []
 
-    /// A pending, one-shot request for the AppKit composer to take first
-    /// responder, set by every "Add to AI Chat" style action.
+    /// A pending, one-shot request for the SwiftUI composer to take focus (and
+    /// raise the keyboard), set by every "Add to AI Chat" style action.
     ///
     /// A one-shot *token* rather than a Bool or a monotonic counter, for two
     /// reasons the simpler shapes get wrong. A Bool can't distinguish two
     /// consecutive attach actions, so the second wouldn't refocus a composer the
-    /// user had clicked away from. A counter is never "spent": the AppKit
-    /// representable remembers the last value it fulfilled in its coordinator,
-    /// so when the inspector is closed and reopened, the rebuilt coordinator
-    /// starts at zero, sees a non-zero count, and steals focus for an attach the
-    /// user performed minutes ago. Consumption clears it here in the store — the
-    /// single place both the old and the new coordinator agree on — so a
-    /// fulfilled request can't replay, and each split pane's `AiStore` owns its
-    /// own token so two panes can't collide.
+    /// user had tapped away from. A counter is never "spent": the observer that
+    /// fulfils it remembers the last value it saw in view state, so when the
+    /// panel is torn down and remounted, the rebuilt view starts at zero, sees a
+    /// non-zero count, and steals focus for an attach the user performed minutes
+    /// ago. Consumption clears it here in the store — the single place both the
+    /// old and the new panel agree on — so a fulfilled request can't replay, and
+    /// each split pane's `AiStore` owns its own token so two panes can't collide.
     private(set) var composerFocusRequest: String?
 
     /// Session-lifetime pixels for references already attached to a sent
@@ -552,6 +544,16 @@ final class AiStore {
     /// pages' text into `pageTexts` (no idle pacing); `nil` extracts the whole
     /// document. Returns how many pages were newly populated. Web documents load
     /// their full text up front, so none is registered for them.
+    ///
+    /// - Important: **Nothing installs this on iPad yet** — no file under
+    ///   `Vellum/Platform/iOS/` assigns it, so `ensureExtracted` returns 0 and
+    ///   `AiToolEngine.getPageText`/`searchDocument` and the per-turn context
+    ///   fill read only what the background walk has already produced. That is
+    ///   a known parity gap versus macOS (#129 packet 7 §5 R3), not a bug in
+    ///   this property. Whoever closes it **must** route the handler's reads
+    ///   through `PageTextExtractionGate.shared` at `.onDemand`: it would
+    ///   otherwise become a fourth ungated producer of `PDFPage.string` bursts
+    ///   and defeat the serialization the gate exists for.
     var ensureExtractedHandler: ((Set<Int>?) async -> Int)?
 
     init() {
@@ -585,7 +587,9 @@ final class AiStore {
     func addLocalMessage(role: AiRole, content: String, id: String? = nil) -> String {
         let message = AiPersistence.makeMessage(role: role, content: content, id: id)
         messages.append(message)
-        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        AiPersistence.saveConversation(
+            for: app?.document, messages: messages,
+            coordinator: app?.workspace?.storageCoordinator)
         return message.id
     }
 
@@ -596,7 +600,9 @@ final class AiStore {
             next.content = content
             return next
         }
-        AiPersistence.saveConversation(for: app?.document, messages: messages)
+        AiPersistence.saveConversation(
+            for: app?.document, messages: messages,
+            coordinator: app?.workspace?.storageCoordinator)
     }
 
     func setThinkingState(_ thinking: Bool) {
@@ -676,7 +682,7 @@ final class AiStore {
     }
 
     /// Mark a focus request as fulfilled. Ignores a token that is no longer the
-    /// pending one, so a late `updateNSView` from a torn-down composer can't
+    /// pending one, so a late `onChange` delivered from a torn-down panel can't
     /// cancel a newer request the user has just made.
     func consumeComposerFocusRequest(_ request: String) {
         guard composerFocusRequest == request else { return }
@@ -743,8 +749,9 @@ final class AiStore {
     /// message still being assembled) and falls back to this session's cache for
     /// one whose pixels were stripped on the way to disk. Returns nil for a
     /// reference restored from a previous session — the caller must say so
-    /// rather than render an empty frame. Returns `Data`, not `NSImage`, so the
-    /// resolution logic is testable headlessly.
+    /// rather than render an empty frame. Returns `Data`, not `UIImage`, so the
+    /// resolution logic is testable headlessly — `SentReferenceChips` does the
+    /// `UIImage(data:)` conversion. Do not "improve" this into an image type.
     func referencePreviewData(for reference: AiReference) -> Data? {
         let base64 = reference.image?.base64Data.isEmpty == false
             ? reference.image?.base64Data
@@ -755,17 +762,21 @@ final class AiStore {
 
     // MARK: - Attachment drops
 
-    /// Take a drop routed here from the sidebar's single AppKit drag catcher (see
-    /// `SidebarDropCatcher` / `SidebarPanelStack`) when the AI tab is visible. A
-    /// Finder file payload is classified off the main actor and its images are
-    /// attached as reference chips (non-image files are declined with a notice);
-    /// raw image bytes (Preview / a browser) are normalized and attached as an
-    /// image reference.
+    /// Take a drop the AI panel classified out of SwiftUI's `.onDrop` providers
+    /// (`AttachmentDrop`). A Files payload is classified off the main actor and
+    /// its images are attached as reference chips (non-image files are declined
+    /// with a notice); raw image bytes (Photos / a browser) are normalized and
+    /// attached as an image reference.
     ///
-    /// Lives on the store, not the view, because the sidebar routes every drop
-    /// through one destination that dispatches to whichever store owns the visible
-    /// tab — the panels no longer own a drop target of their own. See
-    /// `SidebarDropRoutingTests` for why stacked panels can't each register one.
+    /// Lives on the store, not the view, because this is where the images-only
+    /// policy, the tab-identity guard and the image cap all live — the panel
+    /// registers the drop target (and on iPad it registers two: the panel root
+    /// and the composer field), but it must not each grow its own copy of the
+    /// policy. macOS routes the same payloads here from its single sidebar drag
+    /// catcher; the shape of this entry point is deliberately identical.
+    ///
+    /// Takes the whole gesture's payload, not one file at a time: a mixed drop
+    /// must produce exactly one notice, not one per rejected file.
     func handleDrop(_ payload: AttachmentDropPayload) -> Bool {
         switch payload {
         case let .files(urls):
@@ -779,18 +790,30 @@ final class AiStore {
     /// Read and classify each dropped/picked file off the main actor (a 48MP
     /// photo spends real time in decode + resize), then attach every image as a
     /// chip. Only images can be attached — the images-only policy shared by
-    /// drag-and-drop and the picker's ("+" → Attach image…) entry point. Any
-    /// non-image files in the drop are declined with a single notice that names
-    /// them, so a mixed drop still lands its images and the rest is explained
-    /// rather than silently dropped; folders and unreadable paths get the
-    /// distinct "folder or unreadable" notice.
+    /// drag-and-drop and the attach menu's Files entry. Any non-image files in
+    /// the drop are declined with a single notice that names them, so a mixed
+    /// drop still lands its images and the rest is explained rather than
+    /// silently dropped; folders and unreadable paths get the distinct "folder
+    /// or unreadable" notice.
     func attachFiles(at urls: [URL]) {
-        // App sandbox is off (project.yml), so the URL needs no security-scoped
-        // bookmark — plain file reads are enough.
         let sessionId = app?.activeTabId
         Task { [weak self] in
+            // iOS deviation from the Mac, and NOT optional: this app IS
+            // sandboxed, and every URL that reaches here — from `.fileImporter`
+            // or from a Files drag — is security-scoped. Reading one without
+            // holding its scope open fails exactly like a missing file, so
+            // `aiFileAttachment` would return nil and the user would be told
+            // their PNG is "a folder or unreadable". Start/stop must bracket the
+            // read itself, hence inside the per-URL map rather than around the
+            // detached task. Balanced by `defer`, and only stopped when the
+            // start actually succeeded (URLs already inside our own container
+            // return false and must not be stopped).
             let results = await Task.detached(priority: .userInitiated) {
-                urls.map { (name: $0.lastPathComponent, attachment: aiFileAttachment(from: $0)) }
+                urls.map { url -> (name: String, attachment: AiFileAttachment?) in
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    return (name: url.lastPathComponent, attachment: aiFileAttachment(from: url))
+                }
             }.value
             guard let self, self.app?.activeTabId == sessionId else { return }
 
@@ -854,8 +877,15 @@ final class AiStore {
     }
 
     /// Restore the persisted conversation for a document (or reset when nil).
-    func loadConversationForDocument(_ document: DocumentInfo?) {
-        messages = AiPersistence.loadConversation(for: document)
+    func loadConversationForDocument(
+        _ document: DocumentInfo?, coordinator: StorageCoordinator? = nil
+    ) async {
+        if let coordinator {
+            messages = await AiPersistence.loadConversation(
+                for: document, coordinator: coordinator)
+        } else {
+            messages = AiPersistence.loadConversation(for: document)
+        }
         activity = .idle
         streamingMessageId = nil
         composerReferences = []
@@ -890,7 +920,9 @@ final class AiStore {
         let transaction = AiConversationClearTransaction(
             document: document, sessionId: sessionId, removedMessages: messages)
         cancelActiveRequest()
-        AiPersistence.saveConversation(for: document, messages: [])
+        AiPersistence.saveConversation(
+            for: document, messages: [],
+            coordinator: app?.workspace?.storageCoordinator)
         messages = []
         error = nil
         return transaction
@@ -904,7 +936,9 @@ final class AiStore {
         let current = AiPersistence.loadConversation(for: document)
         let currentIds = Set(current.map(\.id))
         let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
-        AiPersistence.saveConversation(for: document, messages: restored)
+        AiPersistence.saveConversation(
+            for: document, messages: restored,
+            coordinator: app?.workspace?.storageCoordinator)
         if isShowing(transaction, document: document) {
             cancelActiveRequest()
             // Read back rather than showing `restored`: the save applies the
@@ -925,7 +959,9 @@ final class AiStore {
         let removedIds = Set(transaction.removedMessages.map(\.id))
         let remaining = AiPersistence.loadConversation(for: document)
             .filter { !removedIds.contains($0.id) }
-        AiPersistence.saveConversation(for: document, messages: remaining)
+        AiPersistence.saveConversation(
+            for: document, messages: remaining,
+            coordinator: app?.workspace?.storageCoordinator)
         if isShowing(transaction, document: document) {
             cancelActiveRequest()
             messages = remaining
@@ -1071,10 +1107,6 @@ final class AiStore {
             error = "Set your OpenCode Go API key in AI settings."
             return
         }
-        if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
-            error = "Sign in with ChatGPT in AI settings."
-            return
-        }
 
         // The transcript keeps its own copy of what was attached — the composer
         // chips are cleared on submit, so without this the sent message would
@@ -1126,7 +1158,9 @@ final class AiStore {
         }
         let documentForPersist = app.document ?? documentAtStart
         let messagesWithUser = Array(messages.dropLast())
-        AiPersistence.saveConversation(for: documentForPersist, messages: messagesWithUser)
+        AiPersistence.saveConversation(
+            for: documentForPersist, messages: messagesWithUser,
+            coordinator: app.workspace?.storageCoordinator)
 
         // Image inputs: the auto page snapshot first, then any snapshot the user
         // explicitly attached as a reference.
@@ -1223,21 +1257,6 @@ final class AiStore {
                     toolEngine: engine,
                     onEvent: onEvent
                 )
-            case .chatgpt:
-                guard let chatgptAuth else {
-                    throw AiClientError.message("Sign in with ChatGPT in AI settings.")
-                }
-                let model = settingsAtStart.chatgptModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                result = try await ChatGPTClient(auth: chatgptAuth).generate(
-                    model: model.isEmpty ? "gpt-5.5" : model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: images,
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
             case .opencode:
                 let model = settingsAtStart.opencodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !model.isEmpty else {
@@ -1295,7 +1314,9 @@ final class AiStore {
             let completed = AiPersistence.limitedMessages(messagesWithUser + [
                 assistantMessage
             ])
-            AiPersistence.saveConversation(for: documentForPersist, messages: completed)
+            AiPersistence.saveConversation(
+                for: documentForPersist, messages: completed,
+                coordinator: app.workspace?.storageCoordinator)
             if app.activeTabId == sessionIdAtStart {
                 messages = completed
                 activity = .idle
@@ -1317,7 +1338,9 @@ final class AiStore {
             let failed = messagesWithUser + [
                 AiPersistence.makeMessage(role: .assistant, content: content, id: assistantId)
             ]
-            AiPersistence.saveConversation(for: documentForPersist, messages: failed)
+            AiPersistence.saveConversation(
+                for: documentForPersist, messages: failed,
+                coordinator: app.workspace?.storageCoordinator)
             if app.activeTabId == sessionIdAtStart {
                 messages = failed
                 activity = .idle

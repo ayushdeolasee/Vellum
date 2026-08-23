@@ -4,8 +4,8 @@ import Testing
 @testable import Vellum
 
 // The vault is the one place in the app where a bug destroys something the
-// user cannot recreate: every API key and OAuth token lives in a single
-// keychain item, rewritten whole on every change. Until now none of it was
+// user cannot recreate: every API key lives in a single keychain item, rewritten
+// whole on every change. Until now none of it was
 // testable, because it called the Security framework directly and the test
 // guard (`isRunningTests` -> in-memory store) short-circuits every public entry
 // point before the vault logic runs.

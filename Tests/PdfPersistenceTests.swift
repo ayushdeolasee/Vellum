@@ -1,7 +1,157 @@
 import XCTest
 import PDFKit
 import CoreGraphics
+import CoreText
 @testable import Vellum
+
+/// MainActor-isolated box for sampling the largest scheduling gap observed while
+/// a write runs (Task closures are `@Sendable` and can't capture a mutable var).
+@MainActor
+private final class GapTracker {
+    var maxGap: Double = 0
+    func record(_ gap: Double) { maxGap = max(maxGap, gap) }
+}
+
+@MainActor
+final class HighlightResizeTests: XCTestCase {
+    private func textPage(_ string: String = "The quick brown fox jumps over the lazy dog") -> PDFPage {
+        let data = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
+        let attributed = CFAttributedStringCreate(
+            nil,
+            string as CFString,
+            [kCTFontAttributeName: font] as CFDictionary)!
+        context.textPosition = CGPoint(x: 40, y: 700)
+        CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+        context.endPDFPage()
+        context.closePDF()
+        return PDFDocument(data: data as Data)!.page(at: 0)!
+    }
+
+    private func position(for range: NSRange, on page: PDFPage) -> PositionData {
+        let selection = page.selection(for: range)!
+        let rects = selection.selectionsByLine().compactMap { line -> AnnotationRect? in
+            guard let linePage = line.pages.first else { return nil }
+            return PdfTextLocator.uiRect(
+                fromPageSpace: line.bounds(for: linePage), page: linePage)
+        }
+        let dimensions = PdfTextLocator.displayDimensions(of: page)
+        return PositionData(
+            rects: PdfTextLocator.mergeLineRects(rects),
+            pageWidth: Double(dimensions.width),
+            pageHeight: Double(dimensions.height),
+            selectedText: selection.string,
+            startOffset: nil,
+            endOffset: nil,
+            prefix: nil,
+            suffix: nil,
+            viewportOffset: nil)
+    }
+
+    private func midpointY(_ position: PositionData) -> Double {
+        let rect = position.rects.first!
+        return rect.y + rect.height / 2
+    }
+
+    func testDragEndPastTextEndDoesNotCrash() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: current.pageWidth + 1_000, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasPrefix("quick") == true)
+        XCTAssertTrue(result?.selectedText?.hasSuffix("dog") == true)
+    }
+
+    func testDragEndPastStartHoldsLastFrame() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let targetCharacter = position(for: NSRange(location: 1, length: 1), on: page)
+        let targetRect = targetCharacter.rects.first!
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current))))
+    }
+
+    func testDragEndIntoLeftMarginHoldsLastFrame() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: 0, y: midpointY(current))))
+    }
+
+    func testDragEndExtendsWhileStartStaysPinned() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 4, length: 11), on: page)
+        let targetWord = position(for: NSRange(location: 20, length: 5), on: page)
+        let targetRect = targetWord.rects.first!
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasPrefix("quick") == true)
+        XCTAssertTrue(result?.selectedText?.contains("fox") == true)
+    }
+
+    func testDragStartExtendsWhileEndStaysPinned() {
+        let page = textPage()
+        let current = position(for: NSRange(location: 16, length: 3), on: page)
+        let targetWord = position(for: NSRange(location: 0, length: 3), on: page)
+        let targetRect = targetWord.rects.first!
+        let result = PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .start,
+            toDisplayPoint: CGPoint(x: targetRect.x + targetRect.width / 2, y: midpointY(current)))
+
+        XCTAssertTrue(result?.selectedText?.hasSuffix("fox") == true)
+        let text = result?.selectedText ?? ""
+        XCTAssertTrue(text.contains("The") || text.hasPrefix("he"))
+    }
+
+    func testResizeOnEmptyPageReturnsNil() {
+        let data = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        context.beginPDFPage(nil)
+        context.endPDFPage()
+        context.closePDF()
+        let page = PDFDocument(data: data as Data)!.page(at: 0)!
+        let current = PositionData(
+            rects: [AnnotationRect(x: 10, y: 10, width: 50, height: 12)],
+            pageWidth: 612,
+            pageHeight: 792,
+            selectedText: "x",
+            startOffset: nil,
+            endOffset: nil,
+            prefix: nil,
+            suffix: nil,
+            viewportOffset: nil)
+
+        XCTAssertNil(PdfTextLocator.resizedPosition(
+            page: page,
+            current: current,
+            edge: .end,
+            toDisplayPoint: CGPoint(x: 100, y: 16)))
+    }
+}
 
 // Round-trip tests for the PDF persistence engine (Services/Pdf/*). These
 // mirror the Rust tests in src-tauri/src/pdf_annotations.rs and additionally
@@ -83,6 +233,38 @@ final class PdfPersistenceTests: XCTestCase {
 
     private func openSession(_ path: String) async throws -> PdfDocumentSession {
         try await PdfSessionBackend().open(path: path, sessionId: UUID().uuidString)
+    }
+
+    /// A deliberately heavy PDF: every page carries a UNIQUE full-page noise
+    /// image (noise defeats both compression and CGPDFContext's image dedup),
+    /// yielding a file in the hundreds-of-megabytes class. A mutation pays the
+    /// full pipeline over that file — read, double parse (CGPDFDocument +
+    /// PDFDocument), `dataRepresentation()`, the byte-patch scan, and the
+    /// atomic rewrite — which is the cost the main thread used to eat
+    /// synchronously on textbook-size documents.
+    private func makeLargePdf(name: String, pages: Int, imageSide: Int) -> String {
+        let url = tempDir.appendingPathComponent("\(name).pdf")
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil)!
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        for _ in 0..<pages {
+            // arc4random_buf fills at C speed, so fixture generation stays
+            // fast even in unoptimized Debug test builds.
+            var pixels = [UInt8](repeating: 0, count: imageSide * imageSide * 4)
+            pixels.withUnsafeMutableBytes { arc4random_buf($0.baseAddress, $0.count) }
+            let image: CGImage = pixels.withUnsafeMutableBytes { raw in
+                let bitmap = CGContext(
+                    data: raw.baseAddress, width: imageSide, height: imageSide,
+                    bitsPerComponent: 8, bytesPerRow: imageSide * 4, space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+                return bitmap.makeImage()!
+            }
+            context.beginPDFPage(nil)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 612, height: 792))
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return url.path
     }
 
     private func position(_ rect: AnnotationRect, pageWidth: Double = 612, pageHeight: Double = 792, selectedText: String? = "selected text") -> PositionData {
@@ -391,6 +573,33 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertFalse(missing)
     }
 
+    /// Packet 6 §5.3 risk 1, iPad-only: a titled bookmark breaks the
+    /// `"Bookmark - page "` /Title invariant the iPadOS-26 rehydration pass
+    /// matches on. If the matcher was not widened, the next mutation on the
+    /// document throws "Failed to match all PDF bookmarks" and the user can no
+    /// longer annotate the file at all.
+    func testTitledBookmarkDoesNotBlockLaterAnnotationWrites() async throws {
+        let path = makeTestPdf(name: "titled-then-highlight")
+        let session = try await openSession(path)
+        let bookmark = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 2, color: nil, content: nil, positionData: nil))
+        let retitled = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: bookmark.id, color: nil, content: "Chapter 1 — intro", positionData: nil))
+        XCTAssertTrue(retitled)
+
+        let fresh = try await openSession(path)
+        let highlight = try await fresh.createAnnotation(CreateAnnotationInput(
+            type: .highlight, pageNumber: 1, color: "#fef08a", content: nil,
+            positionData: position(AnnotationRect(x: 72, y: 100, width: 100, height: 16))))
+
+        let annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.count, 2)
+        XCTAssertEqual(
+            annotations.first { $0.id == bookmark.id }?.content, "Chapter 1 — intro",
+            "the title must survive the rewrite triggered by the highlight create")
+        XCTAssertNotNil(annotations.first { $0.id == highlight.id })
+    }
+
     func testMetadataLastPageTitleAndCustomKeys() async throws {
         let path = makeTestPdf(name: "metadata")
         let session = try await openSession(path)
@@ -482,8 +691,6 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertFalse(missing)
     }
 
-    /// Pinning a highlight (or note) stamps /VellumPinned, survives reopen,
-    /// floats the annotation to the front of the list, and can be cleared.
     func testPinHighlightPersistsAndSortsFirst() async throws {
         let path = makeTestPdf(name: "pin-highlight")
         let session = try await openSession(path)
@@ -565,6 +772,59 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(annotations.first { $0.id == page2.id }).pinned)
     }
 
+    /// Packet 6 §5.3 risk 3, iPad-only: retitle and pin arriving in ONE
+    /// `UpdateAnnotationInput` rewrite the outline twice. The second increment
+    /// has to be built from bytes re-read off disk, not from the now-stale
+    /// document handle, or the file ends up truncated or double-/Prev-chained.
+    func testBookmarkRetitleAndPinInOneUpdate() async throws {
+        let path = makeTestPdf(name: "retitle-and-pin")
+        let session = try await openSession(path)
+        let page2 = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 2, color: nil, content: nil, positionData: nil))
+        let page1 = try await session.createAnnotation(CreateAnnotationInput(
+            type: .bookmark, pageNumber: 1, color: nil, content: nil, positionData: nil))
+
+        let both = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: page2.id, color: nil, content: "Pinned & titled",
+            positionData: nil, isPinned: true))
+        XCTAssertTrue(both)
+
+        let items = rawOutlineItems(path)
+        let item = try XCTUnwrap(items.first { CgPdf.string($0, "VellumNM") == page2.id })
+        XCTAssertEqual(CgPdf.integer(item, "VellumPinned"), 1)
+        XCTAssertEqual(CgPdf.string(item, "Title"), "Pinned & titled")
+        XCTAssertEqual(CgPdf.string(item, "VellumContent"), "Pinned & titled")
+
+        let annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertEqual(annotations.map(\.id), [page2.id, page1.id])
+        XCTAssertEqual(annotations.first?.content, "Pinned & titled")
+        XCTAssertTrue(try XCTUnwrap(annotations.first).pinned)
+    }
+
+    /// Packet 6 §5.3 risk 2, iPad-only: on iPadOS 26 the PDFKit serializer
+    /// drops custom annotation keys, so a pin only survives an unrelated
+    /// mutation if the rehydration pass writes /VellumPinned back.
+    func testPinnedHighlightSurvivesUnrelatedRewrite() async throws {
+        let path = makeTestPdf(name: "pin-survives")
+        let session = try await openSession(path)
+        let highlight = try await session.createAnnotation(CreateAnnotationInput(
+            type: .highlight, pageNumber: 1, color: "#fef08a", content: nil,
+            positionData: position(AnnotationRect(x: 72, y: 100, width: 100, height: 16))))
+        let pinnedOk = try await session.updateAnnotation(UpdateAnnotationInput(
+            id: highlight.id, color: nil, content: nil, positionData: nil, isPinned: true))
+        XCTAssertTrue(pinnedOk)
+
+        _ = try await openSession(path).createAnnotation(CreateAnnotationInput(
+            type: .note, pageNumber: 3, color: nil, content: "unrelated",
+            positionData: position(AnnotationRect(x: 40, y: 40, width: 0, height: 0))))
+
+        let annotations = try await openSession(path).annotations(pageNumber: nil)
+        XCTAssertTrue(
+            try XCTUnwrap(annotations.first { $0.id == highlight.id }).pinned,
+            "pin must survive the rewrite caused by an unrelated create")
+        XCTAssertEqual(annotations.first?.id, highlight.id)
+    }
+
     func testDeleteHighlight() async throws {
         let path = makeTestPdf(name: "delete")
         let session = try await openSession(path)
@@ -620,6 +880,32 @@ final class PdfPersistenceTests: XCTestCase {
         // /NM stamped with the derived id on first update.
         let dictionary = try XCTUnwrap(rawAnnotation(path, page: 1, nm: "pdf-direct-1-0"))
         XCTAssertEqual(CgPdf.string(dictionary, "NM"), "pdf-direct-1-0")
+    }
+
+    func testUnrelatedCreateDoesNotClaimForeignAnnotation() async throws {
+        let path = makeClassicPdf(name: "foreign-preserved", objects: [
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [5 0 R] >>",
+            4: "<< /Length 0 >>\nstream\n\nendstream",
+            5: "<< /Type /Annot /Subtype /Highlight /Rect [72 676 252 692] /QuadPoints [72 692 252 692 72 676 252 676] /C [1 1 0] /T (Vellum) /Contents (External comment) >>",
+        ])
+
+        let session = try await openSession(path)
+        _ = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 1,
+            color: nil,
+            content: "Vellum note",
+            positionData: position(AnnotationRect(x: 300, y: 400, width: 0, height: 0))))
+
+        let foreign = try XCTUnwrap(rawAnnotations(path, page: 1).first {
+            CgPdf.string($0, "Contents") == "External comment"
+        })
+        XCTAssertNil(CgPdf.string(foreign, "NM"))
+        XCTAssertEqual(CgPdf.string(foreign, "T"), "Vellum")
+        XCTAssertFalse(CgPdf.has(foreign, "VellumCreatedAt"))
+        XCTAssertFalse(CgPdf.has(foreign, "VellumUpdatedAt"))
     }
 
     func testForeignAnnotationDerivedIdSkipsNonDictionarySlots() async throws {
@@ -687,29 +973,32 @@ final class PdfPersistenceTests: XCTestCase {
         XCTAssertTrue(page.annotations.isEmpty)
 
         // Render page 1 like the viewer does and require non-blank pixels.
+        // CoreGraphics (page.draw + CGBitmapContext) is cross-platform, so the
+        // same round-trip test runs on both the macOS and iPad builds.
         let box = page.bounds(for: .cropBox)
         let width = Int(box.width), height = Int(box.height)
-        let thumb = page.thumbnail(of: NSSize(width: width, height: height), for: .cropBox)
-        let rep = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        NSColor.white.setFill()
-        NSRect(x: 0, y: 0, width: width, height: height).fill()
-        thumb.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
-        NSGraphicsContext.restoreGraphicsState()
+        let bytesPerRow = width * 4
+        var buffer = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(buffer.withUnsafeMutableBytes { raw in
+            CGContext(
+                data: raw.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        })
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        // Map the crop box to the context origin before drawing the page.
+        context.translateBy(x: -box.origin.x, y: -box.origin.y)
+        page.draw(with: .cropBox, to: context)
 
         var sum = 0.0, sumSq = 0.0, count = 0.0
-        let bytes = try XCTUnwrap(rep.bitmapData)
         for y in stride(from: 0, to: height, by: 2) {
             for x in stride(from: 0, to: width, by: 2) {
-                let offset = y * rep.bytesPerRow + x * rep.samplesPerPixel
-                let luma = 0.299 * Double(bytes[offset])
-                    + 0.587 * Double(bytes[offset + 1])
-                    + 0.114 * Double(bytes[offset + 2])
+                let offset = y * bytesPerRow + x * 4
+                let luma = 0.299 * Double(buffer[offset])
+                    + 0.587 * Double(buffer[offset + 1])
+                    + 0.114 * Double(buffer[offset + 2])
                 sum += luma
                 sumSq += luma * luma
                 count += 1
@@ -844,140 +1133,64 @@ final class PdfPersistenceTests: XCTestCase {
         try await session.save()
         try await session.close()
     }
-}
 
-// Deterministic tests for the highlight edge-resize core
-// (PdfViewerController.resizedPosition). Uses a real one-line text PDF so
-// PDFKit's point-to-point selection behaves like it does in the app.
-@MainActor
-final class HighlightResizeTests: XCTestCase {
-    /// One-page PDF with a single line of extractable text, drawn with CoreText.
-    private func textPage(_ string: String = "The quick brown fox jumps over the lazy dog") -> PDFPage {
-        let data = NSMutableData()
-        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let consumer = CGDataConsumer(data: data as CFMutableData)!
-        let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
-        ctx.beginPDFPage(nil)
-        let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
-        let attr = CFAttributedStringCreate(nil, string as CFString, [kCTFontAttributeName: font] as CFDictionary)!
-        let line = CTLineCreateWithAttributedString(attr)
-        ctx.textPosition = CGPoint(x: 40, y: 700)
-        CTLineDraw(line, ctx)
-        ctx.endPDFPage()
-        ctx.closePDF()
-        return PDFDocument(data: data as Data)!.page(at: 0)!
-    }
+    /// The freeze regression: creating an annotation on a textbook-size PDF must
+    /// not block the MainActor. We create a note on a heavy document while a
+    /// MainActor loop samples its own scheduling latency every 50ms; if the
+    /// write ran on the main thread (the old behavior) the sampler would stall
+    /// for the whole multi-second rewrite.
+    func testCreateAnnotationKeepsMainActorResponsiveOnLargePdf() async throws {
+        // ~55 pages x unique 1024x1024 noise image ≈ 170MB on disk. Note:
+        // `dataRepresentation()` alone is NOT the heaviness gauge — PDFKit
+        // stream-copies at memcpy speed (a 470MB file serializes in ~0.2s) —
+        // so the fixture check below gates on the wall-clock cost of the FULL
+        // createAnnotation pipeline (read + double parse + serialize +
+        // byte-patch scan + atomic rewrite), which is exactly the work the
+        // main thread used to do synchronously.
+        let path = makeLargePdf(name: "responsive", pages: 55, imageSide: 1024)
 
-    /// Display-space PositionData for a character range, matching how the app
-    /// derives a highlight's rects (uiRect + mergeLineRects).
-    private func position(for range: NSRange, on page: PDFPage) -> PositionData {
-        let sel = page.selection(for: range)!
-        var rects: [AnnotationRect] = []
-        for line in sel.selectionsByLine() {
-            guard let p = line.pages.first else { continue }
-            rects.append(PdfViewerController.uiRect(fromPageSpace: line.bounds(for: p), page: p))
+        let session = try await openSession(path)
+
+        // Sample MainActor scheduling latency continuously.
+        let tracker = GapTracker()
+        let sampler = Task { @MainActor in
+            var last = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+                let now = Date()
+                tracker.record(now.timeIntervalSince(last) - 0.050)
+                last = now
+            }
         }
-        let dims = PdfViewerController.displayDimensions(of: page)
-        return PositionData(
-            rects: PdfViewerController.mergeLineRects(rects),
-            pageWidth: Double(dims.width), pageHeight: Double(dims.height),
-            selectedText: sel.string, startOffset: nil, endOffset: nil,
-            prefix: nil, suffix: nil, viewportOffset: nil)
-    }
+        // Let the sampler establish a baseline before the write starts.
+        try await Task.sleep(for: .milliseconds(120))
 
-    private func midY(_ pos: PositionData) -> Double {
-        let r = pos.rects.first!
-        return r.y + r.height / 2
-    }
+        let writeStart = Date()
+        let created = try await session.createAnnotation(CreateAnnotationInput(
+            type: .note,
+            pageNumber: 1,
+            color: nil,
+            content: "responsiveness note",
+            positionData: position(AnnotationRect(x: 100, y: 100, width: 0, height: 0), selectedText: nil)))
+        let writeSeconds = Date().timeIntervalSince(writeStart)
 
-    // THE CRASH: the old index-based core called characterBounds(at:) with an
-    // out-of-range index when the end handle was dragged past the text, trapping.
-    // The selection-based core must not crash and must extend to the last word.
-    func testDragEndPastTextEndDoesNotCrash() throws {
-        let page = textPage()
-        XCTAssertGreaterThan(page.numberOfCharacters, 10)
-        let pos = position(for: NSRange(location: 4, length: 11), on: page) // "quick brown"
-        let farRight = CGPoint(x: pos.pageWidth + 1000, y: midY(pos))
-        let result = PdfViewerController.resizedPosition(
-            page: page, current: pos, edge: .end, toDisplayPoint: farRight)
-        XCTAssertNotNil(result, "dragging end past the text end must extend, not crash/fail")
-        let text = result?.selectedText ?? ""
-        XCTAssertTrue(text.hasPrefix("quick"), "start stays pinned at 'quick': \(text)")
-        XCTAssertTrue(text.hasSuffix("dog"), "end extends to the last word: \(text)")
-    }
+        sampler.cancel()
+        let maxGap = tracker.maxGap
 
-    // Dragging the END handle LEFT past the START must NOT drag the beginning
-    // along — crossing the pinned edge holds the last frame (returns nil) instead
-    // of inverting the selection (the "beginning moves when I drag the end" bug).
-    func testDragEndPastStartHolds() throws {
-        let page = textPage()
-        let pos = position(for: NSRange(location: 4, length: 11), on: page) // starts at 'q' (idx 4)
-        // Target 'h' in "The" (index 1), which is BEFORE the start anchor.
-        let h = position(for: NSRange(location: 1, length: 1), on: page)
-        let target = CGPoint(x: h.rects.first!.x + h.rects.first!.width / 2, y: midY(pos))
-        XCTAssertNil(
-            PdfViewerController.resizedPosition(
-                page: page, current: pos, edge: .end, toDisplayPoint: target),
-            "over-dragging the end past the start must hold, not move the start")
-    }
+        // The mutation must be genuinely expensive, or a passing gap assertion
+        // proves nothing. On the old main-thread code path this entire
+        // duration WAS a MainActor stall.
+        XCTAssertGreaterThan(
+            writeSeconds, 0.5,
+            "fixture too cheap (createAnnotation took \(writeSeconds)s) to exercise the freeze; scale up pages")
 
-    // Dragging into the left margin (before the pinned start) must HOLD the last
-    // frame, not jump — jumping is exactly the "not smooth" behavior.
-    func testDragIntoLeftMarginHolds() throws {
-        let page = textPage()
-        let pos = position(for: NSRange(location: 4, length: 11), on: page)
-        let farLeft = CGPoint(x: 0, y: midY(pos))
-        XCTAssertNil(
-            PdfViewerController.resizedPosition(
-                page: page, current: pos, edge: .end, toDisplayPoint: farLeft),
-            "an off-text margin point must hold, not jump the highlight")
-    }
+        // The annotation must actually have landed on disk.
+        let annotations = try await openSession(path).annotations(pageNumber: nil)
+        let note = try XCTUnwrap(annotations.first { $0.id == created.id })
+        XCTAssertEqual(note.content, "responsiveness note")
 
-    // Dragging the END rightward to a point inside a later word extends the
-    // highlight to track the cursor, with the start unchanged.
-    func testDragEndExtendsToCursor() throws {
-        let page = textPage()
-        let pos = position(for: NSRange(location: 4, length: 11), on: page) // "quick brown"
-        // Target the middle of "jumps" (index 20..24 in the sample string).
-        let jumps = position(for: NSRange(location: 20, length: 5), on: page)
-        let target = CGPoint(x: jumps.rects.first!.x + jumps.rects.first!.width / 2, y: midY(pos))
-        let result = PdfViewerController.resizedPosition(
-            page: page, current: pos, edge: .end, toDisplayPoint: target)
-        XCTAssertNotNil(result)
-        let text = result?.selectedText ?? ""
-        XCTAssertTrue(text.hasPrefix("quick"), "start stays pinned near the original start: \(text)")
-        XCTAssertTrue(text.contains("fox"), "end extends past the original end ('quick brown'): \(text)")
-    }
-
-    // Dragging the START handle leftward extends the highlight to the left while
-    // the END stays pinned.
-    func testDragStartExtendsLeftKeepsEndPinned() throws {
-        let page = textPage()
-        let pos = position(for: NSRange(location: 16, length: 3), on: page) // "fox"
-        // Target the middle of "The" (index 0..2), to the left of "fox".
-        let the = position(for: NSRange(location: 0, length: 3), on: page)
-        let target = CGPoint(x: the.rects.first!.x + the.rects.first!.width / 2, y: midY(pos))
-        let result = PdfViewerController.resizedPosition(
-            page: page, current: pos, edge: .start, toDisplayPoint: target)
-        XCTAssertNotNil(result)
-        let text = result?.selectedText ?? ""
-        XCTAssertTrue(text.hasSuffix("fox"), "end stays pinned at 'fox': \(text)")
-        XCTAssertTrue(text.contains("The") || text.hasPrefix("he"), "start extends leftward: \(text)")
-    }
-
-    // Empty / no-text page must fail gracefully (not crash).
-    func testResizeOnEmptyPageReturnsNil() throws {
-        let data = NSMutableData()
-        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let consumer = CGDataConsumer(data: data as CFMutableData)!
-        let ctx = CGContext(consumer: consumer, mediaBox: &box, nil)!
-        ctx.beginPDFPage(nil); ctx.endPDFPage(); ctx.closePDF()
-        let page = PDFDocument(data: data as Data)!.page(at: 0)!
-        let pos = PositionData(
-            rects: [AnnotationRect(x: 10, y: 10, width: 50, height: 12)],
-            pageWidth: 612, pageHeight: 792, selectedText: "x",
-            startOffset: nil, endOffset: nil, prefix: nil, suffix: nil, viewportOffset: nil)
-        XCTAssertNil(PdfViewerController.resizedPosition(
-            page: page, current: pos, edge: .end, toDisplayPoint: CGPoint(x: 100, y: 16)))
+        XCTAssertLessThan(
+            maxGap, 0.5,
+            "MainActor stalled \(maxGap)s during a \(writeSeconds)s write — the write is blocking main")
     }
 }

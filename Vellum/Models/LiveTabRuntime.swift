@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import Observation
 import PDFKit
@@ -12,9 +13,9 @@ import PDFKit
 /// expensive a tab owns hangs off here and nowhere else, so an eviction that
 /// drops the runtime's contents genuinely gives the memory back.
 ///
-/// The runtime object itself survives eviction — it is just a tab id, a page-text
-/// dictionary and a couple of nil-able controllers. What eviction throws away is
-/// the native state hanging off it.
+/// The runtime object itself survives eviction — it is just a tab id, a
+/// page-text dictionary and a couple of controllers. What eviction throws away
+/// is the native state hanging off it.
 @MainActor
 @Observable
 final class LiveTabRuntime {
@@ -27,14 +28,38 @@ final class LiveTabRuntime {
     }
 
     let tabId: String
-    var pdfController = PdfViewerController()
-    var webController = WebViewerController()
+
+    /// The tab's PDF controller. It lives here rather than in the viewer's
+    /// `@State` so the controller — and the `PDFView` it retains — outlives any
+    /// single SwiftUI host: a tab dragged to another pane is remounted, and a
+    /// remount must not rebuild PDFKit.
+    var pdfController = PdfViewerControlleriOS()
+
+    /// The tab's web controller, on the same terms as `pdfController`: it owns
+    /// the `WKWebView` and its content process, both of which must survive a
+    /// remount.
+    var webController: WebViewerController_iOS
+    private let webLibraryStorage: WebLibraryStorage
+
+    /// The pane used to own one `InkController_iOS` (registered in
+    /// `InkRegistry_iOS` by pane id). That was correct while exactly one tab per
+    /// pane was ever mounted. Live tabs break it: several tabs' `PDFView`s are
+    /// mounted at once and each installs `ink.inkProvider` as its
+    /// `pageOverlayViewProvider`, so one controller would hand tab B's page-3
+    /// canvas to tab A's page 3. Ink is per-DOCUMENT state and now lives on the
+    /// runtime with everything else the tab owns.
+    var ink = InkController_iOS()
+
+    /// Where the tab's PDF load has got to. Owned by the runtime rather than by
+    /// the mounted viewer's `@State` so a remount — a tab dragged between panes,
+    /// or a warm tab coming back — does not restart a load that already
+    /// finished.
     var pdfLoadState: PdfLoadState = .idle
-    var pageTexts: [Int: String] = [:]
+
     private(set) var isEvicted = false
 
     /// Whether this tab is in the hot tier and should therefore be mounted and
-    /// drawn. `PaneView` reads it, so it is observed: a demotion on the
+    /// drawn. `PaneView_iOS` reads it, so it is observed: a demotion on the
     /// sweeper's tick pulls the viewer out of the rendered tree by itself.
     ///
     /// Starts `false` — a tab the user has never opened has nothing to render
@@ -42,11 +67,16 @@ final class LiveTabRuntime {
     /// policy sets it on the first activation.
     private(set) var isRendered = false
 
-    /// The parsed, annotation-stripped display document, kept beside
-    /// `pdfLoadState` so it survives a *cancelled* load. `.task(id: isActive)`
-    /// is cancelled whenever the user switches away mid-load, which resets the
-    /// state to `.idle`; without this the next visit would re-parse a document
-    /// we had already finished parsing.
+    /// Page text extracted from this tab's document, by 1-based page number.
+    /// Kept on the runtime (and deliberately kept across an eviction) so the AI
+    /// context stays truthful while an evicted viewer restores, and so the
+    /// restore is spared a full extraction walk.
+    var pageTexts: [Int: String] = [:]
+
+    /// The parsed, annotation-stripped display document, kept beside the load
+    /// state so it survives a *cancelled* load. The viewer's load task is
+    /// cancelled whenever the user switches away mid-load; without this the next
+    /// visit would re-parse a document we had already finished parsing.
     ///
     /// This deliberately lives here rather than in an LRU on `AppStore`. A
     /// second cache elsewhere would mean an eviction that drops the runtime
@@ -65,6 +95,7 @@ final class LiveTabRuntime {
     /// closing and reopening it. The mounted viewer keys its load task on this,
     /// because neither `isActive` nor the view's structural identity changes
     /// across a retarget, so nothing else would make it re-read the file.
+    ///
     private(set) var documentGeneration = 0
 
     /// Drop the document parsed from the tab's previous location and ask the
@@ -80,8 +111,13 @@ final class LiveTabRuntime {
         documentGeneration += 1
     }
 
-    init(tabId: String) {
+    init(
+        tabId: String,
+        webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
+    ) {
         self.tabId = tabId
+        self.webLibraryStorage = webLibraryStorage
+        self.webController = WebViewerController_iOS(storage: webLibraryStorage)
     }
 
     /// Adopt a freshly parsed display document. `byteCount` is the size of the
@@ -105,7 +141,7 @@ final class LiveTabRuntime {
     /// Hot ⇄ warm. Warm keeps everything expensive — the parsed `PDFDocument`,
     /// the `PDFView`, the `WKWebView` and its content process are all still
     /// here, held by the controllers below — and only stops the tab being drawn:
-    /// `PaneView` swaps the viewer for `Color.clear`, which unmounts the
+    /// `LiveTabHost_iOS` swaps the viewer for `Color.clear`, which unmounts the
     /// representable and takes the native view out of the window's layout and
     /// display cycle. Coming back re-parents that same native view instead of
     /// rebuilding it, which is the point of having a middle tier at all.
@@ -131,19 +167,29 @@ final class LiveTabRuntime {
     /// session backend on every edit, the scroll position was mirrored into the
     /// `PdfTab` while the tab was still on screen, and the extraction walk's
     /// pages are handed to `PageTextPersister.flushDetached()` below — a real
-    /// write that the quit path awaits via `awaitInFlightFlushes()`. The web
-    /// side additionally holds its teardown open until a pending auto-archive
-    /// lands (see `WebViewerController.releaseResidency`).
+    /// write that the background path awaits via `awaitInFlightFlushes()`. The
+    /// web side additionally holds its teardown open until a pending
+    /// auto-archive lands (see `WebViewerController_iOS.releaseResidency`).
     func releaseResidency() {
         guard !isEvicted else { return }
+        // Debounced ink is a real, unwritten user edit (the write coalescing
+        // from PR #78 is exactly what makes it possible for one to be pending
+        // here). Hold the controller alive until its flush lands, the same way
+        // the web side holds itself open for a pending auto-archive.
+        let pendingInk = ink
+        Task { @MainActor in
+            await pendingInk.flushPendingInkAndWait()
+            withExtendedLifetime(pendingInk) {}
+        }
         pdfController.flushAndDropPersister()
         pdfController.reset()
         webController.releaseResidency()
         // Drop the controller objects themselves: they strongly own the PDFView
         // and the WKWebView, so resetting alone would stop them without
         // releasing the memory this eviction is meant to reclaim.
-        pdfController = PdfViewerController()
-        webController = WebViewerController()
+        pdfController = PdfViewerControlleriOS()
+        webController = WebViewerController_iOS(storage: webLibraryStorage)
+        ink = InkController_iOS()
         pdfLoadState = .idle
         preparedDocument = nil
         pdfByteCount = 0
@@ -160,9 +206,12 @@ final class LiveTabRuntime {
         isEvicted = false
     }
 
+    /// iPad's PDF controller has no `pauseTextExtraction`; `flushPersister()` is
+    /// the equivalent drain of the page-text cache it owns.
     func flushPdfText() async {
-        await pdfController.pauseTextExtraction()
+        await pdfController.flushPersister()
     }
 }
 
 extension LiveTabRuntime: TabResidentResource {}
+#endif

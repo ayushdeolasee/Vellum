@@ -84,6 +84,49 @@ actor IntegrationsCache {
         return destination
     }
 
+    /// Whether an id names real download artifacts. The id-only retention path
+    /// uses this to distinguish a vanished PDF (reclaimable by provider/id)
+    /// from an article whose URL-keyed archive cannot be reconstructed.
+    func existingDownloadURL(provider: IntegrationProvider, itemID: String) -> URL? {
+        guard let pdf = try? downloadURL(provider: provider, itemID: itemID),
+            fileManager.fileExists(atPath: pdf.path)
+        else { return nil }
+        return pdf
+    }
+
+    func hasDownloadArtifacts(provider: IntegrationProvider, itemID: String) -> Bool {
+        guard let manifest = try? manifestURL(provider: provider, itemID: itemID) else {
+            return existingDownloadURL(provider: provider, itemID: itemID) != nil
+        }
+        return existingDownloadURL(provider: provider, itemID: itemID) != nil
+            || fileManager.fileExists(atPath: manifest.path)
+    }
+
+    /// Deletes one installed copy and its manifest — the retention sweep's
+    /// counterpart to `installDownload`. Reports whether anything is gone from
+    /// disk afterwards: a copy that never existed is already "deleted" as far
+    /// as the caller is concerned, while a file that refused to go keeps the
+    /// item tracked for the next sweep.
+    func deleteDownload(provider: IntegrationProvider, itemID: String) -> Bool {
+        guard let pdf = try? downloadURL(provider: provider, itemID: itemID) else { return false }
+        if fileManager.fileExists(atPath: pdf.path) {
+            try? fileManager.removeItem(at: pdf)
+        }
+        if let manifest = try? manifestURL(provider: provider, itemID: itemID),
+            fileManager.fileExists(atPath: manifest.path)
+        {
+            try? fileManager.removeItem(at: manifest)
+        }
+        return !fileManager.fileExists(atPath: pdf.path)
+    }
+
+    func downloadByteSize(provider: IntegrationProvider, itemID: String) -> Int {
+        guard let url = try? downloadURL(provider: provider, itemID: itemID),
+            let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        else { return 0 }
+        return (attributes[.size] as? NSNumber)?.intValue ?? 0
+    }
+
     func managedDownloadURLs(provider: IntegrationProvider) -> [URL] {
         let directory = providerDirectory(provider).appendingPathComponent("downloads", isDirectory: true)
         return (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension.lowercased() == "pdf" }) ?? []

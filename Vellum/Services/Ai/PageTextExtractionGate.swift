@@ -183,3 +183,35 @@ final class PageTextExtractionGate {
         try? await Task.sleep(for: remaining)
     }
 }
+
+// MARK: - iPad addition: bodies that run off the main actor
+//
+// The iPad's 1→N walk parses a PRIVATE `PDFDocument` copy on a detached utility
+// task (see `PdfViewerControlleriOS.startTextExtraction(data:)`) because
+// walking the live, view-bound document on the main actor starved the run loop
+// for minutes on textbook PDFs. The synchronous `extractText` above runs its
+// body on the main actor, which would undo that. This overload holds the exact
+// same single slot and applies the exact same pacing — only the queue
+// bookkeeping stays main-actor isolated; the body runs wherever the caller is.
+//
+// The pacing contract is unchanged and load-bearing: return the extracted text
+// (empty string included) to have the next caller paced, return nil when no
+// read happened so nothing is paced.
+extension PageTextExtractionGate {
+    func extractText(
+        priority: Priority,
+        offMain body: @Sendable () async -> String?
+    ) async -> String? {
+        guard await acquire(priority: priority) else { return nil }
+        var suspectedLiveText = false
+        defer { release(pacingNeeded: suspectedLiveText) }
+        guard !Task.isCancelled else { return nil }
+        let started = ContinuousClock.now
+        let text = await body()
+        if let text {
+            suspectedLiveText = text.isEmpty
+                || ContinuousClock.now - started >= Self.ocrDurationThreshold
+        }
+        return text
+    }
+}

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -59,7 +60,7 @@ struct AiPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !aiStore.settings.isConfigured(chatGPTSignedIn: workspace.chatgptAuth.isSignedIn) {
+            if !aiStore.settings.isConfigured() {
                 configureAiBanner
             }
             messages
@@ -1205,3 +1206,4 @@ final class SubmitTextView: NSTextView {
         placeholder.draw(at: NSPoint(x: textContainerInset.width, y: textContainerInset.height), withAttributes: attributes)
     }
 }
+#endif

@@ -2,7 +2,7 @@ import XCTest
 import SwiftUI
 @testable import Vellum
 
-/// The AI transcript's stick-to-bottom rule (`AiPanel.follows`).
+/// The AI transcript's stick-to-bottom rule (`AiPanel_iOS.follows`).
 ///
 /// Issue #57: the transcript re-ran `scrollToBottom` on every streamed token, so
 /// scrolling up to re-read part of an answer yanked you straight back down. The
@@ -18,8 +18,8 @@ final class AiTranscriptFollowTests: XCTestCase {
 
     /// A viewport shorter than the content, i.e. a transcript long enough to
     /// scroll. `offset` is the scroll position; `content` the laid-out height.
-    private func metrics(offset: CGFloat, content: CGFloat, viewport: CGFloat = 500) -> AiPanel.ScrollMetrics {
-        AiPanel.ScrollMetrics(offsetY: offset, contentHeight: content, viewportHeight: viewport)
+    private func metrics(offset: CGFloat, content: CGFloat, viewport: CGFloat = 500) -> AiPanel_iOS.ScrollMetrics {
+        AiPanel_iOS.ScrollMetrics(offsetY: offset, contentHeight: content, viewportHeight: viewport)
     }
 
     /// Scroll position that puts the end of the content at the bottom edge.
@@ -37,16 +37,16 @@ final class AiTranscriptFollowTests: XCTestCase {
         // 300pt of new text arrives; the offset has not moved yet.
         let after = metrics(offset: before.offsetY, content: 2300)
         XCTAssertGreaterThan(
-            after.distanceFromBottom, AiPanel.bottomSlack,
+            after.distanceFromBottom, AiPanel_iOS.bottomSlack,
             "precondition: the token must push the end out of slack range")
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     /// The very first token of a reply, arriving into an empty-ish transcript.
     func testTheFirstTokenKeepsFollowing() {
         let before = metrics(offset: 0, content: 120)
         let after = metrics(offset: 0, content: 900)
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     /// Following means the programmatic `scrollToBottom` lands next. It only ever
@@ -57,9 +57,9 @@ final class AiTranscriptFollowTests: XCTestCase {
         // scrollToBottom aligns the 1pt anchor with the viewport edge, leaving
         // the transcript's 12pt bottom padding below it.
         let after = metrics(offset: atEnd(content: 2300) - 12, content: 2300)
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
         XCTAssertLessThan(
-            after.distanceFromBottom, AiPanel.bottomSlack,
+            after.distanceFromBottom, AiPanel_iOS.bottomSlack,
             "the slack must cover the transcript's bottom padding or following can never settle")
     }
 
@@ -70,13 +70,13 @@ final class AiTranscriptFollowTests: XCTestCase {
         // The reader drags up 400pt while a token happens to land in the same
         // geometry update — growth plus a DECREASED offset is unambiguously them.
         let after = metrics(offset: before.offsetY - 400, content: 2100)
-        XCTAssertFalse(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertFalse(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     func testScrollingUpAfterTheStreamEndsStopsFollowing() {
         let before = metrics(offset: atEnd(content: 2000), content: 2000)
         let after = metrics(offset: before.offsetY - 400, content: 2000)
-        XCTAssertFalse(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertFalse(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     /// Content that keeps growing under a reader who has already scrolled away
@@ -86,7 +86,7 @@ final class AiTranscriptFollowTests: XCTestCase {
         var previous = metrics(offset: 600, content: 2000)
         for growth in stride(from: 2100, through: 3000, by: 100) {
             let next = metrics(offset: 600, content: CGFloat(growth))
-            state = AiPanel.follows(was: state, from: previous, to: next)
+            state = AiPanel_iOS.follows(was: state, from: previous, to: next)
             XCTAssertFalse(state, "a streamed token re-armed following at content height \(growth)")
             previous = next
         }
@@ -95,7 +95,7 @@ final class AiTranscriptFollowTests: XCTestCase {
     func testScrollingBackToTheBottomReArmsFollowing() {
         let before = metrics(offset: 600, content: 2000)
         let after = metrics(offset: atEnd(content: 2000), content: 2000)
-        XCTAssertTrue(AiPanel.follows(was: false, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: false, from: before, to: after))
     }
 
     /// Rubber-band overscroll past the end reads as "at the bottom", not as a
@@ -104,7 +104,7 @@ final class AiTranscriptFollowTests: XCTestCase {
         let before = metrics(offset: atEnd(content: 2000), content: 2000)
         let after = metrics(offset: before.offsetY + 80, content: 2000)
         XCTAssertEqual(after.distanceFromBottom, 0)
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     // MARK: - The panel resizing under the transcript
@@ -119,10 +119,10 @@ final class AiTranscriptFollowTests: XCTestCase {
         // question; the transcript below the header loses exactly that height.
         let after = metrics(offset: before.offsetY, content: 2000, viewport: 500 - 84)
         XCTAssertGreaterThan(
-            after.distanceFromBottom, AiPanel.bottomSlack,
+            after.distanceFromBottom, AiPanel_iOS.bottomSlack,
             "precondition: the shrink must push the end out of slack range")
         XCTAssertTrue(
-            AiPanel.follows(was: true, from: before, to: after),
+            AiPanel_iOS.follows(was: true, from: before, to: after),
             "a viewport shrink is not a reader scroll")
     }
 
@@ -130,14 +130,14 @@ final class AiTranscriptFollowTests: XCTestCase {
     func testOpeningTheSettingsSectionDoesNotUnstickAReader() {
         let before = metrics(offset: atEnd(content: 3000, viewport: 600), content: 3000, viewport: 600)
         let after = metrics(offset: before.offsetY, content: 3000, viewport: 380)
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     /// A reader who had already scrolled away stays away across a resize.
     func testAResizeDoesNotReArmAReaderWhoScrolledAway() {
         let before = metrics(offset: 600, content: 3000, viewport: 500)
         let after = metrics(offset: 600, content: 3000, viewport: 420)
-        XCTAssertFalse(AiPanel.follows(was: false, from: before, to: after))
+        XCTAssertFalse(AiPanel_iOS.follows(was: false, from: before, to: after))
     }
 
     /// Growing the viewport back can clamp the offset down. That looks like an
@@ -147,7 +147,7 @@ final class AiTranscriptFollowTests: XCTestCase {
         let before = metrics(offset: atEnd(content: 2000, viewport: 416), content: 2000, viewport: 416)
         let after = metrics(offset: atEnd(content: 2000, viewport: 500), content: 2000, viewport: 500)
         XCTAssertLessThan(after.offsetY, before.offsetY, "precondition: the offset clamps down")
-        XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+        XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
     }
 
     // MARK: - Degenerate content
@@ -159,7 +159,7 @@ final class AiTranscriptFollowTests: XCTestCase {
         for content in [CGFloat(150), 300, 499] {
             let after = metrics(offset: 0, content: content, viewport: 500)
             XCTAssertEqual(after.distanceFromBottom, 0)
-            XCTAssertTrue(AiPanel.follows(was: true, from: before, to: after))
+            XCTAssertTrue(AiPanel_iOS.follows(was: true, from: before, to: after))
         }
     }
 }

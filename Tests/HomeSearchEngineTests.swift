@@ -97,6 +97,29 @@ private func stubItem(
         haystack: HomeSearchHaystack(title: title, name: identity, location: identity))
 }
 
+private func pdfStubItem(
+    id: String,
+    path: String,
+    section: HomeSearchSection,
+    storageKey: String
+) -> HomeSearchItem {
+    HomeSearchItem(
+        id: id,
+        identity: HomeSearchItemBuilder.identity(path, kind: .pdf),
+        section: section,
+        kind: .pdf,
+        target: .file(path: path, recordedPath: path),
+        title: "Paper",
+        subtitle: "Paper.pdf",
+        detail: "",
+        tooltip: path,
+        date: nil,
+        badges: [],
+        canRevealInFinder: true,
+        haystack: HomeSearchHaystack(title: "Paper", name: "Paper.pdf", location: path),
+        storageKey: storageKey)
+}
+
 /// A snapshot provider that answers instantly the first time and then parks
 /// forever. The only way to get an engine into a known-good state and *then*
 /// cancel a reload out from under it, which is what the welcome screen's
@@ -202,6 +225,22 @@ struct RecentDocumentsSearchProviderTests {
 
 @Suite("Saved webpages provider")
 struct SavedWebpagesSearchProviderTests {
+    @Test("A captured page stays New until the device-local ledger is cleared")
+    func mapsCapturedUnreadState() async throws {
+        let url = "https://example.com/captured"
+        let key = WebLibrary.pageKey(url)
+        let provider = SavedWebpagesSearchProvider(load: {
+            [
+                WebLibraryEntry(
+                    url: url, title: "Captured", pageCount: nil,
+                    savedAt: nil, hasSnapshot: true)
+            ]
+        }, isCapturedUnread: { $0 == key })
+
+        let item = try #require(try await provider.items(matching: "").first)
+        #expect(item.badges.contains(.capturedUnread))
+    }
+
     @Test("A saved page is badged saved, and offline when a snapshot exists")
     func mapsSavedPage() async throws {
         let provider = SavedWebpagesSearchProvider(load: {
@@ -429,6 +468,66 @@ struct HomeSearchEngineTests {
         #expect(corpus.count == 1)
         // Provider order is dedupe priority: the earlier source wins.
         #expect(corpus.first?.id == "recents:x")
+    }
+
+    @Test("A duplicate upgrades a recent's path hash to its durable document key")
+    func dedupeAdoptsStableKeyOverLegacyPathHash() async throws {
+        let path = "/docs/Paper.pdf"
+        let legacyKey = DocumentIdentity.sha256Hex(path)
+        let stableKey = "11111111-1111-1111-1111-111111111111"
+        let engine = HomeSearchEngine(providers: [
+            StubProvider(id: "recents", displayName: "Recents", mode: .snapshot) { _ in
+                [pdfStubItem(
+                    id: "recents:paper", path: path, section: .recents,
+                    storageKey: legacyKey)]
+            },
+            StubProvider(id: "library", displayName: "Library", mode: .snapshot) { _ in
+                [pdfStubItem(
+                    id: "library:paper", path: path, section: .documents,
+                    storageKey: stableKey)]
+            },
+        ])
+        await engine.reload()
+
+        let item = try #require(await engine.corpus.first)
+        #expect(item.id == "recents:paper")
+        #expect(item.storageKey == stableKey)
+
+        // Upgrading the row must keep both generations of position identity
+        // resolvable: the stable id and the pre-stamp path hash.
+        let stableResume = ResumeEntry(
+            key: .pdf(stableIdentifier: stableKey), title: "Paper",
+            openedAt: Date(timeIntervalSince1970: 2), position: nil,
+            lastOpenedOn: nil, openElsewhere: [])
+        let legacyResume = ResumeEntry(
+            key: .pdfPath(path), title: "Paper",
+            openedAt: Date(timeIntervalSince1970: 1), position: nil,
+            lastOpenedOn: nil, openElsewhere: [])
+        #expect(ContinueReadingResolver.resolve([stableResume], in: [item]).count == 1)
+        #expect(ContinueReadingResolver.resolve([legacyResume], in: [item]).count == 1)
+    }
+
+    @Test("Dedupe does not replace one durable document key with another")
+    func dedupeKeepsPriorityWhenStableKeysConflict() async throws {
+        let path = "/docs/Paper.pdf"
+        let firstStableKey = "11111111-1111-1111-1111-111111111111"
+        let secondStableKey = "22222222-2222-2222-2222-222222222222"
+        let engine = HomeSearchEngine(providers: [
+            StubProvider(id: "recents", displayName: "Recents", mode: .snapshot) { _ in
+                [pdfStubItem(
+                    id: "recents:paper", path: path, section: .recents,
+                    storageKey: firstStableKey)]
+            },
+            StubProvider(id: "library", displayName: "Library", mode: .snapshot) { _ in
+                [pdfStubItem(
+                    id: "library:paper", path: path, section: .documents,
+                    storageKey: secondStableKey)]
+            },
+        ])
+        await engine.reload()
+
+        let item = try #require(await engine.corpus.first)
+        #expect(item.storageKey == firstStableKey)
     }
 
     @Test("Snapshot providers load once and are not re-queried per keystroke")

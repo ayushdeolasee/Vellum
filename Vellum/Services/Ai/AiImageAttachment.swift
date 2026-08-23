@@ -1,5 +1,11 @@
-import AppKit
 import Foundation
+import ImageIO
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+import UniformTypeIdentifiers
 
 /// Normalize arbitrary image bytes — a file dropped on the AI panel, or one
 /// picked through the attach menu — into the same `AiPageImageSnapshot` the PDF
@@ -19,6 +25,7 @@ import Foundation
 /// reachable via OpenRouter and OpenCode Zen) and sits comfortably under the
 /// OpenAI and Gemini limits.
 func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapshot? {
+#if os(macOS)
     guard let rep = NSBitmapImageRep(data: data) else { return nil }
     let sourceWidth = rep.pixelsWide, sourceHeight = rep.pixelsHigh
     guard sourceWidth > 0, sourceHeight > 0 else { return nil }
@@ -29,10 +36,6 @@ func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapsho
     let height = max(1, Int((Double(sourceHeight) * scale).rounded()))
     let hasAlpha = rep.hasAlpha
 
-    // Always draw into an RGBA buffer, even for an opaque source: CoreGraphics
-    // has no 24-bit backing store, so `NSGraphicsContext(bitmapImageRep:)`
-    // returns nil for a 3-sample rep. The alpha channel is simply dropped again
-    // by the JPEG encoder below.
     guard let out = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -44,17 +47,14 @@ func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapsho
     context.imageInterpolation = .high
     let target = NSRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
     if !hasAlpha {
-        // Flatten onto white so a JPEG-bound image can't pick up the untouched
-        // buffer's transparency as black.
         NSColor.white.setFill()
         target.fill()
     }
-    rep.draw(in: target, from: .zero, operation: hasAlpha ? .copy : .sourceOver,
-             fraction: 1, respectFlipped: true, hints: nil)
+    rep.draw(
+        in: target, from: .zero, operation: hasAlpha ? .copy : .sourceOver,
+        fraction: 1, respectFlipped: true, hints: nil)
     NSGraphicsContext.restoreGraphicsState()
 
-    // Alpha survives only in PNG; opaque images go to JPEG, which is far smaller
-    // for photographs (the common case for a dropped file).
     var encoded: Data?
     var mediaType = "image/png"
     if hasAlpha {
@@ -63,13 +63,68 @@ func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapsho
         mediaType = "image/jpeg"
         encoded = out.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
     }
+    if let current = encoded, current.count > 4 * 1_024 * 1_024,
+       let smaller = out.representation(using: .jpeg, properties: [.compressionFactor: 0.6]) {
+        encoded = smaller
+        mediaType = "image/jpeg"
+    }
+
+    guard let bytes = encoded else { return nil }
+    return AiPageImageSnapshot(
+        pageNumber: nil,
+        base64Data: bytes.base64EncodedString(),
+        mediaType: mediaType,
+        width: width,
+        height: height)
+#else
+    // Decode the first frame through ImageIO so animated GIFs / multi-page
+    // TIFFs collapse to a single frame and we can inspect the pixel dimensions
+    // and alpha up front without paying for a full UIImage decode twice.
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+    let sourceWidth = cgImage.width, sourceHeight = cgImage.height
+    guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+
+    let alphaInfo = cgImage.alphaInfo
+    let hasAlpha = !(alphaInfo == .none || alphaInfo == .noneSkipFirst || alphaInfo == .noneSkipLast)
+
+    let longest = max(sourceWidth, sourceHeight)
+    let scale = longest > maxSide ? Double(maxSide) / Double(longest) : 1
+    let width = max(1, Int((Double(sourceWidth) * scale).rounded()))
+    let height = max(1, Int((Double(sourceHeight) * scale).rounded()))
+    let size = CGSize(width: width, height: height)
+
+    // Draw into a fresh buffer at the target size. Opaque sources flatten onto
+    // white so a JPEG-bound image can't pick up transparency as black; images
+    // with alpha keep it (only meaningful for the PNG path below).
+    let format = UIGraphicsImageRendererFormat.preferred()
+    format.scale = 1
+    format.opaque = !hasAlpha
+    let rendered = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+        if !hasAlpha {
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+        }
+        UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: size))
+    }
+
+    // Alpha survives only in PNG; opaque images go to JPEG, which is far smaller
+    // for photographs (the common case for a dropped file).
+    var encoded: Data?
+    var mediaType = "image/png"
+    if hasAlpha {
+        encoded = rendered.pngData()
+    } else {
+        mediaType = "image/jpeg"
+        encoded = rendered.jpegData(compressionQuality: 0.8)
+    }
 
     // Per-image byte ceilings are real (Anthropic rejects above 5 MB); re-encode
     // rather than let the request fail at the provider. JPEG even for an alpha
     // image at this point — a >4 MB PNG is a photo-sized image whose transparency
     // is worth less than the request going through.
     if let current = encoded, current.count > 4 * 1_024 * 1_024 {
-        if let smaller = out.representation(using: .jpeg, properties: [.compressionFactor: 0.6]) {
+        if let smaller = rendered.jpegData(compressionQuality: 0.6) {
             encoded = smaller
             mediaType = "image/jpeg"
         }
@@ -83,4 +138,5 @@ func aiImageSnapshot(from data: Data, maxSide: Int = 1568) -> AiPageImageSnapsho
         width: width,
         height: height
     )
+#endif
 }

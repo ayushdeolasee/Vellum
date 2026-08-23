@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Observation
 import SwiftUI
@@ -110,19 +111,7 @@ struct WebViewerView: View {
                 // The pinned note draft keeps the popover mounted while its note
                 // field has focus — by then the DOM selection is already gone
                 // (see selectionNoteDraft).
-                if controller.selection != nil || controller.selectionNoteDraft != nil,
-                   let position = controller.popoverPosition {
-                    WebSelectionPopover(
-                        position: position,
-                        onHighlight: { color in controller.addHighlight(color: color) },
-                        onNote: { content in controller.addSelectionNote(content: content) },
-                        onBeginNote: { controller.beginSelectionNote() },
-                        onAskAi: { controller.askAiAboutSelection() },
-                        onClose: { controller.clearSelection() }
-                    )
-                    .id(controller.selectionIdentity)
-                    .zIndex(50)
-                }
+                selectionPopover(containerSize: proxy.size)
 
                 if let menu = controller.contextMenu {
                     AnchoredPopover(
@@ -266,6 +255,27 @@ struct WebViewerView: View {
             guard isActive else { return }
             let delta = note.userInfo?["delta"] as? Int ?? 0
             controller.goHistory(delta: delta)
+        }
+    }
+
+    @ViewBuilder
+    private func selectionPopover(containerSize: CGSize) -> some View {
+        if controller.selection != nil || controller.selectionNoteDraft != nil,
+           let position = controller.popoverPosition {
+            AnchoredPopover(
+                x: position.x, y: position.y,
+                placement: .above, containerSize: containerSize
+            ) {
+                WebSelectionPopover(
+                    onHighlight: { color in controller.addHighlight(color: color) },
+                    onNote: { content in controller.addSelectionNote(content: content) },
+                    onBeginNote: { controller.beginSelectionNote() },
+                    onAskAi: { controller.askAiAboutSelection() },
+                    onClose: { controller.clearSelection() }
+                )
+                .id(controller.selectionIdentity)
+            }
+            .zIndex(50)
         }
     }
 
@@ -1816,3 +1826,4 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
         delegate?.userContentController(userContentController, didReceive: message)
     }
 }
+#endif

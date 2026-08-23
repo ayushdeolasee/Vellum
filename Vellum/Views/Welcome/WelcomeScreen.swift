@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -1249,3 +1250,4 @@ private func registerRecentRemovalRedo(
     .preferredColorScheme(.dark)
     .tint(ThemePalette.dark.primary)
 }
+#endif

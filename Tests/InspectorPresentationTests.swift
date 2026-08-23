@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import Vellum
 
+// The inspector's presentation state (issues #101, #120), driven entirely
+// through `WorkspaceStore`. Nothing here mounts a view: `inspectorPresented`,
+// `setInspectorPresented`, `sidebarTab`, `sidebarWidth`, `rememberSidebarWidth`
+// and `revealSidebarTab` are pure store logic, and the reason they are worth
+// this much coverage is that the two concepts they juggle look like one. A
+// start tab has no document, so the inspector is *unavailable* — but that is
+// not the user closing it, and confusing the two loses the selected panel and
+// the column width every time someone opens a new tab.
+//
+// iPad note: the iPad inspector is an iOS rebuild (`PaneShell_iOS` +
+// `.inspector`), not main's AppKit-hosted column, but the store contract it
+// drives is identical, so this suite ports across essentially unchanged. Only
+// the comments naming AppKit have been re-pointed at SwiftUI's iOS inspector
+// host; the `InspectorLayout` envelope it clamps to is the iPad's own (see
+// `InspectorTabSwitcherTests`), which is why the width test is written against
+// the constants rather than against literals.
+
 /// `.scratchDefaults` gives each test its own domain for the recents write that
 /// `AppStore.adoptOpenedDocument` performs — opening a document is unavoidable
 /// here, it is the whole subject of these tests. The recents redirect is no
@@ -183,7 +200,10 @@ struct InspectorPresentationTests {
         workspace.rememberSidebarWidth(InspectorLayout.maximumWidth)
         #expect(workspace.sidebarWidth == InspectorLayout.maximumWidth)
 
-        // Anything outside it is AppKit mid-transition, not a user choice.
+        // Anything outside it is the inspector host mid-transition, not a user
+        // choice. On iPad that is `.onGeometryChange` reporting the column while
+        // it collapses, which is the same class of transient main's AppKit
+        // splitter produced.
         workspace.rememberSidebarWidth(InspectorLayout.minimumWidth - 1)
         workspace.rememberSidebarWidth(InspectorLayout.maximumWidth + 1)
         #expect(workspace.sidebarWidth == InspectorLayout.maximumWidth)

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Observation
 import PDFKit
@@ -31,7 +32,7 @@ struct PdfContextMenuState {
 /// overlay stack. One instance per PdfViewerView; reset on document change.
 @MainActor
 @Observable
-final class PdfViewerController {
+final class PdfViewerController: HighlightResizeControlling {
     /// Strong so a workspace-owned runtime can carry the exact native PDFView
     /// between pane hosts. `reset()` releases it on close/eviction.
     var pdfView: PDFView?
@@ -191,8 +192,8 @@ final class PdfViewerController {
             y: pdfView.bounds.height - rect.maxY,
             width: rect.width,
             height: rect.height
-        )
-    }
+    )
+}
 
     private func topLeftPoint(_ point: CGPoint) -> CGPoint {
         guard let pdfView, !pdfView.isFlipped else { return point }
@@ -1244,3 +1245,4 @@ final class PdfViewerController {
         )
     }
 }
+#endif

@@ -1,10 +1,15 @@
-import Dispatch
+#if os(iOS)
 import Foundation
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 // Open-tab residency policy (issue #52).
 //
 // Two things used to be thrown away the moment the user switched tabs: the
-// SwiftUI/AppKit view tree (`PaneView` keyed its viewer on `activeTabId`) and,
+// SwiftUI view tree (`PaneView_iOS` keyed its viewer on `activeTabId`) and,
 // with it, everything expensive the tab owned — the parsed `PDFDocument`, the
 // live `PDFView`, the `WKWebView` and its web content process. Coming back
 // meant re-reading the file, re-parsing it, re-stripping the embedded
@@ -13,7 +18,7 @@ import Foundation
 //
 // The fix has two halves, and they live in different places:
 //
-//   * **View residency** — `PaneView` now keeps a `LiveTabHost` mounted for
+//   * **View residency** — `PaneView_iOS` now keeps a `LiveTabHost` mounted for
 //     every open tab and merely hides the inactive ones. Nothing is torn down
 //     on a switch, so a switch costs an opacity change. That is what makes it
 //     *instant*; keeping the parsed document alive without keeping the view
@@ -27,7 +32,8 @@ import Foundation
 // A tab moves through three tiers, and the boundaries between them come from
 // the repo owner's request on PR #67 (quoted on each constant below):
 //
-//   HOT   — the 5 most recently used tabs, for 10 minutes since last active.
+//   HOT   — the `hotLimit` most recently used tabs (3 on iPad, 2 on iPhone —
+//           see `TabResidencyBudget`), for 10 minutes since last active.
 //           Kept mounted and rendered, so switching to one is instant. This is
 //           the tier the whole feature exists for.
 //   WARM  — still resident (parsed `PDFDocument` and live `WKWebView` alive)
@@ -42,9 +48,8 @@ import Foundation
 //     however long the user sits on it. Pinning is per-pane, so a split window
 //     keeps BOTH visible documents rendered.
 //   * Ceilings — a resident-tab count limit and an approximate byte budget —
-//     evict the least-recently-active unpinned tabs early, and the system
-//     memory-pressure source tightens both sharply when the OS says it is
-//     short on RAM.
+//     evict the least-recently-active unpinned tabs early, and an iOS memory
+//     warning tightens both sharply when the OS says it is short on RAM.
 //
 // Everything here is main-actor: the stores it serves are `@Observable` and
 // main-actor, and eviction reaches into PDFKit/WebKit objects that are only
@@ -98,9 +103,9 @@ enum TabResidencyTier: Sendable {
 // MARK: - Resident resources
 
 /// The expensive native state one tab owns and the policy can reclaim: in
-/// production always a `LiveTabRuntime` (its `PdfViewerController` with the
-/// parsed `PDFDocument` and live `PDFView`, and its `WebViewerController` with
-/// the `WKWebView`). Kept as a protocol so the policy can be unit-tested
+/// production always a `LiveTabRuntime` (its `PdfViewerControlleriOS` with
+/// the parsed `PDFDocument` and live `PDFView`, and its `WebViewerController_iOS`
+/// with the `WKWebView`). Kept as a protocol so the policy can be unit-tested
 /// against a trivial stand-in rather than against PDFKit and WebKit.
 ///
 /// Conformers are responsible for being safe to drop at *any* moment an
@@ -132,40 +137,47 @@ protocol TabResidentResource: AnyObject {
     func releaseResidency()
 }
 
-// MARK: - Manager
+// MARK: - Budget
 
-@MainActor
-final class TabResidencyManager {
-    // MARK: The three numbers
-    //
-    // All three come from the repo owner's request on PR #67 and were chosen
-    // deliberately. Do not "optimise" them without going back to that comment:
-    //
-    //   "Maybe we can keep rendering the previous 5 tabs opened by the user for
-    //    10 minutes let's say. So that it's instant when switching but if the
-    //    user hasn't gone back to it then we stop rendering and then after 30
-    //    minutes let say we can clean that out of the memory completely."
+/// The ceilings, as data.
+///
+/// There is one residency *policy* (`TabResidencyManager` below) and two sets of
+/// *numbers*, because one binary now serves two devices with very different
+/// footprint limits (#150). Making the numbers a value rather than a compile-time
+/// constant means the choice is made exactly once, at the shell seam
+/// (`ShellIdiom_iOS`), and can be handed to a test as an argument instead of
+/// being asserted against whatever the shipping device happens to want.
+///
+/// The two WINDOWS are the repo owner's request on PR #67 and are the same on
+/// both presets — they describe how a person uses tabs, not how much RAM the
+/// device has:
+///
+///   "Maybe we can keep rendering the previous 5 tabs opened by the user for
+///    10 minutes let's say. So that it's instant when switching but if the
+///    user hasn't gone back to it then we stop rendering and then after 30
+///    minutes let say we can clean that out of the memory completely."
+///
+/// The COUNT and BYTE ceilings are what differ. Do not retune either preset
+/// without going back to that comment and to the per-device reasoning on
+/// `.pad` / `.phone`.
+struct TabResidencyBudget: Sendable, Equatable {
+    /// **Hot set size.** The N most recently active tabs stay mounted and
+    /// rendered. Pinned tabs (whatever each pane is showing right now) are hot
+    /// *in addition* to these, not out of the same budget: a split window must
+    /// never leave a visible document unrendered just because the user has been
+    /// round three other tabs.
+    var hotLimit: Int
 
-    /// **Hot set size** — "the previous **5** tabs opened by the user".
-    ///
-    /// The 5 most recently active tabs stay mounted and rendered. Pinned tabs
-    /// (whatever each pane is showing right now) are hot *in addition* to these,
-    /// not out of the same budget: a split window must never leave a visible
-    /// document unrendered just because the user has been round five other tabs.
-    static let hotTabLimit = 5
-
-    /// **How long a tab stays rendered** — "for **10 minutes** … then we stop
-    /// rendering".
-    ///
-    /// Measured from when the tab was last active. Past it the tab drops to
-    /// warm: its resources stay, but nothing is drawn or laid out for it.
-    /// Enforced by the shared sweeper, so the real boundary is 10 minutes plus
-    /// up to one `sweepInterval` — irrelevant for a tier whose only effect is
+    /// **How long a tab stays rendered** — "for 10 minutes … then we stop
+    /// rendering". Measured from when the tab was last active. Past it the tab
+    /// drops to warm: its resources stay, but nothing is drawn or laid out for
+    /// it. Enforced by the shared sweeper, so the real boundary is this plus up
+    /// to one `sweepInterval` — irrelevant for a tier whose only effect is
     /// saving draw work.
-    static let hotWindow: Duration = .seconds(10 * 60)
+    var hotWindow: Duration
 
-    /// **The retention window** — "after **30 minutes** … we can clean that out
-    /// of the memory completely".
+    /// **The retention window** — "after 30 minutes … we can clean that out of
+    /// the memory completely".
     ///
     /// NOTE THE TENSION: issue #52 says "only remove them if inactive for more
     /// than 2 hours". The owner's later comment on PR #67 says 30 minutes. We
@@ -174,43 +186,106 @@ final class TabResidencyManager {
     /// design, dropping from 2 hours to 30 minutes would have meant a cold
     /// reload after half an hour, whereas now the tab spends minutes 10–30 warm
     /// and only genuinely reloads past 30.
-    static let retentionWindow: Duration = .seconds(30 * 60)
+    var retention: Duration
 
-    /// Ceiling on how many tabs stay resident at once, regardless of how recently
-    /// they were used. Eight covers "a paper plus its references" comfortably
-    /// while bounding the worst case for someone who leaves forty tabs open.
-    static let residentTabLimit = 8
+    /// Ceiling on how many tabs stay resident at once, regardless of how
+    /// recently they were used.
+    var tabLimit: Int
 
-    /// Approximate ceiling on total resident bytes. A single 400 MB scanned PDF
-    /// plus a couple of heavy web tabs should still fit; a shelf of them should
-    /// not. Deliberately generous — the memory-pressure hook below is the real
-    /// safety net, this is just a guardrail against obvious runaway.
-    ///
-    /// Read it as a rough guardrail, not accounting: PDFs are costed at their
-    /// *file* size and PDFKit's live footprint is some multiple of that, and
-    /// there is no cheap way to do better.
-    static let residentByteBudget = 768 * 1024 * 1024
+    /// Approximate ceiling on total resident bytes. Read it as a rough
+    /// guardrail, not accounting: PDFs are costed at their *file* size and
+    /// PDFKit's live footprint is some multiple of that, and there is no cheap
+    /// way to do better. The memory-warning hook is the real safety net.
+    var byteBudget: Int
 
     /// Tightened ceilings applied while the system reports memory pressure. At
-    /// `.warning` we shrink hard but keep a little warmth; at `.critical` every
-    /// inactive tab goes immediately (see `handleMemoryPressure`).
-    static let pressureTabLimit = 2
-    static let pressureByteBudget = 128 * 1024 * 1024
+    /// `.warning` we shrink to these but keep a little warmth; at `.critical`
+    /// every inactive tab goes immediately (see `handleMemoryPressure`).
+    var pressureTabLimit: Int
+    var pressureByteBudget: Int
+
+    /// iPad (parity #129). macOS ships 5 hot / 8 resident / 768 MB / 2 / 128 MB;
+    /// iPadOS enforces a hard per-app footprint and jetsams rather than
+    /// swapping, so those would be a crash, not a guardrail, here.
+    ///
+    /// `hotLimit: 3` because every hot tab keeps a live `PDFView`/`WKWebView` in
+    /// the window's layout+display cycle, and an iPad has exactly one window and
+    /// at most two visible panes: 3 = the two pinned panes plus one recent.
+    /// `tabLimit: 4` still covers "a paper plus its references". At 256 MB a
+    /// flat-96 MB web tab plus a large scanned PDF still fits; a shelf of them
+    /// does not. Under a memory warning only the tab on screen is worth keeping.
+    static let pad = TabResidencyBudget(
+        hotLimit: 3,
+        hotWindow: .seconds(10 * 60),
+        retention: .seconds(30 * 60),
+        tabLimit: 4,
+        byteBudget: 256 * 1024 * 1024,
+        pressureTabLimit: 1,
+        pressureByteBudget: 48 * 1024 * 1024)
+
+    /// iPhone (#150 / #153). An order of magnitude under the Mac's 768 MB, which
+    /// is the spec's constraint expressed as a number; `TabResidencyBudgetTests`
+    /// asserts that relation rather than trusting this comment.
+    ///
+    /// `hotLimit: 2` because the phone shell has exactly ONE pane (D4), so the
+    /// hot set is the document being read plus one recent — there is no second
+    /// visible document to keep rendered, and a third live `PDFView` buys
+    /// nothing but footprint. `tabLimit: 3` keeps that pair plus one warm tab
+    /// behind them. 64 MB is roughly one large scanned PDF plus a web tab, which
+    /// is as much as a phone can hold without inviting jetsam; under pressure it
+    /// drops to the tab on screen and 24 MB.
+    static let phone = TabResidencyBudget(
+        hotLimit: 2,
+        hotWindow: .seconds(10 * 60),
+        retention: .seconds(30 * 60),
+        tabLimit: 3,
+        byteBudget: 64 * 1024 * 1024,
+        pressureTabLimit: 1,
+        pressureByteBudget: 24 * 1024 * 1024)
+}
+
+// MARK: - Manager
+
+@MainActor
+final class TabResidencyManager {
+    // MARK: The shipped numbers
+    //
+    // These stay as statics because they are the iPad preset — the numbers this
+    // app shipped with and the ones `TabResidencyTests` pins — and because a
+    // handful of call sites and tests read them by name. They are ALIASES now,
+    // not the source of truth: the source of truth is `TabResidencyBudget.pad`,
+    // and what a given manager actually enforces is whatever budget it was
+    // handed (`budget`), which on iPhone is `.phone`.
+
+    static let hotTabLimit = TabResidencyBudget.pad.hotLimit
+    static let hotWindow = TabResidencyBudget.pad.hotWindow
+    static let retentionWindow = TabResidencyBudget.pad.retention
+    static let residentTabLimit = TabResidencyBudget.pad.tabLimit
+    static let residentByteBudget = TabResidencyBudget.pad.byteBudget
+    static let pressureTabLimit = TabResidencyBudget.pad.pressureTabLimit
+    static let pressureByteBudget = TabResidencyBudget.pad.pressureByteBudget
 
     /// How often the shared sweeper wakes. One tick per minute is ample
     /// resolution for a 10-minute demotion and a 30-minute eviction, and the
-    /// generous tolerance lets the kernel coalesce it with other timers so an
-    /// idle Vellum is not the reason a Mac stays awake. The sweeper only runs
-    /// while something is resident.
+    /// generous tolerance lets the kernel coalesce it with other timers. The
+    /// sweeper only runs while something is resident and is suspended with the
+    /// app, so it is not what drains an iPad battery — the per-frame write
+    /// coalescing elsewhere in the tree is.
     static let sweepInterval: Duration = .seconds(60)
     static let sweepTolerance: Duration = .seconds(30)
 
-    /// Severity reported by the system memory-pressure source, normalised so the
-    /// policy does not have to import Dispatch's option set at every call site.
+    /// Severity of a memory-pressure event, normalised so the policy does not
+    /// have to reason about the platform's signal at every call site. iOS raises
+    /// exactly one undifferentiated warning; `noteMemoryWarning()` is what maps
+    /// it onto these two levels.
     enum PressureLevel: Sendable {
         case warning
         case critical
     }
+
+    /// A second warning inside this window means the first eviction did not buy
+    /// enough headroom, so the next one drops everything off screen.
+    static let pressureEscalationWindow: Duration = .seconds(60)
 
     private struct Entry {
         let resource: any TabResidentResource
@@ -219,11 +294,20 @@ final class TabResidencyManager {
     }
 
     private let clock: ResidencyClock
-    private let retention: Duration
-    private let hotLimit: Int
-    private let hot: Duration
-    private let tabLimit: Int
-    private let byteBudget: Int
+
+    /// The ceilings this manager enforces. Injected at construction from
+    /// `ShellIdiom_iOS.current.residencyBudget`, so "phone-sized memory" is a
+    /// property of the object rather than of the build.
+    let budget: TabResidencyBudget
+
+    // Named shorthands for the budget's fields, so the policy below reads the
+    // same as it did when these were stored properties.
+    private var retention: Duration { budget.retention }
+    private var hotLimit: Int { budget.hotLimit }
+    private var hot: Duration { budget.hotWindow }
+    private var tabLimit: Int { budget.tabLimit }
+    private var byteBudget: Int { budget.byteBudget }
+
     /// False in tests: no background sweeper task, no memory-pressure source, so
     /// a test drives `sweep()` and `handleMemoryPressure(_:)` deterministically.
     private let automaticMaintenance: Bool
@@ -240,44 +324,74 @@ final class TabResidencyManager {
     private var activeTabByOwner: [ObjectIdentifier: String] = [:]
 
     private var sweepTask: Task<Void, Never>?
-    private var pressureSource: (any DispatchSourceMemoryPressure)?
+    /// `nonisolated(unsafe)` for one reason: `deinit` is nonisolated and this is
+    /// the handle it must give back. It is written exactly once, from `init` on
+    /// the main actor, and read exactly once, from `deinit` — by which point no
+    /// other reference to the manager exists — so there is no race to protect
+    /// against.
+    private nonisolated(unsafe) var memoryWarningObserver: (any NSObjectProtocol)?
+    private var lastMemoryWarning: Duration?
     /// Coalesces the deferred ceiling check `store` schedules — see
     /// `scheduleCeilingEnforcement`. One hop per runloop turn, however many
     /// resources are stored in it.
     private var ceilingCheckScheduled = false
 
+    /// The designated init. `.pad` by default so every call site that predates
+    /// the phone — including `WorkspaceStore`'s own default — keeps the numbers
+    /// it already had.
     init(
         clock: ResidencyClock = ContinuousResidencyClock(),
-        retention: Duration = TabResidencyManager.retentionWindow,
-        hotLimit: Int = TabResidencyManager.hotTabLimit,
-        hotWindow: Duration = TabResidencyManager.hotWindow,
-        tabLimit: Int = TabResidencyManager.residentTabLimit,
-        byteBudget: Int = TabResidencyManager.residentByteBudget,
+        budget: TabResidencyBudget = .pad,
         automaticMaintenance: Bool = true
     ) {
         self.clock = clock
-        self.retention = retention
-        self.hotLimit = hotLimit
-        self.hot = hotWindow
-        self.tabLimit = tabLimit
-        self.byteBudget = byteBudget
+        self.budget = budget
         self.automaticMaintenance = automaticMaintenance
-        if automaticMaintenance { installMemoryPressureSource() }
+        if automaticMaintenance { installMemoryWarningObserver() }
+    }
+
+    /// Field-by-field convenience shim, kept because the residency suite builds
+    /// managers by overriding one ceiling at a time and that is the clearest way
+    /// to write those tests. `clock` and `retention` are deliberately NOT
+    /// defaulted: an all-defaults overload would be ambiguous with the budget
+    /// init above, and every caller of this form passes both anyway.
+    convenience init(
+        clock: ResidencyClock,
+        retention: Duration,
+        hotLimit: Int = TabResidencyBudget.pad.hotLimit,
+        hotWindow: Duration = TabResidencyBudget.pad.hotWindow,
+        tabLimit: Int = TabResidencyBudget.pad.tabLimit,
+        byteBudget: Int = TabResidencyBudget.pad.byteBudget,
+        automaticMaintenance: Bool = true
+    ) {
+        self.init(
+            clock: clock,
+            budget: TabResidencyBudget(
+                hotLimit: hotLimit,
+                hotWindow: hotWindow,
+                retention: retention,
+                tabLimit: tabLimit,
+                byteBudget: byteBudget,
+                pressureTabLimit: TabResidencyBudget.pad.pressureTabLimit,
+                pressureByteBudget: TabResidencyBudget.pad.pressureByteBudget),
+            automaticMaintenance: automaticMaintenance)
     }
 
     deinit {
         // `deinit` is nonisolated, so only the two handles that are safe to
         // touch from anywhere get cleaned up here. Cancelling the Task stops the
-        // sweep loop; cancelling the DispatchSource both stops its handler
-        // firing and is what makes a discarded manager (one per test) stop being
-        // registered with the kernel. The residents themselves are released by
+        // sweep loop; `removeObserver` is nonisolated-safe and is what makes a
+        // discarded manager (one per test) stop hearing memory warnings. The
+        // residents themselves are released by
         // ARC as `entries` tears down. That is enough: `releaseResidency()` has
         // nothing to flush that is not already persisted — annotations
         // round-trip on every edit, page text is flushed detached by
         // `PageTextPersister` and awaited by the quit path, and `last_page` is
         // written on tab switch and again at quit.
         sweepTask?.cancel()
-        pressureSource?.cancel()
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
     }
 
     // MARK: - Store / fetch
@@ -287,7 +401,7 @@ final class TabResidencyManager {
     /// live `WKWebView`s claim the same tab.
     ///
     /// Call this when the tab actually acquires native state (i.e. when it is
-    /// first shown), not when its runtime object is created: `PaneView` creates
+    /// first shown), not when its runtime object is created: `PaneView_iOS` creates
     /// a runtime for every open tab during layout, and a tab that has never been
     /// looked at holds nothing worth counting against a ceiling.
     func store(_ resource: any TabResidentResource, tabId: String) {
@@ -395,9 +509,9 @@ final class TabResidencyManager {
 
     /// Run `enforceCeilings` on the next main-actor turn rather than inline.
     ///
-    /// `store` is reachable from a SwiftUI `body` — `PaneView` resolves a tab's
+    /// `store` is reachable from a SwiftUI `body` — `PaneView_iOS` resolves a tab's
     /// runtime there — and eviction mutates `@Observable` state on the resources
-    /// it releases (`LiveTabRuntime.isEvicted`, `WebViewerController.initCount`),
+    /// it releases (`LiveTabRuntime.isEvicted`, `WebViewerController_iOS.initCount`),
     /// which is exactly the "modifying state during view update" hazard. A hop
     /// sidesteps that and is still three orders of magnitude sooner than the
     /// next sweep, which is the whole point.
@@ -422,11 +536,11 @@ final class TabResidencyManager {
             // Keep the pinned tabs plus a small warm set — switching between the
             // two documents you are comparing should still be instant even on a
             // machine that is swapping. Dropping *everything* on the first
-            // `.warning` (which macOS raises routinely) would effectively delete
+            // `.warning` (which iPadOS can raise routinely) would effectively delete
             // the feature on a busy machine.
             return evict(
-                tabLimit: Self.pressureTabLimit,
-                byteBudget: Self.pressureByteBudget,
+                tabLimit: budget.pressureTabLimit,
+                byteBudget: budget.pressureByteBudget,
                 expireIdle: true)
         case .critical:
             // Everything that is not on screen goes, now.
@@ -552,30 +666,37 @@ final class TabResidencyManager {
         task.cancel()
     }
 
-    /// Subscribe to the kernel's memory-pressure notifications. `DispatchSource`
-    /// (rather than `NSApplication`, which has no equivalent signal on macOS) is
-    /// the supported way to hear about this; the handler is delivered on the main
-    /// queue so it can go straight into the main-actor eviction path.
-    private func installMemoryPressureSource() {
-        let source = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical], queue: .main)
-        // Read the level off `self.pressureSource` rather than capturing `source`
-        // in the handler: a handler that captures its own source forms a
-        // retain cycle that only `cancel()` can break, and we would rather not
-        // depend on `deinit` running to avoid a leak.
-        source.setEventHandler { [weak self] in
-            // The handler runs on DispatchQueue.main, which *is* the main actor's
-            // executor, but Dispatch cannot express that in the type system.
-            MainActor.assumeIsolated {
-                guard let self, let data = self.pressureSource?.data else { return }
-                if data.contains(.critical) {
-                    self.handleMemoryPressure(.critical)
-                } else if data.contains(.warning) {
-                    self.handleMemoryPressure(.warning)
-                }
-            }
+    /// iOS has one memory signal, `UIApplication.didReceiveMemoryWarningNotification`,
+    /// and no severity on it — unlike Dispatch's memory-pressure source, which
+    /// macOS raises at `.warning` routinely and `.critical` rarely.
+    ///
+    /// Treating every warning as `.critical` would delete the warm tier on a
+    /// device that raises one warning an hour; treating every warning as
+    /// `.warning` ignores that on iPadOS the next step after a warning is
+    /// jetsam, not swap. So: the first warning applies the tight ceilings, and a
+    /// second one inside `pressureEscalationWindow` escalates to `.critical`.
+    /// Driven off the injected clock, so a test can prove both branches without
+    /// waiting a minute.
+    @discardableResult
+    func noteMemoryWarning() -> [String] {
+        let now = clock.now
+        let escalate = lastMemoryWarning.map { now - $0 < Self.pressureEscalationWindow } ?? false
+        lastMemoryWarning = now
+        return handleMemoryPressure(escalate ? .critical : .warning)
+    }
+
+    private func installMemoryWarningObserver() {
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            // Deliberately a hop rather than `MainActor.assumeIsolated`: the
+            // notification is posted on the main thread today, but nothing in
+            // the API contract guarantees the observer's queue, and an eviction
+            // mutates `@Observable` state on the resources it releases.
+            Task { @MainActor [weak self] in self?.noteMemoryWarning() }
         }
-        source.resume()
-        pressureSource = source
     }
 }
+#endif
