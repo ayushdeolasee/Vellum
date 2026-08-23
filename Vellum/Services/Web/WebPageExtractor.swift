@@ -37,6 +37,12 @@ enum WebUrl {
         guard scheme == "http" || scheme == "https" else {
             throw SessionServiceError.invalidDocument("Unsupported URL scheme: \(scheme)")
         }
+#if os(iOS)
+        guard scheme == "https" else {
+            throw SessionServiceError.invalidDocument(
+                "Plain HTTP webpages aren't supported. Use an HTTPS address.")
+        }
+#endif
 
         var rest = String(candidate[candidate.index(after: colon)...])
         guard rest.hasPrefix("//") else {
