@@ -174,15 +174,8 @@ final class WorkspaceStore {
     let settingsAi: AiStore
 
     #if os(macOS)
-    /// App-wide updater state shared by Home and the app menu.
+    /// One app-wide Sparkle controller shared by every update command.
     let updateChecker = UpdateChecker()
-    private(set) var didStartAutomaticUpdateCheck = false
-
-    func checkForUpdatesAutomatically() async {
-        guard !didStartAutomaticUpdateCheck else { return }
-        didStartAutomaticUpdateCheck = true
-        await updateChecker.check(silent: true)
-    }
     #endif
 
     /// Window-wide, shared by every pane's AiStore: the OpenRouter model catalog

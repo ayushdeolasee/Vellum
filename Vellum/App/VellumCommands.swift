@@ -70,14 +70,7 @@ struct VellumCommands: Commands {
         // This remains available with a document open, unlike the Home toolbar
         // control, and shares its durable state with that control.
         CommandGroup(after: .appInfo) {
-            if appWorkspace.updateChecker.state == .available,
-               let version = appWorkspace.updateChecker.availableVersion {
-                Button("Install Update \(version)", action: appWorkspace.updateChecker.install)
-            }
-            Button("Check for Updates…") {
-                Task { await appWorkspace.updateChecker.check() }
-            }
-            .disabled(appWorkspace.updateChecker.state == .checking)
+            Button("Check for Updates…", action: appWorkspace.updateChecker.check)
         }
 
         // MARK: File

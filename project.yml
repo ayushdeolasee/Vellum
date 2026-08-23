@@ -9,6 +9,9 @@ packages:
   SwiftMath:
     url: https://github.com/mgriebling/SwiftMath
     exactVersion: 1.7.3
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -45,6 +48,7 @@ targets:
       - path: Vellum
     dependencies:
       - package: SwiftMath
+      - package: Sparkle
     settings:
       base:
         PRODUCT_NAME: Vellum

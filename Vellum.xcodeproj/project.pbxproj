@@ -590,6 +590,7 @@
 		DEFEF67CBB89A49C694CB4F5 /* PhoneShellStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E4FB9AB7345DD4F55352DD1 /* PhoneShellStore.swift */; };
 		DFA6BE60BF4911831A2ECD5A /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */; };
 		E1012542A479C72D5AE7D8EC /* StorageRelocationContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3B4FF58D51631918FFFCE5 /* StorageRelocationContextTests.swift */; };
+		E238A383F1C8EB9EA06A7B69 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 14CA02E4EED41E2D2B8E3D3A /* Sparkle */; };
 		E2641696297CFDDCBD9248BA /* ReadLaterModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2ED6E4FCE053674A62E9EDD /* ReadLaterModels.swift */; };
 		E2B8207D7A7660B264FEC83E /* ScratchpadDrop_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13375C9AB108CE6FC48786B /* ScratchpadDrop_macOS.swift */; };
 		E37E138BF46333FC6D4C63A5 /* WebViewerView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC65D72937E15736374B3533 /* WebViewerView_iOS.swift */; };
@@ -1130,6 +1131,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5E1B7F8891E24F9FF2771E3E /* SwiftMath in Frameworks */,
+				E238A383F1C8EB9EA06A7B69 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1969,6 +1971,7 @@
 			name = VellumMac;
 			packageProductDependencies = (
 				E836F9260711ED8FCA98AE2F /* SwiftMath */,
+				14CA02E4EED41E2D2B8E3D3A /* Sparkle */,
 			);
 			productName = VellumMac;
 			productReference = 7D191BAF475861DE8FD22D4F /* VellumMac.app */;
@@ -2015,6 +2018,7 @@
 			mainGroup = FD07E6C24C59CD1DC1943393;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -3181,6 +3185,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.6;
+			};
+		};
 		D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath";
@@ -3196,6 +3208,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
+		};
+		14CA02E4EED41E2D2B8E3D3A /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 		E836F9260711ED8FCA98AE2F /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
