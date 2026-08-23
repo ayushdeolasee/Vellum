@@ -16,9 +16,8 @@ import Foundation
 //   * `url(forUbiquityContainerIdentifier:)` is called once, with the explicit
 //     identifier (never nil), off the main thread, and the result is cached.
 //
-// On this branch the iCloud entitlement is deliberately not wired into
-// project.yml (free signing team can't provision it — Vellum#149), so
-// `init?` returns nil and every test runs against `FakeSyncedContainer`.
+// Production resolves the fixed container authorized by the app's iCloud
+// entitlement. Tests use `FakeSyncedContainer` through the established seam.
 actor ICloudSyncedContainer: SyncedContainer {
     private let identifier: SyncedContainerIdentifier
     private let root: URL

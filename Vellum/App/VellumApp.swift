@@ -181,6 +181,9 @@ struct VellumApp: App {
                             webLastOpened: { await positions.lastOpenedForWebURL($0) },
                             webStorage: workspace.webLibraryStorage)
                     }
+                    await Task.detached(priority: .utility) {
+                        WebStorageSettings.resolveICloudRoot()
+                    }.value
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the
                     // storage choice goes first — it decides where everything

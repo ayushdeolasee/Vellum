@@ -89,6 +89,7 @@ xcodebuild archive \
   -destination "generic/platform=macOS" \
   -archivePath "$archive_path" \
   -derivedDataPath "$derived_data" \
+  -allowProvisioningUpdates \
   | xcbeautify
 
 print "Exporting with Developer ID..."
@@ -114,6 +115,48 @@ if [[ "$signature" != *"Authority=Developer ID Application:"* \
   exit 1
 fi
 
+signed_entitlements="$release_dir/signed-entitlements.plist"
+codesign -d --entitlements "$signed_entitlements" --xml "$app_path"
+
+icloud_container="iCloud.com.ayushdeolasee.vellum"
+signed_icloud_containers=$(/usr/libexec/PlistBuddy \
+  -c "Print :com.apple.developer.icloud-container-identifiers" \
+  "$signed_entitlements" 2>/dev/null || true)
+signed_ubiquity_containers=$(/usr/libexec/PlistBuddy \
+  -c "Print :com.apple.developer.ubiquity-container-identifiers" \
+  "$signed_entitlements" 2>/dev/null || true)
+signed_icloud_services=$(/usr/libexec/PlistBuddy \
+  -c "Print :com.apple.developer.icloud-services" \
+  "$signed_entitlements" 2>/dev/null || true)
+
+if [[ "$signed_icloud_containers" != *"$icloud_container"* \
+   || "$signed_ubiquity_containers" != *"$icloud_container"* \
+   || "$signed_icloud_services" != *"CloudDocuments"* ]]; then
+  print -u2 "Release stopped: the exported app lacks its signed iCloud Documents entitlements."
+  exit 1
+fi
+
+profile_path="$app_path/Contents/embedded.provisionprofile"
+profile_plist="$release_dir/embedded-provision.plist"
+if [[ ! -s "$profile_path" ]] \
+  || ! security cms -D -i "$profile_path" > "$profile_plist"; then
+  print -u2 "Release stopped: the exported app lacks a valid Developer ID provisioning profile."
+  exit 1
+fi
+
+profile_icloud_containers=$(/usr/libexec/PlistBuddy \
+  -c "Print :Entitlements:com.apple.developer.icloud-container-identifiers" \
+  "$profile_plist" 2>/dev/null || true)
+profile_ubiquity_containers=$(/usr/libexec/PlistBuddy \
+  -c "Print :Entitlements:com.apple.developer.ubiquity-container-identifiers" \
+  "$profile_plist" 2>/dev/null || true)
+
+if [[ "$profile_icloud_containers" != *"$icloud_container"* \
+   || "$profile_ubiquity_containers" != *"$icloud_container"* ]]; then
+  print -u2 "Release stopped: the Developer ID profile does not authorize $icloud_container."
+  exit 1
+fi
+
 executable="$app_path/Contents/MacOS/Vellum"
 architectures=$(lipo -archs "$executable")
 if [[ " $architectures " != *" arm64 "* || " $architectures " != *" x86_64 "* ]]; then
@@ -134,7 +177,7 @@ diskutil image create from \
 codesign --force \
   --sign "$identity" \
   --timestamp \
-  --identifier com.vellum.app.dmg \
+  --identifier com.ayushdeolasee.vellum.dmg \
   "$dmg_path"
 codesign --verify --strict --verbose=2 "$dmg_path"
 

@@ -3,7 +3,7 @@ import Foundation
 
 // Webpage sidecar records + the saved-pages library — port of the storage half
 // of src-tauri/src/web_page.rs. Uses the exact same on-disk layout under the
-// app-data dir (~/Library/Application Support/com.vellum.app/web/) — same
+// app-data dir (~/Library/Application Support/com.ayushdeolasee.vellum/web/) — same
 // sha256-hex keys, same snake_case JSON — so libraries written by the Tauri
 // app keep working.
 
@@ -75,7 +75,7 @@ enum WebLibrary {
         // iOS always provides an in-container Application Support directory.
         let base = applicationSupport ?? URL(fileURLWithPath: NSTemporaryDirectory())
         #endif
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.ayushdeolasee.vellum"
         return base.appendingPathComponent(bundleId, isDirectory: true)
     }
 

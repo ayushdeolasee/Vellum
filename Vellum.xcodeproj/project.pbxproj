@@ -1027,6 +1027,7 @@
 		CF26A8AE533298D45E31BC6A /* AppDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDefaults.swift; sourceTree = "<group>"; };
 		CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell_iOS.swift; sourceTree = "<group>"; };
 		D0C17A6EF96F73E713F0E197 /* WebLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibraryStorage.swift; sourceTree = "<group>"; };
+		D13A31829F798B3BBA78B09F /* Vellum-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Vellum-macOS.entitlements"; sourceTree = "<group>"; };
 		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLibraryActions_iOS.swift; sourceTree = "<group>"; };
 		D1FED2784B5B178282C91505 /* DocumentDataCoordinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataCoordinationTests.swift; sourceTree = "<group>"; };
@@ -1571,6 +1572,7 @@
 				C8F4E0214AE68A33C5052709 /* Untitled.icon */,
 				229408A6EEAF85EF71311708 /* Vellum-AppGroup.entitlements */,
 				338949714215E58B03C6B359 /* Vellum-iOS.entitlements */,
+				D13A31829F798B3BBA78B09F /* Vellum-macOS.entitlements */,
 				76D226C5BF26487AF44B0712 /* App */,
 				0A893C9E10BE8275414AA01D /* Models */,
 				F8C622CDAB2620944EFB4900 /* Platform */,
@@ -2875,6 +2877,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
@@ -2888,7 +2891,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;
 			};
@@ -3089,6 +3092,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
@@ -3102,7 +3106,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;
 			};
