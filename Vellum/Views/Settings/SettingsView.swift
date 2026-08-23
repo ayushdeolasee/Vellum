@@ -407,6 +407,7 @@ private struct AiSettingsTab: View {
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
     @State private var validationState: AiConnectionValidationState = .idle
+    @State private var consentRevision = 0
 
     var body: some View {
         Form {
@@ -463,6 +464,24 @@ private struct AiSettingsTab: View {
             } header: {
                 Text("Assistant")
             }
+            Section {
+                LabeledContent("Current provider") {
+                    Text(AiSharingConsent.isGranted(for: aiStore.settings.provider)
+                         ? "Allowed" : "Not allowed")
+                        .foregroundStyle(.secondary)
+                }
+                Link("Read Vellum's Privacy Policy", destination: VellumPrivacyPolicy.url)
+                Button("Revoke AI Sharing Permissions", role: .destructive) {
+                    AiSharingConsent.revokeAll()
+                    consentRevision += 1
+                }
+                .disabled(!hasAnySharingPermission)
+                .accessibilityIdentifier("ai.revokeSharingPermissions")
+            } header: {
+                Text("Data Sharing")
+            } footer: {
+                Text("Revoking stops future AI requests. Vellum will ask again before it sends document content to any provider.")
+            }
         }
         .formStyle(.grouped)
         #if os(iOS)
@@ -477,6 +496,11 @@ private struct AiSettingsTab: View {
 
     private var canValidate: Bool {
         !aiStore.apiKeyBinding.wrappedValue.isEmpty
+    }
+
+    private var hasAnySharingPermission: Bool {
+        _ = consentRevision
+        return AiSharingConsent.hasAnyGranted
     }
 
     private var configurationSummary: String {
