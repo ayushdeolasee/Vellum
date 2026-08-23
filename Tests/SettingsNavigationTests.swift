@@ -81,4 +81,20 @@ final class SettingsNavigationTests: XCTestCase {
 
         XCTAssertFalse(settings.isConfigured())
     }
+
+    func testAiSharingConsentIsProviderSpecificAndRevocable() {
+        // AppDefaults uses a private scratch domain inside the hosted test
+        // process, so this never touches the user's real preferences.
+        AiSharingConsent.revokeAll()
+        defer { AiSharingConsent.revokeAll() }
+
+        XCTAssertFalse(AiSharingConsent.hasAnyGranted)
+
+        AiSharingConsent.grant(for: .gemini)
+        XCTAssertTrue(AiSharingConsent.isGranted(for: .gemini))
+        XCTAssertFalse(AiSharingConsent.isGranted(for: .openai))
+
+        AiSharingConsent.revokeAll()
+        XCTAssertFalse(AiSharingConsent.hasAnyGranted)
+    }
 }

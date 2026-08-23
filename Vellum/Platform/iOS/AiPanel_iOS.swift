@@ -29,6 +29,7 @@ struct AiPanel_iOS: View {
     @State private var fileImporterOpen = false
     @State private var photosPickerOpen = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var consentProvider: AiProvider?
     /// Focus for the composer, driven by `AiStore.composerFocusRequest` so that
     /// attaching context from elsewhere in the app also raises the keyboard.
     @FocusState private var composerFocused: Bool
@@ -117,6 +118,12 @@ struct AiPanel_iOS: View {
             guard let request else { return }
             composerFocused = true
             aiStore.consumeComposerFocusRequest(request)
+        }
+        .sheet(item: $consentProvider) { provider in
+            AiSharingConsentSheet(provider: provider, model: aiStore.activeModelName) {
+                consentProvider = nil
+                submit()
+            }
         }
     }
 
@@ -915,6 +922,11 @@ struct AiPanel_iOS: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        let provider = aiStore.settings.provider
+        guard AiSharingConsent.isGranted(for: provider) else {
+            consentProvider = provider
+            return
+        }
         // With only references attached, send a light default prompt so the
         // request is non-empty and the model knows to act on them.
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed

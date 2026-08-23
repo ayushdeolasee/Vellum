@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Privacy policy for Vellum, a document reader for iPhone, iPad, and Mac.">
+  <title>Vellum Privacy Policy</title>
+  <style>
+    :root {
+      --bg: #f4f1e9;
+      --paper: #fffdf8;
+      --ink: #17201c;
+      --muted: #5f6964;
+      --line: #d9d5ca;
+      --accent: #285f4b;
+      --note: #eef4ef;
+      --warning: #fff5dd;
+      --warning-line: #d6a746;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111613;
+        --paper: #1a211d;
+        --ink: #eef2ee;
+        --muted: #adb7b1;
+        --line: #39443e;
+        --accent: #8dd7b5;
+        --note: #202d27;
+        --warning: #332b1c;
+        --warning-line: #c9993c;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(860px, calc(100% - 32px)); margin: 44px auto 72px; }
+    header, section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: clamp(22px, 4vw, 38px);
+      margin-top: 18px;
+    }
+    header { border-top: 6px solid var(--accent); }
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
+    h1 { margin: 6px 0 12px; font-size: clamp(2rem, 6vw, 3.4rem); }
+    h2 { margin: 0 0 14px; font-size: 1.55rem; }
+    h3 { margin: 24px 0 8px; font-size: 1.08rem; }
+    p { margin: 0 0 14px; }
+    p:last-child { margin-bottom: 0; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    ul { padding-left: 1.3rem; margin: 8px 0 16px; }
+    li { margin: 7px 0; }
+    .eyebrow { color: var(--muted); font-size: .76rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 1.08rem; max-width: 720px; }
+    .summary {
+      background: var(--note);
+      border-radius: 13px;
+      padding: 18px;
+      margin-top: 22px;
+    }
+    .warning {
+      background: var(--warning);
+      border-left: 5px solid var(--warning-line);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin: 18px 0;
+    }
+    nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; }
+    nav a { padding: 5px 0; }
+    table { border-collapse: collapse; width: 100%; font-size: .94rem; }
+    th, td { border-bottom: 1px solid var(--line); padding: 12px 9px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .76rem; letter-spacing: .07em; text-transform: uppercase; }
+    .provider { scroll-margin-top: 18px; }
+    .checked { color: var(--muted); font-size: .88rem; }
+    footer { color: var(--muted); padding: 24px 8px 0; text-align: center; font-size: .88rem; }
+    @media (max-width: 640px) {
+      nav { grid-template-columns: 1fr; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+      tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+      td { border: 0; padding: 5px 0; }
+      td::before { content: attr(data-label); display: block; color: var(--muted); font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Effective 19 August 2026</div>
+    <h1>Vellum privacy policy</h1>
+    <p class="lede">Vellum is a document reader made by Ayush Deolasee. Your library stays on your device or in the storage location you choose. Optional AI and read-later connections send data directly from Vellum to the service you select.</p>
+    <div class="summary">
+      <strong>The short version</strong>
+      <ul>
+        <li>Vellum has no developer-operated account, analytics, advertising, or tracking service.</li>
+        <li>Documents, notes, reading positions, and AI conversations are stored locally unless you choose a synced or external storage location.</li>
+        <li>AI is optional. Vellum asks before it first sends document content to each AI provider.</li>
+        <li>API keys and read-later tokens are stored in Apple Keychain.</li>
+        <li>Deleting local data does not delete copies already held by a provider.</li>
+      </ul>
+    </div>
+  </header>
+
+  <section>
+    <h2>Contents</h2>
+    <nav aria-label="Policy sections">
+      <a href="#scope">1. Scope</a>
+      <a href="#local-data">2. Data stored by Vellum</a>
+      <a href="#ai">3. Optional AI providers</a>
+      <a href="#integrations">4. Read-later integrations</a>
+      <a href="#web">5. Documents and webpages</a>
+      <a href="#credentials">6. Credentials and security</a>
+      <a href="#retention">7. Retention and deletion</a>
+      <a href="#choices">8. Your choices</a>
+      <a href="#transfers">9. International processing</a>
+      <a href="#contact">10. Contact</a>
+    </nav>
+  </section>
+
+  <section id="scope">
+    <h2>1. Scope</h2>
+    <p>This policy covers the Vellum app for iPhone, iPad, and Mac. It describes the data Vellum stores, the network requests the app makes, and the optional services a user can connect.</p>
+    <p>Vellum's developer does not operate a server that receives your documents, prompts, provider credentials, library, or reading activity. A connected provider still receives data directly from your device and handles it under its own terms and privacy policy.</p>
+    <p>This policy does not replace the policy of Apple, an AI provider, a website, Readwise, or Raindrop.io.</p>
+  </section>
+
+  <section id="local-data">
+    <h2>2. Data stored by Vellum</h2>
+    <p>Vellum stores the information needed to provide its reading and annotation features. Depending on what you use, this can include:</p>
+    <ul>
+      <li>PDFs, saved webpages, document titles, file locations, and cached extracted text.</li>
+      <li>Highlights, annotations, bookmarks, reading positions, Scratchpad notes, and attachments.</li>
+      <li>AI conversations, references attached to a prompt, model settings, and usage totals. Full image pixels attached to an AI message are sent for that request but are not kept in the saved conversation.</li>
+      <li>Readwise or Raindrop item metadata and optional offline copies.</li>
+      <li>App preferences, recent files, workspace state, and cache-cleanup settings.</li>
+    </ul>
+    <p>Vellum stores this data on the device and in the library location you choose. If an iCloud-enabled build and iCloud storage are selected, Apple processes the synced files under <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. A custom folder may be managed by its filesystem or sync provider.</p>
+    <p>The app and its share and widget extensions may exchange the minimum data needed for capture and widget display through Apple's App Group container.</p>
+  </section>
+
+  <section id="ai">
+    <h2>3. Optional AI providers</h2>
+    <p>AI features are off unless you add a provider credential. Before the first content-bearing request to each AI provider, Vellum shows a consent sheet naming the service and the categories of information that can be sent. Switching providers requires separate permission.</p>
+    <p>An AI request may include:</p>
+    <ul>
+      <li>Your prompt and recent AI conversation.</li>
+      <li>The document title, current and visible page numbers, page text, and annotations.</li>
+      <li>Selected text, highlights, quoted replies, images, page snapshots, and other references you attach.</li>
+      <li>Excerpts and annotations from other pages, plus tool results, when you ask the assistant to search or act on the document.</li>
+      <li>The selected provider, model, technical request information, and the API credential needed to authenticate.</li>
+    </ul>
+    <p>The provider returns a reply to Vellum. Vellum stores the conversation in your library. Provider processing is necessary to supply the AI feature and is separate from Vellum's local storage.</p>
+    <p>For App Store privacy disclosure, Vellum treats sent text as Other User Content and sent images as Photos or Videos. Both are used for app functionality, are not used by Vellum for tracking, and may be linked to the provider account because the request uses that account's API credential.</p>
+
+    <div class="warning">
+      Provider rules differ by account, region, model, endpoint, and settings. Do not send confidential, sensitive, regulated, or third-party content unless you have checked the selected provider's current rules and have permission to share it.
+    </div>
+
+    <table aria-label="AI provider summary">
+      <thead><tr><th>Service</th><th>Routing</th><th>Important current rule</th></tr></thead>
+      <tbody>
+        <tr>
+          <td data-label="Service"><a href="#gemini">Google Gemini</a></td>
+          <td data-label="Routing">Direct to Google</td>
+          <td data-label="Important current rule">Unpaid and paid API projects have different training rules.</td>
+        </tr>
+        <tr>
+          <td data-label="Service"><a href="#openai">OpenAI API</a></td>
+          <td data-label="Routing">Direct to OpenAI</td>
+          <td data-label="Important current rule">API content is not used for training by default; default abuse logs may last up to 30 days.</td>
+        </tr>
+        <tr>
+          <td data-label="Service"><a href="#openrouter">OpenRouter</a></td>
+          <td data-label="Routing">OpenRouter, then a model provider</td>
+          <td data-label="Important current rule">The final provider can have its own retention and training rules.</td>
+        </tr>
+        <tr>
+          <td data-label="Service"><a href="#opencode">OpenCode Zen or Go</a></td>
+          <td data-label="Routing">OpenCode, then a model provider</td>
+          <td data-label="Important current rule">Retention and training vary by gateway and selected model.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 class="provider" id="gemini">Google Gemini Developer API</h3>
+    <p>Vellum sends requests directly to Google's Gemini Developer API using the API key you provide. Google states that outside the EEA, Switzerland, and the UK, content sent through unpaid Gemini API quota may be reviewed by people and used to provide, improve, and develop Google products and machine-learning technologies. Google states that content sent through a paid API project is not used to improve its products, although it may retain content for abuse prevention and legal duties.</p>
+    <p>Optional logging, datasets, zero-data-retention approval, and certain API features have separate retention rules. Vellum cannot determine from a pasted key whether your project is paid or approved for stronger controls. Review the <a href="https://ai.google.dev/gemini-api/terms">Gemini API terms</a>, <a href="https://ai.google.dev/gemini-api/docs/logs-policy">logging rules</a>, and <a href="https://ai.google.dev/gemini-api/docs/zdr">zero data retention guide</a>.</p>
+    <p>Removing the key or revoking permission in Vellum stops future requests. It does not erase content Google already received.</p>
+
+    <h3 class="provider" id="openai">OpenAI API</h3>
+    <p>Vellum sends requests directly to the OpenAI API using the API key you provide. This is API use, not a ChatGPT consumer account connection. OpenAI states that it does not use API content to train its models by default unless the account holder opts in.</p>
+    <p>OpenAI's default abuse-monitoring logs may contain prompts, responses, and related metadata for up to 30 days. Legal, safety, endpoint, storage, Files, and approved retention-control rules can change that period. Review <a href="https://developers.openai.com/api/docs/guides/your-data">OpenAI's API data controls</a> and <a href="https://openai.com/policies/privacy-policy/">privacy policy</a>.</p>
+    <p>Deleting a Vellum conversation or revoking permission does not delete provider-held data or API objects. Use the applicable OpenAI account or API controls for those copies.</p>
+
+    <h3 class="provider" id="openrouter">OpenRouter</h3>
+    <p>Vellum sends a request to OpenRouter, which forwards it to the model provider selected for the request. OpenRouter states that it does not store prompt and response content by default. It does store request metadata such as model, provider, token counts, latency, and cost, and it anonymously categorizes a small sample of prompts. Prompt logging and product-improvement use are separate account options.</p>
+    <p>The receiving model provider may retain content or use it under its own terms. Blocking training, requiring a zero-data-retention endpoint, and disabling OpenRouter logging are separate controls. Bringing your own upstream key does not bypass OpenRouter because the request still passes through its service. Review OpenRouter's <a href="https://openrouter.ai/privacy">privacy policy</a>, <a href="https://openrouter.ai/docs/guides/privacy/data-collection">data collection guide</a>, and <a href="https://openrouter.ai/docs/guides/privacy/provider-logging/">provider logging guide</a>.</p>
+    <p>Vellum cannot delete content already passed to an underlying model provider.</p>
+
+    <h3 class="provider" id="opencode">OpenCode Zen and OpenCode Go</h3>
+    <p>Vellum connects to OpenCode's hosted Zen and Go gateways, not to a local OpenCode process or a user-defined server. OpenCode receives the request and routes it to the provider that hosts the selected model.</p>
+    <p>OpenCode says Zen models are hosted in the United States. Zen provider rules vary and some free models may use content for improvement. OpenCode's current Go table says listed Go models do not train on content, but retention varies by model from zero to 30 days. These lists and exceptions change. OpenCode's general privacy policy also describes prompt information as personal data and does not give one fixed gateway-retention period.</p>
+    <p>Review the current <a href="https://opencode.ai/docs/zen/">Zen model rules</a>, <a href="https://opencode.ai/docs/go/">Go model rules</a>, and <a href="https://opencode.ai/legal/privacy-policy">OpenCode privacy policy</a> before sending sensitive material.</p>
+    <p>Removing a Zen or Go key or revoking permission stops future requests from Vellum. It does not erase content already received by OpenCode or an underlying model provider.</p>
+    <p class="checked">Provider terms and linked data-handling pages last checked 19 August 2026.</p>
+  </section>
+
+  <section id="integrations">
+    <h2>4. Read-later integrations</h2>
+    <p>Readwise Reader and Raindrop.io are optional. Vellum connects only after you provide a token. It stores that token in Apple Keychain and sends it directly to the chosen service to authenticate.</p>
+
+    <h3>Readwise Reader</h3>
+    <p>Vellum may retrieve Reader item identifiers, titles, authors, summaries, tags, source links, saved and updated dates, locations, thumbnails, and available PDF or document content. If you move an item in Vellum, Vellum sends the item identifier and new location to Readwise.</p>
+    <p>Vellum currently uses a long-lived Readwise personal access token rather than a scoped OAuth grant. Treat it like a password. Readwise describes broad service-provider processing, international transfers, and purpose-based retention without one fixed deletion period. Review the <a href="https://readwise.io/privacy">Readwise privacy policy</a> and <a href="https://readwise.io/reader_api">Reader API documentation</a>.</p>
+
+    <h3>Raindrop.io</h3>
+    <p>Vellum may retrieve bookmark identifiers, titles, excerpts, tags, collections, links, dates, thumbnails, and available file or PDF content. If you move a bookmark in Vellum, Vellum sends the bookmark identifier and destination collection to Raindrop.io.</p>
+    <p>Vellum currently uses a non-expiring Raindrop test token rather than normal expiring OAuth credentials. Treat it like a password. Raindrop.io states that its main data storage is on AWS in Germany, while its privacy policy permits processing and transfers in other countries. Review the <a href="https://help.raindrop.io/privacy">Raindrop.io privacy policy</a>, <a href="https://help.raindrop.io/security">security information</a>, and <a href="https://developer.raindrop.io/">API documentation</a>.</p>
+
+    <p>Disconnecting either service disables future requests and removes its token from Vellum. Vellum removes the synced metadata snapshot. You can choose whether to delete downloaded files. Disconnecting does not delete anything in the provider account. Use Readwise or Raindrop.io account controls for provider-held data.</p>
+  </section>
+
+  <section id="web">
+    <h2>5. Documents and webpages</h2>
+    <p>Opening a local PDF does not send its contents to Vellum's developer. The operating system or storage provider may still process the file when it comes from iCloud Drive, another cloud filesystem, or a shared location.</p>
+    <p>When you add, open, or save a webpage, Vellum requests the URL from the website and may load related page resources. The website and its service providers can receive ordinary network information such as your IP address, request headers, cookies accepted by the web view, and the requested URL. Their policies apply.</p>
+    <p>Sharing a webpage to Vellum passes the URL or captured page content through the local App Group container so the main app can save it. Vellum may keep an offline archive and extracted text in your selected library location.</p>
+  </section>
+
+  <section id="credentials">
+    <h2>6. Credentials and security</h2>
+    <p>Vellum stores AI API keys and Readwise or Raindrop tokens in Apple Keychain. It sends a credential only to authenticate a request to the selected service. The developer does not receive a copy.</p>
+    <p>No system is perfectly secure. Protect device access, provider accounts, API keys, and local or synced document folders. Revoke a credential at the provider if a device or token may be compromised.</p>
+  </section>
+
+  <section id="retention">
+    <h2>7. Retention and deletion</h2>
+    <p>Vellum keeps user-created library data until you delete it, replace the library, or remove the app and its data. This includes documents, annotations, Scratchpad notes, bookmarks, reading positions, and AI conversations.</p>
+    <p>Vellum can remove rebuildable offline webpages and cached extracted text for items that have not been opened during the storage-retention period and were never saved or annotated. The default period is six months. Settings offers 1, 3, 6, or 12 months, or Never.</p>
+    <p>Read-later cache retention is controlled separately. Disconnecting a read-later service removes its credential and synced metadata. The disconnect flow lets you decide whether downloaded files are also deleted.</p>
+    <p>Deleting a file, conversation, credential, or permission in Vellum affects Vellum's local or selected synced copy. It does not recall data already sent to an AI provider, website, Readwise, or Raindrop.io. Each external service controls its own logs, backups, legal holds, account data, and deletion process.</p>
+  </section>
+
+  <section id="choices">
+    <h2>8. Your choices</h2>
+    <ul>
+      <li>Use Vellum without connecting an AI or read-later service.</li>
+      <li>Review the exact AI provider before sending, choose Not Now, or revoke all AI-sharing permissions in Settings.</li>
+      <li>Remove an AI key to prevent that provider from being used.</li>
+      <li>Disconnect Readwise or Raindrop.io and choose whether to remove downloaded files.</li>
+      <li>Delete local documents, conversations, annotations, notes, and caches through Vellum or the selected storage location.</li>
+    </ul>
+    <p>Revoking AI permission stops future sharing. Vellum asks again before the next request to that provider. It does not delete earlier provider-held data.</p>
+    <p>For access, correction, portability, objection, or deletion rights concerning a provider's copy, contact that provider. For Vellum's local data, use the app and the selected storage location because the developer has no server-side copy to retrieve.</p>
+  </section>
+
+  <section id="transfers">
+    <h2>9. International processing and children</h2>
+    <p>Connected services may process data in countries different from yours. Their privacy policies describe their locations and transfer safeguards. OpenCode states that Zen models are hosted in the United States. Readwise operates from the United States. Raindrop.io describes German storage but permits broader international processing. AI gateways may send a request to another model provider.</p>
+    <p>Vellum is not designed to collect information from children through a developer-operated service. Because Vellum can open documents and websites and connect to external providers, a parent, guardian, school, or organization should decide whether those services and the selected content are appropriate.</p>
+  </section>
+
+  <section id="contact">
+    <h2>10. Changes and contact</h2>
+    <p>This policy may change when Vellum adds a feature, changes a provider, or learns that a provider's practices have changed. A new effective date will appear at the top. Vellum will ask for AI-sharing permission again if the purpose or categories of content sent change materially.</p>
+    <p>Privacy questions about Vellum can be sent to <a href="mailto:pypdeveloper@deolasee.org">pypdeveloper@deolasee.org</a>. Do not email documents, API keys, access tokens, or other sensitive content.</p>
+  </section>
+
+  <footer>Vellum · Ayush Deolasee · Effective 19 August 2026</footer>
+</main>
+</body>
+</html>
