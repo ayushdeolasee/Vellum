@@ -2,6 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
   "name": "vellum-work",
   "compatibility_date": "2026-08-23",
+  "workers_dev": false,
+  "preview_urls": true,
   "assets": {
     "directory": "."
   },
