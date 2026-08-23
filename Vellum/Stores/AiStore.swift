@@ -9,7 +9,7 @@ enum AiRole: String, Codable, Sendable {
     case assistant
 }
 
-enum AiProvider: String, Codable, Sendable {
+enum AiProvider: String, Codable, Sendable, Identifiable {
     case gemini
     case openai
     case openrouter
@@ -20,6 +20,8 @@ enum AiProvider: String, Codable, Sendable {
     /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
     /// separate from Zen. See `OpenCodeClient.Gateway`.
     case opencodeGo
+
+    var id: String { rawValue }
 }
 
 /// User-selected reasoning/thinking effort, applied to whichever provider is
@@ -1116,6 +1118,10 @@ final class AiStore {
         }
         if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
             error = "Sign in with ChatGPT in AI settings."
+            return
+        }
+        guard !AiSharingConsent.needsConsent(for: settingsAtStart.provider) else {
+            error = "Allow sharing with \(settingsAtStart.provider.consentDisplayName) before sending."
             return
         }
 

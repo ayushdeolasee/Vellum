@@ -408,6 +408,7 @@ private struct AiSettingsTab: View {
     @Environment(\.palette) private var palette
     @Environment(ChatGPTAuth.self) private var chatGPTAuth
     @State private var validationState: AiConnectionValidationState = .idle
+    @State private var consentRevision = 0
 
     var body: some View {
         Form {
@@ -473,6 +474,29 @@ private struct AiSettingsTab: View {
             } header: {
                 Text("Assistant")
             }
+
+            Section {
+                ForEach(AiSharingConsent.providers) { provider in
+                    LabeledContent(provider.consentDisplayName) {
+                        HStack(spacing: 12) {
+                            Text(consentIsGranted(for: provider) ? "Granted" : "Not granted")
+                                .foregroundStyle(.secondary)
+                            if consentIsGranted(for: provider) {
+                                Button("Reset") {
+                                    AiSharingConsent.revoke(for: provider)
+                                    consentRevision += 1
+                                }
+                                .accessibilityIdentifier("aiConsent.reset.\(provider.rawValue)")
+                            }
+                        }
+                    }
+                }
+                Link("Privacy Policy", destination: LegalLinks.privacyPolicy)
+            } header: {
+                Text("Data Sharing")
+            } footer: {
+                Text("Resetting a provider makes Vellum ask again before the next request.")
+            }
         }
         .formStyle(.grouped)
         #if os(iOS)
@@ -488,6 +512,11 @@ private struct AiSettingsTab: View {
 
     private var canValidate: Bool {
         aiStore.settings.provider == .chatgpt ? chatGPTAuth.isSignedIn : !aiStore.apiKeyBinding.wrappedValue.isEmpty
+    }
+
+    private func consentIsGranted(for provider: AiProvider) -> Bool {
+        _ = consentRevision
+        return AiSharingConsent.isGranted(for: provider)
     }
 
     private var configurationSummary: String {

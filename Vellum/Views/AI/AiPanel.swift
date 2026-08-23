@@ -31,6 +31,7 @@ struct AiPanel: View {
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
+    @State private var consentProvider: AiProvider?
     /// Live width of the transcript column. The sidebar is a resizable
     /// `.inspector` (240…700pt), and bubbles used to be pinned to a fixed
     /// 272pt — so widening it only grew the empty gutter beside them. Tracking
@@ -88,6 +89,12 @@ struct AiPanel: View {
         ) { result in
             guard case let .success(urls) = result else { return }
             aiStore.attachFiles(at: urls)
+        }
+        .sheet(item: $consentProvider) { provider in
+            AiSharingConsentSheet(provider: provider) {
+                consentProvider = nil
+                submit()
+            }
         }
     }
 
@@ -768,6 +775,11 @@ struct AiPanel: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        let provider = aiStore.settings.provider
+        guard !AiSharingConsent.needsConsent(for: provider) else {
+            consentProvider = provider
+            return
+        }
         // With only references attached, send a light default prompt so the
         // request is non-empty and the model knows to act on them.
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
