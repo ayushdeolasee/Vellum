@@ -55,7 +55,21 @@ if [[ -z "$version" || -z "$build" ]]; then
 fi
 
 tag="v$version"
-release_dir="$repo_root/build/releases/Vellum-$version-$build"
+release_dir_base="$repo_root/build/releases/Vellum-$version-$build"
+release_dir="$release_dir_base"
+retry_number=2
+
+if [[ "$publish" == true ]] \
+  && gh release view "$tag" --repo ayushdeolasee/Vellum >/dev/null 2>&1; then
+  print -u2 "Release stopped: GitHub release $tag already exists."
+  exit 1
+fi
+
+while [[ -e "$release_dir" ]]; do
+  release_dir="$release_dir_base-retry-$retry_number"
+  (( retry_number++ ))
+done
+
 archive_path="$release_dir/Vellum.xcarchive"
 export_dir="$release_dir/export"
 derived_data="$release_dir/DerivedData"
@@ -63,11 +77,6 @@ dmg_root="$release_dir/dmg-root"
 updates_dir="$release_dir/updates"
 dmg_path="$updates_dir/Vellum.dmg"
 appcast_path="$updates_dir/appcast.xml"
-
-if [[ -e "$release_dir" ]]; then
-  print -u2 "Release stopped: output already exists at $release_dir"
-  exit 1
-fi
 
 mkdir -p "$release_dir" "$updates_dir"
 
@@ -171,7 +180,7 @@ if [[ "$publish" != true ]]; then
   exit 0
 fi
 
-if gh release view "$tag" >/dev/null 2>&1; then
+if gh release view "$tag" --repo ayushdeolasee/Vellum >/dev/null 2>&1; then
   print -u2 "Release stopped: GitHub release $tag already exists."
   exit 1
 fi
