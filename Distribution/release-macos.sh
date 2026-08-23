@@ -30,6 +30,14 @@ identity=$(security find-identity -v -p codesigning \
   | awk -F'"' '/Developer ID Application/ { print $2; exit }')
 if [[ -z "$identity" ]]; then
   print -u2 "Release stopped: no Developer ID Application certificate is installed."
+  print -u2 "In Xcode, sign in to the paid team, then use Manage Certificates > + > Developer ID Application."
+  exit 1
+fi
+
+if ! xcrun notarytool history \
+  --keychain-profile VellumNotary >/dev/null 2>&1; then
+  print -u2 "Release stopped: the VellumNotary Keychain profile is missing or invalid."
+  print -u2 "Create it with: xcrun notarytool store-credentials VellumNotary"
   exit 1
 fi
 
