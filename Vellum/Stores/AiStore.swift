@@ -1107,7 +1107,7 @@ final class AiStore {
             error = "Set your OpenCode Go API key in AI settings."
             return
         }
-        guard AiSharingConsent.isGranted(for: settingsAtStart.provider) else {
+        guard !AiSharingConsent.needsConsent(for: settingsAtStart.provider) else {
             error = "Review and allow sharing with \(settingsAtStart.provider.displayName) before sending."
             return
         }

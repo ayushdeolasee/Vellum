@@ -10,6 +10,11 @@ enum VellumPrivacyPolicy {
 /// data categories asks again without trying to migrate an older permission.
 enum AiSharingConsent {
     static let disclosureVersion = 1
+    static let providers = AiProvider.allCases
+
+    static func needsConsent(for provider: AiProvider) -> Bool {
+        !isGranted(for: provider)
+    }
 
     static func isGranted(for provider: AiProvider) -> Bool {
         AppDefaults.current.bool(forKey: key(for: provider))

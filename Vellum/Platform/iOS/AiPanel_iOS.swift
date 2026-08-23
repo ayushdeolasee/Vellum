@@ -923,7 +923,7 @@ struct AiPanel_iOS: View {
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
         let provider = aiStore.settings.provider
-        guard AiSharingConsent.isGranted(for: provider) else {
+        guard !AiSharingConsent.needsConsent(for: provider) else {
             consentProvider = provider
             return
         }

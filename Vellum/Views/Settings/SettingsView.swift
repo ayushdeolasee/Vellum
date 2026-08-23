@@ -465,22 +465,26 @@ private struct AiSettingsTab: View {
                 Text("Assistant")
             }
             Section {
-                LabeledContent("Current provider") {
-                    Text(AiSharingConsent.isGranted(for: aiStore.settings.provider)
-                         ? "Allowed" : "Not allowed")
-                        .foregroundStyle(.secondary)
+                ForEach(AiSharingConsent.providers) { provider in
+                    LabeledContent(provider.displayName) {
+                        HStack(spacing: 12) {
+                            Text(AiSharingConsent.isGranted(for: provider) ? "Allowed" : "Not allowed")
+                                .foregroundStyle(.secondary)
+                            if AiSharingConsent.isGranted(for: provider) {
+                                Button("Revoke") {
+                                    AiSharingConsent.revoke(for: provider)
+                                    consentRevision += 1
+                                }
+                                .accessibilityIdentifier("aiConsent.revoke.\(provider.rawValue)")
+                            }
+                        }
+                    }
                 }
                 Link("Read Vellum's Privacy Policy", destination: VellumPrivacyPolicy.url)
-                Button("Revoke AI Sharing Permissions", role: .destructive) {
-                    AiSharingConsent.revokeAll()
-                    consentRevision += 1
-                }
-                .disabled(!hasAnySharingPermission)
-                .accessibilityIdentifier("ai.revokeSharingPermissions")
             } header: {
                 Text("Data Sharing")
             } footer: {
-                Text("Revoking stops future AI requests. Vellum will ask again before it sends document content to any provider.")
+                Text("Revoking a provider makes Vellum ask again before the next request.")
             }
         }
         .formStyle(.grouped)
@@ -496,11 +500,6 @@ private struct AiSettingsTab: View {
 
     private var canValidate: Bool {
         !aiStore.apiKeyBinding.wrappedValue.isEmpty
-    }
-
-    private var hasAnySharingPermission: Bool {
-        _ = consentRevision
-        return AiSharingConsent.hasAnyGranted
     }
 
     private var configurationSummary: String {
