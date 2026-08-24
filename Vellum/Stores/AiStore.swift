@@ -9,7 +9,7 @@ enum AiRole: String, Codable, Sendable {
     case assistant
 }
 
-enum AiProvider: String, Codable, Sendable {
+enum AiProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     case gemini
     case openai
     case openrouter
@@ -1105,6 +1105,10 @@ final class AiStore {
         if settingsAtStart.provider == .opencodeGo,
            settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             error = "Set your OpenCode Go API key in AI settings."
+            return
+        }
+        guard !AiSharingConsent.needsConsent(for: settingsAtStart.provider) else {
+            error = "Review and allow sharing with \(settingsAtStart.provider.displayName) before sending."
             return
         }
 

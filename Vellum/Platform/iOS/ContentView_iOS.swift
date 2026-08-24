@@ -231,6 +231,7 @@ struct AddWebpageSheet_iOS: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
     @State private var url = ""
+    @State private var errorMessage: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -248,6 +249,12 @@ struct AddWebpageSheet_iOS: View {
                     .focused($focused)
                     .onSubmit(submit)
                     .accessibilityIdentifier("addWebpage.urlField")
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(palette.destructive)
+                        .accessibilityIdentifier("addWebpage.error")
+                }
                 Spacer()
             }
             .padding(20)
@@ -270,8 +277,13 @@ struct AddWebpageSheet_iOS: View {
     private func submit() {
         let trimmed = url.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        onSubmit(trimmed)
-        dismiss()
+        do {
+            errorMessage = nil
+            onSubmit(try WebUrl.normalize(trimmed))
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 #endif

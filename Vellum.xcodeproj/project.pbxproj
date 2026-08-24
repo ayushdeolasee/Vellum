@@ -83,6 +83,7 @@
 		15B509D29926E16D34EC944A /* VellumWidgetSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */; };
 		161CBBC41417C78ECF54C79F /* CapturedUnreadLedgerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1C66603161A0100A404C97 /* CapturedUnreadLedgerTests.swift */; };
 		179624D568F6AF9C1077ECD1 /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
+		17A54FCBDEBE8222691AC2DE /* AiSharingConsentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533005EB4BF21944F7E3A6A6 /* AiSharingConsentSheet.swift */; };
 		17CEDFD80E708ADD26650928 /* RecentsResolveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C2905E4A08861E42C2EED /* RecentsResolveTests.swift */; };
 		17F8E5141F42F3BA0F66B072 /* PdfKitView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3327FE5E7C3DE48E4B9479B8 /* PdfKitView_iOS.swift */; };
 		180750A677DAD5343D6A77A4 /* PositionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DBCDE84390CA4C92158C34 /* PositionModels.swift */; };
@@ -199,6 +200,7 @@
 		41EDFC3445164FFD63A268C8 /* OpenCodeZenClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39E1889C3B2C6F221C33BC9 /* OpenCodeZenClient.swift */; };
 		423797FA1EFC78D1C193ECA3 /* ContinueReadingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E520CFD2E62A25AC4353F0DA /* ContinueReadingTests.swift */; };
 		4254F0BE577C113D920024C9 /* DocumentAccessBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FACFDED0229C75659621FEE /* DocumentAccessBookmarkStore.swift */; };
+		42BD28D226EFA7D32EF3E989 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */; };
 		43C780BABA587B2775DFC01E /* StorageInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */; };
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
 		45629F4BBD2AE0E0C9CAF397 /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
@@ -260,6 +262,7 @@
 		57FE634EDFF56D52C341AFF8 /* CapturedUnreadLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB1654654F4215F8C48E255 /* CapturedUnreadLedger.swift */; };
 		5863B1EFB0D85D3AFACE6D45 /* WebPageExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E209F0AEC418389859234E /* WebPageExtractor.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
+		5A6EAD75FDF528DDDCB47340 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
 		5B311D72C1AD925E42700C81 /* ConnectServiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033CBF675FDE5C67C943F0EB /* ConnectServiceSheet.swift */; };
 		5B3F78353A1C587A9F99710A /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
@@ -270,6 +273,7 @@
 		5DA4AAB4DE38725F72AD4AC4 /* HomeResultViews_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38398409012FE6C2B867E989 /* HomeResultViews_macOS.swift */; };
 		5E1B7F8891E24F9FF2771E3E /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = E836F9260711ED8FCA98AE2F /* SwiftMath */; };
 		5ECD33C8989F2BEF18A108A4 /* AiAddAsNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC6D7A36009931F223DB9C2 /* AiAddAsNoteTests.swift */; };
+		5F00D6AA2EC4A2FA1D5750CB /* AiSharingConsentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533005EB4BF21944F7E3A6A6 /* AiSharingConsentSheet.swift */; };
 		5FF82C62FE4C7CC82FD160FD /* AiConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327F0E350D7D13A26878EB77 /* AiConversationStoreTests.swift */; };
 		610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */; };
 		61926E81ED718C34215E0FA0 /* HelpCenterView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD108C6E47B57843360C1EFE /* HelpCenterView_iOS.swift */; };
@@ -329,6 +333,7 @@
 		78521DCFB889C40A803CBA6B /* ICloudSyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F07613531ED060241AC3AE6C /* ICloudSyncedContainer.swift */; };
 		78A99602D6C7EDD3EA7FD7F1 /* DocumentAccessBookmarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5DD549A406B0F92F0CC6B8 /* DocumentAccessBookmarkStoreTests.swift */; };
 		7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */; };
+		7A45DC5875B954C81F86BCC4 /* AiSharingConsentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */; };
 		7A5E69A38AAC8A4109C9C38F /* PositionTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEECB8C58BF7A46A3DA5958D /* PositionTestSupport.swift */; };
 		7A9E17C5B161FD9C0AE88840 /* HomeSearchItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC12177F7D45E8D3AC6AE4E0 /* HomeSearchItem.swift */; };
 		7B5740B0DB04AB50C0D0ED35 /* PdfViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87B22387C1A8E19F0316151E /* PdfViewerView.swift */; };
@@ -354,6 +359,7 @@
 		833F7AA94109E4E841EAEF98 /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9304E8D40BBDAA6890D83939 /* KaTeX_Fraktur-Regular.woff2 */; };
 		852138F8BE51971133242B8D /* PaneDocumentState_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B633A746E91D010B8EF69B /* PaneDocumentState_iOS.swift */; };
 		85FB484C37EE97CDC44BCCC5 /* ModelSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */; };
+		8650CD0CEBB5D7A0723A8E9D /* AiSharingConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */; };
 		86D51A60816B39EA73862181 /* PdfTextLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00E4B04332A759BD4D59A98 /* PdfTextLocator.swift */; };
 		8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B19F1048CA6DE0E71C521DB /* VellumApp.swift */; };
 		874BF346A6F89EA1049BC11B /* VellumCapture.js in Resources */ = {isa = PBXBuildFile; fileRef = 107A9FB8BC038245B98313FB /* VellumCapture.js */; };
@@ -477,6 +483,7 @@
 		B370CC64C56C8E29DC8A4C42 /* WebStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF653B1B8741B61DBE9B55EE /* WebStorage.swift */; };
 		B3DA8203EC8840A14F4D6AFD /* StorageRelocationInventoryReloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7968C20D5E48A1B564CD3A45 /* StorageRelocationInventoryReloadPolicy.swift */; };
 		B40539229B7FA2B662AEDA7C /* PhoneShell_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */; };
+		B42768975D72D52CBA514F02 /* AiSharingConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */; };
 		B462FF7C885DECBBCA1D7909 /* ModelSelector_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5DA195F4FAB34BD661D698 /* ModelSelector_macOS.swift */; };
 		B6535E25C5FC85D2DBE39DC3 /* PdfDocIdRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C33B518BE736FCF7077F63A /* PdfDocIdRegistry.swift */; };
 		B6E7064FCA323EAE596EEE46 /* StorageSettingsTab_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1EE0A9A387B6A049E8BC72 /* StorageSettingsTab_macOS.swift */; };
@@ -583,6 +590,7 @@
 		DEFEF67CBB89A49C694CB4F5 /* PhoneShellStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E4FB9AB7345DD4F55352DD1 /* PhoneShellStore.swift */; };
 		DFA6BE60BF4911831A2ECD5A /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 90AB7C8FB37749DA52B6CF96 /* KaTeX_Main-Regular.woff2 */; };
 		E1012542A479C72D5AE7D8EC /* StorageRelocationContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3B4FF58D51631918FFFCE5 /* StorageRelocationContextTests.swift */; };
+		E238A383F1C8EB9EA06A7B69 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 14CA02E4EED41E2D2B8E3D3A /* Sparkle */; };
 		E2641696297CFDDCBD9248BA /* ReadLaterModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2ED6E4FCE053674A62E9EDD /* ReadLaterModels.swift */; };
 		E2B8207D7A7660B264FEC83E /* ScratchpadDrop_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13375C9AB108CE6FC48786B /* ScratchpadDrop_macOS.swift */; };
 		E37E138BF46333FC6D4C63A5 /* WebViewerView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC65D72937E15736374B3533 /* WebViewerView_iOS.swift */; };
@@ -735,6 +743,7 @@
 		1AF164F3710054DE83B01BD6 /* ScratchDefaultsTrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchDefaultsTrait.swift; sourceTree = "<group>"; };
 		1B16BB3DA6BAD63BFC33B328 /* IntegrationDownloadClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationDownloadClientTests.swift; sourceTree = "<group>"; };
 		1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchStore.swift; sourceTree = "<group>"; };
+		1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsent.swift; sourceTree = "<group>"; };
 		1C9BE797AE8229E8D9218ED7 /* PhoneHome_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHome_iOS.swift; sourceTree = "<group>"; };
 		1DB1457E96D2FA9A96B968DD /* ScratchOutRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchOutRecognizer.swift; sourceTree = "<group>"; };
 		1DE37DD793875C0DBF92E050 /* KaTeX_Main-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-BoldItalic.woff2"; sourceTree = "<group>"; };
@@ -804,6 +813,7 @@
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
 		4B707464546ECFFA1A49EBDE /* purify.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = purify.min.js; sourceTree = "<group>"; };
 		4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabStack_iOS.swift; sourceTree = "<group>"; };
+		4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsentTests.swift; sourceTree = "<group>"; };
 		4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiFileAttachment.swift; sourceTree = "<group>"; };
 		4E282C555B1B420914134C74 /* WelcomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeScreen.swift; sourceTree = "<group>"; };
 		4E69330A4F460353FBCB25AB /* TabResidency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabResidency.swift; sourceTree = "<group>"; };
@@ -818,6 +828,7 @@
 		529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Script-Regular.woff2"; sourceTree = "<group>"; };
 		52E885CBA58636B5BAA9935D /* CaptureIngestion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureIngestion.swift; sourceTree = "<group>"; };
 		532C0DFF5803CDB1E4EDF9D8 /* RetentionTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetentionTestSupport.swift; sourceTree = "<group>"; };
+		533005EB4BF21944F7E3A6A6 /* AiSharingConsentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsentSheet.swift; sourceTree = "<group>"; };
 		53899B1157FB1D317B24206F /* IntegrationsSettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsSettingsTab.swift; sourceTree = "<group>"; };
 		541F3C060A41BF612E4E4904 /* SyncedContainerRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerRoutingTests.swift; sourceTree = "<group>"; };
 		54417DBF142FD33E6B2F6672 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -842,6 +853,7 @@
 		672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageLocationChoiceSheet.swift; sourceTree = "<group>"; };
 		67F0E655E1727AA1DA9413F0 /* PageTextExtractionGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextExtractionGate.swift; sourceTree = "<group>"; };
 		69D83625A65E8BF9F7A76DA9 /* StorageConflictsSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageConflictsSheet_iOS.swift; sourceTree = "<group>"; };
+		6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		6C1DAAEBD7AD58F5AE7FA6C1 /* ConnectServiceSheet_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectServiceSheet_macOS.swift; sourceTree = "<group>"; };
 		6C8DEB50E950BCD7AEA5AB0D /* IntegrationsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsStore.swift; sourceTree = "<group>"; };
 		6D281471A76A306A77CBC080 /* HomeNotifications_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeNotifications_iOS.swift; sourceTree = "<group>"; };
@@ -1015,6 +1027,7 @@
 		CF26A8AE533298D45E31BC6A /* AppDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDefaults.swift; sourceTree = "<group>"; };
 		CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell_iOS.swift; sourceTree = "<group>"; };
 		D0C17A6EF96F73E713F0E197 /* WebLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibraryStorage.swift; sourceTree = "<group>"; };
+		D13A31829F798B3BBA78B09F /* Vellum-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Vellum-macOS.entitlements"; sourceTree = "<group>"; };
 		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLibraryActions_iOS.swift; sourceTree = "<group>"; };
 		D1FED2784B5B178282C91505 /* DocumentDataCoordinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataCoordinationTests.swift; sourceTree = "<group>"; };
@@ -1119,6 +1132,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5E1B7F8891E24F9FF2771E3E /* SwiftMath in Frameworks */,
+				E238A383F1C8EB9EA06A7B69 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1216,6 +1230,7 @@
 				2AA8777A0129DDD533B0801E /* AiImageAttachment.swift */,
 				35C068E934EF0FD9F7DAE0CD /* AiPersistence.swift */,
 				90963B42EE17356826E8DE90 /* AiPrompts.swift */,
+				1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */,
 				E201F2530645C6348ECC59AA /* AiStreaming.swift */,
 				ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */,
 				A17D3131ADA1819B327BDBB6 /* AiUsage.swift */,
@@ -1274,6 +1289,7 @@
 				76CE0FA1F100C06F0CD1F37C /* AiMarkdownRenderingTests.swift */,
 				4AA459842CA86BEED9D34C1E /* AiPipelineTests.swift */,
 				9674A1105A70C761C2EC40AB /* AiReferencePersistenceTests.swift */,
+				4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */,
 				7A4DB73291B8E06F452CEBCD /* AiToolSummaryTests.swift */,
 				372DC33960E8DFA9E3444D41 /* AiTranscriptFollowTests.swift */,
 				F125F1382328217B11BF1DB2 /* AttachmentDropTests.swift */,
@@ -1408,6 +1424,7 @@
 			children = (
 				2423823E0BE86C417B6ABBC6 /* AiPanel.swift */,
 				C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */,
+				533005EB4BF21944F7E3A6A6 /* AiSharingConsentSheet.swift */,
 				9E9308A43A15E8D1EAAEC887 /* AiToolSourceRow.swift */,
 				CD3D09C89D224F5C322CE8BB /* AiToolSummaryView.swift */,
 				5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */,
@@ -1555,6 +1572,7 @@
 				C8F4E0214AE68A33C5052709 /* Untitled.icon */,
 				229408A6EEAF85EF71311708 /* Vellum-AppGroup.entitlements */,
 				338949714215E58B03C6B359 /* Vellum-iOS.entitlements */,
+				D13A31829F798B3BBA78B09F /* Vellum-macOS.entitlements */,
 				76D226C5BF26487AF44B0712 /* App */,
 				0A893C9E10BE8275414AA01D /* Models */,
 				F8C622CDAB2620944EFB4900 /* Platform */,
@@ -1754,6 +1772,7 @@
 				760E31133D3C378D6A17E0F9 /* Info-iOS.plist */,
 				460DC0522689EC17EC0D233B /* Info.plist */,
 				E3E5D7D6B867201216086389 /* katex */,
+				6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */,
 				6C7E25AE58824F0184077A94 /* katex */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
 			);
@@ -1954,6 +1973,7 @@
 			name = VellumMac;
 			packageProductDependencies = (
 				E836F9260711ED8FCA98AE2F /* SwiftMath */,
+				14CA02E4EED41E2D2B8E3D3A /* Sparkle */,
 			);
 			productName = VellumMac;
 			productReference = 7D191BAF475861DE8FD22D4F /* VellumMac.app */;
@@ -2000,6 +2020,7 @@
 			mainGroup = FD07E6C24C59CD1DC1943393;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -2023,6 +2044,7 @@
 			files = (
 				EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */,
 				1F27BEF7A0CFEDADB3836503 /* Assets.xcassets in Resources */,
+				42BD28D226EFA7D32EF3E989 /* PrivacyInfo.xcprivacy in Resources */,
 				54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */,
 				91F222D3BA33FB57079495ED /* katex in Resources */,
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
@@ -2066,6 +2088,7 @@
 				3EF7CEE3CF389E963C81309A /* KaTeX_Size3-Regular.woff2 in Resources */,
 				8DDAA460F63C14A45102A938 /* KaTeX_Size4-Regular.woff2 in Resources */,
 				A68E149E31D65B448C98440D /* KaTeX_Typewriter-Regular.woff2 in Resources */,
+				5A6EAD75FDF528DDDCB47340 /* PrivacyInfo.xcprivacy in Resources */,
 				3EA8E32DDDFE39367F6812C8 /* Untitled.icon in Resources */,
 				5415BA8B747B6A442ED2FDE6 /* auto-render.min.js in Resources */,
 				0EB130C7FC1B6257A9BFFB1B /* editor.bundle.js in Resources */,
@@ -2116,6 +2139,8 @@
 				07260CFA0C9B8EE68004A51E /* AiPersistence.swift in Sources */,
 				B91B04DFA338FE74843A4DAE /* AiPrompts.swift in Sources */,
 				45629F4BBD2AE0E0C9CAF397 /* AiSettingsPanel.swift in Sources */,
+				B42768975D72D52CBA514F02 /* AiSharingConsent.swift in Sources */,
+				5F00D6AA2EC4A2FA1D5750CB /* AiSharingConsentSheet.swift in Sources */,
 				6CC3DA1F6C17B97F49745960 /* AiStore.swift in Sources */,
 				3DA6CF8CCF2666634EC157D8 /* AiStreaming.swift in Sources */,
 				73A609AFD82A5162B8F5AAC6 /* AiToolEngine.swift in Sources */,
@@ -2382,6 +2407,8 @@
 				8D58E063EF882C7E725B81A0 /* AiPersistence.swift in Sources */,
 				BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */,
 				EF7A65F99A00454F851FA17C /* AiSettingsPanel.swift in Sources */,
+				8650CD0CEBB5D7A0723A8E9D /* AiSharingConsent.swift in Sources */,
+				17A54FCBDEBE8222691AC2DE /* AiSharingConsentSheet.swift in Sources */,
 				D4A79DFDB08A01D35D47933A /* AiStore.swift in Sources */,
 				F9DA8014506FBB48C440F718 /* AiStreaming.swift in Sources */,
 				2759D19C5033A1DC130A9E15 /* AiToolEngine.swift in Sources */,
@@ -2631,6 +2658,7 @@
 				FED4169148DF98E951EC8084 /* AiMarkdownRenderingTests.swift in Sources */,
 				C529F97AB901B963D8DB4726 /* AiPipelineTests.swift in Sources */,
 				F4ED32A7851D641FB6F47CA4 /* AiReferencePersistenceTests.swift in Sources */,
+				7A45DC5875B954C81F86BCC4 /* AiSharingConsentTests.swift in Sources */,
 				610646426C95711C3BAD33BA /* AiToolSummaryTests.swift in Sources */,
 				21C5244660D9DDC7CF6BA218 /* AiTranscriptFollowTests.swift in Sources */,
 				0A8D06EC43340A3149052C29 /* AttachmentDropTests.swift in Sources */,
@@ -2849,10 +2877,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Vellum/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -2862,7 +2891,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;
 			};
@@ -2935,7 +2964,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-AppGroup.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -3018,7 +3047,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-AppGroup.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -3063,10 +3092,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Vellum/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -3076,7 +3106,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vellum.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;
 			};
@@ -3159,6 +3189,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.6;
+			};
+		};
 		D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath";
@@ -3174,6 +3212,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D857D3D6F15AE8E999C71224 /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
+		};
+		14CA02E4EED41E2D2B8E3D3A /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3B4DC6ECB95E287C7BBA5C74 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 		E836F9260711ED8FCA98AE2F /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;

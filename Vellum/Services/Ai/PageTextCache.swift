@@ -96,12 +96,12 @@ actor PageTextCache {
         directory = dir
     }
 
-    /// Class-C home (design §2): ~/Library/Caches/com.vellum.app/text — evictable
+    /// Class-C home: ~/Library/Caches/com.ayushdeolasee.vellum/text — evictable
     /// without loss, never synced, guilt-free TTL cleanup.
     static var defaultDirectory: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.vellum.app"
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.ayushdeolasee.vellum"
         return base
             .appendingPathComponent(bundleId, isDirectory: true)
             .appendingPathComponent("text", isDirectory: true)

@@ -337,8 +337,8 @@ private struct NoteToolToggle: View {
 private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
+    @Environment(WorkspaceStore.self) private var workspace
 
-    @State private var updateChecker = UpdateChecker()
     @State private var pageSaved = false
     @State private var exporting = false
 
@@ -381,18 +381,9 @@ private struct OverflowMenu: View {
             }
 
             Section {
-                if updateChecker.state == .available,
-                   let version = updateChecker.availableVersion {
-                    Button(action: updateChecker.install) {
-                        Label("Install Update \(version)", systemImage: "arrow.down.circle")
-                    }
-                }
-                Button {
-                    Task { await updateChecker.check() }
-                } label: {
+                Button(action: workspace.updateChecker.check) {
                     Label("Check for Updates…", systemImage: "arrow.clockwise")
                 }
-                .disabled(updateChecker.state == .checking)
             }
         } label: {
             Label("More", systemImage: "ellipsis")
@@ -405,9 +396,6 @@ private struct OverflowMenu: View {
         .help("More — open, save, export, and updates")
         .accessibilityLabel("More actions")
         .accessibilityIdentifier("toolbar.overflowMenu")
-        .task {
-            await updateChecker.check(silent: true)
-        }
         .task(id: ToolbarDocumentKey(appStore)) {
             await loadSavedState(for: ToolbarDocumentKey(appStore))
         }

@@ -574,26 +574,12 @@ struct WelcomeScreen: View {
                 .font(.headline)
                 .foregroundStyle(palette.foreground)
             Spacer()
-            if updateChecker.state == .available,
-               let version = updateChecker.availableVersion {
-                Button {
-                    updateChecker.install()
-                } label: {
-                    Label("Install Update \(version)", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.borderless)
-                .help(updateChecker.tooltip)
-                .accessibilityIdentifier("welcome.installUpdate")
-            }
-            Button {
-                Task { await updateChecker.check() }
-            } label: {
+            Button(action: updateChecker.check) {
                 Label("Check for Updates", systemImage: "arrow.clockwise")
                     .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
-            .disabled(updateChecker.state == .checking)
-            .help(updateChecker.tooltip)
+            .help("Check for updates")
             .accessibilityIdentifier("welcome.checkForUpdates")
 
             Button(action: showSettings) {
