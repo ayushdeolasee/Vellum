@@ -173,6 +173,11 @@ extension WalkthroughPage {
                     text:
                         "Paste an API key for Gemini, the OpenAI API, OpenRouter, OpenCode Zen, "
                         + "or OpenCode Go."),
+                WalkthroughPoint(
+                    symbol: "hand.raised",
+                    text:
+                        "Before Vellum sends document content to a provider for the first time, "
+                        + "it explains what will be shared and asks for permission."),
             ]
         ),
 
