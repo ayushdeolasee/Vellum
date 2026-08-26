@@ -159,6 +159,10 @@ h1 span {
 
 .btn-download:focus-visible,
 .platform-row a:focus-visible,
+.platform-row button:focus-visible,
+.signup-dialog button:focus-visible,
+.signup-dialog input:focus-visible,
+.signup-dialog a:focus-visible,
 .brand:focus-visible {
   outline: 3px solid var(--gold);
   outline-offset: 4px;
@@ -399,6 +403,190 @@ h1 span {
   text-underline-offset: 3px;
 }
 
+.platform-row button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #514d9c;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.platform-row button:hover {
+  color: #363171;
+}
+
+.signup-dialog {
+  width: min(600px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  margin: auto;
+  overflow: auto;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: #211e19;
+}
+
+.signup-dialog::backdrop {
+  background: rgba(15, 14, 12, 0.78);
+  backdrop-filter: blur(5px);
+}
+
+.signup-card {
+  position: relative;
+  padding: clamp(28px, 6vw, 48px);
+  border-top: 6px solid var(--gold);
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.38) 1px, transparent 1px),
+    var(--paper);
+  background-size: 100% 34px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+}
+
+.signup-card .eyebrow {
+  color: #6e57a8;
+}
+
+.signup-card h2 {
+  max-width: 460px;
+  margin: 12px 0 10px;
+  color: #211e19;
+  font-family: "Iowan Old Style", "New York", Georgia, serif;
+  font-size: clamp(2rem, 7vw, 3rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.04;
+}
+
+.signup-intro {
+  max-width: 480px;
+  margin-bottom: 28px;
+  color: #736b60;
+}
+
+.dialog-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  padding: 0 0 3px;
+  border: 1px solid #cbc2b2;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  color: #514b42;
+  cursor: pointer;
+  font: 1.55rem/1 system-ui, sans-serif;
+  place-items: center;
+}
+
+.name-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.signup-dialog label {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 15px;
+  color: #4d473f;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.signup-dialog input {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid #bdb4a5;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #211e19;
+  font: inherit;
+}
+
+.signup-dialog input:focus-visible {
+  outline-offset: 1px;
+}
+
+.signup-honeypot {
+  position: absolute;
+  left: -10000px;
+}
+
+.turnstile-wrap {
+  min-height: 65px;
+  margin: 5px 0 14px;
+}
+
+.signup-privacy {
+  margin-bottom: 18px;
+  color: #736b60;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.signup-submit,
+.signup-success button {
+  min-height: 48px;
+  padding: 11px 20px;
+  border: 0;
+  border-radius: 9px;
+  background: #514d9c;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+}
+
+.signup-submit:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.signup-status {
+  min-height: 24px;
+  margin-top: 10px;
+  color: #9a2f27;
+  font-size: 0.83rem;
+}
+
+.signup-success {
+  padding: 20px 0 4px;
+  text-align: center;
+}
+
+.signup-success > span {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 18px;
+  border-radius: 999px;
+  background: #e3ddf6;
+  color: #514d9c;
+  font-size: 1.45rem;
+  font-weight: 800;
+  place-items: center;
+}
+
+.signup-success h3 {
+  color: #211e19;
+  font-family: "Iowan Old Style", "New York", Georgia, serif;
+  font-size: 2rem;
+}
+
+.signup-success p {
+  margin: 6px auto 22px;
+  color: #736b60;
+}
+
 .final-cta {
   padding: 112px 0;
   text-align: center;
@@ -547,6 +735,19 @@ footer .container {
 
   footer .container {
     flex-direction: column;
+  }
+
+  .name-fields {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .signup-card {
+    padding: 28px 22px;
+  }
+
+  .signup-card h2 {
+    padding-right: 24px;
   }
 }
 

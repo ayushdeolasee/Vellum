@@ -1,12 +1,22 @@
 {
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
   "name": "vellum-work",
+  "main": "worker.js",
   "compatibility_date": "2026-08-23",
   "workers_dev": false,
   "preview_urls": true,
   "assets": {
-    "directory": "."
+    "directory": ".",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vellum-testflight-signups",
+      "database_id": "5980fbd7-e937-4d33-af8c-de0cc2932e7d"
+    }
+  ],
   "routes": [
     {
       "pattern": "vellum.work",
