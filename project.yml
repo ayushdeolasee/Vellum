@@ -44,8 +44,11 @@ targets:
   VellumMac:
     type: application
     platform: macOS
+    productName: Vellum
     sources:
       - path: Vellum
+        excludes:
+          - "Resources/PrivacyInfo.xcprivacy"
     dependencies:
       - package: SwiftMath
       - package: Sparkle
@@ -92,6 +95,7 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Info-iOS.plist"
+          - "Resources/macOS/PrivacyInfo.xcprivacy"
           # Bundled below as a folder reference so the CodeMirror/KaTeX editor
           # keeps its directory layout (editor.html's relative `katex.min.css`
           # and the css's `fonts/*.woff2` only resolve if `katex/` and its

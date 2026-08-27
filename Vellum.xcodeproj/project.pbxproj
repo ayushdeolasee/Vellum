@@ -69,6 +69,7 @@
 		11C2926C10028D621EC201C7 /* StorageLocationChoiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */; };
 		11E2E63E94EA67BA3BFDA181 /* SheetPresence_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */; };
 		129A90B710ED33C6E0B7174E /* PhoneTabSwitcher_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A4B69BFC3ED916B2B94F57 /* PhoneTabSwitcher_iOS.swift */; };
+		12D43EF495F4C242824EFFA7 /* AnonymousAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */; };
 		13197D131C14080E55C95D10 /* VellumDeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A06AA119CD408C8DC6DAFFA /* VellumDeepLink.swift */; };
 		131F1C91F0FF0D74AE5DCBC2 /* CaptureRecordBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87B047D633C0555E833CCB73 /* CaptureRecordBuilder.swift */; };
 		13589ED137C354784B9A3C7B /* VellumWidgetSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */; };
@@ -262,7 +263,6 @@
 		57FE634EDFF56D52C341AFF8 /* CapturedUnreadLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB1654654F4215F8C48E255 /* CapturedUnreadLedger.swift */; };
 		5863B1EFB0D85D3AFACE6D45 /* WebPageExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E209F0AEC418389859234E /* WebPageExtractor.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
-		5A6EAD75FDF528DDDCB47340 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
 		5B311D72C1AD925E42700C81 /* ConnectServiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033CBF675FDE5C67C943F0EB /* ConnectServiceSheet.swift */; };
 		5B3F78353A1C587A9F99710A /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
@@ -310,6 +310,7 @@
 		7108684D8FC432CEA922BC6F /* IntegrationsSyncEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775B99053C1485E779A62CE6 /* IntegrationsSyncEngineTests.swift */; };
 		712B4366FB45CC553D50E4EF /* LiveTabRuntime_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E6AB46224F2E9D0978B22E /* LiveTabRuntime_macOS.swift */; };
 		71685114BDCE14CB64874FC9 /* KaTeX_SansSerif-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */; };
+		71F26A8EA9097BAAD50824CB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E615CFE934E72065A1FCEE81 /* PrivacyInfo.xcprivacy */; };
 		722833C5980022232CECE93B /* WelcomeScreen_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */; };
 		723AEAB28F34C7D878D39094 /* StubURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0BEE9BC19E2CAE995864D6 /* StubURLProtocol.swift */; };
 		7344AECE5FDB1A449D1A4312 /* PdfViewerTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 591147DD4B09255C3446521D /* PdfViewerTypes.swift */; };
@@ -363,6 +364,7 @@
 		86D51A60816B39EA73862181 /* PdfTextLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00E4B04332A759BD4D59A98 /* PdfTextLocator.swift */; };
 		8731F2E7D641F7563A0DD4FA /* VellumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B19F1048CA6DE0E71C521DB /* VellumApp.swift */; };
 		874BF346A6F89EA1049BC11B /* VellumCapture.js in Resources */ = {isa = PBXBuildFile; fileRef = 107A9FB8BC038245B98313FB /* VellumCapture.js */; };
+		8764597B314403A32A9BE51B /* AnonymousAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */; };
 		8771306209EF5B28E7D20AD1 /* PdfAnnotationCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */; };
 		88200E668064242DF5AD488F /* PositionMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF2CB6E68C17483659E62D /* PositionMerge.swift */; };
 		885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */ = {isa = PBXBuildFile; fileRef = 8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */; };
@@ -806,6 +808,7 @@
 		43D27ECCD653EDD01DC2A624 /* ComposerReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReferences.swift; sourceTree = "<group>"; };
 		43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageInventory.swift; sourceTree = "<group>"; };
 		4595D81B536618AD46838B59 /* IntegrationsSettingsTab_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsSettingsTab_macOS.swift; sourceTree = "<group>"; };
+		45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnonymousAnalytics.swift; sourceTree = "<group>"; };
 		460DC0522689EC17EC0D233B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47A602CA71FB338EEBF4BAF4 /* PdfOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfOverlays.swift; sourceTree = "<group>"; };
 		483181603DAF95A4B32E193B /* PhoneChromeLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneChromeLayoutTests.swift; sourceTree = "<group>"; };
@@ -893,7 +896,6 @@
 		7CAEFA877A742FE4B9D31369 /* CaptureRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecord.swift; sourceTree = "<group>"; };
 		7CE71F23DD6DAFEBDF2112BF /* StorageOrphansSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageOrphansSheet_iOS.swift; sourceTree = "<group>"; };
 		7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkToolPalette_iOS.swift; sourceTree = "<group>"; };
-		7D191BAF475861DE8FD22D4F /* VellumMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VellumMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7DF1C643170F589E5AA136EE /* VellumSystemRouteHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumSystemRouteHandoff.swift; sourceTree = "<group>"; };
 		7E4C07C56943274B9E062A70 /* RecentFilesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentFilesService.swift; sourceTree = "<group>"; };
 		7E506B1F5144DA0A96843FEE /* RevealableSecureField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField.swift; sourceTree = "<group>"; };
@@ -1029,6 +1031,7 @@
 		D0C17A6EF96F73E713F0E197 /* WebLibraryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLibraryStorage.swift; sourceTree = "<group>"; };
 		D13A31829F798B3BBA78B09F /* Vellum-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Vellum-macOS.entitlements"; sourceTree = "<group>"; };
 		D1784468C7F465AAEB5C63E9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		D17A0D59B372839D9486FE7E /* Vellum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vellum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLibraryActions_iOS.swift; sourceTree = "<group>"; };
 		D1FED2784B5B178282C91505 /* DocumentDataCoordinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDataCoordinationTests.swift; sourceTree = "<group>"; };
 		D3510D3AF43D77CE2F65AECB /* DocumentSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSessionManager.swift; sourceTree = "<group>"; };
@@ -1067,6 +1070,7 @@
 		E46879D3BEAFC2CEAC37BA95 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		E4FB44C08D0803E940B36BA5 /* AttachmentDrop_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDrop_macOS.swift; sourceTree = "<group>"; };
 		E520CFD2E62A25AC4353F0DA /* ContinueReadingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinueReadingTests.swift; sourceTree = "<group>"; };
+		E615CFE934E72065A1FCEE81 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E6D207F76764C52312C77AEA /* IntegrationThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationThumbnailCache.swift; sourceTree = "<group>"; };
 		E6F24325DB469DC976471FB7 /* RaindropClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaindropClient.swift; sourceTree = "<group>"; };
 		E70BA19480CF71B6E14A7984 /* HomeSearchProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSearchProvider.swift; sourceTree = "<group>"; };
@@ -1250,7 +1254,7 @@
 			isa = PBXGroup;
 			children = (
 				9D58D6980122701CBA30200F /* Vellum.app */,
-				7D191BAF475861DE8FD22D4F /* VellumMac.app */,
+				D17A0D59B372839D9486FE7E /* Vellum.app */,
 				F7EB2CAD9B62427704761B66 /* VellumShare.appex */,
 				775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */,
 				B90FF0B5EC9E9949FF46B5C9 /* VellumWidgets.appex */,
@@ -1518,6 +1522,7 @@
 		76D226C5BF26487AF44B0712 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */,
 				027E09C0BD7A98F4590A5878 /* ContentView.swift */,
 				84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */,
 				723EC058218A6DF8D994CC26 /* UpdateChecker.swift */,
@@ -1693,6 +1698,14 @@
 			path = fonts;
 			sourceTree = "<group>";
 		};
+		BAC8D36F38C39A4C2108F1D5 /* macOS */ = {
+			isa = PBXGroup;
+			children = (
+				E615CFE934E72065A1FCEE81 /* PrivacyInfo.xcprivacy */,
+			);
+			path = macOS;
+			sourceTree = "<group>";
+		};
 		C1D4282C52504165457363DE /* Settings */ = {
 			isa = PBXGroup;
 			children = (
@@ -1774,6 +1787,7 @@
 				E3E5D7D6B867201216086389 /* katex */,
 				6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */,
 				6C7E25AE58824F0184077A94 /* katex */,
+				BAC8D36F38C39A4C2108F1D5 /* macOS */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
 			);
 			path = Resources;
@@ -1976,7 +1990,7 @@
 				14CA02E4EED41E2D2B8E3D3A /* Sparkle */,
 			);
 			productName = VellumMac;
-			productReference = 7D191BAF475861DE8FD22D4F /* VellumMac.app */;
+			productReference = D17A0D59B372839D9486FE7E /* Vellum.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -2088,7 +2102,7 @@
 				3EF7CEE3CF389E963C81309A /* KaTeX_Size3-Regular.woff2 in Resources */,
 				8DDAA460F63C14A45102A938 /* KaTeX_Size4-Regular.woff2 in Resources */,
 				A68E149E31D65B448C98440D /* KaTeX_Typewriter-Regular.woff2 in Resources */,
-				5A6EAD75FDF528DDDCB47340 /* PrivacyInfo.xcprivacy in Resources */,
+				71F26A8EA9097BAAD50824CB /* PrivacyInfo.xcprivacy in Resources */,
 				3EA8E32DDDFE39367F6812C8 /* Untitled.icon in Resources */,
 				5415BA8B747B6A442ED2FDE6 /* auto-render.min.js in Resources */,
 				0EB130C7FC1B6257A9BFFB1B /* editor.bundle.js in Resources */,
@@ -2150,6 +2164,7 @@
 				68FEAF941D6095976CE73952 /* AiUsage.swift in Sources */,
 				749FD1EEDC3279E3EF12A1A5 /* AnnotationSidebar.swift in Sources */,
 				A5DBD6EFE0728A5167D1F2E6 /* AnnotationStore.swift in Sources */,
+				12D43EF495F4C242824EFFA7 /* AnonymousAnalytics.swift in Sources */,
 				27FFCB2D55F70C8B37319A05 /* AppDefaults.swift in Sources */,
 				FBBE27A980D304C976EE251D /* AppStore.swift in Sources */,
 				28088DB05B5E458B9511B85F /* AttachmentDrop.swift in Sources */,
@@ -2418,6 +2433,7 @@
 				30F9DFF4371A901244DAD7BE /* AiUsage.swift in Sources */,
 				9AC827DE4385CD8EC4201A49 /* AnnotationSidebar.swift in Sources */,
 				9C7F3F0B4C0CDEE7ED83CBB4 /* AnnotationStore.swift in Sources */,
+				8764597B314403A32A9BE51B /* AnonymousAnalytics.swift in Sources */,
 				D4B81230A40F81C6E5B6F408 /* AppDefaults.swift in Sources */,
 				F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */,
 				B861F8FD72248FD16E1562D4 /* AttachmentDrop.swift in Sources */,

@@ -93,13 +93,14 @@
 <body>
 <main>
   <header>
-    <div class="eyebrow">Effective 19 August 2026</div>
+    <div class="eyebrow">Effective 27 August 2026</div>
     <h1>Vellum privacy policy</h1>
     <p class="lede">Vellum is a document reader made by Ayush Deolasee. Your library stays on your device or in the storage location you choose. Optional AI and read-later connections send data directly from Vellum to the service you select.</p>
     <div class="summary">
       <strong>The short version</strong>
       <ul>
-        <li>Vellum has no developer-operated account, analytics, advertising, or tracking service.</li>
+        <li>Vellum has no developer-operated app account, advertising, or tracking service. Limited anonymous events measure downloads, first launches, and update checks.</li>
+        <li>If you join the TestFlight waitlist, the developer stores your name and email only to manage beta invitations.</li>
         <li>Documents, notes, reading positions, and AI conversations are stored locally unless you choose a synced or external storage location.</li>
         <li>AI is optional. Vellum asks before it first sends document content to each AI provider.</li>
         <li>API keys and read-later tokens are stored in Apple Keychain.</li>
@@ -126,7 +127,7 @@
 
   <section id="scope">
     <h2>1. Scope</h2>
-    <p>This policy covers the Vellum app for iPhone, iPad, and Mac. It describes the data Vellum stores, the network requests the app makes, and the optional services a user can connect.</p>
+    <p>This policy covers the Vellum app for iPhone, iPad, and Mac, as well as the TestFlight signup form on vellum.work. It describes the data Vellum stores, the network requests the app makes, and the optional services a user can connect.</p>
     <p>Vellum's developer does not operate a server that receives your documents, prompts, provider credentials, library, or reading activity. A connected provider still receives data directly from your device and handles it under its own terms and privacy policy.</p>
     <p>This policy does not replace the policy of Apple, an AI provider, a website, Readwise, or Raindrop.io.</p>
   </section>
@@ -143,6 +144,14 @@
     </ul>
     <p>Vellum stores this data on the device and in the library location you choose. If an iCloud-enabled build and iCloud storage are selected, Apple processes the synced files under <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. A custom folder may be managed by its filesystem or sync provider.</p>
     <p>The app and its share and widget extensions may exchange the minimum data needed for capture and widget display through Apple's App Group container.</p>
+
+    <h3>TestFlight signups</h3>
+    <p>If you join the TestFlight waitlist on vellum.work, Vellum's developer receives your first name, last name, email address, signup date, and invitation status. This information is used only to manage beta invitations. It is not sold, used for advertising, or added to a marketing list.</p>
+    <p><a href="https://www.cloudflare.com/privacypolicy/">Cloudflare</a> processes the form submission, performs the security check, and stores the waitlist in Cloudflare D1 on the developer's behalf. When an invitation is available, the developer may provide your name and email address to Apple through App Store Connect so Apple can send the TestFlight invitation. Cloudflare and <a href="https://www.apple.com/legal/privacy/">Apple</a> handle that information under their own privacy policies.</p>
+
+    <h3>Anonymous analytics</h3>
+    <p>Vellum records anonymous events when someone selects a Mac download button, when the Mac app first opens successfully after analytics support is installed, and when the Mac app checks for updates. The app event contains only the event name, app version, and build number. Download events also contain the location of the selected button.</p>
+    <p>The analytics record does not contain a user, device, or installation identifier, document information, reading activity, credentials, or the request's IP address. Cloudflare necessarily receives ordinary network information while delivering the request, but Vellum does not add that information to the analytics event. Anonymous events are stored in Cloudflare D1.</p>
   </section>
 
   <section id="ai">
@@ -246,6 +255,8 @@
     <p>Vellum can remove rebuildable offline webpages and cached extracted text for items that have not been opened during the storage-retention period and were never saved or annotated. The default period is six months. Settings offers 1, 3, 6, or 12 months, or Never.</p>
     <p>Read-later cache retention is controlled separately. Disconnecting a read-later service removes its credential and synced metadata. The disconnect flow lets you decide whether downloaded files are also deleted.</p>
     <p>Deleting a file, conversation, credential, or permission in Vellum affects Vellum's local or selected synced copy. It does not recall data already sent to an AI provider, website, Readwise, or Raindrop.io. Each external service controls its own logs, backups, legal holds, account data, and deletion process.</p>
+    <p>TestFlight waitlist information is deleted when the beta ends, when it is no longer needed to manage invitations, or 12 months after signup, whichever comes first. You can request earlier deletion using the contact address below. Apple controls information already submitted to App Store Connect.</p>
+    <p>Vellum deletes anonymous analytics events older than three months when a new analytics event arrives. Because the events have no user, device, or installation identifier, Vellum cannot retrieve or delete events for a particular person.</p>
   </section>
 
   <section id="choices">
@@ -256,9 +267,10 @@
       <li>Remove an AI key to prevent that provider from being used.</li>
       <li>Disconnect Readwise or Raindrop.io and choose whether to remove downloaded files.</li>
       <li>Delete local documents, conversations, annotations, notes, and caches through Vellum or the selected storage location.</li>
+      <li>Request access to, correction of, or deletion of your TestFlight waitlist information by emailing the contact address below.</li>
     </ul>
     <p>Revoking AI permission stops future sharing. Vellum asks again before the next request to that provider. It does not delete earlier provider-held data.</p>
-    <p>For access, correction, portability, objection, or deletion rights concerning a provider's copy, contact that provider. For Vellum's local data, use the app and the selected storage location because the developer has no server-side copy to retrieve.</p>
+    <p>For access, correction, portability, objection, or deletion rights concerning a provider's copy, contact that provider. For Vellum's local app data, use the app and the selected storage location because the developer has no server-side copy to retrieve. For TestFlight waitlist information, contact Vellum's developer.</p>
   </section>
 
   <section id="transfers">
@@ -273,7 +285,7 @@
     <p>Privacy questions about Vellum can be sent to <a href="mailto:pypdeveloper@deolasee.org">pypdeveloper@deolasee.org</a>. Do not email documents, API keys, access tokens, or other sensitive content.</p>
   </section>
 
-  <footer>Vellum · Ayush Deolasee · Effective 19 August 2026</footer>
+  <footer>Vellum · Ayush Deolasee · Effective 27 August 2026</footer>
 </main>
 </body>
 </html>

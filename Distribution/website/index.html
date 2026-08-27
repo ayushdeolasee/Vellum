@@ -8,6 +8,7 @@
   <link rel="canonical" href="https://vellum.work/" />
   <link rel="icon" type="image/png" href="app-icon.png" />
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=onTurnstileReady" defer></script>
 </head>
 <body>
   <header class="hero">
@@ -26,7 +27,7 @@
         </p>
 
         <div class="hero-actions" id="download">
-          <a class="btn-download" href="https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg">
+          <a class="btn-download" href="/download/mac?source=hero">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 3v13" />
               <path d="M6 11l6 6 6-6" />
@@ -136,22 +137,18 @@
           <p class="eyebrow">Available now</p>
           <h2>Built for long reads on Mac.</h2>
           <p class="platform-copy">
-            Download the full Vellum reading workspace today. iPhone and iPad versions
-            are coming next.
+            Download the full Vellum reading workspace today, or join the beta for
+            the universal iPhone and iPad app.
           </p>
         </div>
         <div class="platform-status">
           <div class="platform-row available">
             <span>macOS</span>
-            <a href="https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg">Download .dmg</a>
+            <a href="/download/mac?source=platforms">Download .dmg</a>
           </div>
-          <div class="platform-row">
-            <span>iPhone</span>
-            <span>Coming soon</span>
-          </div>
-          <div class="platform-row">
-            <span>iPad</span>
-            <span>Coming soon</span>
+          <div class="platform-row beta">
+            <span>iPhone &amp; iPad</span>
+            <button type="button" id="open-testflight-signup">Join TestFlight</button>
           </div>
         </div>
       </div>
@@ -162,11 +159,60 @@
         <img src="app-icon.png" alt="" />
         <p class="eyebrow">Vellum for Mac</p>
         <h2>Make room for reading.</h2>
-        <a class="btn-download" href="https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg">Download Vellum</a>
+        <a class="btn-download" href="/download/mac?source=footer">Download Vellum</a>
         <p class="install-note">Open the downloaded .dmg, drag Vellum into Applications, then open it from there.</p>
       </div>
     </section>
   </main>
+
+  <dialog class="signup-dialog" id="testflight-dialog" aria-labelledby="signup-title">
+    <div class="signup-card">
+      <button class="dialog-close" type="button" data-close-dialog aria-label="Close TestFlight signup">×</button>
+      <p class="eyebrow">Early access</p>
+      <h2 id="signup-title">Join Vellum on iPhone and iPad.</h2>
+      <p class="signup-intro">Add your details and we'll email you a TestFlight invitation when a place is ready.</p>
+
+      <form id="testflight-form">
+        <div id="signup-fields">
+          <div class="name-fields">
+            <label>
+              <span>First name</span>
+              <input id="first-name" name="firstName" type="text" autocomplete="given-name" maxlength="80" required />
+            </label>
+            <label>
+              <span>Last name</span>
+              <input name="lastName" type="text" autocomplete="family-name" maxlength="80" required />
+            </label>
+          </div>
+
+          <label>
+            <span>Email address</span>
+            <input name="email" type="email" autocomplete="email" maxlength="254" required />
+          </label>
+
+          <label class="signup-honeypot" aria-hidden="true">
+            <span>Website</span>
+            <input name="website" type="text" autocomplete="off" tabindex="-1" />
+          </label>
+
+          <div class="turnstile-wrap">
+            <div id="testflight-turnstile"></div>
+          </div>
+
+          <p class="signup-privacy">We'll use these details only to manage Vellum beta invitations. Read the <a href="/privacy.html">privacy policy</a>.</p>
+          <button class="signup-submit" type="submit">Join TestFlight</button>
+          <p class="signup-status" id="signup-status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="signup-success" id="signup-success" hidden>
+          <span aria-hidden="true">✓</span>
+          <h3>You're on the list.</h3>
+          <p>We'll send your TestFlight invitation by email when a place is ready.</p>
+          <button type="button" data-close-dialog>Done</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
 
   <footer>
     <div class="container">
@@ -174,5 +220,6 @@
       <span><a href="/privacy.html">Privacy</a> · macOS, iPhone, and iPad are trademarks of Apple Inc.</span>
     </div>
   </footer>
+  <script src="signup.js"></script>
 </body>
 </html>
