@@ -12,13 +12,10 @@ import SwiftUI
 /// It is built from the same pieces as the iPad library — `HomeResultRow`,
 /// `HomeSectionHeader`, `HomeLinkActionRow`, `HomeFilterChip`,
 /// `HomeLibraryActions_iOS`, `HomeOpenResolver` — with a phone layout over the
-/// top. What it deliberately does NOT carry, versus `WelcomeLibrary_iOS`:
+/// top. Its source switcher opens the same account-specific library used on
+/// iPad, including search and collection filters. What it deliberately does
+/// not carry, versus `WelcomeLibrary_iOS`:
 ///
-///   * the source switcher and the embedded read-later library list. That list
-///     is a full secondary browser with its own search field, filter and sort;
-///     at 390pt it would be a second screen wearing the first one's chrome.
-///     Read-later items still appear as search results here, and still open
-///     through the account's own route (see `open`);
 ///   * the keyboard affordances (`Keycap`, arrow-key selection, ⌘F hints). They
 ///     stay reachable — the notification handler below focuses the field — but
 ///     nothing draws chrome for a keyboard the phone usually does not have;
@@ -34,6 +31,8 @@ struct PhoneHome_iOS: View {
     /// store and writes `query`/`filter`/`sort` into it, but it does not own its
     /// lifetime — `PhoneShell_iOS` does.
     @Bindable var store: HomeSearchStore
+    /// Shell-owned so returning from an article keeps the selected library.
+    @Binding var source: HomeSource
     /// A one-shot "put the keyboard in the search field" request, owned by the
     /// shell and CLEARED here.
     ///
@@ -66,6 +65,7 @@ struct PhoneHome_iOS: View {
 
     init(
         store: HomeSearchStore,
+        source: Binding<HomeSource>,
         focusSearch: Binding<Bool>,
         onOpen: @escaping () -> Void,
         onAddWebpage: @escaping () -> Void,
@@ -73,6 +73,7 @@ struct PhoneHome_iOS: View {
         onDocumentOpened: @escaping () -> Void
     ) {
         self.store = store
+        _source = source
         _focusSearch = focusSearch
         self.onOpen = onOpen
         self.onAddWebpage = onAddWebpage
@@ -91,17 +92,18 @@ struct PhoneHome_iOS: View {
     /// browse — never while the first load is still in flight, or the screen
     /// would flash "welcome" at someone with a full library.
     private var showsFirstRun: Bool {
-        !store.isLoading && store.libraryIsEmpty && !store.isSearching && !hasConnectedLibrary
+        guard browsedProvider == nil else { return false }
+        return !store.isLoading && store.libraryIsEmpty && !store.isSearching
+            && integrations.connectedProviders.isEmpty
     }
 
-    /// Whether a connected account is holding anything to read. It counts as
-    /// "has a library" for the same reason recents and saved pages do: the hero
-    /// is for someone with nothing to open, and this reader has a shelf of
-    /// articles one tap away.
-    private var hasConnectedLibrary: Bool {
-        integrations.connectedProviders.contains { provider in
-            !(integrations.providers[provider]?.items.isEmpty ?? true)
-        }
+    private var sources: [HomeSource] {
+        HomeSource.options(connected: integrations.connectedProviders)
+    }
+
+    private var browsedProvider: IntegrationProvider? {
+        if case .provider(let provider) = source { return provider }
+        return nil
     }
 
     var body: some View {
@@ -146,8 +148,12 @@ struct PhoneHome_iOS: View {
         // the time the field appears.
         .onChange(of: focusSearch, initial: true) { _, requested in
             guard requested else { return }
+            source = .library
             searchFocused = true
             focusSearch = false
+        }
+        .onChange(of: integrations.connectedProviders, initial: true) { _, connected in
+            source = HomeSource.reconciled(source, connected: connected)
         }
         .homeLibraryPresentations(actions, toastAlignment: .bottom)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
@@ -226,21 +232,40 @@ struct PhoneHome_iOS: View {
     private var library: some View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
-                searchCapsule
-                filterScroller
-                if appStore.error != nil {
-                    errorBanner.frame(maxWidth: .infinity, alignment: .leading)
+                if sources.count > 1 {
+                    ScrollView(.horizontal) {
+                        HomeSourceSwitcher_iOS(sources: sources, selection: $source)
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if browsedProvider == nil {
+                    searchCapsule
+                    filterScroller
+                    if appStore.error != nil {
+                        errorBanner.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
             .padding(.horizontal, Self.gutter)
             .padding(.bottom, 8)
 
-            resultList
+            if let provider = browsedProvider {
+                ExternalLibraryList_iOS(
+                    provider: provider,
+                    onDocumentOpened: documentDidOpenIfSuccessful)
+                    .id(provider)
+            } else {
+                resultList
+            }
         }
         // Progress and failures for a read-later PDF opened from a search
         // result — without it, tapping a Readwise row would look like nothing
         // happened for the length of the download.
-        .overlay(alignment: .bottom) { readLaterNotice }
+        .overlay(alignment: .bottom) {
+            if browsedProvider == nil { readLaterNotice }
+        }
     }
 
     /// 52pt because this is the phone's primary target and the one control a

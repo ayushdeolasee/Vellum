@@ -27,6 +27,12 @@ enum ExternalLibraryFilter {
 /// the tap *is* the primary action and there is no selection to hang a menu on.
 struct ExternalLibraryList_iOS: View {
     let provider: IntegrationProvider
+    var onDocumentOpened: (() -> Void)?
+
+    init(provider: IntegrationProvider, onDocumentOpened: (() -> Void)? = nil) {
+        self.provider = provider
+        self.onDocumentOpened = onDocumentOpened
+    }
 
     @Environment(AppStore.self) private var appStore
     @Environment(IntegrationsStore.self) private var integrations
@@ -136,7 +142,17 @@ struct ExternalLibraryList_iOS: View {
     /// PDF is downloaded into the integrations cache and opened as a normal PDF
     /// tab through `AppStore.openFile` (and so inherits `PdfFileGate`). There is
     /// deliberately no bespoke reader path here.
-    private func open(_ item: ReadLaterItem) { Task { do { switch try await integrations.route(for: item) { case .web(let url): await appStore.openUrl(url.absoluteString); case .file(let url): await appStore.openFile(path: url.path) } } catch {} } }
+    private func open(_ item: ReadLaterItem) {
+        integrations.run {
+            guard let route = try? await integrations.route(for: item) else { return }
+            switch route {
+            case .web(let url): await appStore.openUrl(url.absoluteString)
+            case .file(let url): await appStore.openFile(path: url.path)
+            }
+            guard appStore.document != nil, appStore.error == nil else { return }
+            onDocumentOpened?()
+        }
+    }
     private func stateView(_ title: String, _ message: String, _ symbol: String) -> some View { ContentUnavailableView(title, systemImage: symbol, description: Text(message)).frame(maxWidth: .infinity, maxHeight: .infinity) }
 }
 

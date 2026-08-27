@@ -75,20 +75,7 @@ struct WelcomeLibrary_iOS: View {
         // the list would also take the switcher away, leaving no way back.
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
-            && !hasConnectedLibrary
-    }
-
-    /// Whether a connected account is holding anything to read. It counts as
-    /// "has a library" for the same reason recents and saved pages do: the hero
-    /// is for someone with nothing to open, and this reader has a shelf of
-    /// articles one tap away. The corpus gets there on its own once the
-    /// read-later provider is indexed — this term stops the hero flashing
-    /// before that lands, and keeps the switcher reachable for a reader whose
-    /// ONLY content is a connected account.
-    private var hasConnectedLibrary: Bool {
-        integrations.connectedProviders.contains { provider in
-            !(integrations.providers[provider]?.items.isEmpty ?? true)
-        }
+            && integrations.connectedProviders.isEmpty
     }
 
     /// Library plus one entry per connected account, in `IntegrationProvider`
