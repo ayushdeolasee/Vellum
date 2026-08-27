@@ -977,7 +977,6 @@ struct SidebarContent_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotations
-    @Environment(ScratchpadStore.self) private var scratchpad
     @Environment(\.palette) private var palette
 
     // "Has this tab ever been revealed?" latches. The sidebar is open by
@@ -1055,24 +1054,7 @@ struct SidebarContent_iOS: View {
                     panel(.ai) { AiPanel_iOS() }
                 }
                 if hasShownScratchpad {
-                    panel(.scratchpad) {
-                        ScratchpadPanel()
-                            .overlay {
-                                if presentation == .phoneSheet,
-                                   scratchpad.text.trimmingCharacters(
-                                    in: .whitespacesAndNewlines
-                                   ).isEmpty {
-                                    ContentUnavailableView(
-                                        "Start a scratchpad",
-                                        systemImage: "note.text",
-                                        description: Text(
-                                            "Tap anywhere to keep free-form notes with this document."
-                                        ))
-                                    .allowsHitTesting(false)
-                                    .accessibilityIdentifier("phone.inspector.scratchpad.empty")
-                                }
-                            }
-                    }
+                    panel(.scratchpad) { ScratchpadPanel() }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

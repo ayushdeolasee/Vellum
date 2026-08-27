@@ -78,6 +78,10 @@ struct PaneDocumentState_iOS: ViewModifier {
     // MARK: - Per-pane document lifecycle
 
     private func loadDocumentState() async {
+        // This task can run before the app root's startup task. Wait for the
+        // coordinator here so restored documents never treat that launch race
+        // as an unavailable identity migration.
+        await workspace.startStorageCoordinator()
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
         await pane.scratchpad.clearDocumentContext().value
