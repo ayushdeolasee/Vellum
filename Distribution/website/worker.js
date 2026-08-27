@@ -6,14 +6,14 @@ const MAC_DOWNLOAD_URL = "https://github.com/ayushdeolasee/Vellum/releases/lates
 const MAC_APPCAST_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/appcast.xml";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, context) {
     const url = new URL(request.url);
 
     if (url.pathname === "/download/mac") {
       if (request.method !== "GET") {
         return new Response(null, { status: 405, headers: { Allow: "GET" } });
       }
-      recordEvent(env, "download_click", normalizeDownloadSource(url.searchParams.get("source")));
+      recordEvent(context, env, "download_click", normalizeDownloadSource(url.searchParams.get("source")));
       return new Response(null, {
         status: 302,
         headers: {
@@ -28,7 +28,7 @@ export default {
         return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
       }
       if (request.method === "GET") {
-        recordEvent(env, "update_check", "sparkle");
+        recordEvent(context, env, "update_check", "sparkle");
       }
       return fetch(MAC_APPCAST_URL, {
         method: request.method,
@@ -93,11 +93,15 @@ async function createAnalyticsEvent(request, env) {
     return json({ error: "Invalid event." }, 400);
   }
 
-  recordEvent(env, "first_launch", "mac_app", version, build);
-  return new Response(null, {
-    status: 204,
-    headers: { "Cache-Control": "no-store" },
-  });
+  try {
+    await writeEvent(env, "first_launch", "mac_app", version, build);
+    return new Response(null, {
+      status: 204,
+      headers: { "Cache-Control": "no-store" },
+    });
+  } catch {
+    return json({ error: "Analytics are temporarily unavailable." }, 503);
+  }
 }
 
 async function createSignup(request, env) {
@@ -246,16 +250,21 @@ function normalizeReleaseValue(value) {
   return /^[0-9A-Za-z.+-]{1,32}$/.test(normalized) ? normalized : null;
 }
 
-function recordEvent(env, event, source, version = "", build = "") {
-  try {
-    env.ANALYTICS.writeDataPoint({
-      blobs: [event, source, version, build],
-      doubles: [1],
-      indexes: ["vellum"],
-    });
-  } catch {
-    // Analytics must never block a download, update check, or app launch.
-  }
+function recordEvent(context, env, event, source, version = "", build = "") {
+  context.waitUntil(writeEvent(env, event, source, version, build).catch(() => {}));
+}
+
+async function writeEvent(env, event, source, version = "", build = "") {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO analytics_events (event, source, version, build)
+       VALUES (?, ?, ?, ?)`,
+    ).bind(event, source, version, build),
+    env.DB.prepare(
+      `DELETE FROM analytics_events
+       WHERE created_at < datetime('now', '-3 months')`,
+    ),
+  ]);
 }
 
 function csvField(value) {

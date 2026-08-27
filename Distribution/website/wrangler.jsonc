@@ -10,12 +10,6 @@
     "binding": "ASSETS",
     "run_worker_first": ["/api/*", "/download/*", "/updates/*"]
   },
-  "analytics_engine_datasets": [
-    {
-      "binding": "ANALYTICS",
-      "dataset": "vellum_analytics"
-    }
-  ],
   "d1_databases": [
     {
       "binding": "DB",

@@ -150,8 +150,8 @@
     <p><a href="https://www.cloudflare.com/privacypolicy/">Cloudflare</a> processes the form submission, performs the security check, and stores the waitlist in Cloudflare D1 on the developer's behalf. When an invitation is available, the developer may provide your name and email address to Apple through App Store Connect so Apple can send the TestFlight invitation. Cloudflare and <a href="https://www.apple.com/legal/privacy/">Apple</a> handle that information under their own privacy policies.</p>
 
     <h3>Anonymous analytics</h3>
-    <p>Vellum records aggregate events when someone selects a Mac download button, when the Mac app first opens successfully after analytics support is installed, and when the Mac app checks for updates. The app event contains only the event name, app version, and build number. Download events also contain the location of the selected button.</p>
-    <p>The analytics record does not contain a user, device, or installation identifier, document information, reading activity, credentials, or the request's IP address. Cloudflare necessarily receives ordinary network information while delivering the request, but Vellum does not add that information to the Analytics Engine event. Cloudflare stores Analytics Engine events for three months.</p>
+    <p>Vellum records anonymous events when someone selects a Mac download button, when the Mac app first opens successfully after analytics support is installed, and when the Mac app checks for updates. The app event contains only the event name, app version, and build number. Download events also contain the location of the selected button.</p>
+    <p>The analytics record does not contain a user, device, or installation identifier, document information, reading activity, credentials, or the request's IP address. Cloudflare necessarily receives ordinary network information while delivering the request, but Vellum does not add that information to the analytics event. Anonymous events are stored in Cloudflare D1.</p>
   </section>
 
   <section id="ai">
@@ -256,7 +256,7 @@
     <p>Read-later cache retention is controlled separately. Disconnecting a read-later service removes its credential and synced metadata. The disconnect flow lets you decide whether downloaded files are also deleted.</p>
     <p>Deleting a file, conversation, credential, or permission in Vellum affects Vellum's local or selected synced copy. It does not recall data already sent to an AI provider, website, Readwise, or Raindrop.io. Each external service controls its own logs, backups, legal holds, account data, and deletion process.</p>
     <p>TestFlight waitlist information is deleted when the beta ends, when it is no longer needed to manage invitations, or 12 months after signup, whichever comes first. You can request earlier deletion using the contact address below. Apple controls information already submitted to App Store Connect.</p>
-    <p>Anonymous analytics events expire from Cloudflare Analytics Engine after three months. Because the events have no user, device, or installation identifier, Vellum cannot retrieve or delete events for a particular person.</p>
+    <p>Vellum deletes anonymous analytics events older than three months when a new analytics event arrives. Because the events have no user, device, or installation identifier, Vellum cannot retrieve or delete events for a particular person.</p>
   </section>
 
   <section id="choices">
