@@ -1,8 +1,7 @@
 import Foundation
 
-/// The `UserDefaults` domain the app-state services read and write — currently
-/// `RecentFilesService` (the recent-documents list) and `WorkspaceService` (the
-/// split-screen layout).
+/// The `UserDefaults` domain app-state services read and write, including the
+/// recent-documents list, split-screen layout, and one-time analytics marker.
 ///
 /// It exists to make two guarantees that a bare `UserDefaults.standard` and a
 /// process-global override variable could not (#102):
