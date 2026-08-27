@@ -27,7 +27,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>SUFeedURL</key>
-	<string>https://github.com/ayushdeolasee/Vellum/releases/latest/download/appcast.xml</string>
+	<string>https://vellum.work/updates/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>jSAB/YdoguCzNSO6M7fKjvrZ2RCGVqIpGzuwl2fu1p8=</string>
 	<key>SUEnableAutomaticChecks</key>

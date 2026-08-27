@@ -138,6 +138,9 @@ struct VellumApp: App {
         Window("Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
+                .task(priority: .utility) {
+                    await AnonymousAnalytics.shared.reportFirstLaunchIfNeeded()
+                }
                 .task {
                     await workspace.startStorageCoordinator()
                     await workspace.integrations.start()

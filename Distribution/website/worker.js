@@ -2,10 +2,47 @@ const JSON_HEADERS = {
   "Cache-Control": "no-store",
   "Content-Type": "application/json; charset=utf-8",
 };
+const MAC_DOWNLOAD_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg";
+const MAC_APPCAST_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/appcast.xml";
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/download/mac") {
+      if (request.method !== "GET") {
+        return new Response(null, { status: 405, headers: { Allow: "GET" } });
+      }
+      recordEvent(env, "download_click", normalizeDownloadSource(url.searchParams.get("source")));
+      return new Response(null, {
+        status: 302,
+        headers: {
+          "Cache-Control": "no-store",
+          Location: MAC_DOWNLOAD_URL,
+        },
+      });
+    }
+
+    if (url.pathname === "/updates/appcast.xml") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
+      }
+      if (request.method === "GET") {
+        recordEvent(env, "update_check", "sparkle");
+      }
+      return fetch(MAC_APPCAST_URL, {
+        method: request.method,
+        headers: { Accept: "application/xml, text/xml;q=0.9, */*;q=0.8" },
+        redirect: "follow",
+      });
+    }
+
+    if (url.pathname === "/api/analytics") {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405, { Allow: "POST" });
+      }
+      return createAnalyticsEvent(request, env);
+    }
 
     if (url.pathname === "/api/testflight-signups") {
       if (request.method !== "POST") {
@@ -28,6 +65,40 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+async function createAnalyticsEvent(request, env) {
+  if (request.headers.get("Content-Type")?.split(";", 1)[0].trim() !== "application/json") {
+    return json({ error: "Content type must be application/json." }, 415);
+  }
+
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (contentLength > 1024) {
+    return json({ error: "That event is too large." }, 413);
+  }
+
+  let body;
+  try {
+    const rawBody = await request.text();
+    if (rawBody.length > 1024) {
+      return json({ error: "That event is too large." }, 413);
+    }
+    body = JSON.parse(rawBody);
+  } catch {
+    return json({ error: "Invalid event." }, 400);
+  }
+
+  const version = normalizeReleaseValue(body.version);
+  const build = normalizeReleaseValue(body.build);
+  if (body.event !== "first_launch" || !version || !build) {
+    return json({ error: "Invalid event." }, 400);
+  }
+
+  recordEvent(env, "first_launch", "mac_app", version, build);
+  return new Response(null, {
+    status: 204,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
 
 async function createSignup(request, env) {
   const origin = request.headers.get("Origin");
@@ -163,6 +234,28 @@ function normalizeEmail(value) {
   const normalized = value.trim().toLowerCase();
   if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return null;
   return normalized;
+}
+
+function normalizeDownloadSource(value) {
+  return ["hero", "platforms", "footer"].includes(value) ? value : "direct";
+}
+
+function normalizeReleaseValue(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return /^[0-9A-Za-z.+-]{1,32}$/.test(normalized) ? normalized : null;
+}
+
+function recordEvent(env, event, source, version = "", build = "") {
+  try {
+    env.ANALYTICS.writeDataPoint({
+      blobs: [event, source, version, build],
+      doubles: [1],
+      indexes: ["vellum"],
+    });
+  } catch {
+    // Analytics must never block a download, update check, or app launch.
+  }
 }
 
 function csvField(value) {
