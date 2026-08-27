@@ -349,7 +349,7 @@ struct PdfOverlayStack_iOS: View {
             // PDFView sees it. The crop goes to whichever panel armed the mode
             // (AppStore.regionCaptureTarget).
             if app.mode == .snapshotRegion {
-                RegionCaptureOverlay_iOS { rect in
+                RegionCaptureOverlay_iOS(tool: app.regionCaptureTool) { rect in
                     // `finishRegionCapture` hands back the destination the tab
                     // armed and returns to view mode in one step; reading
                     // `regionCaptureTarget` after the reset would always say

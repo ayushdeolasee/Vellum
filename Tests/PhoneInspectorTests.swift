@@ -75,12 +75,30 @@ struct PhoneInspectorTests {
     @Test("The sheet offers a half and a full height, and only the half keeps the reader live")
     func detentsAreMediumAndLarge() {
         #expect(PhoneInspectorSheet_iOS.detents == [.medium, .large])
+        #expect(PhoneInspectorSheet_iOS.availableDetents == [
+            PhoneInspectorSheet_iOS.captureDetent, .medium, .large
+        ])
         // `presentationBackgroundInteraction(.enabled(upThrough:))` is what lets
         // the document scroll under a half-height sheet. Pinned to `.medium`:
         // at `.large` the document is not visible, so there is nothing to
         // interact with and the sheet should own the screen.
         #expect(PhoneInspectorSheet_iOS.interactiveDetent == .medium)
         #expect(PhoneInspectorSheet_iOS.detents.contains(PhoneInspectorSheet_iOS.interactiveDetent))
+    }
+
+    @Test("Region capture can move the page and resets to selection when it ends")
+    func regionCaptureToolResets() async throws {
+        let fixture = InspectorFixture()
+        try await fixture.openPdf()
+
+        fixture.app.beginRegionCapture(target: .ai)
+        #expect(fixture.app.regionCaptureTool == .select)
+
+        fixture.app.setRegionCaptureTool(.move)
+        #expect(fixture.app.regionCaptureTool == .move)
+
+        fixture.app.setMode(.view)
+        #expect(fixture.app.regionCaptureTool == .select)
     }
 
     // MARK: - Presentation (D2)

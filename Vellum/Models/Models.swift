@@ -211,6 +211,13 @@ enum RegionCaptureTarget: Sendable, Equatable {
     case scratchpad
 }
 
+/// The phone capture bar can hand touches back to the reader for panning and
+/// pinching, then reclaim them when the user is ready to draw the crop.
+enum RegionCaptureTool: Sendable, Equatable {
+    case move
+    case select
+}
+
 struct WebVisibleRange: Equatable, Sendable {
     var start: Int
     var end: Int

@@ -55,7 +55,7 @@ struct WebViewerView_iOS: View {
                     // renders page content only, so the marquee itself can never
                     // land inside the crop. Routes per AppStore.regionCaptureTarget.
                     if app.mode == .snapshotRegion {
-                        RegionCaptureOverlay_iOS { rect in
+                        RegionCaptureOverlay_iOS(tool: app.regionCaptureTool) { rect in
                             // See PdfViewerView_iOS: the destination has to be
                             // read out of the tab before the mode reset clears
                             // it, which is what `finishRegionCapture` is for.

@@ -1,16 +1,15 @@
 #if os(iOS)
 import SwiftUI
 
-/// Drag-to-crop overlay for `.snapshotRegion` mode on iPad — the touch twin of
+/// Drag-to-crop overlay for `.snapshotRegion` mode on iOS, the touch twin of
 /// the macOS `RegionCaptureOverlay`. Draws a dimmed scrim with a clear cut-out
 /// over the marquee and reports the final rectangle (viewer top-left
-/// coordinates) on release. Because it's a full-viewer, hit-testable layer, the
-/// drag never reaches the PDFView / WKWebView underneath, so the marquee can't
-/// fight native text selection. A plain tap or a sub-threshold wobble calls
-/// `onCancel` instead of cropping, and an explicit 44pt cancel button (also
-/// bound to the hardware Escape key) always backs out — so the capture mode can
-/// never get stuck behind the scrim.
+/// coordinates) on release. Select owns the viewer's touches so the marquee
+/// cannot fight native text selection. Move hands them back to PDFKit or WebKit
+/// for panning and pinching. A plain tap or a sub-threshold wobble cancels, and
+/// the explicit 44pt cancel button keeps the mode from getting stuck.
 struct RegionCaptureOverlay_iOS: View {
+    let tool: RegionCaptureTool
     let onCapture: (CGRect) -> Void
     let onCancel: () -> Void
 
@@ -30,10 +29,22 @@ struct RegionCaptureOverlay_iOS: View {
     }
 
     var body: some View {
+        ZStack(alignment: .topTrailing) {
+            if tool == .select {
+                selectionLayer
+            } else {
+                // A non-hit-testable placeholder preserves the full-view
+                // layout while PDFKit or WebKit handles pan and pinch gestures.
+                Color.clear.allowsHitTesting(false)
+            }
+
+            cancelButton.padding(16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var selectionLayer: some View {
         ZStack(alignment: .topLeading) {
-            // Dimmed scrim with the marquee rect punched clear (destinationOut).
-            // `compositingGroup` isolates the blend so only this layer is cut,
-            // not the viewer below it.
             Rectangle()
                 .fill(.black.opacity(0.28))
                 .overlay(alignment: .topLeading) {
@@ -46,7 +57,6 @@ struct RegionCaptureOverlay_iOS: View {
                 }
                 .compositingGroup()
 
-            // Dashed marquee border tracing the live crop rect.
             if let rect {
                 Rectangle()
                     .strokeBorder(
@@ -56,16 +66,8 @@ struct RegionCaptureOverlay_iOS: View {
                     .offset(x: rect.minX, y: rect.minY)
                     .allowsHitTesting(false)
             }
-
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        // Explicit escape hatch for touch users (and the hardware Esc key). Sits
-        // in an overlay so the button keeps its own 44pt hit target instead of
-        // expanding to fill the scrim.
-        .overlay(alignment: .topTrailing) {
-            cancelButton.padding(16)
-        }
         .gesture(
             // minimumDistance 0 so even a plain tap ends the gesture and reaches
             // the cancel path — with a positive threshold a bare tap never fires

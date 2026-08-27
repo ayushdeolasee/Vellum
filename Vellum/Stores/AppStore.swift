@@ -168,6 +168,10 @@ final class AppStore {
     /// top-level (`Models.swift`) because `PdfTab` carries it.
     private(set) var regionCaptureTarget: RegionCaptureTarget = .ai
 
+    /// Whether the region overlay owns touches or leaves them with the reader.
+    /// This is transient phone UI state and never travels with a tab.
+    private(set) var regionCaptureTool: RegionCaptureTool = .select
+
     /// The window's workspace. One AppStore now backs one *pane*; app-global
     /// shell state (inspector open/tab, sidebar text size, default highlight
     /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
@@ -915,6 +919,7 @@ final class AppStore {
             break
         case .note:
             regionCaptureTarget = .ai
+            regionCaptureTool = .select
             updateActiveTab {
                 $0.mode = .note
                 $0.regionCaptureTarget = nil
@@ -922,6 +927,7 @@ final class AppStore {
         case .view:
             pendingNoteContent = nil
             regionCaptureTarget = .ai
+            regionCaptureTool = .select
             updateActiveTab {
                 $0.mode = .view
                 $0.pendingNoteContent = nil
@@ -934,6 +940,7 @@ final class AppStore {
     /// the viewer overlay routes the resulting snapshot to the right store.
     func beginRegionCapture(target: RegionCaptureTarget) {
         regionCaptureTarget = target
+        regionCaptureTool = .select
         pendingNoteContent = nil
         mode = .snapshotRegion
         updateActiveTab {
@@ -944,6 +951,11 @@ final class AppStore {
             $0.pendingNoteContent = nil
             $0.regionCaptureTarget = target
         }
+    }
+
+    func setRegionCaptureTool(_ tool: RegionCaptureTool) {
+        guard mode == .snapshotRegion else { return }
+        regionCaptureTool = tool
     }
 
     /// Enter note-placement mode carrying an AI reply: the next click on the
@@ -1506,6 +1518,7 @@ final class AppStore {
         webVisibleRange = tab.webVisibleRange
         webVisibleBookmarks = tab.webVisibleBookmarks
         regionCaptureTarget = tab.regionCaptureTarget ?? .ai
+        regionCaptureTool = .select
         mode = tab.regionCaptureTarget == nil ? tab.mode : .snapshotRegion
         findVisible = tab.findVisible
         findQuery = tab.findQuery
@@ -1527,6 +1540,7 @@ final class AppStore {
         webVisibleRange = nil
         webVisibleBookmarks = []
         regionCaptureTarget = .ai
+        regionCaptureTool = .select
         mode = .view
     }
 
