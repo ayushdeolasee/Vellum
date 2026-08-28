@@ -28,9 +28,9 @@
         /// check fail.
         @MainActor
         static func register(work: @escaping @MainActor @Sendable () async -> Void) {
-            // `using: nil` delivers the handler on the main queue, which is
-            // where the store the work touches lives anyway.
-            BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+            // The handler hands off to main-actor stores, so ask BackgroundTasks
+            // to invoke it on the main queue instead of its default background queue.
+            BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
                 guard let refresh = task as? BGAppRefreshTask else {
                     task.setTaskCompleted(success: false)
                     return
