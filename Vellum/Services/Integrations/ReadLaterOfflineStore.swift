@@ -139,9 +139,10 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
             // user saying keep it, and annotating promotes to saved anyway.
             return record.saved || !record.annotations.isEmpty
         case .pdf:
-            guard case .file(let url)? = await engine.existingRoute(for: item) else { return false }
+            let urls = await engine.downloadedCopyURLs(for: item)
+            guard !urls.isEmpty else { return false }
             return await Task.detached(priority: .utility) {
-                Self.pdfHasAnnotations(at: url)
+                urls.contains(where: Self.pdfHasAnnotations)
             }.value
         case .epub, .video, .other:
             return false
@@ -155,11 +156,10 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
     ) async -> Bool {
         switch item.kind {
         case .pdf:
-            guard case .file(let url)? = await engine.existingRoute(for: item) else {
-                return false
-            }
+            let urls = await engine.downloadedCopyURLs(for: item)
+            guard !urls.isEmpty else { return false }
             let hasAnnotations = await Task.detached(priority: .utility) {
-                Self.pdfHasAnnotations(at: url)
+                urls.contains(where: Self.pdfHasAnnotations)
             }.value
             guard !hasAnnotations else { return false }
             return await engine.removeDownloadedCopy(
@@ -231,12 +231,12 @@ struct IntegrationsOfflineStore: ReadLaterOfflineStoring {
         guard let provider = IntegrationProvider(rawValue: providerID), !vendorID.isEmpty else {
             return removedLocatedArtifact
         }
-        guard let pdfURL = await engine.downloadedCopyURL(
+        let pdfURLs = await engine.downloadedCopyURLs(
             provider: provider, itemID: vendorID)
-        else { return removedLocatedArtifact }
-        guard !openDocumentPaths.contains(pdfURL.path) else { return false }
+        guard !pdfURLs.isEmpty else { return removedLocatedArtifact }
+        guard pdfURLs.allSatisfy({ !openDocumentPaths.contains($0.path) }) else { return false }
         let hasAnnotations = await Task.detached(priority: .utility) {
-            Self.pdfHasAnnotations(at: pdfURL)
+            pdfURLs.contains(where: Self.pdfHasAnnotations)
         }.value
         guard !hasAnnotations else { return false }
         return await engine.removeDownloadedCopyIfPresent(

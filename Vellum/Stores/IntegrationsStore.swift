@@ -10,6 +10,10 @@ import Observation
 final class IntegrationsStore {
     private(set) var providers: [IntegrationProvider: IntegrationProviderViewState]
     private(set) var downloads: [ReadLaterItem.ID: IntegrationDownloadState] = [:]
+    /// A retained older PDF revision that the user can reopen after the
+    /// provider supplied a replacement. The file remains on disk after this
+    /// one-time warning is dismissed.
+    private(set) var previousRevisionURLs: [ReadLaterItem.ID: URL] = [:]
     /// Success/error toasts for move-to-collection actions. Kept separate from
     /// `downloads` so a move toast can never stomp live download progress.
     private(set) var moveNotices: [ReadLaterItem.ID: IntegrationDownloadState] = [:]
@@ -73,6 +77,10 @@ final class IntegrationsStore {
     /// Fade-out timers for success toasts, keyed by item and stamped with the
     /// notice they belong to so a newer toast can cancel the older one's timer.
     @ObservationIgnored private var noticeExpiries: [ReadLaterItem.ID: (sequence: Int, task: Task<Void, Never>)] = [:]
+    /// Prevents an immediate reopen from re-showing a warning while its
+    /// acknowledgement is queued behind actor work. A later provider revision
+    /// points at a different previous URL and is therefore still shown.
+    @ObservationIgnored private var acknowledgedRevisionURLs: [ReadLaterItem.ID: URL] = [:]
 
     init(engine: IntegrationsSyncEngine, thumbnails: IntegrationThumbnailCache = IntegrationThumbnailCache(), scheduler: any IntegrationSleeper = ContinuousIntegrationSleeper(), now: @escaping @Sendable () -> Date = { .now }, refreshInterval: Duration = .seconds(30 * 60), staleInterval: TimeInterval = 30 * 60, prefetcher: ReadLaterPrefetcher? = nil, webLibraryStorage: WebLibraryStorage = WebLibraryStorage()) {
         self.engine = engine; self.thumbnails = thumbnails; self.scheduler = scheduler; self.now = now; self.refreshInterval = refreshInterval; self.staleInterval = staleInterval
@@ -292,6 +300,8 @@ final class IntegrationsStore {
         itemsRevisions[provider, default: 0] += 1
         let prefix = provider.rawValue + ":"
         downloads = downloads.filter { !$0.key.hasPrefix(prefix) }
+        previousRevisionURLs = previousRevisionURLs.filter { !$0.key.hasPrefix(prefix) }
+        acknowledgedRevisionURLs = acknowledgedRevisionURLs.filter { !$0.key.hasPrefix(prefix) }
         moveNotices = moveNotices.filter { !$0.key.hasPrefix(prefix) }
         pendingMoves = pendingMoves.filter { !$0.key.hasPrefix(prefix) }
         inFlightMoves = inFlightMoves.filter { !$0.hasPrefix(prefix) }
@@ -305,9 +315,12 @@ final class IntegrationsStore {
         // delays putting the document on screen.
         run { [prefetcher] in await prefetcher.markRead(item) }
         if item.kind != .pdf { return .web(item.sourceURL) }
-        if let existing = await engine.acquireExistingRoute(for: item) { return existing }
+        if let existing = await engine.acquireExistingRoute(for: item) {
+            await surfaceRevisionWarning(for: item)
+            return existing
+        }
         downloads[item.id] = .init(progress: nil, message: "Downloading \(item.title)…", isActive: true, sequence: nextSequence())
-        do { let route = try await engine.download(item) { [weak self] value in await MainActor.run { guard let self else { return }; let old = self.downloads[item.id]; self.downloads[item.id] = .init(progress: value.map { max(old?.progress ?? 0, min(1, $0)) }, message: "Downloading \(item.title)…", isActive: true, sequence: old?.sequence ?? self.nextSequence()) } }; downloads[item.id] = nil; return route }
+        do { let route = try await engine.download(item) { [weak self] value in await MainActor.run { guard let self else { return }; let old = self.downloads[item.id]; self.downloads[item.id] = .init(progress: value.map { max(old?.progress ?? 0, min(1, $0)) }, message: "Downloading \(item.title)…", isActive: true, sequence: old?.sequence ?? self.nextSequence()) } }; await surfaceRevisionWarning(for: item); return route }
         catch { downloads[item.id] = .init(progress: nil, message: error.localizedDescription, isActive: false, sequence: nextSequence()); throw error }
     }
 
@@ -323,7 +336,27 @@ final class IntegrationsStore {
         await thumbnails.image(for: item.thumbnailURL)
     }
     #endif
-    func dismissDownloadNotice(_ id: ReadLaterItem.ID) { downloads[id] = nil }
+
+    func previousRevisionURL(for id: ReadLaterItem.ID) -> URL? { previousRevisionURLs[id] }
+
+    func takePreviousRevision(for id: ReadLaterItem.ID) -> URL? {
+        let url = previousRevisionURLs[id]
+        dismissDownloadNotice(id)
+        return url
+    }
+
+    func dismissDownloadNotice(_ id: ReadLaterItem.ID) {
+        downloads[id] = nil
+        let previousURL = previousRevisionURLs[id]
+        previousRevisionURLs[id] = nil
+        guard let previousURL,
+              let item = searchableItems.first(where: { $0.id == id }) else { return }
+        acknowledgedRevisionURLs[id] = previousURL
+        run { [engine] in
+            await engine.acknowledgeRevisionWarning(
+                for: item, previousRevisionURL: previousURL)
+        }
+    }
 
     // MARK: - Moving items between collections
 
@@ -403,7 +436,8 @@ final class IntegrationsStore {
                     if let candidate = index.byStrippedAddress[stripped], !candidate.isEmpty { id = candidate }
                 }
             } else {
-                id = index.byDownloadKey[String((path as NSString).lastPathComponent.dropLast(4))]
+                let fileStem = String((path as NSString).lastPathComponent.dropLast(4))
+                id = index.byDownloadKey[String(fileStem.prefix(64))]
             }
             if let id, let item = index.byID[id] { return item }
         }
@@ -430,6 +464,21 @@ final class IntegrationsStore {
     }
 
     func dismissMoveNotice(_ id: ReadLaterItem.ID) { moveNotices[id] = nil }
+
+    private func surfaceRevisionWarning(for item: ReadLaterItem) async {
+        guard let previousURL = await engine.pendingPreviousRevisionURL(for: item) else {
+            previousRevisionURLs[item.id] = nil
+            downloads[item.id] = nil
+            return
+        }
+        guard acknowledgedRevisionURLs[item.id] != previousURL else { return }
+        previousRevisionURLs[item.id] = previousURL
+        downloads[item.id] = .init(
+            progress: nil,
+            message: "A newer revision was downloaded. Your previous copy was preserved.",
+            isActive: false,
+            sequence: nextSequence())
+    }
 
     private func replace(id: ReadLaterItem.ID, in provider: IntegrationProvider, with value: ReadLaterItem) {
         // Deliberately no re-sort: a locally-originated move keeps the row where

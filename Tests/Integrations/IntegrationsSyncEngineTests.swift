@@ -740,7 +740,11 @@ struct IntegrationsSyncEngineTests {
         #expect(full.lastFullSweep != nil)
     }
 
-    @Test func anItemUpdatedOnTheServiceIsDownloadedAgainInsteadOfServingTheStaleCopy() async throws {
+    @Test(
+        "A provider update downloads separately and leaves the previous revision available",
+        .bug("https://github.com/ayushdeolasee/Vellum/issues/164")
+    )
+    func anItemUpdatedOnTheServiceIsDownloadedAgainInsteadOfServingTheStaleCopy() async throws {
         let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let item = try makeIntegrationItem(provider: .readwise, id: "rw-pdf", updatedAt: updatedAt, kind: .pdf, pdfRetrieval: .readwiseItem(id: "rw-pdf"))
         let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
@@ -763,10 +767,20 @@ struct IntegrationsSyncEngineTests {
         let second = try await engine.download(updated) { _ in }
 
         #expect(staleRoute == nil)
-        #expect(second == first)
+        #expect(second != first)
         #expect(await downloader.requests().count == 2)
         #expect(await engine.existingRoute(for: updated) == second)
         #expect(await engine.existingRoute(for: item) == nil)
+        guard case .file(let previousURL) = first else {
+            Issue.record("Expected the first revision to be a local PDF")
+            return
+        }
+        #expect(await engine.pendingPreviousRevisionURL(for: updated) == previousURL)
+        #expect(FileManager.default.fileExists(atPath: previousURL.path))
+        await engine.acknowledgeRevisionWarning(
+            for: updated, previousRevisionURL: previousURL)
+        #expect(await engine.pendingPreviousRevisionURL(for: updated) == nil)
+        #expect(FileManager.default.fileExists(atPath: previousURL.path))
         let manifestURL = try await harness.cache.manifestURL(provider: .readwise, itemID: item.vendorID)
         let manifest = try JSONDecoder().decode(IntegrationsCache.DownloadManifest.self, from: Data(contentsOf: manifestURL))
         #expect(manifest.revision == ISO8601DateFormatter.integrationString(from: updated.updatedAt))

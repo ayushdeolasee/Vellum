@@ -73,7 +73,12 @@ struct ExternalLibraryList_iOS: View {
                 FloatingNotice(
                     message: notice.state.message, progress: notice.state.progress,
                     isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
-                    accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+                    accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice",
+                    actionTitle: integrations.previousRevisionURL(for: notice.id) == nil ? nil : "Open Previous",
+                    action: {
+                        guard let url = integrations.takePreviousRevision(for: notice.id) else { return }
+                        Task { await appStore.openFile(path: url.path) }
+                    }
                 ) {
                     if notice.isMove { integrations.dismissMoveNotice(notice.id) } else { integrations.dismissDownloadNotice(notice.id) }
                 }

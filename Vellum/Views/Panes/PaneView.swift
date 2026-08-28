@@ -34,7 +34,7 @@ struct PaneView: View {
                     // this pane's whole body.
                     .overlay(alignment: .bottomTrailing) {
                         if app.document != nil {
-                            PaneIntegrationNotice(path: app.document?.pdfPath)
+                            PaneIntegrationNotice(app: app, path: app.document?.pdfPath)
                                 .padding(18)
                         }
                     }
@@ -299,6 +299,7 @@ private struct PaneDocumentIdentity: Hashable {
 /// confirmations/errors, download progress). Owns the integrations-store
 /// lookup so only this small view re-renders on store churn.
 private struct PaneIntegrationNotice: View {
+    let app: AppStore
     let path: String?
 
     @Environment(IntegrationsStore.self) private var integrations
@@ -309,7 +310,12 @@ private struct PaneIntegrationNotice: View {
             FloatingNotice(
                 message: notice.state.message, progress: notice.state.progress,
                 isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
-                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice"
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice",
+                actionTitle: integrations.previousRevisionURL(for: item.id) == nil ? nil : "Open Previous",
+                action: {
+                    guard let url = integrations.takePreviousRevision(for: item.id) else { return }
+                    Task { await app.openFile(path: url.path) }
+                }
             ) {
                 if notice.isMove { integrations.dismissMoveNotice(item.id) } else { integrations.dismissDownloadNotice(item.id) }
             }

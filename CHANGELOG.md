@@ -8,6 +8,7 @@
 - Continue Reading position handoff through the coordinated storage layer.
 - Safari share capture through an App Group, with a 1 MiB DOM limit, URL fallback, and app-side archive creation.
 - Background read-later prefetch and retention that protects opened, saved, and annotated items.
+- Preserve older read-later PDF revisions after provider updates, with an Open Previous recovery action.
 - Recent and Read Later Home Screen widgets, Lock Screen accessories, and validated App Intent/deep-link entry points.
 - Local, custom-folder, and iCloud Drive coordinated storage. Live Scratchpad data follows the same coordinated storage location (#165).
 
