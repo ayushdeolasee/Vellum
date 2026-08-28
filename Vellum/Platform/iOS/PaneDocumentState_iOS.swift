@@ -78,10 +78,19 @@ struct PaneDocumentState_iOS: ViewModifier {
     // MARK: - Per-pane document lifecycle
 
     private func loadDocumentState() async {
+        // This task can run before the app root's startup task. Wait for the
+        // coordinator here so restored documents never treat that launch race
+        // as an unavailable identity migration.
+        await workspace.startStorageCoordinator()
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
         await pane.scratchpad.clearDocumentContext().value
         guard app.document != nil else { return }
+        // Scratchpad is the only panel backed by a cold WebKit editor. Restore
+        // its small sidecar first so opening the tab never waits behind a full
+        // PDF annotation scan or AI conversation materialization.
+        await pane.scratchpad.loadForDocument(app.document).value
+        guard !Task.isCancelled else { return }
         await pane.annotations.loadAnnotations()
         guard !Task.isCancelled else { return }
         // In iCloud mode the document's notes/conversations may be evicted
@@ -96,7 +105,6 @@ struct PaneDocumentState_iOS: ViewModifier {
            let runtime = workspace.existingLiveTabRuntime(for: tabId) {
             pane.ai.restorePageTexts(runtime.pageTexts)
         }
-        await pane.scratchpad.loadForDocument(app.document).value
     }
 
     private var documentIdentity: PaneDocumentIdentity_iOS {

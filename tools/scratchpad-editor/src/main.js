@@ -15,6 +15,25 @@ import { theme, highlight } from "./theme.js";
 let view = null;
 let suppressChange = false;
 
+function loadOptionalScript(source, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = source;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = resolve;
+    document.head.appendChild(script);
+  });
+}
+
+function beginLoadingPreviewLibraries() {
+  window.ScratchpadPreviewLibraries = {
+    katex: loadOptionalScript("katex.min.js", "katex"),
+    marked: loadOptionalScript("marked.min.js", "marked"),
+  };
+}
+
 // Teach closeBrackets to auto-pair `$` (inline math) alongside the default
 // `() [] {}` — but not quotes, which are noisy in prose. closeBrackets reads
 // the first `closeBrackets` language-data value it finds, so provide ours at
@@ -109,6 +128,10 @@ const api = {
 };
 
 function boot() {
+  // Math and table rendering are optional preview work. Loading their parsers
+  // dynamically lets CodeMirror accept focus and typing without waiting for
+  // another 300 KB of JavaScript on a cold WebKit process.
+  beginLoadingPreviewLibraries();
   createEditor(document.getElementById("editor"));
   post("ready", {});
 }

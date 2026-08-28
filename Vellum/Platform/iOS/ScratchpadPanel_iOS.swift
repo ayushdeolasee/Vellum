@@ -5,6 +5,38 @@ import UniformTypeIdentifiers
 import WebKit
 import ImageIO
 
+@MainActor
+enum ScratchpadEditorPrewarmer {
+    private static var warmupView: WKWebView?
+    private static var mountedEditorCount = 0
+
+    static func prepare() {
+        guard warmupView == nil, mountedEditorCount == 0,
+              let url = ScratchpadEditorResources.templateURL else { return }
+        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        view.isHidden = true
+        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        warmupView = view
+    }
+
+    static func editorDidMount() {
+        mountedEditorCount += 1
+        warmupView?.stopLoading()
+        warmupView = nil
+    }
+
+    static func editorDidUnmount() {
+        mountedEditorCount = max(0, mountedEditorCount - 1)
+    }
+}
+
+private enum ScratchpadEditorResources {
+    static var templateURL: URL? {
+        Bundle.main.url(forResource: "editor", withExtension: "html", subdirectory: "katex")
+            ?? Bundle.main.url(forResource: "editor", withExtension: "html")
+    }
+}
+
 /// Sidebar tab for free-form Markdown + LaTeX notes tied to the active
 /// document. A single Obsidian-style live-preview editor renders every line
 /// except the one under the cursor, which shows raw Markdown source. The text
@@ -673,9 +705,10 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
             store?.addImage(capture, label: "Image")
         }
 
-        if let url = Self.templateURL {
+        if let url = ScratchpadEditorResources.templateURL {
             webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         }
+        ScratchpadEditorPrewarmer.editorDidMount()
         return webView
     }
 
@@ -688,11 +721,7 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
         coordinator.parent.store.insertMarkdownHandler = nil
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "scratchpad")
-    }
-
-    private static var templateURL: URL? {
-        Bundle.main.url(forResource: "editor", withExtension: "html", subdirectory: "katex")
-            ?? Bundle.main.url(forResource: "editor", withExtension: "html")
+        ScratchpadEditorPrewarmer.editorDidUnmount()
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
