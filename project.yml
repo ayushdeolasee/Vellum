@@ -3,11 +3,15 @@ options:
   bundleIdPrefix: com.vellum
   deploymentTarget:
     iOS: "26.0"
+    macOS: "26.0"
   createIntermediateGroups: true
 packages:
   SwiftMath:
     url: https://github.com/mgriebling/SwiftMath
     exactVersion: 1.7.3
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -30,7 +34,37 @@ schemes:
       config: Debug
       targets:
         - VellumTests
+  Vellum Mac:
+    build:
+      targets:
+        VellumMac: all
+    run:
+      config: Debug
 targets:
+  VellumMac:
+    type: application
+    platform: macOS
+    productName: Vellum
+    sources:
+      - path: Vellum
+        excludes:
+          - "Resources/PrivacyInfo.xcprivacy"
+    dependencies:
+      - package: SwiftMath
+      - package: Sparkle
+    settings:
+      base:
+        PRODUCT_NAME: Vellum
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
+        ENABLE_HARDENED_RUNTIME: "YES"
+        ENABLE_APP_SANDBOX: "NO"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: Vellum/Resources/Info.plist
   VellumTests:
     type: bundle.unit-test
     platform: iOS
@@ -61,6 +95,7 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Info-iOS.plist"
+          - "Resources/macOS/PrivacyInfo.xcprivacy"
           # Bundled below as a folder reference so the CodeMirror/KaTeX editor
           # keeps its directory layout (editor.html's relative `katex.min.css`
           # and the css's `fonts/*.woff2` only resolve if `katex/` and its
@@ -83,12 +118,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info-iOS.plist
-        # App Groups are supported by the free/Personal team and are the only
-        # capability the Safari extension needs. The iCloud entitlement
-        # (Vellum/Vellum-iOS.entitlements) remains intentionally unwired: the
-        # free team cannot provision it. Merge the iCloud keys into this file
-        # only after moving to a paid Apple Developer account.
-        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-AppGroup.entitlements
+        # The paid-team build uses the fixed iCloud container and the App Group
+        # shared with the capture and widget extensions.
+        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-iOS.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: "NO"
         SUPPORTS_MACCATALYST: "NO"

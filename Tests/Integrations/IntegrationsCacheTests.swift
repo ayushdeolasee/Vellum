@@ -129,6 +129,8 @@ struct IntegrationsCacheTests {
             // Providers can roll back to an older revision identifier. That
             // must not reuse and overwrite the user's first r1 file.
             manifest: .init(provider: .raindrop, itemID: "item", revision: "r1"))
+        #expect(try await cache.pendingPreviousRevisionURL(
+            provider: .raindrop, itemID: "item") == installed.currentURL)
         try await cache.acknowledgeRevisionWarning(
             provider: .raindrop, itemID: "item",
             previousRevisionURL: installed.currentURL)
@@ -143,6 +145,33 @@ struct IntegrationsCacheTests {
         #expect(try await cache.currentDownload(
             provider: .raindrop, itemID: "item", revision: "r1") == third.currentURL)
         #expect(await cache.downloadURLs(provider: .raindrop, itemID: "item").count == 3)
+    }
+
+    @Test("The first update preserves and exposes a legacy download")
+    func legacyDownloadIsOfferedAfterFirstRevisionUpdate() async throws {
+        let root = try IntegrationTemporaryRoot.make()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = IntegrationsCache(root: root)
+        let legacyURL = try await cache.downloadURL(
+            provider: .readwise, itemID: "legacy-item")
+        try Data("%PDF-legacy".utf8).write(to: legacyURL)
+        let legacyManifest = IntegrationsCache.DownloadManifest(
+            provider: .readwise, itemID: "legacy-item", revision: "r1")
+        let manifestURL = try await cache.manifestURL(
+            provider: .readwise, itemID: "legacy-item")
+        try JSONEncoder().encode(legacyManifest).write(to: manifestURL)
+
+        let temporary = try await cache.temporaryDownloadURL(
+            provider: .readwise, itemID: "legacy-item")
+        try Data("%PDF-current".utf8).write(to: temporary)
+        let installation = try await cache.installDownload(
+            temporaryURL: temporary,
+            manifest: .init(
+                provider: .readwise, itemID: "legacy-item", revision: "r2"))
+
+        #expect(installation.preservedRevisionURL == legacyURL)
+        #expect(try await cache.pendingPreviousRevisionURL(
+            provider: .readwise, itemID: "legacy-item") == legacyURL)
     }
 
     @Test func downloadArtifactPresenceDistinguishesPDFsFromUnknownArticleIDs() async throws {

@@ -1,5 +1,10 @@
-import SwiftUI
+#if os(iOS)
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
+import SwiftUI
 
 // Chips shown above the composer input for each attached reference (selected
 // text, highlight, snapshot, or an AI-reply quote). Removable; images show a
@@ -79,3 +84,4 @@ private struct ReferenceChip: View {
         return UIImage(data: data)
     }
 }
+#endif

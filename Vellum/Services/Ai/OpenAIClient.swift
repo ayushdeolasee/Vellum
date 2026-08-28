@@ -68,13 +68,11 @@ final class OpenAIClient {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
             let bytes = try await openStream(request)
-            let turn = try await Self.consumeTurn(
-                bytes, provider: "OpenAI", throwsOnUnexpectedIncomplete: true, onEvent: onEvent)
+            let turn = try await Self.consumeTurn(bytes, onEvent: onEvent)
 
             // The gate is the only route from a streamed turn into the tool
             // loop, so a truncated response cannot reach `toolEngine.run` (#107).
-            switch try Self.turnOutcome(
-                turn, provider: "OpenAI", hasPriorActions: !actionResults.isEmpty) {
+            switch try Self.turnOutcome(turn, hasPriorActions: !actionResults.isEmpty) {
             case .finish(let reply):
                 return AiProviderResult(reply: Self.finalize(reply, actions: actionResults), actionResults: actionResults)
             case .runTools(let queued):
@@ -120,20 +118,8 @@ final class OpenAIClient {
     /// deltas live. Generic over the byte source so the loop can be driven from
     /// an SSE fixture in tests instead of a network response.
     ///
-    /// Shared by both Responses-API clients rather than copied into each. #107
-    /// existed because this logic lived in two places and one copy was wrong, so
-    /// the two remaining differences are parameters — a visible argument at the
-    /// call site — instead of a divergent second copy that can drift again.
-    ///
-    /// `throwsOnUnexpectedIncomplete` is the ChatGPT/Codex difference: that
-    /// backend's `response.incomplete` reasons are left to finalize silently,
-    /// which is the behaviour that client has always had. Preserved as-is here,
-    /// not endorsed — whether Codex should surface a content-filter cutoff the
-    /// way the direct client does is its own question, not this change's.
     static func consumeTurn<Bytes: AsyncSequence>(
         _ bytes: Bytes,
-        provider: String,
-        throwsOnUnexpectedIncomplete: Bool,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> StreamedTurn where Bytes.Element == UInt8 {
         var turn = StreamedTurn()
@@ -167,13 +153,13 @@ final class OpenAIClient {
                 let reason = ((object["response"] as? [String: Any])?["incomplete_details"] as? [String: Any])?["reason"] as? String
                 if reason == "max_output_tokens" {
                     turn.hitTokenLimit = true
-                } else if throwsOnUnexpectedIncomplete {
+                } else {
                     throw AiClientError.message(incompleteMessage(reason: reason ?? "unknown"))
                 }
             case "response.failed", "error":
                 let message = ((object["response"] as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
                     ?? (object["message"] as? String)
-                throw AiClientError.message(message ?? "\(provider) streaming failed.")
+                throw AiClientError.message(message ?? "OpenAI streaming failed.")
             default:
                 break
             }
@@ -188,8 +174,7 @@ final class OpenAIClient {
         case runTools([[String: Any]])
     }
 
-    /// The one decision point between a streamed turn and the tool loop, shared
-    /// by the two Responses-API clients (OpenAI-direct and ChatGPT OAuth).
+    /// The one decision point between a streamed turn and the tool loop.
     ///
     /// A `max_output_tokens` cutoff can arrive *after* a `function_call` item
     /// completed in the same response, so a non-empty `calls` does NOT mean the
@@ -213,7 +198,7 @@ final class OpenAIClient {
     /// at all is worth failing outright, where "try a lower thinking mode" is
     /// the actionable thing to say.
     static func turnOutcome(
-        _ turn: StreamedTurn, provider: String, hasPriorActions: Bool
+        _ turn: StreamedTurn, hasPriorActions: Bool
     ) throws -> TurnOutcome {
         guard turn.hitTokenLimit else {
             return turn.calls.isEmpty ? .finish(reply: turn.text) : .runTools(turn.calls)
@@ -225,7 +210,7 @@ final class OpenAIClient {
             return .finish(reply: "_(stopped at the output-token limit before answering — try a lower thinking mode)_")
         }
         throw AiClientError.message(
-            "\(provider) hit the output-token limit before producing any text. Try a lower thinking mode.")
+            "OpenAI hit the output-token limit before producing any text. Try a lower thinking mode.")
     }
 
     /// Whether `model` takes a `reasoning` field at all. Everything else rejects
@@ -281,11 +266,12 @@ final class OpenAIClient {
             if lowered.contains("gpt-5.4-pro") { return ["medium", "high", "xhigh"] }
             return []
         }
-        // 5.2 through 5.5 share a vocabulary: no "minimal", plus "none" and
-        // "xhigh". gpt-5.5's row is also quoted verbatim by the API's own
+        // 5.2 through 5.6 share Vellum's exposed vocabulary: no "minimal",
+        // plus "none" and "xhigh". gpt-5.5's row is also quoted by the API's own
         // rejection: "Supported values are: 'none', 'low', 'medium', 'high', and
         // 'xhigh'."
-        if lowered.contains("gpt-5.5") || lowered.contains("gpt-5.4") || lowered.contains("gpt-5.2") {
+        if lowered.contains("gpt-5.6") || lowered.contains("gpt-5.5")
+            || lowered.contains("gpt-5.4") || lowered.contains("gpt-5.2") {
             return ["none", "low", "medium", "high", "xhigh"]
         }
         // gpt-5.1 added "none" but has neither "minimal" nor "xhigh". This also

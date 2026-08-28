@@ -1,5 +1,10 @@
+#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 // The transcript half of the reference-chip UI (issue #58).
 //
@@ -418,3 +423,4 @@ private struct ChipFlowLayout: Layout {
         }
     }
 }
+#endif

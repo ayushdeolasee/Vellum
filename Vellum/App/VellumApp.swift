@@ -111,7 +111,7 @@ struct VellumApp: App {
         uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         // The first keychain read of a launch is a full vault load plus the
         // legacy migration — hundreds of milliseconds, reachable synchronously
-        // from @MainActor callers (AI keys, ChatGPT auth, integration tokens).
+        // from @MainActor callers (AI keys and integration tokens).
         // Warm it on a background queue here, after the UI-test configuration
         // has had its say, so no main-actor read ever pays for it.
         KeychainStore.prewarm()
@@ -138,6 +138,9 @@ struct VellumApp: App {
         Window("Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
+                .task(priority: .utility) {
+                    await AnonymousAnalytics.shared.reportFirstLaunchIfNeeded()
+                }
                 .task {
                     await workspace.startStorageCoordinator()
                     await workspace.integrations.start()
@@ -181,6 +184,9 @@ struct VellumApp: App {
                             webLastOpened: { await positions.lastOpenedForWebURL($0) },
                             webStorage: workspace.webLibraryStorage)
                     }
+                    await Task.detached(priority: .utility) {
+                        WebStorageSettings.resolveICloudRoot()
+                    }.value
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the
                     // storage choice goes first — it decides where everything
@@ -198,18 +204,6 @@ struct VellumApp: App {
                         didOpenUITestDocument = true
                         await workspace.focusedPane.app.openFile(path: uiTestDocumentPath)
                     }
-                }
-                .task {
-                    // A UI-test launch skips this: it is a real network request
-                    // whose outcome adds an "install update" affordance to
-                    // Home's chrome, which is the opposite of deterministic
-                    // (and rate-limits the release API across a test run).
-                    guard !UITestLaunchConfiguration.isEnabled else { return }
-                    // The checker belongs to the workspace, not the Home
-                    // toolbar, so this continues to represent the same check
-                    // while documents are opened or Home is revisited — and it
-                    // is the same instance the app menu's update commands use.
-                    await workspace.checkForUpdatesAutomatically()
                 }
                 .sheet(
                     isPresented: $showStorageChoice,
@@ -232,7 +226,6 @@ struct VellumApp: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
@@ -253,7 +246,6 @@ struct VellumApp: App {
                 .environment(workspace.integrations)
                 .environment(workspace.settingsAi)
                 .environment(workspace.openRouterCatalog)
-                .environment(workspace.chatgptAuth)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)

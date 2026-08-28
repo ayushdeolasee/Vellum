@@ -18,19 +18,19 @@ actor IntegrationsCache {
         let revision: String?
         var fileName: String?
         var preservedRevisions: [PreservedRevision]?
-        var revisionWarningPending: Bool?
+        var pendingPreviousFileName: String?
 
         init(
             provider: IntegrationProvider, itemID: String, revision: String?,
             fileName: String? = nil, preservedRevisions: [PreservedRevision]? = nil,
-            revisionWarningPending: Bool? = nil
+            pendingPreviousFileName: String? = nil
         ) {
             self.provider = provider
             self.itemID = itemID
             self.revision = revision
             self.fileName = fileName
             self.preservedRevisions = preservedRevisions
-            self.revisionWarningPending = revisionWarningPending
+            self.pendingPreviousFileName = pendingPreviousFileName
         }
     }
     struct DownloadInstallation: Hashable, Sendable {
@@ -139,7 +139,8 @@ actor IntegrationsCache {
             revision: requested.revision,
             fileName: destination.lastPathComponent,
             preservedRevisions: preserved.isEmpty ? nil : preserved,
-            revisionWarningPending: preservedURL == nil ? nil : true)
+            pendingPreviousFileName: oldManifest?.pendingPreviousFileName
+                ?? preservedURL?.lastPathComponent)
         do {
             try writeManifest(installedManifest)
         } catch {
@@ -155,10 +156,9 @@ actor IntegrationsCache {
 
     func pendingPreviousRevisionURL(provider: IntegrationProvider, itemID: String) throws -> URL? {
         guard let manifest = manifest(provider: provider, itemID: itemID),
-              manifest.revisionWarningPending == true,
-              let previous = manifest.preservedRevisions?.last else { return nil }
-        let url = try revisionURL(
-            fileName: previous.fileName, provider: provider, itemID: itemID)
+              let fileName = manifest.pendingPreviousFileName else { return nil }
+        let url = try downloadURL(
+            fileName: fileName, provider: provider, itemID: itemID)
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -166,10 +166,16 @@ actor IntegrationsCache {
         provider: IntegrationProvider, itemID: String, previousRevisionURL: URL
     ) throws {
         guard var manifest = manifest(provider: provider, itemID: itemID),
-              manifest.revisionWarningPending == true,
-              manifest.preservedRevisions?.last?.fileName == previousRevisionURL.lastPathComponent
+              manifest.pendingPreviousFileName == previousRevisionURL.lastPathComponent
         else { return }
-        manifest.revisionWarningPending = false
+        let preserved = manifest.preservedRevisions ?? []
+        if let index = preserved.firstIndex(where: {
+            $0.fileName == previousRevisionURL.lastPathComponent
+        }), preserved.indices.contains(index + 1) {
+            manifest.pendingPreviousFileName = preserved[index + 1].fileName
+        } else {
+            manifest.pendingPreviousFileName = nil
+        }
         try writeManifest(manifest)
     }
 
@@ -283,15 +289,15 @@ actor IntegrationsCache {
         guard let fileName = manifest.fileName else {
             return try downloadURL(provider: manifest.provider, itemID: manifest.itemID)
         }
-        return try revisionURL(
+        return try downloadURL(
             fileName: fileName, provider: manifest.provider, itemID: manifest.itemID)
     }
-    private func revisionURL(
+    private func downloadURL(
         fileName: String, provider: IntegrationProvider, itemID: String
     ) throws -> URL {
         let key = Self.downloadKey(provider: provider, itemID: itemID)
         guard fileName == (fileName as NSString).lastPathComponent,
-              fileName.hasPrefix(key + "-"),
+              (fileName == key + ".pdf" || fileName.hasPrefix(key + "-")),
               fileName.lowercased().hasSuffix(".pdf")
         else { throw IntegrationError.invalidResponse }
         return try downloadsDirectory(provider: provider).appendingPathComponent(fileName)

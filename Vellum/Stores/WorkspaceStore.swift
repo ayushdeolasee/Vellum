@@ -173,11 +173,14 @@ final class WorkspaceStore {
     /// document; only its `settings` are used. Changes broadcast to every pane.
     let settingsAi: AiStore
 
+    #if os(macOS)
+    /// One app-wide Sparkle controller shared by every update command.
+    let updateChecker = UpdateChecker()
+    #endif
+
     /// Window-wide, shared by every pane's AiStore: the OpenRouter model catalog
-    /// (fetched once, capability lookups) and the ChatGPT-subscription OAuth
-    /// session (sign-in state + token refresh).
+    /// used for model selection and capability lookups.
     let openRouterCatalog: OpenRouterCatalog
-    let chatgptAuth: ChatGPTAuth
 
     // MARK: Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
 
@@ -398,16 +401,13 @@ final class WorkspaceStore {
             manager.webBackend.storage = webLibraryStorage
         }
         let catalog = OpenRouterCatalog()
-        let auth = ChatGPTAuth()
         let settingsAi = AiStore()
         settingsAi.openRouterCatalog = catalog
-        settingsAi.chatgptAuth = auth
         self.settingsAi = settingsAi
         self.openRouterCatalog = catalog
-        self.chatgptAuth = auth
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
-            openRouterCatalog: catalog, chatgptAuth: auth,
+            openRouterCatalog: catalog,
             storageCoordinator: storageCoordinator,
             webLibraryStorage: webLibraryStorage)
         self.root = .leaf(pane)
@@ -514,7 +514,7 @@ final class WorkspaceStore {
     private func makePane(startTab: Bool) -> PaneModel {
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
-            openRouterCatalog: openRouterCatalog, chatgptAuth: chatgptAuth,
+            openRouterCatalog: openRouterCatalog,
             storageCoordinator: storageCoordinator,
             webLibraryStorage: webLibraryStorage)
         pane.app.workspace = self

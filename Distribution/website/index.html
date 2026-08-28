@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vellum — Read PDFs and web articles in one place</title>
+  <meta name="description" content="Vellum is a reading workspace for PDFs, web articles, and blogs, with annotations, a per-document Scratchpad, and optional AI." />
+  <link rel="canonical" href="https://vellum.work/" />
+  <link rel="icon" type="image/png" href="app-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=onTurnstileReady" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="container">
+      <a class="brand" href="#top" id="top" aria-label="Vellum home">
+        <img src="app-icon.png" alt="" />
+        <span>Vellum</span>
+      </a>
+
+      <div class="hero-copy">
+        <p class="eyebrow">A home for everything worth reading</p>
+        <h1>Read PDFs and<br /><span>the web, together.</span></h1>
+        <p class="tagline">
+          Open a paper, save an article, or settle into a blog. Vellum keeps the
+          reading, your notes, and the conversation in one focused workspace.
+        </p>
+
+        <div class="hero-actions" id="download">
+          <a class="btn-download" href="/download/mac?source=hero">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v13" />
+              <path d="M6 11l6 6 6-6" />
+              <path d="M4 21h16" />
+            </svg>
+            Download for Mac
+          </a>
+          <span class="download-meta">macOS 26.0 or later · Apple Silicon and Intel · .dmg</span>
+        </div>
+
+        <ul class="reading-formats" aria-label="Supported reading formats">
+          <li>PDFs</li>
+          <li>Web articles</li>
+          <li>Blogs</li>
+        </ul>
+      </div>
+
+      <figure class="app-window hero-window">
+        <img src="vellum-library.png" alt="Vellum's library with PDF and webpage entry points" />
+        <figcaption>Your reading library, without the browser tab pile.</figcaption>
+      </figure>
+    </div>
+  </header>
+
+  <main>
+    <section class="reading-story" id="features">
+      <div class="container">
+        <div class="section-intro">
+          <p class="eyebrow">One reading workspace</p>
+          <h2>The page, the context, and your thinking stay together.</h2>
+          <p>
+            Vellum gives PDFs and web pages the same reading tools, so your workflow
+            does not change when the format does.
+          </p>
+        </div>
+
+        <article class="feature-story">
+          <figure class="app-window">
+            <img src="vellum-ai.png" loading="lazy" alt="A research paper open in Vellum beside the optional AI assistant" />
+          </figure>
+          <div class="feature-copy">
+            <p class="feature-label">Read and understand</p>
+            <h3>Go beyond the page you can see.</h3>
+            <p>
+              Read PDFs, articles, and blogs in tabs or split panes. Search the full
+              document, keep your place, and use an AI model you choose when a dense
+              section needs another pass.
+            </p>
+            <ul class="feature-list">
+              <li>Full-document search and page navigation</li>
+              <li>Optional document-aware AI with source context</li>
+              <li>AI-created highlights and notes you can inspect</li>
+              <li>Multiple documents open side by side</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="feature-story reverse">
+          <figure class="app-window">
+            <img src="vellum-scratchpad.png" loading="lazy" alt="A research paper open beside its per-document Scratchpad in Vellum" />
+          </figure>
+          <div class="feature-copy">
+            <p class="feature-label">Mark and remember</p>
+            <h3>Your notes live beside what inspired them.</h3>
+            <p>
+              Highlight passages, add sticky notes, bookmark a position, or build a
+              longer set of ideas in the Scratchpad. Every document gets its own
+              Markdown notebook with LaTeX and image support.
+            </p>
+            <ul class="feature-list">
+              <li>Highlights and notes across PDFs and webpages</li>
+              <li>Portable PDF annotations</li>
+              <li>Per-document Scratchpad with Markdown and LaTeX</li>
+              <li>Region snapshots and image attachments</li>
+            </ul>
+          </div>
+        </article>
+
+        <div class="capability-shelf" aria-label="More Vellum capabilities">
+          <div>
+            <span class="shelf-mark">01</span>
+            <h3>Save the web</h3>
+            <p>Keep offline copies of articles and blogs for distraction-free reading.</p>
+          </div>
+          <div>
+            <span class="shelf-mark">02</span>
+            <h3>Find anything again</h3>
+            <p>Search titles, filenames, and web addresses from one library.</p>
+          </div>
+          <div>
+            <span class="shelf-mark">03</span>
+            <h3>Bring your reading list</h3>
+            <p>Open saved reads from Readwise Reader and Raindrop inside Vellum.</p>
+          </div>
+          <div>
+            <span class="shelf-mark">04</span>
+            <h3>Pick up where you left off</h3>
+            <p>Resume recent reading with your last position and document context intact.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="platforms-section" id="platforms">
+      <div class="container platforms-layout">
+        <div>
+          <p class="eyebrow">Available now</p>
+          <h2>Built for long reads on Mac.</h2>
+          <p class="platform-copy">
+            Download the full Vellum reading workspace today, or join the beta for
+            the universal iPhone and iPad app.
+          </p>
+        </div>
+        <div class="platform-status">
+          <div class="platform-row available">
+            <span>macOS</span>
+            <a href="/download/mac?source=platforms">Download .dmg</a>
+          </div>
+          <div class="platform-row beta">
+            <span>iPhone &amp; iPad</span>
+            <button type="button" id="open-testflight-signup">Join TestFlight</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <div class="container">
+        <img src="app-icon.png" alt="" />
+        <p class="eyebrow">Vellum for Mac</p>
+        <h2>Make room for reading.</h2>
+        <a class="btn-download" href="/download/mac?source=footer">Download Vellum</a>
+        <p class="install-note">Open the downloaded .dmg, drag Vellum into Applications, then open it from there.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="signup-dialog" id="testflight-dialog" aria-labelledby="signup-title">
+    <div class="signup-card">
+      <button class="dialog-close" type="button" data-close-dialog aria-label="Close TestFlight signup">×</button>
+      <p class="eyebrow">Early access</p>
+      <h2 id="signup-title">Join Vellum on iPhone and iPad.</h2>
+      <p class="signup-intro">Add your details and we'll email you a TestFlight invitation when a place is ready.</p>
+
+      <form id="testflight-form">
+        <div id="signup-fields">
+          <div class="name-fields">
+            <label>
+              <span>First name</span>
+              <input id="first-name" name="firstName" type="text" autocomplete="given-name" maxlength="80" required />
+            </label>
+            <label>
+              <span>Last name</span>
+              <input name="lastName" type="text" autocomplete="family-name" maxlength="80" required />
+            </label>
+          </div>
+
+          <label>
+            <span>Email address</span>
+            <input name="email" type="email" autocomplete="email" maxlength="254" required />
+          </label>
+
+          <label class="signup-honeypot" aria-hidden="true">
+            <span>Website</span>
+            <input name="website" type="text" autocomplete="off" tabindex="-1" />
+          </label>
+
+          <div class="turnstile-wrap">
+            <div id="testflight-turnstile"></div>
+          </div>
+
+          <p class="signup-privacy">We'll use these details only to manage Vellum beta invitations. Read the <a href="/privacy.html">privacy policy</a>.</p>
+          <button class="signup-submit" type="submit">Join TestFlight</button>
+          <p class="signup-status" id="signup-status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="signup-success" id="signup-success" hidden>
+          <span aria-hidden="true">✓</span>
+          <h3>You're on the list.</h3>
+          <p>We'll send your TestFlight invitation by email when a place is ready.</p>
+          <button type="button" data-close-dialog>Done</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <footer>
+    <div class="container">
+      <span>© 2026 Vellum. All rights reserved.</span>
+      <span><a href="/privacy.html">Privacy</a> · macOS, iPhone, and iPad are trademarks of Apple Inc.</span>
+    </div>
+  </footer>
+  <script src="signup.js"></script>
+</body>
+</html>

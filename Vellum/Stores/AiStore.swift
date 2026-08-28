@@ -9,12 +9,10 @@ enum AiRole: String, Codable, Sendable {
     case assistant
 }
 
-enum AiProvider: String, Codable, Sendable {
+enum AiProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     case gemini
     case openai
     case openrouter
-    /// ChatGPT-subscription OAuth (Codex backend); no API key, uses `ChatGPTAuth`.
-    case chatgpt
     /// OpenCode Zen gateway, authenticated with a pasted `sk-…` API key.
     case opencode
     /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
@@ -373,7 +371,6 @@ struct AiSettings: Codable, Equatable, Sendable {
     var openaiApiKey: String = ""
     var openrouterModel: String = ""
     var openrouterApiKey: String = ""
-    var chatgptModel: String = "gpt-5.5"
     var opencodeModel: String = "claude-opus-4-8"
     var opencodeApiKey: String = ""
     var opencodeGoModel: String = "glm-5.2"
@@ -382,7 +379,7 @@ struct AiSettings: Codable, Equatable, Sendable {
     var pinnedModels: [String] = []
     var reasoningEffort: AiThinkingMode = .auto
 
-    func isConfigured(chatGPTSignedIn: Bool) -> Bool {
+    func isConfigured() -> Bool {
         switch provider {
         case .gemini:
             hasValue(apiKey) && hasValue(model)
@@ -390,8 +387,6 @@ struct AiSettings: Codable, Equatable, Sendable {
             hasValue(openaiApiKey) && hasValue(openaiModel)
         case .openrouter:
             hasValue(openrouterApiKey) && hasValue(openrouterModel)
-        case .chatgpt:
-            chatGPTSignedIn && hasValue(chatgptModel)
         case .opencode:
             hasValue(opencodeApiKey) && hasValue(opencodeModel)
         case .opencodeGo:
@@ -458,8 +453,6 @@ final class AiStore {
     weak var annotationStore: AnnotationStore?
     /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
     weak var openRouterCatalog: OpenRouterCatalog?
-    /// Wired in by VellumApp; owns the ChatGPT-subscription OAuth lifecycle.
-    weak var chatgptAuth: ChatGPTAuth?
 
     private(set) var messages: [AiMessage] = []
     /// Current request phase; drives the panel's activity indicator.
@@ -1114,8 +1107,8 @@ final class AiStore {
             error = "Set your OpenCode Go API key in AI settings."
             return
         }
-        if settingsAtStart.provider == .chatgpt, chatgptAuth?.isSignedIn != true {
-            error = "Sign in with ChatGPT in AI settings."
+        guard !AiSharingConsent.needsConsent(for: settingsAtStart.provider) else {
+            error = "Review and allow sharing with \(settingsAtStart.provider.displayName) before sending."
             return
         }
 
@@ -1263,21 +1256,6 @@ final class AiStore {
                     prompt: prompt,
                     images: supportsVision ? images : [],
                     allowTools: supportsTools,
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
-            case .chatgpt:
-                guard let chatgptAuth else {
-                    throw AiClientError.message("Sign in with ChatGPT in AI settings.")
-                }
-                let model = settingsAtStart.chatgptModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                result = try await ChatGPTClient(auth: chatgptAuth).generate(
-                    model: model.isEmpty ? "gpt-5.5" : model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: images,
                     thinkingMode: settingsAtStart.reasoningEffort,
                     sessionIdAtStart: sessionIdAtStart,
                     toolEngine: engine,

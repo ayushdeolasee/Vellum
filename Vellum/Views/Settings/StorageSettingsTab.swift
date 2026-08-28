@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// Settings ▸ Storage — the "nothing invisible" pane (design §8). Four data
@@ -1041,3 +1042,4 @@ struct LegacyRow: Identifiable, Sendable, Equatable {
         RecentFilesService.fileName(for: key)
     }
 }
+#endif

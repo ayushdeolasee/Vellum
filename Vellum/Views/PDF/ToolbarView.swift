@@ -210,7 +210,7 @@ private struct PageControls: View {
             pageInput = String(page)
         }
         // Restored sessions start on last_page — sync on tab/doc switch too.
-        .task(id: DocumentKey(appStore)) {
+        .task(id: ToolbarDocumentKey(appStore)) {
             pageInput = String(appStore.currentPage)
         }
     }
@@ -337,8 +337,8 @@ private struct NoteToolToggle: View {
 private struct OverflowMenu: View {
     @Environment(AppStore.self) private var appStore
     @Environment(AiStore.self) private var aiStore
+    @Environment(WorkspaceStore.self) private var workspace
 
-    @State private var updateChecker = UpdateChecker()
     @State private var pageSaved = false
     @State private var exporting = false
 
@@ -381,18 +381,9 @@ private struct OverflowMenu: View {
             }
 
             Section {
-                if updateChecker.state == .available,
-                   let version = updateChecker.availableVersion {
-                    Button(action: updateChecker.install) {
-                        Label("Install Update \(version)", systemImage: "arrow.down.circle")
-                    }
-                }
-                Button {
-                    Task { await updateChecker.check() }
-                } label: {
+                Button(action: workspace.updateChecker.check) {
                     Label("Check for Updates…", systemImage: "arrow.clockwise")
                 }
-                .disabled(updateChecker.state == .checking)
             }
         } label: {
             Label("More", systemImage: "ellipsis")
@@ -405,11 +396,8 @@ private struct OverflowMenu: View {
         .help("More — open, save, export, and updates")
         .accessibilityLabel("More actions")
         .accessibilityIdentifier("toolbar.overflowMenu")
-        .task {
-            await updateChecker.check(silent: true)
-        }
-        .task(id: DocumentKey(appStore)) {
-            await loadSavedState(for: DocumentKey(appStore))
+        .task(id: ToolbarDocumentKey(appStore)) {
+            await loadSavedState(for: ToolbarDocumentKey(appStore))
         }
     }
 
@@ -433,11 +421,11 @@ private struct OverflowMenu: View {
 
     // MARK: Web library
 
-    private func loadSavedState(for identity: DocumentKey) async {
+    private func loadSavedState(for identity: ToolbarDocumentKey) async {
         pageSaved = false
         guard isWeb, let sessionId = appStore.activeTabId else { return }
         let saved = (try? await appStore.sessions.getWebpageSaved(sessionId: sessionId)) ?? false
-        if DocumentKey(appStore) == identity {
+        if ToolbarDocumentKey(appStore) == identity {
             pageSaved = saved
         }
     }
@@ -653,7 +641,7 @@ private struct SidebarToggleButton: View {
 
 /// Identity of the active document — toolbar state (page field, export, saved
 /// flag) resets whenever the tab or backing file changes.
-private struct DocumentKey: Hashable {
+private struct ToolbarDocumentKey: Hashable {
     var tabId: String?
     var path: String?
 

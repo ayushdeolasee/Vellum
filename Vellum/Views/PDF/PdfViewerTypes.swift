@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 // Cross-platform value types + overlay-positioning helper shared by the macOS
@@ -57,3 +58,4 @@ struct AnchoredAbove<Content: View>: View {
             .offset(x: max(8, point.x - size.width / 2), y: max(8, point.y - size.height))
     }
 }
+#endif

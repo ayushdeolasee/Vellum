@@ -68,14 +68,8 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
         // giving up. `RecentFilesService.resolvedPath` still runs first — it is the
         // docId-based re-resolve for a MOVED document (design §7) — and this only
         // rescues the path when that answer no longer exists on disk.
-        resolvePath: @escaping @Sendable (RecentDocument) -> String = { entry in
-            let byIdentity = RecentFilesService.resolvedPath(for: entry)
-            guard entry.kind == .pdf else { return byIdentity }
-            return DocumentImport.resolveExistingPath(byIdentity) ?? byIdentity
-        },
-        fileExists: @escaping @Sendable (String) -> Bool = {
-            DocumentImport.resolveExistingPath($0) != nil
-        }
+        resolvePath: @escaping @Sendable (RecentDocument) -> String = defaultRecentDocumentPath,
+        fileExists: @escaping @Sendable (String) -> Bool = defaultRecentDocumentExists
     ) {
         self.load = load
         self.resolvePath = resolvePath
@@ -126,6 +120,24 @@ struct RecentDocumentsSearchProvider: HomeSearchProvider {
         }
     }
 }
+
+#if os(iOS)
+private let defaultRecentDocumentPath: @Sendable (RecentDocument) -> String = { entry in
+    let byIdentity = RecentFilesService.resolvedPath(for: entry)
+    guard entry.kind == .pdf else { return byIdentity }
+    return DocumentImport.resolveExistingPath(byIdentity) ?? byIdentity
+}
+private let defaultRecentDocumentExists: @Sendable (String) -> Bool = {
+    DocumentImport.resolveExistingPath($0) != nil
+}
+#else
+private let defaultRecentDocumentPath: @Sendable (RecentDocument) -> String = {
+    RecentFilesService.resolvedPath(for: $0)
+}
+private let defaultRecentDocumentExists: @Sendable (String) -> Bool = {
+    FileManager.default.fileExists(atPath: $0)
+}
+#endif
 
 // MARK: - Saved webpages
 

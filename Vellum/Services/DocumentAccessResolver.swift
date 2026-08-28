@@ -98,7 +98,7 @@ struct DocumentAccessResolver: Sendable {
     init(
         store: DocumentAccessBookmarkStore,
         adapter: any DocumentAccessAdapter,
-        libraryDirectory: @escaping @Sendable () -> URL = { DocumentImport.libraryDirectory },
+        libraryDirectory: @escaping @Sendable () -> URL = defaultDocumentLibraryDirectory,
         appOwnedRoots: @escaping @Sendable () -> [URL]? = { nil }
     ) {
         self.store = store
@@ -498,3 +498,17 @@ struct DocumentAccessResolver: Sendable {
         return try await operation()
     }
 }
+
+#if os(iOS)
+private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
+    DocumentImport.libraryDirectory
+}
+#else
+private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
+    let base = FileManager.default.urls(
+        for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    return base
+        .appendingPathComponent("Vellum", isDirectory: true)
+        .appendingPathComponent("Documents", isDirectory: true)
+}
+#endif

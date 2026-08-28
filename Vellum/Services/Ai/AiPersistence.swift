@@ -99,13 +99,23 @@ enum AiPersistence {
         }
 
         var settings = defaults
-        if let provider = value["provider"] as? String {
-            settings.provider = AiProvider(rawValue: provider) ?? .gemini
+        var needsRewrite = false
+        if let storedProvider = value["provider"] as? String {
+            if let provider = AiProvider(rawValue: storedProvider) {
+                settings.provider = provider
+            } else if storedProvider == "chatgpt" {
+                // ChatGPT OAuth was removed. Keep existing OpenAI users on the
+                // supported OpenAI path instead of silently switching to Gemini.
+                settings.provider = .openai
+                needsRewrite = true
+            } else {
+                settings.provider = .gemini
+                needsRewrite = true
+            }
         }
         if let model = value["model"] as? String { settings.model = model }
         if let model = value["openaiModel"] as? String { settings.openaiModel = model }
         if let model = value["openrouterModel"] as? String { settings.openrouterModel = model }
-        if let model = value["chatgptModel"] as? String { settings.chatgptModel = model }
         if let model = value["opencodeModel"] as? String { settings.opencodeModel = model }
         if let model = value["opencodeGoModel"] as? String { settings.opencodeGoModel = model }
         if let pinned = value["pinnedModels"] as? [String] { settings.pinnedModels = pinned }
@@ -113,7 +123,7 @@ enum AiPersistence {
 
         // Keys now live in the Keychain. Migrate any legacy plaintext keys still
         // present in the UserDefaults blob, then prefer the Keychain copy.
-        var didMigrate = false
+        var didMigrate = needsRewrite
         migrate(account: KeychainStore.Account.gemini, legacy: value["apiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.openai, legacy: value["openaiApiKey"] as? String, didMigrate: &didMigrate)
         migrate(account: KeychainStore.Account.openrouter, legacy: value["openrouterApiKey"] as? String, didMigrate: &didMigrate)

@@ -21,3 +21,4 @@ Tests/Texts/
 
 # Agent scratch (mutation scripts, build logs)
 .logs/
+.wrangler/

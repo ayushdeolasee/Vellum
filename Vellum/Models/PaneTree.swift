@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 
 // The split-screen layout model. A window shows a recursive tree of panes; each
@@ -30,7 +31,6 @@ final class PaneModel: Identifiable {
         teardowns: TabTeardownRegistry = TabTeardownRegistry(),
         documentAccess: DocumentAccessResolver = .live,
         openRouterCatalog: OpenRouterCatalog,
-        chatgptAuth: ChatGPTAuth,
         storageCoordinator: StorageCoordinator? = nil,
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
@@ -41,7 +41,6 @@ final class PaneModel: Identifiable {
         ai.app = app
         ai.annotationStore = annotations
         ai.openRouterCatalog = openRouterCatalog
-        ai.chatgptAuth = chatgptAuth
         self.app = app
         self.annotations = annotations
         self.ai = ai
@@ -101,3 +100,4 @@ indirect enum PaneNode: Identifiable {
         return false
     }
 }
+#endif

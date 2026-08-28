@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 #if os(iOS)
 import UIKit
@@ -687,3 +688,4 @@ struct ModelSelector: View {
         return s
     }
 }
+#endif

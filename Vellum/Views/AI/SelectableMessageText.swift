@@ -1,5 +1,10 @@
+#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 import UniformTypeIdentifiers
 
 // Assistant-message renderer backed by a read-only UITextView so the user can
@@ -713,3 +718,4 @@ enum AiAttributedRenderer {
         return result
     }
 }
+#endif

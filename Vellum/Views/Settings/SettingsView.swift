@@ -406,8 +406,8 @@ private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
-    @Environment(ChatGPTAuth.self) private var chatGPTAuth
     @State private var validationState: AiConnectionValidationState = .idle
+    @State private var consentRevision = 0
 
     var body: some View {
         Form {
@@ -418,17 +418,13 @@ private struct AiSettingsTab: View {
                     }
                 }
 
-                if aiStore.settings.provider == .chatgpt {
-                    LabeledContent("Account") { ChatGPTSignInControl() }
-                } else {
-                    LabeledContent(aiStore.keyFieldLabel) {
-                        RevealableSecureField(
-                            accessibilityLabel: aiStore.keyFieldLabel,
-                            placeholder: aiStore.keyFieldPlaceholder,
-                            text: aiStore.apiKeyBinding
-                        )
-                            .id(aiStore.settings.provider)
-                    }
+                LabeledContent(aiStore.keyFieldLabel) {
+                    RevealableSecureField(
+                        accessibilityLabel: aiStore.keyFieldLabel,
+                        placeholder: aiStore.keyFieldPlaceholder,
+                        text: aiStore.apiKeyBinding
+                    )
+                        .id(aiStore.settings.provider)
                 }
 
                 LabeledContent("Model") {
@@ -450,19 +446,14 @@ private struct AiSettingsTab: View {
                     Button("Validate Connection") {
                         validationState = .checking
                         let settings = aiStore.settings
-                        let signedIn = chatGPTAuth.isSignedIn
                         let provider = settings.provider
                         let model = aiStore.activeModelName
                         let credential = aiStore.apiKeyBinding.wrappedValue
                         Task {
-                            let result = await AiConnectionValidator.validate(
-                                settings: settings,
-                                chatGPTSignedIn: signedIn
-                            )
+                            let result = await AiConnectionValidator.validate(settings: settings)
                             guard aiStore.settings.provider == provider,
                                   aiStore.activeModelName == model,
-                                  aiStore.apiKeyBinding.wrappedValue == credential,
-                                  chatGPTAuth.isSignedIn == signedIn else { return }
+                                  aiStore.apiKeyBinding.wrappedValue == credential else { return }
                             validationState = result
                         }
                     }
@@ -472,6 +463,28 @@ private struct AiSettingsTab: View {
                 }
             } header: {
                 Text("Assistant")
+            }
+            Section {
+                ForEach(AiSharingConsent.providers) { provider in
+                    LabeledContent(provider.displayName) {
+                        HStack(spacing: 12) {
+                            Text(AiSharingConsent.isGranted(for: provider) ? "Allowed" : "Not allowed")
+                                .foregroundStyle(.secondary)
+                            if AiSharingConsent.isGranted(for: provider) {
+                                Button("Revoke") {
+                                    AiSharingConsent.revoke(for: provider)
+                                    consentRevision += 1
+                                }
+                                .accessibilityIdentifier("aiConsent.revoke.\(provider.rawValue)")
+                            }
+                        }
+                    }
+                }
+                Link("Read Vellum's Privacy Policy", destination: VellumPrivacyPolicy.url)
+            } header: {
+                Text("Data Sharing")
+            } footer: {
+                Text("Revoking a provider makes Vellum ask again before the next request.")
             }
         }
         .formStyle(.grouped)
@@ -483,19 +496,17 @@ private struct AiSettingsTab: View {
         .onChange(of: aiStore.settings.provider) { _, _ in validationState = .idle }
         .onChange(of: aiStore.activeModelName) { _, _ in validationState = .idle }
         .onChange(of: aiStore.apiKeyBinding.wrappedValue) { _, _ in validationState = .idle }
-        .onChange(of: chatGPTAuth.isSignedIn) { _, _ in validationState = .idle }
     }
 
     private var canValidate: Bool {
-        aiStore.settings.provider == .chatgpt ? chatGPTAuth.isSignedIn : !aiStore.apiKeyBinding.wrappedValue.isEmpty
+        !aiStore.apiKeyBinding.wrappedValue.isEmpty
     }
 
     private var configurationSummary: String {
         let provider = AiProviderOption.all.first { $0.provider == aiStore.settings.provider }?.label
             ?? aiStore.settings.provider.rawValue
-        let credential = aiStore.settings.provider == .chatgpt
-            ? (chatGPTAuth.isSignedIn ? "signed in" : "not signed in")
-            : (aiStore.apiKeyBinding.wrappedValue.isEmpty ? "credential missing" : "credential saved")
+        let credential = aiStore.apiKeyBinding.wrappedValue.isEmpty
+            ? "credential missing" : "credential saved"
         return "\(provider) · \(aiStore.activeModelName) · \(credential)"
     }
 
@@ -504,7 +515,7 @@ private struct AiSettingsTab: View {
         switch validationState {
         case .idle:
             if !canValidate {
-                Text(aiStore.settings.provider == .chatgpt ? "Sign in to validate" : "Add a credential to validate")
+                Text("Add a credential to validate")
                     .foregroundStyle(.secondary)
             }
         case .checking:
@@ -562,8 +573,6 @@ enum AiConnectionValidator {
         case .opencodeGo:
             key = settings.opencodeGoApiKey
             urlString = "https://opencode.ai/zen/go/v1/models"
-        case .chatgpt:
-            return nil
         }
         guard !key.isEmpty, let url = URL(string: urlString) else { return nil }
         var request = URLRequest(url: url)
@@ -578,12 +587,8 @@ enum AiConnectionValidator {
 
     static func validate(
         settings: AiSettings,
-        chatGPTSignedIn: Bool,
         session: URLSession = .shared
     ) async -> AiConnectionValidationState {
-        if settings.provider == .chatgpt {
-            return chatGPTSignedIn ? .valid : .invalid("ChatGPT is not signed in")
-        }
         guard let request = request(settings: settings) else {
             return .invalid("Credential is missing")
         }

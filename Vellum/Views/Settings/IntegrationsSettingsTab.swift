@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// The Integrations tab of the settings sheet: auto-refresh scheduling plus one
@@ -137,3 +138,4 @@ struct IntegrationsSettingsTab: View {
         }
     }
 }
+#endif

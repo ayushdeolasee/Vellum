@@ -28,9 +28,11 @@ struct AiPanel: View {
     private var isVisibleTab: Bool { workspace.sidebarTab == .ai }
 
     @State private var input = ""
+    @State private var settingsOpen = false
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
+    @State private var consentProvider: AiProvider?
     /// Live width of the transcript column. The sidebar is a resizable
     /// `.inspector` (240…700pt), and bubbles used to be pinned to a fixed
     /// 272pt — so widening it only grew the empty gutter beside them. Tracking
@@ -60,8 +62,11 @@ struct AiPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !aiStore.settings.isConfigured(chatGPTSignedIn: workspace.chatgptAuth.isSignedIn) {
+            if !aiStore.settings.isConfigured() {
                 configureAiBanner
+            }
+            if settingsOpen {
+                AiSettingsPanel()
             }
             messages
             composer
@@ -89,6 +94,12 @@ struct AiPanel: View {
             guard case let .success(urls) = result else { return }
             aiStore.attachFiles(at: urls)
         }
+        .sheet(item: $consentProvider) { provider in
+            AiSharingConsentSheet(provider: provider, model: aiStore.activeModelName) {
+                consentProvider = nil
+                submit()
+            }
+        }
     }
 
     private var header: some View {
@@ -104,6 +115,15 @@ struct AiPanel: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
+                IconButton(
+                    variant: settingsOpen ? .active : .ghost,
+                    help: "AI settings",
+                    action: { settingsOpen.toggle() }
+                ) {
+                    Image(systemName: "gearshape").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("aiPanel.settings")
+                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
                 IconButton(
                     help: "Clear AI conversation",
                     disabled: aiStore.messages.isEmpty,
@@ -768,6 +788,11 @@ struct AiPanel: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        let provider = aiStore.settings.provider
+        guard !AiSharingConsent.needsConsent(for: provider) else {
+            consentProvider = provider
+            return
+        }
         // With only references attached, send a light default prompt so the
         // request is non-empty and the model knows to act on them.
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
@@ -1206,4 +1231,4 @@ final class SubmitTextView: NSTextView {
         placeholder.draw(at: NSPoint(x: textContainerInset.width, y: textContainerInset.height), withAttributes: attributes)
     }
 }
-#endif  // os(macOS) — iPad reference; see Platform/iOS/AiPanel_iOS.swift
+#endif

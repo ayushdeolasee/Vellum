@@ -1,5 +1,10 @@
+#if os(iOS)
 import Foundation
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 // Open-tab residency policy (issue #52).
 //
@@ -694,3 +699,4 @@ final class TabResidencyManager {
         }
     }
 }
+#endif

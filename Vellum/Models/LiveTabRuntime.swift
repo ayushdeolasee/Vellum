@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import Observation
 import PDFKit
@@ -213,3 +214,4 @@ final class LiveTabRuntime {
 }
 
 extension LiveTabRuntime: TabResidentResource {}
+#endif
