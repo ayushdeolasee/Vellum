@@ -266,11 +266,12 @@ final class OpenAIClient {
             if lowered.contains("gpt-5.4-pro") { return ["medium", "high", "xhigh"] }
             return []
         }
-        // 5.2 through 5.5 share a vocabulary: no "minimal", plus "none" and
-        // "xhigh". gpt-5.5's row is also quoted verbatim by the API's own
+        // 5.2 through 5.6 share Vellum's exposed vocabulary: no "minimal",
+        // plus "none" and "xhigh". gpt-5.5's row is also quoted by the API's own
         // rejection: "Supported values are: 'none', 'low', 'medium', 'high', and
         // 'xhigh'."
-        if lowered.contains("gpt-5.5") || lowered.contains("gpt-5.4") || lowered.contains("gpt-5.2") {
+        if lowered.contains("gpt-5.6") || lowered.contains("gpt-5.5")
+            || lowered.contains("gpt-5.4") || lowered.contains("gpt-5.2") {
             return ["none", "low", "medium", "high", "xhigh"]
         }
         // gpt-5.1 added "none" but has neither "minimal" nor "xhigh". This also

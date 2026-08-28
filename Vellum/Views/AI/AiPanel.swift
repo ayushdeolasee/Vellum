@@ -28,6 +28,7 @@ struct AiPanel: View {
     private var isVisibleTab: Bool { workspace.sidebarTab == .ai }
 
     @State private var input = ""
+    @State private var settingsOpen = false
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
@@ -63,6 +64,9 @@ struct AiPanel: View {
             header
             if !aiStore.settings.isConfigured() {
                 configureAiBanner
+            }
+            if settingsOpen {
+                AiSettingsPanel()
             }
             messages
             composer
@@ -111,6 +115,15 @@ struct AiPanel: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
+                IconButton(
+                    variant: settingsOpen ? .active : .ghost,
+                    help: "AI settings",
+                    action: { settingsOpen.toggle() }
+                ) {
+                    Image(systemName: "gearshape").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("aiPanel.settings")
+                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
                 IconButton(
                     help: "Clear AI conversation",
                     disabled: aiStore.messages.isEmpty,
