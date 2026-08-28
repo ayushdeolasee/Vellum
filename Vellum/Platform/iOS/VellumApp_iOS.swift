@@ -114,6 +114,12 @@ struct VellumApp_iOS: App {
                     await workspace.startStorageCoordinator()
                     _ = await captureIngestion?.drain()
                 }
+                .task(id: workspace.focusedPane.app.document?.pdfPath) {
+                    guard workspace.focusedPane.app.document != nil else { return }
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard !Task.isCancelled else { return }
+                    ScratchpadEditorPrewarmer.prepare()
+                }
                 .onOpenURL { url in handleIncomingURL(url) }
                 .onChange(of: workspace.focusedPane.app.document?.pdfPath) { _, _ in
                     Task { await publishWidgetSnapshot() }

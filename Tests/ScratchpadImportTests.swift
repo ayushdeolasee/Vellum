@@ -502,6 +502,28 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertTrue(store.dropWarning?.localizedCaseInsensitiveContains("paused") ?? false)
     }
 
+    func testEmptyInitialRekeyDoesNotInspectDurableCopy() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-rekey-empty-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let oldKey = DocumentIdentity.sha256Hex("/tmp/\(UUID().uuidString).pdf")
+        let newKey = UUID().uuidString.lowercased()
+        let durableNote = documentURL(
+            root: root, key: newKey, name: "scratchpad.md")
+        container.seed(
+            durableNote, data: Data("saved note".utf8), readiness: .notDownloaded)
+        container.stallMaterialization(at: durableNote)
+
+        let succeeded = await DocumentDataStore.rekey(
+            from: oldKey, to: newKey, coordinator: coordinator)
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(container.metadataQueryCount, 1)
+        XCTAssertEqual(container.materializationCount, 0)
+        XCTAssertEqual(container.peek(durableNote), Data("saved note".utf8))
+    }
+
     func testImageReferenceIsSavedBeforeWebViewCallback() async throws {
         let root = URL(fileURLWithPath: "/scratchpad-image-flush-\(UUID().uuidString)/Vellum")
         let container = FakeSyncedContainer()

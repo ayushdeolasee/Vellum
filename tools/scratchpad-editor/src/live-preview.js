@@ -35,16 +35,20 @@ class MathWidget extends WidgetType {
   toDOM() {
     const el = document.createElement(this.display ? "div" : "span");
     el.className = this.display ? "cm-math-block" : "cm-math-inline";
-    try {
-      window.katex.render(this.tex, el, {
-        throwOnError: false,
-        displayMode: this.display,
-        output: "html",
-      });
-    } catch (e) {
-      el.textContent = this.tex;
-      el.classList.add("cm-math-error");
-    }
+    el.textContent = this.tex;
+    const render = () => {
+      try {
+        window.katex.render(this.tex, el, {
+          throwOnError: false,
+          displayMode: this.display,
+          output: "html",
+        });
+      } catch (e) {
+        el.classList.add("cm-math-error");
+      }
+    };
+    if (window.katex) render();
+    else window.ScratchpadPreviewLibraries?.katex.then(render);
     return el;
   }
   ignoreEvent() {
@@ -75,13 +79,18 @@ class TableWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-table";
-    try {
-      // Sanitize before insertion — a note could contain raw HTML (e.g. pasted
-      // from the web) whose inline event handlers would otherwise execute.
-      wrap.innerHTML = DOMPurify.sanitize(window.marked.parse(this.src, { gfm: true }));
-    } catch (e) {
-      wrap.textContent = this.src;
-    }
+    wrap.textContent = this.src;
+    const render = () => {
+      try {
+        // Sanitize before insertion — a note could contain raw HTML (e.g. pasted
+        // from the web) whose inline event handlers would otherwise execute.
+        wrap.innerHTML = DOMPurify.sanitize(window.marked.parse(this.src, { gfm: true }));
+      } catch (e) {
+        wrap.textContent = this.src;
+      }
+    };
+    if (window.marked) render();
+    else window.ScratchpadPreviewLibraries?.marked.then(render);
     return wrap;
   }
   ignoreEvent() {

@@ -1059,6 +1059,11 @@ enum DocumentDataStore {
                         sourceEntries[entry.name] = entry
                     }
                 }
+                // There is no migration to perform. Do not inspect the durable
+                // destination: it may be temporarily unavailable even though
+                // the document has no path-keyed data that could be lost.
+                guard !sourceEntries.isEmpty else { return true }
+
                 var destinationEntries = Dictionary(uniqueKeysWithValues:
                     try await access.store.list(destination, suffix: nil).map { ($0.name, $0) })
                 if let fallbackDestination {
@@ -1183,6 +1188,9 @@ enum DocumentDataStore {
                 return true
             }
         } catch {
+            NSLog(
+                "[Vellum] Document data rekey from %@ to %@ failed: %@",
+                oldKey, newKey, String(describing: error))
             return false
         }
     }
