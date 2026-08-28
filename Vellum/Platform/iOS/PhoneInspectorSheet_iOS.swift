@@ -91,14 +91,20 @@ struct PhoneInspectorSheet_iOS: View {
             .preferredColorScheme(themeStore.colorScheme)
             .tint(themeStore.palette.primary)
             .accessibilityIdentifier("phone.inspector.sheet")
-            .presentationDetents(Self.availableDetents, selection: $detent)
+            .presentationDetents(Self.availableDetents, selection: detentSelection)
             // The half-height sheet must not lock the document out. Reading is
             // the point of the screen underneath, and an annotation list you
             // cannot scroll the page beside is a modal dialog wearing a sheet's
             // clothes. `upThrough: .medium` keeps the reader live at half
             // height and hands interaction back to the sheet at `.large`,
             // where the document is not visible anyway.
-            .presentationBackgroundInteraction(.enabled(upThrough: Self.interactiveDetent))
+            // Capture always needs the reader underneath to receive its native
+            // selection, pan, and pinch gestures. The normal sheet remains
+            // interactive only through `.medium`.
+            .presentationBackgroundInteraction(
+                isCapturingRegion
+                    ? .enabled
+                    : .enabled(upThrough: Self.interactiveDetent))
             // With the background interactive there is no dimmed backdrop to
             // tap away, so the grabber is the only visible affordance saying
             // "this drags and dismisses".
@@ -121,10 +127,12 @@ struct PhoneInspectorSheet_iOS: View {
             .onChange(of: isCapturingRegion, initial: true) { _, isCapturing in
                 withAnimation(.snappy) {
                     if isCapturing {
-                        detentBeforeCapture = detent
+                        detentBeforeCapture = Self.detents.contains(detent) ? detent : .medium
                         detent = Self.captureDetent
                     } else {
-                        detent = detentBeforeCapture
+                        detent = Self.detents.contains(detentBeforeCapture)
+                            ? detentBeforeCapture
+                            : .medium
                     }
                 }
             }
@@ -132,11 +140,35 @@ struct PhoneInspectorSheet_iOS: View {
 
     private var isCapturingRegion: Bool { pane.app.mode == .snapshotRegion }
 
+    /// Keep the custom detent registered so SwiftUI continues forwarding
+    /// touches to the reader behind it. Outside capture, dragging down to that
+    /// detent means "dismiss" instead of squeezing normal sidebar content into
+    /// 76 points.
+    private var detentSelection: Binding<PresentationDetent> {
+        Binding(
+            get: { detent },
+            set: { proposed in
+                if isCapturingRegion {
+                    detent = Self.captureDetent
+                } else if proposed == Self.captureDetent {
+                    shell.setInspectorPresented(false)
+                } else {
+                    detent = proposed
+                }
+            })
+    }
+
     private var captureBar: some View {
         HStack(spacing: 8) {
-            captureToolButton(.move, title: "Move", icon: "hand.draw")
-            captureToolButton(.select, title: "Select", icon: "viewfinder")
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Drag to capture")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("One finger captures · two fingers move or zoom")
+                    .font(.system(size: 11))
+                    .foregroundStyle(themeStore.palette.mutedForeground)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button {
                 pane.app.setMode(.view)
             } label: {
@@ -153,33 +185,6 @@ struct PhoneInspectorSheet_iOS: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(themeStore.palette.surface)
         .accessibilityIdentifier("phone.regionCapture.bar")
-    }
-
-    private func captureToolButton(
-        _ tool: RegionCaptureTool,
-        title: String,
-        icon: String
-    ) -> some View {
-        let isSelected = pane.app.regionCaptureTool == tool
-        return Button {
-            pane.app.setRegionCaptureTool(tool)
-        } label: {
-            Label(title, systemImage: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .padding(.horizontal, 12)
-                .frame(height: 44)
-                .foregroundStyle(
-                    isSelected
-                        ? themeStore.palette.primaryForeground
-                        : themeStore.palette.foreground)
-                .background(
-                    isSelected ? themeStore.palette.primary : themeStore.palette.well,
-                    in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityIdentifier("phone.regionCapture.\(title.lowercased())")
     }
 
     /// The ink controller the Handwriting section reads, taken straight from the

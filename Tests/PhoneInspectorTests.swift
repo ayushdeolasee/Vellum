@@ -86,19 +86,19 @@ struct PhoneInspectorTests {
         #expect(PhoneInspectorSheet_iOS.detents.contains(PhoneInspectorSheet_iOS.interactiveDetent))
     }
 
-    @Test("Region capture can move the page and resets to selection when it ends")
-    func regionCaptureToolResets() async throws {
-        let fixture = InspectorFixture()
-        try await fixture.openPdf()
-
-        fixture.app.beginRegionCapture(target: .ai)
-        #expect(fixture.app.regionCaptureTool == .select)
-
-        fixture.app.setRegionCaptureTool(.move)
-        #expect(fixture.app.regionCaptureTool == .move)
-
-        fixture.app.setMode(.view)
-        #expect(fixture.app.regionCaptureTool == .select)
+    @Test("Region capture scrolls toward the edge being held")
+    func regionCaptureEdgeVelocity() {
+        let bounds = CGRect(x: 0, y: 0, width: 390, height: 700)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 350), in: bounds) == .zero)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 1, y: 350), in: bounds).x < 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 389, y: 350), in: bounds).x > 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 1), in: bounds).y < 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 699), in: bounds).y > 0)
     }
 
     // MARK: - Presentation (D2)

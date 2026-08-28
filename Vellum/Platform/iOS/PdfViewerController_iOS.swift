@@ -71,6 +71,12 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     /// Bumped whenever scroll/zoom/layout moves page geometry so the overlays
     /// recompute their positions.
     private(set) var geometryVersion = 0
+    let regionCaptureState = RegionCaptureState()
+
+    @ObservationIgnored private var regionCapturePage: PDFPage?
+    @ObservationIgnored private var regionCapturePageNumber: Int?
+    @ObservationIgnored private var regionCaptureStart: CGPoint?
+    @ObservationIgnored private var regionCaptureCurrent: CGPoint?
 
     private(set) var selection: PdfTextSelection?
     /// Selection popover anchor (bottom-center) in viewer top-left coordinates.
@@ -149,6 +155,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         selectionPopoverPosition = nil
         contextMenu = nil
         highlightResize = nil
+        resetRegionSelection()
         didInitialScroll = false
         findMatches = []
         findIndex = -1
@@ -189,6 +196,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     func scrollChanged(offsetY: CGFloat) {
         currentScrollOffsetY = offsetY
         bumpGeometry()
+        refreshRegionSelectionRect()
         // Dismiss the context menu on real scrolling only — engaging the
         // long-press cancels the touch, and that alone can jiggle the content
         // offset by a point or two, which must not wipe the menu it just opened.
@@ -204,6 +212,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     func scaleChanged() {
         guard let pdfView else { return }
         bumpGeometry()
+        refreshRegionSelectionRect()
         if let app, abs(app.zoom - Double(pdfView.scaleFactor)) > 0.0001 {
             app.setZoom(Double(pdfView.scaleFactor))
         }
@@ -212,7 +221,62 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     func layoutChanged() {
         bumpGeometry()
+        refreshRegionSelectionRect()
         scheduleVisiblePagesRecompute()
+    }
+
+    // MARK: - Region capture
+
+    func beginRegionSelection(at point: CGPoint) -> Bool {
+        guard let pdfView, let document,
+              let page = pdfView.page(for: point, nearest: true) else { return false }
+        regionCapturePage = page
+        regionCapturePageNumber = document.index(for: page) + 1
+        let pagePoint = pdfView.convert(point, to: page)
+        regionCaptureStart = pagePoint
+        regionCaptureCurrent = pagePoint
+        refreshRegionSelectionRect()
+        return true
+    }
+
+    func updateRegionSelection(at point: CGPoint) {
+        guard let pdfView, let page = regionCapturePage else { return }
+        regionCaptureCurrent = pdfView.convert(point, to: page)
+        refreshRegionSelectionRect()
+    }
+
+    func finishRegionSelection() -> Bool {
+        guard let rect = regionCaptureState.selectionRect,
+              rect.width >= RegionCaptureGestureRecognizer.minimumCaptureSize,
+              rect.height >= RegionCaptureGestureRecognizer.minimumCaptureSize else {
+            resetRegionSelection()
+            return false
+        }
+        regionCaptureState.completeCapture()
+        return true
+    }
+
+    func resetRegionSelection() {
+        regionCapturePage = nil
+        regionCapturePageNumber = nil
+        regionCaptureStart = nil
+        regionCaptureCurrent = nil
+        regionCaptureState.clear()
+    }
+
+    private func refreshRegionSelectionRect() {
+        guard let pdfView, let page = regionCapturePage,
+              let start = regionCaptureStart, let current = regionCaptureCurrent else {
+            regionCaptureState.update(rect: nil)
+            return
+        }
+        let first = pdfView.convert(start, from: page)
+        let second = pdfView.convert(current, from: page)
+        regionCaptureState.update(rect: CGRect(
+            x: min(first.x, second.x),
+            y: min(first.y, second.y),
+            width: abs(second.x - first.x),
+            height: abs(second.y - first.y)))
     }
 
     private func scheduleVisiblePagesRecompute() {
@@ -775,18 +839,14 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     // MARK: - Scratchpad region snapshot (drag-to-crop)
 
-    /// Crop a JPEG snapshot of the page under `viewerRect` (viewer top-left
-    /// coordinates, the SwiftUI overlay space, which sits directly over the
-    /// PDFView) for the scratchpad. Returns nil if the rect misses any page or
-    /// is too small. iOS twin of the macOS `PdfSelectionBridge.capturePageRegionData`:
-    /// render the whole page upright with `PDFPage.thumbnail`, composite onto
-    /// white, then crop. The drag-to-crop touch overlay that supplies
-    /// `viewerRect` lands in Phase 6; this entry point is ready for it.
-    func capturePageRegionData(viewerRect rect: CGRect) -> ScratchpadImageCapture? {
-        guard let pdfView, let document else { return nil }
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        guard let page = pdfView.page(for: center, nearest: true) else { return nil }
-        let pageNumber = document.index(for: page) + 1
+    /// Render the selected page upright, then crop the stable page selection.
+    private func capturePageRegionData(
+        viewerRect rect: CGRect,
+        pageNumber: Int
+    ) -> ScratchpadImageCapture? {
+        guard let pdfView, let document,
+              pageNumber >= 1, pageNumber <= document.pageCount,
+              let page = document.page(at: pageNumber - 1) else { return nil }
         guard let pageFrame = pageViewFrame(pageNumber: pageNumber) else { return nil }
         let zoom = max(pdfView.scaleFactor, 0.0001)
         let dims = PdfTextLocator.displayDimensions(of: page)
@@ -842,21 +902,12 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         )
     }
 
-    /// The AI's view of the same drag-to-crop: identical pixels to
-    /// `capturePageRegionData`, wrapped as the base64 snapshot an `AiReference`
-    /// carries. Both the AI panel and the scratchpad arm the one
-    /// `.snapshotRegion` mode; `AppStore.regionCaptureTarget` says which of
-    /// these two the overlay calls.
-    func capturePageRegion(viewerRect rect: CGRect) -> AiPageImageSnapshot? {
-        guard let capture = capturePageRegionData(viewerRect: rect),
-              let pageNumber = capture.pageNumber else { return nil }
-        return AiPageImageSnapshot(
-            pageNumber: pageNumber,
-            base64Data: capture.data.base64EncodedString(),
-            mediaType: capture.mediaType,
-            width: capture.width,
-            height: capture.height
-        )
+    func captureSelectedPageRegionData() -> ScratchpadImageCapture? {
+        guard let rect = regionCaptureState.selectionRect,
+              let pageNumber = regionCapturePageNumber else { return nil }
+        defer { resetRegionSelection() }
+        return capturePageRegionData(viewerRect: rect, pageNumber: pageNumber)
     }
+
 }
 #endif

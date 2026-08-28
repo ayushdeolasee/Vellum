@@ -1,5 +1,6 @@
 #if os(iOS)
 import Observation
+import PDFKit
 import SwiftUI
 import UIKit
 import WebKit
@@ -50,12 +51,13 @@ struct WebViewerView_iOS: View {
                     WebViewRepresentable_iOS(controller: controller, isActive: isActive)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Drag-to-crop region snapshot. The scrim intercepts the
-                    // drag before the web view sees it; WKWebView.takeSnapshot
-                    // renders page content only, so the marquee itself can never
-                    // land inside the crop. Routes per AppStore.regionCaptureTarget.
+                    // WebKit owns capture, two-finger pan, and pinch gestures.
+                    // This layer only draws the live marquee and exposes Cancel.
                     if app.mode == .snapshotRegion {
-                        RegionCaptureOverlay_iOS(tool: app.regionCaptureTool) { rect in
+                        RegionCaptureOverlay_iOS(state: controller.regionCaptureState) {
+                            // Consume the page-coordinate crop before closing
+                            // capture mode clears the gesture's transient state.
+                            let rect = controller.consumeSelectedRegionRect()
                             // See PdfViewerView_iOS: the destination has to be
                             // read out of the tab before the mode reset clears
                             // it, which is what `finishRegionCapture` is for.
@@ -250,7 +252,7 @@ struct WebViewerView_iOS: View {
     /// PdfOverlayStack_iOS.captureRegion). The AI path stays silent on a miss —
     /// a failed takeSnapshot mid-scroll is not worth a banner; the scratchpad
     /// path warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
+    private func captureRegion(_ rect: CGRect?, target: RegionCaptureTarget) {
         let sessionId = app.activeTabId
         switch target {
         case .ai:
@@ -258,18 +260,22 @@ struct WebViewerView_iOS: View {
             // `addCapturedReference` discard the crop if the pane moved on — the
             // active-tab id alone can't tell "same tab, different document"
             // apart, which is a live case for a web tab that navigated.
-            guard let target = aiStore.currentReferenceTarget() else { return }
+            guard let rect, let target = aiStore.currentReferenceTarget() else { return }
             Task {
                 // A web capture always stamps the virtual page it was taken on,
                 // so the snapshot's optional page is always populated here.
-                guard let snapshot = await controller.captureRegionImage(viewerRect: rect),
+                guard let snapshot = await controller.captureRegionImage(pageRect: rect),
                       let page = snapshot.pageNumber else { return }
                 aiStore.addCapturedReference(
                     AiReference(kind: .region(image: snapshot, page: page)), target: target)
             }
         case .scratchpad:
+            guard let rect else {
+                scratchpadStore.warnRegionCaptureFailed()
+                return
+            }
             Task {
-                if let capture = await controller.captureRegion(viewerRect: rect),
+                if let capture = await controller.captureRegion(pageRect: rect),
                    app.activeTabId == sessionId {
                     scratchpadStore.addImage(capture, label: "Web region")
                 } else if app.activeTabId == sessionId {
@@ -332,6 +338,7 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
     let controller: WebViewerController_iOS
     let isActive: Bool
 
+    @Environment(AppStore.self) private var app
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(\.readerChromeScrollAction) private var readerChromeScrollAction
 
@@ -352,17 +359,21 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
             VellumShortcutRouter.perform(action, workspace: workspace)
         }
         context.coordinator.configure(
+            hostView: webView,
             scrollView: webView.scrollView,
             action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
-            controller: controller)
+            controller: controller,
+            regionCaptureEnabled: isActive && app.mode == .snapshotRegion)
         return webView
     }
 
     func updateUIView(_ uiView: VellumWebView, context: Context) {
         context.coordinator.configure(
+            hostView: uiView,
             scrollView: uiView.scrollView,
             action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
-            controller: controller)
+            controller: controller,
+            regionCaptureEnabled: isActive && app.mode == .snapshotRegion)
     }
 
     static func dismantleUIView(_ uiView: VellumWebView, coordinator: Coordinator) {
@@ -370,13 +381,19 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
+        private let regionCaptureGesture = RegionCaptureGestureRecognizer()
+        private weak var scrollView: UIScrollView?
+        private var offsetObservation: NSKeyValueObservation?
+        private var zoomObservation: NSKeyValueObservation?
 
         func configure(
+            hostView: VellumWebView,
             scrollView: UIScrollView,
             action: ReaderChromeScrollAction,
-            controller: WebViewerController_iOS
+            controller: WebViewerController_iOS,
+            regionCaptureEnabled: Bool
         ) {
             chromeScrollObserver.configure(
                 scrollView: scrollView,
@@ -384,10 +401,66 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
                 sourceInteractionBlocked: { [weak controller] in
                     controller?.blocksAutomaticChromeChanges ?? true
                 })
+
+            if regionCaptureGesture.view !== hostView {
+                regionCaptureGesture.detach()
+                regionCaptureGesture.delegate = self
+                regionCaptureGesture.onBegin = { [weak controller] point in
+                    controller?.beginRegionSelection(at: point) ?? false
+                }
+                regionCaptureGesture.onUpdate = { [weak controller] point in
+                    controller?.updateRegionSelection(at: point)
+                }
+                regionCaptureGesture.onFinish = { [weak controller] in
+                    controller?.finishRegionSelection() ?? false
+                }
+                regionCaptureGesture.onResetSelection = { [weak controller] in
+                    controller?.resetRegionSelection()
+                }
+                hostView.addGestureRecognizer(regionCaptureGesture)
+            }
+            regionCaptureGesture.configure(
+                hostView: hostView,
+                scrollView: scrollView,
+                enabled: regionCaptureEnabled)
+
+            if self.scrollView !== scrollView {
+                offsetObservation?.invalidate()
+                zoomObservation?.invalidate()
+                self.scrollView = scrollView
+                offsetObservation = scrollView.observe(\.contentOffset, options: [.new]) {
+                    [weak controller] _, _ in
+                    MainActor.assumeIsolated { controller?.refreshRegionSelectionRect() }
+                }
+                zoomObservation = scrollView.observe(\.zoomScale, options: [.new]) {
+                    [weak controller] _, _ in
+                    MainActor.assumeIsolated { controller?.refreshRegionSelectionRect() }
+                }
+            }
+        }
+
+        nonisolated func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            MainActor.assumeIsolated {
+                let involvesCapture = gestureRecognizer === regionCaptureGesture
+                    || other === regionCaptureGesture
+                guard involvesCapture else { return true }
+                let native = gestureRecognizer === regionCaptureGesture ? other : gestureRecognizer
+                return native === scrollView?.panGestureRecognizer
+                    || native === scrollView?.pinchGestureRecognizer
+            }
         }
 
         func detach() {
+            offsetObservation?.invalidate()
+            offsetObservation = nil
+            zoomObservation?.invalidate()
+            zoomObservation = nil
+            regionCaptureGesture.detach()
             chromeScrollObserver.detach()
+            scrollView = nil
         }
     }
 }
@@ -405,6 +478,9 @@ final class WebViewerController_iOS: NSObject {
     /// Observable history state for phone/iPad toolbar disabled states.
     private(set) var canGoBack = false
     private(set) var canGoForward = false
+    let regionCaptureState = RegionCaptureState()
+    @ObservationIgnored private var regionCaptureStart: CGPoint?
+    @ObservationIgnored private var regionCaptureCurrent: CGPoint?
     private(set) var selection: WebSelection?
     private(set) var popoverPosition: CGPoint?
     /// The selection pinned while the selection popover's note field is open.
@@ -1155,27 +1231,89 @@ final class WebViewerController_iOS: NSObject {
         resolve(value)
     }
 
-    /// Snapshot the web-view region under `viewerRect` (SwiftUI overlay-local
-    /// coordinates, which sit directly over the web view), encoded for a vision
-    /// request. The touch overlay that supplies `viewerRect` lands in Phase 6;
-    /// this entry point is ready for it.
-    func captureRegionImage(viewerRect rect: CGRect) async -> AiPageImageSnapshot? {
-        await snapshot(rect: rect.intersection(webView.bounds))
+    // MARK: Region capture
+
+    func beginRegionSelection(at point: CGPoint) -> Bool {
+        let contentPoint = webView.convert(point, to: webView.scrollView)
+        regionCaptureStart = contentPoint
+        regionCaptureCurrent = contentPoint
+        refreshRegionSelectionRect()
+        return true
     }
 
-    /// Crop the web-view region under `viewerRect` for the scratchpad. Runs the
-    /// snapshot bytes through the shared `scratchpadCapture` normalizer
-    /// (downscale/encode) so a web crop is stored just like a dropped image.
-    /// The drag-to-crop touch overlay that supplies `viewerRect` lands in
-    /// Phase 6; this entry point is ready for it.
-    func captureRegion(viewerRect rect: CGRect) async -> ScratchpadImageCapture? {
-        let clamped = rect.intersection(webView.bounds)
-        guard clamped.width >= 4, clamped.height >= 4 else { return nil }
-        let config = WKSnapshotConfiguration()
-        config.rect = clamped
-        guard let image = try? await webView.takeSnapshot(configuration: config),
-              let png = image.pngData() else { return nil }
-        return scratchpadCapture(from: png)
+    func updateRegionSelection(at point: CGPoint) {
+        regionCaptureCurrent = webView.convert(point, to: webView.scrollView)
+        refreshRegionSelectionRect()
+    }
+
+    func refreshRegionSelectionRect() {
+        guard let start = regionCaptureStart, let current = regionCaptureCurrent else {
+            regionCaptureState.update(rect: nil)
+            return
+        }
+        let first = webView.scrollView.convert(start, to: webView)
+        let second = webView.scrollView.convert(current, to: webView)
+        regionCaptureState.update(rect: CGRect(
+            x: min(first.x, second.x),
+            y: min(first.y, second.y),
+            width: abs(second.x - first.x),
+            height: abs(second.y - first.y)))
+    }
+
+    func finishRegionSelection() -> Bool {
+        guard let rect = regionCaptureState.selectionRect,
+              rect.width >= RegionCaptureGestureRecognizer.minimumCaptureSize,
+              rect.height >= RegionCaptureGestureRecognizer.minimumCaptureSize else {
+            resetRegionSelection()
+            return false
+        }
+        regionCaptureState.completeCapture()
+        return true
+    }
+
+    func resetRegionSelection() {
+        regionCaptureStart = nil
+        regionCaptureCurrent = nil
+        regionCaptureState.clear()
+    }
+
+    func consumeSelectedRegionRect() -> CGRect? {
+        guard let start = regionCaptureStart, let current = regionCaptureCurrent else { return nil }
+        defer { resetRegionSelection() }
+        let rect = CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(current.x - start.x),
+            height: abs(current.y - start.y))
+        return rect.width >= RegionCaptureGestureRecognizer.minimumCaptureSize
+            && rect.height >= RegionCaptureGestureRecognizer.minimumCaptureSize ? rect : nil
+    }
+
+    func captureRegionImage(pageRect rect: CGRect) async -> AiPageImageSnapshot? {
+        guard let image = await renderWebRegion(rect) else { return nil }
+        return aiSnapshot(from: image, page: max(1, app?.currentPage ?? 1))
+    }
+
+    func captureRegion(pageRect rect: CGRect) async -> ScratchpadImageCapture? {
+        guard let image = await renderWebRegion(rect),
+              let jpeg = image.jpegData(compressionQuality: 0.85) else { return nil }
+        return scratchpadCapture(from: jpeg)
+    }
+
+    /// `takeSnapshot` is viewport-only. PDF generation accepts web-page
+    /// coordinates, so it preserves a crop that expanded while edge-scrolling.
+    private func renderWebRegion(_ rect: CGRect) async -> UIImage? {
+        let configuration = WKPDFConfiguration()
+        configuration.rect = rect
+        guard let data = try? await webView.pdf(configuration: configuration),
+              let document = PDFDocument(data: data),
+              let page = document.page(at: 0) else { return nil }
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width >= 1, bounds.height >= 1 else { return nil }
+        let scale = min(3, max(1, 1280 / max(bounds.width, bounds.height)))
+        return page.thumbnail(
+            of: CGSize(width: bounds.width * scale, height: bounds.height * scale),
+            for: .mediaBox)
     }
 
     /// Snapshot of what the reader can currently see. There is no way to render
