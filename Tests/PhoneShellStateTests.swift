@@ -307,6 +307,27 @@ struct PhoneShellStateTests {
         #expect(shell.inspectorPresented)
     }
 
+    @Test("Region capture temporarily hides the inspector without closing it")
+    func regionCaptureOwnsItsControls() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-region-capture.pdf")
+        shell.didOpenDocument()
+        shell.revealInspector(.ai)
+        #expect(shell.inspectorPresented)
+
+        app.beginRegionCapture(target: .ai)
+        #expect(shell.inspectorPresented == false)
+        #expect(shell.readerChromePresented == false)
+
+        // SwiftUI writes `false` while dismissing the sheet. Capture caused
+        // this dismissal, so it must not erase the user's open-sidebar state.
+        shell.setInspectorPresented(false)
+        app.setMode(.view)
+        #expect(shell.inspectorPresented)
+        #expect(shell.readerChromePresented)
+        #expect(shell.inspectorTab == .ai)
+    }
+
     @Test("Every existing reveal path selects its panel and shows it")
     func revealSelectsAPanelAndPresentsIt() async throws {
         let (shell, app) = try await makeShell()

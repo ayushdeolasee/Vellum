@@ -83,6 +83,28 @@ struct PhoneInspectorTests {
         #expect(PhoneInspectorSheet_iOS.detents.contains(PhoneInspectorSheet_iOS.interactiveDetent))
     }
 
+    @Test("Region capture scrolls and snaps to nearby edges")
+    func regionCaptureEdgeBehavior() {
+        let bounds = CGRect(x: 0, y: 0, width: 390, height: 700)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 350), in: bounds) == .zero)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 1, y: 350), in: bounds).x < 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 389, y: 350), in: bounds).x > 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 1), in: bounds).y < 0)
+        #expect(RegionCaptureGestureRecognizer.scrollVelocity(
+            at: CGPoint(x: 195, y: 699), in: bounds).y > 0)
+
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 20, y: 680), in: bounds) == CGPoint(x: 0, y: 700))
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 370, y: 20), in: bounds) == CGPoint(x: 390, y: 0))
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 30, y: 350), in: bounds) == CGPoint(x: 30, y: 350))
+    }
+
     // MARK: - Presentation (D2)
 
     @Test("The sheet is not presented until there is a document and the user asks")

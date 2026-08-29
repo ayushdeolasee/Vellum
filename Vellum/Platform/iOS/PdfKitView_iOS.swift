@@ -216,6 +216,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller, ink: ink) }
 
     func makeUIView(context: Context) -> PDFView {
+        context.coordinator.setRegionCaptureEnabled(isActive && app.mode == .snapshotRegion)
         context.coordinator.updateChromeScrollAction(
             isActive ? readerChromeScrollAction : ReaderChromeScrollAction())
         // Live tabs: the PDFView belongs to the tab's `LiveTabRuntime` and
@@ -271,6 +272,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
+        context.coordinator.setRegionCaptureEnabled(isActive && app.mode == .snapshotRegion)
         context.coordinator.updateChromeScrollAction(
             isActive ? readerChromeScrollAction : ReaderChromeScrollAction())
         uiView.backgroundColor = UIColor(palette.well)
@@ -327,7 +329,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var offsetObservation: NSKeyValueObservation?
         private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
+        private let regionCaptureGesture = RegionCaptureGestureRecognizer()
         private var readerChromeScrollAction = ReaderChromeScrollAction()
+        private var regionCaptureEnabled = false
 
         init(controller: PdfViewerControlleriOS, ink: InkController_iOS) {
             self.controller = controller
@@ -340,8 +344,33 @@ struct PdfKitView_iOS: UIViewRepresentable {
             configureChromeObserver(for: scrollView)
         }
 
+        func setRegionCaptureEnabled(_ enabled: Bool) {
+            regionCaptureEnabled = enabled
+            guard let view, let scrollView else { return }
+            regionCaptureGesture.configure(
+                hostView: view, scrollView: scrollView, enabled: enabled)
+        }
+
         func attach(to view: PDFView) {
             self.view = view
+
+            if regionCaptureGesture.view !== view {
+                regionCaptureGesture.detach()
+                regionCaptureGesture.delegate = self
+                regionCaptureGesture.onBegin = { [weak controller] point in
+                    controller?.beginRegionSelection(at: point) ?? false
+                }
+                regionCaptureGesture.onUpdate = { [weak controller] point in
+                    controller?.updateRegionSelection(at: point)
+                }
+                regionCaptureGesture.onFinish = { [weak controller] in
+                    controller?.finishRegionSelection() ?? false
+                }
+                regionCaptureGesture.onResetSelection = { [weak controller] in
+                    controller?.resetRegionSelection()
+                }
+                view.addGestureRecognizer(regionCaptureGesture)
+            }
 
             // Outside-tap dismissal (highlight editor / context menu / selection
             // popover) and long-press "Add note here". Non-cancelling +
@@ -427,6 +456,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
         private func observeScroll(_ scroll: UIScrollView) {
             scrollView = scroll
+            if let view {
+                regionCaptureGesture.configure(
+                    hostView: view, scrollView: scroll, enabled: regionCaptureEnabled)
+            }
             configureChromeObserver(for: scroll)
             // Make PDFKit's internal long-presses (nearest-word selection) wait
             // for ours to fail. On text presses `EmptyAreaLongPressRecognizer`
@@ -498,7 +531,14 @@ struct PdfKitView_iOS: UIViewRepresentable {
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
-            true
+            MainActor.assumeIsolated {
+                let involvesCapture = gestureRecognizer === regionCaptureGesture
+                    || other === regionCaptureGesture
+                guard involvesCapture else { return true }
+                let native = gestureRecognizer === regionCaptureGesture ? other : gestureRecognizer
+                return native === scrollView?.panGestureRecognizer
+                    || native === scrollView?.pinchGestureRecognizer
+            }
         }
 
         func detach() {
@@ -506,6 +546,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
             observers = []
             offsetObservation?.invalidate()
             offsetObservation = nil
+            regionCaptureGesture.detach()
             chromeScrollObserver.detach()
             // The PDFView is NOT released here. It belongs to the tab's
             // `LiveTabRuntime`, not to this host: nil'ing the controller's

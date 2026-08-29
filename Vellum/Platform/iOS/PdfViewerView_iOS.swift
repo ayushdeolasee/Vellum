@@ -344,18 +344,20 @@ struct PdfOverlayStack_iOS: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            // Drag-to-crop region snapshot. Sits above the page layers so its
-            // marquee owns the touch; the scrim swallows the drag before the
-            // PDFView sees it. The crop goes to whichever panel armed the mode
-            // (AppStore.regionCaptureTarget).
+            // The native PDFView owns capture, pan, and pinch gestures. This
+            // layer only draws its live marquee and exposes Cancel.
             if app.mode == .snapshotRegion {
-                RegionCaptureOverlay_iOS { rect in
+                RegionCaptureOverlay_iOS(state: controller.regionCaptureState) {
+                    // Preserve the pixels before leaving capture mode. Closing
+                    // the mode disables the native recognizer and clears its
+                    // transient selection state.
+                    let capture = controller.captureSelectedPageRegionData()
                     // `finishRegionCapture` hands back the destination the tab
                     // armed and returns to view mode in one step; reading
                     // `regionCaptureTarget` after the reset would always say
                     // `.ai`.
                     let target = app.finishRegionCapture()
-                    captureRegion(rect, target: target)
+                    attachRegion(capture, target: target)
                 } onCancel: {
                     // Plain tap or tiny wobble: back out without a warning — the
                     // user changed their mind.
@@ -399,17 +401,23 @@ struct PdfOverlayStack_iOS: View {
     /// Hand the finished crop to whichever panel armed the capture. The AI path
     /// stays silent on a miss (it just re-arms nothing); the scratchpad path
     /// warns, since its button is the one the user pressed to get here.
-    private func captureRegion(_ rect: CGRect, target: RegionCaptureTarget) {
+    private func attachRegion(
+        _ capture: ScratchpadImageCapture?,
+        target: RegionCaptureTarget
+    ) {
         switch target {
         case .ai:
-            // A region crop always lands on a page (capturePageRegion bails
-            // otherwise), so the snapshot's optional page is always populated.
-            if let snapshot = controller.capturePageRegion(viewerRect: rect),
-               let page = snapshot.pageNumber {
+            if let capture, let page = capture.pageNumber {
+                let snapshot = AiPageImageSnapshot(
+                    pageNumber: page,
+                    base64Data: capture.data.base64EncodedString(),
+                    mediaType: capture.mediaType,
+                    width: capture.width,
+                    height: capture.height)
                 aiStore.addReference(AiReference(kind: .region(image: snapshot, page: page)))
             }
         case .scratchpad:
-            if let capture = controller.capturePageRegionData(viewerRect: rect) {
+            if let capture {
                 let label = capture.pageNumber.map { "Region · p.\($0)" } ?? "Region"
                 scratchpadStore.addImage(capture, label: label)
             } else {
