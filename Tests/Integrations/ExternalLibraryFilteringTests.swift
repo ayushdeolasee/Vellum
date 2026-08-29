@@ -3,6 +3,19 @@ import Testing
 @testable import Vellum
 
 struct ExternalLibraryFilteringTests {
+    @Test func raindropDefaultFolderPreferenceRoundTripsAndClears() throws {
+        let suiteName = "Vellum.ExternalLibraryFilteringTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = IntegrationPreferences(defaults: defaults)
+
+        preferences.defaultRaindropCollectionID = "raindrop:collection:10"
+        #expect(preferences.defaultRaindropCollectionID == "raindrop:collection:10")
+
+        preferences.defaultRaindropCollectionID = nil
+        #expect(preferences.defaultRaindropCollectionID == nil)
+    }
+
     @Test func removedCollectionClearsTheStaleSelection() {
         #expect(ExternalLibraryFilter.reconciledCollectionID("raindrop:collection:old", availableIDs: ["raindrop:collection:new"]) == nil)
         #expect(ExternalLibraryFilter.reconciledCollectionID("raindrop:collection:new", availableIDs: ["raindrop:collection:new"]) == "raindrop:collection:new")

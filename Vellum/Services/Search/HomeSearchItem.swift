@@ -138,6 +138,12 @@ struct HomeSearchItem: Identifiable, Hashable, Sendable {
     /// is one row that says all three things, rather than the recents row
     /// silently losing what the other sources knew about it.
     var badges: HomeSearchBadges
+    /// Read-later accounts that also contain this item. This is a set because
+    /// the same URL can exist in both Raindrop and Readwise, or can merge into
+    /// a higher-priority local row during deduplication.
+    var integrationProviders: Set<IntegrationProvider> = []
+    /// Provider-supplied artwork used by the shared Library row.
+    var thumbnailURL: URL? = nil
     let canRevealInFinder: Bool
     let haystack: HomeSearchHaystack
     /// The `documents/<key>/` folder this item's `meta.json` lives under, when

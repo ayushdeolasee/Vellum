@@ -383,6 +383,17 @@ struct HomeSearchSectionTests {
         #expect(!rank(corpus, "", filter: .saved).contains { $0.id == "w2" })
     }
 
+    @Test("A connected-service filter follows provider membership")
+    func providerFilter() {
+        var raindrop = item(
+            id: "rain", section: .readLater, kind: .web, title: "Raindrop Article")
+        raindrop.integrationProviders = [.raindrop]
+        let local = item(id: "local", title: "Local PDF")
+
+        #expect(rank([local, raindrop], "", filter: .provider(.raindrop)).map(\.id) == ["rain"])
+        #expect(rank([local, raindrop], "", filter: .provider(.readwise)).isEmpty)
+    }
+
     @Test("Browse sorting honours the sort order, with undated items last")
     func browseSorting() {
         let corpus = [

@@ -21,22 +21,9 @@ import UniformTypeIdentifiers
 // `HomeSearchProvider`s. See `HomeSearchProvider.swift` for how a connected
 // read-later account will slot in.
 //
-// Connected read-later accounts (Readwise, Raindrop) reach this screen twice,
-// and the two paths are deliberately different:
-//
-//  1. BROWSING. The control bar grows a source switcher — Library plus one
-//     segment per connected account — and picking an account swaps the result
-//     area for that provider's own `ExternalLibraryList`. That list brings its
-//     own search field, collection filter and context menus, so the library's
-//     search field and filter chips step aside while it is on screen rather
-//     than sitting above a list they cannot drive.
-//  2. SEARCHING. A read-later `HomeSearchProvider` — the extension point
-//     `HomeSearchProvider.swift` describes — puts those articles in the
-//     ordinary corpus, ranked against everything else under the `.readLater`
-//     section. This screen's half of that is `open(_:)`, which routes a
-//     `.readLater` row back through `IntegrationsStore` (an article opens its
-//     page, a PDF is downloaded first) so a search hit behaves exactly like
-//     the same row clicked inside the provider's own library.
+// Library search includes every connected read-later account. Picking a source
+// narrows the same search field to that account and swaps only the result list
+// and applicable filters. The header stays put while the user changes scope.
 
 struct WelcomeScreen: View {
     /// Whether the pane hosting this screen is the focused one. A split window
@@ -57,6 +44,10 @@ struct WelcomeScreen: View {
     /// read-later account's. Reset to `.library` when the account being browsed
     /// is disconnected — see the `connectedProviders` change handler.
     @State private var source: HomeSource = .library
+    /// Provider-only browse controls live here so the home screen can keep one
+    /// stable search and filter area while `ExternalLibraryList` owns its rows.
+    @State private var externalCollectionID: String?
+    @State private var externalSortByName = false
     /// First-run hero only. The library layout uses the search field itself for
     /// links (see `HomeSearchLinkDetector`) plus the Add Webpage button.
     @State private var urlInput = ""
@@ -99,24 +90,7 @@ struct WelcomeScreen: View {
         // the switcher away, leaving no way back.
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
-            && !hasConnectedLibrary
-    }
-
-    /// Whether a connected account is holding anything to read.
-    ///
-    /// It counts as "has a library" for the same reason recents and saved pages
-    /// do: the hero is for someone with nothing to open, and this reader has a
-    /// shelf of articles one click away. The corpus gets there on its own once
-    /// the read-later provider has been indexed — this term is what stops the
-    /// hero flashing in the window before that lands, and what keeps the source
-    /// switcher reachable for a reader whose ONLY content is a connected
-    /// account. A connected account with nothing in it is not a library, so it
-    /// still gets the hero (and its "open a PDF" affordances) rather than an
-    /// empty list.
-    private var hasConnectedLibrary: Bool {
-        integrations.connectedProviders.contains { provider in
-            !(integrations.providers[provider]?.items.isEmpty ?? true)
-        }
+            && integrations.connectedProviders.isEmpty
     }
 
     /// Library plus one entry per connected account, in `IntegrationProvider`
@@ -190,6 +164,13 @@ struct WelcomeScreen: View {
         // fallback is the local library, which always exists.
         .onChange(of: integrations.connectedProviders) { _, connected in
             source = HomeSource.reconciled(source, connected: connected)
+            store.filter = store.filter.reconciled(connected: connected)
+        }
+        .onChange(of: source) {
+            // Collection ids belong to one service. Carrying a Readwise
+            // location into Raindrop would silently empty the result list.
+            externalCollectionID = browsedProvider.flatMap { integrations.defaultCollectionID(for: $0) }
+            searchFocused = true
         }
         // Re-index when the app comes back to the front. The corpus is a
         // snapshot of three on-disk sources, and all three can change while
@@ -261,15 +242,10 @@ struct WelcomeScreen: View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
                 header
-                // A connected account's list owns its own search field (and its
-                // own collection filter and sort), so the library's field steps
-                // aside instead of sitting above a list it cannot drive. ⌘F
-                // still means "search my library" — it comes back here first,
-                // see `focusSearchField`.
-                if browsedProvider == nil {
-                    searchField
+                searchField
+                if sources.count > 1 {
+                    controlBar
                 }
-                controlBar
                 if appStore.error != nil {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -286,11 +262,13 @@ struct WelcomeScreen: View {
                 // the settings pane shows), and nesting it in the capped column
                 // would double every horizontal inset it applies.
                 //
-                // `.id(provider)` so switching accounts rebuilds it: its search
-                // text and collection selection belong to one account, and
-                // carrying them across would filter Raindrop by a Readwise
-                // location that does not exist there.
-                ExternalLibraryList(provider: provider)
+                // Rebuild row selection and loading state when the account
+                // changes. The query stays in the shared field above.
+                ExternalLibraryList(
+                    provider: provider,
+                    search: $store.query,
+                    collectionID: $externalCollectionID,
+                    sortByName: $externalSortByName)
                     .id(provider)
             } else {
                 resultList
@@ -370,23 +348,26 @@ struct WelcomeScreen: View {
                 // field, so the user never has to leave the keyboard or tab
                 // into the list. Return opens; Escape clears then unfocuses.
                 .onKeyPress(.downArrow) {
+                    guard browsedProvider == nil else { return .ignored }
                     store.moveSelection(1)
                     return .handled
                 }
                 .onKeyPress(.upArrow) {
+                    guard browsedProvider == nil else { return .ignored }
                     store.moveSelection(-1)
                     return .handled
                 }
-                .onKeyPress(.return) { openSelection() }
+                .onKeyPress(.return) {
+                    guard browsedProvider == nil else { return .ignored }
+                    return openSelection()
+                }
                 .onKeyPress(.escape) {
                     if store.clearQuery() { return .handled }
                     searchFocused = false
                     return .handled
                 }
 
-            if store.query.isEmpty {
-                Keycap(keys: "⌘F")
-            } else {
+            if !store.query.isEmpty {
                 IconButton(help: "Clear search") {
                     store.clearQuery()
                     focusSearchField()
@@ -395,6 +376,8 @@ struct WelcomeScreen: View {
                 }
                 .accessibilityIdentifier("welcome.clearSearch")
             }
+
+            searchFilterMenu
         }
         .padding(.horizontal, HomeLayout.rowInset)
         .frame(height: 46)
@@ -408,55 +391,108 @@ struct WelcomeScreen: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
-    /// One row for "which library, and how am I looking at it".
-    ///
-    /// The source switcher leads it because it is the outer choice: it changes
-    /// WHICH library is on screen, where the chips only narrow the one already
-    /// there. That difference is why they are not all chips — the switcher is
-    /// the segmented control, sitting on its own track, with a hairline between
-    /// it and the filters so two adjacent groups of small pills do not read as
-    /// one seven-option row. Everything after the switcher belongs to the local
-    /// library and leaves with it; a browsed account gets its sync state there
-    /// instead.
+    private var searchFilterMenu: some View {
+        Menu {
+            if let provider = browsedProvider {
+                providerFilterOptions(for: provider)
+            } else {
+                Picker("Show", selection: $store.filter) {
+                    ForEach(
+                        HomeSearchFilter.options(connected: integrations.connectedProviders),
+                        id: \.self
+                    ) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.inline)
+
+                Divider()
+
+                Picker("Sort by", selection: $store.sort) {
+                    ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+        } label: {
+            Image(
+                systemName: searchFilterIsActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(
+                    searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Search filters")
+        .accessibilityLabel("Search filters")
+        .accessibilityValue(searchFilterSummary)
+        .accessibilityIdentifier("welcome.searchFilters")
+    }
+
+    @ViewBuilder
+    private func providerFilterOptions(for provider: IntegrationProvider) -> some View {
+        let collections = integrations.providers[provider]?.collections ?? []
+        let allTitle = provider == .raindrop ? "All folders" : "All locations"
+
+        Picker(provider == .raindrop ? "Folder" : "Location", selection: $externalCollectionID) {
+            Text(allTitle).tag(String?.none)
+            ForEach(collections) { collection in
+                Text(String(repeating: "  ", count: collection.depth) + collection.title)
+                    .tag(String?.some(collection.id))
+            }
+        }
+        .pickerStyle(.inline)
+
+        Divider()
+
+        Picker("Sort by", selection: $externalSortByName) {
+            Text("Recently saved").tag(false)
+            Text("Name").tag(true)
+        }
+        .pickerStyle(.inline)
+    }
+
+    private var searchFilterIsActive: Bool {
+        if browsedProvider != nil {
+            return externalCollectionID != nil || externalSortByName
+        }
+        return store.filter != .all || store.sort != .recent
+    }
+
+    private var searchFilterSummary: String {
+        if let provider = browsedProvider {
+            let collection = integrations.providers[provider]?.collections
+                .first(where: { $0.id == externalCollectionID })?.title
+            return collection ?? (provider == .raindrop ? "All folders" : "All locations")
+        }
+        return store.filter.label
+    }
+
+    /// The source row stays in place while Library and provider results swap.
     private var controlBar: some View {
         HStack(spacing: 8) {
-            if sources.count > 1 {
-                HomeSourceSwitcher(sources: sources, selection: $source)
-
-                if browsedProvider == nil {
-                    Divider()
-                        .frame(height: 18)
-                        .padding(.horizontal, 2)
-                }
-            }
+            HomeSourceSwitcher(sources: sources, selection: $source)
 
             if let provider = browsedProvider {
                 Spacer(minLength: 12)
                 sourceStatus(for: provider)
-            } else {
-                ForEach(HomeSearchFilter.allCases, id: \.self) { option in
-                    HomeFilterChip(label: option.label, isSelected: store.filter == option) {
-                        store.filter = option
-                        // Clicking a chip moves first responder to the button; hand
-                        // the keyboard straight back so typing continues to search.
-                        focusSearchField()
-                    }
-                    .accessibilityIdentifier("welcome.filter.\(option.label)")
-                }
-
+            } else if store.isSearching {
                 Spacer(minLength: 12)
-
-                if store.isSearching {
-                    Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
-                        .font(.system(size: 12))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.mutedForeground)
-                        .accessibilityIdentifier("welcome.resultCount")
-                } else {
-                    sortMenu
-                }
+                Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.mutedForeground)
+                    .accessibilityIdentifier("welcome.resultCount")
             }
         }
+        .frame(height: 30)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Where the browsed account's sync stands, plus a way to push it.
@@ -539,29 +575,6 @@ struct WelcomeScreen: View {
             }
             .padding(18)
         }
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            Picker("Sort by", selection: $store.sort) {
-                ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
-                    Text(option.label).tag(option)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12))
-                Text(store.sort.label)
-                    .font(.system(size: 12, weight: .medium))
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .foregroundStyle(palette.mutedForeground)
-        .help("Change how the library is sorted")
-        .accessibilityIdentifier("welcome.sort")
     }
 
     // MARK: - Home chrome (from #70)
@@ -850,12 +863,8 @@ struct WelcomeScreen: View {
         NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
     }
 
-    /// ⌘F (and every control that hands the keyboard back) means "search my
-    /// library", so it returns from a connected account's list first. Focusing
-    /// a field that is not on screen would otherwise make the chord look dead
-    /// in exactly the place a reader is most likely to try it.
+    /// ⌘F focuses the one search field without changing its current scope.
     private func focusSearchField() {
-        source = .library
         searchFocused = true
     }
 
@@ -1011,12 +1020,7 @@ struct WelcomeScreen: View {
 
 // MARK: - Source switcher
 
-/// Which library the home screen is showing.
-///
-/// A source is a MODE, not a facet: picking an account swaps the entire result
-/// area for that provider's list, where a `HomeSearchFilter` only narrows the
-/// rows already on screen. Keeping them different controls (a segmented track
-/// versus flat chips) is what keeps that difference legible.
+/// The search scope shown on the home screen.
 enum HomeSource: Hashable {
     case library
     case provider(IntegrationProvider)
@@ -1118,7 +1122,7 @@ struct HomeSourceSwitcher: View {
         let isSelected = selection == source
         let isHovering = hovering == source
         return Button {
-            withAnimation(.snappy) { selection = source }
+            selection = source
         } label: {
             Group {
                 if showTitle {
@@ -1136,8 +1140,7 @@ struct HomeSourceSwitcher: View {
             // Padding, frame, surface and shape all INSIDE the label: a
             // `.plain` button hit-tests against its label's rendered content,
             // so the same chain applied to the Button would move the layout
-            // and leave the clickable region on the glyph (the trap both
-            // `InspectorTabSwitcher` and `HomeFilterChip` document).
+            // and leave the clickable region on the glyph.
             .padding(.horizontal, 10)
             .frame(height: 26)
             .selectionSurface(

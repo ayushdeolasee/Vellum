@@ -63,6 +63,8 @@ struct WelcomeLibrary_iOS: View {
     @State private var actions: HomeLibraryActions_iOS
     @State private var showSettings = false
     @State private var showHelp = false
+    @State private var externalCollectionID: String?
+    @State private var externalSortByName = false
     @FocusState private var searchFocused: Bool
 
     /// The calm first-run hero, shown only once we KNOW there is nothing to
@@ -75,20 +77,7 @@ struct WelcomeLibrary_iOS: View {
         // the list would also take the switcher away, leaving no way back.
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
-            && !hasConnectedLibrary
-    }
-
-    /// Whether a connected account is holding anything to read. It counts as
-    /// "has a library" for the same reason recents and saved pages do: the hero
-    /// is for someone with nothing to open, and this reader has a shelf of
-    /// articles one tap away. The corpus gets there on its own once the
-    /// read-later provider is indexed — this term stops the hero flashing
-    /// before that lands, and keeps the switcher reachable for a reader whose
-    /// ONLY content is a connected account.
-    private var hasConnectedLibrary: Bool {
-        integrations.connectedProviders.contains { provider in
-            !(integrations.providers[provider]?.items.isEmpty ?? true)
-        }
+            && integrations.connectedProviders.isEmpty
     }
 
     /// Library plus one entry per connected account, in `IntegrationProvider`
@@ -157,6 +146,11 @@ struct WelcomeLibrary_iOS: View {
         // fallback is the local library, which always exists.
         .onChange(of: integrations.connectedProviders) { _, connected in
             source = HomeSource.reconciled(source, connected: connected)
+            store.filter = store.filter.reconciled(connected: connected)
+        }
+        .onChange(of: source) { oldSource, newSource in
+            guard oldSource != newSource else { return }
+            externalCollectionID = browsedProvider.flatMap { integrations.defaultCollectionID(for: $0) }
         }
         // Re-index when the app comes back to the front. The corpus is a
         // snapshot of on-disk sources, and all of them can change while Vellum
@@ -190,14 +184,7 @@ struct WelcomeLibrary_iOS: View {
     private var libraryLayout: some View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
-                // A connected account's list owns its own search field (and its
-                // own collection filter and sort), so the library's field steps
-                // aside instead of sitting above a list it cannot drive. ⌘F
-                // still means "search my library" — it comes back here first,
-                // see the `.vellumFocusHomeSearch` handler.
-                if browsedProvider == nil {
-                    searchField
-                }
+                searchField
                 controlBar
                 if appStore.error != nil {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
@@ -215,15 +202,20 @@ struct WelcomeLibrary_iOS: View {
                 // view the Settings pane shows), and nesting it in the capped
                 // column would double every horizontal inset it applies.
                 //
-                // `.id(provider)` so switching accounts rebuilds it: its search
-                // text and collection selection belong to one account, and
-                // carrying them across would filter Raindrop by a Readwise
-                // collection that does not exist there.
-                ExternalLibraryList_iOS(provider: provider)
-                    .id(provider)
+                ExternalLibraryList_iOS(
+                    provider: provider,
+                    search: $store.query,
+                    collectionID: $externalCollectionID,
+                    sortByName: $externalSortByName)
+                    .simultaneousGesture(dismissSearchKeyboardTap)
             } else {
                 resultList
             }
+        }
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { searchFocused = false }
         }
         // Progress and failures for a read-later PDF opened from a SEARCH
         // result. `ExternalLibraryList_iOS` floats this itself, so it is only
@@ -299,6 +291,7 @@ struct WelcomeLibrary_iOS: View {
         .padding(.horizontal, 16)
         .frame(height: 44)
         .background(palette.background)
+        .simultaneousGesture(dismissSearchKeyboardTap)
     }
 
     // MARK: - Search
@@ -316,12 +309,14 @@ struct WelcomeLibrary_iOS: View {
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .submitLabel(.go)
+                .submitLabel(browsedProvider == nil ? .go : .search)
                 // `.webSearch` puts "/" and ".com" on the software keyboard,
                 // which is right for a field that doubles as an address bar.
                 .keyboardType(.webSearch)
                 .accessibilityIdentifier("welcome.search")
-                .onSubmit { _ = openSelection() }
+                .onSubmit {
+                    if browsedProvider == nil { _ = openSelection() }
+                }
                 // Arrow keys walk the results while the caret stays in the
                 // field, so a Magic Keyboard user never has to leave it.
                 // Supported on iOS 17+. Return is handled by `.onSubmit`
@@ -340,10 +335,7 @@ struct WelcomeLibrary_iOS: View {
                     return .handled
                 }
 
-            if store.query.isEmpty {
-                // Meaningful with a keyboard attached, and harmless without.
-                Keycap(keys: "⌘F")
-            } else {
+            if !store.query.isEmpty {
                 IconButton(help: "Clear search") {
                     _ = store.clearQuery()
                 } icon: {
@@ -351,6 +343,14 @@ struct WelcomeLibrary_iOS: View {
                 }
                 .accessibilityIdentifier("welcome.clearSearch")
             }
+
+            HomeSearchFilterMenu_iOS(
+                provider: browsedProvider,
+                collections: browsedProvider.flatMap { integrations.providers[$0]?.collections } ?? [],
+                libraryFilter: $store.filter,
+                librarySort: $store.sort,
+                collectionID: $externalCollectionID,
+                sortByName: $externalSortByName)
         }
         .padding(.horizontal, HomeLayout.rowInset)
         .frame(height: 46)
@@ -364,143 +364,19 @@ struct WelcomeLibrary_iOS: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
-    /// One row for "which library, and how am I looking at it": the source
-    /// switcher, then the filters, then either the result count (while
-    /// searching) or the sort menu.
-    ///
-    /// The switcher leads because it is the outer choice — it changes WHICH
-    /// library is on screen, where the chips only narrow the one already there.
-    /// A hairline sits between them so two adjacent groups of small pills do
-    /// not read as one long row. Everything after the switcher belongs to the
-    /// local library and leaves with it; a browsed account gets its sync state
-    /// in that slot instead.
-    ///
-    /// Wrapped in a horizontal `ScrollView` because a start tab can be a third
-    /// of a 13" screen wide, and four chips plus a sort menu clip there.
+    /// This row never changes shape when its selection changes. Search, filters,
+    /// sorting and provider sync all stay in the search field above it.
     private var controlBar: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            HStack {
                 if sources.count > 1 {
                     HomeSourceSwitcher_iOS(sources: sources, selection: $source)
-
-                    if browsedProvider == nil {
-                        Divider()
-                            .frame(height: 18)
-                            .padding(.horizontal, 2)
-                    }
-                }
-
-                if let provider = browsedProvider {
-                    Spacer(minLength: 12)
-                    sourceStatus(for: provider)
-                } else {
-                    ForEach(HomeSearchFilter.allCases, id: \.self) { option in
-                        HomeFilterChip(label: option.label, isSelected: store.filter == option) {
-                            // Main also hands first responder back to the field
-                            // here; on iOS that would raise the software
-                            // keyboard every time a chip is tapped, so it is
-                            // dropped.
-                            store.filter = option
-                        }
-                        .accessibilityIdentifier("welcome.filter.\(option.label)")
-                    }
-
-                    Spacer(minLength: 12)
-
-                    if store.isSearching {
-                        Text(store.resultCount == 1 ? "1 result" : "\(store.resultCount) results")
-                            .font(.system(size: 12))
-                            .monospacedDigit()
-                            .foregroundStyle(palette.mutedForeground)
-                            .accessibilityIdentifier("welcome.resultCount")
-                    } else {
-                        sortMenu
-                    }
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
-    }
-
-    /// Where the browsed account's sync stands, plus a way to push it.
-    ///
-    /// Takes the slot the sort menu holds for the local library, because it
-    /// answers the same question that control does — "is what I'm looking at
-    /// what I think it is?". Kept to one muted line: `ExternalLibraryList_iOS`
-    /// already states the loud cases (authentication required, sync failed)
-    /// over the list itself.
-    private func sourceStatus(for provider: IntegrationProvider) -> some View {
-        let state = integrations.providers[provider]
-        let isSyncing = state?.connection == .syncing
-        return HStack(spacing: 6) {
-            if isSyncing {
-                ProgressView()
-                    .controlSize(.mini)
-                    .accessibilityHidden(true)
-            }
-            Text(syncLabel(for: state))
-                .font(.system(size: 12))
-                .foregroundStyle(palette.mutedForeground)
-                .lineLimit(1)
-                .accessibilityIdentifier("welcome.source.status")
-
-            IconButton(help: "Sync \(provider.name) now", disabled: isSyncing) {
-                // Store-owned rather than a bare `Task`: this is background work
-                // started from a view a pane change can tear down at any moment,
-                // and the store's scene-background drain joins what it started
-                // (root CLAUDE.md — never drop the handle).
-                integrations.run { await integrations.sync(provider) }
-            } icon: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12))
-            }
-            .accessibilityIdentifier("welcome.source.sync")
-        }
-        // Main hangs the full `statusMessage` off `.help`; iPad has no hover, so
-        // the sentence-length form becomes a VoiceOver hint on the short one.
-        .accessibilityHint(state?.statusMessage ?? syncLabel(for: state))
-    }
-
-    /// The short form of a provider's connection state. `nil`/`.connected`
-    /// falls through to when the account last synced, because a healthy
-    /// integration's only interesting fact is its freshness.
-    private func syncLabel(for state: IntegrationProviderViewState?) -> String {
-        switch state?.connection {
-        case .syncing: "Syncing…"
-        case .connecting: "Connecting…"
-        case .tokenRejected: "Reconnect in Settings"
-        case .offlineCache: "Offline — cached"
-        case .failed: "Sync failed"
-        default:
-            state?.lastSuccessfulSync
-                .map { "Synced \($0.formatted(.relative(presentation: .numeric)))" }
-                ?? "Not synced yet"
-        }
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            Picker("Sort by", selection: $store.sort) {
-                ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
-                    Text(option.label).tag(option)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12))
-                Text(store.sort.label)
-                    .font(.system(size: 12, weight: .medium))
-            }
-        }
-        // `.borderlessButton` is macOS-only.
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .fixedSize()
-        .foregroundStyle(palette.mutedForeground)
-        .accessibilityIdentifier("welcome.sort")
+        .simultaneousGesture(dismissSearchKeyboardTap)
     }
 
     // MARK: - Results
@@ -561,6 +437,11 @@ struct WelcomeLibrary_iOS: View {
                 }
             }
         }
+        .simultaneousGesture(dismissSearchKeyboardTap)
+    }
+
+    private var dismissSearchKeyboardTap: some Gesture {
+        TapGesture().onEnded { searchFocused = false }
     }
 
     /// Two different "nothing here" messages, because they need two different

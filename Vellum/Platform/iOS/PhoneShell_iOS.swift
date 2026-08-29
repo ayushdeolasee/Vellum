@@ -45,6 +45,7 @@ private struct PhoneShellRoot_iOS: View {
     /// from reading, which on a phone is constantly. Held here it outlives the
     /// route and a return to Home is a repaint.
     @State private var homeSearch: HomeSearchStore
+    @State private var homeSource: HomeSource = .library
 
     @State private var addWebpagePresented = false
     @State private var isImporting = false
@@ -251,6 +252,7 @@ private struct PhoneShellRoot_iOS: View {
     private var homeRoute: some View {
         PhoneHome_iOS(
             store: homeSearch,
+            source: $homeSource,
             focusSearch: $focusHomeSearch,
             onOpen: { presentImporter() },
             onAddWebpage: { addWebpagePresented = true },

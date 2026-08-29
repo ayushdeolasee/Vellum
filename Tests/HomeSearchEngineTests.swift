@@ -679,9 +679,17 @@ struct HomeSearchEngineTests {
     /// documents directory knows a file carries notes. Keeping the
     /// highest-priority row but discarding what the others knew would make the
     /// Recents row of a saved, annotated article claim it is neither.
-    @Test("A row absorbs the badges of the duplicates it replaces")
+    @Test("A row absorbs metadata from the duplicates it replaces")
     func mergesBadgesAcrossSources() async throws {
         let shared = "https://x.test/article"
+        let thumbnail = try #require(URL(string: "https://x.test/thumbnail.png"))
+        let readLater: HomeSearchItem = {
+            var value = stubItem(
+                id: "read-later:1", identity: shared, section: .readLater, title: "Article")
+            value.integrationProviders = [.raindrop]
+            value.thumbnailURL = thumbnail
+            return value
+        }()
         let engine = HomeSearchEngine(providers: [
             StubProvider(id: "recents", displayName: "Recents", mode: .snapshot) { _ in
                 [stubItem(id: "recents:1", identity: shared, section: .recents, title: "Article")]
@@ -700,6 +708,9 @@ struct HomeSearchEngineTests {
                         badges: [.notes])
                 ]
             },
+            StubProvider(id: "read-later", displayName: "Read Later", mode: .snapshot) { _ in
+                [readLater]
+            },
         ])
         await engine.reload()
 
@@ -713,6 +724,8 @@ struct HomeSearchEngineTests {
         #expect(row.badges.contains(.saved))
         #expect(row.badges.contains(.offline))
         #expect(row.badges.contains(.notes))
+        #expect(row.integrationProviders == [.raindrop])
+        #expect(row.thumbnailURL == thumbnail)
     }
 
     /// A cancelled task group hands back whatever its children finished before
