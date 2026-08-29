@@ -159,7 +159,7 @@ struct PhoneHome_iOS: View {
         }
         .onChange(of: source) { oldSource, newSource in
             guard oldSource != newSource else { return }
-            externalCollectionID = nil
+            externalCollectionID = browsedProvider.flatMap { integrations.defaultCollectionID(for: $0) }
         }
         .homeLibraryPresentations(actions, toastAlignment: .bottom)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }

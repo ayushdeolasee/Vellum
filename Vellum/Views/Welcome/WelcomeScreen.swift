@@ -169,7 +169,7 @@ struct WelcomeScreen: View {
         .onChange(of: source) {
             // Collection ids belong to one service. Carrying a Readwise
             // location into Raindrop would silently empty the result list.
-            externalCollectionID = nil
+            externalCollectionID = browsedProvider.flatMap { integrations.defaultCollectionID(for: $0) }
             searchFocused = true
         }
         // Re-index when the app comes back to the front. The corpus is a

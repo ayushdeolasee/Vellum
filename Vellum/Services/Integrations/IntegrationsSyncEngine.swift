@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import PDFKit
 
-struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true }
+struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true; var defaultRaindropCollectionID: String? = nil }
 
 actor IntegrationsSyncEngine {
     private let credentials: any IntegrationCredentials
@@ -64,11 +64,12 @@ actor IntegrationsSyncEngine {
             if let token = await credentials.credential(for: provider), Self.fingerprint(token) == fingerprint { connected.insert(provider) }
             else { authenticationRequired.insert(provider) }
         }
-        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled)
+        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled, defaultRaindropCollectionID: preferences.defaultRaindropCollectionID)
     }
 
     func setAutoRefreshEnabled(_ enabled: Bool) { preferences.autoRefreshEnabled = enabled }
     func setOfflineReadingEnabled(_ enabled: Bool) { preferences.offlineReadingEnabled = enabled }
+    func setDefaultRaindropCollectionID(_ collectionID: String?) { preferences.defaultRaindropCollectionID = collectionID }
     func validate(provider: IntegrationProvider, candidate: String) async throws { let token = candidate.trimmingCharacters(in: .whitespacesAndNewlines); guard !token.isEmpty else { throw IntegrationError.invalidCredential }; try await validateToken(token, provider) }
 
     func connect(provider: IntegrationProvider, candidate: String) async throws -> ProviderSnapshot {

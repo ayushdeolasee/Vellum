@@ -26,6 +26,7 @@ final class IntegrationsStore {
     /// "Download for offline reading" (#157). Mirrors the persisted preference;
     /// the toggle writes through the engine like `autoRefreshEnabled` does.
     var offlineReadingEnabled = true
+    private(set) var defaultRaindropCollectionID: String?
 
     @ObservationIgnored private let engine: IntegrationsSyncEngine
     /// Background autopull + the fourteen-day retention clock. Built here (not
@@ -107,7 +108,7 @@ final class IntegrationsStore {
     }
 
     private func performStart() async {
-        let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled; offlineReadingEnabled = loaded.offlineReadingEnabled
+        let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled; offlineReadingEnabled = loaded.offlineReadingEnabled; defaultRaindropCollectionID = loaded.defaultRaindropCollectionID
         for provider in IntegrationProvider.allCases {
             if loaded.authenticationRequiredProviders.contains(provider) {
                 if let snapshot = loaded.snapshots[provider] { apply(snapshot, connection: .tokenRejected) }
@@ -147,6 +148,18 @@ final class IntegrationsStore {
         run { [engine] in await engine.setOfflineReadingEnabled(enabled) }
         guard enabled else { return }
         run { [weak self] in await self?.prefetchOfflineCopies() }
+    }
+
+    func setDefaultRaindropCollectionID(_ collectionID: String?) {
+        guard collectionID != defaultRaindropCollectionID else { return }
+        defaultRaindropCollectionID = collectionID
+        run { [engine] in await engine.setDefaultRaindropCollectionID(collectionID) }
+    }
+
+    func defaultCollectionID(for provider: IntegrationProvider) -> String? {
+        guard provider == .raindrop, let defaultRaindropCollectionID,
+              providers[provider]?.collections.contains(where: { $0.id == defaultRaindropCollectionID }) == true else { return nil }
+        return defaultRaindropCollectionID
     }
 
     /// One prefetch pass over the current queue. Safe to call from every

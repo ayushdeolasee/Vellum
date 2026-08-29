@@ -24,6 +24,25 @@ struct IntegrationsSettingsTab: View {
                     providerRow(provider)
                 }
             }
+
+            if integrations.providers[.raindrop]?.isConnected == true {
+                Section {
+                    Picker("Default folder", selection: Binding(
+                        get: { integrations.defaultCollectionID(for: .raindrop) },
+                        set: { integrations.setDefaultRaindropCollectionID($0) })) {
+                        Text("All folders").tag(String?.none)
+                        ForEach(integrations.providers[.raindrop]?.collections ?? []) { collection in
+                            Text(String(repeating: "  ", count: collection.depth) + collection.title)
+                                .tag(Optional(collection.id))
+                        }
+                    }
+                    .accessibilityIdentifier("integrations.raindrop.defaultFolder")
+                } header: {
+                    Text("Raindrop.io")
+                } footer: {
+                    Text("Vellum opens this folder first. You can still change the folder from Home filters.")
+                }
+            }
         }
         .formStyle(.grouped)
         .frame(height: 460)

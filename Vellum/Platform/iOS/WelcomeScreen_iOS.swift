@@ -150,7 +150,7 @@ struct WelcomeLibrary_iOS: View {
         }
         .onChange(of: source) { oldSource, newSource in
             guard oldSource != newSource else { return }
-            externalCollectionID = nil
+            externalCollectionID = browsedProvider.flatMap { integrations.defaultCollectionID(for: $0) }
         }
         // Re-index when the app comes back to the front. The corpus is a
         // snapshot of on-disk sources, and all of them can change while Vellum

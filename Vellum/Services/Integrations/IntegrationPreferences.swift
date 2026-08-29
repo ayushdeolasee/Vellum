@@ -4,6 +4,7 @@ struct IntegrationPreferences {
     private enum Key {
         static let autoRefresh = "integrations.autoRefresh"
         static let offlineReading = "integrations.offlineReading"
+        static let defaultRaindropCollection = "integrations.raindrop.defaultCollection"
         static let enabledPrefix = "integrations.enabled."
         static let generationPrefix = "integrations.generation."
         static let fingerprintPrefix = "integrations.accountFingerprint."
@@ -36,6 +37,17 @@ struct IntegrationPreferences {
     var offlineReadingEnabled: Bool {
         get { defaults.object(forKey: Key.offlineReading) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: Key.offlineReading) }
+    }
+
+    var defaultRaindropCollectionID: String? {
+        get { defaults.string(forKey: Key.defaultRaindropCollection) }
+        nonmutating set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.defaultRaindropCollection)
+            } else {
+                defaults.removeObject(forKey: Key.defaultRaindropCollection)
+            }
+        }
     }
 
     func metadata(for provider: IntegrationProvider) -> IntegrationConnectionMetadata {
