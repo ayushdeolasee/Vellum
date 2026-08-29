@@ -15,7 +15,7 @@ import Foundation
 /// "Saved" are all just answers to "which part of my library do I mean?", and
 /// splitting them across two control rows would cost more screen than the
 /// distinction is worth. `accepts` is the single place that knows the difference.
-enum HomeSearchFilter: Int, Hashable, Sendable, CaseIterable {
+enum HomeSearchFilter: Hashable, Sendable {
     case all
     case documents
     case webpages
@@ -23,13 +23,24 @@ enum HomeSearchFilter: Int, Hashable, Sendable, CaseIterable {
     /// also covers pages merely visited or annotated — "Saved" is the shelf
     /// things were deliberately put on, so it is worth reaching in one click.
     case saved
+    case provider(IntegrationProvider)
+
+    static func options(connected providers: [IntegrationProvider]) -> [Self] {
+        [.all, .documents, .webpages, .saved] + providers.map(Self.provider)
+    }
+
+    func reconciled(connected providers: [IntegrationProvider]) -> Self {
+        guard case .provider(let provider) = self else { return self }
+        return providers.contains(provider) ? self : .all
+    }
 
     var label: String {
         switch self {
-        case .all: "All"
+        case .all: "Everything"
         case .documents: "PDFs"
         case .webpages: "Webpages"
         case .saved: "Saved"
+        case .provider(let provider): provider.name
         }
     }
 
@@ -43,6 +54,7 @@ enum HomeSearchFilter: Int, Hashable, Sendable, CaseIterable {
         // of every source describing the same document precisely so that "is
         // this saved?" stays answerable from whichever row survived.
         case .saved: item.badges.contains(.saved)
+        case .provider(let provider): item.integrationProviders.contains(provider)
         }
     }
 }

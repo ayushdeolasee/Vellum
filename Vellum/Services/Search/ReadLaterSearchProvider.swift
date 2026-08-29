@@ -31,34 +31,34 @@ struct ReadLaterSearchProvider: HomeSearchProvider {
         // local copy of an article (recents, saved webpages, library) the
         // local row wins the dedupe and opens offline; this row only exists
         // for articles that live nowhere else on this iPad.
-        return await source.items.map { item in
-            let url = item.sourceURL.absoluteString
-            let name = HomeSearchItemBuilder.host(of: url) ?? url
-            return HomeSearchItem(
-                id: "\(id):\(item.id)",
-                identity: HomeSearchItemBuilder.identity(url, kind: .web),
-                section: .readLater,
-                kind: .web,
-                target: .url(url),
+        return await source.items.map { Self.searchItem(for: $0, now: now) }
+    }
+
+    static func searchItem(for item: ReadLaterItem, now: Date = Date()) -> HomeSearchItem {
+        let url = item.sourceURL.absoluteString
+        let name = HomeSearchItemBuilder.host(of: url) ?? url
+        let kind: DocumentKind = item.kind == .pdf ? .pdf : .web
+        return HomeSearchItem(
+            id: "read-later:\(item.id)",
+            identity: HomeSearchItemBuilder.identity(url, kind: kind),
+            section: .readLater,
+            kind: kind,
+            target: .url(url),
+            title: item.title,
+            subtitle: item.author.map { "\($0) · \(name)" } ?? name,
+            detail: HomeSearchDateLabel.short(for: item.savedAt, now: now),
+            tooltip: url,
+            date: item.savedAt,
+            badges: [],
+            integrationProviders: [item.provider],
+            thumbnailURL: item.thumbnailURL,
+            canRevealInFinder: false,
+            haystack: HomeSearchHaystack(
                 title: item.title,
-                subtitle: item.author.map { "\($0) · \(name)" } ?? name,
-                detail: HomeSearchDateLabel.short(for: item.savedAt, now: now),
-                tooltip: url,
-                date: item.savedAt,
-                badges: [],
-                canRevealInFinder: false,
-                haystack: HomeSearchHaystack(
-                    title: item.title,
-                    name: name,
-                    location: url,
-                    // The provider's name makes "readwise" or "raindrop" a
-                    // usable query; tags/author/excerpt are the fields those
-                    // services themselves match on.
-                    extra: ([item.provider.name, item.author ?? "", item.excerpt ?? ""]
-                        + item.tags).joined(separator: " ")),
-                // No local record to key on — a remote article only gains a
-                // storage folder once the user opens it.
-                storageKey: nil)
-        }
+                name: name,
+                location: url,
+                extra: ([item.provider.name, item.author ?? "", item.excerpt ?? ""]
+                    + item.tags).joined(separator: " ")),
+            storageKey: nil)
     }
 }

@@ -196,6 +196,10 @@ actor HomeSearchEngine {
                 order.append(item.identity)
             } else {
                 merged[item.identity]?.badges.formUnion(item.badges)
+                merged[item.identity]?.integrationProviders.formUnion(item.integrationProviders)
+                if merged[item.identity]?.thumbnailURL == nil {
+                    merged[item.identity]?.thumbnailURL = item.thumbnailURL
+                }
                 // Recents has display priority, but an unstamped PDF recent
                 // only knows the legacy path-hash key. If a duplicate from the
                 // documents inventory carries the later durable stamp, retain

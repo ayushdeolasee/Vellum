@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 // The small, reusable pieces of the home screen's result list. Split out of
 // `WelcomeScreen_iOS` so the screen itself reads as layout.
@@ -75,6 +76,8 @@ struct HomeResultRow: View {
 
     @Environment(\.palette) private var palette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(IntegrationsStore.self) private var integrations
+    @State private var thumbnail: UIImage?
 
     var body: some View {
         Button(action: open) {
@@ -140,6 +143,9 @@ struct HomeResultRow: View {
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
         .accessibilityValue(accessibilityValue)
+        .task(id: item.thumbnailURL) {
+            thumbnail = await integrations.thumbnailImage(for: item.thumbnailURL)
+        }
         // Reached by long-press on iPad, which is the standard affordance for
         // destructive row actions.
         .contextMenu {
@@ -169,12 +175,21 @@ struct HomeResultRow: View {
     }
 
     private var icon: some View {
-        Image(systemName: item.systemImage)
-            .font(.system(size: 15, weight: .regular))
-            .foregroundStyle(item.badges.contains(.missing) ? AnyShapeStyle(palette.destructive)
-                                                            : AnyShapeStyle(.secondary))
+        Group {
+            if let thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: item.systemImage)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(item.badges.contains(.missing)
+                        ? AnyShapeStyle(palette.destructive) : AnyShapeStyle(.secondary))
+            }
+        }
             .frame(width: 32, height: 32)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator)
             }

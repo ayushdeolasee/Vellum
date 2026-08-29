@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 
 // The small, reusable pieces of the home screen's result list. Split out of
@@ -63,7 +64,9 @@ struct HomeResultRow: View {
     let removals: [(removal: HomeSearchRemoval, action: () -> Void)]
 
     @Environment(\.palette) private var palette
+    @Environment(IntegrationsStore.self) private var integrations
     @State private var hovering = false
+    @State private var thumbnail: NSImage?
 
     var body: some View {
         Button(action: open) {
@@ -114,6 +117,9 @@ struct HomeResultRow: View {
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
         .accessibilityValue(item.subtitle)
+        .task(id: item.thumbnailURL) {
+            thumbnail = await integrations.thumbnailImage(for: item.thumbnailURL)
+        }
         .contextMenu {
             Button("Open") { open() }
             if let rename {
@@ -132,12 +138,21 @@ struct HomeResultRow: View {
     }
 
     private var icon: some View {
-        Image(systemName: item.systemImage)
-            .font(.system(size: 15, weight: .regular))
-            .foregroundStyle(item.badges.contains(.missing) ? AnyShapeStyle(palette.destructive)
-                                                            : AnyShapeStyle(.secondary))
+        Group {
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: item.systemImage)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(item.badges.contains(.missing)
+                        ? AnyShapeStyle(palette.destructive) : AnyShapeStyle(.secondary))
+            }
+        }
             .frame(width: 32, height: 32)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator)
             }
@@ -266,41 +281,4 @@ struct HomeSectionHeader: View {
     }
 }
 
-// MARK: - Small controls
-
-/// Capsule filter chip. Uses the shared `SelectionStyle` surface so it reads as
-/// the same "this is current" state as the toolbar tabs and segmented thumb.
-struct HomeFilterChip: View {
-    let label: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @Environment(\.palette) private var palette
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(
-                    SelectionStyle.foreground(palette, selected: isSelected, hovering: hovering))
-                .padding(.horizontal, 12)
-                .frame(height: 26)
-                .selectionSurface(
-                    selected: isSelected, hovering: hovering, in: Capsule(), palette: palette)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-    }
-}
-
-// `KeyCapsule` used to live here. It is gone in favour of `Keycap`
-// (Views/Shared/Controls.swift), which #70 landed on main: this version styled
-// itself with `.quaternary` / `.separator`, and those resolve from the color
-// scheme rather than from our palette, so against the light parchment chrome
-// they washed out to nearly nothing — the same defect that made the
-// walkthrough's page dots invisible in light mode. `Keycap` uses
-// `palette.muted` / `palette.borderStrong`, which are defined for both schemes.
 #endif

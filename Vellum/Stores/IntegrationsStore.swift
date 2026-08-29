@@ -318,9 +318,15 @@ final class IntegrationsStore {
     func thumbnailImage(for item: ReadLaterItem) async -> NSImage? {
         await thumbnails.image(for: item.thumbnailURL)
     }
+    func thumbnailImage(for url: URL?) async -> NSImage? {
+        await thumbnails.image(for: url)
+    }
     #else
     func thumbnailImage(for item: ReadLaterItem) async -> UIImage? {
         await thumbnails.image(for: item.thumbnailURL)
+    }
+    func thumbnailImage(for url: URL?) async -> UIImage? {
+        await thumbnails.image(for: url)
     }
     #endif
     func dismissDownloadNotice(_ id: ReadLaterItem.ID) { downloads[id] = nil }

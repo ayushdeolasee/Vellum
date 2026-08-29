@@ -27,20 +27,29 @@ enum ExternalLibraryFilter {
 /// the tap *is* the primary action and there is no selection to hang a menu on.
 struct ExternalLibraryList_iOS: View {
     let provider: IntegrationProvider
+    @Binding var search: String
+    @Binding var collectionID: String?
+    @Binding var sortByName: Bool
     var onDocumentOpened: (() -> Void)?
 
-    init(provider: IntegrationProvider, onDocumentOpened: (() -> Void)? = nil) {
+    init(
+        provider: IntegrationProvider,
+        search: Binding<String>,
+        collectionID: Binding<String?>,
+        sortByName: Binding<Bool>,
+        onDocumentOpened: (() -> Void)? = nil
+    ) {
         self.provider = provider
+        _search = search
+        _collectionID = collectionID
+        _sortByName = sortByName
         self.onDocumentOpened = onDocumentOpened
     }
 
     @Environment(AppStore.self) private var appStore
     @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
-    @State private var search = ""
-    @State private var collectionID: String?
-    @State private var sortByName = false
-
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private var state: IntegrationProviderViewState? { integrations.providers[provider] }
     private var failureMessage: String? { if case .failed(let message)? = state?.connection { message } else { nil } }
     private var warningMessage: String? {
@@ -56,13 +65,13 @@ struct ExternalLibraryList_iOS: View {
         let values = (state?.items ?? []).filter { item in
             (collectionID == nil || item.collectionIDs.contains(collectionID!)) && (query.isEmpty || item.title.localizedCaseInsensitiveContains(query) || item.author?.localizedCaseInsensitiveContains(query) == true || item.tags.contains(where: { $0.localizedCaseInsensitiveContains(query) }))
         }
-        return sortByName ? values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending } : values
+        return sortByName
+            ? values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            : values.sorted { $0.savedAt > $1.savedAt }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            controls.padding(.horizontal, 24).padding(.vertical, 12)
-            Divider()
             if items.isEmpty {
                 if state?.connection == .tokenRejected, state?.items.isEmpty == true { stateView("Authentication required", "Reconnect this service in Settings.", "key.slash") }
                 else if let failureMessage, state?.items.isEmpty == true { stateView("Sync failed", failureMessage, "exclamationmark.triangle") }
@@ -88,34 +97,19 @@ struct ExternalLibraryList_iOS: View {
         }
     }
 
-    private var controls: some View {
-        HStack(spacing: 10) {
-            TextField("Search \(provider.name)", text: $search)
-                .textFieldStyle(.roundedBorder)
-                .submitLabel(.search)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("welcome.external.search")
-            Menu(collectionID == nil ? "All locations" : state?.collections.first(where: { $0.id == collectionID })?.title ?? "Location") {
-                Button("All locations") { collectionID = nil }
-                ForEach(state?.collections ?? []) { collection in Button { collectionID = collection.id } label: { Text(String(repeating: "  ", count: collection.depth) + collection.title) } }
-            }
-            // The Mac used a `.toggleStyle(.button)` Toggle with a `.help`
-            // tooltip; on touch that is an unlabelled mystery box, so it becomes
-            // an explicit icon button with a real accessibility label.
-            Button { sortByName.toggle() } label: {
-                Image(systemName: sortByName ? "textformat.abc" : "clock")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Sort by name")
-        }
-    }
-
     private var list: some View {
-        List {
-            ForEach(items) { item in
-                Button { open(item) } label: { ExternalLibraryRow_iOS(item: item) }
-                    .buttonStyle(.plain)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    ForEach(items) { item in
+                        HomeResultRow(
+                            item: ReadLaterSearchProvider.searchItem(for: item),
+                            isSelected: false,
+                            open: { open(item) },
+                            share: nil,
+                            rename: nil,
+                            removals: [])
+                    .accessibilityIdentifier("welcome.external.row.\(item.id)")
                     .contextMenu {
                         Button("Open") { open(item) }
                         Button("Open Original in Browser") { UIApplication.shared.open(item.sourceURL) }
@@ -123,17 +117,18 @@ struct ExternalLibraryList_iOS: View {
                         Divider()
                         MoveToCollectionMenu(item: item, integrations: integrations)
                     }
-                    // Long-press is the only other route to the browser; a
-                    // swipe makes it discoverable without one.
-                    .swipeActions(edge: .trailing) {
-                        Button("Open in Browser") { UIApplication.shared.open(item.sourceURL) }
                     }
+                } header: {
+                    HomeSectionHeader(section: .readLater, count: items.count)
+                }
             }
+            .frame(maxWidth: HomeLayout.contentMaxWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, horizontalSizeClass == .compact ? 8 : HomeLayout.columnPadding)
+            .padding(.bottom, 32)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .background(palette.well)
-        .environment(\.defaultMinListRowHeight, 60)
+        .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("welcome.external.library")
     }
 
@@ -156,21 +151,80 @@ struct ExternalLibraryList_iOS: View {
     private func stateView(_ title: String, _ message: String, _ symbol: String) -> some View { ContentUnavailableView(title, systemImage: symbol, description: Text(message)).frame(maxWidth: .infinity, maxHeight: .infinity) }
 }
 
-private struct ExternalLibraryRow_iOS: View {
-    let item: ReadLaterItem
+/// One filter button shared by Library, Raindrop.io and Readwise Reader.
+/// The button never moves; only the menu choices change with the selected source.
+struct HomeSearchFilterMenu_iOS: View {
+    let provider: IntegrationProvider?
+    let collections: [ReadLaterCollection]
+    @Binding var libraryFilter: HomeSearchFilter
+    @Binding var librarySort: HomeSearchSortOrder
+    @Binding var collectionID: String?
+    @Binding var sortByName: Bool
+
+    @Environment(\.palette) private var palette
     @Environment(IntegrationsStore.self) private var integrations
-    @State private var image: UIImage?
-    var body: some View {
-        LibraryRowContent_iOS(title: item.title, subtitle: [item.author, item.sourceURL.host()].compactMap { $0 }.joined(separator: " · "), badge: item.kind == .pdf ? "PDF" : nil) {
-            Group { if let image { Image(uiImage: image).resizable().scaledToFill() } else { Image(systemName: item.kind == .pdf ? "doc.richtext" : "globe").foregroundStyle(.secondary) } }
-                .frame(width: 34, height: 34).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.md)).clipShape(RoundedRectangle(cornerRadius: Radius.md)).overlay { RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator) }
+
+    private var hasActiveFilter: Bool {
+        if provider != nil {
+            return collectionID != nil || sortByName
         }
-        // Fetch, file read and decode all happen inside the thumbnail actor —
-        // the row only assigns the finished image, so scrolling never pays for
-        // disk I/O or ImageIO on the main actor. That argument matters more on
-        // iPad than on a Mac, not less: this is battery as well as smoothness.
-        .task(id: item.thumbnailURL) { image = await integrations.thumbnailImage(for: item) }
-        .accessibilityIdentifier("welcome.external.row.\(item.id)")
+        return libraryFilter != .all || librarySort != .recent
+    }
+
+    var body: some View {
+        Menu {
+            if let provider {
+                Picker(provider == .raindrop ? "Folder" : "Location", selection: $collectionID) {
+                    Text(provider == .raindrop ? "All folders" : "All locations")
+                        .tag(String?.none)
+                    ForEach(collections) { collection in
+                        Text(String(repeating: "  ", count: collection.depth) + collection.title)
+                            .tag(Optional(collection.id))
+                    }
+                }
+
+                Picker("Sort by", selection: $sortByName) {
+                    Text("Recently saved").tag(false)
+                    Text("Name").tag(true)
+                }
+
+                Divider()
+
+                Button {
+                    integrations.run { await integrations.sync(provider) }
+                } label: {
+                    Label("Sync now", systemImage: "arrow.clockwise")
+                }
+                .disabled(integrations.providers[provider]?.connection == .syncing)
+            } else {
+                Picker("Show", selection: $libraryFilter) {
+                    ForEach(
+                        HomeSearchFilter.options(connected: integrations.connectedProviders),
+                        id: \.self
+                    ) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+
+                Picker("Sort by", selection: $librarySort) {
+                    ForEach(HomeSearchSortOrder.allCases, id: \.self) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: hasActiveFilter
+                ? "line.3.horizontal.decrease.circle.fill"
+                : "line.3.horizontal.decrease")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(hasActiveFilter ? palette.primary : palette.mutedForeground)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Search filters")
+        .accessibilityValue(hasActiveFilter ? "Filtered" : "No filters applied")
+        .accessibilityIdentifier("welcome.searchFilters")
     }
 }
 
