@@ -28,6 +28,7 @@ final class RegionCaptureState {
 @MainActor
 final class RegionCaptureGestureRecognizer: UIGestureRecognizer {
     static let minimumCaptureSize: CGFloat = 4
+    static let edgeSnapInset: CGFloat = 24
     private static let edgeInset: CGFloat = 48
     private static let maximumScrollSpeed: CGFloat = 280
 
@@ -95,7 +96,7 @@ final class RegionCaptureGestureRecognizer: UIGestureRecognizer {
             onResetSelection?()
             return
         }
-        let point = touch.location(in: hostView)
+        let point = Self.snappedCapturePoint(touch.location(in: hostView), in: hostView.bounds)
         guard onBegin?(point) ?? false else {
             state = .failed
             return
@@ -109,7 +110,8 @@ final class RegionCaptureGestureRecognizer: UIGestureRecognizer {
         guard !usedAdditionalTouch, activeTouches.count == 1,
               let primaryTouch, touches.contains(primaryTouch), let hostView else { return }
         state = .changed
-        onUpdate?(primaryTouch.location(in: hostView))
+        onUpdate?(Self.snappedCapturePoint(
+            primaryTouch.location(in: hostView), in: hostView.bounds))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -121,7 +123,10 @@ final class RegionCaptureGestureRecognizer: UIGestureRecognizer {
             state = .cancelled
             return
         }
-        if let hostView { onUpdate?(primaryTouch.location(in: hostView)) }
+        if let hostView {
+            onUpdate?(Self.snappedCapturePoint(
+                primaryTouch.location(in: hostView), in: hostView.bounds))
+        }
         stopDisplayLink()
         state = (onFinish?() ?? false) ? .ended : .cancelled
     }
@@ -151,6 +156,21 @@ final class RegionCaptureGestureRecognizer: UIGestureRecognizer {
                 return maximumScrollSpeed * min(1, (value - (maximum - edgeInset)) / edgeInset)
             }
             return 0
+        }
+
+        return CGPoint(
+            x: component(point.x, minimum: bounds.minX, maximum: bounds.maxX),
+            y: component(point.y, minimum: bounds.minY, maximum: bounds.maxY))
+    }
+
+    /// A finger can stop just inside the screen edge without losing the pixels
+    /// underneath the system gesture area. Points farther in stay exact.
+    static func snappedCapturePoint(_ point: CGPoint, in bounds: CGRect) -> CGPoint {
+        func component(_ value: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+            let clamped = min(maximum, max(minimum, value))
+            if clamped <= minimum + edgeSnapInset { return minimum }
+            if clamped >= maximum - edgeSnapInset { return maximum }
+            return clamped
         }
 
         return CGPoint(
@@ -208,17 +228,55 @@ struct RegionCaptureOverlay_iOS: View {
     let onCancel: () -> Void
 
     @Environment(\.palette) private var palette
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             selectionLayer.allowsHitTesting(false)
-            cancelButton.padding(16)
+            if horizontalSizeClass == .compact {
+                VStack(spacing: 0) {
+                    Spacer().allowsHitTesting(false)
+                    captureBar
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
+                }
+            } else {
+                cancelButton.padding(16)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: state.captureGeneration) {
             onCapture()
             state.clear()
         }
+    }
+
+    private var captureBar: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Drag to capture")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Two fingers move or zoom")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Color.clear.frame(width: 44, height: 44)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 4)
+        .frame(height: 52)
+        .background(palette.surface.opacity(0.96), in: Capsule())
+        .overlay {
+            Capsule().stroke(palette.border.opacity(0.7), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .allowsHitTesting(false)
+        .overlay(alignment: .trailing) {
+            cancelButton.padding(.trailing, 4)
+        }
+        .accessibilityIdentifier("phone.regionCapture.bar")
     }
 
     private var selectionLayer: some View {

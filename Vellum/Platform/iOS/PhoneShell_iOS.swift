@@ -291,10 +291,12 @@ private struct PhoneShellRoot_iOS: View {
                     }))
                 .ignoresSafeArea()
 
-            PhoneReaderChrome_iOS(
-                shell: shell,
-                onOpenFile: { presentImporter() },
-                onAddWebpage: { addWebpagePresented = true })
+            if shell.readerChromePresented {
+                PhoneReaderChrome_iOS(
+                    shell: shell,
+                    onOpenFile: { presentImporter() },
+                    onAddWebpage: { addWebpagePresented = true })
+            }
         }
         // The route's own handle, so a UI test can assert "the reader is on
         // screen" without depending on which chrome happens to be visible —
@@ -304,8 +306,8 @@ private struct PhoneShellRoot_iOS: View {
         // Immersive reading is the absence of chrome, and that has to include
         // the system's own: the status bar and the home indicator are the two
         // remaining pieces of furniture over a full-bleed page.
-        .statusBarHidden(!shell.chromeVisible)
-        .persistentSystemOverlays(shell.chromeVisible ? .automatic : .hidden)
+        .statusBarHidden(!shell.readerChromePresented)
+        .persistentSystemOverlays(shell.readerChromePresented ? .automatic : .hidden)
         // The inspector (P6). Presented from the READER, not from the shell
         // root, for two reasons. It scopes the presentation to the route that
         // owns it, so a trip to Home takes the sheet down with the screen it

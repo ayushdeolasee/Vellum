@@ -68,19 +68,12 @@ struct PhoneInspectorSheet_iOS: View {
     /// `.medium` again (the half-height sheet is the one that leaves the
     /// document readable underneath it).
     @State private var detent: PresentationDetent = .medium
-    @State private var detentBeforeCapture: PresentationDetent = .medium
 
     var body: some View {
-        Group {
-            if isCapturingRegion {
-                captureBar
-            } else {
-                SidebarContent_iOS(
-                    ink: ink,
-                    presentation: .phoneSheet,
-                    onTabSelected: shell.selectInspectorTab)
-            }
-        }
+        SidebarContent_iOS(
+            ink: ink,
+            presentation: .phoneSheet,
+            onTabSelected: shell.selectInspectorTab)
             .environment(workspace)
             .environment(pane.app)
             .environment(pane.annotations)
@@ -91,20 +84,14 @@ struct PhoneInspectorSheet_iOS: View {
             .preferredColorScheme(themeStore.colorScheme)
             .tint(themeStore.palette.primary)
             .accessibilityIdentifier("phone.inspector.sheet")
-            .presentationDetents(Self.availableDetents, selection: detentSelection)
+            .presentationDetents(Self.detents, selection: $detent)
             // The half-height sheet must not lock the document out. Reading is
             // the point of the screen underneath, and an annotation list you
             // cannot scroll the page beside is a modal dialog wearing a sheet's
             // clothes. `upThrough: .medium` keeps the reader live at half
             // height and hands interaction back to the sheet at `.large`,
             // where the document is not visible anyway.
-            // Capture always needs the reader underneath to receive its native
-            // selection, pan, and pinch gestures. The normal sheet remains
-            // interactive only through `.medium`.
-            .presentationBackgroundInteraction(
-                isCapturingRegion
-                    ? .enabled
-                    : .enabled(upThrough: Self.interactiveDetent))
+            .presentationBackgroundInteraction(.enabled(upThrough: Self.interactiveDetent))
             // With the background interactive there is no dimmed backdrop to
             // tap away, so the grabber is the only visible affordance saying
             // "this drags and dismisses".
@@ -124,67 +111,6 @@ struct PhoneInspectorSheet_iOS: View {
                 guard request != nil else { return }
                 withAnimation(.snappy) { detent = .large }
             }
-            .onChange(of: isCapturingRegion, initial: true) { _, isCapturing in
-                withAnimation(.snappy) {
-                    if isCapturing {
-                        detentBeforeCapture = Self.detents.contains(detent) ? detent : .medium
-                        detent = Self.captureDetent
-                    } else {
-                        detent = Self.detents.contains(detentBeforeCapture)
-                            ? detentBeforeCapture
-                            : .medium
-                    }
-                }
-            }
-    }
-
-    private var isCapturingRegion: Bool { pane.app.mode == .snapshotRegion }
-
-    /// Keep the custom detent registered so SwiftUI continues forwarding
-    /// touches to the reader behind it. Outside capture, dragging down to that
-    /// detent means "dismiss" instead of squeezing normal sidebar content into
-    /// 76 points.
-    private var detentSelection: Binding<PresentationDetent> {
-        Binding(
-            get: { detent },
-            set: { proposed in
-                if isCapturingRegion {
-                    detent = Self.captureDetent
-                } else if proposed == Self.captureDetent {
-                    shell.setInspectorPresented(false)
-                } else {
-                    detent = proposed
-                }
-            })
-    }
-
-    private var captureBar: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Drag to capture")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("One finger captures · two fingers move or zoom")
-                    .font(.system(size: 11))
-                    .foregroundStyle(themeStore.palette.mutedForeground)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button {
-                pane.app.setMode(.view)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Cancel region capture")
-            .accessibilityIdentifier("phone.regionCapture.cancel")
-        }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(themeStore.palette.surface)
-        .accessibilityIdentifier("phone.regionCapture.bar")
     }
 
     /// The ink controller the Handwriting section reads, taken straight from the
@@ -207,10 +133,6 @@ struct PhoneInspectorSheet_iOS: View {
     /// sheet opens: half the screen is enough for the annotation list while
     /// leaving the page it annotates on screen.
     static let detents: Set<PresentationDetent> = [.medium, .large]
-
-    /// Compact capture controls leave almost the whole page visible.
-    static let captureDetent: PresentationDetent = .height(76)
-    static let availableDetents: Set<PresentationDetent> = detents.union([captureDetent])
 
     /// The tallest detent at which the document underneath stays interactive.
     /// Named so the modifier above and any test agree on one value.

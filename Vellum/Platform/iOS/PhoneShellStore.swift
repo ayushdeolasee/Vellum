@@ -89,7 +89,10 @@ final class PhoneShellStore {
     /// `route == .reader` is the phone's: the sheet belongs over the document,
     /// and Home has its own full-screen surface underneath it.
     ///
-    /// The third is the tab switcher (P7), and it is a mechanical necessity as
+    /// Capture also hides the sheet: its controls live directly over the
+    /// reader, where sheet sizing cannot block or distort them.
+    ///
+    /// The final term is the tab switcher (P7), and it is a mechanical necessity as
     /// much as a design one. UIKit presents one thing at a time from a given
     /// host: a `.fullScreenCover` asked to present while this sheet is up
     /// either fails or stacks over a panel that has no business being under it.
@@ -98,7 +101,17 @@ final class PhoneShellStore {
     /// over a grid of cards inspects nothing. The preference itself is
     /// untouched, so closing the switcher brings the panel back.
     var inspectorPresented: Bool {
-        workspace.inspectorPresented && route == .reader && !switcherPresented
+        workspace.inspectorPresented
+            && route == .reader
+            && !switcherPresented
+            && app.mode != .snapshotRegion
+    }
+
+    /// Snapshot capture owns the full reader surface. Keep the user's normal
+    /// chrome preference intact so the bars return when capture ends, but do
+    /// not present either bar while the marquee is active.
+    var readerChromePresented: Bool {
+        chromeVisible && app.mode != .snapshotRegion
     }
 
     /// Applies a presentation change originating from SwiftUI's sheet.
@@ -120,7 +133,9 @@ final class PhoneShellStore {
     /// takes `inspectorPresented` false, and SwiftUI writes that false back the
     /// same way. Hence the guard names both routes-away-from-the-sheet.
     func setInspectorPresented(_ isPresented: Bool) {
-        guard route == .reader, !switcherPresented else { return }
+        guard route == .reader,
+              !switcherPresented,
+              app.mode != .snapshotRegion else { return }
         workspace.setInspectorPresented(isPresented)
     }
 

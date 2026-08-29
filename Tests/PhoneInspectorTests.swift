@@ -75,9 +75,6 @@ struct PhoneInspectorTests {
     @Test("The sheet offers a half and a full height, and only the half keeps the reader live")
     func detentsAreMediumAndLarge() {
         #expect(PhoneInspectorSheet_iOS.detents == [.medium, .large])
-        #expect(PhoneInspectorSheet_iOS.availableDetents == [
-            PhoneInspectorSheet_iOS.captureDetent, .medium, .large
-        ])
         // `presentationBackgroundInteraction(.enabled(upThrough:))` is what lets
         // the document scroll under a half-height sheet. Pinned to `.medium`:
         // at `.large` the document is not visible, so there is nothing to
@@ -86,8 +83,8 @@ struct PhoneInspectorTests {
         #expect(PhoneInspectorSheet_iOS.detents.contains(PhoneInspectorSheet_iOS.interactiveDetent))
     }
 
-    @Test("Region capture scrolls toward the edge being held")
-    func regionCaptureEdgeVelocity() {
+    @Test("Region capture scrolls and snaps to nearby edges")
+    func regionCaptureEdgeBehavior() {
         let bounds = CGRect(x: 0, y: 0, width: 390, height: 700)
         #expect(RegionCaptureGestureRecognizer.scrollVelocity(
             at: CGPoint(x: 195, y: 350), in: bounds) == .zero)
@@ -99,6 +96,13 @@ struct PhoneInspectorTests {
             at: CGPoint(x: 195, y: 1), in: bounds).y < 0)
         #expect(RegionCaptureGestureRecognizer.scrollVelocity(
             at: CGPoint(x: 195, y: 699), in: bounds).y > 0)
+
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 20, y: 680), in: bounds) == CGPoint(x: 0, y: 700))
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 370, y: 20), in: bounds) == CGPoint(x: 390, y: 0))
+        #expect(RegionCaptureGestureRecognizer.snappedCapturePoint(
+            CGPoint(x: 30, y: 350), in: bounds) == CGPoint(x: 30, y: 350))
     }
 
     // MARK: - Presentation (D2)
