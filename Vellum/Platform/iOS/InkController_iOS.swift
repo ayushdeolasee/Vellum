@@ -176,6 +176,11 @@ final class InkController_iOS {
     /// Bumped on every drawing mutation so undo/redo button state re-renders
     /// (UndoManager itself is not observable).
     private(set) var drawingVersion = 0
+    /// One cached summary for the sidebar. It is populated while the PDF is
+    /// already being parsed off-main, so opening or interacting with the
+    /// sidebar never has to walk every PDF page from SwiftUI's `body`.
+    private(set) var handwritingPages: [Int] = []
+    @ObservationIgnored private var handwritingDocumentID: ObjectIdentifier?
     /// The tool in use before the last switch — the Pencil double-tap target.
     @ObservationIgnored private var previousTool: InkTool = .eraser
 
@@ -352,8 +357,20 @@ final class InkController_iOS {
 
     /// A page canvas was seeded with existing ink — nudge observers (the
     /// sidebar's Handwriting chips) that consult the canvas cache.
-    func noteSeededDrawing() {
+    func noteSeededDrawing(page: Int, hasVisibleInk: Bool) {
         drawingVersion &+= 1
+        updateHandwritingPage(page, hasInk: hasVisibleInk)
+    }
+
+    /// Adopts the summary gathered during the viewer's existing detached PDF
+    /// preparation pass. The display document is stripped of native
+    /// annotations before PDFKit mounts it, so this is also the authoritative
+    /// record for pages that have not created a PencilKit canvas yet.
+    func adoptHandwritingPages(_ pages: [Int], for document: PDFDocument) {
+        handwritingDocumentID = ObjectIdentifier(document)
+        if handwritingPages != pages {
+            handwritingPages = pages
+        }
     }
 
     /// The active PencilKit tool. The width is exactly the one the user picked:
@@ -388,7 +405,28 @@ final class InkController_iOS {
     /// no display-document mutation here.
     func drawingChanged(_ drawing: PKDrawing, page: Int) {
         drawingVersion &+= 1
+        updateHandwritingPage(
+            page,
+            hasInk: drawing.strokes.contains(where: PdfInk.strokeHasVisibleInk))
         persist(drawing: drawing, page: page)
+    }
+
+    private func updateHandwritingPage(_ page: Int, hasInk: Bool) {
+        guard page >= 1,
+              let document = pdfController?.document,
+              handwritingDocumentID == ObjectIdentifier(document)
+        else { return }
+
+        var pages = Set(handwritingPages)
+        if hasInk {
+            pages.insert(page)
+        } else {
+            pages.remove(page)
+        }
+        let updated = pages.sorted()
+        if updated != handwritingPages {
+            handwritingPages = updated
+        }
     }
 
     // MARK: - Persistence to the on-disk PDF

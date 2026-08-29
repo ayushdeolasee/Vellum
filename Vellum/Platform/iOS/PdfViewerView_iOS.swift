@@ -14,6 +14,7 @@ import SwiftUI
 /// never touched off-main again, so the crossing is safe.
 private struct PreparedPdf: @unchecked Sendable {
     let document: PDFDocument?
+    let handwritingPages: [Int]
 }
 
 /// What makes the viewer's load task run again: becoming active, or the tab's
@@ -143,14 +144,23 @@ struct PdfViewerView_iOS: View {
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
-                    guard let document = PDFDocument(data: data) else { return PreparedPdf(document: nil) }
+                    guard let document = PDFDocument(data: data) else {
+                        return PreparedPdf(document: nil, handwritingPages: [])
+                    }
+                    var handwritingPages: [Int] = []
                     for index in 0..<document.pageCount {
                         guard let page = document.page(at: index) else { continue }
-                        for annotation in page.annotations {
+                        let pageAnnotations = page.annotations
+                        if pageAnnotations.contains(where: PdfInk.isVellumInk) {
+                            handwritingPages.append(index + 1)
+                        }
+                        for annotation in pageAnnotations {
                             page.removeAnnotation(annotation)
                         }
                     }
-                    return PreparedPdf(document: document)
+                    return PreparedPdf(
+                        document: document,
+                        handwritingPages: handwritingPages)
                 }.value
                 guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
                 guard let parsed = prepared.document else {
@@ -160,6 +170,7 @@ struct PdfViewerView_iOS: View {
                 // The byte count is what the residency policy costs this tab at
                 // when ranking eviction candidates against its byte budget.
                 runtime.adoptPreparedPdf(parsed, byteCount: data.count)
+                ink.adoptHandwritingPages(prepared.handwritingPages, for: parsed)
                 document = parsed
             }
             // Restore persisted page text before adopting (PDF only; the host
