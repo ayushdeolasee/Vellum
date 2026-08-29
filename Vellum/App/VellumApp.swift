@@ -135,7 +135,7 @@ struct VellumApp: App {
     var body: some Scene {
         // Single window like the Tauri app — stores are app-wide singletons,
         // so multiple windows would fight over the same active-tab state.
-        Window("Vellum", id: "main") {
+        Window(RuntimeProfile.current.isDevelopment ? "Vellum Dev" : "Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task(priority: .utility) {

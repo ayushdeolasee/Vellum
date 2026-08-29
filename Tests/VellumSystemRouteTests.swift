@@ -12,7 +12,7 @@ struct VellumSystemRouteTests {
         let route = VellumSystemRoute(shelf: .readLater, itemID: validWidgetItemID)
         let url = try #require(VellumDeepLink.url(for: route))
 
-        #expect(url.absoluteString == "vellum://open/read-later?id=\(validWidgetItemID)")
+        #expect(url.absoluteString == "vellum-dev://open/read-later?id=\(validWidgetItemID)")
         #expect(VellumDeepLink.parse(url) == route)
     }
 
@@ -21,13 +21,13 @@ struct VellumSystemRouteTests {
         .bug(id: 158),
         arguments: [
             "https://open/recent?id=\(validWidgetItemID)",
-            "vellum://other/recent?id=\(validWidgetItemID)",
-            "vellum://open/unknown?id=\(validWidgetItemID)",
-            "vellum://open/recent?id=short",
-            "vellum://open/recent?id=\(validWidgetItemID)&extra=value",
-            "vellum://open/recent?id=\(validWidgetItemID)#fragment",
-            "vellum://user@open/recent?id=\(validWidgetItemID)",
-            "vellum://open:42/recent?id=\(validWidgetItemID)",
+            "vellum-dev://other/recent?id=\(validWidgetItemID)",
+            "vellum-dev://open/unknown?id=\(validWidgetItemID)",
+            "vellum-dev://open/recent?id=short",
+            "vellum-dev://open/recent?id=\(validWidgetItemID)&extra=value",
+            "vellum-dev://open/recent?id=\(validWidgetItemID)#fragment",
+            "vellum-dev://user@open/recent?id=\(validWidgetItemID)",
+            "vellum-dev://open:42/recent?id=\(validWidgetItemID)",
         ])
     func rejectsMalformed(_ value: String) throws {
         let url = try #require(URL(string: value))

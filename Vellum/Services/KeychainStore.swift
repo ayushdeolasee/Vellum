@@ -39,10 +39,14 @@ enum KeychainStore {
     /// same "service/account" vault key as the real vault.
     private static let testStore = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
-    private static let vaultService = "com.vellum.vault"
+    private static var vaultService: String { RuntimeProfile.current.keychainVaultService }
     private static let vaultAccount = "vault"
     /// Service namespaces that previously stored one keychain item per secret.
-    private static let legacyServices = ["com.vellum.ai", "com.vellum.integrations"]
+    private static var legacyServices: [String] {
+        RuntimeProfile.current.isDevelopment && !isRunningTests
+            ? []
+            : ["com.vellum.ai", "com.vellum.integrations"]
+    }
 
     /// Vault contents plus the keychain item's modification date, used to
     /// detect writes from another running Vellum instance before overwriting.

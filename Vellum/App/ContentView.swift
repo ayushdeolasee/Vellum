@@ -73,6 +73,13 @@ struct ContentView: View {
             .focusedSceneValue(
                 \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
+            .overlay(alignment: .topTrailing) {
+                if RuntimeProfile.current.isDevelopment {
+                    DevelopmentBadge()
+                        .padding(12)
+                        .allowsHitTesting(false)
+                }
+            }
             .onAppear(perform: installKeyMonitor)
             .onDisappear(perform: removeKeyMonitor)
     }

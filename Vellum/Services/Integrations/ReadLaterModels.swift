@@ -221,6 +221,7 @@ struct IntegrationDownloadState: Hashable, Sendable {
 }
 
 enum IntegrationError: LocalizedError, Equatable, Sendable {
+    case syncDisabled
     case invalidCredential, tokenRejected, rateLimited, invalidResponse, malformedData
     case credentialPersistenceFailed, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
     case unsupportedDestination, paginationDidNotAdvance
@@ -228,6 +229,7 @@ enum IntegrationError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .syncDisabled: "Sync is disabled for this launch."
         case .invalidCredential: "Enter a valid access token."
         case .tokenRejected: "The service rejected this token. Check it and try again."
         case .rateLimited: "The service is temporarily rate limiting requests."

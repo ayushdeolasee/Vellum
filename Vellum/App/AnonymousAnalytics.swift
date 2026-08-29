@@ -12,7 +12,8 @@ actor AnonymousAnalytics {
     private init() {}
 
     func reportFirstLaunchIfNeeded() async {
-        guard !TestEnvironment.isHostedTestProcess,
+        guard RuntimeProfile.current.syncEnabled,
+              !TestEnvironment.isHostedTestProcess,
               !UITestLaunchConfiguration.isEnabled
         else { return }
 

@@ -187,6 +187,13 @@ struct VellumApp_iOS: App {
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
+                .overlay(alignment: .topTrailing) {
+                    if RuntimeProfile.current.isDevelopment {
+                        DevelopmentBadge()
+                            .padding(12)
+                            .allowsHitTesting(false)
+                    }
+                }
         }
         .commands {
             VellumCommands_iOS(workspace: workspace)

@@ -128,6 +128,7 @@ enum StorageAccess: Sendable {
             let root = WebStorageLayout.resolve(mode: mode, storeDir: storeDir).recordsDir
             return .direct(root: root)
         case .icloud:
+            guard RuntimeProfile.current.syncEnabled else { return .unavailable }
             let (root, container) = await Task.detached(priority: .utility) {
                 WebStorageSettings.resolveICloudRoot()
                 let root = WebStorageSettings.icloudVellumRoot

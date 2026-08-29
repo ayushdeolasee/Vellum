@@ -6,7 +6,7 @@ import Foundation
 /// pipeline. Its bytes are discarded; once iOS wakes the containing app, the
 /// app drains the App Group record through WebFetch/WebArchive itself.
 enum CaptureBackgroundSession {
-    static let identifier = "com.ayushdeolasee.vellum.capture-wake"
+    static var identifier: String { RuntimeProfile.current.captureBackgroundSessionIdentifier }
 
     static func configuration() -> URLSessionConfiguration {
         configuration(identifier: identifier)
