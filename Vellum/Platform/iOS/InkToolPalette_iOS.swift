@@ -16,7 +16,10 @@ struct InkToolPalette_iOS: View {
     @State private var showCompactPopover = false
 
     private var colors: [Color] {
-        ink.tool == .highlighter ? InkPalette.highlighterColors : InkPalette.penColors
+        switch ink.tool {
+        case .highlighter, .textHighlight: InkPalette.highlighterColors
+        case .pen, .eraser: InkPalette.penColors
+        }
     }
 
     var body: some View {
@@ -37,10 +40,12 @@ struct InkToolPalette_iOS: View {
                 colorRow(compact: compact)
                 divider
             }
-            if compact {
-                widthCycleButton
-            } else {
-                widthRow
+            if ink.tool != .textHighlight {
+                if compact {
+                    widthCycleButton
+                } else {
+                    widthRow
+                }
             }
             if ink.tool == .eraser {
                 divider
@@ -82,7 +87,9 @@ struct InkToolPalette_iOS: View {
     private var toolGroup: some View {
         HStack(spacing: 4) {
             toolButton(.pen, system: "pencil.tip", label: "Pen")
-            toolButton(.highlighter, system: "highlighter", label: "Highlighter")
+            toolButton(.highlighter, system: "highlighter", label: "Freehand highlighter")
+            toolButton(
+                .textHighlight, system: "character.cursor.ibeam", label: "Text highlight")
             toolButton(.eraser, system: "eraser", label: "Eraser")
         }
     }
@@ -135,7 +142,9 @@ struct InkToolPalette_iOS: View {
                 .accessibilityLabel(Text("Ink color"))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
-            customColorPicker
+            if ink.tool != .textHighlight {
+                customColorPicker
+            }
         }
     }
 
@@ -238,6 +247,7 @@ struct InkToolPalette_iOS: View {
         switch ink.tool {
         case .pen: 1...14
         case .highlighter: 6...40
+        case .textHighlight: 1...1
         case .eraser: 6...60
         }
     }
@@ -246,6 +256,7 @@ struct InkToolPalette_iOS: View {
         switch ink.tool {
         case .pen: "Pen"
         case .highlighter: "Highlighter"
+        case .textHighlight: "Text highlight"
         case .eraser: "Eraser"
         }
     }
@@ -337,7 +348,7 @@ struct InkToolPalette_iOS: View {
     }
 
     private func dotSize(_ w: CGFloat) -> CGFloat {
-        let scale: CGFloat = ink.tool == .highlighter ? 0.5 : (ink.tool == .eraser ? 0.5 : 1.6)
+        let scale: CGFloat = ink.tool == .pen ? 1.6 : 0.5
         return min(24, max(6, w * scale))
     }
 

@@ -330,6 +330,21 @@ struct PdfKitView_iOS: UIViewRepresentable {
         private var offsetObservation: NSKeyValueObservation?
         private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
         private let regionCaptureGesture = RegionCaptureGestureRecognizer()
+        private lazy var pencilTextHighlightGesture: UIPanGestureRecognizer = {
+            let gesture = UIPanGestureRecognizer(
+                target: self, action: #selector(pencilTextHighlightDragged(_:)))
+            gesture.maximumNumberOfTouches = 1
+            gesture.cancelsTouchesInView = true
+            gesture.delegate = self
+            #if targetEnvironment(simulator)
+            // Simulator has no Pencil input; direct touch keeps this interaction
+            // verifiable without changing real-device finger scrolling.
+            gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            #else
+            gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+            #endif
+            return gesture
+        }()
         private var readerChromeScrollAction = ReaderChromeScrollAction()
         private var regionCaptureEnabled = false
 
@@ -353,6 +368,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
         func attach(to view: PDFView) {
             self.view = view
+
+            if pencilTextHighlightGesture.view !== view {
+                view.addGestureRecognizer(pencilTextHighlightGesture)
+            }
 
             if regionCaptureGesture.view !== view {
                 regionCaptureGesture.detach()
@@ -473,6 +492,10 @@ struct PdfKitView_iOS: UIViewRepresentable {
                     native.require(toFail: ours)
                 }
             }
+            // A Pencil drag that starts on text highlights it. A finger, or a
+            // Pencil drag beginning in whitespace, fails this recognizer and
+            // proceeds through PDFKit's normal scrolling gesture.
+            scroll.panGestureRecognizer.require(toFail: pencilTextHighlightGesture)
             offsetObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] scroll, _ in
                 MainActor.assumeIsolated {
                     self?.controller.scrollChanged(offsetY: scroll.contentOffset.y)
@@ -527,6 +550,39 @@ struct PdfKitView_iOS: UIViewRepresentable {
             controller.handleNoteTap(atTopLeft: gesture.location(in: view))
         }
 
+        @objc private func pencilTextHighlightDragged(_ gesture: UIPanGestureRecognizer) {
+            guard let view else { return }
+            let point = gesture.location(in: view)
+            switch gesture.state {
+            case .began:
+                if !controller.beginPencilTextHighlight(atTopLeft: point) {
+                    gesture.isEnabled = false
+                    gesture.isEnabled = true
+                }
+            case .changed:
+                controller.updatePencilTextHighlight(atTopLeft: point)
+            case .ended:
+                controller.updatePencilTextHighlight(atTopLeft: point)
+                controller.finishPencilTextHighlight(color: ink.textHighlightColorHex)
+            case .cancelled, .failed:
+                controller.cancelPencilTextHighlight()
+            default:
+                break
+            }
+        }
+
+        nonisolated func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            MainActor.assumeIsolated {
+                guard gestureRecognizer === pencilTextHighlightGesture else { return true }
+                guard ink.isActive, ink.tool == .textHighlight, let view else { return false }
+                return controller.canBeginPencilTextHighlight(
+                    atTopLeft: touch.location(in: view))
+            }
+        }
+
         nonisolated func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
@@ -548,6 +604,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
             offsetObservation = nil
             regionCaptureGesture.detach()
             chromeScrollObserver.detach()
+            if let view {
+                view.removeGestureRecognizer(pencilTextHighlightGesture)
+            }
             // The PDFView is NOT released here. It belongs to the tab's
             // `LiveTabRuntime`, not to this host: nil'ing the controller's
             // reference on dismantle is what used to make every remount rebuild
