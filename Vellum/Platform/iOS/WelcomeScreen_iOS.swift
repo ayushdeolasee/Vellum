@@ -105,13 +105,10 @@ struct WelcomeLibrary_iOS: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // In compact mode the pane already has its own chrome, so the Home
-            // bar would be a second title row inside a split. Help and Settings
-            // stay reachable from the pane's own menu.
-            if !compact {
-                homeHeader
-                Divider()
-            }
+            // Compact Home sits below the pane's tab strip, so it omits the
+            // duplicate title but keeps the global Help and Settings actions.
+            homeHeader
+            Divider()
             Group {
                 if showsFirstRun {
                     firstRunLayout
@@ -263,18 +260,23 @@ struct WelcomeLibrary_iOS: View {
     /// them — `UpdateChecker` is a Sparkle-style self-updater, which is
     /// meaningless in an App Store app.
     ///
-    /// This is the app's settings entry point when no document is open, so it
-    /// has to survive the search revamp.
+    /// Compact start tabs omit the title because the pane already has a tab
+    /// strip, but the global actions remain visible in every empty state.
     private var homeHeader: some View {
         HStack(spacing: 8) {
-            Text("Home")
-                .font(.headline)
-                .foregroundStyle(palette.foreground)
+            if !compact {
+                Text("Home")
+                    .font(.headline)
+                    .foregroundStyle(palette.foreground)
+            }
             Spacer()
             Button {
                 showHelp = true
             } label: {
-                Label("Help", systemImage: "questionmark.circle").labelStyle(.iconOnly)
+                Label("Help", systemImage: "questionmark.circle")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.help")
             Button {
@@ -284,7 +286,10 @@ struct WelcomeLibrary_iOS: View {
                 workspace.settingsSection = .general
                 showSettings = true
             } label: {
-                Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
+                Label("Settings", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.settings")
         }
