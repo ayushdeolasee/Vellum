@@ -381,6 +381,12 @@ struct WelcomeLibrary_iOS: View {
 
     // MARK: - Results
 
+    /// Two columns fit the full iPad library, while a split pane naturally
+    /// falls back to one without a size-class threshold.
+    private var resultColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 360), spacing: 12, alignment: .top)]
+    }
+
     private var resultList: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -397,17 +403,19 @@ struct WelcomeLibrary_iOS: View {
 
                     ForEach(store.sections) { group in
                         Section {
-                            ForEach(group.items) { item in
-                                HomeResultRow(
-                                    item: item,
-                                    isSelected: store.selectedId == item.id,
-                                    open: { open(item) },
-                                    share: shareTarget(for: item),
-                                    rename: actions.renameAction(for: item),
-                                    removals: actions.removalActions(
-                                        for: item, undoManager: undoManager)
-                                )
-                                .id(item.id)
+                            LazyVGrid(columns: resultColumns, alignment: .leading, spacing: 6) {
+                                ForEach(group.items) { item in
+                                    HomeResultRow(
+                                        item: item,
+                                        isSelected: store.selectedId == item.id,
+                                        open: { open(item) },
+                                        share: shareTarget(for: item),
+                                        rename: actions.renameAction(for: item),
+                                        removals: actions.removalActions(
+                                            for: item, undoManager: undoManager)
+                                    )
+                                    .id(item.id)
+                                }
                             }
                         } header: {
                             HomeSectionHeader(section: group.section, count: group.items.count)
