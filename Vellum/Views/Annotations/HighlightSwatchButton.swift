@@ -28,12 +28,21 @@ struct HighlightSwatchButton: View {
                 }
                 .frame(width: size, height: size)
                 .scaleEffect(hovering ? 1.1 : 1)
-                .contentShape(Circle())
+                .frame(width: interactionSize, height: interactionSize)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(helpText)
         .accessibilityLabel(helpText)
         .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var interactionSize: CGFloat {
+        #if os(iOS)
+        max(size, 44)
+        #else
+        size
+        #endif
     }
 }

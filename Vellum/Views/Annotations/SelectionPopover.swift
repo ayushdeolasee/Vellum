@@ -24,7 +24,7 @@ struct SelectionPopover: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 4) {
+            HStack(spacing: controlSpacing) {
                 ForEach(HIGHLIGHT_COLORS) { color in
                     HighlightSwatchButton(
                         color: color,
@@ -51,7 +51,8 @@ struct SelectionPopover: View {
                         .font(.system(size: 12))
                         .frame(width: 24, height: 24)
                         .foregroundStyle(.secondary)
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy")
@@ -67,7 +68,8 @@ struct SelectionPopover: View {
                         .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
                         .clipShape(Circle())
-                        .contentShape(Circle())
+                        .frame(width: interactionSize, height: interactionSize)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onHover { noteButtonHovering = $0 }
@@ -82,7 +84,8 @@ struct SelectionPopover: View {
                         .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
                         .clipShape(Circle())
-                        .contentShape(Circle())
+                        .frame(width: interactionSize, height: interactionSize)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onHover { askAiHovering = $0 }
@@ -90,7 +93,7 @@ struct SelectionPopover: View {
                 .accessibilityLabel("Ask AI about this")
                 .accessibilityIdentifier("selectionPopover.askAi")
             }
-            .padding(6)
+            .padding(controlPadding)
             .darkGlassSurface(in: .capsule)
 
             if showNoteInput {
@@ -114,6 +117,30 @@ struct SelectionPopover: View {
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
+    }
+
+    private var interactionSize: CGFloat {
+        #if os(iOS)
+        44
+        #else
+        24
+        #endif
+    }
+
+    private var controlSpacing: CGFloat {
+        #if os(iOS)
+        0
+        #else
+        4
+        #endif
+    }
+
+    private var controlPadding: CGFloat {
+        #if os(iOS)
+        4
+        #else
+        6
+        #endif
     }
 
     /// Attach the selected text to the AI composer as a `.selection` reference

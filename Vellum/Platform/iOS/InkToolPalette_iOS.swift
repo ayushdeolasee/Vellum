@@ -50,7 +50,7 @@ struct InkToolPalette_iOS: View {
             actionRow
         }
         .padding(.horizontal, compact ? 10 : 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .frame(height: 56)
         .glassEffect(.regular, in: .capsule)
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
@@ -67,7 +67,8 @@ struct InkToolPalette_iOS: View {
                 .fill(palette.foreground)
                 .frame(width: dotSize(ink.activeWidth), height: dotSize(ink.activeWidth))
                 .frame(width: 34, height: 34)
-                .contentShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Stroke width — tap to cycle, touch and hold to adjust")
@@ -80,7 +81,7 @@ struct InkToolPalette_iOS: View {
     }
 
     private var toolGroup: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             toolButton(.pen, system: "pencil.tip", label: "Pen")
             toolButton(.highlighter, system: "highlighter", label: "Highlighter")
             toolButton(.eraser, system: "eraser", label: "Eraser")
@@ -99,7 +100,8 @@ struct InkToolPalette_iOS: View {
                 .background {
                     if selected { Circle().fill(palette.primary.opacity(0.16)) }
                 }
-                .contentShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -113,7 +115,7 @@ struct InkToolPalette_iOS: View {
     /// takes over as soon as there's width for it.
     private func colorRow(compact: Bool) -> some View {
         let shown = compact ? Array(colors.prefix(3)) : colors
-        return HStack(spacing: 6) {
+        return HStack(spacing: 0) {
             ForEach(shown, id: \.self) { color in
                 let selected = colorsEqual(ink.activeColor, color)
                 Button {
@@ -129,7 +131,8 @@ struct InkToolPalette_iOS: View {
                                 Circle().stroke(palette.primary, lineWidth: 2).padding(-3)
                             }
                         }
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text("Ink color"))
@@ -153,10 +156,13 @@ struct InkToolPalette_iOS: View {
             supportsOpacity: ink.tool == .highlighter
         )
         .labelsHidden()
-        .frame(width: 26, height: 26)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
         .overlay {
             if isCustom {
-                Circle().stroke(palette.primary, lineWidth: 2).padding(-3)
+                Circle()
+                    .stroke(palette.primary, lineWidth: 2)
+                    .frame(width: 32, height: 32)
             }
         }
         .accessibilityLabel(Text("Custom ink color"))
@@ -166,7 +172,7 @@ struct InkToolPalette_iOS: View {
     /// Tapping an unselected dot selects that slot; tapping the already-
     /// selected dot opens a popover to customize its size.
     private var widthRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             ForEach(Array(ink.activeWidths.enumerated()), id: \.offset) { index, w in
                 let selected = index == ink.activeSlot
                 Button {
@@ -183,7 +189,8 @@ struct InkToolPalette_iOS: View {
                         .background {
                             if selected { Circle().fill(palette.primary.opacity(0.16)) }
                         }
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text("\(toolLabel) size, \(String(format: "%.1f", w)) points"))
@@ -253,7 +260,7 @@ struct InkToolPalette_iOS: View {
     /// Pixel (bitmap) vs object (vector) eraser mode. Shown next to the width
     /// dots only while the eraser is the active tool.
     private func eraserModeRow(compact: Bool) -> some View {
-        HStack(spacing: compact ? 2 : 4) {
+        HStack(spacing: 0) {
             eraserModeButton(.pixel, system: "eraser", label: "Pixel eraser", size: compact ? 36 : 40)
             eraserModeButton(.object, system: "eraser.line.dashed", label: "Object eraser", size: compact ? 36 : 40)
         }
@@ -272,7 +279,8 @@ struct InkToolPalette_iOS: View {
                 .background {
                     if selected { Circle().fill(palette.primary.opacity(0.16)) }
                 }
-                .contentShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -280,7 +288,7 @@ struct InkToolPalette_iOS: View {
     }
 
     private var actionRow: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             fingerToggle
             paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
             paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
@@ -292,6 +300,8 @@ struct InkToolPalette_iOS: View {
                     .padding(.horizontal, 16)
                     .frame(height: 36)
                     .background(palette.primary, in: Capsule())
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Done inking")
@@ -312,7 +322,8 @@ struct InkToolPalette_iOS: View {
                 .background {
                     if on { Circle().fill(palette.primary.opacity(0.16)) }
                 }
-                .contentShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(on ? "Finger drawing on" : "Finger drawing off")
@@ -325,7 +336,8 @@ struct InkToolPalette_iOS: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(enabled ? AnyShapeStyle(palette.foreground) : AnyShapeStyle(.tertiary))
                 .frame(width: 40, height: 40)
-                .contentShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
