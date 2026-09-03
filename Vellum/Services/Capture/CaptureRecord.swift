@@ -157,13 +157,13 @@ enum CaptureDecodeOutcome: Sendable, Equatable {
 
 enum CaptureCoding {
     /// Deterministic bytes so the wire format is assertable byte for byte.
-    nonisolated(unsafe) static let encoder: JSONEncoder = {
+    static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }()
 
-    nonisolated(unsafe) static let decoder = JSONDecoder()
+    static let decoder = JSONDecoder()
 
     static func encode(_ record: CaptureRecord) throws -> Data {
         try encoder.encode(record)
@@ -193,7 +193,7 @@ enum CaptureTimestamp {
         return iso8601Plain.date(from: value)
     }
 
-    nonisolated(unsafe) private static let writer: DateFormatter = {
+    private static let writer: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")

@@ -624,7 +624,7 @@ enum PositionTimestamp {
 
     static func parse(_ value: String) -> Date? { WebLibrary.parseRfc3339(value) }
 
-    nonisolated(unsafe) private static let formatter: DateFormatter = {
+    private static let formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
@@ -636,7 +636,7 @@ enum PositionTimestamp {
 enum PositionCoding {
     /// Deterministic bytes: these files sync, so stable ordering and small
     /// output beat the sidecar's pretty printing.
-    nonisolated(unsafe) static let encoder: JSONEncoder = {
+    static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .custom { date, encoder in
@@ -646,7 +646,7 @@ enum PositionCoding {
         return encoder
     }()
 
-    nonisolated(unsafe) static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let raw = try decoder.singleValueContainer().decode(String.self)

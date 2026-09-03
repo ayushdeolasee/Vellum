@@ -241,7 +241,7 @@ struct PdfViewerView_iOS: View {
             await controller?.locateText(pageNumber: page, query: query)
         }
         aiStore.capturePageImageHandler = { [weak controller] page in
-            await controller?.capturePageImage(pageNumber: page)
+            controller?.capturePageImage(pageNumber: page)
         }
         app.findQueryHandler = { [weak controller] query in
             MainActor.assumeIsolated { controller?.findQuery(query) }

@@ -798,7 +798,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard dims.width >= 1, dims.height >= 1 else { return nil }
 
         let zoom = pdfView?.scaleFactor ?? 1
-        let backing = min(UIScreen.main.scale, 1.5)
+        let backing = min(pdfView?.traitCollection.displayScale ?? 1, 1.5)
         var pixelWidth = dims.width * zoom * backing
         var pixelHeight = dims.height * zoom * backing
         guard pixelWidth >= 2, pixelHeight >= 2 else { return nil }

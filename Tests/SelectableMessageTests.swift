@@ -186,7 +186,7 @@ final class SelectableMessageTests: XCTestCase {
     /// is the check: a re-render always installs a fresh NSAttributedString.
     func testWidthOnlyUpdateSkipsRerenderForAReplyWithNoMath() throws {
         let content = "A plain reply with **bold** and `code` but no equations at all."
-        let host = mountedBubble(content: content, maxWidth: 248, frameWidth: 520)
+        let host = try mountedBubble(content: content, maxWidth: 248, frameWidth: 520)
         let view = try XCTUnwrap(Self.firstSubview(of: SelectableTextView.self, in: host.view))
         let before = view.attributed
 
@@ -205,7 +205,7 @@ final class SelectableMessageTests: XCTestCase {
     /// width changes, or the panel is left showing a stale, undersized image.
     func testWidthOnlyUpdateRerendersAReplyThatContainsMath() throws {
         let content = "The Gaussian integral: $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$"
-        let host = mountedBubble(content: content, maxWidth: 100, frameWidth: 520)
+        let host = try mountedBubble(content: content, maxWidth: 100, frameWidth: 520)
         let view = try XCTUnwrap(Self.firstSubview(of: SelectableTextView.self, in: host.view))
         let before = view.attributed
         XCTAssertEqual(view.appliedMathWidth, 100)
@@ -237,16 +237,19 @@ final class SelectableMessageTests: XCTestCase {
     /// on subsequent `rootView` swaps against the same live text view.
     ///
     /// Unlike the pure measurements above, this one needs a real (off-screen,
-    /// scene-less, never-shown) `UIWindow`: SwiftUI only instantiates a
+    /// never-shown `UIWindow`: SwiftUI only instantiates a
     /// `UIViewRepresentable`'s UIView once the hosting controller's view is in a
     /// window, and these two tests assert on that live view's identity.
     private func mountedBubble(
         content: String, maxWidth: CGFloat, frameWidth: CGFloat
-    ) -> UIHostingController<SelectableMessageText> {
+    ) throws -> UIHostingController<SelectableMessageText> {
         let host = UIHostingController(rootView: SelectableMessageText(
             content: content, color: .primary, secondary: .secondary,
             maxWidth: maxWidth, onQuote: { _ in }))
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: frameWidth, height: 600))
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: frameWidth, height: 600)
         window.rootViewController = host
         window.isHidden = false
         windows.append(window)
