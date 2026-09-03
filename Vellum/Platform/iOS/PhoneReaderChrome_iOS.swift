@@ -503,7 +503,6 @@ struct PhoneReaderBottomBar: View {
         .foregroundStyle(palette.foreground)
         .frame(width: PhoneChromeLayout.buttonSide, height: PhoneChromeLayout.buttonSide)
         .contentShape(Rectangle())
-        .accessibilityLabel("More actions")
         .accessibilityIdentifier("phone.reader.more")
     }
 

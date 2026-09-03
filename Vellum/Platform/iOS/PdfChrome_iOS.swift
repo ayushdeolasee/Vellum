@@ -264,7 +264,7 @@ struct PdfToolbar_iOS: View {
     }
 
     private var moreMenu: some View {
-        Menu {
+        Menu("More actions", systemImage: "ellipsis") {
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -377,23 +377,12 @@ struct PdfToolbar_iOS: View {
             }
             Divider()
             Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
-        } label: {
-            // DO NOT port main's ZStack trick here (#129 packet 7 §2.10 G4).
-            // On AppKit a menu control paints its own hover highlight *beneath*
-            // any attached background, so main draws the glyph and the pill as
-            // ZStack siblings and drops the `Menu` itself to `.opacity(0.02)` as
-            // a transparent-but-still-hit-testable target. UIKit menus paint no
-            // such highlight under an attached background, so copying that would
-            // buy nothing and make this glyph 2% opaque. The system's own
-            // menu-open highlight is the touch feedback; `contentShape` below
-            // keeps the whole 44pt slot tappable, which is the part that matters.
-            Image(systemName: "ellipsis")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(palette.foreground)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
         }
-        .accessibilityLabel("More actions")
+        .labelStyle(.iconOnly)
+        .font(.system(size: 18, weight: .medium))
+        .foregroundStyle(palette.foreground)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
