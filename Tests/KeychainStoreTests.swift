@@ -47,6 +47,30 @@ struct KeychainStoreTests {
                 ])
             #expect(fake.legacyValue(service: aiService, account: "gemini") == nil)
             #expect(fake.legacyValue(service: integrationsService, account: "read-later.readwise") == nil)
+            #expect(fake.vaultUsesAfterFirstUnlock)
+        }
+    }
+
+    @Test("A readable vault retries after its accessibility update fails")
+    func existingVaultAccessibilityMigrationRetries() {
+        let fake = FakeKeychain()
+        fake.seedVault(
+            ["com.vellum.integrations/read-later.readwise": "rw1"],
+            afterFirstUnlock: false)
+        fake.accessibilityMigrationSucceeds = false
+
+        KeychainStore.withBackend(fake.backend) {
+            #expect(KeychainStore.get("read-later.readwise", service: integrationsService) == nil)
+            #expect(fake.accessibilityMigrationAttemptCount == 1)
+            #expect(fake.readCount == 1, "the vault remained readable after the failed update")
+
+            fake.accessibilityMigrationSucceeds = true
+
+            #expect(
+                KeychainStore.get("read-later.readwise", service: integrationsService) == "rw1")
+            #expect(fake.vaultUsesAfterFirstUnlock)
+            #expect(fake.accessibilityMigrationAttemptCount == 2)
+            #expect(fake.readCount == 2, "the failed locked-device read must not be cached")
         }
     }
 
@@ -321,6 +345,8 @@ private final class FakeKeychain: @unchecked Sendable {
     /// payload that no longer decodes. Attribute probes still succeed, as they
     /// do on macOS.
     var vaultIsReadable = true
+    var vaultUsesAfterFirstUnlock = true
+    var accessibilityMigrationSucceeds = true
     var vaultWriteSucceeds = true
     var commitLockIsAvailable = true
     /// service -> account -> item.
@@ -331,6 +357,7 @@ private final class FakeKeychain: @unchecked Sendable {
     var onRead: (@Sendable () -> Void)?
 
     private(set) var readCount = 0
+    private(set) var accessibilityMigrationAttemptCount = 0
     private(set) var probeCount = 0
     private(set) var writeCount = 0
     private(set) var deleteCount = 0
@@ -347,9 +374,12 @@ private final class FakeKeychain: @unchecked Sendable {
         return clock
     }
 
-    func seedVault(_ entries: [String: String], at date: Date? = nil) {
+    func seedVault(
+        _ entries: [String: String], at date: Date? = nil, afterFirstUnlock: Bool = true
+    ) {
         vaultEntries = entries
         vaultModDate = date ?? tick()
+        vaultUsesAfterFirstUnlock = afterFirstUnlock
     }
 
     func seedLegacy(service: String, account: String, value: String, at date: Date? = nil) {
@@ -372,6 +402,14 @@ private final class FakeKeychain: @unchecked Sendable {
                 guard vaultIsReadable else { return nil }
                 return KeychainStore.VaultState(entries: vaultEntries, modDate: vaultModDate)
             },
+            migrateVaultAccessibility: { [self] in
+                guard vaultEntries != nil, !vaultUsesAfterFirstUnlock else { return true }
+                accessibilityMigrationAttemptCount += 1
+                guard accessibilityMigrationSucceeds else { return false }
+                vaultUsesAfterFirstUnlock = true
+                vaultModDate = tick()
+                return true
+            },
             probeModDate: { [self] in
                 probeCount += 1
                 return vaultEntries == nil ? nil : vaultModDate
@@ -381,6 +419,7 @@ private final class FakeKeychain: @unchecked Sendable {
                 guard vaultWriteSucceeds else { return false }
                 vaultEntries = entries
                 vaultModDate = tick()
+                vaultUsesAfterFirstUnlock = true
                 return true
             },
             deleteVault: { [self] in
