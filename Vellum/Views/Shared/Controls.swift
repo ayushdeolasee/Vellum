@@ -38,7 +38,11 @@ struct IconButton<Icon: View>: View {
                 .foregroundStyle(foreground)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.md))
                 .frame(width: size.targetSide, height: size.targetSide)
+                #if os(macOS)
+                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+                #else
                 .contentShape(Rectangle())
+                #endif
         }
         .buttonStyle(.plain)
         .disabled(disabled)
