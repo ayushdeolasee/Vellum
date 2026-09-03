@@ -279,51 +279,56 @@ struct WelcomeScreen: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "doc.text")
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(.tint)
-                .frame(width: 44, height: 44)
-                .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+        VStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(.tint)
+                    .frame(width: 44, height: 44)
+                    .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Wordmark(size: 22)
-                Text("Everything you've read, in one place.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.mutedForeground)
+                VStack(alignment: .leading, spacing: 2) {
+                    homeTitle(size: 22)
+                    Text("Everything you've read, in one place.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.mutedForeground)
+                }
+
+                Spacer(minLength: 12)
+                homeActions
             }
 
-            Spacer(minLength: 12)
+            HStack(spacing: 14) {
+                Spacer(minLength: 0)
 
-            TextButton(disabled: appStore.isLoading, action: openDocuments) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14))
-                Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+                TextButton(disabled: appStore.isLoading, action: openDocuments) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 14))
+                    Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+                }
+                .accessibilityIdentifier("welcome.openPdf")
+
+                TextButton(variant: .secondary, disabled: appStore.isLoading) {
+                    NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+                } label: {
+                    Image(systemName: "globe")
+                        .font(.system(size: 14))
+                    Text("Add Webpage")
+                }
+                .help("Open a webpage by URL (⌘L)")
+                .accessibilityIdentifier("welcome.addWebpage")
+
+                // Returning users get the compact icon form; the first-run
+                // hero spells the walkthrough out as a text link instead.
+                IconButton(
+                    help: "A short walkthrough of Vellum's features",
+                    action: openWalkthrough
+                ) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 14))
+                }
+                .accessibilityIdentifier("welcome.walkthrough")
             }
-            .accessibilityIdentifier("welcome.openPdf")
-
-            TextButton(variant: .secondary, disabled: appStore.isLoading) {
-                NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-            } label: {
-                Image(systemName: "globe")
-                    .font(.system(size: 14))
-                Text("Add Webpage")
-            }
-            .help("Open a webpage by URL (⌘L)")
-            .accessibilityIdentifier("welcome.addWebpage")
-
-            // #65's walkthrough entry point. Returning users get the compact
-            // icon form — this header is already dense, and they've seen the
-            // offer before; the first-run hero spells it out as a text link
-            // instead. The two layouts are mutually exclusive, so exactly one
-            // `welcome.walkthrough` is ever on screen.
-            IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
-                Image(systemName: "questionmark.circle")
-                    .font(.system(size: 14))
-            }
-            .accessibilityIdentifier("welcome.walkthrough")
-
-            homeActions
         }
     }
 
@@ -594,6 +599,13 @@ struct WelcomeScreen: View {
         }
     }
 
+    private func homeTitle(size: CGFloat) -> some View {
+        Wordmark(size: size)
+            .accessibilityRepresentation {
+                Text("Home").accessibilityAddTraits(.isHeader)
+            }
+    }
+
     private func showSettings() {
         workspace.settingsSection = .general
         openSettings()
@@ -739,7 +751,7 @@ struct WelcomeScreen: View {
                 .padding(.bottom, 12)
 
             HStack(spacing: 8) {
-                Wordmark(size: 36)
+                homeTitle(size: 36)
                 homeActions
             }
 
