@@ -1611,6 +1611,7 @@ final class AppStore {
                 }
                 await positions?.flush()
                 if closingDocument.kind == .pdf {
+                    await runtime?.flushPendingAnnotationWrites()
                     try? await sessions.setDocumentMetadata(
                         sessionId: tabId, key: "last_page", value: lastPage)
                 }

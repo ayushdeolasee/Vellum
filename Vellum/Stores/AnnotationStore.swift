@@ -94,6 +94,17 @@ final class AnnotationStore {
         return await create(input, label: "highlight")
     }
 
+    /// Queue a highlight against a known tab instead of consulting whichever
+    /// tab happens to be active when an input task starts.
+    func enqueueHighlight(
+        _ input: CreateAnnotationInput,
+        sessionId: String
+    ) -> (annotation: Annotation, persistence: Task<Bool, Never>)? {
+        var input = input
+        input.type = .highlight
+        return enqueueCreate(input, label: "highlight", sessionId: sessionId)
+    }
+
     @discardableResult
     func addNote(_ input: CreateAnnotationInput) async -> Annotation? {
         var input = input
@@ -227,6 +238,15 @@ final class AnnotationStore {
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
+        return enqueueCreate(input, label: label, sessionId: sessionId)?.annotation
+    }
+
+    private func enqueueCreate(
+        _ input: CreateAnnotationInput,
+        label: String,
+        sessionId: String
+    ) -> (annotation: Annotation, persistence: Task<Bool, Never>)? {
+        guard app.containsTab(id: sessionId) else { return nil }
 
         // Optimistic create: render the annotation immediately with a stable,
         // caller-supplied id/timestamp, then persist in the background. Embedding
@@ -247,24 +267,27 @@ final class AnnotationStore {
             positionData: input.positionData,
             createdAt: now,
             updatedAt: now)
-        annotations.append(optimistic)
+        if app.activeTabId == sessionId {
+            annotations.append(optimistic)
+        }
 
         // Persist in the background and return the optimistic record NOW, so the
         // caller can open the note editor / reset the tool immediately instead of
         // waiting out the whole-file rewrite.
-        let task = Task { [weak self] () -> Bool in
-            guard let self else { return false }
-            defer { self.pendingCreates[id] = nil }
+        let sessions = sessions
+        let app = app
+        let task = Task { [weak self, sessions, app] () -> Bool in
+            defer { self?.pendingCreates[id] = nil }
             do {
-                let saved = try await self.sessions.createAnnotation(
+                let saved = try await sessions.createAnnotation(
                     sessionId: sessionId, input: input)
                 // The create just lazily stamped /VellumDocId (first mutation on
                 // an unstamped PDF); surface the resolved id into the in-memory
                 // document so class-B stores can key off it this session.
-                if self.app.activeTabId == sessionId {
-                    await self.app.syncDocumentId(sessionId: sessionId)
+                if app.activeTabId == sessionId {
+                    await app.syncDocumentId(sessionId: sessionId)
                 }
-                guard self.app.activeTabId == sessionId else { return true }
+                guard let self, app.activeTabId == sessionId else { return true }
                 // Reconcile in place (same id, so the SwiftUI row/editor is
                 // preserved) with authoritative defaults, without clobbering a
                 // color, text, resize, or web-page move made while I/O awaited.
@@ -285,7 +308,7 @@ final class AnnotationStore {
             } catch {
                 NSLog("[annotation-store] Failed to create \(label): \(error)")
                 // Roll back the optimistic insert.
-                if self.app.activeTabId == sessionId {
+                if let self, app.activeTabId == sessionId {
                     self.annotations.removeAll { $0.id == id }
                     if self.selectedAnnotationId == id { self.selectedAnnotationId = nil }
                 }
@@ -293,7 +316,7 @@ final class AnnotationStore {
             }
         }
         pendingCreates[id] = task
-        return optimistic
+        return (optimistic, task)
     }
 
     /// The default color the backend would assign when the caller passes none,

@@ -139,7 +139,7 @@ struct InkToolPalette_iOS: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text("Ink color"))
+                .accessibilityLabel(Text(accessibilityLabel(for: color)))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
             if ink.tool != .textHighlight {
@@ -292,10 +292,12 @@ struct InkToolPalette_iOS: View {
 
     private var actionRow: some View {
         HStack(spacing: 4) {
-            fingerToggle
-            paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
-            paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
-            paletteButton("trash", label: "Clear page", enabled: true) { ink.clearCurrentPage() }
+            if ink.tool != .textHighlight {
+                fingerToggle
+                paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
+                paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
+                paletteButton("trash", label: "Clear page", enabled: true) { ink.clearCurrentPage() }
+            }
             Button(action: onDone) {
                 Text("Done")
                     .font(.system(size: 15, weight: .semibold))
@@ -354,6 +356,17 @@ struct InkToolPalette_iOS: View {
 
     private func colorsEqual(_ a: Color, _ b: Color) -> Bool {
         UIColor(a).cgColor == UIColor(b).cgColor
+    }
+
+    private func accessibilityLabel(for color: Color) -> String {
+        if ink.tool == .highlighter || ink.tool == .textHighlight,
+           let index = InkPalette.highlighterColors.firstIndex(where: {
+               colorsEqual($0, color)
+           })
+        {
+            return "\(HIGHLIGHT_COLORS[index].name) highlight color"
+        }
+        return "Ink color"
     }
 }
 #endif

@@ -96,7 +96,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     @ObservationIgnored private var findMatches: [PDFSelection] = []
     @ObservationIgnored private var findIndex = -1
     @ObservationIgnored private var pencilTextHighlightPage: PDFPage?
-    @ObservationIgnored private var pencilTextHighlightStart: CGPoint?
+    @ObservationIgnored private var pencilTextHighlightStartRange: NSRange?
     @ObservationIgnored private var isPencilTextHighlighting = false
 
     var isNoteMode: Bool { app?.mode == .note }
@@ -525,9 +525,14 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
               let page = pdfView.page(for: point, nearest: false),
               canBeginPencilTextHighlight(atTopLeft: point) else { return false }
 
+        let pagePoint = pdfView.convert(point, to: page)
+        guard let word = page.selectionForWord(at: pagePoint),
+              word.numberOfTextRanges(on: page) > 0 else { return false }
+        let startRange = word.range(at: 0, on: page)
+        guard startRange.location != NSNotFound, startRange.length > 0 else { return false }
         isPencilTextHighlighting = true
         pencilTextHighlightPage = page
-        pencilTextHighlightStart = pdfView.convert(point, to: page)
+        pencilTextHighlightStartRange = startRange
         selection = nil
         selectionPopoverPosition = nil
         contextMenu = nil
@@ -540,14 +545,22 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard isPencilTextHighlighting,
               let pdfView,
               let page = pencilTextHighlightPage,
-              let start = pencilTextHighlightStart else { return }
+              let start = pencilTextHighlightStartRange else { return }
 
         let bounds = page.bounds(for: pdfView.displayBox)
         let current = pdfView.convert(point, to: page)
         let clamped = CGPoint(
             x: min(max(current.x, bounds.minX), bounds.maxX),
             y: min(max(current.y, bounds.minY), bounds.maxY))
-        guard let currentSelection = page.selection(from: start, to: clamped),
+        guard let word = page.selectionForWord(at: clamped),
+              word.numberOfTextRanges(on: page) > 0 else { return }
+        let end = word.range(at: 0, on: page)
+        guard end.location != NSNotFound, end.length > 0 else { return }
+        let lowerBound = min(start.location, end.location)
+        let upperBound = max(NSMaxRange(start), NSMaxRange(end))
+        guard upperBound > lowerBound,
+              let currentSelection = page.selection(
+                  for: NSRange(location: lowerBound, length: upperBound - lowerBound)),
               currentSelection.string?.isEmpty == false else { return }
         pdfView.setCurrentSelection(currentSelection, animate: false)
     }
@@ -561,15 +574,21 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
         let captured = captureTextSelection(currentSelection)?.selection
         cancelPencilTextHighlight()
-        guard let captured else { return }
+        guard let captured,
+              let originSessionId = tabId,
+              app?.activeTabId == originSessionId,
+              let annotationStore,
+              let runtime else { return }
         let input = CreateAnnotationInput(
             type: .highlight,
             pageNumber: captured.pageNumber,
             color: color,
             content: nil,
             positionData: captured.positionData)
-        Task { [weak self] in
-            await self?.annotationStore?.addHighlight(input)
+        if let queued = annotationStore.enqueueHighlight(
+            input, sessionId: originSessionId)
+        {
+            runtime.trackAnnotationWrite(queued.persistence)
         }
     }
 
@@ -578,7 +597,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         // PDFView notification cannot briefly show the selection popover.
         pdfView?.setCurrentSelection(nil, animate: false)
         pencilTextHighlightPage = nil
-        pencilTextHighlightStart = nil
+        pencilTextHighlightStartRange = nil
         isPencilTextHighlighting = false
     }
 
