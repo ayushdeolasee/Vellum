@@ -5,9 +5,10 @@ import PencilKit
 import SwiftUI
 import UIKit
 
-/// The Pencil ink tool. Highlighter is a translucent marker; pen is opaque.
+/// Apple Pencil tools. Text highlight creates Vellum annotations; the others
+/// use PencilKit ink.
 enum InkTool: String, CaseIterable, Sendable {
-    case pen, highlighter, eraser
+    case pen, highlighter, textHighlight, eraser
 }
 
 /// Ink colors (Scriptorium-aligned). Pen inks are saturated; highlighter reuses
@@ -147,6 +148,9 @@ final class InkController_iOS {
     }
     var penColor: Color = InkPalette.penColors[0]
     var highlighterColor: Color = InkPalette.highlighterColors[0]
+    /// Color for text-backed Vellum highlights drawn with the Pencil. Kept
+    /// separate from the freehand marker so switching tools preserves both.
+    var textHighlightColor: Color = Color(hex: WorkspaceStore.storedDefaultHighlightColor())
     /// Per-tool width slots, selected slot, and eraser mode — persisted as one
     /// JSON blob (see `InkWidthSettings`).
     var widthSettings: InkWidthSettings = InkWidthSettings.loadFromDefaults() {
@@ -268,8 +272,29 @@ final class InkController_iOS {
     @ObservationIgnored private var drainTask: Task<Void, Never>?
 
     var activeColor: Color {
-        get { tool == .highlighter ? highlighterColor : penColor }
-        set { if tool == .highlighter { highlighterColor = newValue } else { penColor = newValue } }
+        get {
+            switch tool {
+            case .highlighter: highlighterColor
+            case .textHighlight: textHighlightColor
+            case .pen, .eraser: penColor
+            }
+        }
+        set {
+            switch tool {
+            case .highlighter: highlighterColor = newValue
+            case .textHighlight: textHighlightColor = newValue
+            case .pen, .eraser: penColor = newValue
+            }
+        }
+    }
+
+    /// Persisted annotation color for the Pencil text-highlighter. Its palette
+    /// is deliberately the same five colors as ordinary Vellum highlights.
+    var textHighlightColorHex: String {
+        let selected = UIColor(textHighlightColor).cgColor
+        return HIGHLIGHT_COLORS.first {
+            UIColor(Color(hex: $0.value)).cgColor == selected
+        }?.value ?? WorkspaceStore.storedDefaultHighlightColor()
     }
     /// The three width presets for the active tool.
     var activeWidths: [CGFloat] {
@@ -277,6 +302,7 @@ final class InkController_iOS {
             switch tool {
             case .pen: widthSettings.penWidths
             case .highlighter: widthSettings.highlighterWidths
+            case .textHighlight: []
             case .eraser: widthSettings.eraserWidths
             }
         }
@@ -284,6 +310,7 @@ final class InkController_iOS {
             switch tool {
             case .pen: widthSettings.penWidths = newValue
             case .highlighter: widthSettings.highlighterWidths = newValue
+            case .textHighlight: break
             case .eraser: widthSettings.eraserWidths = newValue
             }
         }
@@ -294,6 +321,7 @@ final class InkController_iOS {
             switch tool {
             case .pen: widthSettings.penSlot
             case .highlighter: widthSettings.highlighterSlot
+            case .textHighlight: 0
             case .eraser: widthSettings.eraserSlot
             }
         }
@@ -301,6 +329,7 @@ final class InkController_iOS {
             switch tool {
             case .pen: widthSettings.penSlot = newValue
             case .highlighter: widthSettings.highlighterSlot = newValue
+            case .textHighlight: break
             case .eraser: widthSettings.eraserSlot = newValue
             }
         }
@@ -353,6 +382,7 @@ final class InkController_iOS {
     func bumpTool() {
         toolVersion &+= 1
         inkProvider.applyTool()
+        inkProvider.refreshPolicies()
     }
 
     /// A page canvas was seeded with existing ink — nudge observers (the
@@ -386,6 +416,10 @@ final class InkController_iOS {
             return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth)
         case .highlighter:
             return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth)
+        case .textHighlight:
+            // Text highlighting uses a PDFView gesture, not PencilKit. The
+            // overlay is disabled for this mode; this value is never drawn.
+            return PKInkingTool(.marker, color: UIColor(textHighlightColor), width: 12)
         case .eraser:
             // Explicit width — the default reports 0 ("system default"), which
             // leaves the erase radius an unknown.

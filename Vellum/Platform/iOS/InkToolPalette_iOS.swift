@@ -16,7 +16,10 @@ struct InkToolPalette_iOS: View {
     @State private var showCompactPopover = false
 
     private var colors: [Color] {
-        ink.tool == .highlighter ? InkPalette.highlighterColors : InkPalette.penColors
+        switch ink.tool {
+        case .highlighter, .textHighlight: InkPalette.highlighterColors
+        case .pen, .eraser: InkPalette.penColors
+        }
     }
 
     var body: some View {
@@ -25,22 +28,46 @@ struct InkToolPalette_iOS: View {
         // letting the capsule clip at the edges.
         ViewThatFits(in: .horizontal) {
             paletteRow(compact: false)
-            paletteRow(compact: true)
+            if ink.tool == .textHighlight {
+                compactTextHighlightPalette
+            } else {
+                paletteRow(compact: true)
+            }
         }
+    }
+
+    /// The four-tool row cannot share 240 points with five 44-point swatches.
+    /// A second row keeps the tool group intact and puts every highlight color
+    /// in the system menu without adding another piece of palette state.
+    private var compactTextHighlightPalette: some View {
+        VStack(spacing: 2) {
+            toolGroup
+            HStack(spacing: 6) {
+                textHighlightColorMenu
+                divider
+                actionRow
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: .capsule)
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
     }
 
     private func paletteRow(compact: Bool) -> some View {
         HStack(spacing: compact ? 6 : 10) {
             toolGroup
-            divider
             if ink.tool != .eraser {
-                colorRow(compact: compact)
                 divider
+                colorRow(compact: compact)
             }
-            if compact {
-                widthCycleButton
-            } else {
-                widthRow
+            if ink.tool != .textHighlight {
+                divider
+                if compact {
+                    widthCycleButton
+                } else {
+                    widthRow
+                }
             }
             if ink.tool == .eraser {
                 divider
@@ -82,7 +109,9 @@ struct InkToolPalette_iOS: View {
     private var toolGroup: some View {
         HStack(spacing: 4) {
             toolButton(.pen, system: "pencil.tip", label: "Pen")
-            toolButton(.highlighter, system: "highlighter", label: "Highlighter")
+            toolButton(.highlighter, system: "highlighter", label: "Freehand highlighter")
+            toolButton(
+                .textHighlight, system: "character.cursor.ibeam", label: "Text highlight")
             toolButton(.eraser, system: "eraser", label: "Eraser")
         }
     }
@@ -106,11 +135,8 @@ struct InkToolPalette_iOS: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// Preset swatches plus the custom color well. When the palette is compact
-    /// (e.g. the Annotations sidebar is open and the PDF column is narrow) only
-    /// the first few presets are shown so the row still fits — the color well
-    /// still reaches every color, and no preset is fully lost since the full row
-    /// takes over as soon as there's width for it.
+    /// Preset swatches plus the custom color well. Full rows show every preset;
+    /// compact freehand rows show three because their color well reaches more.
     private func colorRow(compact: Bool) -> some View {
         let shown = compact ? Array(colors.prefix(3)) : colors
         return HStack(spacing: 6) {
@@ -129,14 +155,60 @@ struct InkToolPalette_iOS: View {
                                 Circle().stroke(palette.primary, lineWidth: 2).padding(-3)
                             }
                         }
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text("Ink color"))
+                .accessibilityLabel(Text(accessibilityLabel(for: color)))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
-            customColorPicker
+            if ink.tool != .textHighlight {
+                customColorPicker
+            }
         }
+    }
+
+    private var textHighlightColorMenu: some View {
+        let selectedName = HIGHLIGHT_COLORS.indices.first(where: {
+            colorsEqual(InkPalette.highlighterColors[$0], ink.textHighlightColor)
+        }).map { HIGHLIGHT_COLORS[$0].name } ?? "Highlight"
+
+        return Menu {
+            ForEach(HIGHLIGHT_COLORS.indices, id: \.self) { index in
+                let selected = colorsEqual(
+                    InkPalette.highlighterColors[index], ink.textHighlightColor)
+                Button {
+                    ink.textHighlightColor = InkPalette.highlighterColors[index]
+                    ink.bumpTool()
+                } label: {
+                    Label(
+                        HIGHLIGHT_COLORS[index].name,
+                        systemImage: selected ? "checkmark.circle.fill" : "circle.fill")
+                        .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                }
+                .accessibilityLabel("\(HIGHLIGHT_COLORS[index].name) highlight color")
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(ink.textHighlightColor)
+                    .frame(width: 18, height: 18)
+                    .overlay(Circle().strokeBorder(palette.border, lineWidth: 1))
+                Text(selectedName)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(selectedName) highlight color")
+        .accessibilityHint("Choose highlight color")
     }
 
     /// Full-spectrum color well: opens the system color picker so the user can
@@ -238,6 +310,7 @@ struct InkToolPalette_iOS: View {
         switch ink.tool {
         case .pen: 1...14
         case .highlighter: 6...40
+        case .textHighlight: 1...1
         case .eraser: 6...60
         }
     }
@@ -246,6 +319,7 @@ struct InkToolPalette_iOS: View {
         switch ink.tool {
         case .pen: "Pen"
         case .highlighter: "Highlighter"
+        case .textHighlight: "Text highlight"
         case .eraser: "Eraser"
         }
     }
@@ -281,10 +355,12 @@ struct InkToolPalette_iOS: View {
 
     private var actionRow: some View {
         HStack(spacing: 4) {
-            fingerToggle
-            paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
-            paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
-            paletteButton("trash", label: "Clear page", enabled: true) { ink.clearCurrentPage() }
+            if ink.tool != .textHighlight {
+                fingerToggle
+                paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
+                paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
+                paletteButton("trash", label: "Clear page", enabled: true) { ink.clearCurrentPage() }
+            }
             Button(action: onDone) {
                 Text("Done")
                     .font(.system(size: 15, weight: .semibold))
@@ -337,12 +413,23 @@ struct InkToolPalette_iOS: View {
     }
 
     private func dotSize(_ w: CGFloat) -> CGFloat {
-        let scale: CGFloat = ink.tool == .highlighter ? 0.5 : (ink.tool == .eraser ? 0.5 : 1.6)
+        let scale: CGFloat = ink.tool == .pen ? 1.6 : 0.5
         return min(24, max(6, w * scale))
     }
 
     private func colorsEqual(_ a: Color, _ b: Color) -> Bool {
         UIColor(a).cgColor == UIColor(b).cgColor
+    }
+
+    private func accessibilityLabel(for color: Color) -> String {
+        if ink.tool == .highlighter || ink.tool == .textHighlight,
+           let index = InkPalette.highlighterColors.firstIndex(where: {
+               colorsEqual($0, color)
+           })
+        {
+            return "\(HIGHLIGHT_COLORS[index].name) highlight color"
+        }
+        return "Ink color"
     }
 }
 #endif
