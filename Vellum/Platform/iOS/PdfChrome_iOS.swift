@@ -24,6 +24,7 @@ struct PdfToolbar_iOS: View {
     @State private var pageFieldText = ""
     @State private var showPageJump = false
     @State private var showSettings = false
+    @State private var showHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -38,16 +39,16 @@ struct PdfToolbar_iOS: View {
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
     // the lowest-value pods yield instead of clipping at the edges: the zoom
     // pod first (pinch still works for PDFs and web pages; More keeps the
-    // commands), then the page-step chevrons (the page field still jumps
-    // anywhere).
-    private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 740 }
+    // commands), then annotation tools, page-step chevrons, and finally page
+    // navigation plus Sidebar.
+    private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 840 }
     // DELIBERATE DIVERGENCE FROM macOS (#115 review, #129 packet 7 §2.10 G5).
     // The Mac toolbar splits `[< >]` and `[1 / N]` into two separate glass
     // capsules. The iPad keeps them in ONE pod, `[< 1/N >]`, for two reasons:
     //
     //  * cost. A second capsule spends ~16pt on its own horizontal padding plus
     //    the inter-pod gap, in a row that already has to shed the zoom pod at
-    //    740pt and these very chevrons at 590pt. Mouse-sized 32pt targets can
+    //    840pt and these very chevrons at 590pt. Mouse-sized 32pt targets can
     //    afford the split; 44pt ones cannot.
     //  * meaning. The Mac's page indicator is an inline editable text field —
     //    a control in its own right. The iPad's is a *tap target that opens the
@@ -57,11 +58,14 @@ struct PdfToolbar_iOS: View {
     // When the chevrons drop out below 590pt the pod degrades to `[1/N]`, which
     // is still the same one semantic cluster — "page navigation".
     private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 590 }
-    // Narrowest tier: when a split pane is squeezed by the open inspector, fold
-    // the find/note/ink/bookmark pod into the More menu so the trailing
-    // sidebar-toggle + More pod always fits inside the pane instead of being
-    // pushed under (and clipped by) the sidebar where it can't be tapped.
-    private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 500 }
+    private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 660 }
+    // At the 240pt pane floor, Close (52), Help + Settings + More (144), the
+    // spacer and HStack gaps (20), and horizontal insets (24) use exactly 240pt.
+    // Navigation and Sidebar return together once their widest compact form fits;
+    // every hidden action remains available from More.
+    private var showNavigationAndSidebar: Bool {
+        toolbarWidth == 0 || toolbarWidth >= 400
+    }
     private var isBookmarked: Bool {
         findCurrentBookmark(
             annotations: annotationStore.annotations,
@@ -102,26 +106,28 @@ struct PdfToolbar_iOS: View {
                 }
             }
 
-            if isWeb {
-                GlassToolPod(label: "Page history") {
-                    GlassToolButton(system: "arrow.left", label: "Back") {
-                        webHistory(-1)
-                    }
-                    GlassToolButton(system: "arrow.right", label: "Forward") {
-                        webHistory(1)
-                    }
-                }
-            } else {
-                GlassToolPod(label: "Page navigation") {
-                    if showPageChevrons {
-                        GlassToolButton(system: "chevron.left", label: "Previous page") {
-                            appStore.goToPage(appStore.currentPage - 1)
+            if showNavigationAndSidebar {
+                if isWeb {
+                    GlassToolPod(label: "Page history") {
+                        GlassToolButton(system: "arrow.left", label: "Back") {
+                            webHistory(-1)
+                        }
+                        GlassToolButton(system: "arrow.right", label: "Forward") {
+                            webHistory(1)
                         }
                     }
-                    pageField
-                    if showPageChevrons {
-                        GlassToolButton(system: "chevron.right", label: "Next page") {
-                            appStore.goToPage(appStore.currentPage + 1)
+                } else {
+                    GlassToolPod(label: "Page navigation") {
+                        if showPageChevrons {
+                            GlassToolButton(system: "chevron.left", label: "Previous page") {
+                                appStore.goToPage(appStore.currentPage - 1)
+                            }
+                        }
+                        pageField
+                        if showPageChevrons {
+                            GlassToolButton(system: "chevron.right", label: "Next page") {
+                                appStore.goToPage(appStore.currentPage + 1)
+                            }
                         }
                     }
                 }
@@ -188,11 +194,20 @@ struct PdfToolbar_iOS: View {
             }
 
             GlassToolPod(label: "Panel and document actions") {
-                GlassToolButton(
-                    system: "sidebar.right", label: "Toggle sidebar",
-                    active: workspace.sidebarOpen
-                ) {
-                    workspace.sidebarOpen.toggle()
+                GlassToolButton(system: "questionmark.circle", label: "Help") {
+                    showHelp = true
+                }
+                GlassToolButton(system: "gearshape", label: "Settings") {
+                    workspace.settingsSection = .general
+                    showSettings = true
+                }
+                if showNavigationAndSidebar {
+                    GlassToolButton(
+                        system: "sidebar.right", label: "Toggle sidebar",
+                        active: workspace.sidebarOpen
+                    ) {
+                        workspace.sidebarOpen.toggle()
+                    }
                 }
                 moreMenu
             }
@@ -218,6 +233,7 @@ struct PdfToolbar_iOS: View {
         // `.sheet` does not reliably inherit across the UIHostingController
         // boundary — and cannot drift apart.
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -265,6 +281,45 @@ struct PdfToolbar_iOS: View {
 
     private var moreMenu: some View {
         Menu {
+            if !showNavigationAndSidebar {
+                if isWeb {
+                    Button { webHistory(-1) } label: {
+                        Label("Back", systemImage: "arrow.left")
+                    }
+                    Button { webHistory(1) } label: {
+                        Label("Forward", systemImage: "arrow.right")
+                    }
+                } else {
+                    Button { appStore.goToPage(appStore.currentPage - 1) } label: {
+                        Label("Previous Page", systemImage: "chevron.left")
+                    }
+                    Button {
+                        pageFieldText = String(appStore.currentPage)
+                        showPageJump = true
+                    } label: {
+                        Label("Go to Page…", systemImage: "number")
+                    }
+                    Button { appStore.goToPage(appStore.currentPage + 1) } label: {
+                        Label("Next Page", systemImage: "chevron.right")
+                    }
+                }
+                Button {
+                    workspace.sidebarOpen.toggle()
+                } label: {
+                    Label(
+                        workspace.sidebarOpen ? "Hide Sidebar" : "Show Sidebar",
+                        systemImage: "sidebar.right")
+                }
+                Divider()
+            } else if !isWeb, !showPageChevrons {
+                Button { appStore.goToPage(appStore.currentPage - 1) } label: {
+                    Label("Previous Page", systemImage: "chevron.left")
+                }
+                Button { appStore.goToPage(appStore.currentPage + 1) } label: {
+                    Label("Next Page", systemImage: "chevron.right")
+                }
+                Divider()
+            }
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -375,8 +430,6 @@ struct PdfToolbar_iOS: View {
                 Divider()
                 MoveToCollectionMenu(item: item, integrations: integrations)
             }
-            Divider()
-            Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
         } label: {
             // DO NOT port main's ZStack trick here (#129 packet 7 §2.10 G4).
             // On AppKit a menu control paints its own hover highlight *beneath*
