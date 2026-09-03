@@ -89,9 +89,9 @@ struct HomeResultRow: View {
                         Text(item.title)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(palette.foreground)
-                            .lineLimit(3)
                             .truncationMode(.middle)
                         HomeBadgeStrip(badges: item.badges)
+                            .accessibilityHidden(true)
                     } else {
                         HStack(spacing: 6) {
                             Text(item.title)
@@ -100,12 +100,13 @@ struct HomeResultRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             HomeBadgeStrip(badges: item.badges)
+                                .accessibilityHidden(true)
                         }
                     }
                     Text(item.subtitle)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
 
                     if dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
@@ -168,10 +169,27 @@ struct HomeResultRow: View {
     }
 
     private var accessibilityValue: String {
+        var details: [String] = []
         if item.badges.contains(.capturedUnread) {
-            return "New, not yet opened. \(item.subtitle)"
+            details.append("New, not yet opened")
         }
-        return item.subtitle
+        details.append(item.subtitle)
+        if !item.detail.isEmpty {
+            details.append(item.detail)
+        }
+        if item.badges.contains(.missing) {
+            details.append("File not found at its last known location")
+        }
+        if item.badges.contains(.saved) {
+            details.append("Saved to your library")
+        }
+        if item.badges.contains(.offline) {
+            details.append("Available offline")
+        }
+        if item.badges.contains(.notes) {
+            details.append("Has notes or an AI conversation")
+        }
+        return details.filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     private var icon: some View {
@@ -267,7 +285,7 @@ struct HomeLinkActionRow: View {
                     Text(url)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
                 }
 

@@ -71,7 +71,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 phoneTabContent
                 Divider()
-                accessibilityTabBar
+                accessibilityTabPicker
             }
         } else {
             TabView(selection: $phoneTab) {
@@ -105,36 +105,31 @@ struct SettingsView: View {
         }
     }
 
-    private var accessibilityTabBar: some View {
-        HStack(spacing: 8) {
+    private var accessibilityTabPicker: some View {
+        Menu {
             ForEach(SettingsPhoneTab.allCases, id: \.self) { tab in
                 Button {
                     phoneTab = tab
                 } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: tab.symbol)
-                            .font(.title3)
-                        Text(tab.title)
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
-                    }
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .background(
-                            tab == phoneTab ? Color.accentColor.opacity(0.14) : .clear,
-                            in: RoundedRectangle(cornerRadius: 10))
-                        .contentShape(Rectangle())
+                    Label(
+                        tab.title,
+                        systemImage: tab == phoneTab ? "checkmark" : tab.symbol)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(tab == phoneTab ? Color.accentColor : .secondary)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(tab == phoneTab ? [.isButton, .isSelected] : .isButton)
                 .accessibilityIdentifier("settings.tab.\(tab.title.lowercased())")
             }
+        } label: {
+            Label(phoneTab.title, systemImage: phoneTab.symbol)
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Settings section")
+        .accessibilityValue(phoneTab.title)
+        .accessibilityIdentifier("settings.tab.picker")
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
         .background(.bar)
     }
     #endif
