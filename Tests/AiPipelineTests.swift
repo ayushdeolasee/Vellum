@@ -134,6 +134,21 @@ final class AiPipelineTests: XCTestCase {
 
     // MARK: - §2 Prompt duplication & prefix fixtures
 
+    func testQuizMenuBuildsScopedRequests() {
+        XCTAssertEqual(
+            AiPrompts.quizRequest(for: .currentPage(12)),
+            "Quiz me on page 12. Ask one question at a time."
+        )
+        XCTAssertEqual(
+            AiPrompts.quizRequest(for: .attachedMaterial),
+            "Quiz me on the attached material. Ask one question at a time."
+        )
+        XCTAssertEqual(
+            AiPrompts.quizRequest(for: .document),
+            "Quiz me on this document. Ask one question at a time."
+        )
+    }
+
     /// The newest user request must appear exactly once in the joined prompt:
     /// under "### Latest User Request", not also inside the conversation block.
     func testLatestUserRequestAppearsExactlyOnce() {

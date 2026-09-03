@@ -182,6 +182,13 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             shortcut: nil,
             keywords: ["tools", "agent", "edit", "actions", "write"]),
         HelpTopic(
+            id: "ai-quiz",
+            title: "Quiz yourself",
+            symbol: "brain.head.profile",
+            summary: "Open the Quiz menu in the AI panel to start with the current page, attached material, or the whole document. You can also ask for a chapter or section in the composer. The assistant asks one question at a time and explains each answer from the source.",
+            shortcut: nil,
+            keywords: ["quiz", "study", "learn", "recall", "chapter", "questions"]),
+        HelpTopic(
             id: "ask-ai",
             title: "Ask AI about a selection",
             symbol: "quote.opening",
