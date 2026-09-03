@@ -31,3 +31,78 @@ struct OpenAIModelCatalogTests {
         #expect(OpenAIModelCatalog.parse(Data("not json".utf8)).isEmpty)
     }
 }
+
+extension StubbedTransportSuites {
+    @Suite(.serialized)
+    @MainActor
+    struct OpenAIModelCatalogStateTests {
+        @Test func emptyKeyClearsLoadedCatalog() async throws {
+            StubURLProtocol.install { request in
+                (
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!,
+                    Data(#"{"data":[{"id":"gpt-5"}]}"#.utf8)
+                )
+            }
+            defer { StubURLProtocol.reset() }
+            let catalog = OpenAIModelCatalog()
+
+            await catalog.refresh(apiKey: "key-a", session: StubURLProtocol.session())
+            #expect(catalog.models == ["gpt-5"])
+
+            await catalog.refresh(apiKey: "   ", session: StubURLProtocol.session())
+
+            #expect(catalog.models.isEmpty)
+            #expect(catalog.error == nil)
+            #expect(catalog.isLoading == false)
+        }
+
+        @Test func newCredentialSupersedesInFlightRequest() async {
+            StubURLProtocol.installStreaming { request in
+                let isFirstCredential = request.value(forHTTPHeaderField: "Authorization") == "Bearer key-a"
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: isFirstCredential ? 401 : 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                let data = isFirstCredential
+                    ? Data()
+                    : Data(#"{"data":[{"id":"gpt-6"}]}"#.utf8)
+                return StubStreamingResponse(
+                    response: response,
+                    chunks: [
+                        StubStreamingChunk(
+                            data,
+                            delay: isFirstCredential ? .milliseconds(50) : nil
+                        ),
+                    ]
+                )
+            }
+            defer { StubURLProtocol.reset() }
+            let session = StubURLProtocol.session()
+            let catalog = OpenAIModelCatalog()
+
+            let firstRefresh = Task {
+                await catalog.refresh(apiKey: "key-a", session: session)
+            }
+            while catalog.isLoading == false {
+                await Task.yield()
+            }
+
+            let secondRefresh = Task {
+                await catalog.refresh(apiKey: "key-b", session: session)
+            }
+            await secondRefresh.value
+            await firstRefresh.value
+
+            #expect(catalog.models == ["gpt-6"])
+            #expect(catalog.error == nil)
+            #expect(catalog.isLoading == false)
+        }
+    }
+}

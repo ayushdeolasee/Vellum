@@ -13,15 +13,25 @@ final class OpenAIModelCatalog {
     private(set) var error: String?
 
     private static let endpoint = URL(string: "https://api.openai.com/v1/models")!
+    private var refreshGeneration = 0
 
     func refresh(apiKey: String, session: URLSession = .shared) async {
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !isLoading else { return }
-
         models = []
-        isLoading = true
         error = nil
-        defer { isLoading = false }
+        guard !key.isEmpty else {
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        defer {
+            if refreshGeneration == generation {
+                isLoading = false
+            }
+        }
 
         var request = URLRequest(url: Self.endpoint)
         request.timeoutInterval = 15
@@ -29,6 +39,7 @@ final class OpenAIModelCatalog {
 
         do {
             let (data, response) = try await session.data(for: request)
+            guard refreshGeneration == generation else { return }
             guard let http = response as? HTTPURLResponse else {
                 error = "OpenAI returned an invalid response."
                 return
@@ -47,6 +58,7 @@ final class OpenAIModelCatalog {
             }
             models = parsed
         } catch {
+            guard refreshGeneration == generation else { return }
             self.error = "Couldn't load OpenAI models."
         }
     }
