@@ -386,14 +386,15 @@ private struct DocumentErrorNotice: View {
     }
 }
 
-/// The whole inspector column: the tab switcher header, then the three sidebar
-/// panels. All three panels stay mounted in a ZStack; only their
+/// The whole inspector column: the tab switcher header, then the sidebar
+/// panels. All panels stay mounted in a ZStack; only their
 /// visibility toggles as the tab changes. Keeping them alive (rather than
 /// switching, which destroys the inactive ones) preserves each panel's transient
 /// state across tab flips — the AI panel's scroll position and half-typed
 /// composer draft, and the scratchpad editor's caret/scroll/selection in its
-/// live-preview WebView. The persisted text itself already survives via the
-/// stores; this keeps the *view* state that the stores don't hold.
+/// live-preview WebView, plus the browser's history and current page. The
+/// persisted text itself already survives via the stores; this keeps the *view*
+/// state that the stores don't hold.
 ///
 /// Trade-off mirrored from the AI panel: because the inactive panels no longer
 /// unmount on a tab switch, their `onDisappear` fires only when the document
@@ -456,6 +457,7 @@ struct SidebarPanelStack: View {
                 panel(.annotations) { AnnotationSidebar() }
                 panel(.ai) { AiPanel() }
                 panel(.scratchpad) { ScratchpadPanel() }
+                panel(.browser) { SidebarBrowserView() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
@@ -471,10 +473,10 @@ struct SidebarPanelStack: View {
         }
         // ONE drag destination for the whole sidebar — a drag-only AppKit overlay
         // (see `SidebarDropCatcher` for why not `.onDrop`). Its closures read the
-        // visible tab LIVE at event time: annotations refuses (no attachment
-        // target); AI and scratchpad accept an attachment-carrying drag and route
-        // the payload to their store. A non-image dropped on the scratchpad still
-        // reaches its handler and is explained.
+        // visible tab LIVE at event time: annotations and browser refuse (no
+        // attachment target); AI and scratchpad accept an attachment-carrying
+        // drag and route the payload to their store. A non-image dropped on the
+        // scratchpad still reaches its handler and is explained.
         //
         // Overlaid on the VStack, so it spans the switcher header too. The
         // catcher's `hitTest` returns nil for every point, so the header's
@@ -502,6 +504,8 @@ struct SidebarPanelStack: View {
             return []
         case .ai, .scratchpad:
             return AttachmentDrop.carriesAttachment(sender) ? .copy : []
+        case .browser:
+            return []
         }
     }
 
@@ -512,7 +516,7 @@ struct SidebarPanelStack: View {
         switch workspace.sidebarTab {
         case .ai: return aiStore.handleDrop(payload)
         case .scratchpad: return scratchpadStore.handleDrop(payload)
-        case .annotations: return false
+        case .annotations, .browser: return false
         }
     }
 

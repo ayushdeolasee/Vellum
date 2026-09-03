@@ -264,6 +264,7 @@
 		5863B1EFB0D85D3AFACE6D45 /* WebPageExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E209F0AEC418389859234E /* WebPageExtractor.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
+		5B032D1B6F481713662D4374 /* SidebarBrowserView_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C0A113831547B57F8F3CB6 /* SidebarBrowserView_macOS.swift */; };
 		5B311D72C1AD925E42700C81 /* ConnectServiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033CBF675FDE5C67C943F0EB /* ConnectServiceSheet.swift */; };
 		5B3F78353A1C587A9F99710A /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
 		5BEEF07E614919A1E431E977 /* PdfZoomPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B700C5630743F12FAFB3C96 /* PdfZoomPolicyTests.swift */; };
@@ -507,6 +508,7 @@
 		BDCA776FEABD1AA03677E0CF /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
 		BEADF6098AC6C592A53810F2 /* TabResidencyBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD7C72856A02537E63E6CC4 /* TabResidencyBudgetTests.swift */; };
 		BEEE0A40A34EFCD976777E4D /* Controls.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2630E8BE36D65B9E485FD6F /* Controls.swift */; };
+		BF82E82B78FC62B3D6FF1AE4 /* SidebarBrowserView_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C0A113831547B57F8F3CB6 /* SidebarBrowserView_macOS.swift */; };
 		C00AC72121CE0C914C5B1C32 /* ShellIdiom_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 746237EA42F01B2A8B1AF425 /* ShellIdiom_iOS.swift */; };
 		C0467FFEFEFFFC2D272897A1 /* HomeSearchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */; };
 		C131DCD066F428AFFC8459E2 /* PhoneLaunchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED60213848C19BB826911B8D /* PhoneLaunchStateTests.swift */; };
@@ -763,6 +765,7 @@
 		2464B358D0D5E267B7D55CFC /* HomeOpenIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOpenIntentTests.swift; sourceTree = "<group>"; };
 		2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView_iOS.swift; sourceTree = "<group>"; };
 		255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerController_iOS.swift; sourceTree = "<group>"; };
+		25C0A113831547B57F8F3CB6 /* SidebarBrowserView_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarBrowserView_macOS.swift; sourceTree = "<group>"; };
 		26319BD42BBB2666619FEBFB /* IntegrationsSyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsSyncEngine.swift; sourceTree = "<group>"; };
 		2644771A5AD6C2DB43F41537 /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
 		2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenameDocumentSheet_iOS.swift; sourceTree = "<group>"; };
@@ -1621,6 +1624,7 @@
 				08111ACF12BEE6ACC52F1835 /* SelectableMessageText_macOS.swift */,
 				02269B75EB688D2DA06FD7BA /* SentReferenceChips_macOS.swift */,
 				F18DE1801E094BBF642D7F69 /* SheetPresenceMonitor_macOS.swift */,
+				25C0A113831547B57F8F3CB6 /* SidebarBrowserView_macOS.swift */,
 				D8C2FE7E64BD765B9DBEB4A4 /* SidebarDropCatcher_macOS.swift */,
 				0030B264DA2E5A7BBBFD9986 /* StorageLocationChoiceSheet_macOS.swift */,
 				8A1EE0A9A387B6A049E8BC72 /* StorageSettingsTab_macOS.swift */,
@@ -2338,6 +2342,7 @@
 				11E2E63E94EA67BA3BFDA181 /* SheetPresence_iOS.swift in Sources */,
 				AAC2C2D0A33EBFAE7A7E46BF /* ShellIdiom_iOS.swift in Sources */,
 				0802D738602C4452108B8758 /* ShortcutRouter_iOS.swift in Sources */,
+				BF82E82B78FC62B3D6FF1AE4 /* SidebarBrowserView_macOS.swift in Sources */,
 				30AD8539C97B4A1146188956 /* SidebarDropCatcher_macOS.swift in Sources */,
 				27F5B9A72AF7C2A4F4FD1D9F /* StickyNoteOverlay.swift in Sources */,
 				9952D353E84E3E8B863A3028 /* StorageConflictsSheet_iOS.swift in Sources */,
@@ -2607,6 +2612,7 @@
 				8B86C4435F04F6310965D0E7 /* SheetPresence_iOS.swift in Sources */,
 				C00AC72121CE0C914C5B1C32 /* ShellIdiom_iOS.swift in Sources */,
 				22AF5CEF40F9C905992B2D35 /* ShortcutRouter_iOS.swift in Sources */,
+				5B032D1B6F481713662D4374 /* SidebarBrowserView_macOS.swift in Sources */,
 				0615AA46C525E261B0AE29BC /* SidebarDropCatcher_macOS.swift in Sources */,
 				7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */,
 				48A5BA847518B11A7747B870 /* StorageConflictsSheet_iOS.swift in Sources */,

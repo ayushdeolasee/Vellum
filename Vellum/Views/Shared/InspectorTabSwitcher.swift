@@ -43,7 +43,7 @@ enum InspectorLayout {
 
     /// The narrowest width the switcher can actually be handed: the column
     /// cannot go below `minimumWidth`, and the switcher is inset inside it.
-    /// `presentation(for:)` must still keep all three destinations laid out
+    /// `presentation(for:)` must still keep every destination laid out
     /// side by side here — see `InspectorTabSwitcherTests`. The `.menu`
     /// fallback below therefore should not be reachable in a normal window; it
     /// is kept only for the case where the host squeezes the column past its
@@ -73,6 +73,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "Annotations"
         case .ai: "AI"
         case .scratchpad: "Scratchpad"
+        #if os(macOS)
+        case .browser: "Browser"
+        #endif
         }
     }
 
@@ -81,6 +84,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "highlighter"
         case .ai: "sparkles"
         case .scratchpad: "note.text"
+        #if os(macOS)
+        case .browser: "globe"
+        #endif
         }
     }
 
@@ -96,6 +102,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "annotations"
         case .ai: "ai"
         case .scratchpad: "scratchpad"
+        #if os(macOS)
+        case .browser: "browser"
+        #endif
         }
     }
 
@@ -112,6 +121,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "1"
         case .ai: "2"
         case .scratchpad: "3"
+        #if os(macOS)
+        case .browser: "4"
+        #endif
         }
     }
 
@@ -122,7 +134,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
     static let shortcutModifiers: EventModifiers = [.command, .option]
 }
 
-/// Responsive navigation for the inspector's three persistent panels.
+/// Responsive navigation for the inspector's persistent panels.
 ///
 /// This intentionally lives inside the inspector instead of the toolbar: the
 /// toolbar may collapse items into an overflow menu at narrow widths, and the
