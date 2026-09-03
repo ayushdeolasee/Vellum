@@ -1,10 +1,7 @@
 import SwiftUI
 
-/// App settings window (⌘, / Vellum ▸ Settings…). A durable macOS preferences
-/// scene: a toolbar-style TabView whose tabs hold real, already-wired settings —
-/// General (appearance), Reading (sidebar text size), Annotations (default
-/// highlight color), and AI (provider / key / model / voice). New settings slot
-/// into the matching tab instead of accreting in ad-hoc popovers.
+/// App settings surface. macOS uses its preferences TabView, iPhone keeps a
+/// compact tab shell, and iPad pairs a section list with the selected form.
 struct SettingsView: View {
     /// #70: the selected tab is workspace state, not view state, so a caller
     /// that presents Settings for a *reason* — Home's gear button, "Configure
@@ -12,13 +9,20 @@ struct SettingsView: View {
     /// the reader on General and making them find it.
     @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
+    @Environment(\.dismiss) private var dismiss
     @State private var phoneTab: SettingsPhoneTab = .general
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     #endif
 
     var body: some View {
         #if os(iOS)
-        phoneSettings
+        Group {
+            if ShellIdiom_iOS.current == .pad {
+                padSettings
+            } else {
+                phoneSettings
+            }
+        }
         .onAppear {
             phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
         }
@@ -65,6 +69,54 @@ struct SettingsView: View {
     }
 
     #if os(iOS)
+    private var padSettings: some View {
+        NavigationSplitView {
+            List(selection: padSectionSelection) {
+                ForEach(WorkspaceStore.SettingsSection.padSections, id: \.self) { section in
+                    Label(section.title, systemImage: section.symbol)
+                        .tag(section)
+                        .accessibilityIdentifier("settings.section.\(section.identifier)")
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+        } detail: {
+            padSettingsContent(for: workspace.settingsSection)
+                .navigationTitle(workspace.settingsSection.title)
+                .navigationBarTitleDisplayMode(.inline)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
+        .presentationSizing(.page)
+    }
+
+    private var padSectionSelection: Binding<WorkspaceStore.SettingsSection?> {
+        Binding(
+            get: { workspace.settingsSection },
+            set: { section in
+                if let section {
+                    workspace.settingsSection = section
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func padSettingsContent(for section: WorkspaceStore.SettingsSection) -> some View {
+        switch section {
+        case .general: GeneralSettingsTab()
+        case .reading: ReadingSettingsTab()
+        case .annotations: AnnotationsSettingsTab()
+        case .ai: AiSettingsTab()
+        case .storage: StorageSettingsTab()
+        case .integrations: IntegrationsSettingsTab()
+        }
+    }
+
     @ViewBuilder
     private var phoneSettings: some View {
         if dynamicTypeSize.isAccessibilitySize {
@@ -185,6 +237,50 @@ enum SettingsPhoneTab: Hashable, CaseIterable {
         case .annotations: "highlighter"
         case .ai: "sparkles"
         case .more: "ellipsis"
+        }
+    }
+}
+
+private extension WorkspaceStore.SettingsSection {
+    static let padSections: [Self] = [
+        .general,
+        .reading,
+        .annotations,
+        .ai,
+        .storage,
+        .integrations,
+    ]
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .reading: "Reading"
+        case .annotations: "Annotations"
+        case .ai: "AI"
+        case .storage: "Storage"
+        case .integrations: "Integrations"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .reading: "text.book.closed"
+        case .annotations: "highlighter"
+        case .ai: "sparkles"
+        case .storage: "internaldrive"
+        case .integrations: "link"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .general: "general"
+        case .reading: "reading"
+        case .annotations: "annotations"
+        case .ai: "ai"
+        case .storage: "storage"
+        case .integrations: "integrations"
         }
     }
 }
