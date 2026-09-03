@@ -7,6 +7,15 @@ private let validWidgetItemID = String(repeating: "a", count: 64)
 
 @Suite("Widget and system routes")
 struct VellumSystemRouteTests {
+    @Test("Development profiles reject production-only services")
+    func developmentRejectsProductionServices() {
+        let development = RuntimeProfile(bundleIdentifier: "com.ayushdeolasee.vellum.dev")
+        let production = RuntimeProfile(bundleIdentifier: "com.ayushdeolasee.vellum")
+
+        #expect(development.allowsProductionServices == false)
+        #expect(production.allowsProductionServices)
+    }
+
     @Test("A widget route round-trips through the narrow URL grammar", .bug(id: 158))
     func deepLinkRoundTrip() throws {
         let route = VellumSystemRoute(shelf: .readLater, itemID: validWidgetItemID)

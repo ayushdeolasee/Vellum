@@ -7,13 +7,16 @@ final class UpdateChecker {
 
     init() {
         controller = SPUStandardUpdaterController(
-            startingUpdater: RuntimeProfile.current.syncEnabled,
+            startingUpdater: RuntimeProfile.current.allowsProductionServices
+                && RuntimeProfile.current.syncEnabled,
             updaterDelegate: nil,
             userDriverDelegate: nil)
     }
 
     func check() {
-        guard RuntimeProfile.current.syncEnabled else { return }
+        guard RuntimeProfile.current.allowsProductionServices,
+              RuntimeProfile.current.syncEnabled
+        else { return }
         controller.checkForUpdates(nil)
     }
 }

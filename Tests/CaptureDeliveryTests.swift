@@ -4,6 +4,29 @@ import Testing
 @testable import Vellum
 
 struct CaptureDeliveryTests {
+    @Test("Disabled sync leaves pending captures untouched without fetching")
+    func disabledSyncLeavesPendingCaptureUntouched() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-disabled-sync")
+        defer { CaptureFixtures.remove(layout) }
+        try CaptureInboxWriter(layout: layout).write(
+            CaptureFixtures.record(outerHTML: nil))
+        let counter = FetchCounter()
+        let ingestion = CaptureIngestion(
+            layout: layout,
+            storage: WebLibraryStorage(),
+            syncEnabled: false,
+            fetch: { url in
+                await counter.called()
+                return CapturePageHTML(html: "network", baseURL: url)
+            },
+            snapshot: { _, html in CapturedSnapshot(html: html, assets: [], skipped: 0) },
+            libraryDidChange: {})
+
+        #expect(await ingestion.drain() == CaptureDrainReport())
+        #expect(await counter.count == 0)
+        #expect(await CaptureInbox(layout: layout).pendingCount() == 1)
+    }
+
     @Test("DOM limit has an exact boundary and reports URL-only fallback")
     func domLimitBoundary() {
         #expect(CaptureDOMPolicy.includes(byteCount: CaptureDOMPolicy.maximumByteCount))

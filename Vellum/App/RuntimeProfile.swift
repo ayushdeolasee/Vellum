@@ -16,6 +16,8 @@ enum RuntimeProfile: Sendable {
 
     var isDevelopment: Bool { self == .development }
 
+    var allowsProductionServices: Bool { self == .production }
+
     var syncEnabled: Bool {
         !ProcessInfo.processInfo.arguments.contains("--disable-sync")
     }
