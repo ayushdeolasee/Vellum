@@ -54,7 +54,7 @@ struct PdfViewerView: View {
                 if case .idle = runtime.pdfLoadState {
                     await load(tabId: tabId)
                 } else {
-                    activate()
+                    await activate()
                 }
             }
     }
@@ -196,7 +196,7 @@ struct PdfViewerView: View {
                     seeded: cached ?? [:]))
             }
             runtime.pdfLoadState = .loaded(document)
-            if isActive { activate() }
+            if isActive { await activate(data: data) }
         } catch {
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             NSLog("[PdfViewer] readPdfBytes FAILED: %@", error.localizedDescription)
@@ -241,7 +241,7 @@ struct PdfViewerView: View {
         }
     }
 
-    private func activate() {
+    private func activate(data: Data? = nil) async {
         guard app.activeTabId == tabId else { return }
         controller.rebind(
             app: app, annotationStore: annotationStore, ai: aiStore, tabId: tabId,
@@ -249,10 +249,23 @@ struct PdfViewerView: View {
         aiStore.restorePageTexts(runtime.pageTexts)
         registerHandlers()
         handlersTabId = tabId
-        controller.startTextExtraction()
         if case .loaded(let pdf) = runtime.pdfLoadState {
             app.setNumPages(pdf.pageCount)
+            if let data {
+                controller.startTextExtraction(data: data)
+            } else {
+                await resumeTextExtraction(pageCount: pdf.pageCount)
+            }
         }
+    }
+
+    /// Resume a partial walk without retaining a second full copy of every PDF
+    /// for the lifetime of its tab. Fully indexed documents skip the read.
+    private func resumeTextExtraction(pageCount: Int) async {
+        guard runtime.pageTexts.count < pageCount else { return }
+        guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
+        guard !Task.isCancelled, app.activeTabId == tabId else { return }
+        controller.startTextExtraction(data: data)
     }
 
     private func deactivate() async {
