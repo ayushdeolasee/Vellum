@@ -35,12 +35,12 @@ struct InkToolPalette_iOS: View {
     private func paletteRow(compact: Bool) -> some View {
         HStack(spacing: compact ? 6 : 10) {
             toolGroup
-            divider
             if ink.tool != .eraser {
-                colorRow(compact: compact)
                 divider
+                colorRow(compact: compact)
             }
             if ink.tool != .textHighlight {
+                divider
                 if compact {
                     widthCycleButton
                 } else {
@@ -113,13 +113,13 @@ struct InkToolPalette_iOS: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// Preset swatches plus the custom color well. When the palette is compact
-    /// (e.g. the Annotations sidebar is open and the PDF column is narrow) only
-    /// the first few presets are shown so the row still fits — the color well
-    /// still reaches every color, and no preset is fully lost since the full row
-    /// takes over as soon as there's width for it.
+    /// Preset swatches plus the custom color well. Compact freehand tools show
+    /// three presets because their color well still reaches every color. Text
+    /// highlighting has no custom well, so it keeps all five presets visible.
     private func colorRow(compact: Bool) -> some View {
-        let shown = compact ? Array(colors.prefix(3)) : colors
+        let shown = compact && ink.tool != .textHighlight
+            ? Array(colors.prefix(3))
+            : colors
         return HStack(spacing: 6) {
             ForEach(shown, id: \.self) { color in
                 let selected = colorsEqual(ink.activeColor, color)
