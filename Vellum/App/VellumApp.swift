@@ -7,17 +7,21 @@ import SwiftUI
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
 
-    /// Finder double-click / drag-onto-dock for registered types (.pdf,
-    /// .vellumweb, .vellum). Routes into the focused pane's store the same way
-    /// ContentView.openFilePanel does — `openFiles` dispatches each extension
-    /// (bundle import, archive import, or plain PDF open).
+    /// Finder document opens and browser-extension webpage routes both arrive
+    /// here. Each target uses the same opener as the equivalent in-app action.
     func application(_ application: NSApplication, open urls: [URL]) {
-        let paths = urls.map(\.path)
-        guard !paths.isEmpty else { return }
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return }
             let app = workspace.focusedPane.app
-            Task { await app.openFiles(paths: paths) }
+            Task {
+                for url in urls {
+                    if let webpage = VellumExternalWebLink.parse(url) {
+                        await app.openUrl(webpage.absoluteString)
+                    } else if url.isFileURL {
+                        await app.openFiles(paths: [url.path])
+                    }
+                }
+            }
         }
     }
 

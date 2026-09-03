@@ -11,6 +11,10 @@ The phone layout has a search-first Home, a full-screen reader, a pull-up inspec
 
 Safari sharing writes a small capture record to the App Group. The app later creates the durable web archive; DOM payloads over the conservative 1 MiB limit fall back to fetching the shared URL.
 
+## Chrome extension
+
+The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the macOS app. To install it locally, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `VellumChrome` folder. Pin **Open in Vellum** for one-click access.
+
 ## Current limits
 
 - Local and custom-folder storage work in this build. The coordinated iCloud path is implemented, but its entitlement stays intentionally unwired until the production cutover in #149.
@@ -42,6 +46,7 @@ The same generated `Vellum` scheme and destinations work with Xcode build/test a
 
 - `Vellum/` — shared app sources and platform adapters
 - `VellumShare/` — iOS Safari share extension
+- `VellumChrome/` — Chrome extension for the macOS app
 - `Tests/` — unit tests
 - `specs/` — feature specifications
 - `project.yml` — XcodeGen source of truth for this branch
