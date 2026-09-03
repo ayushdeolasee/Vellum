@@ -89,7 +89,6 @@ struct HomeResultRow: View {
                         Text(item.title)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(palette.foreground)
-                            .lineLimit(3)
                             .truncationMode(.middle)
                         HomeBadgeStrip(badges: item.badges)
                     } else {
@@ -105,7 +104,7 @@ struct HomeResultRow: View {
                     Text(item.subtitle)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
 
                     if dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
@@ -267,7 +266,7 @@ struct HomeLinkActionRow: View {
                     Text(url)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
                 }
 

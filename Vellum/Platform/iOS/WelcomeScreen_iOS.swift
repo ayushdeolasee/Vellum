@@ -274,7 +274,10 @@ struct WelcomeLibrary_iOS: View {
             Button {
                 showHelp = true
             } label: {
-                Label("Help", systemImage: "questionmark.circle").labelStyle(.iconOnly)
+                Label("Help", systemImage: "questionmark.circle")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.help")
             Button {
@@ -284,12 +287,15 @@ struct WelcomeLibrary_iOS: View {
                 workspace.settingsSection = .general
                 showSettings = true
             } label: {
-                Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
+                Label("Settings", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.settings")
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
+        .frame(minHeight: 44)
         .background(palette.background)
         .simultaneousGesture(dismissSearchKeyboardTap)
     }
@@ -299,12 +305,12 @@ struct WelcomeLibrary_iOS: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15))
+                .font(.body)
                 .foregroundStyle(palette.mutedForeground)
 
             TextField("Search your library — or paste a link", text: $store.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 15))
+                .font(.body)
                 .foregroundStyle(palette.foreground)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -353,7 +359,7 @@ struct WelcomeLibrary_iOS: View {
                 sortByName: $externalSortByName)
         }
         .padding(.horizontal, HomeLayout.rowInset)
-        .frame(height: 46)
+        .frame(minHeight: 46)
         .glassEffect(.regular, in: .capsule)
         .overlay {
             // A hairline primary edge on focus, the same "this is current"
