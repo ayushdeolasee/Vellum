@@ -108,18 +108,11 @@ struct WelcomeScreen: View {
     }
 
     var body: some View {
-        // #70's Home chrome — title, update affordances, settings gear — stays
-        // above BOTH layouts exactly as it did on main. The search revamp
-        // replaces only what used to live below this divider.
-        VStack(spacing: 0) {
-            homeHeader
-            Divider()
-            Group {
-                if showsFirstRun {
-                    firstRunLayout
-                } else {
-                    libraryLayout
-                }
+        Group {
+            if showsFirstRun {
+                firstRunLayout
+            } else {
+                libraryLayout
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -329,6 +322,8 @@ struct WelcomeScreen: View {
                     .font(.system(size: 14))
             }
             .accessibilityIdentifier("welcome.walkthrough")
+
+            homeActions
         }
     }
 
@@ -577,16 +572,10 @@ struct WelcomeScreen: View {
         }
     }
 
-    // MARK: - Home chrome (from #70)
-
-    /// The window's Home bar. Carried over from #70 unchanged: it is the app's
-    /// only settings entry point outside ⌘, so it has to survive the revamp.
-    private var homeHeader: some View {
+    /// Update and settings belong with the page heading instead of in a second
+    /// title bar above it. The first-run hero and library header share this row.
+    private var homeActions: some View {
         HStack(spacing: 8) {
-            Text("Home")
-                .font(.headline)
-                .foregroundStyle(palette.foreground)
-            Spacer()
             Button(action: updateChecker.check) {
                 Label("Check for Updates", systemImage: "arrow.clockwise")
                     .labelStyle(.iconOnly)
@@ -603,9 +592,6 @@ struct WelcomeScreen: View {
             .help("Settings… (⌘,)")
             .accessibilityIdentifier("welcome.settings")
         }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .background(palette.background)
     }
 
     private func showSettings() {
@@ -752,7 +738,10 @@ struct WelcomeScreen: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: Radius.xxl))
                 .padding(.bottom, 12)
 
-            Wordmark(size: 36)
+            HStack(spacing: 8) {
+                Wordmark(size: 36)
+                homeActions
+            }
 
             Text("A quiet place to read, annotate, and think alongside your documents.")
                 .font(.system(size: 14))
