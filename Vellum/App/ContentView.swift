@@ -76,7 +76,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
                 if RuntimeProfile.current.isDevelopment {
                     DevelopmentBadge()
-                        .padding(.trailing, 12)
+                        .padding(.trailing, 64)
                         .padding(.vertical, 4)
                         .allowsHitTesting(false)
                 }
