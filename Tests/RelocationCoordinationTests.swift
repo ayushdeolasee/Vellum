@@ -5,8 +5,8 @@ import Testing
 
 @Suite("Storage relocation — coordinated side")
 struct RelocationCoordinationTests {
-    @Test("Legacy Mac iCloud data imports into the coordinated shared container")
-    func legacyMacICloudImportUsesCoordinatedDestination() async throws {
+    @Test("Legacy Mac iCloud data copies into the coordinated shared container")
+    func legacyMacICloudImportPreservesSource() async throws {
         let root = PositionFixtures.scratchDirectory("legacy-mac-icloud-import")
         defer { PositionFixtures.remove(root) }
 
@@ -22,7 +22,8 @@ struct RelocationCoordinationTests {
             recordsInRoot: true,
             localStoreDir: storeDir)
         let recordURL = source.recordsDir.appendingPathComponent("legacy.json")
-        let bytes = Data(#"{"schema":"unchanged"}"#.utf8)
+        let bytes = try WebLibrary.jsonEncoderPretty.encode(
+            WebPageRecord(url: "https://example.com/legacy"))
         try await DirectLibraryFileStore().replace(recordURL, with: bytes)
 
         let container = FakeSyncedContainer()
@@ -39,13 +40,76 @@ struct RelocationCoordinationTests {
             legacyRoot,
             to: destination,
             coordinator: coordinator)
+        let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
 
         #expect(moved)
-        #expect(try await DirectLibraryFileStore().read(recordURL) == nil)
+        #expect(repeated)
+        #expect(try await DirectLibraryFileStore().read(recordURL) == bytes)
         #expect(container.peek(
             destination.recordsDir.appendingPathComponent("legacy.json")) == bytes)
-        #expect(container.coordinatedWriteCount == 1)
+        #expect(container.coordinatedWriteCount > 0)
         #expect(container.metadataQueryCount > 0)
+        await coordinator.stop()
+    }
+
+    @Test("An unequal legacy archive collision preserves both copies")
+    func unequalLegacyArchiveCollisionStaysPending() async throws {
+        let root = PositionFixtures.scratchDirectory("legacy-archive-collision")
+        defer { PositionFixtures.remove(root) }
+
+        let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
+        let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
+        let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
+        let source = WebStorageLayout.pretty(
+            root: legacyRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let destination = WebStorageLayout.pretty(
+            root: sharedRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let key = "collision"
+        let sourceName = "Legacy.vellumweb"
+        let destinationName = "Shared.vellumweb"
+        let sourceURL = source.archivesDir.appendingPathComponent(sourceName)
+        let destinationURL = destination.archivesDir.appendingPathComponent(destinationName)
+        let sourceBytes = Data("legacy".utf8)
+        let destinationBytes = Data("shared".utf8)
+        var sourceIndex = WebArchiveIndex.Contents()
+        sourceIndex.entries[key] = sourceName
+        var destinationIndex = WebArchiveIndex.Contents()
+        destinationIndex.entries[key] = destinationName
+        let direct = DirectLibraryFileStore()
+        try await direct.replace(sourceURL, with: sourceBytes)
+        try await direct.replace(
+            try #require(source.indexPath),
+            with: try WebLibrary.jsonEncoderPretty.encode(sourceIndex))
+
+        let container = FakeSyncedContainer()
+        container.seed(destinationURL, data: destinationBytes)
+        container.seed(
+            try #require(destination.indexPath),
+            data: try WebLibrary.jsonEncoderPretty.encode(destinationIndex))
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { sharedRoot },
+            containerFactory: { container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+
+        let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+
+        #expect(!moved)
+        #expect(try await direct.read(sourceURL) == sourceBytes)
+        #expect(container.peek(destinationURL) == destinationBytes)
         await coordinator.stop()
     }
 

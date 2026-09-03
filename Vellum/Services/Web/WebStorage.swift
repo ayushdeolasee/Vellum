@@ -39,7 +39,6 @@ enum WebStorageSettings {
     static let customBookmarkKey = "web.storage.customBookmark"
     static let autoSaveKey = "web.storage.autoSavePages"
     static let pendingRelocationKey = "web.storage.pendingRelocationFrom"
-    static let legacyMacICloudMigrationKey = "web.storage.legacyMacICloudMigrationCompleted"
 
     // Test seams (same idiom as WebLibrary.storeDirOverride).
     nonisolated(unsafe) static var modeOverride: WebStorageMode?
@@ -115,26 +114,19 @@ enum WebStorageSettings {
     #if os(macOS)
     /// Vellum 0.1.0 stored its iCloud library in the user's general iCloud
     /// Drive folder. New builds use the fixed app container instead, but must
-    /// collect existing data from the old location once it is reachable.
+    /// collect existing data from the old location whenever it is reachable.
     static var legacyMacICloudVellumRoot: URL? {
         let driveRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
                 "Library/Mobile Documents/com~apple~CloudDocs",
                 isDirectory: true)
+        let legacyRoot = driveRoot.appendingPathComponent("Vellum", isDirectory: true)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(
-            atPath: driveRoot.path, isDirectory: &isDirectory),
+            atPath: legacyRoot.path, isDirectory: &isDirectory),
             isDirectory.boolValue
         else { return nil }
-        return driveRoot.appendingPathComponent("Vellum", isDirectory: true)
-    }
-
-    static var legacyMacICloudMigrationCompleted: Bool {
-        AppDefaults.current.bool(forKey: legacyMacICloudMigrationKey)
-    }
-
-    static func markLegacyMacICloudMigrationCompleted() {
-        AppDefaults.current.set(true, forKey: legacyMacICloudMigrationKey)
+        return legacyRoot
     }
     #endif
 
@@ -552,15 +544,13 @@ enum WebStorageMigrator {
         }
 
         #if os(macOS)
-        if !WebStorageSettings.legacyMacICloudMigrationCompleted,
-           WebStorageSettings.chosenMode == .icloud,
+        if WebStorageSettings.chosenMode == .icloud,
            active.requiresCoordination,
            let legacyRoot = WebStorageSettings.legacyMacICloudVellumRoot {
-            let moved = await migrateLegacyICloudRoot(
+            _ = await migrateLegacyICloudRoot(
                 legacyRoot,
                 to: active,
                 coordinator: coordinator)
-            if moved { WebStorageSettings.markLegacyMacICloudMigrationCompleted() }
         }
         #endif
 
@@ -579,9 +569,10 @@ enum WebStorageMigrator {
         }
     }
 
-    /// Move the former Finder-managed Mac iCloud library into the fixed shared
-    /// container. Each successful file transfer removes its source, so repeated
-    /// launch attempts are harmless and naturally retry an interrupted import.
+    /// Copy the former Finder-managed Mac iCloud library into the fixed shared
+    /// container. The legacy source stays intact because it cannot participate
+    /// in the shared container's file coordination. Every launch retries the
+    /// copy so unavailable items and rollback-created data are picked up later.
     @discardableResult
     static func migrateLegacyICloudRoot(
         _ legacyRoot: URL,
@@ -593,16 +584,16 @@ enum WebStorageMigrator {
             recordsInRoot: true,
             localStoreDir: WebLibrary.storeDir)
         guard source != destination else { return true }
-        return await coordinator.performExclusiveDirectStorageImport(
-            from: source,
+        return await coordinator.performExclusiveStorageImport(
             to: destination
-        ) { sourceContext, destinationContext in
+        ) { destinationContext in
             guard let destinationContext else { return false }
             return await relocate(
                 from: source,
                 to: destination,
-                sourceStore: sourceContext.fileStore,
-                destinationStore: destinationContext.fileStore)
+                sourceStore: DirectLibraryFileStore(allowedRoot: legacyRoot),
+                destinationStore: destinationContext.fileStore,
+                preserveSource: true)
         }
     }
 
@@ -748,7 +739,8 @@ enum WebStorageMigrator {
         from source: WebStorageLayout,
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
-        destinationStore: any LibraryFileStore
+        destinationStore: any LibraryFileStore,
+        preserveSource: Bool = false
     ) async -> Bool {
         guard source != destination else { return true }
 
@@ -764,23 +756,27 @@ enum WebStorageMigrator {
                 from: source,
                 to: destination,
                 sourceStore: sourceStore,
-                destinationStore: destinationStore) && clean
+                destinationStore: destinationStore,
+                preserveSource: preserveSource) && clean
         }
         clean = await relocateArchives(
             from: source,
             to: destination,
             sourceStore: sourceStore,
-            destinationStore: destinationStore) && clean
+            destinationStore: destinationStore,
+            preserveSource: preserveSource) && clean
         clean = await relocateTree(
             from: source.documentsDir,
             to: destination.documentsDir,
             sourceStore: sourceStore,
-            destinationStore: destinationStore) && clean
+            destinationStore: destinationStore,
+            preserveSource: preserveSource) && clean
         clean = await relocateTree(
             from: source.positionsDir,
             to: destination.positionsDir,
             sourceStore: sourceStore,
-            destinationStore: destinationStore) && clean
+            destinationStore: destinationStore,
+            preserveSource: preserveSource) && clean
         return clean
     }
 
@@ -788,7 +784,8 @@ enum WebStorageMigrator {
         from source: WebStorageLayout,
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
-        destinationStore: any LibraryFileStore
+        destinationStore: any LibraryFileStore,
+        preserveSource: Bool
     ) async -> Bool {
         let sourceEntries: [LibraryFileEntry]
         let destinationEntries: [LibraryFileEntry]
@@ -828,7 +825,9 @@ enum WebStorageMigrator {
                     output = sourceData
                 }
                 try await destinationStore.replace(destinationURL, with: output)
-                try await sourceStore.remove(entry.url)
+                if !preserveSource {
+                    try await sourceStore.remove(entry.url)
+                }
             } catch {
                 clean = false
             }
@@ -854,7 +853,8 @@ enum WebStorageMigrator {
         from source: WebStorageLayout,
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
-        destinationStore: any LibraryFileStore
+        destinationStore: any LibraryFileStore,
+        preserveSource: Bool
     ) async -> Bool {
         let sourceArchives: [LibraryFileEntry]
         let destinationArchives: [LibraryFileEntry]
@@ -907,7 +907,9 @@ enum WebStorageMigrator {
             guard let sourceName, let sourceEntry = sourceByName[sourceName] else {
                 // An index entry left behind by an already-completed copy is
                 // stale and safe to prune; a missing local archive needs no work.
-                if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
+                if !preserveSource,
+                   source.pretty,
+                   sourceIndex.entries.removeValue(forKey: key) != nil {
                     sourceIndexChanged = true
                 }
                 continue
@@ -960,8 +962,12 @@ enum WebStorageMigrator {
                 }
                 if let existing = destinationByName[destinationName] {
                     guard existing.readiness.isReady,
-                          try await destinationStore.read(destinationURL) != nil
+                          let destinationBytes = try await destinationStore.read(destinationURL)
                     else {
+                        clean = false
+                        continue
+                    }
+                    guard destinationBytes == bytes else {
                         clean = false
                         continue
                     }
@@ -974,9 +980,11 @@ enum WebStorageMigrator {
                         byteSize: Int64(bytes.count),
                         contentModifiedAt: sourceEntry.contentModifiedAt)
                 }
-                try await sourceStore.remove(sourceEntry.url)
-                if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
-                    sourceIndexChanged = true
+                if !preserveSource {
+                    try await sourceStore.remove(sourceEntry.url)
+                    if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
+                        sourceIndexChanged = true
+                    }
                 }
             } catch {
                 clean = false
@@ -1026,7 +1034,8 @@ enum WebStorageMigrator {
         from sourceRoot: URL,
         to destinationRoot: URL,
         sourceStore: any LibraryFileStore,
-        destinationStore: any LibraryFileStore
+        destinationStore: any LibraryFileStore,
+        preserveSource: Bool
     ) async -> Bool {
         guard sourceRoot != destinationRoot else { return true }
         let sourceFiles: [RelativeFile]
@@ -1065,7 +1074,9 @@ enum WebStorageMigrator {
                 } else {
                     try await destinationStore.replace(destinationURL, with: sourceData)
                 }
-                try await sourceStore.remove(file.entry.url)
+                if !preserveSource {
+                    try await sourceStore.remove(file.entry.url)
+                }
             } catch {
                 clean = false
             }

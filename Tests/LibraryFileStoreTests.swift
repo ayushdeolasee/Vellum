@@ -23,6 +23,31 @@ struct LibraryFileStoreTests {
         #expect(try await store.read(target) == nil)
     }
 
+    @Test("Rooted direct storage rejects symlinks and paths outside its root")
+    func rootedDirectStorageStaysInsideRoot() async throws {
+        let root = PositionFixtures.scratchDirectory("rooted-file-store")
+        let outside = PositionFixtures.scratchDirectory("outside-file-store")
+        defer {
+            PositionFixtures.remove(root)
+            PositionFixtures.remove(outside)
+        }
+        let outsideFile = outside.appendingPathComponent("outside.json")
+        let link = root.appendingPathComponent("linked.json")
+        try Data("keep".utf8).write(to: outsideFile)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outsideFile)
+        let store = DirectLibraryFileStore(allowedRoot: root)
+
+        await #expect(throws: LibraryFileError.symbolicLink(link.standardizedFileURL)) {
+            _ = try await store.list(root, suffix: nil)
+        }
+        await #expect(
+            throws: LibraryFileError.outsideAllowedRoot(outsideFile.standardizedFileURL)
+        ) {
+            _ = try await store.read(outsideFile)
+        }
+        #expect(try Data(contentsOf: outsideFile) == Data("keep".utf8))
+    }
+
     @Test("Coordinated storage uses metadata and coordinated primitives only")
     func coordinatedRoundTrip() async throws {
         let root = URL(fileURLWithPath: "/Vellum/.vellum/records", isDirectory: true)
