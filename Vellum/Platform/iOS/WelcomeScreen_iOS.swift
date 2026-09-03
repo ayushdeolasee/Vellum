@@ -30,6 +30,7 @@ struct WelcomeLibrary_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
 
@@ -305,12 +306,12 @@ struct WelcomeLibrary_iOS: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.body)
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.mutedForeground)
 
             TextField("Search your library — or paste a link", text: $store.query)
                 .textFieldStyle(.plain)
-                .font(.body)
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.foreground)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -342,11 +343,17 @@ struct WelcomeLibrary_iOS: View {
                 }
 
             if !store.query.isEmpty {
-                IconButton(help: "Clear search") {
+                Button {
                     _ = store.clearQuery()
-                } icon: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
                 .accessibilityIdentifier("welcome.clearSearch")
             }
 
