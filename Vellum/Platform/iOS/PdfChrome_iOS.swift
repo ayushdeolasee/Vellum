@@ -24,6 +24,7 @@ struct PdfToolbar_iOS: View {
     @State private var pageFieldText = ""
     @State private var showPageJump = false
     @State private var showSettings = false
+    @State private var showHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -188,6 +189,13 @@ struct PdfToolbar_iOS: View {
             }
 
             GlassToolPod(label: "Panel and document actions") {
+                GlassToolButton(system: "questionmark.circle", label: "Help") {
+                    showHelp = true
+                }
+                GlassToolButton(system: "gearshape", label: "Settings") {
+                    workspace.settingsSection = .general
+                    showSettings = true
+                }
                 GlassToolButton(
                     system: "sidebar.right", label: "Toggle sidebar",
                     active: workspace.sidebarOpen
@@ -218,6 +226,7 @@ struct PdfToolbar_iOS: View {
         // `.sheet` does not reliably inherit across the UIHostingController
         // boundary — and cannot drift apart.
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -375,8 +384,6 @@ struct PdfToolbar_iOS: View {
                 Divider()
                 MoveToCollectionMenu(item: item, integrations: integrations)
             }
-            Divider()
-            Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
         } label: {
             // DO NOT port main's ZStack trick here (#129 packet 7 §2.10 G4).
             // On AppKit a menu control paints its own hover highlight *beneath*
