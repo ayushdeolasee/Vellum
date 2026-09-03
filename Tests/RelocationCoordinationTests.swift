@@ -5,6 +5,50 @@ import Testing
 
 @Suite("Storage relocation — coordinated side")
 struct RelocationCoordinationTests {
+    @Test("Legacy Mac iCloud data imports into the coordinated shared container")
+    func legacyMacICloudImportUsesCoordinatedDestination() async throws {
+        let root = PositionFixtures.scratchDirectory("legacy-mac-icloud-import")
+        defer { PositionFixtures.remove(root) }
+
+        let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
+        let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
+        let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
+        let source = WebStorageLayout.pretty(
+            root: legacyRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let destination = WebStorageLayout.pretty(
+            root: sharedRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let recordURL = source.recordsDir.appendingPathComponent("legacy.json")
+        let bytes = Data(#"{"schema":"unchanged"}"#.utf8)
+        try await DirectLibraryFileStore().replace(recordURL, with: bytes)
+
+        let container = FakeSyncedContainer()
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { sharedRoot },
+            containerFactory: { container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+
+        let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+
+        #expect(moved)
+        #expect(try await DirectLibraryFileStore().read(recordURL) == nil)
+        #expect(container.peek(
+            destination.recordsDir.appendingPathComponent("legacy.json")) == bytes)
+        #expect(container.coordinatedWriteCount == 1)
+        #expect(container.metadataQueryCount > 0)
+        await coordinator.stop()
+    }
+
     @Test("A stale iCloud file stays pending while current data and positions move")
     func staleFileKeepsSourceAndRetryFinishes() async throws {
         let destinationRoot = PositionFixtures.scratchDirectory("coordinated-relocation")

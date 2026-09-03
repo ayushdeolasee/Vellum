@@ -39,6 +39,7 @@ enum WebStorageSettings {
     static let customBookmarkKey = "web.storage.customBookmark"
     static let autoSaveKey = "web.storage.autoSavePages"
     static let pendingRelocationKey = "web.storage.pendingRelocationFrom"
+    static let legacyMacICloudMigrationKey = "web.storage.legacyMacICloudMigrationCompleted"
 
     // Test seams (same idiom as WebLibrary.storeDirOverride).
     nonisolated(unsafe) static var modeOverride: WebStorageMode?
@@ -110,6 +111,32 @@ enum WebStorageSettings {
     static var icloudVellumRoot: URL? {
         icloudDriveRoot?.appendingPathComponent("Vellum", isDirectory: true)
     }
+
+    #if os(macOS)
+    /// Vellum 0.1.0 stored its iCloud library in the user's general iCloud
+    /// Drive folder. New builds use the fixed app container instead, but must
+    /// collect existing data from the old location once it is reachable.
+    static var legacyMacICloudVellumRoot: URL? {
+        let driveRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Mobile Documents/com~apple~CloudDocs",
+                isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: driveRoot.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else { return nil }
+        return driveRoot.appendingPathComponent("Vellum", isDirectory: true)
+    }
+
+    static var legacyMacICloudMigrationCompleted: Bool {
+        AppDefaults.current.bool(forKey: legacyMacICloudMigrationKey)
+    }
+
+    static func markLegacyMacICloudMigrationCompleted() {
+        AppDefaults.current.set(true, forKey: legacyMacICloudMigrationKey)
+    }
+    #endif
 
     // MARK: Custom folder (security-scoped bookmark)
 
@@ -524,6 +551,19 @@ enum WebStorageMigrator {
             if moved { clearPendingRelocation() }
         }
 
+        #if os(macOS)
+        if !WebStorageSettings.legacyMacICloudMigrationCompleted,
+           WebStorageSettings.chosenMode == .icloud,
+           active.requiresCoordination,
+           let legacyRoot = WebStorageSettings.legacyMacICloudVellumRoot {
+            let moved = await migrateLegacyICloudRoot(
+                legacyRoot,
+                to: active,
+                coordinator: coordinator)
+            if moved { WebStorageSettings.markLegacyMacICloudMigrationCompleted() }
+        }
+        #endif
+
         let localLayout = WebStorageLayout.local(storeDir: WebLibrary.storeDir)
         guard active != localLayout else { return }
         _ = await coordinator.performExclusiveStorageRelocation(
@@ -534,6 +574,33 @@ enum WebStorageMigrator {
             return await relocate(
                 from: localLayout,
                 to: active,
+                sourceStore: sourceContext.fileStore,
+                destinationStore: destinationContext.fileStore)
+        }
+    }
+
+    /// Move the former Finder-managed Mac iCloud library into the fixed shared
+    /// container. Each successful file transfer removes its source, so repeated
+    /// launch attempts are harmless and naturally retry an interrupted import.
+    @discardableResult
+    static func migrateLegacyICloudRoot(
+        _ legacyRoot: URL,
+        to destination: WebStorageLayout,
+        coordinator: StorageCoordinator
+    ) async -> Bool {
+        let source = WebStorageLayout.pretty(
+            root: legacyRoot,
+            recordsInRoot: true,
+            localStoreDir: WebLibrary.storeDir)
+        guard source != destination else { return true }
+        return await coordinator.performExclusiveDirectStorageImport(
+            from: source,
+            to: destination
+        ) { sourceContext, destinationContext in
+            guard let destinationContext else { return false }
+            return await relocate(
+                from: source,
+                to: destination,
                 sourceStore: sourceContext.fileStore,
                 destinationStore: destinationContext.fileStore)
         }

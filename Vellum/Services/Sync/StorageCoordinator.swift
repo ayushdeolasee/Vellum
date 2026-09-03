@@ -339,6 +339,29 @@ actor StorageCoordinator {
         }
     }
 
+    /// Import the old macOS iCloud Drive folder into the active layout while
+    /// normal storage traffic is stopped. The source is deliberately direct:
+    /// older Vellum builds addressed that Finder-managed folder without a
+    /// ubiquity-container identity. The destination still receives the normal
+    /// coordinated adapter when it is the shared iCloud container.
+    func performExclusiveDirectStorageImport<T: Sendable>(
+        from source: WebStorageLayout,
+        to destination: WebStorageLayout,
+        _ operation: @escaping @Sendable (
+            StorageContext, StorageContext?
+        ) async -> T
+    ) async -> T {
+        await performExclusiveStorageOperation {
+            let destinationResult = await self.storageContext(for: destination)
+            let result = await operation(
+                .direct(layout: source), destinationResult.context)
+            for container in destinationResult.transientContainers {
+                await container.suspend()
+            }
+            return result
+        }
+    }
+
     @discardableResult
     func background(
         timeout: TimeInterval? = nil,
