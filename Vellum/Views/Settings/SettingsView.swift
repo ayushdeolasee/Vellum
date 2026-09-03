@@ -404,6 +404,7 @@ private struct AnnotationsSettingsTab: View {
 
 private struct AiSettingsTab: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenAIModelCatalog.self) private var openAIModelCatalog
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
     @State private var validationState: AiConnectionValidationState = .idle
@@ -531,7 +532,10 @@ private struct AiSettingsTab: View {
 
     @ViewBuilder
     private var capabilityWarnings: some View {
-        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
+        if let option = aiStore.selectedOption(
+            openAIModels: openAIModelCatalog.models,
+            catalog: openRouterCatalog
+        ) {
             if !option.supportsVision {
                 Label(AiCapabilityWarning.noVision, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

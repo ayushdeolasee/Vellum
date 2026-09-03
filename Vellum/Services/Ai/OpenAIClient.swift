@@ -217,9 +217,8 @@ final class OpenAIClient {
     /// it outright, so the field is omitted for them.
     ///
     /// The o-series belongs here as much as the gpt-5 line does: `o1`/`o3`/`o4`
-    /// all take a reasoning effort. They're unreachable from the OpenAI-direct
-    /// picker, but OpenRouter's catalog is live, so `openai/o3` is one search
-    /// away — and OpenRouter routes every `openai/` id through this table.
+    /// all take a reasoning effort. OpenRouter also routes every `openai/` id
+    /// through this table after stripping the provider prefix.
     static func isReasoningModel(_ model: String) -> Bool {
         let lowered = model.lowercased()
         return lowered.hasPrefix("gpt-5")
