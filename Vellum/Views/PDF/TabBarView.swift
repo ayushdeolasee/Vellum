@@ -18,31 +18,34 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                // Semantic fills, not glass: the tab strip is chrome, so the
-                // active tab uses the shared SelectionStyle surface rather than
-                // stacking its own glass pane on the `.bar` material.
-                HStack(spacing: 4) {
-                    ForEach(appStore.tabs) { tab in
-                        TabItem(
-                            tab: tab,
-                            paneId: paneId,
-                            isActive: tab.id == appStore.activeTabId,
-                            onActivate: { appStore.activateTab(tab.id) },
-                            onClose: { Task { await appStore.closeTab(tab.id) } },
-                            onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
-                            onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
-                            onDuplicate: { Task { await appStore.duplicateTab(tab.id) } },
-                            onMoveToNewPane: {
-                                workspace.splitWithTab(
-                                    tabId: tab.id, from: paneId, target: paneId,
-                                    direction: .horizontal, before: false)
-                            },
-                            onRename: tab.document == nil ? nil : { renamingTab = tab }
-                        )
+            GeometryReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    // Semantic fills, not glass: the tab strip is chrome, so the
+                    // active tab uses the shared SelectionStyle surface rather than
+                    // stacking its own glass pane on the `.bar` material.
+                    HStack(spacing: 4) {
+                        ForEach(appStore.tabs) { tab in
+                            TabItem(
+                                tab: tab,
+                                paneId: paneId,
+                                isActive: tab.id == appStore.activeTabId,
+                                onActivate: { appStore.activateTab(tab.id) },
+                                onClose: { Task { await appStore.closeTab(tab.id) } },
+                                onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
+                                onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
+                                onDuplicate: { Task { await appStore.duplicateTab(tab.id) } },
+                                onMoveToNewPane: {
+                                    workspace.splitWithTab(
+                                        tabId: tab.id, from: paneId, target: paneId,
+                                        direction: .horizontal, before: false)
+                                },
+                                onRename: tab.document == nil ? nil : { renamingTab = tab }
+                            )
+                            .frame(width: tabWidth(for: proxy.size.width))
+                        }
                     }
+                    .padding(.vertical, 5)
                 }
-                .padding(.vertical, 5)
             }
             .frame(maxWidth: .infinity)
 
@@ -134,6 +137,13 @@ struct TabBarView: View {
     /// authoritative `draggingTab` flag it never sticks after a cancelled drag.
     private var joinTargetedBinding: Binding<Bool> {
         Binding(get: { joinTargeted && workspace.draggingTab != nil }, set: { joinTargeted = $0 })
+    }
+
+    private func tabWidth(for stripWidth: CGFloat) -> CGFloat {
+        let count = max(appStore.tabs.count, 1)
+        let spacing = CGFloat(count - 1) * 4
+        let distributedWidth = (stripWidth - spacing) / CGFloat(count)
+        return min(max(distributedWidth, 128), 360)
     }
 
     private func openPdf() {
@@ -230,7 +240,7 @@ private struct TabItem: View {
         }
         .font(.system(size: 12))
         .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-        .frame(minWidth: 128, idealWidth: 176, maxWidth: 224, minHeight: 28, maxHeight: 28)
+        .frame(minWidth: 128, maxWidth: .infinity, minHeight: 28, maxHeight: 28)
         .selectionSurface(
             selected: isActive,
             hovering: hovering,
