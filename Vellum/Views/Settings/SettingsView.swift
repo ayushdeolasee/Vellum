@@ -84,13 +84,13 @@ struct SettingsView: View {
             padSettingsContent(for: workspace.settingsSection)
                 .navigationTitle(workspace.settingsSection.title)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
         .presentationSizing(.page)
     }
 
