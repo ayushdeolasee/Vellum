@@ -41,6 +41,16 @@ struct DirectLibraryFileStore: LibraryFileStore {
     func read(_ url: URL) async throws -> Data? {
         let url = try checkedURL(url)
         let fileManager = FileManager.default
+        if allowedRoot != nil,
+           !fileManager.fileExists(atPath: url.path) {
+            let placeholder = try checkedURL(WebICloud.placeholderURL(for: url))
+            if fileManager.fileExists(atPath: placeholder.path) {
+                _ = WebICloud.materialize(at: url, timeout: 0)
+                guard fileManager.fileExists(atPath: url.path) else {
+                    throw LibraryFileError.notDownloaded(url, .notDownloaded)
+                }
+            }
+        }
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let readiness = try readiness(of: url)
         guard readiness.isReady else {
@@ -99,16 +109,39 @@ struct DirectLibraryFileStore: LibraryFileStore {
                     .isUbiquitousItemKey,
                     .ubiquitousItemDownloadingStatusKey,
                 ],
-                options: [.skipsHiddenFiles])
+                options: allowedRoot == nil ? [.skipsHiddenFiles] : [])
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return []
         } catch {
             throw LibraryFileError.io(error.localizedDescription)
         }
-        var entries: [LibraryFileEntry] = []
+        var entries: [String: LibraryFileEntry] = [:]
         for candidate in urls {
-            let url = try checkedURL(candidate)
+            let candidate = try checkedURL(candidate)
+            let url: URL
+            let isPlaceholder: Bool
+            if let logical = WebICloud.logicalURL(forPlaceholder: candidate) {
+                guard allowedRoot != nil else { continue }
+                url = try checkedURL(logical)
+                isPlaceholder = true
+            } else {
+                guard !candidate.lastPathComponent.hasPrefix(".") else { continue }
+                url = candidate
+                isPlaceholder = false
+            }
             if let suffix, !url.lastPathComponent.hasSuffix(suffix) { continue }
+            if isPlaceholder {
+                _ = WebICloud.materialize(at: url, timeout: 0)
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                entries[url.lastPathComponent] = LibraryFileEntry(
+                    url: url,
+                    name: url.lastPathComponent,
+                    readiness: .notDownloaded,
+                    byteSize: nil,
+                    contentModifiedAt: nil)
+                continue
+            }
             let values: URLResourceValues
             do {
                 values = try url.resourceValues(forKeys: [
@@ -120,14 +153,14 @@ struct DirectLibraryFileStore: LibraryFileStore {
             } catch {
                 throw LibraryFileError.io(error.localizedDescription)
             }
-            entries.append(LibraryFileEntry(
+            entries[url.lastPathComponent] = LibraryFileEntry(
                 url: url,
                 name: url.lastPathComponent,
                 readiness: readiness(from: values),
                 byteSize: values.fileSize.map(Int64.init),
-                contentModifiedAt: values.contentModificationDate))
+                contentModifiedAt: values.contentModificationDate)
         }
-        return entries.sorted { $0.name < $1.name }
+        return entries.values.sorted { $0.name < $1.name }
     }
 
     private func checkedURL(_ url: URL) throws -> URL {

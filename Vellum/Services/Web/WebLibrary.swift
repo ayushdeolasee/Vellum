@@ -405,8 +405,11 @@ enum WebLibrary {
         for name in names {
             if name.hasSuffix(".json") {
                 out.insert(name)
-            } else if name.hasPrefix("."), name.hasSuffix(".json.icloud") {
-                out.insert(String(name.dropFirst().dropLast(".icloud".count)))
+            } else if let logical = WebICloud.logicalURL(
+                forPlaceholder: dir.appendingPathComponent(name)),
+                logical.pathExtension == "json"
+            {
+                out.insert(logical.lastPathComponent)
             }
         }
         return out.sorted()

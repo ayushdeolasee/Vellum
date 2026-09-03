@@ -424,6 +424,18 @@ enum WebICloud {
             .appendingPathComponent(".\(url.lastPathComponent).icloud")
     }
 
+    /// The logical file represented by an iCloud placeholder. Hidden logical
+    /// files stay hidden instead of being exposed as user data.
+    static func logicalURL(forPlaceholder placeholder: URL) -> URL? {
+        let name = placeholder.deletingPathExtension().lastPathComponent
+        guard placeholder.pathExtension == "icloud",
+              name.hasPrefix(".")
+        else { return nil }
+        let logicalName = String(name.dropFirst())
+        guard !logicalName.isEmpty, !logicalName.hasPrefix(".") else { return nil }
+        return placeholder.deletingLastPathComponent().appendingPathComponent(logicalName)
+    }
+
     /// True when the item exists in the library — either materialized or as an
     /// evicted placeholder.
     static func itemExists(at url: URL) -> Bool {
@@ -1132,6 +1144,10 @@ enum WebStorageMigrator {
             let relative = relativePrefix.isEmpty
                 ? entry.name
                 : "\(relativePrefix)/\(entry.name)"
+            if !entry.readiness.isReady {
+                files.append(RelativeFile(relativePath: relative, entry: entry))
+                continue
+            }
             if entry.url.pathExtension.isEmpty, depth < 8 {
                 do {
                     let children = try await store.list(entry.url, suffix: nil)
