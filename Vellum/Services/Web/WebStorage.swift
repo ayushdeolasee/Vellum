@@ -821,8 +821,8 @@ enum WebStorageMigrator {
                         clean = false
                         continue
                     }
-                    output = merged
-                    needsReplace = merged != destinationData
+                    output = merged.data
+                    needsReplace = merged.changed
                 } else {
                     output = sourceData
                     needsReplace = true
@@ -840,10 +840,14 @@ enum WebStorageMigrator {
         return clean
     }
 
-    private static func mergedRecord(_ source: Data, into destination: Data) -> Data? {
+    private static func mergedRecord(
+        _ source: Data,
+        into destination: Data
+    ) -> (data: Data, changed: Bool)? {
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }
+        let original = current
         WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
         current.saved = current.saved || incoming.saved
         current.savedAt = current.savedAt ?? incoming.savedAt
@@ -857,7 +861,8 @@ enum WebStorageMigrator {
             current.loadingPolicy = current.loadingPolicy ?? incoming.loadingPolicy
         }
         current.openedAt = current.openedAt ?? incoming.openedAt
-        return try? WebLibrary.jsonEncoderPretty.encode(current)
+        guard let data = try? WebLibrary.jsonEncoderPretty.encode(current) else { return nil }
+        return (data, current != original)
     }
 
     private static func relocateArchives(

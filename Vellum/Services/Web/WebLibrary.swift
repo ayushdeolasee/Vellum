@@ -9,7 +9,7 @@ import Foundation
 
 /// Sidecar record persisted per webpage (`<appData>/web/<key>.json`).
 /// All fields default on decode except `url` (mirrors `#[serde(default)]`).
-struct WebPageRecord: Codable, Sendable {
+struct WebPageRecord: Codable, Equatable, Sendable {
     var url: String
     var title: String?
     var pageCount: Int?
