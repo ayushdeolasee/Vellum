@@ -225,7 +225,9 @@ extension SidebarBrowserController: WKNavigationDelegate, WKUIDelegate {
         guard let url = navigationAction.request.url else { return .allow }
         let scheme = url.scheme?.lowercased()
         guard scheme == "http" || scheme == "https" else {
-            if let scheme, ["mailto", "tel", "facetime"].contains(scheme) {
+            if navigationAction.navigationType == .linkActivated,
+               let scheme,
+               ["mailto", "tel", "facetime"].contains(scheme) {
                 NSWorkspace.shared.open(url)
             }
             return .cancel
