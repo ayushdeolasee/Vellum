@@ -142,6 +142,7 @@ struct AiPanel_iOS: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 4) {
+                quizMenu
                 touchIconButton(
                     system: "gearshape", label: "AI settings", active: settingsOpen
                 ) {
@@ -169,6 +170,46 @@ struct AiPanel_iOS: View {
         guard let transaction = aiStore.clearConversation() else { return }
         guard let undoManager else { return }
         registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+    }
+
+    private var quizMenu: some View {
+        Menu {
+            Button("Current page") {
+                startQuiz(.currentPage(appStore.currentPage))
+            }
+            if !aiStore.composerReferences.isEmpty {
+                Button("Attached material") {
+                    startQuiz(.attachedMaterial)
+                }
+            }
+            Button("Whole document") {
+                startQuiz(.document)
+            }
+        } label: {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 15))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(appStore.document == nil || aiStore.isThinking)
+        .accessibilityLabel("Start a quiz")
+        .accessibilityIdentifier("aiPanel.quiz")
+    }
+
+    private func startQuiz(_ scope: AiQuizScope) {
+        guard !aiStore.isThinking else { return }
+        let request = AiPrompts.quizRequest(for: scope)
+        if !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !aiStore.composerReferences.isEmpty {
+            input += input.isEmpty ? request : "\n\n\(request)"
+            return
+        }
+        input = request
+        submit()
     }
 
     /// Shown until there is a usable provider credential. On iPad the button
@@ -441,6 +482,11 @@ struct AiPanel_iOS: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(palette.foreground)
                 Text("The assistant can read the page, jump around, and create notes and highlights for you.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Use the brain button to quiz yourself on a page, an attachment, or the whole document.")
                     .font(.system(size: 12))
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
