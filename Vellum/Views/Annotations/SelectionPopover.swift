@@ -4,9 +4,8 @@ import UIKit
 #endif
 
 // Selection popover — port of src/components/annotations/SelectionPopover.tsx.
-// 5 color swatches (24px, tooltip "Highlight {Name}"), divider, note button
-// toggling a 256px note-input row (Enter/Add submits trimmed non-empty text →
-// addNote with the selection's position + selected_text; Escape closes).
+// Five compact color swatches plus copy, note, and AI actions. iOS wraps them
+// into two rows of 44pt targets; note input stays a separate 256pt row.
 
 struct SelectionPopover: View {
     let selection: PdfTextSelection
@@ -24,74 +23,24 @@ struct SelectionPopover: View {
 
     var body: some View {
         VStack(spacing: 4) {
+            #if os(iOS)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(44), spacing: 0), count: 5),
+                alignment: .leading,
+                spacing: 0
+            ) {
+                controlItems
+            }
+            .frame(width: 220)
+            .padding(4)
+            .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            #else
             HStack(spacing: 4) {
-                ForEach(HIGHLIGHT_COLORS) { color in
-                    HighlightSwatchButton(
-                        color: color,
-                        size: 24,
-                        helpText: "Highlight \(color.name)"
-                    ) {
-                        handleHighlight(color.value)
-                    }
-                }
-
-                Rectangle()
-                    .fill(.quaternary)
-                    .frame(width: 1, height: 20)
-                    .padding(.horizontal, 4)
-
-                #if os(iOS)
-                // The system callout is suppressed on iPad (it collided with
-                // this popover), so copy lives here instead.
-                Button {
-                    UIPasteboard.general.string = selection.text
-                    onClose()
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(.secondary)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Copy")
-                .accessibilityIdentifier("selectionPopover.copy")
-                #endif
-
-                Button {
-                    showNoteInput.toggle()
-                } label: {
-                    Image(systemName: "plus.bubble")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
-                        .clipShape(Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .onHover { noteButtonHovering = $0 }
-                .help("Add note")
-                .accessibilityLabel("Add note")
-                .accessibilityIdentifier("selectionPopover.addNote")
-
-                Button(action: handleAskAi) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
-                        .clipShape(Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .onHover { askAiHovering = $0 }
-                .help("Ask AI about this")
-                .accessibilityLabel("Ask AI about this")
-                .accessibilityIdentifier("selectionPopover.askAi")
+                controlItems
             }
             .padding(6)
             .darkGlassSurface(in: .capsule)
+            #endif
 
             if showNoteInput {
                 HStack(spacing: 6) {
@@ -105,15 +54,104 @@ struct SelectionPopover: View {
                         #endif
                         .onAppear { noteFieldFocused = true }
 
+                    #if os(iOS)
+                    Button(action: handleAddNote) {
+                        Text("Add")
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.small)
+                    #else
                     Button("Add", action: handleAddNote)
                         .buttonStyle(.glassProminent)
                         .controlSize(.small)
+                    #endif
                 }
                 .padding(8)
                 .frame(width: 256)
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
+    }
+
+    @ViewBuilder
+    private var controlItems: some View {
+        ForEach(HIGHLIGHT_COLORS) { color in
+            HighlightSwatchButton(
+                color: color,
+                size: 24,
+                helpText: "Highlight \(color.name)"
+            ) {
+                handleHighlight(color.value)
+            }
+        }
+
+        #if os(macOS)
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
+        #else
+        // The system callout is suppressed on iPad (it collided with this
+        // popover), so copy lives here instead.
+        Button {
+            UIPasteboard.general.string = selection.text
+            onClose()
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy")
+        .accessibilityIdentifier("selectionPopover.copy")
+        #endif
+
+        Button {
+            showNoteInput.toggle()
+        } label: {
+            Image(systemName: "plus.bubble")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Circle())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .onHover { noteButtonHovering = $0 }
+        .help("Add note")
+        .accessibilityLabel("Add note")
+        .accessibilityIdentifier("selectionPopover.addNote")
+
+        Button(action: handleAskAi) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Circle())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .onHover { askAiHovering = $0 }
+        .help("Ask AI about this")
+        .accessibilityLabel("Ask AI about this")
+        .accessibilityIdentifier("selectionPopover.askAi")
     }
 
     /// Attach the selected text to the AI composer as a `.selection` reference

@@ -343,6 +343,7 @@ struct PdfOverlayStack_iOS: View {
     var body: some View {
         let _ = controller.geometryVersion
         let scale = controller.pdfView.map { Double($0.scaleFactor) } ?? app.zoom
+        let viewportWidth = controller.pdfView?.bounds.width
         ZStack(alignment: .topLeading) {
             // Note-mode: a clear layer that captures the placement tap so it
             // never reaches the PDFView's own selection handling.
@@ -389,7 +390,7 @@ struct PdfOverlayStack_iOS: View {
 
             if let selection = controller.selection,
                let position = controller.selectionPopoverPosition {
-                AnchoredAbove(point: position) {
+                AnchoredAbove(point: position, containerWidth: viewportWidth) {
                     SelectionPopover(selection: selection) {
                         controller.clearSelection()
                     }
