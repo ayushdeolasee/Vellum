@@ -51,21 +51,20 @@ struct KeychainStoreTests {
         }
     }
 
-    @Test("A locked existing vault retries its accessibility migration after unlock")
+    @Test("A readable vault retries after its accessibility update fails")
     func existingVaultAccessibilityMigrationRetries() {
         let fake = FakeKeychain()
         fake.seedVault(
             ["com.vellum.integrations/read-later.readwise": "rw1"],
             afterFirstUnlock: false)
         fake.accessibilityMigrationSucceeds = false
-        fake.vaultIsReadable = false
 
         KeychainStore.withBackend(fake.backend) {
             #expect(KeychainStore.get("read-later.readwise", service: integrationsService) == nil)
             #expect(fake.accessibilityMigrationAttemptCount == 1)
+            #expect(fake.readCount == 1, "the vault remained readable after the failed update")
 
             fake.accessibilityMigrationSucceeds = true
-            fake.vaultIsReadable = true
 
             #expect(
                 KeychainStore.get("read-later.readwise", service: integrationsService) == "rw1")
@@ -404,11 +403,12 @@ private final class FakeKeychain: @unchecked Sendable {
                 return KeychainStore.VaultState(entries: vaultEntries, modDate: vaultModDate)
             },
             migrateVaultAccessibility: { [self] in
-                guard vaultEntries != nil, !vaultUsesAfterFirstUnlock else { return }
+                guard vaultEntries != nil, !vaultUsesAfterFirstUnlock else { return true }
                 accessibilityMigrationAttemptCount += 1
-                guard accessibilityMigrationSucceeds else { return }
+                guard accessibilityMigrationSucceeds else { return false }
                 vaultUsesAfterFirstUnlock = true
                 vaultModDate = tick()
+                return true
             },
             probeModDate: { [self] in
                 probeCount += 1

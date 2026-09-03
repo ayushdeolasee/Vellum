@@ -69,8 +69,9 @@ enum KeychainStore {
         /// nil when an item exists but can't be read (denied prompt, corrupt).
         var readVaultItem: @Sendable () -> VaultState?
         /// Moves an existing iOS vault to the protection class required by
-        /// background refresh. A no-op when absent or already migrated.
-        var migrateVaultAccessibility: @Sendable () -> Void
+        /// background refresh. False leaves the vault uncached so a later
+        /// load or save retries the migration.
+        var migrateVaultAccessibility: @Sendable () -> Bool
         /// The vault item's modification date, nil when absent. Attribute-only,
         /// so it must never trigger an access prompt.
         var probeModDate: @Sendable () -> Date?
@@ -223,8 +224,9 @@ enum KeychainStore {
     private static func loadVaultLocked() -> VaultState? {
         if let cache { return cache }
         let backend = backendLocked
-        backend.migrateVaultAccessibility()
+        let accessibilityReady = backend.migrateVaultAccessibility()
         guard let state = backend.readVaultItem() else { return nil }
+        guard accessibilityReady else { return nil }
         cache = state
         reconcileLegacyItemsLocked()
         return cache
@@ -368,20 +370,25 @@ enum KeychainStore {
     /// documents for background apps before reading it. If the device has not
     /// been unlocked since boot, both this update and the following read fail;
     /// because failed loads are not cached, a later foreground read retries.
-    private static func liveMigrateVaultAccessibility() {
+    private static func liveMigrateVaultAccessibility() -> Bool {
         #if os(iOS)
         var query = vaultBaseQuery()
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let attributes = result as? [String: Any],
-              attributes[kSecAttrAccessible as String] as? String
-                != kSecAttrAccessibleAfterFirstUnlock as String
-        else { return }
-        SecItemUpdate(
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return true }
+        guard status == errSecSuccess,
+              let attributes = result as? [String: Any]
+        else { return false }
+        if attributes[kSecAttrAccessible as String] as? String
+            == kSecAttrAccessibleAfterFirstUnlock as String { return true }
+        return SecItemUpdate(
             vaultBaseQuery() as CFDictionary,
             [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock] as CFDictionary)
+            == errSecSuccess
+        #else
+        return true
         #endif
     }
 
