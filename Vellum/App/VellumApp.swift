@@ -13,13 +13,12 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return }
             let app = workspace.focusedPane.app
-            let webpages = urls.compactMap(VellumExternalWebLink.parse)
+            let hasWebpage = urls.contains { VellumExternalWebLink.parse($0) != nil }
             let filePaths = urls.filter(\.isFileURL).map(\.path)
             Task {
-                for webpage in webpages {
-                    await app.openUrl(webpage.absoluteString)
-                }
-                if !filePaths.isEmpty {
+                if hasWebpage {
+                    await app.openIncomingURLs(urls)
+                } else if !filePaths.isEmpty {
                     await app.openFiles(paths: filePaths)
                 }
             }
