@@ -304,6 +304,9 @@ private struct UnhighlightButton: View {
                 RoundedRectangle(cornerRadius: 4)
                     .strokeBorder(palette.border, lineWidth: 1)
             )
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #endif
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
