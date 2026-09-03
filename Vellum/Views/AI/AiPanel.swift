@@ -451,19 +451,20 @@ struct AiPanel: View {
     /// therefore the right answer and does not compete with the bubble's cap —
     /// the two never lay out the same subtree.
     private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(summaries) { summary in
+                    AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
             Text("Sources & actions")
                 .font(.caption)
                 .foregroundStyle(palette.mutedForeground)
-                .padding(.horizontal, 4)
-
-            ForEach(summaries) { summary in
-                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sources and actions")
+        .accessibilityIdentifier("aiToolSummaries")
     }
 
     @ViewBuilder
