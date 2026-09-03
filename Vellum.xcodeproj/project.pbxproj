@@ -126,6 +126,7 @@
 		252A859CBF3B6F40740EC8BB /* DocumentDataStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */; };
 		25CB4101A0C312376C855317 /* SyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AE428525E41E75F87CAE44F /* SyncedContainer.swift */; };
 		25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC36411CEE83A332FBFA83A0 /* WebSessionBackend.swift */; };
+		2670577A5E7C804FA8FA5FD8 /* VellumExternalWebLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */; };
 		2688D255C06F387795FB1299 /* ScratchpadPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */; };
 		26E53512166BB91F1579151D /* IntegrationsSettingsTab_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4595D81B536618AD46838B59 /* IntegrationsSettingsTab_macOS.swift */; };
 		2708447E7B0AB5779FD79A5B /* SafeClearTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1F783F50CC2705F7C3733D /* SafeClearTests.swift */; };
@@ -309,6 +310,7 @@
 		70B144E6762F1DB4018ABD6D /* PositionWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BBD3C6F730DC9A2EDE0154F /* PositionWiringTests.swift */; };
 		7108684D8FC432CEA922BC6F /* IntegrationsSyncEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775B99053C1485E779A62CE6 /* IntegrationsSyncEngineTests.swift */; };
 		712B4366FB45CC553D50E4EF /* LiveTabRuntime_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E6AB46224F2E9D0978B22E /* LiveTabRuntime_macOS.swift */; };
+		714FF02C027A95D988A9173F /* VellumExternalWebLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */; };
 		71685114BDCE14CB64874FC9 /* KaTeX_SansSerif-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */; };
 		71F26A8EA9097BAAD50824CB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E615CFE934E72065A1FCEE81 /* PrivacyInfo.xcprivacy */; };
 		722833C5980022232CECE93B /* WelcomeScreen_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6191996494A8A84900D279 /* WelcomeScreen_iOS.swift */; };
@@ -459,6 +461,7 @@
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		A8F90F19745170170BF9B13A /* VellumCommands_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */; };
 		AA5DCBC0B5F97BC2DEF95C39 /* PositionCoalescingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B668A374C9761E4C84D702 /* PositionCoalescingTests.swift */; };
+		AA66D58816F45E06D45E790E /* VellumExternalWebLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26AEE820D7F76A6A92314015 /* VellumExternalWebLinkTests.swift */; };
 		AAAFAFF384C09649E3E31D93 /* ConnectServiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033CBF675FDE5C67C943F0EB /* ConnectServiceSheet.swift */; };
 		AAB142DDABAD085F9C70C6BE /* WelcomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E282C555B1B420914134C74 /* WelcomeScreen.swift */; };
 		AAC2C2D0A33EBFAE7A7E46BF /* ShellIdiom_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 746237EA42F01B2A8B1AF425 /* ShellIdiom_iOS.swift */; };
@@ -765,6 +768,7 @@
 		255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerController_iOS.swift; sourceTree = "<group>"; };
 		26319BD42BBB2666619FEBFB /* IntegrationsSyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsSyncEngine.swift; sourceTree = "<group>"; };
 		2644771A5AD6C2DB43F41537 /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
+		26AEE820D7F76A6A92314015 /* VellumExternalWebLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumExternalWebLinkTests.swift; sourceTree = "<group>"; };
 		2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenameDocumentSheet_iOS.swift; sourceTree = "<group>"; };
 		27A4B69BFC3ED916B2B94F57 /* PhoneTabSwitcher_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTabSwitcher_iOS.swift; sourceTree = "<group>"; };
 		287B357B7A7C9503C3C1199C /* ScratchpadPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPersistence.swift; sourceTree = "<group>"; };
@@ -818,6 +822,7 @@
 		4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabStack_iOS.swift; sourceTree = "<group>"; };
 		4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsentTests.swift; sourceTree = "<group>"; };
 		4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiFileAttachment.swift; sourceTree = "<group>"; };
+		4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumExternalWebLink.swift; sourceTree = "<group>"; };
 		4E282C555B1B420914134C74 /* WelcomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeScreen.swift; sourceTree = "<group>"; };
 		4E69330A4F460353FBCB25AB /* TabResidency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabResidency.swift; sourceTree = "<group>"; };
 		4E826FD6201A813D8310F984 /* PositionWireFormatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionWireFormatTests.swift; sourceTree = "<group>"; };
@@ -1367,6 +1372,7 @@
 				9CD7C72856A02537E63E6CC4 /* TabResidencyBudgetTests.swift */,
 				22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */,
 				90C50948404B30999979C84A /* VellumBundleTests.swift */,
+				26AEE820D7F76A6A92314015 /* VellumExternalWebLinkTests.swift */,
 				FD1CAC0FB4ABEA7872C85B14 /* VellumSystemRouteTests.swift */,
 				8352DF5C4A0A69EF4D19687D /* WalkthroughLayoutTests.swift */,
 				E2042B70E9B14894B30A1877 /* WalkthroughTests.swift */,
@@ -1725,6 +1731,7 @@
 		C66AF06BB00C617BFD3DEA2D /* Web */ = {
 			isa = PBXGroup;
 			children = (
+				4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */,
 				E064C75923B5E7D98E256470 /* WebArchive.swift */,
 				EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */,
 				D0C17A6EF96F73E713F0E197 /* WebLibraryStorage.swift */,
@@ -2370,6 +2377,7 @@
 				2FCA7CA3DF295F9623469F7E /* VellumCommands.swift in Sources */,
 				A8F90F19745170170BF9B13A /* VellumCommands_iOS.swift in Sources */,
 				2E571A6857F9CA8EA709937C /* VellumDeepLink.swift in Sources */,
+				714FF02C027A95D988A9173F /* VellumExternalWebLink.swift in Sources */,
 				48D38F1483C7C41B79688BF7 /* VellumSystemRouteHandoff.swift in Sources */,
 				4768DF117C803C2D9618FC47 /* VellumWidgetSnapshot.swift in Sources */,
 				00E0D4A949B6BD7C88E476F1 /* VellumWidgetSnapshotPublisher.swift in Sources */,
@@ -2639,6 +2647,7 @@
 				E902AE322CF4E85CD5937369 /* VellumCommands.swift in Sources */,
 				C91E39E971206E14521EB884 /* VellumCommands_iOS.swift in Sources */,
 				997ACFC8C0058D47E95426CD /* VellumDeepLink.swift in Sources */,
+				2670577A5E7C804FA8FA5FD8 /* VellumExternalWebLink.swift in Sources */,
 				8BD696DBDAF7BEF928677D04 /* VellumSystemRouteHandoff.swift in Sources */,
 				1F8C484D6058F812E5B684CB /* VellumWidgetSnapshot.swift in Sources */,
 				AD29368E59AA24AB83822878 /* VellumWidgetSnapshotPublisher.swift in Sources */,
@@ -2766,6 +2775,7 @@
 				BEADF6098AC6C592A53810F2 /* TabResidencyBudgetTests.swift in Sources */,
 				5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */,
 				742579EA974AAA82CA7C2098 /* VellumBundleTests.swift in Sources */,
+				AA66D58816F45E06D45E790E /* VellumExternalWebLinkTests.swift in Sources */,
 				1EA0F1229F7A80A2F3F25116 /* VellumSystemRouteTests.swift in Sources */,
 				077387370617D3B0DCF008AF /* WalkthroughLayoutTests.swift in Sources */,
 				9B5BE4F139A065CDDF4C5A3E /* WalkthroughTests.swift in Sources */,
