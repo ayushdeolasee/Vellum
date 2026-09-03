@@ -198,7 +198,9 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
         if !seeded.strokes.isEmpty {
             // Let observers (the sidebar's Handwriting chips) know ink exists
             // on this page — seeding is invisible to them otherwise.
-            ink?.noteSeededDrawing()
+            ink?.noteSeededDrawing(
+                page: canvas.pageNumber,
+                hasVisibleInk: seeded.strokes.contains(where: PdfInk.strokeHasVisibleInk))
         }
 
         applyPolicy(to: canvas)

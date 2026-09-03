@@ -991,24 +991,20 @@ struct SidebarContent_iOS: View {
     // first time each tab is actually selected.
     //
     // They only ever flip false -> true, never back, so the mounted-panel
-    // behaviour documented on the ZStack below is preserved exactly: after the
-    // first reveal the panel stays in the tree and tab flips remain pure
-    // opacity toggles — no WebView reload, no lost caret or composer draft.
+    // behaviour documented on the ZStack below is preserved exactly. Their
+    // first frame is a small progress view; the expensive panel is mounted by
+    // that view's task on the following update. This lets the tab selection
+    // paint immediately instead of making a tap look ignored while WebKit or
+    // the AI transcript is being constructed.
     //
     // Plain @State (not a store): this is per-view presentation bookkeeping,
-    // discarded with the view, and it's read/written only from body and
-    // onChange, which are already MainActor-isolated by View conformance.
-    // Nothing here needs its own isolation or Sendable annotation.
+    // discarded with the view and mutated only by view tasks on the main
+    // actor. Nothing here needs its own store or persistence.
     @State private var hasShownAi = false
     @State private var hasShownScratchpad = false
 
     var body: some View {
-        // Walking every PDF page is only needed by the annotations panel.
-        // Keep that scan out of Scratchpad/AI updates, especially while the
-        // keyboard is driving frequent layout passes.
-        let handwritingPages = workspace.sidebarTab == .annotations
-            ? pagesWithHandwriting()
-            : []
+        let handwritingPages = ink?.handwritingPages ?? []
         VStack(spacing: 0) {
             InspectorTabSwitcher(
                 selection: Binding(
@@ -1057,67 +1053,42 @@ struct SidebarContent_iOS: View {
                 }
                 if hasShownAi {
                     panel(.ai) { AiPanel_iOS() }
+                } else if workspace.sidebarTab == .ai {
+                    ProgressView("Preparing AI…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.ai.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .ai else { return }
+                            hasShownAi = true
+                        }
                 }
                 if hasShownScratchpad {
                     panel(.scratchpad) { ScratchpadPanel() }
+                } else if workspace.sidebarTab == .scratchpad {
+                    ProgressView("Preparing Scratchpad…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.scratchpad.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .scratchpad else { return }
+                            hasShownScratchpad = true
+                        }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Observed as Bools rather than on `workspace.sidebarTab` itself so
-            // we don't need SidebarTab to be Equatable (it lives in shared
-            // Stores/ code compiled for macOS too, and this is a purely iOS
-            // concern). `initial: true` covers the case where the sidebar is
-            // revealed already sitting on .ai/.scratchpad — e.g. AiStore's
-            // "quote in AI" action, which sets sidebarTab = .ai and
-            // sidebarOpen = true in one go. SwiftUI applies the state mutation
-            // on the *next* update pass, so the panel is built one pass after
-            // the first body evaluation rather than inside it, which is exactly
-            // what keeps it off the initial frame.
-            .onChange(of: workspace.sidebarTab == .ai, initial: true) { _, isAi in
-                if isAi { hasShownAi = true }
-            }
-            .onChange(of: workspace.sidebarTab == .scratchpad, initial: true) { _, isScratchpad in
-                if isScratchpad { hasShownScratchpad = true }
-            }
         }
         .background(palette.surface)
     }
 
-    /// Mounts a lazy panel in the same update that selects it, then forwards
-    /// the phone-specific selection action. This avoids a transient blank panel
-    /// and keeps tab selection independent from sheet presentation.
+    /// Selects immediately. A first-time AI/Scratchpad destination initially
+    /// renders its progress view above, then mounts the expensive panel on the
+    /// following update.
     private func selectTab(_ tab: WorkspaceStore.SidebarTab) {
-        switch tab {
-        case .annotations:
-            break
-        case .ai:
-            hasShownAi = true
-        case .scratchpad:
-            hasShownScratchpad = true
-        }
         if let onTabSelected {
             onTabSelected(tab)
         } else {
             workspace.sidebarTab = tab
-        }
-    }
-
-    /// Derive the handwriting summary once per body evaluation. The previous
-    /// empty-state check and section each walked every PDF page independently.
-    private func pagesWithHandwriting() -> [Int] {
-        guard let ink,
-              app.document?.kind == .pdf,
-              let document = ink.pdfController?.document
-        else { return [] }
-
-        _ = ink.drawingVersion
-        return (0..<document.pageCount).compactMap { index in
-            let pageNumber = index + 1
-            if let hasStrokes = ink.inkProvider.cachedStrokes(forPage: pageNumber) {
-                return hasStrokes ? pageNumber : nil
-            }
-            guard let page = document.page(at: index) else { return nil }
-            return PdfInk.hasInk(on: page) ? pageNumber : nil
         }
     }
 

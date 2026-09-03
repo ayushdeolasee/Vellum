@@ -69,8 +69,8 @@ targets:
         PRODUCT_NAME: Vellum
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
         APP_DISPLAY_NAME: Vellum
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "3"
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
@@ -134,8 +134,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
         APP_DISPLAY_NAME: Vellum
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "2"
         TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info-iOS.plist
@@ -173,8 +173,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.share
         PRODUCT_NAME: VellumShare
         APP_DISPLAY_NAME: Save to Vellum
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "2"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: VellumShare/Info.plist
@@ -206,8 +206,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.widgets
         PRODUCT_NAME: VellumWidgets
         APP_DISPLAY_NAME: Vellum Widgets
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "2"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: VellumWidgets/Info.plist

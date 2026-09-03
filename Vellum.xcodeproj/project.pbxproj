@@ -2820,7 +2820,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				APP_DISPLAY_NAME = "Save to Vellum";
 				CODE_SIGN_ENTITLEMENTS = VellumShare/VellumShare.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumShare/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2828,7 +2828,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.share;
 				PRODUCT_NAME = VellumShare;
 				SDKROOT = iphoneos;
@@ -2918,7 +2918,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2929,7 +2929,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.dev;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;
@@ -2942,7 +2942,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				APP_DISPLAY_NAME = "Save to Vellum Dev";
 				CODE_SIGN_ENTITLEMENTS = VellumShare/VellumShare.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumShare/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2950,7 +2950,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.dev.share;
 				PRODUCT_NAME = VellumShare;
 				SDKROOT = iphoneos;
@@ -2966,7 +2966,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				APP_DISPLAY_NAME = "Vellum Widgets Dev";
 				CODE_SIGN_ENTITLEMENTS = VellumWidgets/VellumWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2974,7 +2974,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.dev.widgets;
 				PRODUCT_NAME = VellumWidgets;
 				SDKROOT = iphoneos;
@@ -3008,7 +3008,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Vellum/Resources/Info-iOS.plist";
@@ -3019,7 +3019,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -3100,7 +3100,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Vellum/Resources/Info-iOS.plist";
@@ -3111,7 +3111,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.dev;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -3125,7 +3125,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				APP_DISPLAY_NAME = "Vellum Widgets";
 				CODE_SIGN_ENTITLEMENTS = VellumWidgets/VellumWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3133,7 +3133,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum.widgets;
 				PRODUCT_NAME = VellumWidgets;
 				SDKROOT = iphoneos;
@@ -3150,7 +3150,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "Vellum/Vellum-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3161,7 +3161,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayushdeolasee.vellum;
 				PRODUCT_NAME = Vellum;
 				SDKROOT = macosx;

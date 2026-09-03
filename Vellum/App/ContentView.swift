@@ -73,10 +73,11 @@ struct ContentView: View {
             .focusedSceneValue(
                 \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
-            .overlay(alignment: .topTrailing) {
+            .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
                 if RuntimeProfile.current.isDevelopment {
                     DevelopmentBadge()
-                        .padding(12)
+                        .padding(.trailing, 12)
+                        .padding(.vertical, 4)
                         .allowsHitTesting(false)
                 }
             }
