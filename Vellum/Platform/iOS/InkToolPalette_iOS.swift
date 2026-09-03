@@ -28,8 +28,30 @@ struct InkToolPalette_iOS: View {
         // letting the capsule clip at the edges.
         ViewThatFits(in: .horizontal) {
             paletteRow(compact: false)
-            paletteRow(compact: true)
+            if ink.tool == .textHighlight {
+                compactTextHighlightPalette
+            } else {
+                paletteRow(compact: true)
+            }
         }
+    }
+
+    /// The four-tool row cannot share 240 points with five 44-point swatches.
+    /// A second row keeps the tool group intact and puts every highlight color
+    /// in the system menu without adding another piece of palette state.
+    private var compactTextHighlightPalette: some View {
+        VStack(spacing: 2) {
+            toolGroup
+            HStack(spacing: 6) {
+                textHighlightColorMenu
+                divider
+                actionRow
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: .capsule)
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
     }
 
     private func paletteRow(compact: Bool) -> some View {
@@ -113,13 +135,10 @@ struct InkToolPalette_iOS: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// Preset swatches plus the custom color well. Compact freehand tools show
-    /// three presets because their color well still reaches every color. Text
-    /// highlighting has no custom well, so it keeps all five presets visible.
+    /// Preset swatches plus the custom color well. Full rows show every preset;
+    /// compact freehand rows show three because their color well reaches more.
     private func colorRow(compact: Bool) -> some View {
-        let shown = compact && ink.tool != .textHighlight
-            ? Array(colors.prefix(3))
-            : colors
+        let shown = compact ? Array(colors.prefix(3)) : colors
         return HStack(spacing: 6) {
             ForEach(shown, id: \.self) { color in
                 let selected = colorsEqual(ink.activeColor, color)
@@ -136,7 +155,8 @@ struct InkToolPalette_iOS: View {
                                 Circle().stroke(palette.primary, lineWidth: 2).padding(-3)
                             }
                         }
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(accessibilityLabel(for: color)))
@@ -146,6 +166,49 @@ struct InkToolPalette_iOS: View {
                 customColorPicker
             }
         }
+    }
+
+    private var textHighlightColorMenu: some View {
+        let selectedName = HIGHLIGHT_COLORS.indices.first(where: {
+            colorsEqual(InkPalette.highlighterColors[$0], ink.textHighlightColor)
+        }).map { HIGHLIGHT_COLORS[$0].name } ?? "Highlight"
+
+        return Menu {
+            ForEach(HIGHLIGHT_COLORS.indices, id: \.self) { index in
+                let selected = colorsEqual(
+                    InkPalette.highlighterColors[index], ink.textHighlightColor)
+                Button {
+                    ink.textHighlightColor = InkPalette.highlighterColors[index]
+                    ink.bumpTool()
+                } label: {
+                    Label(
+                        HIGHLIGHT_COLORS[index].name,
+                        systemImage: selected ? "checkmark.circle.fill" : "circle.fill")
+                        .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                }
+                .accessibilityLabel("\(HIGHLIGHT_COLORS[index].name) highlight color")
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(ink.textHighlightColor)
+                    .frame(width: 18, height: 18)
+                    .overlay(Circle().strokeBorder(palette.border, lineWidth: 1))
+                Text(selectedName)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(palette.foreground)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(selectedName) highlight color")
+        .accessibilityHint("Choose highlight color")
     }
 
     /// Full-spectrum color well: opens the system color picker so the user can
