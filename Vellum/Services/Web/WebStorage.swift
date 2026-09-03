@@ -812,6 +812,7 @@ enum WebStorageMigrator {
                     continue
                 }
                 let output: Data
+                let needsReplace: Bool
                 if let existing = destinationByName[entry.name] {
                     guard existing.readiness.isReady,
                           let destinationData = try await destinationStore.read(destinationURL),
@@ -821,10 +822,14 @@ enum WebStorageMigrator {
                         continue
                     }
                     output = merged
+                    needsReplace = merged != destinationData
                 } else {
                     output = sourceData
+                    needsReplace = true
                 }
-                try await destinationStore.replace(destinationURL, with: output)
+                if needsReplace {
+                    try await destinationStore.replace(destinationURL, with: output)
+                }
                 if !preserveSource {
                     try await sourceStore.remove(entry.url)
                 }
@@ -845,6 +850,12 @@ enum WebStorageMigrator {
         current.title = current.title ?? incoming.title
         current.pageCount = current.pageCount ?? incoming.pageCount
         current.lastPage = current.lastPage ?? incoming.lastPage
+        if current.loadingPolicy != "snapshot-only",
+           incoming.loadingPolicy == "snapshot-only" {
+            current.loadingPolicy = "snapshot-only"
+        } else {
+            current.loadingPolicy = current.loadingPolicy ?? incoming.loadingPolicy
+        }
         current.openedAt = current.openedAt ?? incoming.openedAt
         return try? WebLibrary.jsonEncoderPretty.encode(current)
     }

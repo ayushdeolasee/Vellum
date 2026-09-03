@@ -22,11 +22,18 @@ struct RelocationCoordinationTests {
             recordsInRoot: true,
             localStoreDir: storeDir)
         let recordURL = source.recordsDir.appendingPathComponent("legacy.json")
-        let bytes = try WebLibrary.jsonEncoderPretty.encode(
-            WebPageRecord(url: "https://example.com/legacy"))
+        let destinationRecordURL = destination.recordsDir.appendingPathComponent("legacy.json")
+        var sourceRecord = WebPageRecord(url: "https://example.com/legacy")
+        sourceRecord.loadingPolicy = "snapshot-only"
+        let bytes = try WebLibrary.jsonEncoderPretty.encode(sourceRecord)
         try await DirectLibraryFileStore().replace(recordURL, with: bytes)
 
         let container = FakeSyncedContainer()
+        var destinationRecord = WebPageRecord(url: sourceRecord.url)
+        destinationRecord.loadingPolicy = "live-first"
+        container.seed(
+            destinationRecordURL,
+            data: try WebLibrary.jsonEncoderPretty.encode(destinationRecord))
         let coordinator = StorageCoordinator(
             storeDir: storeDir,
             modeProvider: { .icloud },
@@ -40,6 +47,7 @@ struct RelocationCoordinationTests {
             legacyRoot,
             to: destination,
             coordinator: coordinator)
+        let writesAfterFirstImport = container.coordinatedWriteCount
         let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
@@ -48,9 +56,11 @@ struct RelocationCoordinationTests {
         #expect(moved)
         #expect(repeated)
         #expect(try await DirectLibraryFileStore().read(recordURL) == bytes)
-        #expect(container.peek(
-            destination.recordsDir.appendingPathComponent("legacy.json")) == bytes)
-        #expect(container.coordinatedWriteCount > 0)
+        let importedBytes = try #require(container.peek(destinationRecordURL))
+        let imported = try JSONDecoder().decode(WebPageRecord.self, from: importedBytes)
+        #expect(imported.loadingPolicy == "snapshot-only")
+        #expect(writesAfterFirstImport == 1)
+        #expect(container.coordinatedWriteCount == writesAfterFirstImport)
         #expect(container.metadataQueryCount > 0)
         await coordinator.stop()
     }
