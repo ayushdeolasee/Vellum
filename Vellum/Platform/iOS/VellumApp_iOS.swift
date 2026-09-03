@@ -183,6 +183,7 @@ struct VellumApp_iOS: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(inkRegistry)
+                .environment(workspace.openAIModelCatalog)
                 .environment(workspace.openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)

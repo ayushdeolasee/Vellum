@@ -182,6 +182,10 @@ final class WorkspaceStore {
     /// used for model selection and capability lookups.
     let openRouterCatalog: OpenRouterCatalog
 
+    /// Window-wide OpenAI catalog loaded with the user's API key when the model
+    /// picker opens.
+    let openAIModelCatalog: OpenAIModelCatalog
+
     // MARK: Sidebar text size — ⌘+/⌘− while the pointer is over the side panel.
 
     static let minSidebarFontSize: Double = 10
@@ -401,10 +405,12 @@ final class WorkspaceStore {
             manager.webBackend.storage = webLibraryStorage
         }
         let catalog = OpenRouterCatalog()
+        let openAIModelCatalog = OpenAIModelCatalog()
         let settingsAi = AiStore()
         settingsAi.openRouterCatalog = catalog
         self.settingsAi = settingsAi
         self.openRouterCatalog = catalog
+        self.openAIModelCatalog = openAIModelCatalog
         let pane = PaneModel(
             sessions: sessions, teardowns: tabTeardowns, documentAccess: documentAccess,
             openRouterCatalog: catalog,

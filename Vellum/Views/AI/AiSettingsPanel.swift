@@ -8,11 +8,6 @@ enum AiModelCatalog {
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
         "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash",
     ]
-    static let openAI = [
-        "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-        "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.4-mini", "gpt-5.4",
-        "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini",
-    ]
     /// Models on the OpenCode **Zen** gateway: proprietary flagships plus the
     /// open-weight and free models Zen also hosts. See `opencodeGo` for the
     /// separate Go gateway.
@@ -70,25 +65,30 @@ enum AiModelCatalog {
         switch provider {
         case .openrouter: catalog?.model(for: model)?.supportsVision ?? true
         case .opencode, .opencodeGo: opencodeSupportsVision(model)
-        // Every model in these built-in catalogs is multimodal.
+        // These catalogs contain only models compatible with image input.
         case .gemini, .openai: true
         }
     }
 
-    static func models(for provider: AiProvider) -> [String] {
+    static func models(for provider: AiProvider, openAIModels: [String] = []) -> [String] {
         switch provider {
         case .gemini: gemini
-        case .openai: openAI
+        case .openai: openAIModels
         case .opencode: opencode
         case .opencodeGo: opencodeGo
         case .openrouter: []
         }
     }
 
-    /// Unified options for the model selector. Built-in provider models are all
-    /// vision- and tool-capable; OpenRouter models come from the live catalog.
+    /// Unified options for the model selector. OpenRouter supplies capability
+    /// metadata; the other lists contain only models compatible with Vellum's
+    /// image-and-tools requests.
     @MainActor
-    static func options(for provider: AiProvider, catalog: OpenRouterCatalog) -> [AiModelOption] {
+    static func options(
+        for provider: AiProvider,
+        openAIModels: [String],
+        catalog: OpenRouterCatalog
+    ) -> [AiModelOption] {
         if provider == .openrouter {
             return catalog.models.map {
                 AiModelOption(
@@ -106,13 +106,13 @@ enum AiModelCatalog {
         if provider == .opencode || provider == .opencodeGo {
             // OpenCode open models are mostly text-only; vision is looked up per
             // id so we don't send a page image the model can't read.
-            return models(for: provider).map {
+            return models(for: provider, openAIModels: openAIModels).map {
                 AiModelOption(id: $0, name: $0,
                               supportsVision: opencodeSupportsVision($0), supportsTools: true,
                               contextLength: nil, promptPrice: nil, created: nil)
             }
         }
-        return models(for: provider).map {
+        return models(for: provider, openAIModels: openAIModels).map {
             AiModelOption(id: $0, name: $0, supportsVision: true, supportsTools: true,
                           contextLength: nil, promptPrice: nil, created: nil)
         }
@@ -121,6 +121,7 @@ enum AiModelCatalog {
 
 struct AiSettingsPanel: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenAIModelCatalog.self) private var openAIModelCatalog
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
     @Environment(\.palette) private var palette
 
@@ -173,7 +174,10 @@ struct AiSettingsPanel: View {
 
     @ViewBuilder
     private var capabilityWarnings: some View {
-        if let option = aiStore.selectedOption(catalog: openRouterCatalog) {
+        if let option = aiStore.selectedOption(
+            openAIModels: openAIModelCatalog.models,
+            catalog: openRouterCatalog
+        ) {
             if !option.supportsVision {
                 warning(AiCapabilityWarning.noVision)
             }
@@ -199,16 +203,47 @@ struct AiSettingsPanel: View {
 /// it in its own label container so the surrounding layout stays distinct.
 struct AiModelSelectorField: View {
     @Environment(AiStore.self) private var aiStore
+    @Environment(OpenAIModelCatalog.self) private var openAIModelCatalog
     @Environment(OpenRouterCatalog.self) private var openRouterCatalog
 
     var body: some View {
         ModelSelector(
-            options: aiStore.modelOptions(catalog: openRouterCatalog),
+            options: aiStore.modelOptions(
+                openAIModels: openAIModelCatalog.models,
+                catalog: openRouterCatalog
+            ),
             selection: aiStore.modelBinding,
             pinned: aiStore.pinnedBinding,
-            isLoading: aiStore.settings.provider == .openrouter && openRouterCatalog.isLoading,
-            onOpen: { if aiStore.settings.provider == .openrouter { Task { await openRouterCatalog.refresh() } } }
+            isLoading: modelsAreLoading,
+            emptyMessage: openAIEmptyMessage,
+            onOpen: {
+                switch aiStore.settings.provider {
+                case .openai:
+                    let key = aiStore.settings.openaiApiKey
+                    Task { await openAIModelCatalog.refresh(apiKey: key) }
+                case .openrouter:
+                    Task { await openRouterCatalog.refresh() }
+                default:
+                    break
+                }
+            }
         )
+    }
+
+    private var modelsAreLoading: Bool {
+        switch aiStore.settings.provider {
+        case .openai: openAIModelCatalog.isLoading
+        case .openrouter: openRouterCatalog.isLoading
+        default: false
+        }
+    }
+
+    private var openAIEmptyMessage: String? {
+        guard aiStore.settings.provider == .openai else { return nil }
+        if aiStore.settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Add your OpenAI API key to load models."
+        }
+        return openAIModelCatalog.error
     }
 }
 
@@ -352,11 +387,16 @@ extension AiStore {
         }
     }
 
-    func modelOptions(catalog: OpenRouterCatalog) -> [AiModelOption] {
-        AiModelCatalog.options(for: settings.provider, catalog: catalog)
+    func modelOptions(openAIModels: [String], catalog: OpenRouterCatalog) -> [AiModelOption] {
+        AiModelCatalog.options(
+            for: settings.provider,
+            openAIModels: openAIModels,
+            catalog: catalog
+        )
     }
 
-    func selectedOption(catalog: OpenRouterCatalog) -> AiModelOption? {
-        modelOptions(catalog: catalog).first { $0.id == modelBinding.wrappedValue }
+    func selectedOption(openAIModels: [String], catalog: OpenRouterCatalog) -> AiModelOption? {
+        modelOptions(openAIModels: openAIModels, catalog: catalog)
+            .first { $0.id == modelBinding.wrappedValue }
     }
 }

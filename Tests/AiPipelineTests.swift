@@ -340,12 +340,11 @@ final class AiPipelineTests: XCTestCase {
         XCTAssertNil(OpenAIClient.supportedReasoningEffort(model: "gpt-4o", requested: "high"))
     }
 
-    /// Omitting a family is not the safe default it looks like: gpt-5.2/5.4
-    /// default to `reasoning.effort: none`, so an omitted field means the user
-    /// picked "High" and got *no* reasoning. Every gpt-5 id the pickers actually
-    /// ship has to resolve an explicit mode to something.
-    func testEveryShippedGpt5ModelHonoursAnExplicitMode() {
-        let shipped = AiModelCatalog.openAI + AiModelCatalog.opencode
+    /// Bundled gateway models remain covered by the effort table. OpenAI API
+    /// models now come from the network, and unknown ids are covered separately
+    /// by the omit-rather-than-guess regression test above.
+    func testEveryBundledGpt5ModelHonoursAnExplicitMode() {
+        let shipped = AiModelCatalog.opencode
         for model in Set(shipped).filter({ $0.hasPrefix("gpt-5") }).sorted() {
             XCTAssertNotNil(
                 OpenAIClient.supportedReasoningEffort(model: model, requested: "high"),
