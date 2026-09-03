@@ -219,10 +219,10 @@ private struct TabItem: View {
                     .font(.system(size: 12))
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
+                    .opacity(hovering || isActive ? 1 : 0)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .opacity(hovering || isActive ? 1 : 0)
             .padding(.trailing, 4)
             .help("Close \(label)")
             .accessibilityLabel("Close \(label)")
