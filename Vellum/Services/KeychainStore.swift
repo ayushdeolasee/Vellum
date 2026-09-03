@@ -68,6 +68,9 @@ enum KeychainStore {
         /// One full read of the vault item. Empty state when no item exists,
         /// nil when an item exists but can't be read (denied prompt, corrupt).
         var readVaultItem: @Sendable () -> VaultState?
+        /// Moves an existing iOS vault to the protection class required by
+        /// background refresh. A no-op when absent or already migrated.
+        var migrateVaultAccessibility: @Sendable () -> Void
         /// The vault item's modification date, nil when absent. Attribute-only,
         /// so it must never trigger an access prompt.
         var probeModDate: @Sendable () -> Date?
@@ -87,6 +90,7 @@ enum KeychainStore {
 
         static let live = Backend(
             readVaultItem: { KeychainStore.liveReadVaultItem() },
+            migrateVaultAccessibility: { KeychainStore.liveMigrateVaultAccessibility() },
             probeModDate: { KeychainStore.liveProbeModDate() },
             writeVault: { KeychainStore.liveWriteVault($0) },
             deleteVault: { KeychainStore.liveDeleteVault() },
@@ -218,7 +222,9 @@ enum KeychainStore {
     /// Call with `lock` held.
     private static func loadVaultLocked() -> VaultState? {
         if let cache { return cache }
-        guard let state = backendLocked.readVaultItem() else { return nil }
+        let backend = backendLocked
+        backend.migrateVaultAccessibility()
+        guard let state = backend.readVaultItem() else { return nil }
         cache = state
         reconcileLegacyItemsLocked()
         return cache
@@ -357,6 +363,28 @@ enum KeychainStore {
         return VaultState(entries: entries, modDate: item[kSecAttrModificationDate as String] as? Date)
     }
 
+    /// Existing installs used the Keychain default, which is unavailable while
+    /// an iOS device is locked. Move the vault to the protection class Apple
+    /// documents for background apps before reading it. If the device has not
+    /// been unlocked since boot, both this update and the following read fail;
+    /// because failed loads are not cached, a later foreground read retries.
+    private static func liveMigrateVaultAccessibility() {
+        #if os(iOS)
+        var query = vaultBaseQuery()
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any],
+              attributes[kSecAttrAccessible as String] as? String
+                != kSecAttrAccessibleAfterFirstUnlock as String
+        else { return }
+        SecItemUpdate(
+            vaultBaseQuery() as CFDictionary,
+            [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock] as CFDictionary)
+        #endif
+    }
+
     /// The vault item's current modification date (nil when absent).
     /// Attribute-only queries never trigger an access prompt.
     private static func liveProbeModDate() -> Date? {
@@ -371,11 +399,15 @@ enum KeychainStore {
 
     private static func liveWriteVault(_ entries: [String: String]) -> Bool {
         guard let data = try? JSONEncoder().encode(entries) else { return false }
+        var attributes: [String: Any] = [kSecValueData as String: data]
+        #if os(iOS)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        #endif
         let status = SecItemUpdate(
-            vaultBaseQuery() as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            vaultBaseQuery() as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var addQuery = vaultBaseQuery()
-            addQuery[kSecValueData as String] = data
+            addQuery.merge(attributes) { _, new in new }
             addQuery[kSecAttrLabel as String] = "Vellum"
             return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }
