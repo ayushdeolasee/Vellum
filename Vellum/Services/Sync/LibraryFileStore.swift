@@ -172,8 +172,7 @@ struct DirectLibraryFileStore: LibraryFileStore {
 
     private func readiness(from values: URLResourceValues) -> ItemReadiness {
         guard allowedRoot != nil else { return .current }
-        guard let isUbiquitousItem = values.isUbiquitousItem else { return .notDownloaded }
-        guard isUbiquitousItem else { return .current }
+        guard values.isUbiquitousItem == true else { return .current }
         switch values.ubiquitousItemDownloadingStatus {
         case .current: return .current
         case .downloaded: return .downloaded
