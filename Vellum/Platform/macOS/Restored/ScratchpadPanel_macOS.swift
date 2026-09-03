@@ -42,6 +42,16 @@ struct ScratchpadPanel: View {
                 dropsEnabled: workspace.sidebarTab == .scratchpad
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                palette.surfaceMuted,
+                in: RoundedRectangle(cornerRadius: Radius.md)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .strokeBorder(palette.borderStrong)
+                    .allowsHitTesting(false)
+            }
+            .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The drop outline and the whole-area drag destination live on the sidebar
