@@ -13,7 +13,7 @@
 	<key>CFBundleName</key>
 	<string>Vellum</string>
 	<key>CFBundleDisplayName</key>
-	<string>Vellum</string>
+	<string>$(APP_DISPLAY_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleURLTypes</key>
@@ -22,10 +22,10 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.ayushdeolasee.vellum.open</string>
+			<string>$(APP_URL_NAME)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>vellum</string>
+				<string>$(APP_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
@@ -47,11 +47,11 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.ayushdeolasee.vellum.readlater.refresh</string>
+		<string>$(READ_LATER_BACKGROUND_TASK_IDENTIFIER)</string>
 	</array>
 	<key>NSUbiquitousContainers</key>
 	<dict>
-		<key>iCloud.com.ayushdeolasee.vellum</key>
+		<key>ICLOUD_CONTAINER_KEY</key>
 		<dict>
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<true/>

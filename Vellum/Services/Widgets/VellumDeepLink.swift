@@ -12,7 +12,7 @@ struct VellumSystemRoute: Equatable, Hashable, Sendable {
 /// A deliberately tiny URL grammar: `vellum://open/<shelf>?id=<sha256>`.
 /// Paths, provider identifiers, and web addresses never cross the URL boundary.
 enum VellumDeepLink {
-    static let scheme = "vellum"
+    static var scheme: String { RuntimeProfile.current.urlScheme }
     static let host = "open"
 
     static func url(for route: VellumSystemRoute) -> URL? {

@@ -14,11 +14,11 @@ struct SyncedContainerIdentifier: Hashable, Sendable {
         self.rawValue = rawValue
     }
 
-    /// The ONE place the container id is written. Deliberately a literal rather
-    /// than `"iCloud." + Bundle.main.bundleIdentifier!`: inside the test host
-    /// that derivation yields `iCloud.com.ayushdeolasee.vellum.tests`, which
-    /// names a container that does not exist.
-    static let vellum = SyncedContainerIdentifier(rawValue: "iCloud.com.ayushdeolasee.vellum")
+    /// The active build profile owns the fixed container identifier. This must
+    /// not derive directly from the test host bundle identifier.
+    static var vellum: SyncedContainerIdentifier {
+        SyncedContainerIdentifier(rawValue: RuntimeProfile.current.cloudContainerIdentifier)
+    }
 }
 
 /// Single resolver for Vellum's ubiquity container root. Web storage and the

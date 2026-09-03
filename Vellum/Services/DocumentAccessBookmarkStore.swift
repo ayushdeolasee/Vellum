@@ -46,7 +46,7 @@ final class DocumentAccessBookmarkStore: @unchecked Sendable {
             in: .userDomainMask
         )[0]
         return appSupport
-            .appendingPathComponent("Vellum", isDirectory: true)
+            .appendingPathComponent(RuntimeProfile.current.localStorageDirectoryName, isDirectory: true)
             .appendingPathComponent("DocumentAccess", isDirectory: true)
     }
 

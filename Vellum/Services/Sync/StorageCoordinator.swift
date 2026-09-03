@@ -449,6 +449,15 @@ actor StorageCoordinator {
     }
 
     private func resolveConfiguration(chosenMode: WebStorageMode?) async -> ResolvedConfiguration {
+        if !RuntimeProfile.current.syncEnabled, chosenMode == .icloud {
+            return ResolvedConfiguration(
+                chosenMode: chosenMode,
+                effectiveMode: .local,
+                access: StorageAccess.resolve(
+                    mode: .local, storeDir: storeDir, icloudRoot: nil) { nil },
+                layout: .local(storeDir: storeDir),
+                availability: .degradedToLocal(.iCloudUnavailable))
+        }
         switch chosenMode {
         case .icloud:
             let root = await rootResolver()
@@ -684,6 +693,7 @@ actor StorageCoordinator {
         guard requestedLayout.requiresCoordination else {
             return (.direct(layout: requestedLayout), [])
         }
+        guard RuntimeProfile.current.syncEnabled else { return (nil, []) }
         if requestedLayout == layout, let container = access.container {
             return (.coordinated(container: container, layout: requestedLayout), [])
         }
@@ -856,6 +866,11 @@ actor StorageCoordinator {
 
     private func isAlreadyConfiguredFor(chosenMode nextChosenMode: WebStorageMode?) async -> Bool {
         guard chosenMode == nextChosenMode else { return false }
+        if !RuntimeProfile.current.syncEnabled {
+            return effectiveMode == .local
+                && access.container == nil
+                && layout == .local(storeDir: storeDir)
+        }
         switch nextChosenMode {
         case .icloud:
             let root = await rootResolver()
