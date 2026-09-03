@@ -90,15 +90,15 @@ struct HomeResultRow: View {
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(palette.foreground)
                             .lineLimit(3)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
                         HomeBadgeStrip(badges: item.badges)
                     } else {
                         HStack(spacing: 6) {
                             Text(item.title)
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(palette.foreground)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
                             HomeBadgeStrip(badges: item.badges)
                         }
                     }
@@ -106,7 +106,7 @@ struct HomeResultRow: View {
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .truncationMode(.middle)
+                        .truncationMode(item.kind == .web ? .tail : .middle)
 
                     if dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
                         Text(item.detail)
