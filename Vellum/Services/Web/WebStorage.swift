@@ -583,8 +583,8 @@ enum WebStorageMigrator {
 
     /// Copy the former Finder-managed Mac iCloud library into the fixed shared
     /// container. The legacy source stays intact because it cannot participate
-    /// in the shared container's file coordination. Every launch retries the
-    /// copy so unavailable items and rollback-created data are picked up later.
+    /// in the shared container's file coordination. Every launch retries new,
+    /// changed, or unavailable items without replaying completed copies.
     @discardableResult
     static func migrateLegacyICloudRoot(
         _ legacyRoot: URL,
@@ -762,6 +762,17 @@ enum WebStorageMigrator {
             return relocateDirect(from: source, to: destination)
         }
 
+        let legacyImports: LegacyImportTracker?
+        if preserveSource {
+            guard let tracker = try? await LegacyImportTracker.load(
+                destination: destination,
+                store: destinationStore)
+            else { return false }
+            legacyImports = tracker
+        } else {
+            legacyImports = nil
+        }
+
         var clean = true
         if source.recordsDir != destination.recordsDir {
             clean = await relocateRecords(
@@ -769,27 +780,83 @@ enum WebStorageMigrator {
                 to: destination,
                 sourceStore: sourceStore,
                 destinationStore: destinationStore,
-                preserveSource: preserveSource) && clean
+                preserveSource: preserveSource,
+                legacyImports: legacyImports) && clean
         }
         clean = await relocateArchives(
             from: source,
             to: destination,
             sourceStore: sourceStore,
             destinationStore: destinationStore,
-            preserveSource: preserveSource) && clean
+            preserveSource: preserveSource,
+            legacyImports: legacyImports) && clean
         clean = await relocateTree(
             from: source.documentsDir,
             to: destination.documentsDir,
             sourceStore: sourceStore,
             destinationStore: destinationStore,
-            preserveSource: preserveSource) && clean
+            preserveSource: preserveSource,
+            legacyPathPrefix: "documents",
+            legacyImports: legacyImports) && clean
         clean = await relocateTree(
             from: source.positionsDir,
             to: destination.positionsDir,
             sourceStore: sourceStore,
             destinationStore: destinationStore,
-            preserveSource: preserveSource) && clean
+            preserveSource: preserveSource,
+            legacyPathPrefix: "positions",
+            legacyImports: legacyImports) && clean
         return clean
+    }
+
+    /// Stored beside the destination index, outside page records, archives,
+    /// documents, and positions that users can delete through the app.
+    private actor LegacyImportTracker {
+        private static let fileName = "legacy-imports.json"
+
+        private let url: URL
+        private let store: any LibraryFileStore
+        private var fingerprints: [String: String]
+
+        private init(
+            url: URL,
+            store: any LibraryFileStore,
+            fingerprints: [String: String]
+        ) {
+            self.url = url
+            self.store = store
+            self.fingerprints = fingerprints
+        }
+
+        static func load(
+            destination: WebStorageLayout,
+            store: any LibraryFileStore
+        ) async throws -> LegacyImportTracker {
+            guard let internalDirectory = destination.indexPath?.deletingLastPathComponent()
+            else { throw LibraryFileError.unavailable }
+            let url = internalDirectory.appendingPathComponent(fileName)
+            let fingerprints: [String: String]
+            if let data = try await store.read(url) {
+                fingerprints = try JSONDecoder().decode([String: String].self, from: data)
+            } else {
+                fingerprints = [:]
+            }
+            return LegacyImportTracker(url: url, store: store, fingerprints: fingerprints)
+        }
+
+        func contains(_ path: String, fingerprint: String) -> Bool {
+            fingerprints[path] == fingerprint
+        }
+
+        func record(_ fingerprint: String, for path: String) async throws {
+            guard fingerprints[path] != fingerprint else { return }
+            var updated = fingerprints
+            updated[path] = fingerprint
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            try await store.replace(url, with: encoder.encode(updated))
+            fingerprints = updated
+        }
     }
 
     private static func relocateRecords(
@@ -797,7 +864,8 @@ enum WebStorageMigrator {
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
-        preserveSource: Bool
+        preserveSource: Bool,
+        legacyImports: LegacyImportTracker?
     ) async -> Bool {
         let sourceEntries: [LibraryFileEntry]
         let destinationEntries: [LibraryFileEntry]
@@ -823,38 +891,24 @@ enum WebStorageMigrator {
                     clean = false
                     continue
                 }
-                let sourceFingerprint = preserveSource
-                    ? WebArchive.sha256Hex(sourceData)
-                    : nil
+                let legacyPath = "records/\(entry.name)"
+                let sourceFingerprint = WebArchive.sha256Hex(sourceData)
+                if let legacyImports,
+                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
+                    continue
+                }
                 let output: Data
                 let needsReplace: Bool
                 if let existing = destinationByName[entry.name] {
                     guard existing.readiness.isReady,
                           let destinationData = try await destinationStore.read(destinationURL),
-                          let merged = mergedRecord(
-                            sourceData,
-                            into: destinationData,
-                            sourceFingerprint: sourceFingerprint)
+                          let merged = mergedRecord(sourceData, into: destinationData)
                     else {
                         clean = false
                         continue
                     }
                     output = merged.data
                     needsReplace = merged.changed
-                } else if let sourceFingerprint {
-                    guard var incoming = try? JSONDecoder().decode(
-                        WebPageRecord.self, from: sourceData)
-                    else {
-                        clean = false
-                        continue
-                    }
-                    incoming.legacySourceFingerprint = sourceFingerprint
-                    guard let marked = try? WebLibrary.jsonEncoderPretty.encode(incoming) else {
-                        clean = false
-                        continue
-                    }
-                    output = marked
-                    needsReplace = true
                 } else {
                     output = sourceData
                     needsReplace = true
@@ -864,6 +918,8 @@ enum WebStorageMigrator {
                 }
                 if !preserveSource {
                     try await sourceStore.remove(entry.url)
+                } else if let legacyImports {
+                    try await legacyImports.record(sourceFingerprint, for: legacyPath)
                 }
             } catch {
                 clean = false
@@ -874,16 +930,11 @@ enum WebStorageMigrator {
 
     private static func mergedRecord(
         _ source: Data,
-        into destination: Data,
-        sourceFingerprint: String?
+        into destination: Data
     ) -> (data: Data, changed: Bool)? {
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }
-        if let sourceFingerprint,
-           current.legacySourceFingerprint == sourceFingerprint {
-            return (destination, false)
-        }
         let original = current
         WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
         current.saved = current.saved || incoming.saved
@@ -898,8 +949,6 @@ enum WebStorageMigrator {
             current.loadingPolicy = current.loadingPolicy ?? incoming.loadingPolicy
         }
         current.openedAt = current.openedAt ?? incoming.openedAt
-        current.legacySourceFingerprint = sourceFingerprint
-            ?? current.legacySourceFingerprint
         guard let data = try? WebLibrary.jsonEncoderPretty.encode(current) else { return nil }
         return (data, current != original)
     }
@@ -909,7 +958,8 @@ enum WebStorageMigrator {
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
-        preserveSource: Bool
+        preserveSource: Bool,
+        legacyImports: LegacyImportTracker?
     ) async -> Bool {
         let sourceArchives: [LibraryFileEntry]
         let destinationArchives: [LibraryFileEntry]
@@ -974,6 +1024,28 @@ enum WebStorageMigrator {
                 continue
             }
 
+            let bytes: Data
+            let legacyPath = "Web Pages/\(sourceName)"
+            let sourceFingerprint: String
+            do {
+                guard let sourceData = try await sourceStore.read(sourceEntry.url) else {
+                    clean = false
+                    continue
+                }
+                bytes = sourceData
+                var fingerprintData = Data(key.utf8)
+                fingerprintData.append(0)
+                fingerprintData.append(sourceData)
+                sourceFingerprint = WebArchive.sha256Hex(fingerprintData)
+                if let legacyImports,
+                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
+                    continue
+                }
+            } catch {
+                clean = false
+                continue
+            }
+
             let destinationName: String
             if destination.pretty {
                 if let existing = destinationIndex.entries[key] {
@@ -1011,10 +1083,6 @@ enum WebStorageMigrator {
 
             let destinationURL = destination.archivesDir.appendingPathComponent(destinationName)
             do {
-                guard let bytes = try await sourceStore.read(sourceEntry.url) else {
-                    clean = false
-                    continue
-                }
                 if let existing = destinationByName[destinationName] {
                     guard existing.readiness.isReady,
                           let destinationBytes = try await destinationStore.read(destinationURL)
@@ -1040,6 +1108,8 @@ enum WebStorageMigrator {
                     if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
                         sourceIndexChanged = true
                     }
+                } else if let legacyImports {
+                    try await legacyImports.record(sourceFingerprint, for: legacyPath)
                 }
             } catch {
                 clean = false
@@ -1090,7 +1160,9 @@ enum WebStorageMigrator {
         to destinationRoot: URL,
         sourceStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
-        preserveSource: Bool
+        preserveSource: Bool,
+        legacyPathPrefix: String,
+        legacyImports: LegacyImportTracker?
     ) async -> Bool {
         guard sourceRoot != destinationRoot else { return true }
         let sourceFiles: [RelativeFile]
@@ -1116,6 +1188,12 @@ enum WebStorageMigrator {
                     clean = false
                     continue
                 }
+                let legacyPath = "\(legacyPathPrefix)/\(file.relativePath)"
+                let sourceFingerprint = WebArchive.sha256Hex(sourceData)
+                if let legacyImports,
+                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
+                    continue
+                }
                 if let existing = destinationByPath[file.relativePath] {
                     guard existing.readiness.isReady,
                           try await destinationStore.read(destinationURL) != nil
@@ -1131,6 +1209,8 @@ enum WebStorageMigrator {
                 }
                 if !preserveSource {
                     try await sourceStore.remove(file.entry.url)
+                } else if let legacyImports {
+                    try await legacyImports.record(sourceFingerprint, for: legacyPath)
                 }
             } catch {
                 clean = false

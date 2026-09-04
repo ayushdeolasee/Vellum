@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Storage relocation — coordinated side")
 struct RelocationCoordinationTests {
-    @Test("Legacy Mac iCloud data copies into the coordinated shared container")
+    @Test("Legacy Mac iCloud data imports once and changed source retries")
     func legacyMacICloudImportPreservesSource() async throws {
         let root = PositionFixtures.scratchDirectory("legacy-mac-icloud-import")
         defer { PositionFixtures.remove(root) }
@@ -28,7 +28,17 @@ struct RelocationCoordinationTests {
         sourceRecord.saved = true
         sourceRecord.savedAt = "2026-09-01T00:00:00Z"
         let bytes = try WebLibrary.jsonEncoderPretty.encode(sourceRecord)
-        try await DirectLibraryFileStore().replace(recordURL, with: bytes)
+        let sourceArchiveName = "Legacy.vellumweb"
+        let sourceArchiveURL = source.archivesDir.appendingPathComponent(sourceArchiveName)
+        let sourceArchiveBytes = Data("legacy archive".utf8)
+        var sourceIndex = WebArchiveIndex.Contents()
+        sourceIndex.entries["legacy"] = sourceArchiveName
+        let direct = DirectLibraryFileStore()
+        try await direct.replace(recordURL, with: bytes)
+        try await direct.replace(sourceArchiveURL, with: sourceArchiveBytes)
+        try await direct.replace(
+            try #require(source.indexPath),
+            with: try WebLibrary.jsonEncoderPretty.encode(sourceIndex))
 
         let container = FakeSyncedContainer()
         var destinationRecord = WebPageRecord(url: sourceRecord.url)
@@ -49,15 +59,27 @@ struct RelocationCoordinationTests {
             legacyRoot,
             to: destination,
             coordinator: coordinator)
+        let destinationIndexURL = try #require(destination.indexPath)
+        let manifestURL = destinationIndexURL.deletingLastPathComponent()
+            .appendingPathComponent("legacy-imports.json")
+        let importedIndex = try JSONDecoder().decode(
+            WebArchiveIndex.Contents.self,
+            from: try #require(container.peek(destinationIndexURL)))
+        let destinationArchiveName = try #require(importedIndex.entries["legacy"])
+        let destinationArchiveURL = destination.archivesDir.appendingPathComponent(
+            destinationArchiveName)
         var userRecord = try JSONDecoder().decode(
             WebPageRecord.self,
             from: try #require(container.peek(destinationRecordURL)))
         userRecord.saved = false
         userRecord.savedAt = nil
         userRecord.title = "User title"
-        try await CoordinatedLibraryFileStore(container: container).replace(
+        let destinationStore = CoordinatedLibraryFileStore(container: container)
+        try await destinationStore.replace(
             destinationRecordURL,
             with: try WebLibrary.jsonEncoderPretty.encode(userRecord))
+        try await destinationStore.remove(destinationArchiveURL)
+        try await destinationStore.remove(destinationIndexURL)
         let writesAfterUserChange = container.coordinatedWriteCount
         let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
@@ -66,16 +88,34 @@ struct RelocationCoordinationTests {
 
         #expect(moved)
         #expect(repeated)
-        #expect(try await DirectLibraryFileStore().read(recordURL) == bytes)
+        #expect(try await direct.read(recordURL) == bytes)
+        #expect(try await direct.read(sourceArchiveURL) == sourceArchiveBytes)
         let importedBytes = try #require(container.peek(destinationRecordURL))
         let imported = try JSONDecoder().decode(WebPageRecord.self, from: importedBytes)
         #expect(imported.loadingPolicy == "snapshot-only")
         #expect(!imported.saved)
         #expect(imported.savedAt == nil)
         #expect(imported.title == "User title")
-        #expect(writesAfterUserChange == 2)
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
+        #expect(container.peek(manifestURL) != nil)
         #expect(container.coordinatedWriteCount == writesAfterUserChange)
         #expect(container.metadataQueryCount > 0)
+
+        var changedSourceRecord = sourceRecord
+        changedSourceRecord.pageCount = 7
+        let changedBytes = try WebLibrary.jsonEncoderPretty.encode(changedSourceRecord)
+        try await direct.replace(recordURL, with: changedBytes)
+        let changed = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let changedImported = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        #expect(changed)
+        #expect(changedImported.pageCount == 7)
+        #expect(container.coordinatedWriteCount == writesAfterUserChange + 2)
         await coordinator.stop()
     }
 
@@ -134,6 +174,10 @@ struct RelocationCoordinationTests {
         #expect(!moved)
         #expect(try await direct.read(sourceURL) == sourceBytes)
         #expect(container.peek(destinationURL) == destinationBytes)
+        let manifestURL = try #require(destination.indexPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("legacy-imports.json")
+        #expect(container.peek(manifestURL) == nil)
         await coordinator.stop()
     }
 

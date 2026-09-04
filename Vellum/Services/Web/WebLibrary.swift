@@ -21,9 +21,6 @@ struct WebPageRecord: Codable, Equatable, Sendable {
     /// set when importing a .vellumweb archive that requests it).
     var loadingPolicy: String?
     var annotations: [Annotation]
-    /// Hash of the copy-only legacy record last folded into this destination.
-    /// User edits retain it, so an unchanged source cannot replay stale state.
-    var legacySourceFingerprint: String?
 
     enum CodingKeys: String, CodingKey {
         case url
@@ -35,7 +32,6 @@ struct WebPageRecord: Codable, Equatable, Sendable {
         case openedAt = "opened_at"
         case loadingPolicy = "loading_policy"
         case annotations
-        case legacySourceFingerprint = "legacy_source_fingerprint"
     }
 
     init(url: String) {
@@ -48,7 +44,6 @@ struct WebPageRecord: Codable, Equatable, Sendable {
         openedAt = nil
         loadingPolicy = nil
         annotations = []
-        legacySourceFingerprint = nil
     }
 
     init(from decoder: Decoder) throws {
@@ -62,8 +57,6 @@ struct WebPageRecord: Codable, Equatable, Sendable {
         openedAt = try container.decodeIfPresent(String.self, forKey: .openedAt)
         loadingPolicy = try container.decodeIfPresent(String.self, forKey: .loadingPolicy)
         annotations = try container.decodeIfPresent([Annotation].self, forKey: .annotations) ?? []
-        legacySourceFingerprint = try container.decodeIfPresent(
-            String.self, forKey: .legacySourceFingerprint)
     }
 }
 
