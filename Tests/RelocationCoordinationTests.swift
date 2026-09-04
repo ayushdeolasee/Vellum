@@ -60,8 +60,12 @@ struct RelocationCoordinationTests {
             to: destination,
             coordinator: coordinator)
         let destinationIndexURL = try #require(destination.indexPath)
-        let manifestURL = destinationIndexURL.deletingLastPathComponent()
-            .appendingPathComponent("legacy-imports.json")
+        let receiptDirectory = destinationIndexURL.deletingLastPathComponent()
+            .appendingPathComponent("legacy-imports", isDirectory: true)
+        let recordReceiptURL = receiptDirectory.appendingPathComponent(
+            "\(WebLibrary.pageKey("records/legacy.json")).json")
+        let archiveReceiptURL = receiptDirectory.appendingPathComponent(
+            "\(WebLibrary.pageKey("Web Pages/Legacy.vellumweb")).json")
         let importedIndex = try JSONDecoder().decode(
             WebArchiveIndex.Contents.self,
             from: try #require(container.peek(destinationIndexURL)))
@@ -98,7 +102,9 @@ struct RelocationCoordinationTests {
         #expect(imported.title == "User title")
         #expect(container.peek(destinationArchiveURL) == nil)
         #expect(container.peek(destinationIndexURL) == nil)
-        #expect(container.peek(manifestURL) != nil)
+        #expect(recordReceiptURL != archiveReceiptURL)
+        #expect(container.peek(recordReceiptURL) != nil)
+        #expect(container.peek(archiveReceiptURL) != nil)
         #expect(container.coordinatedWriteCount == writesAfterUserChange)
         #expect(container.metadataQueryCount > 0)
 
@@ -115,7 +121,30 @@ struct RelocationCoordinationTests {
             from: try #require(container.peek(destinationRecordURL)))
         #expect(changed)
         #expect(changedImported.pageCount == 7)
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
         #expect(container.coordinatedWriteCount == writesAfterUserChange + 2)
+
+        container.seed(archiveReceiptURL, data: Data("corrupt".utf8))
+        let writesBeforeCorruptRetry = container.coordinatedWriteCount
+        let corruptRetry = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let recordAfterCorruptRetry = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        let restoredIndex = try JSONDecoder().decode(
+            WebArchiveIndex.Contents.self,
+            from: try #require(container.peek(destinationIndexURL)))
+        let restoredArchiveURL = destination.archivesDir.appendingPathComponent(
+            try #require(restoredIndex.entries["legacy"]))
+        #expect(corruptRetry)
+        #expect(!recordAfterCorruptRetry.saved)
+        #expect(recordAfterCorruptRetry.title == "User title")
+        #expect(recordAfterCorruptRetry.pageCount == 7)
+        #expect(container.peek(restoredArchiveURL) == sourceArchiveBytes)
+        #expect(container.coordinatedWriteCount == writesBeforeCorruptRetry + 3)
         await coordinator.stop()
     }
 
@@ -174,10 +203,12 @@ struct RelocationCoordinationTests {
         #expect(!moved)
         #expect(try await direct.read(sourceURL) == sourceBytes)
         #expect(container.peek(destinationURL) == destinationBytes)
-        let manifestURL = try #require(destination.indexPath)
+        let receiptURL = try #require(destination.indexPath)
             .deletingLastPathComponent()
-            .appendingPathComponent("legacy-imports.json")
-        #expect(container.peek(manifestURL) == nil)
+            .appendingPathComponent("legacy-imports", isDirectory: true)
+            .appendingPathComponent(
+                "\(WebLibrary.pageKey("Web Pages/Legacy.vellumweb")).json")
+        #expect(container.peek(receiptURL) == nil)
         await coordinator.stop()
     }
 

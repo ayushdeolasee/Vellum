@@ -762,13 +762,13 @@ enum WebStorageMigrator {
             return relocateDirect(from: source, to: destination)
         }
 
-        let legacyImports: LegacyImportTracker?
+        let legacyImports: LegacyImportReceipts?
         if preserveSource {
-            guard let tracker = try? await LegacyImportTracker.load(
+            guard let receipts = LegacyImportReceipts(
                 destination: destination,
                 store: destinationStore)
             else { return false }
-            legacyImports = tracker
+            legacyImports = receipts
         } else {
             legacyImports = nil
         }
@@ -809,53 +809,58 @@ enum WebStorageMigrator {
         return clean
     }
 
-    /// Stored beside the destination index, outside page records, archives,
-    /// documents, and positions that users can delete through the app.
-    private actor LegacyImportTracker {
-        private static let fileName = "legacy-imports.json"
+    private struct LegacyImportReceipt: Codable, Sendable {
+        var path: String
+        var fingerprint: String
+    }
 
-        private let url: URL
-        private let store: any LibraryFileStore
-        private var fingerprints: [String: String]
-
-        private init(
-            url: URL,
-            store: any LibraryFileStore,
-            fingerprints: [String: String]
-        ) {
-            self.url = url
-            self.store = store
-            self.fingerprints = fingerprints
+    /// One coordinated receipt per source path avoids a shared read-modify-write
+    /// race. Receipts sit outside user-deletable records, archives, and trees.
+    private struct LegacyImportReceipts: Sendable {
+        enum Status: Sendable {
+            case matches
+            case needsProcessing
+            case unavailable
         }
 
-        static func load(
+        private let directory: URL
+        private let store: any LibraryFileStore
+
+        init?(
             destination: WebStorageLayout,
             store: any LibraryFileStore
-        ) async throws -> LegacyImportTracker {
+        ) {
             guard let internalDirectory = destination.indexPath?.deletingLastPathComponent()
-            else { throw LibraryFileError.unavailable }
-            let url = internalDirectory.appendingPathComponent(fileName)
-            let fingerprints: [String: String]
-            if let data = try await store.read(url) {
-                fingerprints = try JSONDecoder().decode([String: String].self, from: data)
-            } else {
-                fingerprints = [:]
-            }
-            return LegacyImportTracker(url: url, store: store, fingerprints: fingerprints)
+            else { return nil }
+            directory = internalDirectory.appendingPathComponent(
+                "legacy-imports", isDirectory: true)
+            self.store = store
         }
 
-        func contains(_ path: String, fingerprint: String) -> Bool {
-            fingerprints[path] == fingerprint
+        func status(for path: String, fingerprint: String) async -> Status {
+            do {
+                guard let data = try await store.read(receiptURL(for: path)) else {
+                    return .needsProcessing
+                }
+                guard let receipt = try? JSONDecoder().decode(
+                    LegacyImportReceipt.self, from: data),
+                    receipt.path == path
+                else { return .needsProcessing }
+                return receipt.fingerprint == fingerprint ? .matches : .needsProcessing
+            } catch {
+                return .unavailable
+            }
         }
 
         func record(_ fingerprint: String, for path: String) async throws {
-            guard fingerprints[path] != fingerprint else { return }
-            var updated = fingerprints
-            updated[path] = fingerprint
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-            try await store.replace(url, with: encoder.encode(updated))
-            fingerprints = updated
+            let receipt = LegacyImportReceipt(path: path, fingerprint: fingerprint)
+            try await store.replace(receiptURL(for: path), with: encoder.encode(receipt))
+        }
+
+        private func receiptURL(for path: String) -> URL {
+            directory.appendingPathComponent("\(WebLibrary.pageKey(path)).json")
         }
     }
 
@@ -865,7 +870,7 @@ enum WebStorageMigrator {
         sourceStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
         preserveSource: Bool,
-        legacyImports: LegacyImportTracker?
+        legacyImports: LegacyImportReceipts?
     ) async -> Bool {
         let sourceEntries: [LibraryFileEntry]
         let destinationEntries: [LibraryFileEntry]
@@ -893,9 +898,15 @@ enum WebStorageMigrator {
                 }
                 let legacyPath = "records/\(entry.name)"
                 let sourceFingerprint = WebArchive.sha256Hex(sourceData)
-                if let legacyImports,
-                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
-                    continue
+                if let legacyImports {
+                    switch await legacyImports.status(
+                        for: legacyPath, fingerprint: sourceFingerprint) {
+                    case .matches: continue
+                    case .needsProcessing: break
+                    case .unavailable:
+                        clean = false
+                        continue
+                    }
                 }
                 let output: Data
                 let needsReplace: Bool
@@ -959,7 +970,7 @@ enum WebStorageMigrator {
         sourceStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
         preserveSource: Bool,
-        legacyImports: LegacyImportTracker?
+        legacyImports: LegacyImportReceipts?
     ) async -> Bool {
         let sourceArchives: [LibraryFileEntry]
         let destinationArchives: [LibraryFileEntry]
@@ -1037,9 +1048,15 @@ enum WebStorageMigrator {
                 fingerprintData.append(0)
                 fingerprintData.append(sourceData)
                 sourceFingerprint = WebArchive.sha256Hex(fingerprintData)
-                if let legacyImports,
-                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
-                    continue
+                if let legacyImports {
+                    switch await legacyImports.status(
+                        for: legacyPath, fingerprint: sourceFingerprint) {
+                    case .matches: continue
+                    case .needsProcessing: break
+                    case .unavailable:
+                        clean = false
+                        continue
+                    }
                 }
             } catch {
                 clean = false
@@ -1162,7 +1179,7 @@ enum WebStorageMigrator {
         destinationStore: any LibraryFileStore,
         preserveSource: Bool,
         legacyPathPrefix: String,
-        legacyImports: LegacyImportTracker?
+        legacyImports: LegacyImportReceipts?
     ) async -> Bool {
         guard sourceRoot != destinationRoot else { return true }
         let sourceFiles: [RelativeFile]
@@ -1190,9 +1207,15 @@ enum WebStorageMigrator {
                 }
                 let legacyPath = "\(legacyPathPrefix)/\(file.relativePath)"
                 let sourceFingerprint = WebArchive.sha256Hex(sourceData)
-                if let legacyImports,
-                   await legacyImports.contains(legacyPath, fingerprint: sourceFingerprint) {
-                    continue
+                if let legacyImports {
+                    switch await legacyImports.status(
+                        for: legacyPath, fingerprint: sourceFingerprint) {
+                    case .matches: continue
+                    case .needsProcessing: break
+                    case .unavailable:
+                        clean = false
+                        continue
+                    }
                 }
                 if let existing = destinationByPath[file.relativePath] {
                     guard existing.readiness.isReady,
