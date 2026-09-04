@@ -278,9 +278,7 @@ private struct ReadingSettingsTab: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Current size")
-                .accessibilityValue("\(Int(workspace.sidebarFontSize)) points")
+                .accessibilityHidden(true)
             } header: {
                 Text("Sidebar")
             } footer: {
