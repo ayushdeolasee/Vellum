@@ -25,6 +25,8 @@ struct RelocationCoordinationTests {
         let destinationRecordURL = destination.recordsDir.appendingPathComponent("legacy.json")
         var sourceRecord = WebPageRecord(url: "https://example.com/legacy")
         sourceRecord.loadingPolicy = "snapshot-only"
+        sourceRecord.saved = true
+        sourceRecord.savedAt = "2026-09-01T00:00:00Z"
         let bytes = try WebLibrary.jsonEncoderPretty.encode(sourceRecord)
         try await DirectLibraryFileStore().replace(recordURL, with: bytes)
 
@@ -47,7 +49,16 @@ struct RelocationCoordinationTests {
             legacyRoot,
             to: destination,
             coordinator: coordinator)
-        let writesAfterFirstImport = container.coordinatedWriteCount
+        var userRecord = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        userRecord.saved = false
+        userRecord.savedAt = nil
+        userRecord.title = "User title"
+        try await CoordinatedLibraryFileStore(container: container).replace(
+            destinationRecordURL,
+            with: try WebLibrary.jsonEncoderPretty.encode(userRecord))
+        let writesAfterUserChange = container.coordinatedWriteCount
         let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
@@ -59,8 +70,11 @@ struct RelocationCoordinationTests {
         let importedBytes = try #require(container.peek(destinationRecordURL))
         let imported = try JSONDecoder().decode(WebPageRecord.self, from: importedBytes)
         #expect(imported.loadingPolicy == "snapshot-only")
-        #expect(writesAfterFirstImport == 1)
-        #expect(container.coordinatedWriteCount == writesAfterFirstImport)
+        #expect(!imported.saved)
+        #expect(imported.savedAt == nil)
+        #expect(imported.title == "User title")
+        #expect(writesAfterUserChange == 2)
+        #expect(container.coordinatedWriteCount == writesAfterUserChange)
         #expect(container.metadataQueryCount > 0)
         await coordinator.stop()
     }

@@ -823,18 +823,38 @@ enum WebStorageMigrator {
                     clean = false
                     continue
                 }
+                let sourceFingerprint = preserveSource
+                    ? WebArchive.sha256Hex(sourceData)
+                    : nil
                 let output: Data
                 let needsReplace: Bool
                 if let existing = destinationByName[entry.name] {
                     guard existing.readiness.isReady,
                           let destinationData = try await destinationStore.read(destinationURL),
-                          let merged = mergedRecord(sourceData, into: destinationData)
+                          let merged = mergedRecord(
+                            sourceData,
+                            into: destinationData,
+                            sourceFingerprint: sourceFingerprint)
                     else {
                         clean = false
                         continue
                     }
                     output = merged.data
                     needsReplace = merged.changed
+                } else if let sourceFingerprint {
+                    guard var incoming = try? JSONDecoder().decode(
+                        WebPageRecord.self, from: sourceData)
+                    else {
+                        clean = false
+                        continue
+                    }
+                    incoming.legacySourceFingerprint = sourceFingerprint
+                    guard let marked = try? WebLibrary.jsonEncoderPretty.encode(incoming) else {
+                        clean = false
+                        continue
+                    }
+                    output = marked
+                    needsReplace = true
                 } else {
                     output = sourceData
                     needsReplace = true
@@ -854,11 +874,16 @@ enum WebStorageMigrator {
 
     private static func mergedRecord(
         _ source: Data,
-        into destination: Data
+        into destination: Data,
+        sourceFingerprint: String?
     ) -> (data: Data, changed: Bool)? {
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }
+        if let sourceFingerprint,
+           current.legacySourceFingerprint == sourceFingerprint {
+            return (destination, false)
+        }
         let original = current
         WebArchive.mergeAnnotations(&current.annotations, incoming: incoming.annotations)
         current.saved = current.saved || incoming.saved
@@ -873,6 +898,8 @@ enum WebStorageMigrator {
             current.loadingPolicy = current.loadingPolicy ?? incoming.loadingPolicy
         }
         current.openedAt = current.openedAt ?? incoming.openedAt
+        current.legacySourceFingerprint = sourceFingerprint
+            ?? current.legacySourceFingerprint
         guard let data = try? WebLibrary.jsonEncoderPretty.encode(current) else { return nil }
         return (data, current != original)
     }
