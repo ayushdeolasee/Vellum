@@ -5,6 +5,246 @@ import Testing
 
 @Suite("Storage relocation — coordinated side")
 struct RelocationCoordinationTests {
+    @Test("Legacy Mac iCloud data imports once and changed source retries")
+    func legacyMacICloudImportPreservesSource() async throws {
+        let root = PositionFixtures.scratchDirectory("legacy-mac-icloud-import")
+        defer { PositionFixtures.remove(root) }
+
+        let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
+        let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
+        let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
+        let source = WebStorageLayout.pretty(
+            root: legacyRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let destination = WebStorageLayout.pretty(
+            root: sharedRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let recordURL = source.recordsDir.appendingPathComponent("legacy.json")
+        let destinationRecordURL = destination.recordsDir.appendingPathComponent("legacy.json")
+        var sourceRecord = WebPageRecord(url: "https://example.com/legacy")
+        sourceRecord.loadingPolicy = "snapshot-only"
+        sourceRecord.saved = true
+        sourceRecord.savedAt = "2026-09-01T00:00:00Z"
+        let bytes = try WebLibrary.jsonEncoderPretty.encode(sourceRecord)
+        let sourceArchiveName = "Legacy.vellumweb"
+        let sourceArchiveURL = source.archivesDir.appendingPathComponent(sourceArchiveName)
+        let sourceArchiveBytes = Data("legacy archive".utf8)
+        var sourceIndex = WebArchiveIndex.Contents()
+        sourceIndex.entries["legacy"] = sourceArchiveName
+        let direct = DirectLibraryFileStore()
+        try await direct.replace(recordURL, with: bytes)
+        try await direct.replace(sourceArchiveURL, with: sourceArchiveBytes)
+        try await direct.replace(
+            try #require(source.indexPath),
+            with: try WebLibrary.jsonEncoderPretty.encode(sourceIndex))
+
+        let container = FakeSyncedContainer()
+        var destinationRecord = WebPageRecord(url: sourceRecord.url)
+        destinationRecord.loadingPolicy = "live-first"
+        container.seed(
+            destinationRecordURL,
+            data: try WebLibrary.jsonEncoderPretty.encode(destinationRecord))
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { sharedRoot },
+            containerFactory: { container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+
+        let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let destinationIndexURL = try #require(destination.indexPath)
+        let receiptDirectory = destinationIndexURL.deletingLastPathComponent()
+            .appendingPathComponent("legacy-imports", isDirectory: true)
+        func receiptURL(path: String, fingerprint: String) -> URL {
+            receiptDirectory.appendingPathComponent(
+                "\(WebLibrary.pageKey("\(path)\u{0}\(fingerprint)")).json")
+        }
+        let recordFingerprint = WebArchive.sha256Hex(bytes)
+        let recordReceiptURL = receiptURL(
+            path: "records/legacy.json", fingerprint: recordFingerprint)
+        var archiveFingerprintData = Data("legacy".utf8)
+        archiveFingerprintData.append(0)
+        archiveFingerprintData.append(sourceArchiveBytes)
+        let archiveFingerprint = WebArchive.sha256Hex(archiveFingerprintData)
+        let archiveReceiptURL = receiptURL(
+            path: "Web Pages/Legacy.vellumweb", fingerprint: archiveFingerprint)
+        let importedIndex = try JSONDecoder().decode(
+            WebArchiveIndex.Contents.self,
+            from: try #require(container.peek(destinationIndexURL)))
+        let destinationArchiveName = try #require(importedIndex.entries["legacy"])
+        let destinationArchiveURL = destination.archivesDir.appendingPathComponent(
+            destinationArchiveName)
+        var userRecord = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        userRecord.saved = false
+        userRecord.savedAt = nil
+        userRecord.title = "User title"
+        let destinationStore = CoordinatedLibraryFileStore(container: container)
+        try await destinationStore.replace(
+            destinationRecordURL,
+            with: try WebLibrary.jsonEncoderPretty.encode(userRecord))
+        try await destinationStore.remove(destinationArchiveURL)
+        try await destinationStore.remove(destinationIndexURL)
+        let writesAfterUserChange = container.coordinatedWriteCount
+        let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+
+        #expect(moved)
+        #expect(repeated)
+        #expect(try await direct.read(recordURL) == bytes)
+        #expect(try await direct.read(sourceArchiveURL) == sourceArchiveBytes)
+        let importedBytes = try #require(container.peek(destinationRecordURL))
+        let imported = try JSONDecoder().decode(WebPageRecord.self, from: importedBytes)
+        #expect(imported.loadingPolicy == "snapshot-only")
+        #expect(!imported.saved)
+        #expect(imported.savedAt == nil)
+        #expect(imported.title == "User title")
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
+        #expect(recordReceiptURL != archiveReceiptURL)
+        #expect(container.peek(recordReceiptURL) != nil)
+        #expect(container.peek(archiveReceiptURL) != nil)
+        #expect(container.coordinatedWriteCount == writesAfterUserChange)
+        #expect(container.metadataQueryCount > 0)
+
+        var changedSourceRecord = sourceRecord
+        changedSourceRecord.pageCount = 7
+        let changedBytes = try WebLibrary.jsonEncoderPretty.encode(changedSourceRecord)
+        let changedRecordReceiptURL = receiptURL(
+            path: "records/legacy.json",
+            fingerprint: WebArchive.sha256Hex(changedBytes))
+        try await direct.replace(recordURL, with: changedBytes)
+        let changed = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let changedImported = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        #expect(changed)
+        #expect(changedImported.pageCount == 7)
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
+        #expect(container.peek(recordReceiptURL) != nil)
+        #expect(container.peek(changedRecordReceiptURL) != nil)
+        #expect(container.peek(archiveReceiptURL) != nil)
+        #expect(container.coordinatedWriteCount == writesAfterUserChange + 2)
+
+        try await direct.replace(recordURL, with: bytes)
+        let writesBeforeStaleReplay = container.coordinatedWriteCount
+        let staleReplay = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let recordAfterStaleReplay = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        #expect(staleReplay)
+        #expect(recordAfterStaleReplay == changedImported)
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
+        #expect(container.coordinatedWriteCount == writesBeforeStaleReplay)
+
+        container.seed(archiveReceiptURL, data: Data("corrupt".utf8))
+        let writesBeforeCorruptRetry = container.coordinatedWriteCount
+        let corruptRetry = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let recordAfterCorruptRetry = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        let restoredIndex = try JSONDecoder().decode(
+            WebArchiveIndex.Contents.self,
+            from: try #require(container.peek(destinationIndexURL)))
+        let restoredArchiveURL = destination.archivesDir.appendingPathComponent(
+            try #require(restoredIndex.entries["legacy"]))
+        #expect(corruptRetry)
+        #expect(recordAfterCorruptRetry == changedImported)
+        #expect(container.peek(restoredArchiveURL) == sourceArchiveBytes)
+        #expect(container.coordinatedWriteCount == writesBeforeCorruptRetry + 3)
+        await coordinator.stop()
+    }
+
+    @Test("An unequal legacy archive collision preserves both copies")
+    func unequalLegacyArchiveCollisionStaysPending() async throws {
+        let root = PositionFixtures.scratchDirectory("legacy-archive-collision")
+        defer { PositionFixtures.remove(root) }
+
+        let storeDir = root.appendingPathComponent("local/web", isDirectory: true)
+        let legacyRoot = root.appendingPathComponent("legacy/Vellum", isDirectory: true)
+        let sharedRoot = root.appendingPathComponent("shared/Documents/Vellum", isDirectory: true)
+        let source = WebStorageLayout.pretty(
+            root: legacyRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let destination = WebStorageLayout.pretty(
+            root: sharedRoot,
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let key = "collision"
+        let sourceName = "Legacy.vellumweb"
+        let destinationName = "Shared.vellumweb"
+        let sourceURL = source.archivesDir.appendingPathComponent(sourceName)
+        let destinationURL = destination.archivesDir.appendingPathComponent(destinationName)
+        let sourceBytes = Data("legacy".utf8)
+        let destinationBytes = Data("shared".utf8)
+        var sourceIndex = WebArchiveIndex.Contents()
+        sourceIndex.entries[key] = sourceName
+        var destinationIndex = WebArchiveIndex.Contents()
+        destinationIndex.entries[key] = destinationName
+        let direct = DirectLibraryFileStore()
+        try await direct.replace(sourceURL, with: sourceBytes)
+        try await direct.replace(
+            try #require(source.indexPath),
+            with: try WebLibrary.jsonEncoderPretty.encode(sourceIndex))
+
+        let container = FakeSyncedContainer()
+        container.seed(destinationURL, data: destinationBytes)
+        container.seed(
+            try #require(destination.indexPath),
+            data: try WebLibrary.jsonEncoderPretty.encode(destinationIndex))
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { sharedRoot },
+            containerFactory: { container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        await coordinator.start()
+
+        let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+
+        #expect(!moved)
+        #expect(try await direct.read(sourceURL) == sourceBytes)
+        #expect(container.peek(destinationURL) == destinationBytes)
+        let receiptDirectory = try #require(destination.indexPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("legacy-imports", isDirectory: true)
+        var fingerprintData = Data(key.utf8)
+        fingerprintData.append(0)
+        fingerprintData.append(sourceBytes)
+        let fingerprint = WebArchive.sha256Hex(fingerprintData)
+        let receiptIdentity = "Web Pages/Legacy.vellumweb\u{0}\(fingerprint)"
+        let collisionReceiptURL = receiptDirectory.appendingPathComponent(
+            "\(WebLibrary.pageKey(receiptIdentity)).json")
+        #expect(container.peek(collisionReceiptURL) == nil)
+        await coordinator.stop()
+    }
+
     @Test("A stale iCloud file stays pending while current data and positions move")
     func staleFileKeepsSourceAndRetryFinishes() async throws {
         let destinationRoot = PositionFixtures.scratchDirectory("coordinated-relocation")

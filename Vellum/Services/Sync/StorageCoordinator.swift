@@ -339,6 +339,24 @@ actor StorageCoordinator {
         }
     }
 
+    /// Import into the active layout while normal storage traffic is stopped.
+    /// The destination receives the normal coordinated adapter when it is the
+    /// shared iCloud container. Callers own source access and must not delete an
+    /// uncoordinated source.
+    func performExclusiveStorageImport<T: Sendable>(
+        to destination: WebStorageLayout,
+        _ operation: @escaping @Sendable (StorageContext?) async -> T
+    ) async -> T {
+        await performExclusiveStorageOperation {
+            let destinationResult = await self.storageContext(for: destination)
+            let result = await operation(destinationResult.context)
+            for container in destinationResult.transientContainers {
+                await container.suspend()
+            }
+            return result
+        }
+    }
+
     @discardableResult
     func background(
         timeout: TimeInterval? = nil,
