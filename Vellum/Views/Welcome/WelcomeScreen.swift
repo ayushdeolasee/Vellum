@@ -392,7 +392,12 @@ struct WelcomeScreen: View {
     }
 
     private var searchFilterMenu: some View {
-        Menu {
+        Menu(
+            "Search filters",
+            systemImage: searchFilterIsActive
+                ? "line.3.horizontal.decrease.circle.fill"
+                : "line.3.horizontal.decrease"
+        ) {
             if let provider = browsedProvider {
                 providerFilterOptions(for: provider)
             } else {
@@ -415,22 +420,17 @@ struct WelcomeScreen: View {
                 }
                 .pickerStyle(.inline)
             }
-        } label: {
-            Image(
-                systemName: searchFilterIsActive
-                    ? "line.3.horizontal.decrease.circle.fill"
-                    : "line.3.horizontal.decrease")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(
-                    searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
         }
+        .labelStyle(.iconOnly)
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(
+            searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
+        .frame(width: 28, height: 28)
+        .contentShape(Rectangle())
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Search filters")
-        .accessibilityLabel("Search filters")
         .accessibilityValue(searchFilterSummary)
         .accessibilityIdentifier("welcome.searchFilters")
     }

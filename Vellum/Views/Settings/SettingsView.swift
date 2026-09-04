@@ -204,6 +204,8 @@ private struct GeneralSettingsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Appearance")
             } footer: {
                 Text(systemFooter)
                     .font(.footnote)
@@ -264,11 +266,11 @@ private struct ReadingSettingsTab: View {
                 } minimumValueLabel: {
                     Text("A")
                         .font(.caption)
-                        .accessibilityHidden(true)
+                        .accessibilityLabel("Minimum sidebar text size")
                 } maximumValueLabel: {
                     Text("A")
                         .font(.title3)
-                        .accessibilityHidden(true)
+                        .accessibilityLabel("Maximum sidebar text size")
                 }
                 .accessibilityValue("\(Int(workspace.sidebarFontSize)) points")
                 LabeledContent("Current size") {
@@ -276,6 +278,7 @@ private struct ReadingSettingsTab: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
+                .accessibilityHidden(true)
             } header: {
                 Text("Sidebar")
             } footer: {
@@ -290,6 +293,9 @@ private struct ReadingSettingsTab: View {
                     Toggle(
                         "Always show reader controls",
                         isOn: $alwaysShowReaderControls)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Always show reader controls")
+                        .accessibilityValue(alwaysShowReaderControls ? "On" : "Off")
                         .accessibilityIdentifier("settings.reader.alwaysShowControls")
                 } header: {
                     Text("Reader")
@@ -302,6 +308,9 @@ private struct ReadingSettingsTab: View {
 
             Section {
                 Toggle("Two-finger double-tap adds a note", isOn: $twoFingerNoteTap)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Two-finger double-tap adds a note")
+                    .accessibilityValue(twoFingerNoteTap ? "On" : "Off")
             } header: {
                 Text("Gestures")
             } footer: {
@@ -317,8 +326,16 @@ private struct ReadingSettingsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Double-tap action")
                 Toggle("Auto-hide sidebar while inking", isOn: $autoHideSidebarWhileInking)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Auto-hide sidebar while inking")
+                    .accessibilityValue(autoHideSidebarWhileInking ? "On" : "Off")
                 Toggle("Scribble to erase", isOn: $scratchOutToErase)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Scribble to erase")
+                    .accessibilityValue(scratchOutToErase ? "On" : "Off")
             } header: {
                 Text("Apple Pencil")
             } footer: {
@@ -440,8 +457,11 @@ private struct AiSettingsTab: View {
                     Text(configurationSummary)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.trailing)
-                        .accessibilityIdentifier("ai.configurationSummary")
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Configuration")
+                .accessibilityValue(configurationSummary)
+                .accessibilityIdentifier("ai.configurationSummary")
                 HStack {
                     Button("Validate Connection") {
                         validationState = .checking
@@ -466,17 +486,22 @@ private struct AiSettingsTab: View {
             }
             Section {
                 ForEach(AiSharingConsent.providers) { provider in
-                    LabeledContent(provider.displayName) {
-                        HStack(spacing: 12) {
-                            Text(AiSharingConsent.isGranted(for: provider) ? "Allowed" : "Not allowed")
-                                .foregroundStyle(.secondary)
-                            if AiSharingConsent.isGranted(for: provider) {
-                                Button("Revoke") {
-                                    AiSharingConsent.revoke(for: provider)
-                                    consentRevision += 1
-                                }
-                                .accessibilityIdentifier("aiConsent.revoke.\(provider.rawValue)")
+                    let isGranted = AiSharingConsent.isGranted(for: provider)
+                    HStack(spacing: 12) {
+                        Text(provider.displayName)
+                            .accessibilityHidden(true)
+                        Spacer()
+                        Text(isGranted ? "Allowed" : "Not allowed")
+                            .foregroundStyle(.secondary)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(
+                                "\(provider.displayName), \(isGranted ? "Allowed" : "Not allowed")")
+                        if isGranted {
+                            Button("Revoke") {
+                                AiSharingConsent.revoke(for: provider)
+                                consentRevision += 1
                             }
+                            .accessibilityIdentifier("aiConsent.revoke.\(provider.rawValue)")
                         }
                     }
                 }
