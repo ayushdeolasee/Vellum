@@ -814,8 +814,10 @@ enum WebStorageMigrator {
         var fingerprint: String
     }
 
-    /// One coordinated receipt per source path avoids a shared read-modify-write
-    /// race. Receipts sit outside user-deletable records, archives, and trees.
+    /// One coordinated receipt per source path AND fingerprint means concurrent
+    /// source versions never overwrite each other's completion state. A receipt
+    /// means that version completed one destination handling attempt; iCloud's
+    /// conflict resolver still decides which processed version wins.
     private struct LegacyImportReceipts: Sendable {
         enum Status: Sendable {
             case matches
@@ -839,7 +841,9 @@ enum WebStorageMigrator {
 
         func status(for path: String, fingerprint: String) async -> Status {
             do {
-                guard let data = try await store.read(receiptURL(for: path)) else {
+                guard let data = try await store.read(
+                    receiptURL(for: path, fingerprint: fingerprint))
+                else {
                     return .needsProcessing
                 }
                 guard let receipt = try? JSONDecoder().decode(
@@ -856,11 +860,14 @@ enum WebStorageMigrator {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let receipt = LegacyImportReceipt(path: path, fingerprint: fingerprint)
-            try await store.replace(receiptURL(for: path), with: encoder.encode(receipt))
+            try await store.replace(
+                receiptURL(for: path, fingerprint: fingerprint),
+                with: encoder.encode(receipt))
         }
 
-        private func receiptURL(for path: String) -> URL {
-            directory.appendingPathComponent("\(WebLibrary.pageKey(path)).json")
+        private func receiptURL(for path: String, fingerprint: String) -> URL {
+            let identity = "\(path)\u{0}\(fingerprint)"
+            return directory.appendingPathComponent("\(WebLibrary.pageKey(identity)).json")
         }
     }
 

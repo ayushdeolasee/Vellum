@@ -62,10 +62,19 @@ struct RelocationCoordinationTests {
         let destinationIndexURL = try #require(destination.indexPath)
         let receiptDirectory = destinationIndexURL.deletingLastPathComponent()
             .appendingPathComponent("legacy-imports", isDirectory: true)
-        let recordReceiptURL = receiptDirectory.appendingPathComponent(
-            "\(WebLibrary.pageKey("records/legacy.json")).json")
-        let archiveReceiptURL = receiptDirectory.appendingPathComponent(
-            "\(WebLibrary.pageKey("Web Pages/Legacy.vellumweb")).json")
+        func receiptURL(path: String, fingerprint: String) -> URL {
+            receiptDirectory.appendingPathComponent(
+                "\(WebLibrary.pageKey("\(path)\u{0}\(fingerprint)")).json")
+        }
+        let recordFingerprint = WebArchive.sha256Hex(bytes)
+        let recordReceiptURL = receiptURL(
+            path: "records/legacy.json", fingerprint: recordFingerprint)
+        var archiveFingerprintData = Data("legacy".utf8)
+        archiveFingerprintData.append(0)
+        archiveFingerprintData.append(sourceArchiveBytes)
+        let archiveFingerprint = WebArchive.sha256Hex(archiveFingerprintData)
+        let archiveReceiptURL = receiptURL(
+            path: "Web Pages/Legacy.vellumweb", fingerprint: archiveFingerprint)
         let importedIndex = try JSONDecoder().decode(
             WebArchiveIndex.Contents.self,
             from: try #require(container.peek(destinationIndexURL)))
@@ -111,6 +120,9 @@ struct RelocationCoordinationTests {
         var changedSourceRecord = sourceRecord
         changedSourceRecord.pageCount = 7
         let changedBytes = try WebLibrary.jsonEncoderPretty.encode(changedSourceRecord)
+        let changedRecordReceiptURL = receiptURL(
+            path: "records/legacy.json",
+            fingerprint: WebArchive.sha256Hex(changedBytes))
         try await direct.replace(recordURL, with: changedBytes)
         let changed = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
@@ -123,7 +135,25 @@ struct RelocationCoordinationTests {
         #expect(changedImported.pageCount == 7)
         #expect(container.peek(destinationArchiveURL) == nil)
         #expect(container.peek(destinationIndexURL) == nil)
+        #expect(container.peek(recordReceiptURL) != nil)
+        #expect(container.peek(changedRecordReceiptURL) != nil)
+        #expect(container.peek(archiveReceiptURL) != nil)
         #expect(container.coordinatedWriteCount == writesAfterUserChange + 2)
+
+        try await direct.replace(recordURL, with: bytes)
+        let writesBeforeStaleReplay = container.coordinatedWriteCount
+        let staleReplay = await WebStorageMigrator.migrateLegacyICloudRoot(
+            legacyRoot,
+            to: destination,
+            coordinator: coordinator)
+        let recordAfterStaleReplay = try JSONDecoder().decode(
+            WebPageRecord.self,
+            from: try #require(container.peek(destinationRecordURL)))
+        #expect(staleReplay)
+        #expect(recordAfterStaleReplay == changedImported)
+        #expect(container.peek(destinationArchiveURL) == nil)
+        #expect(container.peek(destinationIndexURL) == nil)
+        #expect(container.coordinatedWriteCount == writesBeforeStaleReplay)
 
         container.seed(archiveReceiptURL, data: Data("corrupt".utf8))
         let writesBeforeCorruptRetry = container.coordinatedWriteCount
@@ -140,9 +170,7 @@ struct RelocationCoordinationTests {
         let restoredArchiveURL = destination.archivesDir.appendingPathComponent(
             try #require(restoredIndex.entries["legacy"]))
         #expect(corruptRetry)
-        #expect(!recordAfterCorruptRetry.saved)
-        #expect(recordAfterCorruptRetry.title == "User title")
-        #expect(recordAfterCorruptRetry.pageCount == 7)
+        #expect(recordAfterCorruptRetry == changedImported)
         #expect(container.peek(restoredArchiveURL) == sourceArchiveBytes)
         #expect(container.coordinatedWriteCount == writesBeforeCorruptRetry + 3)
         await coordinator.stop()
@@ -203,12 +231,17 @@ struct RelocationCoordinationTests {
         #expect(!moved)
         #expect(try await direct.read(sourceURL) == sourceBytes)
         #expect(container.peek(destinationURL) == destinationBytes)
-        let receiptURL = try #require(destination.indexPath)
+        let receiptDirectory = try #require(destination.indexPath)
             .deletingLastPathComponent()
             .appendingPathComponent("legacy-imports", isDirectory: true)
-            .appendingPathComponent(
-                "\(WebLibrary.pageKey("Web Pages/Legacy.vellumweb")).json")
-        #expect(container.peek(receiptURL) == nil)
+        var fingerprintData = Data(key.utf8)
+        fingerprintData.append(0)
+        fingerprintData.append(sourceBytes)
+        let fingerprint = WebArchive.sha256Hex(fingerprintData)
+        let receiptIdentity = "Web Pages/Legacy.vellumweb\u{0}\(fingerprint)"
+        let collisionReceiptURL = receiptDirectory.appendingPathComponent(
+            "\(WebLibrary.pageKey(receiptIdentity)).json")
+        #expect(container.peek(collisionReceiptURL) == nil)
         await coordinator.stop()
     }
 
