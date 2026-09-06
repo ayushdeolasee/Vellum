@@ -28,6 +28,7 @@ struct AiPanel: View {
     private var isVisibleTab: Bool { workspace.sidebarTab == .ai }
 
     @State private var input = ""
+    @State private var promptFocusRequest: String?
     @State private var settingsOpen = false
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
@@ -72,6 +73,7 @@ struct AiPanel: View {
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
         // The whole-area drag destination lives on the sidebar container
         // (`SidebarDropCatcher` in `SidebarPanelStack`), which routes drops here
         // via `aiStore.handleDrop`. This local outline only lights for drags
@@ -151,17 +153,16 @@ struct AiPanel: View {
     }
 
     private var configureAiBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "key")
-                .foregroundStyle(palette.mutedForeground)
-            Text("Configure AI to start chatting.")
-                .font(.system(size: 12))
-                .foregroundStyle(palette.mutedForeground)
-            Spacer(minLength: 4)
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Connect a provider to start chatting.", systemImage: "key")
+                .fixedSize(horizontal: false, vertical: true)
             Button("Configure AI in Settings", action: showAiSettings)
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("aiPanel.configureAi")
         }
+        .font(.system(size: 12))
+        .foregroundStyle(palette.mutedForeground)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(palette.surfaceMuted)
@@ -176,7 +177,7 @@ struct AiPanel: View {
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     if aiStore.messages.isEmpty { emptyState }
                     ForEach(aiStore.messages) { message in
                         // The empty streaming placeholder is represented by the
@@ -372,34 +373,54 @@ struct AiPanel: View {
     }
 
     private var emptyState: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(palette.primary)
-                .frame(width: 30, height: 30)
-                .background(palette.muted)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                .overlay { RoundedRectangle(cornerRadius: Radius.md).stroke(palette.border) }
-
-            VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Ask about this document")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(palette.foreground)
-                Text("The assistant can read the page, jump around, and create notes and highlights for you.")
-                    .font(.system(size: 12))
+                Text("Explore an idea, find a passage, or turn what you read into notes.")
+                    .font(.system(size: 13))
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if appStore.document != nil {
+                VStack(spacing: 6) {
+                    suggestedPrompt("Summarize this page", icon: "text.alignleft")
+                    suggestedPrompt("Explain the key ideas", icon: "lightbulb")
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay { RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(palette.border) }
+        .padding(.vertical, 20)
+    }
+
+    private func suggestedPrompt(_ prompt: String, icon: String) -> some View {
+        Button {
+            input = prompt
+            promptFocusRequest = UUID().uuidString
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon).foregroundStyle(palette.mutedForeground)
+                Text(prompt)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.left").foregroundStyle(palette.mutedForeground)
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(palette.foreground)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.lg))
+            .overlay { RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(palette.border) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!input.isEmpty || aiStore.isThinking)
+        .accessibilityHint("Places this question in the composer for you to edit and send")
     }
 
     private func messageRow(_ message: AiMessage) -> some View {
-        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
             HStack(spacing: 4) {
                 Image(systemName: message.role == .user ? "person" : "sparkles")
                     .font(.system(size: 11))
@@ -473,7 +494,8 @@ struct AiPanel: View {
         // container, and both to cap typeset math images — because neither can
         // read the SwiftUI frame back out.
         let bubbleWidth = bubbleMaxWidth(for: message.role)
-        let textWidth = max(bubbleWidth - 24, 80)
+        let horizontalPadding: CGFloat = message.role == .user ? 12 : 0
+        let textWidth = max(bubbleWidth - horizontalPadding * 2, 80)
         BubbleWidthCap(maxWidth: textWidth) {
             if message.role == .assistant {
                 SelectableMessageText(
@@ -498,7 +520,7 @@ struct AiPanel: View {
             } else {
                 MarkdownMessage(
                     content: message.content,
-                    textColor: palette.primaryForeground,
+                    textColor: palette.foreground,
                     mathMaxWidth: textWidth,
                     // Hug, so a short "You" message is a small tinted bubble
                     // rather than a bar the width of the sidebar. The other
@@ -506,21 +528,14 @@ struct AiPanel: View {
                     fillsAvailableWidth: false
                 )
                 .font(.system(size: 14))
-                .foregroundStyle(palette.primaryForeground)
+                .foregroundStyle(palette.foreground)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, message.role == .user ? 10 : 0)
         .background(
-            message.role == .user
-                ? AnyShapeStyle(.tint)
-                : AnyShapeStyle(.quaternary.opacity(0.45)))
-        .clipShape(UnevenRoundedRectangle(
-            topLeadingRadius: message.role == .assistant ? Radius.sm : Radius.xl,
-            bottomLeadingRadius: Radius.xl,
-            bottomTrailingRadius: Radius.xl,
-            topTrailingRadius: message.role == .user ? Radius.sm : Radius.xl
-        ))
+            message.role == .user ? palette.muted : .clear,
+            in: RoundedRectangle(cornerRadius: Radius.xl))
     }
 
     /// Copy / Quote / Add-as-note row under each assistant reply.
@@ -571,7 +586,7 @@ struct AiPanel: View {
         .foregroundStyle(palette.mutedForeground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: Radius.xl))
+        .background(palette.surfaceMuted, in: Capsule())
         .transition(.opacity)
     }
 
@@ -636,7 +651,7 @@ struct AiPanel: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if let notice = strandedImagesNotice {
                 errorBanner(notice, icon: "exclamationmark.triangle")
                     .accessibilityIdentifier("aiPanel.imagesUnsupportedNotice")
@@ -649,20 +664,22 @@ struct AiPanel: View {
             }
             composerControls
         }
-        .padding(6)
-        .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+        .padding(8)
+        .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.xl))
+        .overlay { RoundedRectangle(cornerRadius: Radius.xl).strokeBorder(palette.borderStrong) }
         .padding(12)
-        .overlay(alignment: .top) { Divider() }
     }
 
     private var composerControls: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            attachMenu
+        VStack(spacing: 4) {
             ComposerTextView(
                 text: $input,
-                placeholder: "Ask about this document…",
-                focusRequest: aiStore.composerFocusRequest,
-                onFocusRequestConsumed: aiStore.consumeComposerFocusRequest,
+                placeholder: "Ask a question…",
+                focusRequest: promptFocusRequest ?? aiStore.composerFocusRequest,
+                onFocusRequestConsumed: { request in
+                    if promptFocusRequest == request { promptFocusRequest = nil }
+                    aiStore.consumeComposerFocusRequest(request)
+                },
                 onSubmit: submit,
                 // The composer's NSTextView is a registered drag destination and
                 // AppKit hands it any drop over its bounds before SwiftUI's
@@ -671,19 +688,43 @@ struct AiPanel: View {
                 onAttachmentDrop: attachmentDropHandler,
                 onDropTargeted: { dropTargeted = $0 }
             )
-            Button(action: submit) {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 15))
-                    .frame(width: 36, height: 36)
-                    .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
-                    .foregroundStyle(palette.primaryForeground)
+            HStack(spacing: 4) {
+                attachMenu
+                Button { settingsOpen.toggle() } label: {
+                    HStack(spacing: 4) {
+                        Text(aiStore.activeModelName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.mutedForeground)
+                    .padding(.horizontal, 6)
+                    .frame(height: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Choose AI provider and model")
+                .accessibilityLabel("AI model: \(aiStore.activeModelName)")
+                .accessibilityIdentifier("aiPanel.model")
+                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
+                Spacer(minLength: 0)
+                Button(action: submit) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .background(canSend ? palette.primary : palette.muted,
+                                    in: RoundedRectangle(cornerRadius: Radius.lg))
+                        .foregroundStyle(canSend ? palette.primaryForeground : palette.mutedForeground)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .help("Send message · Return to send, Shift-Return for a new line")
+                .accessibilityLabel("Send message")
+                .accessibilityIdentifier("aiPanel.send")
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            .opacity(canSend ? 1 : 0.4)
-            .help("Send message")
-            .accessibilityLabel("Send message")
-            .accessibilityIdentifier("aiPanel.send")
         }
     }
 
@@ -721,7 +762,7 @@ struct AiPanel: View {
             Image(systemName: "plus")
                 .font(.system(size: 15))
                 .foregroundStyle(palette.mutedForeground)
-                .frame(width: 36, height: 36)
+                .frame(width: 32, height: 32)
                 .contentShape(RoundedRectangle(cornerRadius: Radius.md))
         }
         .menuStyle(.button)
@@ -924,14 +965,16 @@ struct BubbleWidthCap: Layout {
 
 /// Three dots that fade in sequence — the "…" of a thinking indicator.
 private struct AnimatedDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.25)) { context in
+        TimelineView(.animation(minimumInterval: 0.25, paused: reduceMotion)) { context in
             let tick = Int(context.date.timeIntervalSinceReferenceDate * 4) % 3
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
                         .frame(width: 4, height: 4)
-                        .opacity(index == tick ? 1 : 0.3)
+                        .opacity(reduceMotion || index == tick ? 1 : 0.3)
                 }
             }
         }
@@ -984,6 +1027,7 @@ private struct ComposerTextView: View {
 }
 
 private struct ComposerTextViewRep: NSViewRepresentable {
+    @Environment(\.palette) private var palette
     @Binding var text: String
     let placeholder: String
     let focusRequest: String?
@@ -1039,6 +1083,9 @@ private struct ComposerTextViewRep: NSViewRepresentable {
         textView.onDropTargeted = onDropTargeted
         textView.updateDragTypeRegistration()
         textView.placeholder = placeholder
+        textView.textColor = NSColor(palette.foreground)
+        textView.insertionPointColor = NSColor(palette.primary)
+        textView.placeholderColor = NSColor(palette.mutedForeground)
         if textView.string != text { textView.string = text }
         textView.needsDisplay = true
         context.coordinator.publishHeight(for: textView)
@@ -1149,6 +1196,7 @@ final class ComposerDropScrollView: NSScrollView {
 final class SubmitTextView: NSTextView {
     var submit: (() -> Void)?
     var placeholder = ""
+    var placeholderColor = NSColor.secondaryLabelColor
     /// An editable NSTextView is a registered drag destination, so AppKit routes
     /// a drop over the composer to it rather than to the panel's SwiftUI
     /// `.onDrop`. Take attachment drops here and forward the payload; everything
@@ -1226,7 +1274,7 @@ final class SubmitTextView: NSTextView {
         guard string.isEmpty else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: placeholderColor,
         ]
         placeholder.draw(at: NSPoint(x: textContainerInset.width, y: textContainerInset.height), withAttributes: attributes)
     }
