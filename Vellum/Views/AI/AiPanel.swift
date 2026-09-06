@@ -66,9 +66,6 @@ struct AiPanel: View {
             if !aiStore.settings.isConfigured() {
                 configureAiBanner
             }
-            if settingsOpen {
-                AiSettingsPanel()
-            }
             messages
             composer
         }
@@ -140,6 +137,10 @@ struct AiPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
+        .popover(isPresented: $settingsOpen, arrowEdge: .trailing) {
+            AiSettingsPanel()
+                .frame(width: 300)
+        }
     }
 
     /// Clear first, then register Undo if this context has an undo manager.
