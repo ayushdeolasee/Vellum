@@ -114,6 +114,7 @@ struct AiPanel: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 2) {
+                quizMenu
                 IconButton(
                     variant: settingsOpen ? .active : .ghost,
                     help: "AI settings",
@@ -173,6 +174,47 @@ struct AiPanel: View {
     private func showAiSettings() {
         workspace.settingsSection = .ai
         openSettings()
+    }
+
+    private var quizMenu: some View {
+        Menu {
+            Button("Current page") {
+                startQuiz(.currentPage(appStore.currentPage))
+            }
+            if !aiStore.composerReferences.isEmpty {
+                Button("Attached material") {
+                    startQuiz(.attachedMaterial)
+                }
+            }
+            Button("Whole document") {
+                startQuiz(.document)
+            }
+        } label: {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 15))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(appStore.document == nil || aiStore.isThinking)
+        .help("Start a quiz")
+        .accessibilityLabel("Start a quiz")
+        .accessibilityIdentifier("aiPanel.quiz")
+    }
+
+    private func startQuiz(_ scope: AiQuizScope) {
+        guard !aiStore.isThinking else { return }
+        let request = AiPrompts.quizRequest(for: scope)
+        if !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !aiStore.composerReferences.isEmpty {
+            input += input.isEmpty ? request : "\n\n\(request)"
+            return
+        }
+        input = request
+        submit()
     }
 
     private var messages: some View {
@@ -381,6 +423,11 @@ struct AiPanel: View {
                     .foregroundStyle(palette.foreground)
                 Text("Explore an idea, find a passage, or turn what you read into notes.")
                     .font(.system(size: 13))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Use the brain button to quiz yourself on a page, an attachment, or the whole document.")
+                    .font(.system(size: 12))
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
