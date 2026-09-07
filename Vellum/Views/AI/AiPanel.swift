@@ -61,15 +61,19 @@ struct AiPanel: View {
     static let bottomSlack: CGFloat = 24
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            if !aiStore.settings.isConfigured() {
-                configureAiBanner
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header
+                if !aiStore.settings.isConfigured() {
+                    configureAiBanner
+                }
+                messages
+                    .frame(minHeight: 0, maxHeight: .infinity)
+                composer
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            messages
-            composer
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
         // The whole-area drag destination lives on the sidebar container
         // (`SidebarDropCatcher` in `SidebarPanelStack`), which routes drops here
@@ -190,9 +194,10 @@ struct AiPanel: View {
                 startQuiz(.document)
             }
         } label: {
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 15))
-                .frame(width: 28, height: 28)
+            Label("Quiz", systemImage: "brain.head.profile")
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 6)
+                .frame(height: 28)
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
@@ -202,19 +207,15 @@ struct AiPanel: View {
         .disabled(appStore.document == nil || aiStore.isThinking)
         .help("Start a quiz")
         .accessibilityLabel("Start a quiz")
+        .accessibilityHint("Choose a scope to prepare an editable quiz request")
         .accessibilityIdentifier("aiPanel.quiz")
     }
 
     private func startQuiz(_ scope: AiQuizScope) {
         guard !aiStore.isThinking else { return }
         let request = AiPrompts.quizRequest(for: scope)
-        if !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !aiStore.composerReferences.isEmpty {
-            input += input.isEmpty ? request : "\n\n\(request)"
-            return
-        }
-        input = request
-        submit()
+        input += input.isEmpty ? request : "\n\n\(request)"
+        promptFocusRequest = UUID().uuidString
     }
 
     private var messages: some View {
@@ -426,7 +427,7 @@ struct AiPanel: View {
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Use the brain button to quiz yourself on a page, an attachment, or the whole document.")
+                Text("Choose Quiz to practice a page, attached material, or the whole document.")
                     .font(.system(size: 12))
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
