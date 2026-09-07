@@ -90,6 +90,10 @@ final class LiveTabRuntime {
     /// for ranking.
     @ObservationIgnored private var pdfByteCount = 0
 
+    /// Annotation writes launched by this tab. Closing the tab drains these
+    /// before its backend session is closed.
+    @ObservationIgnored private var pendingAnnotationWrites: [Task<Bool, Never>] = []
+
     /// Bumped when the tab keeps its identity while the file underneath it
     /// changes — PDF Save As retargets a *live* tab to a new location instead of
     /// closing and reopening it. The mounted viewer keys its load task on this,
@@ -206,9 +210,24 @@ final class LiveTabRuntime {
         isEvicted = false
     }
 
-    /// iPad's PDF controller has no `pauseTextExtraction`; `flushPersister()` is
-    /// the equivalent drain of the page-text cache it owns.
+    func trackAnnotationWrite(_ task: Task<Bool, Never>) {
+        pendingAnnotationWrites.append(task)
+    }
+
+    func flushPendingAnnotationWrites() async {
+        while !pendingAnnotationWrites.isEmpty {
+            let writes = pendingAnnotationWrites
+            pendingAnnotationWrites.removeAll()
+            for write in writes {
+                _ = await write.value
+            }
+        }
+    }
+
+    /// Drain user annotations before the page-text cache so backgrounding does
+    /// not suspend a highlight write that has already appeared on screen.
     func flushPdfText() async {
+        await flushPendingAnnotationWrites()
         await pdfController.flushPersister()
     }
 }
