@@ -184,10 +184,10 @@ final class PageTextExtractionGate {
     }
 }
 
-// MARK: - iPad addition: bodies that run off the main actor
+// MARK: - Private-document bodies that run off the main actor
 //
-// The iPad's 1→N walk parses a PRIVATE `PDFDocument` copy on a detached utility
-// task (see `PdfViewerControlleriOS.startTextExtraction(data:)`) because
+// The iPad and Mac 1→N walks parse a PRIVATE `PDFDocument` copy on a detached
+// utility task (see each controller's `startTextExtraction(data:)`) because
 // walking the live, view-bound document on the main actor starved the run loop
 // for minutes on textbook PDFs. The synchronous `extractText` above runs its
 // body on the main actor, which would undo that. This overload holds the exact

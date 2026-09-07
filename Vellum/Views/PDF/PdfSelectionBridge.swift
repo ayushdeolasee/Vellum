@@ -28,6 +28,19 @@ struct PdfContextMenuState {
     var pageHeight: Double
 }
 
+/// Carries the private document copy used by the detached page-text walk.
+/// The copy is created and accessed only by that task. The controller is only
+/// dereferenced inside `MainActor.run`.
+private final class PdfExtractionWalkContext: @unchecked Sendable {
+    weak var controller: PdfViewerController?
+    let copy: PDFDocument
+
+    init(controller: PdfViewerController?, copy: PDFDocument) {
+        self.controller = controller
+        self.copy = copy
+    }
+}
+
 /// Shared state + behavior between the PDFView (AppKit) and the SwiftUI
 /// overlay stack. One instance per PdfViewerView; reset on document change.
 @MainActor
@@ -782,8 +795,10 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Stop the background walk before flushing so every page produced before
     /// deactivation is included and no writer races the persisted snapshot.
     func pauseTextExtraction() async {
-        extractionTask?.cancel()
+        let task = extractionTask
         extractionTask = nil
+        task?.cancel()
+        await task?.value
         await persister?.flush()
     }
 
@@ -814,11 +829,10 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Extract one page's text and publish it to the AI store, the tab runtime
     /// and the persistent cache.
     ///
-    /// The single choke point for `page.string` on this controller: it holds
-    /// `PageTextExtractionGate` for the call, so the background walk, the AI
-    /// context fill and the tool paths can never hand PDFKit two Live Text OCR
-    /// requests at once (see PageTextExtractionGate for why that crashes). The
-    /// cache re-check happens *inside* the gate, so a page that the other loop
+    /// The choke point for `page.string` reads on the displayed document. It
+    /// shares `PageTextExtractionGate` with the private-document background walk,
+    /// so the AI context and tool paths cannot overlap a Live Text OCR request.
+    /// The cache re-check happens inside the gate, so a page that the other walk
     /// filled while this request sat in the queue is skipped, not re-extracted.
     private func extractPage(
         _ pageNumber: Int, from document: PDFDocument, tabId: String?,
@@ -847,33 +861,57 @@ final class PdfViewerController: HighlightResizeControlling {
         return outcome
     }
 
-    func startTextExtraction() {
+    /// Walk a private document copy off the main actor so opening a large PDF
+    /// cannot starve the UI while PDFKit extracts every page's text.
+    func startTextExtraction(data: Data) {
         extractionTask?.cancel()
         guard let document else { return }
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
-        // Generation guard: a replacement viewer mounts BEFORE this view's
-        // onDisappear cancels the walk, and this controller's `document` stays
-        // non-nil until then — so without the tab check, an outgoing walk keeps
-        // writing the OLD document's text into the shared pageTexts while the
-        // new document loads, and the new walk's skip guard then persists it.
-        let tabId = app?.activeTabId
-        extractionTask = Task { [weak self] in
-            for pageNumber in 1...pageCount {
-                // Idle pacing stand-in for requestIdleCallback's 16 ms fallback.
+        let tabId = self.tabId ?? app?.activeTabId
+        let documentIdentity = ObjectIdentifier(document)
+        let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
+        let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
+        guard !missingPages.isEmpty else { return }
+
+        extractionTask = Task.detached(priority: .utility) { [weak self] in
+            guard let copy = PDFDocument(data: data) else { return }
+            let walk = PdfExtractionWalkContext(controller: self, copy: copy)
+
+            for pageNumber in missingPages {
                 try? await Task.sleep(for: .milliseconds(16))
                 if Task.isCancelled { return }
-                guard let self else { return }
-                // Skip pages already restored from the cache: don't even queue
-                // for the gate, let alone read page.string (the expensive part)
-                // — true resume of a partial walk.
-                if self.ai?.pageTexts[pageNumber] != nil { continue }
-                let outcome = await self.extractPage(
-                    pageNumber, from: document, tabId: tabId, priority: .background)
-                if case .stale = outcome { return }
+
+                let text = await PageTextExtractionGate.shared.extractText(
+                    priority: .background,
+                    offMain: {
+                        let stillNeeded = await MainActor.run { () -> Bool in
+                            guard let ai = walk.controller?.ai else { return false }
+                            return ai.pageTexts[pageNumber] == nil
+                        }
+                        guard stillNeeded,
+                              pageNumber <= walk.copy.pageCount,
+                              let page = walk.copy.page(at: pageNumber - 1)
+                        else { return nil }
+                        return page.string ?? ""
+                    }
+                )
+                guard let text else { continue }
+
+                let stillCurrent = await MainActor.run { [weak self] () -> Bool in
+                    guard let self, let ai = self.ai,
+                          self.document.map(ObjectIdentifier.init) == documentIdentity,
+                          self.app?.activeTabId == tabId else { return false }
+                    if ai.pageTexts[pageNumber] == nil,
+                       let normalized = ai.setPageText(page: pageNumber, text: text) {
+                        self.runtime?.pageTexts[pageNumber] = normalized
+                        self.persister?.noteExtracted(page: pageNumber, text: normalized)
+                    }
+                    return true
+                }
+                if !stillCurrent { return }
             }
-            // Whole document walked: flush with complete = true.
-            await self?.persister?.flush()
+            await MainActor.run { [weak self] in self?.persister }?.flush()
         }
     }
 
