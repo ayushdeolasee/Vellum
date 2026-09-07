@@ -46,6 +46,7 @@ struct PdfViewerView_iOS: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
 
     private var controller: PdfViewerControlleriOS { runtime.pdfController }
     /// Pencil ink is per-DOCUMENT and therefore per-runtime. The pane used to
@@ -56,6 +57,9 @@ struct PdfViewerView_iOS: View {
     /// Tab the shared handler slots are currently registered for; nil when this
     /// view has no live registration (see `deactivate`'s ownership guard).
     @State private var handlersTabId: String?
+    @State private var indexingIsActive = false
+
+    private var shouldIndex: Bool { isActive && scenePhase == .active }
 
     var body: some View {
         content()
@@ -72,8 +76,15 @@ struct PdfViewerView_iOS: View {
                 if case .idle = runtime.pdfLoadState {
                     await load(tabId: tabId)
                 } else {
-                    activate()
+                    await activate()
                 }
+            }
+            // Activity changes pause indexing without cancelling an in-flight
+            // document load. A load finishing later reads the current state.
+            .task(id: shouldIndex) {
+                indexingIsActive = shouldIndex
+                guard isActive, case .loaded = runtime.pdfLoadState else { return }
+                await activate()
             }
     }
 
@@ -147,17 +158,8 @@ struct PdfViewerView_iOS: View {
                     guard let document = PDFDocument(data: data) else {
                         return PreparedPdf(document: nil, handwritingPages: [])
                     }
-                    var handwritingPages: [Int] = []
-                    for index in 0..<document.pageCount {
-                        guard let page = document.page(at: index) else { continue }
-                        let pageAnnotations = page.annotations
-                        if pageAnnotations.contains(where: PdfInk.isVellumInk) {
-                            handwritingPages.append(index + 1)
-                        }
-                        for annotation in pageAnnotations {
-                            page.removeAnnotation(annotation)
-                        }
-                    }
+                    let handwritingPages = PdfViewerPreparation.stripAnnotations(
+                        from: document, isHandwriting: PdfInk.isVellumInk)
                     return PreparedPdf(
                         document: document,
                         handwritingPages: handwritingPages)
@@ -221,7 +223,7 @@ struct PdfViewerView_iOS: View {
             if isActive {
                 registerHandlers()
                 handlersTabId = tabId
-                controller.startTextExtraction(data: data)
+                if indexingIsActive { controller.startTextExtraction(data: data) }
             }
         } catch {
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
@@ -275,7 +277,7 @@ struct PdfViewerView_iOS: View {
     /// The tab is on screen again, with its document already loaded: reclaim
     /// the pane's shared handler slots and re-point the controller at whichever
     /// pane now hosts it (a tab can be dragged between panes while warm).
-    private func activate() {
+    private func activate() async {
         guard app.activeTabId == tabId else { return }
         controller.rebind(
             app: app, annotationStore: annotationStore, ai: aiStore,
@@ -287,7 +289,11 @@ struct PdfViewerView_iOS: View {
         handlersTabId = tabId
         if case .loaded(let pdf) = runtime.pdfLoadState {
             app.setNumPages(pdf.pageCount)
-            Task { await resumeTextExtraction(pageCount: pdf.pageCount) }
+            if indexingIsActive {
+                await resumeTextExtraction(pageCount: pdf.pageCount)
+            } else {
+                controller.pauseTextExtraction()
+            }
         }
     }
 
@@ -300,8 +306,10 @@ struct PdfViewerView_iOS: View {
     /// never pay the read at all.
     private func resumeTextExtraction(pageCount: Int) async {
         guard runtime.pageTexts.count < pageCount else { return }
+        let generation = runtime.documentGeneration
         guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
-        guard !Task.isCancelled, app.activeTabId == tabId else { return }
+        guard !Task.isCancelled, indexingIsActive, app.activeTabId == tabId,
+              runtime.documentGeneration == generation else { return }
         controller.startTextExtraction(data: data)
     }
 

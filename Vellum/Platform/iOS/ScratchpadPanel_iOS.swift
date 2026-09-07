@@ -21,6 +21,12 @@ enum ScratchpadEditorPrewarmer {
 
     static func editorDidMount() {
         mountedEditorCount += 1
+        cancelWarmup()
+    }
+
+    /// The hidden warmup contains no user content. Release it when backgrounded
+    /// so it cannot keep a WebKit process alive for an unopened editor.
+    static func cancelWarmup() {
         warmupView?.stopLoading()
         warmupView = nil
     }

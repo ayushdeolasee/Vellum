@@ -19,12 +19,9 @@ private func resolveExistingDocumentPath(_ path: String) -> String? {
 
 /// Closed tabs' in-flight teardowns, keyed by the closed tab id.
 ///
-/// A close's teardown keeps rewriting its document long after the tab left the
-/// strip: the `last_page` metadata write is a read + parse + serialize +
-/// atomic rename of the whole PDF (~15s on a large document). Opening or
-/// writing that same file before the rename lands races it — the reopen reads
-/// stale bytes (wrong reading position), and the rename silently replaces
-/// anything written in the window (lost annotations, a clobbered Save As).
+/// A close's teardown drains reading-position and page-text persistence before
+/// releasing its backend session. Reopening the same document must wait for
+/// those writes even after its old tab or pane has disappeared.
 ///
 /// The registry is owned by the WORKSPACE and shared by every pane's AppStore,
 /// not kept per store, for two reasons:
@@ -35,9 +32,7 @@ private func resolveExistingDocumentPath(_ path: String) -> String? {
 ///   quit drain — after the store that started it is gone.
 @MainActor
 final class TabTeardownRegistry {
-    /// One in-flight teardown: the document path it will rewrite (the backend
-    /// stores canonical paths, so this one is canonical too) and the task
-    /// doing the rewriting.
+    /// One in-flight teardown, keyed by canonical document path and identity.
     private struct Entry {
         let documentPath: String
         let documentKey: DocumentKey?
@@ -341,26 +336,9 @@ final class AppStore {
     ///
     /// The file on disk is untouched; see `DocumentRenameService` for why.
     ///
-    /// TEARDOWN-RACE AUDIT (#129 Stage J, the counterpart of the guard in
-    /// `importVellumBundleShowingErrors`). No `awaitTeardowns` is needed here,
-    /// and adding one would only serialise a rename behind an unrelated close:
-    ///
-    ///   * A close's teardown writes three things — the PDF's own Info
-    ///     dictionary (`setDocumentMetadata` `last_page`, a full file rewrite),
-    ///     the page-text cache (`flushPdfText`), and the backend session close.
-    ///   * A rename writes three DIFFERENT things — `documents/<key>/meta.json`
-    ///     (`DocumentDataStore.setTitle`, atomic), the recents list in
-    ///     `AppDefaults`, and, for web documents only, the WebLibrary sidecar
-    ///     record. It never opens the document file. Nothing on the teardown
-    ///     path calls `DocumentDataStore.touch`, so meta.json has no second
-    ///     writer here.
-    ///
-    /// For PDFs the two file sets are therefore disjoint. For web documents both
-    /// paths do reach the same sidecar record — the teardown's `last_page` and
-    /// this rename's `title` — but every mutation of it is funnelled through
-    /// `WebLibrary.withRecord`, whose per-record-path `NSLock` serialises the
-    /// read-modify-write. The interleaving that motivated the import guard (a
-    /// whole-file rewrite from stale in-memory bytes) has no analogue.
+    /// Teardown persists positions and page text; renaming updates document
+    /// metadata and recents. Neither path rewrites the PDF, and the stores
+    /// serialize their own sidecar changes.
     ///
     /// The same reasoning covers `HomeSearchStore`'s rename, which calls
     /// `DocumentRenameService.apply` directly for a document that may have no
@@ -425,7 +403,7 @@ final class AppStore {
 
     // MARK: - Closing / switching tabs
 
-    /// Await every close still finishing its metadata write, text flush, and
+    /// Await every close still finishing its position write, text flush, and
     /// session close. The scene-background flush drains this so suspending
     /// right after closing a tab still persists that tab's reading position.
     func awaitPendingTabTeardowns() async {
@@ -451,12 +429,8 @@ final class AppStore {
 
     /// Close a tab and tear its backend session down.
     ///
-    /// The tab leaves `tabs` — and therefore the tab strip — BEFORE any of the
-    /// teardown work runs. That work is a `last_page` metadata write, which is a
-    /// full read + parse + serialize + atomic rewrite of the PDF on the IO actor
-    /// (~15s on a large document), plus a page-text flush. Awaiting it first
-    /// meant the tab sat visibly in the strip for that whole time after the user
-    /// tapped ×, so closing looked broken.
+    /// The tab leaves the strip immediately. Its tracked teardown drains
+    /// positions and page text before closing the backend session.
     ///
     /// The teardown registers itself in the workspace-wide registry before it
     /// starts. The tab is already gone from `tabs`, so nothing else would await
@@ -580,15 +554,6 @@ final class AppStore {
         guard activeTabId != tabId, let tab = tabs.first(where: { $0.id == tabId }) else { return }
         if let current = tabs.first(where: { $0.id == activeTabId }), current.document != nil {
             recordPosition(for: current)
-            let sessionId = current.id
-            let page = current.currentPage
-            let kind = current.document?.kind
-            Task {
-                if kind == .pdf {
-                    try? await sessions.setDocumentMetadata(
-                        sessionId: sessionId, key: "last_page", value: String(page))
-                }
-            }
         }
         applyActiveState(from: tab)
     }
@@ -1591,7 +1556,6 @@ final class AppStore {
             workspace?.removeLiveTabRuntime(for: tab.id)
             return
         }
-        let lastPage = String(tab.currentPage)
         let runtime = workspace?.existingLiveTabRuntime(for: tab.id)
         let sessions = self.sessions
         let workspace = self.workspace
@@ -1610,10 +1574,6 @@ final class AppStore {
                     await positions?.recordClosed(document: closingDocument)
                 }
                 await positions?.flush()
-                if closingDocument.kind == .pdf {
-                    try? await sessions.setDocumentMetadata(
-                        sessionId: tabId, key: "last_page", value: lastPage)
-                }
                 await runtime?.flushPdfText()
                 try? await sessions.closeFile(sessionId: tabId)
                 workspace?.removeLiveTabRuntime(for: tabId)
