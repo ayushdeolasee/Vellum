@@ -28,7 +28,12 @@ struct HighlightSwatchButton: View {
                 }
                 .frame(width: size, height: size)
                 .scaleEffect(hovering ? 1.1 : 1)
+                #if os(iOS)
+                .frame(width: max(size, 44), height: max(size, 44))
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
