@@ -761,13 +761,12 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         }
     }
 
-    /// Stop the background walk without discarding what it has already
-    /// written. The iPad walk is a detached task over a PRIVATE document copy,
-    /// so cancelling it is the whole of the pause — there is no main-actor loop
-    /// to drain, which is why this needs no `await` (main's macOS twin does).
+    /// Stop speculative indexing and register its partial cache flush so the
+    /// scene-background barrier can await it before suspension.
     func pauseTextExtraction() {
         extractionTask?.cancel()
         extractionTask = nil
+        persister?.flushDetached()
     }
 
     // MARK: - AI highlight locator
@@ -839,7 +838,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     // MARK: - Scratchpad region snapshot (drag-to-crop)
 
-    /// Render the selected page upright, then crop the stable page selection.
+    /// Render only the selected region of the upright page.
     private func capturePageRegionData(
         viewerRect rect: CGRect,
         pageNumber: Int
@@ -861,10 +860,8 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         let rh = max(1, min(Double(rect.height / zoom), Double(dims.height) - ry))
         guard rw >= 4, rh >= 4 else { return nil }
 
-        // Render the whole page, then crop. Scale so the region is legible
-        // (≤1280 on its long side) without blowing up tiny selections; cap the
-        // full-page long side so a tiny crop on a large page can't allocate a
-        // huge bitmap.
+        // Preserve the existing capture scale and pixel limits. The renderer
+        // allocates only the selected region, with the page clipped to it.
         var scale = min(3.0, max(1.0, 1280 / max(rw, rh)))
         let maxFullSide = 4096.0
         let fullLong = Double(max(dims.width, dims.height)) * scale
@@ -874,30 +871,18 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard fullW > 0, fullH > 0 else { return nil }
 
         let fullSize = CGSize(width: fullW, height: fullH)
-        let thumb = page.thumbnail(of: fullSize, for: pdfView.displayBox)
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        format.opaque = true
-        let renderer = UIGraphicsImageRenderer(size: fullSize, format: format)
-        let composited = renderer.image { ctx in
-            UIColor.white.setFill()
-            ctx.fill(CGRect(origin: .zero, size: fullSize))
-            thumb.draw(in: CGRect(origin: .zero, size: fullSize))
-        }
-
-        // The rendered cgImage is top-down, so the crop rect uses top-left origin.
-        guard let full = composited.cgImage else { return nil }
         let cropRect = CGRect(
-            x: rx * scale, y: ry * scale, width: rw * scale, height: rh * scale
-        ).integral
-        guard let cropped = full.cropping(to: cropRect) else { return nil }
-        guard let jpeg = UIImage(cgImage: cropped).jpegData(compressionQuality: 0.72) else { return nil }
+            x: rx * scale, y: ry * scale, width: rw * scale, height: rh * scale)
+        guard let image = PdfRegionRenderer_iOS.render(
+            page: page, box: pdfView.displayBox, fullSize: fullSize, crop: cropRect),
+              let pixels = image.cgImage,
+              let jpeg = image.jpegData(compressionQuality: 0.72) else { return nil }
         return ScratchpadImageCapture(
             data: jpeg,
             fileExtension: "jpg",
             mediaType: "image/jpeg",
-            width: cropped.width,
-            height: cropped.height,
+            width: pixels.width,
+            height: pixels.height,
             pageNumber: pageNumber
         )
     }
