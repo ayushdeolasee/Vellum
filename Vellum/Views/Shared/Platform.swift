@@ -51,6 +51,7 @@ extension Image {
 extension PlatformImage {
     /// Set the VoiceOver description in a cross-platform way. On AppKit this is
     /// `accessibilityDescription`; on UIKit the informal `accessibilityLabel`.
+    @MainActor
     func setAccessibilityDescription(_ description: String) {
         #if os(macOS)
         accessibilityDescription = description
