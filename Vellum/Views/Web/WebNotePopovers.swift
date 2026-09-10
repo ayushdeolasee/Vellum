@@ -433,6 +433,9 @@ struct WebSelectionPopover: View {
     /// Fired as the note field opens, so the controller can pin the selection
     /// before the field steals first responder from the web view.
     var onBeginNote: () -> Void
+    #if os(macOS)
+    var onDictionaryLookup: () -> Void
+    #endif
     var onAskAi: () -> Void
     var onClose: () -> Void
 
@@ -463,6 +466,13 @@ struct WebSelectionPopover: View {
                     if showNoteInput { onBeginNote() }
                 }
                 .accessibilityIdentifier("webSelectionPopover.addNote")
+                #if os(macOS)
+                DictionaryLookupButton {
+                    onDictionaryLookup()
+                    onClose()
+                }
+                .accessibilityIdentifier("webSelectionPopover.dictionaryLookup")
+                #endif
                 AskAiButton {
                     // Same ordering trap as the swatches: onClose drops both the
                     // live selection and the pinned draft, and the reference is
@@ -513,6 +523,31 @@ struct WebSelectionPopover: View {
         onClose()
     }
 }
+
+#if os(macOS)
+private struct DictionaryLookupButton: View {
+    let action: () -> Void
+
+    @Environment(\.palette) private var palette
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "book.closed")
+                .font(.system(size: 14))
+                .foregroundStyle(hovering ? palette.foreground : palette.mutedForeground)
+                .frame(width: 24, height: 24)
+                .background(hovering ? palette.accent : .clear)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Look Up in Dictionary")
+        .accessibilityLabel("Look Up in Dictionary")
+    }
+}
+#endif
 
 private struct SwatchButton: View {
     let color: HighlightColor
