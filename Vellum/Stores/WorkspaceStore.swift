@@ -95,7 +95,12 @@ final class WorkspaceStore {
 
     var sidebarOpen = true
     var sidebarTab: SidebarTab = .annotations
-    enum SidebarTab: Sendable, CaseIterable, Hashable { case annotations, ai, scratchpad }
+    enum SidebarTab: Sendable, CaseIterable, Hashable {
+        case annotations, ai, scratchpad
+        #if os(macOS)
+        case browser
+        #endif
+    }
 
     // MARK: Inspector column width
 
@@ -142,7 +147,7 @@ final class WorkspaceStore {
 
     /// Selects an inspector panel and makes sure it is actually on screen.
     ///
-    /// The ⌥⌘1/2/3 shortcuts route here rather than assigning `sidebarTab`
+    /// The numbered inspector shortcuts route here rather than assigning `sidebarTab`
     /// directly: selecting a panel in a closed inspector would change nothing
     /// the user can see, so choosing one from the keyboard has to open the
     /// column too. Reveal only — it never closes an inspector that is already
