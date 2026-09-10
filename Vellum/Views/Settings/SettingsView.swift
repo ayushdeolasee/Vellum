@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if os(iOS)
+let settingsBottomNavigationClearance: CGFloat = 96
+#endif
+
 /// App settings window (⌘, / Vellum ▸ Settings…). A durable macOS preferences
 /// scene: a toolbar-style TabView whose tabs hold real, already-wired settings —
 /// General (appearance), Reading (sidebar text size), Annotations (default
@@ -212,7 +216,7 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         #if os(iOS)
-        .contentMargins(.bottom, 32, for: .scrollContent)
+        .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
         #else
         .scrollDisabled(true)
         #endif
@@ -330,7 +334,7 @@ private struct ReadingSettingsTab: View {
         }
         .formStyle(.grouped)
         #if os(iOS)
-        .contentMargins(.bottom, 32, for: .scrollContent)
+        .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
         #else
         .scrollDisabled(true)
         #endif
@@ -370,7 +374,7 @@ private struct AnnotationsSettingsTab: View {
         }
         .formStyle(.grouped)
         #if os(iOS)
-        .contentMargins(.bottom, 32, for: .scrollContent)
+        .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
         #else
         .scrollDisabled(true)
         #endif
@@ -489,7 +493,7 @@ private struct AiSettingsTab: View {
         }
         .formStyle(.grouped)
         #if os(iOS)
-        .contentMargins(.bottom, 32, for: .scrollContent)
+        .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
         #else
         .scrollDisabled(true)
         #endif
