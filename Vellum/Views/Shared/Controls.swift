@@ -7,7 +7,14 @@ import SwiftUI
 enum IconButtonVariant { case ghost, primary, active }
 enum IconButtonSize {
     case sm, md
-    var side: CGFloat { self == .sm ? 28 : 32 }
+    var surfaceSide: CGFloat { self == .sm ? 28 : 32 }
+    var targetSide: CGFloat {
+        #if os(macOS)
+        surfaceSide
+        #else
+        max(surfaceSide, 44)
+        #endif
+    }
 }
 
 /// A single, consistent square icon button used across the chrome.
@@ -26,11 +33,16 @@ struct IconButton<Icon: View>: View {
     var body: some View {
         let button = Button(action: action) {
             icon()
-                .frame(width: size.side, height: size.side)
+                .frame(width: size.surfaceSide, height: size.surfaceSide)
                 .background(background)
                 .foregroundStyle(foreground)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                .frame(width: size.targetSide, height: size.targetSide)
+                #if os(macOS)
                 .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+                #else
+                .contentShape(Rectangle())
+                #endif
         }
         .buttonStyle(.plain)
         .disabled(disabled)
