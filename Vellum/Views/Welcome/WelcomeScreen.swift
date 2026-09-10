@@ -108,18 +108,11 @@ struct WelcomeScreen: View {
     }
 
     var body: some View {
-        // #70's Home chrome — title, update affordances, settings gear — stays
-        // above BOTH layouts exactly as it did on main. The search revamp
-        // replaces only what used to live below this divider.
-        VStack(spacing: 0) {
-            homeHeader
-            Divider()
-            Group {
-                if showsFirstRun {
-                    firstRunLayout
-                } else {
-                    libraryLayout
-                }
+        Group {
+            if showsFirstRun {
+                firstRunLayout
+            } else {
+                libraryLayout
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -286,49 +279,56 @@ struct WelcomeScreen: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "doc.text")
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(.tint)
-                .frame(width: 44, height: 44)
-                .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+        VStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(.tint)
+                    .frame(width: 44, height: 44)
+                    .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Wordmark(size: 22)
-                Text("Everything you've read, in one place.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.mutedForeground)
+                VStack(alignment: .leading, spacing: 2) {
+                    homeTitle(size: 22)
+                    Text("Everything you've read, in one place.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.mutedForeground)
+                }
+
+                Spacer(minLength: 12)
+                homeActions
             }
 
-            Spacer(minLength: 12)
+            HStack(spacing: 14) {
+                Spacer(minLength: 0)
 
-            TextButton(disabled: appStore.isLoading, action: openDocuments) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14))
-                Text(appStore.isLoading ? "Opening…" : "Open a PDF")
-            }
-            .accessibilityIdentifier("welcome.openPdf")
+                TextButton(disabled: appStore.isLoading, action: openDocuments) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 14))
+                    Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+                }
+                .accessibilityIdentifier("welcome.openPdf")
 
-            TextButton(variant: .secondary, disabled: appStore.isLoading) {
-                NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-            } label: {
-                Image(systemName: "globe")
-                    .font(.system(size: 14))
-                Text("Add Webpage")
-            }
-            .help("Open a webpage by URL (⌘L)")
-            .accessibilityIdentifier("welcome.addWebpage")
+                TextButton(variant: .secondary, disabled: appStore.isLoading) {
+                    NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+                } label: {
+                    Image(systemName: "globe")
+                        .font(.system(size: 14))
+                    Text("Add Webpage")
+                }
+                .help("Open a webpage by URL (⌘L)")
+                .accessibilityIdentifier("welcome.addWebpage")
 
-            // #65's walkthrough entry point. Returning users get the compact
-            // icon form — this header is already dense, and they've seen the
-            // offer before; the first-run hero spells it out as a text link
-            // instead. The two layouts are mutually exclusive, so exactly one
-            // `welcome.walkthrough` is ever on screen.
-            IconButton(help: "A short walkthrough of Vellum's features", action: openWalkthrough) {
-                Image(systemName: "questionmark.circle")
-                    .font(.system(size: 14))
+                // Returning users get the compact icon form; the first-run
+                // hero spells the walkthrough out as a text link instead.
+                IconButton(
+                    help: "A short walkthrough of Vellum's features",
+                    action: openWalkthrough
+                ) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 14))
+                }
+                .accessibilityIdentifier("welcome.walkthrough")
             }
-            .accessibilityIdentifier("welcome.walkthrough")
         }
     }
 
@@ -577,16 +577,10 @@ struct WelcomeScreen: View {
         }
     }
 
-    // MARK: - Home chrome (from #70)
-
-    /// The window's Home bar. Carried over from #70 unchanged: it is the app's
-    /// only settings entry point outside ⌘, so it has to survive the revamp.
-    private var homeHeader: some View {
+    /// Update and settings belong with the page heading instead of in a second
+    /// title bar above it. The first-run hero and library header share this row.
+    private var homeActions: some View {
         HStack(spacing: 8) {
-            Text("Home")
-                .font(.headline)
-                .foregroundStyle(palette.foreground)
-            Spacer()
             Button(action: updateChecker.check) {
                 Label("Check for Updates", systemImage: "arrow.clockwise")
                     .labelStyle(.iconOnly)
@@ -603,9 +597,13 @@ struct WelcomeScreen: View {
             .help("Settings… (⌘,)")
             .accessibilityIdentifier("welcome.settings")
         }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .background(palette.background)
+    }
+
+    private func homeTitle(size: CGFloat) -> some View {
+        Wordmark(size: size)
+            .accessibilityRepresentation {
+                Text("Home").accessibilityAddTraits(.isHeader)
+            }
     }
 
     private func showSettings() {
@@ -752,7 +750,10 @@ struct WelcomeScreen: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: Radius.xxl))
                 .padding(.bottom, 12)
 
-            Wordmark(size: 36)
+            HStack(spacing: 8) {
+                homeTitle(size: 36)
+                homeActions
+            }
 
             Text("A quiet place to read, annotate, and think alongside your documents.")
                 .font(.system(size: 14))
