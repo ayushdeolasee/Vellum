@@ -70,7 +70,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
         APP_DISPLAY_NAME: Vellum
         MARKETING_VERSION: "0.1.1"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
@@ -78,6 +78,9 @@ targets:
         ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
+        INFOPLIST_PREPROCESS: "YES"
+        INFOPLIST_OTHER_PREPROCESSOR_FLAGS: -traditional
+        INFOPLIST_PREPROCESSOR_DEFINITIONS: ICLOUD_CONTAINER_KEY=$(ICLOUD_CONTAINER_IDENTIFIER)
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev

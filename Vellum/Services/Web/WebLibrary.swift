@@ -9,7 +9,7 @@ import Foundation
 
 /// Sidecar record persisted per webpage (`<appData>/web/<key>.json`).
 /// All fields default on decode except `url` (mirrors `#[serde(default)]`).
-struct WebPageRecord: Codable, Sendable {
+struct WebPageRecord: Codable, Equatable, Sendable {
     var url: String
     var title: String?
     var pageCount: Int?
@@ -405,8 +405,11 @@ enum WebLibrary {
         for name in names {
             if name.hasSuffix(".json") {
                 out.insert(name)
-            } else if name.hasPrefix("."), name.hasSuffix(".json.icloud") {
-                out.insert(String(name.dropFirst().dropLast(".icloud".count)))
+            } else if let logical = WebICloud.logicalURL(
+                forPlaceholder: dir.appendingPathComponent(name)),
+                logical.pathExtension == "json"
+            {
+                out.insert(logical.lastPathComponent)
             }
         }
         return out.sorted()
