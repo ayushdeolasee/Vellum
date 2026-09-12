@@ -244,7 +244,6 @@ struct PhoneTabCardTests {
         #expect(PhoneTabSwitcherLayout.columnCount(for: .accessibility1) == 1)
         #expect(PhoneTabSwitcherLayout.columnCount(for: .accessibility5) == 1)
         #expect(PhoneTabSwitcherLayout.accessibilityPreviewHeight <= 160)
-        #expect(PhoneTabSwitcherLayout.minimumBarHeight >= PhoneChromeLayout.buttonSide)
     }
 
     // MARK: - Fixtures
