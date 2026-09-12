@@ -56,8 +56,8 @@ final class SheetPresenceIOSTests: XCTestCase {
     // state, while the async overload inherits the class's isolation.
     override func setUp() async throws {
         try await super.setUp()
-        let scene = Self.foregroundScene
-        window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        let scene = try XCTUnwrap(Self.foregroundScene)
+        window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
         root = UIViewController()
         window.rootViewController = root

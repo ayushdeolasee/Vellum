@@ -270,6 +270,7 @@ struct WebViewerView: View {
                     onHighlight: { color in controller.addHighlight(color: color) },
                     onNote: { content in controller.addSelectionNote(content: content) },
                     onBeginNote: { controller.beginSelectionNote() },
+                    onDictionaryLookup: { controller.lookUpSelection() },
                     onAskAi: { controller.askAiAboutSelection() },
                     onClose: { controller.clearSelection() }
                 )
@@ -732,6 +733,13 @@ final class WebViewerController: NSObject {
             positionData: selection.positionData)
         Task { await annotationStore.addNote(input) }
     }
+
+    #if os(macOS)
+    func lookUpSelection() {
+        guard let selection = anchoringSelection else { return }
+        DictionaryLookup.show(selection.text)
+    }
+    #endif
 
     /// Attach the selected text to the AI composer. The page number is the
     /// content script's virtual page — the same locator the AI's scroll/read

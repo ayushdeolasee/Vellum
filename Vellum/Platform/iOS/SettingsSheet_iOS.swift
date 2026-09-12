@@ -105,7 +105,7 @@ struct MoreSettingsNavigation: View {
                 }
             }
             .formStyle(.grouped)
-            .contentMargins(.bottom, 32, for: .scrollContent)
+            .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
