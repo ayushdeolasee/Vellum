@@ -170,22 +170,50 @@ struct PhoneTabSwitcher_iOS: View {
     /// Count on the leading edge, with the two actions grouped like the reader's
     /// bottom-bar controls.
     private var bottomBar: some View {
-        HStack(spacing: PhoneChromeLayout.podGap) {
-            countText
-                .padding(.horizontal, 14)
-                .frame(height: PhoneChromeLayout.capsuleHeight)
-                .glassEffect(.regular, in: .capsule)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: PhoneChromeLayout.podGap) {
+                countPod.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: PhoneChromeLayout.podGap)
+                actionPod
+            }
+            VStack(alignment: .leading, spacing: PhoneChromeLayout.podGap) {
+                countPod
+                HStack {
+                    Spacer(minLength: 0)
+                    actionPod
+                }
+            }
+        }
+        .padding(.horizontal, PhoneChromeLayout.edgeInset)
+        .padding(.bottom, PhoneChromeLayout.barEdgeGap)
+    }
 
-            Spacer(minLength: PhoneChromeLayout.podGap)
+    private var countPod: some View {
+        countText
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+            .glassEffect(.regular, in: .capsule)
+    }
 
-            GlassToolPod(label: "Tab actions") {
-                newDocumentButton
+    // Unlike the reader's fixed-height pod, this one grows with accessibility
+    // symbols. The safe-area inset reserves its complete measured height.
+    private var actionPod: some View {
+        HStack(spacing: 2) {
+            newDocumentButton
+            if dynamicTypeSize.isAccessibilitySize {
+                compactDoneButton
+            } else {
                 doneButton
             }
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .padding(.horizontal, PhoneChromeLayout.edgeInset)
-        .padding(.bottom, PhoneChromeLayout.barEdgeGap)
+        .padding(.horizontal, 4)
+        .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tab actions")
+        .fixedSize()
     }
 
     private var countText: some View {
@@ -211,6 +239,21 @@ struct PhoneTabSwitcher_iOS: View {
         .accessibilityIdentifier("phone.tabs.done")
     }
 
+    private var compactDoneButton: some View {
+        Button { shell.setSwitcherPresented(false) } label: {
+            Image(systemName: "checkmark")
+                .font(.title3.weight(.semibold))
+                .frame(
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(palette.primary)
+        .accessibilityLabel("Done")
+        .accessibilityIdentifier("phone.tabs.done")
+    }
+
     private var newDocumentButton: some View {
         Button {
             // Home, never `newStartTab()` (D1). A start tab would grow a
@@ -221,8 +264,8 @@ struct PhoneTabSwitcher_iOS: View {
             Image(systemName: "plus")
                 .font(.title3.weight(.medium))
                 .frame(
-                    width: PhoneChromeLayout.buttonSide,
-                    height: PhoneChromeLayout.buttonSide)
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -435,12 +478,14 @@ struct PhoneTabCardView: View {
                 .font(.largeTitle.weight(.light))
                 .foregroundStyle(palette.mutedForeground)
 
-            Text(card.subtitle)
-                .font(.subheadline)
-                .foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
-                .truncationMode(.middle)
+            if !dynamicTypeSize.isAccessibilitySize {
+                Text(card.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
         }
         .padding()
     }
@@ -450,12 +495,12 @@ struct PhoneTabCardView: View {
             Text(card.title)
                 .font(card.isCurrent ? .headline.bold() : .headline)
                 .foregroundStyle(palette.foreground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 .truncationMode(.middle)
             Text(card.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(palette.mutedForeground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.middle)
 
             if let duplicateLabel = card.duplicateLabel {
