@@ -492,6 +492,7 @@
 		B797343BE6D4B6B393106727 /* ReadLaterModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E72CB77832820C619CF16CE /* ReadLaterModelsTests.swift */; };
 		B7A0350349231F39EDFD8A59 /* PdfViewerTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 591147DD4B09255C3446521D /* PdfViewerTypes.swift */; };
 		B861F8FD72248FD16E1562D4 /* AttachmentDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFD2EC2ED5A947809EA139F /* AttachmentDrop.swift */; };
+		B86935749867E512F08FB9C5 /* RuntimeProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74B3FA3EB7B501620A84978 /* RuntimeProfile.swift */; };
 		B888B546956DB756D60DF8A5 /* IntegrationDownloadClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B16BB3DA6BAD63BFC33B328 /* IntegrationDownloadClientTests.swift */; };
 		B91B04DFA338FE74843A4DAE /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
 		B924748ABA2723D2FF65D99C /* StorageSettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB83E31DAAFDC48C15F2F130 /* StorageSettingsTab.swift */; };
@@ -624,6 +625,7 @@
 		EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 89E21441131E7C57CE324E83 /* AppIcon.icns */; };
 		EB84EADC707DE136E349331A /* CaptureIngestion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E885CBA58636B5BAA9935D /* CaptureIngestion.swift */; };
 		EC8E8BEBA004E5F474CB6C2A /* LibraryRowContent_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 656551BD8605C356B7BCA1A1 /* LibraryRowContent_iOS.swift */; };
+		EC924D21D1EF72BBECC0E64E /* RuntimeProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74B3FA3EB7B501620A84978 /* RuntimeProfile.swift */; };
 		ED18A2F8ED331DD39E036B6E /* PhoneTabCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50571ABC2FB2CC45C9E2B4A /* PhoneTabCard.swift */; };
 		ED2A3AAB419D271FB39677F6 /* LiveTabViewerContract_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FDE9E4FAA9229184B3BDC7F /* LiveTabViewerContract_iOS.swift */; };
 		ED7C505CE3E48CE35C600873 /* MathRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */; };
@@ -1041,6 +1043,7 @@
 		D4E6AB46224F2E9D0978B22E /* LiveTabRuntime_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabRuntime_macOS.swift; sourceTree = "<group>"; };
 		D5656DC56874E29C2DCD69B4 /* ReadLaterHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadLaterHTTPClient.swift; sourceTree = "<group>"; };
 		D731F7DD5287488D2021276D /* StickyNoteOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickyNoteOverlay.swift; sourceTree = "<group>"; };
+		D74B3FA3EB7B501620A84978 /* RuntimeProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeProfile.swift; sourceTree = "<group>"; };
 		D7CB0D2C34D6696D7D75D9F0 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		D7F2184C5148E76963CD7389 /* ChromeTapCatcher_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeTapCatcher_iOS.swift; sourceTree = "<group>"; };
 		D82487970E20F6628200C4BE /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
@@ -1524,6 +1527,7 @@
 			children = (
 				45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */,
 				027E09C0BD7A98F4590A5878 /* ContentView.swift */,
+				D74B3FA3EB7B501620A84978 /* RuntimeProfile.swift */,
 				84875506ADE5E9DDF4F20CC4 /* UITestLaunchConfiguration.swift */,
 				723EC058218A6DF8D994CC26 /* UpdateChecker.swift */,
 				4B19F1048CA6DE0E71C521DB /* VellumApp.swift */,
@@ -2317,6 +2321,7 @@
 				8CC7CD580A586D43E33C8594 /* RevealableSecureField.swift in Sources */,
 				F7BECB15704561CDE7FDEAEF /* RevealableSecureField_macOS.swift in Sources */,
 				1B064D24686FC6BD6AF92C04 /* RootShell_iOS.swift in Sources */,
+				EC924D21D1EF72BBECC0E64E /* RuntimeProfile.swift in Sources */,
 				E4CE1738795B94F8EBF84502 /* ScratchOutInk_iOS.swift in Sources */,
 				0140E7EB39BCE9CA91C1D1B4 /* ScratchOutRecognizer.swift in Sources */,
 				E2B8207D7A7660B264FEC83E /* ScratchpadDrop_macOS.swift in Sources */,
@@ -2586,6 +2591,7 @@
 				AD1B694B784E1CEF4F4AAB48 /* RevealableSecureField.swift in Sources */,
 				0AA386A282F4EDB393AF813F /* RevealableSecureField_macOS.swift in Sources */,
 				D17867A0AE9B35DC81EC7EDB /* RootShell_iOS.swift in Sources */,
+				B86935749867E512F08FB9C5 /* RuntimeProfile.swift in Sources */,
 				D4E3F592FB25D9F7BBE0B010 /* ScratchOutInk_iOS.swift in Sources */,
 				13BB407EB986D9510A89DBB9 /* ScratchOutRecognizer.swift in Sources */,
 				D60910465B35CE134EBAF4A5 /* ScratchpadDrop_macOS.swift in Sources */,

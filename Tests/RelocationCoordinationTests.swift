@@ -5,6 +5,43 @@ import Testing
 
 @Suite("Storage relocation — coordinated side")
 struct RelocationCoordinationTests {
+    @Test("Development never discovers or imports the production legacy library")
+    func developmentSkipsProductionLegacyLibrary() async throws {
+        let root = PositionFixtures.scratchDirectory("development-legacy-isolation")
+        defer { PositionFixtures.remove(root) }
+        let profile = RuntimeProfile(bundleIdentifier: "com.ayushdeolasee.vellum.dev")
+        var probes = 0
+        let discovered = WebStorageSettings.legacyMacICloudRoot(profile: profile) {
+            probes += 1
+            return root
+        }
+        #expect(discovered == nil)
+        #expect(probes == 0)
+        #expect(WebStorageSettings.legacyMacICloudRoot(profile: .production) {
+            probes += 1
+            return root
+        } == root)
+        #expect(probes == 1)
+
+        let storeDir = root.appendingPathComponent("local")
+        let destination = WebStorageLayout.pretty(
+            root: root.appendingPathComponent("development"),
+            recordsInRoot: true,
+            localStoreDir: storeDir)
+        let coordinator = StorageCoordinator(
+            storeDir: storeDir,
+            modeProvider: { .icloud },
+            effectiveModeProvider: { .icloud },
+            rootResolver: { Issue.record("Development import resolved storage"); return nil },
+            containerFactory: { FakeSyncedContainer() },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
+        let imported = await WebStorageMigrator.migrateLegacyICloudRoot(
+            root, to: destination, coordinator: coordinator, profile: profile)
+        #expect(!imported)
+        #expect(!FileManager.default.fileExists(atPath: destination.recordsDir.path))
+        await coordinator.stop()
+    }
+
     @Test("Legacy Mac iCloud data imports once and changed source retries")
     func legacyMacICloudImportPreservesSource() async throws {
         let root = PositionFixtures.scratchDirectory("legacy-mac-icloud-import")
@@ -58,7 +95,8 @@ struct RelocationCoordinationTests {
         let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
         let destinationIndexURL = try #require(destination.indexPath)
         let receiptDirectory = destinationIndexURL.deletingLastPathComponent()
             .appendingPathComponent("legacy-imports", isDirectory: true)
@@ -97,7 +135,8 @@ struct RelocationCoordinationTests {
         let repeated = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
 
         #expect(moved)
         #expect(repeated)
@@ -127,7 +166,8 @@ struct RelocationCoordinationTests {
         let changed = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
         let changedImported = try JSONDecoder().decode(
             WebPageRecord.self,
             from: try #require(container.peek(destinationRecordURL)))
@@ -145,7 +185,8 @@ struct RelocationCoordinationTests {
         let staleReplay = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
         let recordAfterStaleReplay = try JSONDecoder().decode(
             WebPageRecord.self,
             from: try #require(container.peek(destinationRecordURL)))
@@ -160,7 +201,8 @@ struct RelocationCoordinationTests {
         let corruptRetry = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
         let recordAfterCorruptRetry = try JSONDecoder().decode(
             WebPageRecord.self,
             from: try #require(container.peek(destinationRecordURL)))
@@ -226,7 +268,8 @@ struct RelocationCoordinationTests {
         let moved = await WebStorageMigrator.migrateLegacyICloudRoot(
             legacyRoot,
             to: destination,
-            coordinator: coordinator)
+            coordinator: coordinator,
+            profile: .production)
 
         #expect(!moved)
         #expect(try await direct.read(sourceURL) == sourceBytes)

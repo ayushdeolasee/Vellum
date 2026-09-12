@@ -111,11 +111,24 @@ enum WebStorageSettings {
         icloudDriveRoot?.appendingPathComponent("Vellum", isDirectory: true)
     }
 
+    /// Resolve lazily so Development never probes the production library.
+    static func legacyMacICloudRoot(
+        profile: RuntimeProfile = .current,
+        lookup: () -> URL?
+    ) -> URL? {
+        guard profile.allowsProductionServices else { return nil }
+        return lookup()
+    }
+
     #if os(macOS)
     /// Vellum 0.1.0 stored its iCloud library in the user's general iCloud
     /// Drive folder. New builds use the fixed app container instead, but must
     /// collect existing data from the old location whenever it is reachable.
     static var legacyMacICloudVellumRoot: URL? {
+        legacyMacICloudRoot { discoverLegacyMacICloudVellumRoot() }
+    }
+
+    private static func discoverLegacyMacICloudVellumRoot() -> URL? {
         let driveRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
                 "Library/Mobile Documents/com~apple~CloudDocs",
@@ -589,8 +602,10 @@ enum WebStorageMigrator {
     static func migrateLegacyICloudRoot(
         _ legacyRoot: URL,
         to destination: WebStorageLayout,
-        coordinator: StorageCoordinator
+        coordinator: StorageCoordinator,
+        profile: RuntimeProfile = .current
     ) async -> Bool {
+        guard profile.allowsProductionServices else { return false }
         let source = WebStorageLayout.pretty(
             root: legacyRoot,
             recordsInRoot: true,
