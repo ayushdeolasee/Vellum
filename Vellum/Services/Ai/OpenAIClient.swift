@@ -20,13 +20,7 @@ final class OpenAIClient {
         }
         // Responses API caching is keyed by prompt_cache_key + prefix, not
         // cache_control parts, so send the fused prompt as a single text part.
-        var content: [[String: Any]] = [["type": "input_text", "text": prompt.joined]]
-        for image in images where !image.base64Data.isEmpty {
-            content.append([
-                "type": "input_image",
-                "image_url": "data:\(image.mediaType);base64,\(image.base64Data)",
-            ])
-        }
+        let content = try Self.inputContent(model: model, prompt: prompt, images: images)
         var input: [[String: Any]] = [["role": "user", "content": content]]
         var actionResults: [String] = []
 
@@ -216,6 +210,29 @@ final class OpenAIClient {
     /// Whether `model` takes a `reasoning` field at all. Everything else rejects
     /// it outright, so the field is omitted for them.
     ///
+    /// o3-mini and its snapshots accept text only, unlike o3 and o4-mini.
+    nonisolated static func isO3Mini(_ model: String) -> Bool {
+        let value = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "o3-mini" || value.hasPrefix("o3-mini-")
+    }
+
+    nonisolated static func inputContent(
+        model: String, prompt: AiUserPrompt, images: [AiPageImageSnapshot]
+    ) throws -> [[String: Any]] {
+        // Also protect a model selection saved before the catalog excluded it.
+        guard !isO3Mini(model) || !images.contains(where: { !$0.base64Data.isEmpty }) else {
+            throw AiClientError.message("This model cannot read images. Choose a different OpenAI model.")
+        }
+        var content: [[String: Any]] = [["type": "input_text", "text": prompt.joined]]
+        for image in images where !image.base64Data.isEmpty {
+            content.append([
+                "type": "input_image",
+                "image_url": "data:\(image.mediaType);base64,\(image.base64Data)",
+            ])
+        }
+        return content
+    }
+
     /// The o-series belongs here as much as the gpt-5 line does: `o1`/`o3`/`o4`
     /// all take a reasoning effort. OpenRouter also routes every `openai/` id
     /// through this table after stripping the provider prefix.

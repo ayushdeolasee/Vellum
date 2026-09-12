@@ -120,7 +120,7 @@ final class OpenAIModelCatalog {
                 of: #"^o(?:[3-9]|[1-9][0-9]+)(?:\D|$)"#,
                 options: .regularExpression
             ) != nil
-        guard isCompatibleFamily else {
+        guard isCompatibleFamily, !OpenAIClient.isO3Mini(value) else {
             return false
         }
         let incompatibleMarkers = [

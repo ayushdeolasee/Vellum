@@ -13,6 +13,8 @@ struct OpenAIModelCatalogTests {
                 ["id": "gpt-4.1"],
                 ["id": "gpt-4o"],
                 ["id": "o3"],
+                ["id": "o3-mini"],
+                ["id": "o3-mini-2025-01-31"],
                 ["id": "gpt-3.5-turbo"],
                 ["id": "gpt-4-turbo"],
                 ["id": "o1-mini"],
@@ -25,6 +27,23 @@ struct OpenAIModelCatalogTests {
         #expect(OpenAIModelCatalog.parse(data) == [
             "gpt-4.1", "gpt-4o", "gpt-5.6-sol", "gpt-6", "o3",
         ])
+    }
+
+    @Test func textOnlyModelsCannotBuildImageBearingRequests() throws {
+        let prompt = AiUserPrompt(stable: "PDF page", volatile: "Describe this image")
+        let images = [AiPageImageSnapshot(pageNumber: 1, base64Data: "aW1hZ2U=", mediaType: "image/png", width: 1, height: 1)]
+        for model in ["o3-mini", "o3-mini-2025-01-31"] {
+            #expect(throws: AiClientError.self) {
+                try OpenAIClient.inputContent(model: model, prompt: prompt, images: images)
+            }
+        }
+        // Retained vision models still send the image, rather than dropping it.
+        for model in ["o3", "o4-mini"] {
+            let content = try OpenAIClient.inputContent(model: model, prompt: prompt, images: images)
+            #expect(content.count == 2)
+            #expect(content[1]["type"] as? String == "input_image")
+            #expect(content[1]["image_url"] as? String == "data:image/png;base64,aW1hZ2U=")
+        }
     }
 
     @Test func malformedResponsesProduceNoModels() {
