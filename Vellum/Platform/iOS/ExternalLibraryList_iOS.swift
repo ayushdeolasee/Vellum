@@ -177,12 +177,7 @@ struct HomeSearchFilterMenu_iOS: View {
     }
 
     var body: some View {
-        Menu(
-            "Search filters",
-            systemImage: hasActiveFilter
-                ? "line.3.horizontal.decrease.circle.fill"
-                : "line.3.horizontal.decrease"
-        ) {
+        Menu {
             if let provider {
                 Picker(provider == .raindrop ? "Folder" : "Location", selection: $collectionID) {
                     Text(provider == .raindrop ? "All folders" : "All locations")
@@ -222,12 +217,20 @@ struct HomeSearchFilterMenu_iOS: View {
                     }
                 }
             }
+        } label: {
+            Label(
+                "Search filters",
+                systemImage: hasActiveFilter
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease"
+            )
+            .labelStyle(.iconOnly)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(hasActiveFilter ? palette.primary : palette.mutedForeground)
+            // Size the rendered label so the entire slot activates the menu.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
-        .labelStyle(.iconOnly)
-        .font(.system(size: 16, weight: .medium))
-        .foregroundStyle(hasActiveFilter ? palette.primary : palette.mutedForeground)
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
         .buttonStyle(.plain)
         .accessibilityValue(hasActiveFilter ? "Filtered" : "No filters applied")
         .accessibilityIdentifier("welcome.searchFilters")

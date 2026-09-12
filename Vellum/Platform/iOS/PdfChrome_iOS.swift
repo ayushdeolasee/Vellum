@@ -264,7 +264,7 @@ struct PdfToolbar_iOS: View {
     }
 
     private var moreMenu: some View {
-        Menu("More actions", systemImage: "ellipsis") {
+        Menu {
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -377,12 +377,15 @@ struct PdfToolbar_iOS: View {
             }
             Divider()
             Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
+        } label: {
+            Label("More actions", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(palette.foreground)
+                // Size the rendered label so the entire slot activates the menu.
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
-        .labelStyle(.iconOnly)
-        .font(.system(size: 18, weight: .medium))
-        .foregroundStyle(palette.foreground)
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {

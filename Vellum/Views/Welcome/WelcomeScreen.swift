@@ -392,12 +392,7 @@ struct WelcomeScreen: View {
     }
 
     private var searchFilterMenu: some View {
-        Menu(
-            "Search filters",
-            systemImage: searchFilterIsActive
-                ? "line.3.horizontal.decrease.circle.fill"
-                : "line.3.horizontal.decrease"
-        ) {
+        Menu {
             if let provider = browsedProvider {
                 providerFilterOptions(for: provider)
             } else {
@@ -420,13 +415,21 @@ struct WelcomeScreen: View {
                 }
                 .pickerStyle(.inline)
             }
+        } label: {
+            Label(
+                "Search filters",
+                systemImage: searchFilterIsActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease"
+            )
+            .labelStyle(.iconOnly)
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(
+                searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
+            // Size the rendered label so the entire slot activates the menu.
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
-        .labelStyle(.iconOnly)
-        .font(.system(size: 14, weight: .medium))
-        .foregroundStyle(
-            searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
