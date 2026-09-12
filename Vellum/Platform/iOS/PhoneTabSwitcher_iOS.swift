@@ -179,19 +179,18 @@ struct PhoneTabSwitcher_iOS: View {
     /// hairline top divider, and the fill carried down through the home
     /// indicator so the grid does not show through beneath the bar.
     private var bottomBar: some View {
-        ZStack {
-            HStack(spacing: 12) {
-                countText
-                Spacer(minLength: 8)
-                doneButton
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                HStack(spacing: 12) {
+                    countText
+                    Spacer(minLength: 8)
+                    newDocumentButton
+                    compactDoneButton
+                }
+            } else {
+                standardBottomBarContent
             }
-
-            // Keep the compact system-style plus at every text size. Its
-            // VoiceOver label carries the full action without turning the
-            // bottom bar into a multi-line panel that covers the cards.
-            newDocumentButton
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
         .padding(.vertical, 4)
         .frame(minHeight: PhoneTabSwitcherLayout.minimumBarHeight)
@@ -201,6 +200,19 @@ struct PhoneTabSwitcher_iOS: View {
                 .frame(height: 0.5)
         }
         .background(palette.surface.ignoresSafeArea(edges: .bottom))
+    }
+
+    private var standardBottomBarContent: some View {
+        ZStack {
+            HStack(spacing: 12) {
+                countText
+                Spacer(minLength: 8)
+                doneButton
+            }
+
+            // Keep the system-style plus centered at standard text sizes.
+            newDocumentButton
+        }
     }
 
     private var countText: some View {
@@ -222,6 +234,23 @@ struct PhoneTabSwitcher_iOS: View {
             .accessibilityIdentifier("phone.tabs.done")
     }
 
+    private var compactDoneButton: some View {
+        Button {
+            shell.setSwitcherPresented(false)
+        } label: {
+            Image(systemName: "checkmark")
+                .font(.title3.weight(.semibold))
+                .frame(
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(palette.primary)
+        .accessibilityLabel("Done")
+        .accessibilityIdentifier("phone.tabs.done")
+    }
+
     private var newDocumentButton: some View {
         Button {
             // Home, never `newStartTab()` (D1). A start tab would grow a
@@ -232,8 +261,8 @@ struct PhoneTabSwitcher_iOS: View {
             Image(systemName: "plus")
                 .font(.title3.weight(.medium))
                 .frame(
-                    width: PhoneChromeLayout.buttonSide,
-                    height: PhoneChromeLayout.buttonSide)
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -446,12 +475,14 @@ struct PhoneTabCardView: View {
                 .font(.largeTitle.weight(.light))
                 .foregroundStyle(palette.mutedForeground)
 
-            Text(card.subtitle)
-                .font(.subheadline)
-                .foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
-                .truncationMode(.middle)
+            if !dynamicTypeSize.isAccessibilitySize {
+                Text(card.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
         }
         .padding()
     }
@@ -461,12 +492,12 @@ struct PhoneTabCardView: View {
             Text(card.title)
                 .font(card.isCurrent ? .headline.bold() : .headline)
                 .foregroundStyle(palette.foreground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 .truncationMode(.middle)
             Text(card.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(palette.mutedForeground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.middle)
 
             if let duplicateLabel = card.duplicateLabel {
