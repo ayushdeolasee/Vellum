@@ -200,6 +200,9 @@ private struct PhoneShellRoot_iOS: View {
             .onChange(of: alwaysShowReaderControls, initial: true) { _, enabled in
                 shell.updateAlwaysShowReaderControls(enabled)
             }
+            .onChange(of: pane.app.mode) { _, mode in
+                if mode != .view { shell.setChrome(true) }
+            }
             .onChange(of: pane.app.findVisible) { _, isVisible in
                 shell.findPresentationChanged(isVisible: isVisible)
             }
@@ -293,7 +296,9 @@ private struct PhoneShellRoot_iOS: View {
                     }))
                 .ignoresSafeArea()
 
-            if shell.readerChromePresented {
+            // Keep the bars mounted so opacity and offset can animate together.
+            // Region capture still removes all reader controls.
+            if pane.app.mode != .snapshotRegion {
                 PhoneReaderChrome_iOS(
                     shell: shell,
                     onOpenFile: { presentImporter() },
