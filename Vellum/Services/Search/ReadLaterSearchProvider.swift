@@ -45,7 +45,7 @@ struct ReadLaterSearchProvider: HomeSearchProvider {
             kind: kind,
             target: .url(url),
             title: item.title,
-            subtitle: item.author.map { "\($0) · \(name)" } ?? name,
+            subtitle: item.author.map { "\(name) · \($0)" } ?? name,
             detail: HomeSearchDateLabel.short(for: item.savedAt, now: now),
             tooltip: url,
             date: item.savedAt,

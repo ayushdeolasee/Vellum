@@ -3,7 +3,7 @@ import Foundation
 /// Reads and atomically replaces one known file in the App Group. In
 /// particular, there is no directory enumeration for the widget to inherit.
 struct VellumWidgetSnapshotStore: Sendable {
-    static let appGroupIdentifier = "group.com.ayushdeolasee.vellum"
+    static var appGroupIdentifier: String { RuntimeProfile.current.appGroupIdentifier }
     static let filename = "widget-snapshot-v1.json"
 
     let fileURL: URL

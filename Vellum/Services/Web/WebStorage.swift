@@ -95,6 +95,7 @@ enum WebStorageSettings {
     static func resolveICloudRoot(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
+        guard RuntimeProfile.current.syncEnabled else { return }
         _ = VellumUbiquityContainerRoot.documentsRoot(
             for: .vellum, environment: environment)
     }

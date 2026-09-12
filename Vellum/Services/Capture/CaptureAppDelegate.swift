@@ -17,7 +17,8 @@ final class CaptureAppDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        guard identifier == CaptureBackgroundSession.identifier else {
+        guard RuntimeProfile.current.syncEnabled,
+              identifier == CaptureBackgroundSession.identifier else {
             completionHandler()
             return
         }
