@@ -747,8 +747,8 @@ private struct ContinueReadingRow_iOS: View {
                     Text(item.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(palette.foreground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .truncationMode(.middle)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
 
                     Group {
                         if dynamicTypeSize.isAccessibilitySize {

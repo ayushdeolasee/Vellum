@@ -97,7 +97,7 @@ struct StorageSettingsTab: View {
         }
         .formStyle(.grouped)
         #if os(iOS)
-        .contentMargins(.bottom, 32, for: .scrollContent)
+        .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
         #endif
         .task {
             refreshSettings()

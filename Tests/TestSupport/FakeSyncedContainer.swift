@@ -98,7 +98,7 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     }
 
     func clearConflict(at url: URL) {
-        lock.withLock { conflictsByURL.removeValue(forKey: url) }
+        lock.withLock { _ = conflictsByURL.removeValue(forKey: url) }
     }
 
     func failNextWrite(with error: SyncedContainerError) {

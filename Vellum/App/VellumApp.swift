@@ -34,12 +34,12 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // before ⌘Q (the 200ms coalesced AI flush, or a detached
                 // page-text flush from the last tab's close) may still be in
                 // flight. Drain those on the terminateLater path — there is no
-                // per-tab metadata/close loop to run — so the final
+                // per-tab position/close loop to run — so the final
                 // conversations.json / cache write always lands. Both awaits are
                 // no-ops when nothing is pending.
                 Task { @MainActor in
                     await workspace.saveNowAfterPendingPositionRecords()
-                    // A tab closed moments ago finishes its metadata write and
+                    // A tab closed moments ago finishes its position write and
                     // session close behind the UI (AppStore.closeTab); it is no
                     // longer in `tabs`, so nothing else here would await it.
                     // Drained via the workspace registry, not per pane: a close
@@ -60,24 +60,15 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             }
             Task { @MainActor in
                 await workspace.saveNowAfterPendingPositionRecords()
-                // Tabs closed moments ago finish their metadata write and
+                // Tabs closed moments ago finish their position write and
                 // session close behind the UI (AppStore.closeTab) and are no
                 // longer in `tabs`, so the loop below would miss them. Drained
                 // via the workspace registry, not per pane: a close that
                 // collapsed its pane left no leaf to ask.
                 await workspace.tabTeardowns.awaitAll()
                 await workspace.flushOpenTabPositions(markClosed: true)
-                for leaf in leaves {
-                    for tab in leaf.app.tabs {
-                        if tab.document?.kind == .pdf {
-                            try? await workspace.sessions.setDocumentMetadata(
-                                sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
-                        }
-                    }
-                }
-                // Metadata rewrites PDFs and changes their validation hashes.
-                // Flush every runtime after those writes (not only the focused
-                // pane's shared handler), then close the backend sessions.
+                // Reading positions are already durable in the position store.
+                // Do not rewrite every PDF just to save its current page.
                 await workspace.flushLivePageTextCaches()
                 for leaf in leaves {
                     for tab in leaf.app.tabs {

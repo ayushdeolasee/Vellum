@@ -83,6 +83,8 @@ targets:
       - target: Vellum
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.tests
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Vellum
@@ -112,6 +114,8 @@ targets:
         embed: true
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum
         MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: "2"
@@ -141,6 +145,8 @@ targets:
       - path: Vellum/Services/Capture/CaptureBackgroundSession.swift
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.share
         PRODUCT_NAME: VellumShare
         MARKETING_VERSION: "0.1.1"
@@ -168,6 +174,8 @@ targets:
       - path: Vellum/Services/Widgets/VellumDeepLink.swift
     settings:
       base:
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.widgets
         PRODUCT_NAME: VellumWidgets
         MARKETING_VERSION: "0.1.1"

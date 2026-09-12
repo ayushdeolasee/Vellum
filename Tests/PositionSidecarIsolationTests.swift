@@ -180,7 +180,7 @@ struct PositionSidecarIsolationTests {
     /// be given that makes it address `records/`.
     @Test("The store's storage adapter cannot address the records directory")
     func storageAdapterCannotAddressTheRecordsDirectory() async throws {
-        try await withScratch { scratch in
+        await withScratch { scratch in
             let storage = FilePositionStorage()
             let file = storage.fileURL(for: PositionFixtures.phone.id)
 
