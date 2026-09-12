@@ -393,59 +393,72 @@ struct WelcomeLibrary_iOS: View {
 
     // MARK: - Results
 
-    private var resultList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    if let link = store.linkSuggestion {
-                        HomeLinkActionRow(
-                            url: link,
-                            isSelected: store.selectedId == HomeSearchStore.linkRowId,
-                            open: { openLink(link) }
-                        )
-                        .id(HomeSearchStore.linkRowId)
-                        .padding(.top, 10)
-                    }
+    /// Use the viewport proposal so narrow panes can shrink below 360 points.
+    private func resultColumns(viewportWidth: CGFloat) -> [GridItem] {
+        let contentWidth = min(
+            HomeLayout.contentMaxWidth, viewportWidth - 2 * HomeLayout.columnPadding)
+        return Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: 12, alignment: .top),
+            count: contentWidth >= 732 ? 2 : 1)
+    }
 
-                    ForEach(store.sections) { group in
-                        Section {
-                            ForEach(group.items) { item in
-                                HomeResultRow(
-                                    item: item,
-                                    isSelected: store.selectedId == item.id,
-                                    open: { open(item) },
-                                    share: shareTarget(for: item),
-                                    rename: actions.renameAction(for: item),
-                                    removals: actions.removalActions(
-                                        for: item, undoManager: undoManager)
-                                )
-                                .id(item.id)
+    private var resultList: some View {
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        if let link = store.linkSuggestion {
+                            HomeLinkActionRow(
+                                url: link,
+                                isSelected: store.selectedId == HomeSearchStore.linkRowId,
+                                open: { openLink(link) }
+                            )
+                            .id(HomeSearchStore.linkRowId)
+                            .padding(.top, 10)
+                        }
+
+                        ForEach(store.sections) { group in
+                            Section {
+                                LazyVGrid(columns: resultColumns(viewportWidth: geometry.size.width), alignment: .leading, spacing: 6) {
+                                    ForEach(group.items) { item in
+                                        HomeResultRow(
+                                            item: item,
+                                            isSelected: store.selectedId == item.id,
+                                            open: { open(item) },
+                                            share: shareTarget(for: item),
+                                            rename: actions.renameAction(for: item),
+                                            removals: actions.removalActions(
+                                                for: item, undoManager: undoManager)
+                                        )
+                                        .id(item.id)
+                                    }
+                                }
+                            } header: {
+                                HomeSectionHeader(section: group.section, count: group.items.count)
                             }
-                        } header: {
-                            HomeSectionHeader(section: group.section, count: group.items.count)
+                        }
+
+                        // A pinned link IS the answer to a pasted URL, so "no
+                        // matches" would be both wrong and unhelpful next to it.
+                        if store.sections.isEmpty, store.linkSuggestion == nil, !store.isLoading {
+                            emptyResults
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 56)
                         }
                     }
-
-                    // A pinned link IS the answer to a pasted URL, so "no
-                    // matches" would be both wrong and unhelpful next to it.
-                    if store.sections.isEmpty, store.linkSuggestion == nil, !store.isLoading {
-                        emptyResults
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 56)
-                    }
+                    .homeContentColumn()
+                    .padding(.bottom, 24)
                 }
-                .homeContentColumn()
-                .padding(.bottom, 24)
-            }
-            .scrollContentBackground(.hidden)
-            // Let a scroll put the software keyboard away instead of trapping
-            // the reader behind it.
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("welcome.results")
-            .onChange(of: store.selectedId) { _, id in
-                guard let id else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(id, anchor: .center)
+                .scrollContentBackground(.hidden)
+                // Let a scroll put the software keyboard away instead of trapping
+                // the reader behind it.
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("welcome.results")
+                .onChange(of: store.selectedId) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
                 }
             }
         }
