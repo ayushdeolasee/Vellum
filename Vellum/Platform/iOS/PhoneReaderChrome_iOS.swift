@@ -3,7 +3,7 @@ import SwiftUI
 
 // The iPhone reader's chrome (#153 P5): two floating glass capsule bars over a
 // full-bleed document, a legibility scrim behind them, and an immersive mode
-// driven by document taps and directional scrolling, with no reveal affordance.
+// driven by deliberate directional scrolling, with no reveal affordance.
 //
 // The iPad's `PdfToolbar_iOS` is a docked row that OWNS a strip of the pane; on
 // a 390pt screen a docked row is a tax paid on every page. So the phone floats
@@ -104,6 +104,7 @@ struct PhoneReaderChrome_iOS: View {
     var onAddWebpage: () -> Void
 
     @Environment(AppStore.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -115,6 +116,7 @@ struct PhoneReaderChrome_iOS: View {
 
             VStack(spacing: 0) {
                 PhoneReaderTopBar(shell: shell)
+                    .offset(y: shell.chromeVisible || reduceMotion ? 0 : -PhoneChromeLayout.slide)
                 // The find bar is a docked row even here: it owns the keyboard
                 // while it is up, and a floating capsule that the keyboard can
                 // cover is not a find bar. It rides with the chrome because
@@ -126,6 +128,7 @@ struct PhoneReaderChrome_iOS: View {
                 Spacer(minLength: 0)
                 PhoneReaderBottomBar(
                     shell: shell, onOpenFile: onOpenFile, onAddWebpage: onAddWebpage)
+                    .offset(y: shell.chromeVisible || reduceMotion ? 0 : PhoneChromeLayout.slide)
             }
             .opacity(shell.chromeVisible ? 1 : 0)
             // Hidden chrome must not eat taps meant for the page, and must not
