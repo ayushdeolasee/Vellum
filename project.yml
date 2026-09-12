@@ -21,6 +21,7 @@ settings:
     DEVELOPMENT_TEAM: 9DCG97VASG
     DEAD_CODE_STRIPPING: "YES"
     TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
+    ICLOUD_CONTAINER_IDENTIFIER: iCloud.com.ayushdeolasee.vellum
 schemes:
   Vellum:
     build:
@@ -65,6 +66,9 @@ targets:
         ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
+        INFOPLIST_PREPROCESS: "YES"
+        INFOPLIST_OTHER_PREPROCESSOR_FLAGS: -traditional
+        INFOPLIST_PREPROCESSOR_DEFINITIONS: ICLOUD_CONTAINER_KEY=$(ICLOUD_CONTAINER_IDENTIFIER)
   VellumTests:
     type: bundle.unit-test
     platform: iOS

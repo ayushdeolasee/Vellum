@@ -28,7 +28,7 @@
 	<string>NSApplication</string>
 	<key>NSUbiquitousContainers</key>
 	<dict>
-		<key>iCloud.com.ayushdeolasee.vellum</key>
+		<key>ICLOUD_CONTAINER_KEY</key>
 		<dict>
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<true/>
