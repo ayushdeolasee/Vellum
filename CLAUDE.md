@@ -6,6 +6,12 @@
 - Keep derived data isolated per worktree. A successful build is not a launch or UI verification; state which level was actually exercised.
 - Before touching iCloud signing or entitlements, check GitHub issue #149. The current free Personal Team deliberately has no iCloud entitlement; do not add one speculatively.
 
+## Development builds and testing
+- Run all local builds, tests, launches, and UI checks with the Debug configuration. Never test through an installed production Vellum app.
+- Build macOS with `xcodebuild -project Vellum.xcodeproj -scheme 'Vellum Mac' -configuration Debug -derivedDataPath <worktree-derived-data> build`.
+- Build or test iPhone/iPad with `xcodebuild -project Vellum.xcodeproj -scheme Vellum -configuration Debug -destination '<simulator-destination>' -derivedDataPath <worktree-derived-data> build|test`.
+- Add `--disable-sync` when launching for UI-only testing. It keeps the app local and skips iCloud, background refresh, capture wake sessions, integration sync, analytics, and update checks.
+
 ## Test isolation and persistent state
 - Tests must never write the user's real preferences, Keychain, document library, or attachment storage. Use `AppDefaults`/`TestEnvironment`, `KeychainStore.withBackend`, and `DocumentDataStore.rootDirectoryOverride` (or the established seam for that subsystem), then restore them in `defer`/teardown on every path.
 - Do not introduce new `UserDefaults.standard` access in app services. It makes tests and UI-test reset state leak into the live app; route app defaults through `AppDefaults`.

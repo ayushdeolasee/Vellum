@@ -15,7 +15,9 @@
     enum ReadLaterBackgroundRefresh {
         /// Must match `BGTaskSchedulerPermittedIdentifiers` in Info-iOS.plist.
         /// A mismatch is a launch-time crash on register, by design.
-        static let identifier = "com.ayushdeolasee.vellum.readlater.refresh"
+        static var identifier: String {
+            RuntimeProfile.current.readLaterBackgroundTaskIdentifier
+        }
 
         /// A floor, not a schedule. iOS decides when (or whether) to run this
         /// based on usage and power; asking for less than an hour just wastes
@@ -28,6 +30,7 @@
         /// check fail.
         @MainActor
         static func register(work: @escaping @MainActor @Sendable () async -> Void) {
+            guard RuntimeProfile.current.syncEnabled else { return }
             // The handler hands off to main-actor stores, so ask BackgroundTasks
             // to invoke it on the main queue instead of its default background queue.
             BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
@@ -43,6 +46,7 @@
         /// and again from inside the handler, because a task that ran is a task
         /// that is no longer scheduled.
         static func schedule(after interval: TimeInterval = earliestInterval) {
+            guard RuntimeProfile.current.syncEnabled else { return }
             let request = BGAppRefreshTaskRequest(identifier: identifier)
             request.earliestBeginDate = Date(timeIntervalSinceNow: interval)
             // Throws on the simulator (no background scheduling) and when the
