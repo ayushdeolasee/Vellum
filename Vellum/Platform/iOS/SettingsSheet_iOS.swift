@@ -30,6 +30,7 @@ struct SettingsSheet_iOS: View {
             // this separate presentation host too.
             .environment(workspace.integrations)
             .environment(workspace.settingsAi)
+            .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .presentationDetents([.large])
     }

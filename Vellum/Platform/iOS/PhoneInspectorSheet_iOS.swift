@@ -79,6 +79,7 @@ struct PhoneInspectorSheet_iOS: View {
             .environment(pane.annotations)
             .environment(pane.ai)
             .environment(pane.scratchpad)
+            .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .environment(\.palette, themeStore.palette)
             .preferredColorScheme(themeStore.colorScheme)
