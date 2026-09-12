@@ -144,13 +144,27 @@ struct InspectorTabSwitcher: View {
     @Binding var selection: WorkspaceStore.SidebarTab
 
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Hovered segment, so an unselected one can preview the selection surface
     /// the way the annotation filter chips and Home rows do. Kept on iPad
     /// because `.onHover` fires for a trackpad or Magic Mouse pointer — it is a
     /// real iPad affordance, not dead macOS code.
     @State private var hovering: WorkspaceStore.SidebarTab?
 
+    @ViewBuilder
     var body: some View {
+#if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            compactMenu
+        } else {
+            sizedSwitcher
+        }
+#else
+        sizedSwitcher
+#endif
+    }
+
+    private var sizedSwitcher: some View {
         GeometryReader { proxy in
             switch InspectorLayout.presentation(for: proxy.size.width) {
             case .fullLabels:
@@ -239,7 +253,8 @@ struct InspectorTabSwitcher: View {
             }
         } label: {
             Label(selection.title, systemImage: selection.systemImage)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: InspectorLayout.switcherHeight)
+                .contentShape(Rectangle())
         }
         // `.borderlessButton` is macOS-only; `.button` + `.plain` is the iOS
         // equivalent that keeps the label from acquiring a bordered chrome.

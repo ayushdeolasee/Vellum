@@ -30,6 +30,7 @@ struct WelcomeLibrary_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
 
@@ -275,7 +276,7 @@ struct WelcomeLibrary_iOS: View {
             } label: {
                 Label("Help", systemImage: "questionmark.circle")
                     .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
+                    .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.help")
@@ -288,13 +289,13 @@ struct WelcomeLibrary_iOS: View {
             } label: {
                 Label("Settings", systemImage: "gearshape")
                     .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
+                    .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.settings")
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
+        .frame(minHeight: 44)
         .background(palette.background)
         .simultaneousGesture(dismissSearchKeyboardTap)
     }
@@ -304,12 +305,12 @@ struct WelcomeLibrary_iOS: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15))
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.mutedForeground)
 
             TextField("Search your library — or paste a link", text: $store.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 15))
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.foreground)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -341,11 +342,17 @@ struct WelcomeLibrary_iOS: View {
                 }
 
             if !store.query.isEmpty {
-                IconButton(help: "Clear search") {
+                Button {
                     _ = store.clearQuery()
-                } icon: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
                 .accessibilityIdentifier("welcome.clearSearch")
             }
 
@@ -358,7 +365,7 @@ struct WelcomeLibrary_iOS: View {
                 sortByName: $externalSortByName)
         }
         .padding(.horizontal, HomeLayout.rowInset)
-        .frame(height: 46)
+        .frame(minHeight: 46)
         .glassEffect(.regular, in: .capsule)
         .overlay {
             // A hairline primary edge on focus, the same "this is current"
