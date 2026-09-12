@@ -405,8 +405,8 @@ final class WorkspaceStore {
             manager.webBackend.storage = webLibraryStorage
         }
         let catalog = OpenRouterCatalog()
-        let openAIModelCatalog = OpenAIModelCatalog()
         let settingsAi = AiStore()
+        let openAIModelCatalog = OpenAIModelCatalog(apiKey: settingsAi.settings.openaiApiKey)
         settingsAi.openRouterCatalog = catalog
         self.settingsAi = settingsAi
         self.openRouterCatalog = catalog

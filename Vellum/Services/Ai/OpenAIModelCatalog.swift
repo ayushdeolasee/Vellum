@@ -15,7 +15,38 @@ final class OpenAIModelCatalog {
     private static let endpoint = URL(string: "https://api.openai.com/v1/models")!
     private var refreshGeneration = 0
 
-    func refresh(apiKey: String, session: URLSession = .shared) async {
+    @ObservationIgnored private var apiKey: String
+    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+
+    init(apiKey: String = "") {
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .vellumAiSettingsChanged, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let key = notification.userInfo?["openaiApiKey"] as? String else { return }
+            MainActor.assumeIsolated {
+                self?.credentialsChanged(key)
+            }
+        }
+    }
+
+    isolated deinit {
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+    }
+
+    private func credentialsChanged(_ apiKey: String) {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key != self.apiKey else { return }
+        self.apiKey = key
+        refreshGeneration &+= 1
+        models = []
+        error = nil
+        isLoading = false
+    }
+
+    func refresh(session: URLSession = .shared) async {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

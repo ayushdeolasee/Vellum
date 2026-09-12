@@ -84,7 +84,7 @@ enum AiPersistence {
 
     static func loadSettings() -> AiSettings {
         let defaults = AiSettings()
-        guard let raw = UserDefaults.standard.string(forKey: settingsKey),
+        guard let raw = AppDefaults.current.string(forKey: settingsKey),
               let data = raw.data(using: .utf8),
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
@@ -181,7 +181,7 @@ enum AiPersistence {
         if opencodeGoWritten { stripped.opencodeGoApiKey = "" }
         guard let data = try? JSONEncoder().encode(stripped),
               let raw = String(data: data, encoding: .utf8) else { return }
-        UserDefaults.standard.set(raw, forKey: settingsKey)
+        AppDefaults.current.set(raw, forKey: settingsKey)
     }
 
     /// Per-document message caches, loaded lazily on first access and

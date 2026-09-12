@@ -219,8 +219,7 @@ struct AiModelSelectorField: View {
             onOpen: {
                 switch aiStore.settings.provider {
                 case .openai:
-                    let key = aiStore.settings.openaiApiKey
-                    Task { await openAIModelCatalog.refresh(apiKey: key) }
+                    Task { await openAIModelCatalog.refresh() }
                 case .openrouter:
                     Task { await openRouterCatalog.refresh() }
                 default:

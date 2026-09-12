@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import XCTest
 @testable import Vellum
 
 struct OpenAIModelCatalogTests {
@@ -32,77 +33,69 @@ struct OpenAIModelCatalogTests {
     }
 }
 
-extension StubbedTransportSuites {
-    @Suite(.serialized)
-    @MainActor
-    struct OpenAIModelCatalogStateTests {
-        @Test func emptyKeyClearsLoadedCatalog() async throws {
-            StubURLProtocol.install { request in
-                (
-                    HTTPURLResponse(
-                        url: request.url!,
-                        statusCode: 200,
-                        httpVersion: nil,
-                        headerFields: nil
-                    )!,
-                    Data(#"{"data":[{"id":"gpt-5"}]}"#.utf8)
-                )
-            }
-            defer { StubURLProtocol.reset() }
-            let catalog = OpenAIModelCatalog()
-
-            await catalog.refresh(apiKey: "key-a", session: StubURLProtocol.session())
-            #expect(catalog.models == ["gpt-5"])
-
-            await catalog.refresh(apiKey: "   ", session: StubURLProtocol.session())
-
-            #expect(catalog.models.isEmpty)
-            #expect(catalog.error == nil)
-            #expect(catalog.isLoading == false)
-        }
-
-        @Test func newCredentialSupersedesInFlightRequest() async {
-            StubURLProtocol.installStreaming { request in
-                let isFirstCredential = request.value(forHTTPHeaderField: "Authorization") == "Bearer key-a"
-                let response = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: isFirstCredential ? 401 : 200,
-                    httpVersion: nil,
-                    headerFields: nil
-                )!
-                let data = isFirstCredential
-                    ? Data()
-                    : Data(#"{"data":[{"id":"gpt-6"}]}"#.utf8)
-                return StubStreamingResponse(
-                    response: response,
-                    chunks: [
-                        StubStreamingChunk(
-                            data,
-                            delay: isFirstCredential ? .milliseconds(50) : nil
-                        ),
+// XCTest runs separately from the Swift Testing suites that override KeychainStore
+// and StubURLProtocol. All stores use a scratch defaults domain and the hosted
+// test process's in-memory keychain; restore its settings before leaving.
+@MainActor
+final class OpenAIModelCatalogStateTests: XCTestCase {
+    nonisolated func testCredentialChangesInvalidateEveryCatalogWithoutReopeningPicker() async throws {
+        let suiteName = "com.vellum.tests.catalog.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        await AppDefaults.withDefaults(defaults) { @MainActor in
+            let original = AiPersistence.loadSettings()
+            defer { AiPersistence.saveSettings(original) }
+            let settingsStore = AiStore()
+            let inspectorStore = AiStore()
+            for editor in [settingsStore, inspectorStore] {
+                for nextKey in ["key-b", "   "] {
+                    var settings = editor.settings
+                    settings.openaiApiKey = "key-a"
+                    editor.setSettings(settings)
+                    let catalogs = [
+                        OpenAIModelCatalog(apiKey: settingsStore.settings.openaiApiKey),
+                        OpenAIModelCatalog(apiKey: inspectorStore.settings.openaiApiKey),
                     ]
-                )
+                    StubURLProtocol.installStreaming { request in
+                        let isOld = request.value(forHTTPHeaderField: "Authorization") == "Bearer key-a"
+                        return StubStreamingResponse(
+                            response: HTTPURLResponse(url: request.url!, statusCode: 200,
+                                                      httpVersion: nil, headerFields: nil)!,
+                            chunks: [StubStreamingChunk(
+                                Data((isOld ? #"{"data":[{"id":"gpt-5"}]}"#
+                                      : #"{"data":[{"id":"gpt-6"}]}"#).utf8),
+                                delay: .milliseconds(50))])
+                    }
+                    let session = StubURLProtocol.session()
+                    let requests = catalogs.map { catalog in
+                        Task { await catalog.refresh(session: session) }
+                    }
+                    while !catalogs.allSatisfy({ $0.isLoading }) { await Task.yield() }
+                    settings.openaiApiKey = nextKey
+                    editor.setSettings(settings)
+                    XCTAssertEqual(settingsStore.settings.openaiApiKey, nextKey.trimmingCharacters(in: .whitespacesAndNewlines))
+                    XCTAssertEqual(inspectorStore.settings.openaiApiKey, nextKey.trimmingCharacters(in: .whitespacesAndNewlines))
+                    for catalog in catalogs {
+                        XCTAssertTrue(catalog.models.isEmpty)
+                        XCTAssertFalse(catalog.isLoading)
+                    }
+                    // Let successful old responses finish without starting another refresh.
+                    for request in requests { await request.value }
+                    for catalog in catalogs {
+                        XCTAssertTrue(catalog.models.isEmpty)
+                        XCTAssertNil(catalog.error)
+                        XCTAssertFalse(catalog.isLoading)
+                        await catalog.refresh(session: session)
+                        XCTAssertEqual(catalog.models, nextKey == "key-b" ? ["gpt-6"] : [])
+                    }
+                    // Clear already-loaded models synchronously as well.
+                    settings.openaiApiKey = ""
+                    editor.setSettings(settings)
+                    XCTAssertTrue(catalogs.allSatisfy { $0.models.isEmpty })
+                    session.invalidateAndCancel()
+                    StubURLProtocol.reset()
+                }
             }
-            defer { StubURLProtocol.reset() }
-            let session = StubURLProtocol.session()
-            let catalog = OpenAIModelCatalog()
-
-            let firstRefresh = Task {
-                await catalog.refresh(apiKey: "key-a", session: session)
-            }
-            while catalog.isLoading == false {
-                await Task.yield()
-            }
-
-            let secondRefresh = Task {
-                await catalog.refresh(apiKey: "key-b", session: session)
-            }
-            await secondRefresh.value
-            await firstRefresh.value
-
-            #expect(catalog.models == ["gpt-6"])
-            #expect(catalog.error == nil)
-            #expect(catalog.isLoading == false)
         }
     }
 }
