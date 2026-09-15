@@ -11,8 +11,6 @@ import UniformTypeIdentifiers
 
 struct PdfToolbar_iOS: View {
     var ink: InkController_iOS
-    var onOpenFile: () -> Void
-    var onAddWebpage: () -> Void
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
@@ -23,7 +21,6 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
-    @State private var showSettings = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -213,11 +210,6 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text("Enter a page number (1–\(appStore.numPages)).")
         }
-        // Extracted to `SettingsSheet_iOS` so this and Home's gear button
-        // present the identical sheet — including the environment injections a
-        // `.sheet` does not reliably inherit across the UIHostingController
-        // boundary — and cannot drift apart.
-        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -298,8 +290,6 @@ struct PdfToolbar_iOS: View {
                 }
                 Divider()
             }
-            Button(action: onOpenFile) { Label("Open File…", systemImage: "folder") }
-            Button(action: onAddWebpage) { Label("Add Webpage…", systemImage: "globe") }
             if !isWeb {
                 Button {
                     if let id = appStore.activeTabId {
@@ -375,8 +365,6 @@ struct PdfToolbar_iOS: View {
                 Divider()
                 MoveToCollectionMenu(item: item, integrations: integrations)
             }
-            Divider()
-            Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
         } label: {
             Label("More actions", systemImage: "ellipsis")
                 .labelStyle(.iconOnly)
