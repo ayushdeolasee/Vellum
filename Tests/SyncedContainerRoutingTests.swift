@@ -97,7 +97,7 @@ struct SyncedContainerRoutingTests {
     func identifierIsALiteral() {
         let derivedFromTestBundle = "iCloud.\(Bundle(for: TestBundleAnchor.self).bundleIdentifier ?? "")"
 
-        #expect(SyncedContainerIdentifier.vellum.rawValue == "iCloud.com.ayushdeolasee.vellum")
+        #expect(SyncedContainerIdentifier.vellum.rawValue == "iCloud.com.ayushdeolasee.vellum.dev")
         #expect(SyncedContainerIdentifier.vellum.rawValue.hasPrefix("iCloud."))
         #expect(SyncedContainerIdentifier.vellum.rawValue != derivedFromTestBundle)
     }

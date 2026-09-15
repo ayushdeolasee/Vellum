@@ -6,6 +6,12 @@ struct AiPromptParameters {
     var latestUserRequest: String
 }
 
+enum AiQuizScope {
+    case currentPage(Int)
+    case attachedMaterial
+    case document
+}
+
 /// The native-tool user prompt split into a cacheable prefix and a per-message
 /// tail (PR A.5). Providers that place an Anthropic-style `cache_control`
 /// breakpoint (OpenRouter, OpenCode Zen) send `stable` and `volatile` as
@@ -37,6 +43,20 @@ enum AiPrompts {
 
     static func nativeSystemPrompt() throws -> String {
         try loadTemplate(named: "tool-mode-native")
+    }
+
+    /// Short, user-visible requests sent by the built-in quiz menu. The system
+    /// prompt owns the teaching behaviour so typed requests such as "quiz me on
+    /// chapter 3" and menu-started quizzes follow the same rules.
+    static func quizRequest(for scope: AiQuizScope) -> String {
+        switch scope {
+        case .currentPage(let page):
+            return "Quiz me on page \(page). Ask one question at a time."
+        case .attachedMaterial:
+            return "Quiz me on the attached material. Ask one question at a time."
+        case .document:
+            return "Quiz me on this document. Ask one question at a time."
+        }
     }
 
     /// Stable-first ordering (Document Context → Recent Conversation → Latest

@@ -9,7 +9,7 @@ import Foundation
 /// routing them through iCloud would put an unsynced-yet, half-uploaded file in
 /// the path of a share sheet that has 200ms to finish.
 struct CaptureInboxLayout: Sendable, Equatable {
-    static let appGroupIdentifier = "group.com.ayushdeolasee.vellum"
+    static var appGroupIdentifier: String { RuntimeProfile.current.appGroupIdentifier }
 
     nonisolated(unsafe) static var containerOverride: URL?
 

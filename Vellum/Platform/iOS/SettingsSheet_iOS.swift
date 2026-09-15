@@ -30,6 +30,7 @@ struct SettingsSheet_iOS: View {
             // this separate presentation host too.
             .environment(workspace.integrations)
             .environment(workspace.settingsAi)
+            .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .presentationDetents([.large])
     }
@@ -105,7 +106,7 @@ struct MoreSettingsNavigation: View {
                 }
             }
             .formStyle(.grouped)
-            .contentMargins(.bottom, 32, for: .scrollContent)
+            .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

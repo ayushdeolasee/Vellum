@@ -218,16 +218,20 @@ struct HomeSearchFilterMenu_iOS: View {
                 }
             }
         } label: {
-            Image(systemName: hasActiveFilter
-                ? "line.3.horizontal.decrease.circle.fill"
-                : "line.3.horizontal.decrease")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(hasActiveFilter ? palette.primary : palette.mutedForeground)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+            Label(
+                "Search filters",
+                systemImage: hasActiveFilter
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease"
+            )
+            .labelStyle(.iconOnly)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(hasActiveFilter ? palette.primary : palette.mutedForeground)
+            // Size the rendered label so the entire slot activates the menu.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Search filters")
         .accessibilityValue(hasActiveFilter ? "Filtered" : "No filters applied")
         .accessibilityIdentifier("welcome.searchFilters")
     }

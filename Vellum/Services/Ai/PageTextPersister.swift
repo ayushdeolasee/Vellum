@@ -23,11 +23,12 @@ final class PageTextPersister {
     private var pages: [Int: String]
     private var dirty = false
     private var newSinceFlush = 0
-    /// Flush every N newly extracted pages (≈ one write per 0.8s at the walk's
-    /// 16ms/page pacing).
-    private let flushThreshold = 50
+    /// Checkpoint disposable text every 256 new pages. Re-encoding the growing
+    /// cache every 50 pages amplified disk writes on long documents. Tab pause,
+    /// completion and quit still flush immediately through the same barriers.
+    private let flushThreshold = 256
     /// The in-flight threshold flush, kept so `flush()` is a real completion
-    /// barrier: without it, a quit right after page 50 would see `dirty ==
+    /// barrier: without it, a quit right after a checkpoint would see `dirty ==
     /// false` and return while the cache write is still pending.
     private var flushTask: Task<Void, Never>?
 
@@ -76,10 +77,12 @@ final class PageTextPersister {
 
     /// Fire-and-forget flush for a persister being dropped (its controller is
     /// resetting). Registered so `awaitInFlightFlushes` can act as the quit
-    /// barrier for writes no controller owns anymore.
-    func flushDetached() {
+    /// barrier for writes no controller owns anymore. A cancelled producer can
+    /// still be finishing a page; drain it before taking the final snapshot.
+    func flushDetached(after producer: Task<Void, Never>? = nil) {
         let id = UUID()
         Self.inFlightFlushes[id] = Task {
+            await producer?.value
             await self.flush()
             Self.inFlightFlushes[id] = nil
         }

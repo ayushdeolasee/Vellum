@@ -38,10 +38,6 @@ enum PhoneTabSwitcherLayout {
     /// actually needs.
     static let closeDisc: CGFloat = 24
 
-    /// Minimum height of the opaque bottom bar, excluding the home indicator's
-    /// inset. It grows when Dynamic Type needs a second row.
-    static let minimumBarHeight: CGFloat = 52
-
     static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
         dynamicTypeSize.isAccessibilitySize ? 1 : 2
     }
@@ -62,11 +58,9 @@ enum PhoneTabSwitcherLayout {
 /// `existingLiveTabRuntime(for:)` plus `residency.isResident(tabId:)` — both
 /// pure reads. Only visible cards allocate their bounded thumbnail bitmap.
 ///
-/// **The bar is opaque, not glass.** Every other floating surface on the phone
-/// is a glass capsule over a document, because there is a document under it
-/// worth seeing. Here the thing underneath is a scrolling grid of cards, and
-/// glass over it would blur the cards into the control that acts on them. So:
-/// `palette.surface`, a hairline divider, and the bottom safe area filled.
+/// The bottom controls use the same glass pods as the reader chrome so moving
+/// between the reader and its tab switcher does not introduce a second visual
+/// language.
 struct PhoneTabSwitcher_iOS: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -130,10 +124,8 @@ struct PhoneTabSwitcher_iOS: View {
         .overlay { if cards.isEmpty { emptyState } }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well.ignoresSafeArea())
-        // The bar is an inset rather than an overlay so the last row of cards
-        // can be scrolled clear of it. With an overlay, the bottom two cards
-        // would sit under an opaque bar with no way to reach their close
-        // buttons.
+        // The controls are an inset rather than an overlay so the last row of
+        // cards can be scrolled clear of them.
         .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
         .environment(\.palette, palette)
         .preferredColorScheme(themeStore.colorScheme)
@@ -175,51 +167,91 @@ struct PhoneTabSwitcher_iOS: View {
 
     // MARK: - Chrome
 
-    /// Count, new, done. No glass (see the type comment): `palette.surface`, a
-    /// hairline top divider, and the fill carried down through the home
-    /// indicator so the grid does not show through beneath the bar.
+    /// Count on the leading edge, with the two actions grouped like the reader's
+    /// bottom-bar controls.
     private var bottomBar: some View {
-        ZStack {
-            HStack(spacing: 12) {
-                countText
-                Spacer(minLength: 8)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: PhoneChromeLayout.podGap) {
+                countPod.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: PhoneChromeLayout.podGap)
+                actionPod
+            }
+            VStack(alignment: .leading, spacing: PhoneChromeLayout.podGap) {
+                countPod
+                HStack {
+                    Spacer(minLength: 0)
+                    actionPod
+                }
+            }
+        }
+        .padding(.horizontal, PhoneChromeLayout.edgeInset)
+        .padding(.bottom, PhoneChromeLayout.barEdgeGap)
+    }
+
+    private var countPod: some View {
+        countText
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+            .glassEffect(.regular, in: .capsule)
+    }
+
+    // Unlike the reader's fixed-height pod, this one grows with accessibility
+    // symbols. The safe-area inset reserves its complete measured height.
+    private var actionPod: some View {
+        HStack(spacing: 2) {
+            newDocumentButton
+            if dynamicTypeSize.isAccessibilitySize {
+                compactDoneButton
+            } else {
                 doneButton
             }
-
-            // Keep the compact system-style plus at every text size. Its
-            // VoiceOver label carries the full action without turning the
-            // bottom bar into a multi-line panel that covers the cards.
-            newDocumentButton
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
-        .padding(.vertical, 4)
-        .frame(minHeight: PhoneTabSwitcherLayout.minimumBarHeight)
-        .background(alignment: .top) {
-            Rectangle()
-                .fill(palette.border)
-                .frame(height: 0.5)
-        }
-        .background(palette.surface.ignoresSafeArea(edges: .bottom))
+        .padding(.horizontal, 4)
+        .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tab actions")
+        .fixedSize()
     }
 
     private var countText: some View {
         Text(countLabel)
-            .font(.subheadline)
+            .font(.subheadline.weight(.medium))
             .monospacedDigit()
-            .foregroundStyle(palette.mutedForeground)
+            .foregroundStyle(palette.foreground)
             .accessibilityIdentifier("phone.tabs.count")
     }
 
     private var doneButton: some View {
-        Button("Done") { shell.setSwitcherPresented(false) }
-            .font(.body.bold())
-            .foregroundStyle(palette.primary)
-            .frame(
-                minWidth: PhoneChromeLayout.buttonSide,
-                minHeight: PhoneChromeLayout.buttonSide)
-            .contentShape(Rectangle())
-            .accessibilityIdentifier("phone.tabs.done")
+        Button { shell.setSwitcherPresented(false) } label: {
+            Text("Done")
+                .font(.body.bold())
+                .foregroundStyle(palette.primary)
+                .padding(.horizontal, 8)
+                .frame(
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("phone.tabs.done")
+    }
+
+    private var compactDoneButton: some View {
+        Button { shell.setSwitcherPresented(false) } label: {
+            Image(systemName: "checkmark")
+                .font(.title3.weight(.semibold))
+                .frame(
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(palette.primary)
+        .accessibilityLabel("Done")
+        .accessibilityIdentifier("phone.tabs.done")
     }
 
     private var newDocumentButton: some View {
@@ -232,8 +264,8 @@ struct PhoneTabSwitcher_iOS: View {
             Image(systemName: "plus")
                 .font(.title3.weight(.medium))
                 .frame(
-                    width: PhoneChromeLayout.buttonSide,
-                    height: PhoneChromeLayout.buttonSide)
+                    minWidth: PhoneChromeLayout.buttonSide,
+                    minHeight: PhoneChromeLayout.buttonSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -446,12 +478,14 @@ struct PhoneTabCardView: View {
                 .font(.largeTitle.weight(.light))
                 .foregroundStyle(palette.mutedForeground)
 
-            Text(card.subtitle)
-                .font(.subheadline)
-                .foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
-                .truncationMode(.middle)
+            if !dynamicTypeSize.isAccessibilitySize {
+                Text(card.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
         }
         .padding()
     }
@@ -461,12 +495,12 @@ struct PhoneTabCardView: View {
             Text(card.title)
                 .font(card.isCurrent ? .headline.bold() : .headline)
                 .foregroundStyle(palette.foreground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 .truncationMode(.middle)
             Text(card.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(palette.mutedForeground)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.middle)
 
             if let duplicateLabel = card.duplicateLabel {

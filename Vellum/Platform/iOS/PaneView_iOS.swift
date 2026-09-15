@@ -92,6 +92,7 @@ struct PaneView_iOS: View {
         .environment(pane.ai)
         .environment(pane.scratchpad)
         // Window-global model catalog read by the in-panel AI settings.
+        .environment(workspace.openAIModelCatalog)
         .environment(workspace.openRouterCatalog)
         .background(PaneFocusCatcher_iOS(isActive: workspace.isSplit) {
             if !isFocused { workspace.focus(pane.id) }

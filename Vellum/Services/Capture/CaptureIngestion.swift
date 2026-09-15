@@ -41,6 +41,7 @@ actor CaptureIngestion {
     private let inbox: CaptureInbox
     private let storage: WebLibraryStorage
     private let unreadLedger: CapturedUnreadLedger
+    private let syncEnabled: Bool
     private let fetch: Fetch
     private let snapshot: Snapshot
     private let libraryDidChange: LibraryDidChange
@@ -51,6 +52,7 @@ actor CaptureIngestion {
         layout: CaptureInboxLayout,
         storage: WebLibraryStorage,
         unreadLedger: CapturedUnreadLedger = .shared,
+        syncEnabled: Bool = RuntimeProfile.current.syncEnabled,
         fetch: @escaping Fetch = { url in
             switch try await WebFetch.fetchPage(url) {
             case .html(let html, let finalURL):
@@ -72,6 +74,7 @@ actor CaptureIngestion {
         inbox = CaptureInbox(layout: layout)
         self.storage = storage
         self.unreadLedger = unreadLedger
+        self.syncEnabled = syncEnabled
         self.fetch = fetch
         self.snapshot = snapshot
         self.libraryDidChange = libraryDidChange
@@ -79,6 +82,7 @@ actor CaptureIngestion {
 
     @discardableResult
     func drain() async -> CaptureDrainReport {
+        guard syncEnabled else { return CaptureDrainReport() }
         if let drainTask {
             return await drainTask.value
         }

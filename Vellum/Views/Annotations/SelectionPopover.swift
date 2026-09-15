@@ -1,12 +1,13 @@
 import SwiftUI
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // Selection popover — port of src/components/annotations/SelectionPopover.tsx.
-// 5 color swatches (24px, tooltip "Highlight {Name}"), divider, note button
-// toggling a 256px note-input row (Enter/Add submits trimmed non-empty text →
-// addNote with the selection's position + selected_text; Escape closes).
+// Five compact color swatches plus copy, note, and AI actions. iOS wraps them
+// into two rows of 44pt targets; note input stays a separate 256pt row.
 
 struct SelectionPopover: View {
     let selection: PdfTextSelection
@@ -19,79 +20,30 @@ struct SelectionPopover: View {
     @State private var showNoteInput = false
     @State private var noteText = ""
     @State private var noteButtonHovering = false
+    @State private var dictionaryButtonHovering = false
     @State private var askAiHovering = false
     @FocusState private var noteFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 4) {
+            #if os(iOS)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(44), spacing: 0), count: 5),
+                alignment: .leading,
+                spacing: 0
+            ) {
+                controlItems
+            }
+            .frame(width: 220)
+            .padding(4)
+            .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            #else
             HStack(spacing: 4) {
-                ForEach(HIGHLIGHT_COLORS) { color in
-                    HighlightSwatchButton(
-                        color: color,
-                        size: 24,
-                        helpText: "Highlight \(color.name)"
-                    ) {
-                        handleHighlight(color.value)
-                    }
-                }
-
-                Rectangle()
-                    .fill(.quaternary)
-                    .frame(width: 1, height: 20)
-                    .padding(.horizontal, 4)
-
-                #if os(iOS)
-                // The system callout is suppressed on iPad (it collided with
-                // this popover), so copy lives here instead.
-                Button {
-                    UIPasteboard.general.string = selection.text
-                    onClose()
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(.secondary)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Copy")
-                .accessibilityIdentifier("selectionPopover.copy")
-                #endif
-
-                Button {
-                    showNoteInput.toggle()
-                } label: {
-                    Image(systemName: "plus.bubble")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
-                        .clipShape(Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .onHover { noteButtonHovering = $0 }
-                .help("Add note")
-                .accessibilityLabel("Add note")
-                .accessibilityIdentifier("selectionPopover.addNote")
-
-                Button(action: handleAskAi) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
-                        .clipShape(Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .onHover { askAiHovering = $0 }
-                .help("Ask AI about this")
-                .accessibilityLabel("Ask AI about this")
-                .accessibilityIdentifier("selectionPopover.askAi")
+                controlItems
             }
             .padding(6)
             .darkGlassSurface(in: .capsule)
+            #endif
 
             if showNoteInput {
                 HStack(spacing: 6) {
@@ -114,6 +66,105 @@ struct SelectionPopover: View {
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
+    }
+
+    @ViewBuilder
+    private var controlItems: some View {
+        ForEach(HIGHLIGHT_COLORS) { color in
+            HighlightSwatchButton(
+                color: color,
+                size: 24,
+                helpText: "Highlight \(color.name)"
+            ) {
+                handleHighlight(color.value)
+            }
+        }
+
+        #if os(macOS)
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
+        #else
+        // The system callout is suppressed on iPad (it collided with this
+        // popover), so copy lives here instead.
+        Button {
+            UIPasteboard.general.string = selection.text
+            onClose()
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy")
+        .accessibilityIdentifier("selectionPopover.copy")
+        #endif
+
+        Button {
+            showNoteInput.toggle()
+        } label: {
+            Image(systemName: "plus.bubble")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(noteButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(noteButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Circle())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .onHover { noteButtonHovering = $0 }
+        .help("Add note")
+        .accessibilityLabel("Add note")
+        .accessibilityIdentifier("selectionPopover.addNote")
+
+        #if os(macOS)
+        Button {
+            DictionaryLookup.show(selection.text)
+            onClose()
+        } label: {
+            Image(systemName: "book.closed")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(dictionaryButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(dictionaryButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { dictionaryButtonHovering = $0 }
+        .help("Look Up in Dictionary")
+        .accessibilityLabel("Look Up in Dictionary")
+        .accessibilityIdentifier("selectionPopover.dictionaryLookup")
+        #endif
+
+        Button(action: handleAskAi) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(askAiHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(askAiHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Circle())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .onHover { askAiHovering = $0 }
+        .help("Ask AI about this")
+        .accessibilityLabel("Ask AI about this")
+        .accessibilityIdentifier("selectionPopover.askAi")
     }
 
     /// Attach the selected text to the AI composer as a `.selection` reference
@@ -156,6 +207,23 @@ struct SelectionPopover: View {
         }
     }
 }
+
+#if os(macOS)
+@MainActor
+enum DictionaryLookup {
+    static func show(_ selection: String) {
+        let text = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let contentView = window.contentView
+        else { return }
+
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let viewPoint = contentView.convert(windowPoint, from: nil)
+        contentView.showDefinition(for: NSAttributedString(string: text), at: viewPoint)
+    }
+}
+#endif
 
 // HighlightSwatchButton moved to Views/Annotations/HighlightSwatchButton.swift
 // (cross-platform) so the shared AnnotationSidebar can use it on iPad.
