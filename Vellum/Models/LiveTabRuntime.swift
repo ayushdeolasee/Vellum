@@ -28,6 +28,9 @@ final class LiveTabRuntime {
     }
 
     let tabId: String
+    /// Workspace-owned barrier for flushes that outlive eviction/close. Tests
+    /// that construct a standalone runtime may omit it.
+    @ObservationIgnored private let teardownRegistry: TabTeardownRegistry?
 
     /// The tab's PDF controller. It lives here rather than in the viewer's
     /// `@State` so the controller — and the `PDFView` it retains — outlives any
@@ -40,6 +43,11 @@ final class LiveTabRuntime {
     /// remount.
     var webController: WebViewerController_iOS
     private let webLibraryStorage: WebLibraryStorage
+
+    /// Apple Pencil ink for the retained webpage. It must share the tab's
+    /// lifetime with `webController`: a warm remount reparents both the
+    /// WKWebView and its overlay without reloading the sidecar.
+    var webInk = WebInkController_iOS()
 
     /// The pane used to own one `InkController_iOS` (registered in
     /// `InkRegistry_iOS` by pane id). That was correct while exactly one tab per
@@ -117,9 +125,11 @@ final class LiveTabRuntime {
 
     init(
         tabId: String,
+        teardownRegistry: TabTeardownRegistry? = nil,
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
         self.tabId = tabId
+        self.teardownRegistry = teardownRegistry
         self.webLibraryStorage = webLibraryStorage
         self.webController = WebViewerController_iOS(storage: webLibraryStorage)
     }
@@ -181,9 +191,23 @@ final class LiveTabRuntime {
         // here). Hold the controller alive until its flush lands, the same way
         // the web side holds itself open for a pending auto-archive.
         let pendingInk = ink
-        Task { @MainActor in
-            await pendingInk.flushPendingInkAndWait()
-            withExtendedLifetime(pendingInk) {}
+        let pendingWebInk = webInk
+        pendingWebInk.detachOverlay()
+        if let teardownRegistry {
+            teardownRegistry.registerReleaseFlush {
+                await pendingInk.flushPendingInkAndWait()
+                let webInkSucceeded = await pendingWebInk.flushPendingInkAndReportSuccess()
+                withExtendedLifetime(pendingInk) {}
+                withExtendedLifetime(pendingWebInk) {}
+                return webInkSucceeded
+            }
+        } else {
+            Task { @MainActor in
+                await pendingInk.flushPendingInkAndWait()
+                await pendingWebInk.flushPendingInkAndWait()
+                withExtendedLifetime(pendingInk) {}
+                withExtendedLifetime(pendingWebInk) {}
+            }
         }
         pdfController.flushAndDropPersister()
         pdfController.reset()
@@ -194,6 +218,7 @@ final class LiveTabRuntime {
         pdfController = PdfViewerControlleriOS()
         webController = WebViewerController_iOS(storage: webLibraryStorage)
         ink = InkController_iOS()
+        webInk = WebInkController_iOS()
         pdfLoadState = .idle
         preparedDocument = nil
         pdfByteCount = 0

@@ -555,7 +555,9 @@ struct PdfKitView_iOS: UIViewRepresentable {
             let point = gesture.location(in: view)
             switch gesture.state {
             case .began:
-                if !controller.beginPencilTextHighlight(atTopLeft: point) {
+                let translation = gesture.translation(in: view)
+                let start = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+                if !controller.beginPencilTextHighlight(atTopLeft: start) {
                     gesture.isEnabled = false
                     gesture.isEnabled = true
                 }
@@ -563,7 +565,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
                 controller.updatePencilTextHighlight(atTopLeft: point)
             case .ended:
                 controller.updatePencilTextHighlight(atTopLeft: point)
-                controller.finishPencilTextHighlight(color: ink.textHighlightColorHex)
+                controller.finishPencilTextHighlight()
             case .cancelled, .failed:
                 controller.cancelPencilTextHighlight()
             default:

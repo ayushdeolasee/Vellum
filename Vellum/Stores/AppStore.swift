@@ -40,9 +40,22 @@ final class TabTeardownRegistry {
     }
 
     private var entries: [String: Entry] = [:]
+    /// Flushes started when an evicted/closed runtime drops the controllers
+    /// that owned debounced Pencil ink. They are separate from document-path
+    /// teardowns because they do not rewrite the document file and therefore
+    /// do not participate in reopen path exclusion.
+    private struct ReleaseFlush {
+        let operation: @MainActor () async -> Bool
+        var task: Task<Bool, Never>?
+    }
+
+    /// A failed release flush stays here with no active task. The next
+    /// background/termination barrier starts one new attempt; one invocation of
+    /// `awaitAll` never retries the same failed operation in a tight loop.
+    private var releaseFlushes: [UUID: ReleaseFlush] = [:]
 
     /// True when no teardown is pending.
-    var isEmpty: Bool { entries.isEmpty }
+    var isEmpty: Bool { entries.isEmpty && releaseFlushes.isEmpty }
 
     func register(tabId: String, document: DocumentInfo, task: Task<Void, Never>) {
         entries[tabId] = Entry(
@@ -56,14 +69,67 @@ final class TabTeardownRegistry {
         entries[tabId] = nil
     }
 
-    /// Await every pending teardown. The scene-background flush drains this so
+    /// Start and retain a runtime-release flush until it finishes. The
+    /// workspace background barrier drains this same registry, including a
+    /// release registered by a close teardown while `awaitAll()` is suspended.
+    func registerReleaseFlush(_ operation: @escaping @MainActor () async -> Bool) {
+        let id = UUID()
+        releaseFlushes[id] = ReleaseFlush(operation: operation, task: nil)
+        _ = startReleaseFlush(id: id)
+    }
+
+    /// Await every pending teardown and attempt each retained release flush at
+    /// most once. The scene-background flush drains this so
     /// suspending right after closing a tab still persists its reading
     /// position — including a tab whose close collapsed its pane. (macOS drains
     /// the same registry from `applicationShouldTerminate`; iOS has no quit, so
     /// `flushOnBackground` is the equivalent last chance.)
-    func awaitAll() async {
-        for entry in Array(entries.values) {
-            await entry.task.value
+    @discardableResult
+    func awaitAll() async -> Bool {
+        // Drain, don't take a single snapshot: a close teardown can evict its
+        // runtime near the end and register an ink release flush while we are
+        // awaiting that close task.
+        var attemptedReleaseFlushes = Set<UUID>()
+        while true {
+            let teardownTasks = entries.values.map(\.task)
+            let releaseIds = releaseFlushes.keys.filter {
+                attemptedReleaseFlushes.contains($0) == false
+            }
+            guard teardownTasks.isEmpty == false || releaseIds.isEmpty == false else {
+                return releaseFlushes.isEmpty
+            }
+
+            for task in teardownTasks { await task.value }
+            for id in releaseIds {
+                attemptedReleaseFlushes.insert(id)
+                if let task = startReleaseFlush(id: id) {
+                    _ = await task.value
+                }
+            }
+        }
+    }
+
+    private func startReleaseFlush(id: UUID) -> Task<Bool, Never>? {
+        guard var entry = releaseFlushes[id] else { return nil }
+        if let task = entry.task { return task }
+        let operation = entry.operation
+        let task = Task { @MainActor in
+            let succeeded = await operation()
+            finishReleaseFlush(id: id, succeeded: succeeded)
+            return succeeded
+        }
+        entry.task = task
+        releaseFlushes[id] = entry
+        return task
+    }
+
+    private func finishReleaseFlush(id: UUID, succeeded: Bool) {
+        guard var entry = releaseFlushes[id] else { return }
+        if succeeded {
+            releaseFlushes[id] = nil
+        } else {
+            entry.task = nil
+            releaseFlushes[id] = entry
         }
     }
 
