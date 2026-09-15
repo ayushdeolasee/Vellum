@@ -138,7 +138,6 @@ final class PdfViewerController: HighlightResizeControlling {
         // Never silently drop an unflushed persister — flush what it has first
         // (idempotent, a no-op when clean).
         flushAndDropPersister()
-        extractionTask?.cancel()
         extractionTask = nil
         document = nil
         pdfView = nil
@@ -794,21 +793,28 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Stop the background walk before flushing so every page produced before
     /// deactivation is included and no writer races the persisted snapshot.
     func pauseTextExtraction() async {
-        extractionTask?.cancel()
-        extractionTask = nil
+        let task = extractionTask
+        let persister = self.persister
+        task?.cancel()
+        // Keep the handle available to another pause or a resumed walk while
+        // this await yields. Capture the persister before a replacement can
+        // install one for a different document.
+        await task?.value
         await persister?.flush()
     }
 
-    /// Synchronous flush-and-drop that survives `reset()`: the flush runs on
-    /// the captured persister (which owns its own page data), so nil'ing the
-    /// property here can't lose pages. Idempotent — a clean persister flushes
+    /// Synchronously cancel and drop, then drain and flush in the background.
+    /// The flush captures the persister (which owns its own page data), so
+    /// nil'ing the property here can't lose pages. A clean persister flushes
     /// to a no-op. Registered via `flushDetached` so the quit path can await
     /// writes whose controller is already gone (⌘Q right after a tab switch
     /// must not truncate the outgoing document's flush).
     func flushAndDropPersister() {
+        let task = extractionTask
+        task?.cancel()
         guard let persister else { return }
         self.persister = nil
-        persister.flushDetached()
+        persister.flushDetached(after: task)
     }
 
     // MARK: - AI page-text feed (getTextContent pass)
@@ -861,8 +867,8 @@ final class PdfViewerController: HighlightResizeControlling {
     }
 
     func startTextExtraction(data: Data) {
-        extractionTask?.cancel()
-        extractionTask = nil
+        let previous = extractionTask
+        previous?.cancel()
         guard let document, let ai, document.pageCount > 0 else { return }
         let docIdentity = ObjectIdentifier(document)
         let tabId = self.tabId
@@ -870,6 +876,7 @@ final class PdfViewerController: HighlightResizeControlling {
         guard !missingPages.isEmpty else { return }
         let persister = self.persister
         extractionTask = Task.detached(priority: .utility) { [weak self] in
+            await previous?.value
             guard !Task.isCancelled, let copy = PDFDocument(data: data) else { return }
             let walk = PdfExtractionWalkContext(controller: self, copy: copy)
             for pageNumber in missingPages {

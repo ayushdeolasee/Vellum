@@ -286,7 +286,7 @@ struct PdfViewerView: View {
 
     private func deactivate() async {
         await controller.pauseTextExtraction()
-        guard handlersTabId == tabId else { return }
+        guard !Task.isCancelled, handlersTabId == tabId else { return }
         // If another document host is taking over, it owns these shared slots
         // now (or is about to). Clearing blindly here can race after its
         // registration. Home has no replacement viewer, so clear in that case.

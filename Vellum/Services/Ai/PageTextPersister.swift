@@ -77,10 +77,12 @@ final class PageTextPersister {
 
     /// Fire-and-forget flush for a persister being dropped (its controller is
     /// resetting). Registered so `awaitInFlightFlushes` can act as the quit
-    /// barrier for writes no controller owns anymore.
-    func flushDetached() {
+    /// barrier for writes no controller owns anymore. A cancelled producer can
+    /// still be finishing a page; drain it before taking the final snapshot.
+    func flushDetached(after producer: Task<Void, Never>? = nil) {
         let id = UUID()
         Self.inFlightFlushes[id] = Task {
+            await producer?.value
             await self.flush()
             Self.inFlightFlushes[id] = nil
         }
