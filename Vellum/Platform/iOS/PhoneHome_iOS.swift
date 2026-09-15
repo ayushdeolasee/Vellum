@@ -747,8 +747,8 @@ private struct ContinueReadingRow_iOS: View {
                     Text(item.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(palette.foreground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .truncationMode(.middle)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .truncationMode(.tail)
 
                     Group {
                         if dynamicTypeSize.isAccessibilitySize {
@@ -776,7 +776,7 @@ private struct ContinueReadingRow_iOS: View {
                     }
                     .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 }
 
                 Spacer(minLength: 8)

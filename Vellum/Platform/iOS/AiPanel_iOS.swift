@@ -142,6 +142,7 @@ struct AiPanel_iOS: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 4) {
+                quizMenu
                 touchIconButton(
                     system: "gearshape", label: "AI settings", active: settingsOpen
                 ) {
@@ -171,22 +172,59 @@ struct AiPanel_iOS: View {
         registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
     }
 
+    private var quizMenu: some View {
+        Menu {
+            Button("Current page") {
+                startQuiz(.currentPage(appStore.currentPage))
+            }
+            if !aiStore.composerReferences.isEmpty {
+                Button("Attached material") {
+                    startQuiz(.attachedMaterial)
+                }
+            }
+            Button("Whole document") {
+                startQuiz(.document)
+            }
+        } label: {
+            Label("Quiz", systemImage: "brain.head.profile")
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 6)
+                .frame(height: 44)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(appStore.document == nil || aiStore.isThinking)
+        .accessibilityLabel("Start a quiz")
+        .accessibilityHint("Choose a scope to prepare an editable quiz request")
+        .accessibilityIdentifier("aiPanel.quiz")
+    }
+
+    private func startQuiz(_ scope: AiQuizScope) {
+        guard !aiStore.isThinking else { return }
+        let request = AiPrompts.quizRequest(for: scope)
+        input += input.isEmpty ? request : "\n\n\(request)"
+        composerFocused = true
+    }
+
     /// Shown until there is a usable provider credential. On iPad the button
     /// reveals the panel's own inline `AiSettingsPanel` rather than opening a
     /// separate Settings window — that inline panel is the iPad's only
     /// in-context path to the provider/model pickers.
     private var configureAiBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "key")
-                .foregroundStyle(palette.mutedForeground)
-            Text("Configure AI to start chatting.")
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Connect a provider to start chatting.", systemImage: "key")
                 .font(.system(size: 12))
                 .foregroundStyle(palette.mutedForeground)
-            Spacer(minLength: 4)
+                .fixedSize(horizontal: false, vertical: true)
             Button("Configure AI in Settings") { settingsOpen = true }
+                .font(.system(size: 12))
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("aiPanel.configureAi")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(palette.surfaceMuted)
@@ -445,6 +483,11 @@ struct AiPanel_iOS: View {
                     .foregroundStyle(palette.mutedForeground)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Choose Quiz to practice a page, attached material, or the whole document.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -509,19 +552,20 @@ struct AiPanel_iOS: View {
     /// therefore the right answer and does not compete with the bubble's cap —
     /// the two never lay out the same subtree.
     private func toolSummaries(_ summaries: [AiToolSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(summaries) { summary in
+                    AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
             Text("Sources & actions")
                 .font(.caption)
                 .foregroundStyle(palette.mutedForeground)
-                .padding(.horizontal, 4)
-
-            ForEach(summaries) { summary in
-                AiToolSummaryView(summary: summary, onJumpToPage: appStore.goToPage)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sources and actions")
+        .accessibilityIdentifier("aiToolSummaries")
     }
 
     @ViewBuilder
@@ -742,9 +786,9 @@ struct AiPanel_iOS: View {
             composerControls
         }
         .padding(6)
-        .glassEffect(.regular, in: .rect(cornerRadius: Radius.xl))
+        .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.xl))
+        .overlay { RoundedRectangle(cornerRadius: Radius.xl).strokeBorder(palette.borderStrong) }
         .padding(12)
-        .overlay(alignment: .top) { Divider() }
     }
 
     private var composerControls: some View {
@@ -768,10 +812,12 @@ struct AiPanel_iOS: View {
                     perform: handleAttachmentDrop
                 )
 
-            Button("Send message", systemImage: "paperplane.fill", action: submit)
-                .labelStyle(.iconOnly)
-                .font(.system(size: 15))
-                .frame(width: 48, height: 48)
+            Button(action: submit) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Rectangle())
+            }
                 .background(.tint, in: RoundedRectangle(cornerRadius: Radius.lg))
                 .foregroundStyle(palette.primaryForeground)
                 .buttonStyle(.plain)

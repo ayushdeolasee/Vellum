@@ -43,7 +43,7 @@ enum InspectorLayout {
 
     /// The narrowest width the switcher can actually be handed: the column
     /// cannot go below `minimumWidth`, and the switcher is inset inside it.
-    /// `presentation(for:)` must still keep all three destinations laid out
+    /// `presentation(for:)` must still keep every destination laid out
     /// side by side here — see `InspectorTabSwitcherTests`. The `.menu`
     /// fallback below therefore should not be reachable in a normal window; it
     /// is kept only for the case where the host squeezes the column past its
@@ -73,6 +73,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "Annotations"
         case .ai: "AI"
         case .scratchpad: "Scratchpad"
+        #if os(macOS)
+        case .browser: "Browser"
+        #endif
         }
     }
 
@@ -81,6 +84,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "highlighter"
         case .ai: "sparkles"
         case .scratchpad: "note.text"
+        #if os(macOS)
+        case .browser: "globe"
+        #endif
         }
     }
 
@@ -96,6 +102,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "annotations"
         case .ai: "ai"
         case .scratchpad: "scratchpad"
+        #if os(macOS)
+        case .browser: "browser"
+        #endif
         }
     }
 
@@ -112,6 +121,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "1"
         case .ai: "2"
         case .scratchpad: "3"
+        #if os(macOS)
+        case .browser: "4"
+        #endif
         }
     }
 
@@ -122,7 +134,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
     static let shortcutModifiers: EventModifiers = [.command, .option]
 }
 
-/// Responsive navigation for the inspector's three persistent panels.
+/// Responsive navigation for the inspector's persistent panels.
 ///
 /// This intentionally lives inside the inspector instead of the toolbar: the
 /// toolbar may collapse items into an overflow menu at narrow widths, and the
@@ -132,13 +144,27 @@ struct InspectorTabSwitcher: View {
     @Binding var selection: WorkspaceStore.SidebarTab
 
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Hovered segment, so an unselected one can preview the selection surface
     /// the way the annotation filter chips and Home rows do. Kept on iPad
     /// because `.onHover` fires for a trackpad or Magic Mouse pointer — it is a
     /// real iPad affordance, not dead macOS code.
     @State private var hovering: WorkspaceStore.SidebarTab?
 
+    @ViewBuilder
     var body: some View {
+#if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            compactMenu
+        } else {
+            sizedSwitcher
+        }
+#else
+        sizedSwitcher
+#endif
+    }
+
+    private var sizedSwitcher: some View {
         GeometryReader { proxy in
             switch InspectorLayout.presentation(for: proxy.size.width) {
             case .fullLabels:
@@ -227,7 +253,8 @@ struct InspectorTabSwitcher: View {
             }
         } label: {
             Label(selection.title, systemImage: selection.systemImage)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: InspectorLayout.switcherHeight)
+                .contentShape(Rectangle())
         }
         // `.borderlessButton` is macOS-only; `.button` + `.plain` is the iOS
         // equivalent that keeps the label from acquiring a bordered chrome.

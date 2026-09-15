@@ -8,6 +8,18 @@ import PDFKit
 // src/hooks/useTextSelection.ts, src/components/pdf/PdfViewer.tsx and
 // src/lib/highlight-locator.ts. UI lives in PdfViewerView / PdfOverlays.
 
+/// The detached walk exclusively owns its PDF copy. Controller access stays
+/// inside MainActor.run; the weak reference does not keep an evicted tab alive.
+private final class PdfExtractionWalkContext: @unchecked Sendable {
+    weak var controller: PdfViewerController?
+    let copy: PDFDocument
+
+    init(controller: PdfViewerController?, copy: PDFDocument) {
+        self.controller = controller
+        self.copy = copy
+    }
+}
+
 /// In-memory text selection (useTextSelection's TextSelection).
 struct PdfTextSelection {
     var text: String
@@ -814,8 +826,9 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Extract one page's text and publish it to the AI store, the tab runtime
     /// and the persistent cache.
     ///
-    /// The single choke point for `page.string` on this controller: it holds
-    /// `PageTextExtractionGate` for the call, so the background walk, the AI
+    /// On-demand reads use the displayed document on the main actor. Both
+    /// this path and the private background copy hold `PageTextExtractionGate`,
+    /// so the background walk, the AI
     /// context fill and the tool paths can never hand PDFKit two Live Text OCR
     /// requests at once (see PageTextExtractionGate for why that crashes). The
     /// cache re-check happens *inside* the gate, so a page that the other loop
@@ -847,33 +860,53 @@ final class PdfViewerController: HighlightResizeControlling {
         return outcome
     }
 
-    func startTextExtraction() {
+    func startTextExtraction(data: Data) {
         extractionTask?.cancel()
-        guard let document else { return }
-        let pageCount = document.pageCount
-        guard pageCount >= 1 else { return }
-        // Generation guard: a replacement viewer mounts BEFORE this view's
-        // onDisappear cancels the walk, and this controller's `document` stays
-        // non-nil until then — so without the tab check, an outgoing walk keeps
-        // writing the OLD document's text into the shared pageTexts while the
-        // new document loads, and the new walk's skip guard then persists it.
-        let tabId = app?.activeTabId
-        extractionTask = Task { [weak self] in
-            for pageNumber in 1...pageCount {
-                // Idle pacing stand-in for requestIdleCallback's 16 ms fallback.
+        extractionTask = nil
+        guard let document, let ai, document.pageCount > 0 else { return }
+        let docIdentity = ObjectIdentifier(document)
+        let tabId = self.tabId
+        let missingPages = (1...document.pageCount).filter { ai.pageTexts[$0] == nil }
+        guard !missingPages.isEmpty else { return }
+        let persister = self.persister
+        extractionTask = Task.detached(priority: .utility) { [weak self] in
+            guard !Task.isCancelled, let copy = PDFDocument(data: data) else { return }
+            let walk = PdfExtractionWalkContext(controller: self, copy: copy)
+            for pageNumber in missingPages {
                 try? await Task.sleep(for: .milliseconds(16))
-                if Task.isCancelled { return }
-                guard let self else { return }
-                // Skip pages already restored from the cache: don't even queue
-                // for the gate, let alone read page.string (the expensive part)
-                // — true resume of a partial walk.
-                if self.ai?.pageTexts[pageNumber] != nil { continue }
-                let outcome = await self.extractPage(
-                    pageNumber, from: document, tabId: tabId, priority: .background)
-                if case .stale = outcome { return }
+                guard !Task.isCancelled else { return }
+                let text = await PageTextExtractionGate.shared.extractText(
+                    priority: .background,
+                    offMain: {
+                        let stillNeeded = await MainActor.run {
+                            guard let controller = walk.controller,
+                                  controller.document.map(ObjectIdentifier.init) == docIdentity,
+                                  controller.app?.activeTabId == tabId,
+                                  let ai = controller.ai else { return false }
+                            return ai.pageTexts[pageNumber] == nil
+                        }
+                        guard stillNeeded, !Task.isCancelled,
+                              let page = walk.copy.page(at: pageNumber - 1) else { return nil }
+                        return page.string ?? ""
+                    })
+                guard !Task.isCancelled else { return }
+                let stillCurrent = await MainActor.run { [weak self] in
+                    guard !Task.isCancelled, let self,
+                          self.document.map(ObjectIdentifier.init) == docIdentity,
+                          self.app?.activeTabId == tabId,
+                          let ai = self.ai else { return false }
+                    if let text, ai.pageTexts[pageNumber] == nil,
+                       let normalized = ai.setPageText(page: pageNumber, text: text) {
+                        self.runtime?.pageTexts[pageNumber] = normalized
+                        persister?.noteExtracted(page: pageNumber, text: normalized)
+                    }
+                    return true
+                }
+                guard stillCurrent else { return }
             }
-            // Whole document walked: flush with complete = true.
-            await self?.persister?.flush()
+            // Reset can drop the walk's handle while this hop is queued.
+            // Register the write with the existing quit/teardown barrier.
+            await MainActor.run { persister?.flushDetached() }
         }
     }
 
