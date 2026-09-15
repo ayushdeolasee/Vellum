@@ -42,6 +42,7 @@ extension EnvironmentValues {
 /// `translate(-50%, -100%)` used by the selection and highlight-edit popovers.
 struct AnchoredAbove<Content: View>: View {
     var point: CGPoint
+    var containerWidth: CGFloat? = nil
     @ViewBuilder var content: () -> Content
 
     @State private var size: CGSize = .zero
@@ -55,7 +56,13 @@ struct AnchoredAbove<Content: View>: View {
             }
             // Clamp away from the leading/top edges so a highlight at the page
             // margin can't push the popover off-screen.
-            .offset(x: max(8, point.x - size.width / 2), y: max(8, point.y - size.height))
+            .offset(x: horizontalOffset, y: max(8, point.y - size.height))
+    }
+
+    private var horizontalOffset: CGFloat {
+        let centered = max(8, point.x - size.width / 2)
+        guard let containerWidth, containerWidth > 0 else { return centered }
+        return min(centered, max(8, containerWidth - size.width - 8))
     }
 }
 #endif
