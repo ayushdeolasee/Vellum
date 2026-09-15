@@ -166,10 +166,7 @@ struct PaneView_iOS: View {
     @ViewBuilder
     private func reader(ink: InkController_iOS) -> some View {
             VStack(spacing: 0) {
-                PdfToolbar_iOS(
-                    ink: ink,
-                    onOpenFile: requestOpenFile,
-                    onAddWebpage: requestAddWebpage)
+                PdfToolbar_iOS(ink: ink)
 
                 if app.findVisible {
                     FindBar()

@@ -50,6 +50,7 @@ struct ExternalLibraryList_iOS: View {
     @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var state: IntegrationProviderViewState? { integrations.providers[provider] }
     private var failureMessage: String? { if case .failed(let message)? = state?.connection { message } else { nil } }
     private var warningMessage: String? {
@@ -76,9 +77,16 @@ struct ExternalLibraryList_iOS: View {
                 if state?.connection == .tokenRejected, state?.items.isEmpty == true { stateView("Authentication required", "Reconnect this service in Settings.", "key.slash") }
                 else if let failureMessage, state?.items.isEmpty == true { stateView("Sync failed", failureMessage, "exclamationmark.triangle") }
                 else { stateView(search.isEmpty ? "Nothing saved yet" : "No results", search.isEmpty ? "Sync this service or save an item there first." : "Try another search or collection.", "tray") }
-            } else if let warningMessage {
-                list.overlay(alignment: .top) { Text(warningMessage).font(.caption).padding(6).background(.regularMaterial, in: Capsule()).padding(.top, 8) }
-            } else { list }
+            } else {
+                if let warningMessage {
+                    Text(warningMessage)
+                        .font(.caption)
+                        .foregroundStyle(palette.mutedForeground)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                }
+                list
+            }
         }
         // A 5-minute freshness check whenever this account is selected.
         .task(id: provider) { await integrations.providerSelected(provider) }
@@ -103,38 +111,47 @@ struct ExternalLibraryList_iOS: View {
     }
 
     private var list: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section {
-                    ForEach(items) { item in
-                        HomeResultRow(
-                            item: ReadLaterSearchProvider.searchItem(for: item),
-                            isSelected: false,
-                            open: { open(item) },
-                            share: nil,
-                            rename: nil,
-                            removals: [])
-                    .accessibilityIdentifier("welcome.external.row.\(item.id)")
-                    .contextMenu {
-                        Button("Open") { open(item) }
-                        Button("Open Original in Browser") { UIApplication.shared.open(item.sourceURL) }
-                        Button("Copy Link") { UIPasteboard.general.string = item.sourceURL.absoluteString }
-                        Divider()
-                        MoveToCollectionMenu(item: item, integrations: integrations)
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        LazyVGrid(
+                            columns: HomeLayout.resultColumns(
+                                viewportWidth: geometry.size.width,
+                                accessibilitySize: dynamicTypeSize.isAccessibilitySize),
+                            alignment: .leading, spacing: 6
+                        ) {
+                            ForEach(items) { item in
+                                HomeResultRow(
+                                    item: ReadLaterSearchProvider.searchItem(for: item),
+                                    isSelected: false,
+                                    open: { open(item) },
+                                    share: nil,
+                                    rename: nil,
+                                    removals: [])
+                                .accessibilityIdentifier("welcome.external.row.\(item.id)")
+                                .contextMenu {
+                                    Button("Open") { open(item) }
+                                    Button("Open Original in Browser") { UIApplication.shared.open(item.sourceURL) }
+                                    Button("Copy Link") { UIPasteboard.general.string = item.sourceURL.absoluteString }
+                                    Divider()
+                                    MoveToCollectionMenu(item: item, integrations: integrations)
+                                }
+                            }
+                        }
+                    } header: {
+                        HomeSectionHeader(section: .readLater, count: items.count)
                     }
-                    }
-                } header: {
-                    HomeSectionHeader(section: .readLater, count: items.count)
                 }
+                .frame(maxWidth: HomeLayout.contentMaxWidth)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, horizontalSizeClass == .compact ? 8 : HomeLayout.columnPadding)
+                .padding(.bottom, 24)
             }
-            .frame(maxWidth: HomeLayout.contentMaxWidth)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, horizontalSizeClass == .compact ? 8 : HomeLayout.columnPadding)
-            .padding(.bottom, 32)
+            .background(palette.well)
+            .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("welcome.external.library")
         }
-        .background(palette.well)
-        .scrollDismissesKeyboard(.interactively)
-        .accessibilityIdentifier("welcome.external.library")
     }
 
     /// Routing through `integrations.route(for:)` is what makes a synced item

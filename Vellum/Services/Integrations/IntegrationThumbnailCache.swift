@@ -23,7 +23,8 @@ actor IntegrationThumbnailCache {
         guard let source = candidate.flatMap(ReadLaterItem.validHTTPURL) else { return nil }
         let destination = root.appendingPathComponent(Self.key(source) + ".image")
         if validImage(at: destination) { return destination }
-        let staging = root.appendingPathComponent(Self.key(source) + ".partial")
+        // Several visible rows can request the same site's icon concurrently.
+        let staging = root.appendingPathComponent(Self.key(source) + "." + UUID().uuidString + ".partial")
         do {
             try Task.checkCancellation()
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
