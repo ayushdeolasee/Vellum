@@ -167,20 +167,19 @@ struct PhoneTabSwitcher_iOS: View {
 
     // MARK: - Chrome
 
-    /// Count on the leading edge, with the two actions grouped like the reader's
-    /// bottom-bar controls.
+    /// Count on the leading edge, with a separate glass button for each action.
     private var bottomBar: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: PhoneChromeLayout.podGap) {
                 countPod.fixedSize(horizontal: true, vertical: false)
                 Spacer(minLength: PhoneChromeLayout.podGap)
-                actionPod
+                actionButtons
             }
             VStack(alignment: .leading, spacing: PhoneChromeLayout.podGap) {
                 countPod
                 HStack {
                     Spacer(minLength: 0)
-                    actionPod
+                    actionButtons
                 }
             }
         }
@@ -197,20 +196,25 @@ struct PhoneTabSwitcher_iOS: View {
             .glassEffect(.regular, in: .capsule)
     }
 
-    // Unlike the reader's fixed-height pod, this one grows with accessibility
+    // Unlike the reader's fixed-height pods, these grow with accessibility
     // symbols. The safe-area inset reserves its complete measured height.
-    private var actionPod: some View {
-        HStack(spacing: 2) {
+    private var actionButtons: some View {
+        HStack(spacing: PhoneChromeLayout.podGap) {
             newDocumentButton
-            if dynamicTypeSize.isAccessibilitySize {
-                compactDoneButton
-            } else {
-                doneButton
+                .padding(.horizontal, 4)
+                .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+                .glassEffect(.regular, in: .capsule)
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    compactDoneButton
+                } else {
+                    doneButton
+                }
             }
+            .padding(.horizontal, 4)
+            .frame(minHeight: PhoneChromeLayout.capsuleHeight)
+            .glassEffect(.regular, in: .capsule)
         }
-        .padding(.horizontal, 4)
-        .frame(minHeight: PhoneChromeLayout.capsuleHeight)
-        .glassEffect(.regular, in: .capsule)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tab actions")
         .fixedSize()

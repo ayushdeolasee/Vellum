@@ -182,7 +182,16 @@ struct WelcomeLibrary_iOS: View {
     private var libraryLayout: some View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
-                searchField
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        searchField
+                        openPdfButton
+                    }
+                    VStack(alignment: .leading, spacing: 12) {
+                        searchField
+                        openPdfButton
+                    }
+                }
                 controlBar
                 if appStore.error != nil {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
@@ -302,6 +311,21 @@ struct WelcomeLibrary_iOS: View {
 
     // MARK: - Search
 
+    private var openPdfButton: some View {
+        Button(action: onOpen) {
+            Label("Open PDF", systemImage: "doc.badge.plus")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(palette.foreground)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 46)
+                .fixedSize(horizontal: true, vertical: false)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityIdentifier("welcome.openPdf")
+    }
+
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
@@ -393,15 +417,6 @@ struct WelcomeLibrary_iOS: View {
 
     // MARK: - Results
 
-    /// Use the viewport proposal so narrow panes can shrink below 360 points.
-    private func resultColumns(viewportWidth: CGFloat) -> [GridItem] {
-        let contentWidth = min(
-            HomeLayout.contentMaxWidth, viewportWidth - 2 * HomeLayout.columnPadding)
-        return Array(
-            repeating: GridItem(.flexible(minimum: 0), spacing: 12, alignment: .top),
-            count: contentWidth >= 732 ? 2 : 1)
-    }
-
     private var resultList: some View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
@@ -419,7 +434,7 @@ struct WelcomeLibrary_iOS: View {
 
                         ForEach(store.sections) { group in
                             Section {
-                                LazyVGrid(columns: resultColumns(viewportWidth: geometry.size.width), alignment: .leading, spacing: 6) {
+                                LazyVGrid(columns: HomeLayout.resultColumns(viewportWidth: geometry.size.width, accessibilitySize: dynamicTypeSize.isAccessibilitySize), alignment: .leading, spacing: 6) {
                                     ForEach(group.items) { item in
                                         HomeResultRow(
                                             item: item,
