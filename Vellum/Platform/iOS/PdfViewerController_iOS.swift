@@ -573,11 +573,17 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             cancelPencilTextHighlight()
             return
         }
-        pencilTextHighlightPage = nil
-        pencilTextHighlightStartRange = nil
-        isPencilTextHighlighting = false
-        selection = captured.selection
-        selectionPopoverPosition = captured.popoverPosition
+        defer { cancelPencilTextHighlight() }
+        guard let runtime, let tabId, let annotationStore else { return }
+        let input = CreateAnnotationInput(
+            type: .highlight,
+            pageNumber: captured.selection.pageNumber,
+            color: runtime.ink.textHighlightColorHex,
+            content: nil,
+            positionData: captured.selection.positionData)
+        if let queued = annotationStore.enqueueHighlight(input, sessionId: tabId) {
+            runtime.trackAnnotationWrite(queued.persistence)
+        }
     }
 
     func cancelPencilTextHighlight() {

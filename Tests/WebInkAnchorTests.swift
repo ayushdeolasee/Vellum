@@ -326,6 +326,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
             """)
             let selected = try await waitFor("selection")
             XCTAssertEqual(selected["text"] as? String, "quick brown fox")
+            XCTAssertEqual(selected["fromPencil"] as? Bool, true)
             XCTAssertNotNil(selected["start"])
             XCTAssertNotNil(selected["end"])
         }

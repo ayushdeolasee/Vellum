@@ -25,15 +25,11 @@ struct InkToolPalette_iOS: View {
 
     var body: some View {
         if state.tool == .textHighlight {
-            HStack(spacing: 8) {
-                Label("Select text", systemImage: "character.cursor.ibeam")
-                    .font(.system(size: 15, weight: .medium))
-                actionRow
-            }
-            .padding(.horizontal, 14)
+            colorRow(compact: false)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .glassEffect(.regular, in: .capsule)
-            .accessibilityHint("Drag the Apple Pencil across text, then choose Highlight, Note, or Ask AI.")
+            .accessibilityHint("Drag the Apple Pencil across text to highlight it in the selected color.")
         } else {
             ViewThatFits(in: .horizontal) {
                 paletteRow(compact: false)
@@ -319,7 +315,7 @@ struct InkToolPalette_iOS: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(state.tool == .textHighlight ? "Done selecting text" : "Done inking")
+            .accessibilityLabel("Done inking")
         }
     }
 

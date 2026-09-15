@@ -1745,11 +1745,12 @@ enum WebContentScript {
     if (d.phase === "end") {
       pencilSelectionStart = null;
       lastSelectionKey = null;
-      reportSelection();
+      reportSelection(true);
+      window.getSelection().removeAllRanges();
     }
   }
 
-  function reportSelection() {
+  function reportSelection(fromPencil) {
     // A resize also changes/clears the native selection internally. Keep those
     // transient events from dismissing the selected highlight's editor.
     if (resizing || pencilSelectionStart) return;
@@ -1795,6 +1796,7 @@ enum WebContentScript {
 
     var ctx = quoteContext(start, end);
     post("selection", {
+      fromPencil: fromPencil === true,
       text: text,
       start: start,
       end: end,

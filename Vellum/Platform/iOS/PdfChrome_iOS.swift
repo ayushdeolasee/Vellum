@@ -178,7 +178,7 @@ struct PdfToolbar_iOS: View {
                         togglePencilTool(.pen)
                     }
                     GlassToolButton(
-                        system: "character.cursor.ibeam", label: "Select text with Apple Pencil",
+                        system: "character.cursor.ibeam", label: "Highlight text with Apple Pencil",
                         active: ink.isActive && ink.toolState.tool == .textHighlight
                     ) {
                         togglePencilTool(.textHighlight)
@@ -312,7 +312,7 @@ struct PdfToolbar_iOS: View {
                 Button {
                     togglePencilTool(.textHighlight)
                 } label: {
-                    Label("Select Text with Apple Pencil", systemImage: "character.cursor.ibeam")
+                    Label("Highlight Text with Apple Pencil", systemImage: "character.cursor.ibeam")
                 }
                 Button {
                     Task { await annotationStore.toggleBookmark() }

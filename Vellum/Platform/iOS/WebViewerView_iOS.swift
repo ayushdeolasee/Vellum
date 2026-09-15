@@ -1687,6 +1687,13 @@ final class WebViewerController_iOS: NSObject {
 
         case "selection":
             handleSelection(data, app: app)
+            if data["fromPencil"] as? Bool == true {
+                if let ink = runtime?.webInk,
+                   ink.isActive, ink.toolState.tool == .textHighlight {
+                    addHighlight(color: ink.toolState.textHighlightColorHex)
+                }
+                clearSelection()
+            }
 
         case "selection-cleared":
             selection = nil
