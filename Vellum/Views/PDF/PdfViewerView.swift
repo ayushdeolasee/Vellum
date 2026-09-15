@@ -32,11 +32,16 @@ struct PdfViewerView: View {
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
 
     private var controller: PdfViewerController { runtime.pdfController }
     /// Tab the shared handler slots are currently registered for; nil when
     /// this view has no live registration (see teardown's ownership guard).
     @State private var handlersTabId: String?
+    @State private var indexingIsActive = false
+    @State private var applicationIsActive = NSApplication.shared.isActive
+
+    private var shouldIndex: Bool { isActive && scenePhase == .active && applicationIsActive }
 
     var body: some View {
         content(tabId: tabId)
@@ -56,6 +61,19 @@ struct PdfViewerView: View {
                 } else {
                     await activate()
                 }
+            }
+            // Activity changes pause indexing without cancelling an in-flight
+            // document load. A load finishing later reads the current state.
+            .task(id: shouldIndex) {
+                indexingIsActive = shouldIndex
+                guard isActive, case .loaded = runtime.pdfLoadState else { return }
+                await activate()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                applicationIsActive = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                applicationIsActive = false
             }
     }
 
@@ -136,12 +154,7 @@ struct PdfViewerView: View {
                 // The document isn't attached to any view yet, so this is safe.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
                     guard let document = PDFDocument(data: data) else { return PreparedPdf(document: nil) }
-                    for index in 0..<document.pageCount {
-                        guard let page = document.page(at: index) else { continue }
-                        for annotation in page.annotations {
-                            page.removeAnnotation(annotation)
-                        }
-                    }
+                    PdfViewerPreparation.stripAnnotations(from: document)
                     return PreparedPdf(document: document)
                 }.value
                 guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
@@ -196,7 +209,10 @@ struct PdfViewerView: View {
                     seeded: cached ?? [:]))
             }
             runtime.pdfLoadState = .loaded(document)
-            if isActive { await activate(data: data) }
+            if isActive {
+                await activate(resumeExtraction: false)
+                if indexingIsActive { controller.startTextExtraction(data: data) }
+            }
         } catch {
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             NSLog("[PdfViewer] readPdfBytes FAILED: %@", error.localizedDescription)
@@ -241,7 +257,7 @@ struct PdfViewerView: View {
         }
     }
 
-    private func activate(data: Data? = nil) async {
+    private func activate(resumeExtraction: Bool = true) async {
         guard app.activeTabId == tabId else { return }
         controller.rebind(
             app: app, annotationStore: annotationStore, ai: aiStore, tabId: tabId,
@@ -251,26 +267,26 @@ struct PdfViewerView: View {
         handlersTabId = tabId
         if case .loaded(let pdf) = runtime.pdfLoadState {
             app.setNumPages(pdf.pageCount)
-            if let data {
-                controller.startTextExtraction(data: data)
-            } else {
+            if !indexingIsActive {
+                await controller.pauseTextExtraction()
+            } else if resumeExtraction {
                 await resumeTextExtraction(pageCount: pdf.pageCount)
             }
         }
     }
 
-    /// Resume a partial walk without retaining a second full copy of every PDF
-    /// for the lifetime of its tab. Fully indexed documents skip the read.
     private func resumeTextExtraction(pageCount: Int) async {
         guard runtime.pageTexts.count < pageCount else { return }
+        let generation = runtime.documentGeneration
         guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
-        guard !Task.isCancelled, app.activeTabId == tabId else { return }
+        guard !Task.isCancelled, indexingIsActive, app.activeTabId == tabId,
+              runtime.documentGeneration == generation else { return }
         controller.startTextExtraction(data: data)
     }
 
     private func deactivate() async {
         await controller.pauseTextExtraction()
-        guard handlersTabId == tabId else { return }
+        guard !Task.isCancelled, handlersTabId == tabId else { return }
         // If another document host is taking over, it owns these shared slots
         // now (or is about to). Clearing blindly here can race after its
         // registration. Home has no replacement viewer, so clear in that case.

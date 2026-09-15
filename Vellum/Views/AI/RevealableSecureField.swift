@@ -114,7 +114,7 @@ private struct SecureTextFieldRep: UIViewRepresentable {
         private let text: Binding<String>
         init(text: Binding<String>) { self.text = text }
 
-        @objc func editingChanged(_ field: UITextField) {
+        @MainActor @objc func editingChanged(_ field: UITextField) {
             text.wrappedValue = field.text ?? ""
         }
     }

@@ -30,6 +30,7 @@ struct WelcomeLibrary_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.undoManager) private var undoManager
     @Environment(\.scenePhase) private var scenePhase
 
@@ -105,13 +106,10 @@ struct WelcomeLibrary_iOS: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // In compact mode the pane already has its own chrome, so the Home
-            // bar would be a second title row inside a split. Help and Settings
-            // stay reachable from the pane's own menu.
-            if !compact {
-                homeHeader
-                Divider()
-            }
+            // Compact Home sits below the pane's tab strip, so it omits the
+            // duplicate title but keeps the global Help and Settings actions.
+            homeHeader
+            Divider()
             Group {
                 if showsFirstRun {
                     firstRunLayout
@@ -263,18 +261,23 @@ struct WelcomeLibrary_iOS: View {
     /// them — `UpdateChecker` is a Sparkle-style self-updater, which is
     /// meaningless in an App Store app.
     ///
-    /// This is the app's settings entry point when no document is open, so it
-    /// has to survive the search revamp.
+    /// Compact start tabs omit the title because the pane already has a tab
+    /// strip, but the global actions remain visible in every empty state.
     private var homeHeader: some View {
         HStack(spacing: 8) {
-            Text("Home")
-                .font(.headline)
-                .foregroundStyle(palette.foreground)
+            if !compact {
+                Text("Home")
+                    .font(.headline)
+                    .foregroundStyle(palette.foreground)
+            }
             Spacer()
             Button {
                 showHelp = true
             } label: {
-                Label("Help", systemImage: "questionmark.circle").labelStyle(.iconOnly)
+                Label("Help", systemImage: "questionmark.circle")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.help")
             Button {
@@ -284,12 +287,15 @@ struct WelcomeLibrary_iOS: View {
                 workspace.settingsSection = .general
                 showSettings = true
             } label: {
-                Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
+                Label("Settings", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("welcome.settings")
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
+        .frame(minHeight: 44)
         .background(palette.background)
         .simultaneousGesture(dismissSearchKeyboardTap)
     }
@@ -299,12 +305,12 @@ struct WelcomeLibrary_iOS: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15))
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.mutedForeground)
 
             TextField("Search your library — or paste a link", text: $store.query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 15))
+                .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.foreground)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -336,11 +342,17 @@ struct WelcomeLibrary_iOS: View {
                 }
 
             if !store.query.isEmpty {
-                IconButton(help: "Clear search") {
+                Button {
                     _ = store.clearQuery()
-                } icon: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
                 .accessibilityIdentifier("welcome.clearSearch")
             }
 
@@ -353,7 +365,7 @@ struct WelcomeLibrary_iOS: View {
                 sortByName: $externalSortByName)
         }
         .padding(.horizontal, HomeLayout.rowInset)
-        .frame(height: 46)
+        .frame(minHeight: 46)
         .glassEffect(.regular, in: .capsule)
         .overlay {
             // A hairline primary edge on focus, the same "this is current"
@@ -381,59 +393,72 @@ struct WelcomeLibrary_iOS: View {
 
     // MARK: - Results
 
-    private var resultList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    if let link = store.linkSuggestion {
-                        HomeLinkActionRow(
-                            url: link,
-                            isSelected: store.selectedId == HomeSearchStore.linkRowId,
-                            open: { openLink(link) }
-                        )
-                        .id(HomeSearchStore.linkRowId)
-                        .padding(.top, 10)
-                    }
+    /// Use the viewport proposal so narrow panes can shrink below 360 points.
+    private func resultColumns(viewportWidth: CGFloat) -> [GridItem] {
+        let contentWidth = min(
+            HomeLayout.contentMaxWidth, viewportWidth - 2 * HomeLayout.columnPadding)
+        return Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: 12, alignment: .top),
+            count: contentWidth >= 732 ? 2 : 1)
+    }
 
-                    ForEach(store.sections) { group in
-                        Section {
-                            ForEach(group.items) { item in
-                                HomeResultRow(
-                                    item: item,
-                                    isSelected: store.selectedId == item.id,
-                                    open: { open(item) },
-                                    share: shareTarget(for: item),
-                                    rename: actions.renameAction(for: item),
-                                    removals: actions.removalActions(
-                                        for: item, undoManager: undoManager)
-                                )
-                                .id(item.id)
+    private var resultList: some View {
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        if let link = store.linkSuggestion {
+                            HomeLinkActionRow(
+                                url: link,
+                                isSelected: store.selectedId == HomeSearchStore.linkRowId,
+                                open: { openLink(link) }
+                            )
+                            .id(HomeSearchStore.linkRowId)
+                            .padding(.top, 10)
+                        }
+
+                        ForEach(store.sections) { group in
+                            Section {
+                                LazyVGrid(columns: resultColumns(viewportWidth: geometry.size.width), alignment: .leading, spacing: 6) {
+                                    ForEach(group.items) { item in
+                                        HomeResultRow(
+                                            item: item,
+                                            isSelected: store.selectedId == item.id,
+                                            open: { open(item) },
+                                            share: shareTarget(for: item),
+                                            rename: actions.renameAction(for: item),
+                                            removals: actions.removalActions(
+                                                for: item, undoManager: undoManager)
+                                        )
+                                        .id(item.id)
+                                    }
+                                }
+                            } header: {
+                                HomeSectionHeader(section: group.section, count: group.items.count)
                             }
-                        } header: {
-                            HomeSectionHeader(section: group.section, count: group.items.count)
+                        }
+
+                        // A pinned link IS the answer to a pasted URL, so "no
+                        // matches" would be both wrong and unhelpful next to it.
+                        if store.sections.isEmpty, store.linkSuggestion == nil, !store.isLoading {
+                            emptyResults
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 56)
                         }
                     }
-
-                    // A pinned link IS the answer to a pasted URL, so "no
-                    // matches" would be both wrong and unhelpful next to it.
-                    if store.sections.isEmpty, store.linkSuggestion == nil, !store.isLoading {
-                        emptyResults
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 56)
-                    }
+                    .homeContentColumn()
+                    .padding(.bottom, 24)
                 }
-                .homeContentColumn()
-                .padding(.bottom, 24)
-            }
-            .scrollContentBackground(.hidden)
-            // Let a scroll put the software keyboard away instead of trapping
-            // the reader behind it.
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("welcome.results")
-            .onChange(of: store.selectedId) { _, id in
-                guard let id else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(id, anchor: .center)
+                .scrollContentBackground(.hidden)
+                // Let a scroll put the software keyboard away instead of trapping
+                // the reader behind it.
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("welcome.results")
+                .onChange(of: store.selectedId) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
                 }
             }
         }

@@ -1,6 +1,8 @@
 import SwiftUI
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // Selection popover — port of src/components/annotations/SelectionPopover.tsx.
@@ -19,6 +21,7 @@ struct SelectionPopover: View {
     @State private var showNoteInput = false
     @State private var noteText = ""
     @State private var noteButtonHovering = false
+    @State private var dictionaryButtonHovering = false
     @State private var askAiHovering = false
     @FocusState private var noteFieldFocused: Bool
 
@@ -74,6 +77,26 @@ struct SelectionPopover: View {
                 .help("Add note")
                 .accessibilityLabel("Add note")
                 .accessibilityIdentifier("selectionPopover.addNote")
+
+                #if os(macOS)
+                Button {
+                    DictionaryLookup.show(selection.text)
+                    onClose()
+                } label: {
+                    Image(systemName: "book.closed")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(dictionaryButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .background(dictionaryButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                        .clipShape(Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .onHover { dictionaryButtonHovering = $0 }
+                .help("Look Up in Dictionary")
+                .accessibilityLabel("Look Up in Dictionary")
+                .accessibilityIdentifier("selectionPopover.dictionaryLookup")
+                #endif
 
                 Button(action: handleAskAi) {
                     Image(systemName: "sparkles")
@@ -156,6 +179,23 @@ struct SelectionPopover: View {
         }
     }
 }
+
+#if os(macOS)
+@MainActor
+enum DictionaryLookup {
+    static func show(_ selection: String) {
+        let text = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let contentView = window.contentView
+        else { return }
+
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let viewPoint = contentView.convert(windowPoint, from: nil)
+        contentView.showDefinition(for: NSAttributedString(string: text), at: viewPoint)
+    }
+}
+#endif
 
 // HighlightSwatchButton moved to Views/Annotations/HighlightSwatchButton.swift
 // (cross-platform) so the shared AnnotationSidebar can use it on iPad.

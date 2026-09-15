@@ -261,19 +261,52 @@ struct KeychainStoreTests {
     /// enumeration, possibly a commit and a password prompt) and it is
     /// reachable synchronously from `@MainActor` callers. `prewarm` moves it
     /// off the caller's thread so those callers only ever hit the cache.
-    @Test("prewarm loads the vault off the calling thread")
-    func prewarmWarmsTheCacheInTheBackground() {
+    @Test("Development prewarm loads its vault without legacy access")
+    func developmentPrewarmAvoidsProductionLegacyCredentials() {
         let fake = FakeKeychain()
-        fake.seedVault(["com.vellum.ai/gemini": "g1"])
+        fake.seedVault([
+            "com.vellum.ai/gemini": "g1",
+            "com.vellum.ai/chatgpt-tokens": "retired",
+        ])
+        fake.seedLegacy(
+            service: aiService, account: "chatgpt-tokens", value: "retired")
         let loaded = DispatchSemaphore(value: 0)
         fake.onRead = { loaded.signal() }
 
         KeychainStore.withBackend(fake.backend) {
-            KeychainStore.prewarm()
+            KeychainStore.prewarm(profile: .development)
             #expect(loaded.wait(timeout: .now() + 5) == .success)
             #expect(fake.readWasOnMainThread == false)
             #expect(KeychainStore.get("gemini") == "g1")
             #expect(fake.readCount == 1, "the warmed cache serves the first get")
+            #expect(fake.vaultEntries?["com.vellum.ai/chatgpt-tokens"] == "retired")
+            #expect(fake.legacyValue(service: aiService, account: "chatgpt-tokens") == "retired")
+            #expect(fake.legacyAccountListCount == 0)
+            #expect(fake.legacyReadCount == 0)
+            #expect(fake.legacyDeleteCount == 0)
+        }
+    }
+
+    @Test("Production prewarm removes retired ChatGPT credentials")
+    func productionPrewarmPurgesRetiredCredentials() {
+        let fake = FakeKeychain()
+        fake.seedVault([
+            "com.vellum.ai/gemini": "g1",
+            "com.vellum.ai/chatgpt-tokens": "retired",
+        ])
+        fake.seedLegacy(
+            service: aiService, account: "chatgpt-tokens", value: "retired")
+        let loaded = DispatchSemaphore(value: 0)
+        fake.onRead = { loaded.signal() }
+
+        KeychainStore.withBackend(fake.backend) {
+            KeychainStore.prewarm(profile: .production)
+            #expect(loaded.wait(timeout: .now() + 5) == .success)
+            #expect(KeychainStore.get("gemini") == "g1")
+            #expect(fake.vaultEntries?["com.vellum.ai/chatgpt-tokens"] == nil)
+            #expect(fake.legacyValue(service: aiService, account: "chatgpt-tokens") == nil)
+            #expect(fake.legacyReadCount == 1)
+            #expect(fake.legacyDeleteCount > 0)
         }
     }
 
@@ -334,6 +367,9 @@ private final class FakeKeychain: @unchecked Sendable {
     private(set) var probeCount = 0
     private(set) var writeCount = 0
     private(set) var deleteCount = 0
+    private(set) var legacyAccountListCount = 0
+    private(set) var legacyReadCount = 0
+    private(set) var legacyDeleteCount = 0
     private(set) var lockDepth = 0
     private(set) var readWasOnMainThread: Bool?
 
@@ -390,14 +426,17 @@ private final class FakeKeychain: @unchecked Sendable {
                 return true
             },
             legacyAccounts: { [self] service in
-                (legacy[service] ?? [:]).keys.sorted()
+                legacyAccountListCount += 1
+                return (legacy[service] ?? [:]).keys.sorted()
             },
             legacyRead: { [self] account, service in
+                legacyReadCount += 1
                 guard !unreadableLegacyAccounts.contains(account),
                       let item = legacy[service]?[account] else { return nil }
                 return KeychainStore.LegacyItem(value: item.value, modDate: item.modDate)
             },
             legacyDelete: { [self] account, service in
+                legacyDeleteCount += 1
                 legacy[service]?[account] = nil
             },
             acquireCommitLock: { [self] in

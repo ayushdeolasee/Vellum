@@ -56,6 +56,7 @@ struct ModelSelector: View {
     @Binding var selection: String
     @Binding var pinned: [String]
     var isLoading = false
+    var emptyMessage: String? = nil
     var onOpen: (() -> Void)?
 
     @Environment(\.palette) private var palette
@@ -353,7 +354,7 @@ struct ModelSelector: View {
                 ProgressView()
                 Text("Loading models…").foregroundStyle(palette.mutedForeground)
             } else if options.isEmpty {
-                Text("No models found").foregroundStyle(palette.mutedForeground)
+                Text(emptyMessage ?? "No models found").foregroundStyle(palette.mutedForeground)
             } else if sort == .pinned && pinned.isEmpty {
                 Image(systemName: "star")
                     .font(.system(size: 18))
