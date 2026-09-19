@@ -249,13 +249,21 @@ final class AppStore {
         self.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
     }
 
-    func openUrl(_ url: String) async {
+    func openUrl(_ url: String, saveToLibrary: Bool = false) async {
         isLoading = true
         error = nil
         do {
             await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
             let sessionId = UUID().uuidString.lowercased()
             let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
+            if saveToLibrary {
+                do {
+                    try await sessions.setWebpageSaved(sessionId: sessionId, saved: true)
+                } catch {
+                    try? await sessions.closeFile(sessionId: sessionId)
+                    throw error
+                }
+            }
             await adoptOpenedDocument(doc, sessionId: sessionId)
             isLoading = false
         } catch {

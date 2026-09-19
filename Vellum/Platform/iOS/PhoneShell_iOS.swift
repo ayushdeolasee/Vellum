@@ -126,7 +126,7 @@ private struct PhoneShellRoot_iOS: View {
                 AddWebpageSheet_iOS { url in
                     let app = pane.app
                     Task {
-                        await app.openUrl(url)
+                        await app.openUrl(url, saveToLibrary: true)
                         routeToOpenedDocumentIfSuccessful(app)
                     }
                 }

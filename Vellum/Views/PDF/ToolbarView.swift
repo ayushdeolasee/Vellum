@@ -124,7 +124,7 @@ struct AddWebpageSheet: View {
         let value = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         dismiss()
-        Task { await appStore.openUrl(value) }
+        Task { await appStore.openUrl(value, saveToLibrary: true) }
     }
 }
 

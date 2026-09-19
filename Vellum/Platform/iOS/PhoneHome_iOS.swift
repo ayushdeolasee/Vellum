@@ -119,6 +119,12 @@ struct PhoneHome_iOS: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
         .task { await reloadLibrary() }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .vellumSyncedLibraryChanged) {
+                guard !Task.isCancelled else { return }
+                await reloadLibrary()
+            }
+        }
         // One driver for every input that invalidates the results (query,
         // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
         // which is exactly the debounce semantics we want while typing.
