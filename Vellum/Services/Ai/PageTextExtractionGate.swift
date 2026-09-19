@@ -26,11 +26,8 @@ import Foundation
 // measurement is why pacing keys off an *empty* result rather than off how long
 // the call took: an empty read is the page shape that sends PDFKit to Live Text.
 //
-// Not covered: `PDFDocument.findString` (⌘F), which scans the whole document in
-// one synchronous main-thread call and so can also drive Live Text. Gating it
-// would mean making the find handler async all the way up through AppStore, so
-// it is left alone for now — it is user-initiated and never concurrent with
-// itself, unlike the four extraction loops.
+// macOS Find uses this gate page by page on a private document. The iOS
+// `PDFDocument.findString` path still scans synchronously outside this gate.
 
 /// Serializes and paces every PDFKit text read that can reach Live Text.
 ///
