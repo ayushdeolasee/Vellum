@@ -44,6 +44,8 @@ final class PdfViewerController {
     // index of the one currently focused.
     @ObservationIgnored private var findMatches: [PDFSelection] = []
     @ObservationIgnored private var findIndex = -1
+    @ObservationIgnored private var findTask: Task<Void, Never>?
+    @ObservationIgnored private var findGeneration = 0
 
     var isNoteMode: Bool { app?.mode == .note }
 
@@ -69,6 +71,7 @@ final class PdfViewerController {
     }
 
     func reset() {
+        findClear()
         extractionTask?.cancel()
         extractionTask = nil
         document = nil
@@ -295,18 +298,39 @@ final class PdfViewerController {
 
     // MARK: - Find (⌘F)
 
-    /// Search the whole document; highlight every match and focus the first.
+    /// Coalesce typing; only the newest query may publish into the live PDFView.
     func findQuery(_ query: String) {
-        guard let document, let pdfView else { return }
-        let matches = document.findString(query, withOptions: [.caseInsensitive])
-        for match in matches {
-            match.color = NSColor.systemYellow.withAlphaComponent(0.5)
+        findClear()
+        app?.setFindResults(count: 0, current: 0)
+        guard !query.isEmpty, let document, let app,
+              let tabId = app.activeTabId else { return }
+        let generation = findGeneration
+        findTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+                let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+                try Task.checkCancellation()
+                let matches = await PdfSearch(data: data).matches(query: query)
+                try Task.checkCancellation()
+                guard let self, self.findGeneration == generation,
+                      self.document === document, app.activeTabId == tabId,
+                      let pdfView = self.pdfView else { return }
+                let selections = matches.compactMap { match in
+                    document.page(at: match.page)?.selection(for: match.range)
+                }
+                for selection in selections {
+                    selection.color = NSColor.systemYellow.withAlphaComponent(0.5)
+                }
+                self.findMatches = selections
+                self.findIndex = selections.isEmpty ? -1 : 0
+                pdfView.highlightedSelections = selections.isEmpty ? nil : selections
+                self.focusCurrentMatch()
+                app.setFindResults(count: selections.count, current: selections.isEmpty ? 0 : 1)
+            } catch {
+                // Clearing, replacing the query, or leaving the document cancels
+                // this task. A read failure leaves the already-cleared results.
+            }
         }
-        findMatches = matches
-        pdfView.highlightedSelections = matches.isEmpty ? nil : matches
-        findIndex = matches.isEmpty ? -1 : 0
-        focusCurrentMatch()
-        app?.setFindResults(count: matches.count, current: matches.isEmpty ? 0 : 1)
     }
 
     /// Move the focused match by `delta`, wrapping at both ends.
@@ -322,6 +346,9 @@ final class PdfViewerController {
     }
 
     func findClear() {
+        findTask?.cancel()
+        findTask = nil
+        findGeneration += 1
         findMatches = []
         findIndex = -1
         pdfView?.highlightedSelections = nil
@@ -578,7 +605,11 @@ final class PdfViewerController {
                 if Task.isCancelled { return }
                 guard let self, self.document === document,
                       let page = document.page(at: pageNumber - 1) else { return }
-                self.ai?.setPageText(page: pageNumber, text: page.string ?? "")
+                let text = await PageTextExtractionGate.shared.extractText(priority: .background) {
+                    page.string ?? ""
+                }
+                guard !Task.isCancelled, self.document === document, let text else { return }
+                self.ai?.setPageText(page: pageNumber, text: text)
             }
         }
     }
@@ -593,7 +624,12 @@ final class PdfViewerController {
         let needle = query
             .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
             .lowercased()
-        guard !needle.isEmpty, let pageString = page.string else { return nil }
+        guard !needle.isEmpty else { return nil }
+        let extracted = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
+            page.string
+        }
+        guard !Task.isCancelled, self.document === document,
+              let pageString = extracted else { return nil }
 
         // Whitespace-free lowercase haystack; every character remembers the
         // UTF-16 range of the source character that produced it.

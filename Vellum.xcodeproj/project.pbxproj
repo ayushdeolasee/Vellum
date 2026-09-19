@@ -135,8 +135,10 @@
 		53CEA523EEE45C0AB2057F98 /* RelocationCoordinationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03D33C5F37CE04627454515D /* RelocationCoordinationTests.swift */; };
 		53E547B991B1DE7E701183D2 /* PhoneShellStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90FD1C6014DA791900E3F0EF /* PhoneShellStateTests.swift */; };
 		546B20185CE6B8EEA5C08069 /* DocumentDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9D539B1461FC063BC82C78 /* DocumentDataStore.swift */; };
+		54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8F4E0214AE68A33C5052709 /* Untitled.icon */; };
 		54E5D11BCC123B35C6A0F216 /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */; };
 		560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */; };
+		567BCA05CE20FB2955BDC3A2 /* PdfSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C888E571A951AE6BCD089B3D /* PdfSearch.swift */; };
 		56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
 		5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
@@ -662,7 +664,9 @@
 		C75EE68092E30567B435AD54 /* FixtureLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureLoader.swift; sourceTree = "<group>"; };
 		C7B863B676278E0E8D3C2EDB /* PaneTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTree.swift; sourceTree = "<group>"; };
 		C854CEB16A3B128A02C7499A /* SyncedContainerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerModels.swift; sourceTree = "<group>"; };
+		C888E571A951AE6BCD089B3D /* PdfSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfSearch.swift; sourceTree = "<group>"; };
 		C8DCF286D5E58E45AB3FABA8 /* MathRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathRenderer.swift; sourceTree = "<group>"; };
+		C8F4E0214AE68A33C5052709 /* Untitled.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Untitled.icon; sourceTree = "<group>"; };
 		CC1F783F50CC2705F7C3733D /* SafeClearTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeClearTests.swift; sourceTree = "<group>"; };
 		CCBBA9A1DAB0373185D8F5EA /* DocumentIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIdentityTests.swift; sourceTree = "<group>"; };
 		CD3B4FF58D51631918FFFCE5 /* StorageRelocationContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageRelocationContextTests.swift; sourceTree = "<group>"; };
@@ -1018,6 +1022,7 @@
 				8C33B518BE736FCF7077F63A /* PdfDocIdRegistry.swift */,
 				102BFBC5EF5B66C15AC2BC86 /* PdfGeometry.swift */,
 				C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */,
+				C888E571A951AE6BCD089B3D /* PdfSearch.swift */,
 				6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */,
 				C00E4B04332A759BD4D59A98 /* PdfTextLocator.swift */,
 				784C007D95038C1220BBF263 /* PdfZoomPolicy.swift */,
@@ -1184,6 +1189,7 @@
 		9E8E2E8E13FD91020A96EDCA /* Vellum */ = {
 			isa = PBXGroup;
 			children = (
+				C8F4E0214AE68A33C5052709 /* Untitled.icon */,
 				229408A6EEAF85EF71311708 /* Vellum-AppGroup.entitlements */,
 				338949714215E58B03C6B359 /* Vellum-iOS.entitlements */,
 				76D226C5BF26487AF44B0712 /* App */,
@@ -1558,6 +1564,7 @@
 			files = (
 				EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */,
 				1F27BEF7A0CFEDADB3836503 /* Assets.xcassets in Resources */,
+				54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */,
 				91F222D3BA33FB57079495ED /* katex in Resources */,
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
 				AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */,
@@ -1734,6 +1741,7 @@
 				C18C6BCDAC6EB771C15F6440 /* PdfKitView_iOS.swift in Sources */,
 				115E39AAB39E90058E9718A7 /* PdfMetadata.swift in Sources */,
 				09358F1893F52DC19029DF03 /* PdfOverlays.swift in Sources */,
+				567BCA05CE20FB2955BDC3A2 /* PdfSearch.swift in Sources */,
 				52FA425B6737E6A4717AEC4E /* PdfSelectionBridge.swift in Sources */,
 				40D4C8C74B050905AF690FD5 /* PdfSessionBackend.swift in Sources */,
 				86D51A60816B39EA73862181 /* PdfTextLocator.swift in Sources */,
