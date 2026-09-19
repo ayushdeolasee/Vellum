@@ -73,7 +73,9 @@ actor ICloudSyncedContainer: SyncedContainer {
         }
         self.registration = PresenterRegistration(
             presenter: DirectoryConflictPresenter(url: self.root, queue: queue, onConflict: emit))
-        self.watcher = UbiquitousMetadataWatcher(onConflict: emit)
+        self.watcher = UbiquitousMetadataWatcher(
+            recordsDirectory: self.root.appendingPathComponent("Vellum/.vellum/records", isDirectory: true),
+            onConflict: emit)
 
         self.registration.register()
         let watcher = self.watcher
@@ -466,12 +468,15 @@ private final class UbiquitousMetadataWatcher {
     private let query = NSMetadataQuery()
     private var observers: [any NSObjectProtocol] = []
     private let onConflict: @Sendable (URL) -> Void
+    private let recordsDirectory: URL
+    private var libraryItems: Set<SyncedItem> = []
     private(set) var isRunning = false
     /// False until the first `DidFinishGathering`. Until then an empty result
     /// set means "we haven't looked yet", not "the file isn't there".
     private(set) var hasFinishedGathering = false
 
-    nonisolated init(onConflict: @escaping @Sendable (URL) -> Void) {
+    nonisolated init(recordsDirectory: URL, onConflict: @escaping @Sendable (URL) -> Void) {
+        self.recordsDirectory = recordsDirectory
         self.onConflict = onConflict
     }
 
@@ -486,6 +491,7 @@ private final class UbiquitousMetadataWatcher {
                 MainActor.assumeIsolated {
                     self?.hasFinishedGathering = true
                     self?.reportConflicts()
+                    self?.reportLibraryChanges()
                 }
             }
             observers.append(token)
@@ -532,6 +538,13 @@ private final class UbiquitousMetadataWatcher {
         for url in conflictedURLs() { onConflict(url) }
     }
 
+    private func reportLibraryChanges() {
+        let current = Set(items(in: recordsDirectory).filter { $0.url.pathExtension == "json" })
+        guard current != libraryItems else { return }
+        libraryItems = current
+        NotificationCenter.default.post(name: .vellumSyncedLibraryChanged, object: nil)
+    }
+
     private func withResults<T>(_ body: ([NSMetadataItem]) -> T) -> T {
         query.disableUpdates()
         defer { query.enableUpdates() }
@@ -563,4 +576,8 @@ private final class UbiquitousMetadataWatcher {
         default: return .notDownloaded
         }
     }
+}
+
+extension Notification.Name {
+    static let vellumSyncedLibraryChanged = Notification.Name("vellumSyncedLibraryChanged")
 }
