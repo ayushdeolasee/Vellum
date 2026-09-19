@@ -326,6 +326,11 @@ struct PhoneReaderBottomBar: View {
         }
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
         .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
+        .alert("Export Failed", isPresented: $exportActions.showExportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(exportActions.exportErrorMessage)
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(title: app.document?.title, isWeb: isWeb) { includeConversations in
                 exportActions.startBundleExport(

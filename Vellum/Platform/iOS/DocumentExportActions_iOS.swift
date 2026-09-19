@@ -49,6 +49,8 @@ struct DocumentKey_iOS: Hashable {
 @MainActor
 @Observable
 final class DocumentExportActions_iOS {
+    var showExportError = false
+    var exportErrorMessage = ""
     /// Whether the active web document is kept for offline use. Meaningless for
     /// PDF tabs, and reset by `loadSavedState` whenever the document changes.
     private(set) var pageSaved = false
@@ -132,8 +134,15 @@ final class DocumentExportActions_iOS {
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(slug).vellumweb")
             try? FileManager.default.removeItem(at: tmp)
-            guard (try? await app.sessions.exportVellumweb(
-                sessionId: sessionId, destPath: tmp.path, pages: pages)) != nil else { return }
+            do {
+                try await flushWebInkForExport(app: app, sessionId: sessionId)
+                _ = try await app.sessions.exportVellumweb(
+                    sessionId: sessionId, destPath: tmp.path, pages: pages)
+            } catch {
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
+                return
+            }
             DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
         }
     }
@@ -157,10 +166,23 @@ final class DocumentExportActions_iOS {
                 try await buildBundle(
                     app: app, sessionId: sessionId, document: document, destination: tmp,
                     includeConversations: includeConversations, pages: pages)
-            } catch { return }
+            } catch {
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
+                return
+            }
             // Not deleted afterwards: the picker copies asynchronously. Same as
             // exportVellumweb; tmp/ is reclaimed by the system.
             DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
+        }
+    }
+
+    private func flushWebInkForExport(app: AppStore, sessionId: String) async throws {
+        guard let workspace = app.workspace else { return }
+        guard await workspace.tabTeardowns.awaitAll(),
+              await workspace.existingLiveTabRuntime(for: sessionId)?
+                .webInk.flushPendingInkAndReportSuccess() != false else {
+            throw SessionServiceError.io("Your ink could not be saved. Try the export again.")
         }
     }
 
@@ -175,6 +197,9 @@ final class DocumentExportActions_iOS {
         includeConversations: Bool,
         pages: [WebPageText]
     ) async throws {
+        if document.kind == .web {
+            try await flushWebInkForExport(app: app, sessionId: sessionId)
+        }
         // The sidecar currently lives under this session's storage key — resolve
         // it BEFORE the stamp changes DocumentInfo.docId.
         let pullKey = DocumentIdentity.storageKey(for: document)

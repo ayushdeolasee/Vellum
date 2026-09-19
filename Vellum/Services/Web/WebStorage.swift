@@ -683,6 +683,20 @@ enum WebStorageMigrator {
                     clean = false
                 }
             }
+
+            // Ink sidecars ride with their records — same records dir, same
+            // newer-wins merge for a raced destination copy.
+            for name in WebInkStore.inkFileNames(inDir: source.recordsDir) {
+                let src = source.recordsDir.appendingPathComponent(name)
+                let dst = dest.recordsDir.appendingPathComponent(name)
+                if !WebICloud.materialize(at: src) {
+                    if WebICloud.itemExists(at: src) { clean = false }
+                    continue
+                }
+                if !WebInkStore.adoptInkFile(from: src, to: dst) {
+                    clean = false
+                }
+            }
         }
 
         // Managed archives: resolve each record's key to a source archive and
@@ -936,7 +950,7 @@ enum WebStorageMigrator {
                 if let existing = destinationByName[entry.name] {
                     guard existing.readiness.isReady,
                           let destinationData = try await destinationStore.read(destinationURL),
-                          let merged = mergedRecord(sourceData, into: destinationData)
+                          let merged = mergedRecord(sourceData, into: destinationData, isInk: entry.name.hasSuffix(".ink.json"))
                     else {
                         clean = false
                         continue
@@ -964,8 +978,15 @@ enum WebStorageMigrator {
 
     private static func mergedRecord(
         _ source: Data,
-        into destination: Data
+        into destination: Data,
+        isInk: Bool = false
     ) -> (data: Data, changed: Bool)? {
+        if isInk {
+            guard let incoming = try? JSONDecoder().decode(WebInkRecord.self, from: source),
+                  let current = try? JSONDecoder().decode(WebInkRecord.self, from: destination) else { return nil }
+            let newer = WebArchive.newerThan(incoming.updatedAt, current.updatedAt)
+            return (newer ? source : destination, newer)
+        }
         guard let incoming = try? JSONDecoder().decode(WebPageRecord.self, from: source),
               var current = try? JSONDecoder().decode(WebPageRecord.self, from: destination)
         else { return nil }

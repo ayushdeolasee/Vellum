@@ -333,6 +333,7 @@ final class PaneTreeTests: XCTestCase {
         let demoted = runtimes[0]
         let controllerWhileWarm = demoted.pdfController
         let documentWhileWarm = demoted.preparedDocument
+        let webInkWhileWarm = demoted.webInk
         XCTAssertFalse(demoted.isRendered)
 
         ws.activateLiveTabRuntime(demoted)
@@ -342,6 +343,7 @@ final class PaneTreeTests: XCTestCase {
         // Same controller, same parsed document: nothing was rebuilt.
         XCTAssertTrue(demoted.pdfController === controllerWhileWarm)
         XCTAssertTrue(demoted.preparedDocument === documentWhileWarm)
+        XCTAssertTrue(demoted.webInk === webInkWhileWarm)
     }
 
     /// The byte budget is only meaningful if a tab reports what it actually
@@ -385,14 +387,18 @@ final class PaneTreeTests: XCTestCase {
         let ws = makeWorkspace()
         let runtime = ws.liveTabRuntime(for: "twice")
         runtime.adoptPreparedPdf(PDFDocument(), byteCount: 100)
+        let webInkBeforeRelease = runtime.webInk
         runtime.releaseResidency()
         let controllerAfterFirst = runtime.pdfController
         let inkAfterFirst = runtime.ink
+        let webInkAfterFirst = runtime.webInk
 
         runtime.releaseResidency()
 
         XCTAssertTrue(runtime.pdfController === controllerAfterFirst)
         XCTAssertTrue(runtime.ink === inkAfterFirst)
+        XCTAssertFalse(runtime.webInk === webInkBeforeRelease)
+        XCTAssertTrue(runtime.webInk === webInkAfterFirst)
         XCTAssertTrue(runtime.isEvicted)
     }
 
@@ -462,16 +468,13 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertNotEqual(ObjectIdentifier(runtime.ink), inkBeforeEviction)
         XCTAssertTrue(runtime.isEvicted)
 
-        // …and the stroke still reached disk, written by the flush the eviction
-        // itself started.
-        let deadline = Date().addingTimeInterval(20)
-        var landed = false
-        while Date() < deadline, !landed {
-            try? await Task.sleep(for: .milliseconds(100))
-            if let document = PDFDocument(url: url), let page = document.page(at: 0) {
-                landed = PdfInk.hasInk(on: page)
-            }
-        }
+        // …and the workspace background/teardown barrier joins that exact
+        // release flush. No polling: return means the displaced controller's
+        // pending write is durable.
+        await ws.tabTeardowns.awaitAll()
+        let landed = PDFDocument(url: url)
+            .flatMap { $0.page(at: 0) }
+            .map { PdfInk.hasInk(on: $0) } ?? false
         XCTAssertTrue(landed, "eviction dropped a debounced stroke instead of flushing it")
     }
 

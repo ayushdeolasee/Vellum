@@ -43,12 +43,14 @@ struct WebViewerView_iOS: View {
     @State private var hasActivated = false
 
     private var controller: WebViewerController_iOS { runtime.webController }
+    /// Web ink has the same per-tab lifetime as the retained WKWebView.
+    private var ink: WebInkController_iOS { runtime.webInk }
 
     var body: some View {
         if hasActivated || isActive || controller.isAttached {
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
-                    WebViewRepresentable_iOS(controller: controller, isActive: isActive)
+                    WebViewRepresentable_iOS(controller: controller, isActive: isActive, ink: ink)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     // WebKit owns capture, two-finger pan, and pinch gestures.
@@ -168,6 +170,15 @@ struct WebViewerView_iOS: View {
                         .zIndex(50)
                     }
                 }
+                // Ink palette pinned to the bottom, mirroring PdfViewerView_iOS.
+                // It lives above the representable, so it stays tappable while
+                // the modal canvas intercepts every page touch.
+                .overlay(alignment: .bottom) {
+                    if ink.isActive {
+                        InkToolPalette_iOS(host: ink)
+                            .padding(.bottom, 24)
+                    }
+                }
             }
             .background(palette.well)
             .clipped()
@@ -194,10 +205,22 @@ struct WebViewerView_iOS: View {
                 controller.scrollToSelected(
                     annotations: annotationStore.annotations,
                     selectedId: annotationStore.selectedAnnotationId)
+                // Document reported in: bind the ink persister and seed any
+                // stored ink (once per URL — repeat inits are hydration
+                // re-extractions of the same document).
+                if controller.initCount > 0 {
+                    ink.documentOpened(url: document.pdfPath)
+                }
             }
             .onChange(of: annotationStore.annotations) {
                 guard isActive else { return }
                 controller.pushAnnotations(annotationStore.annotations)
+            }
+            .onChange(of: ink.toolState.tool) {
+                controller.postPencilSelection(phase: "cancel", point: .zero)
+            }
+            .onChange(of: ink.isActive) {
+                if !ink.isActive { controller.postPencilSelection(phase: "cancel", point: .zero) }
             }
             .onChange(of: app.mode) {
                 guard isActive else { return }
@@ -215,6 +238,11 @@ struct WebViewerView_iOS: View {
             .onChange(of: app.zoom) { _, zoom in
                 guard isActive else { return }
                 controller.applyZoom(zoom)
+                // viewScale reflows the page at the new layout-viewport
+                // width; the ink overlay's zoomScale KVO handles the visual
+                // scale, and this kicks the re-anchor pass that corrects
+                // cluster positions against the reflowed text (decision 8).
+                ink.zoomChanged(zoom)
             }
             .onChange(of: isActive) { _, active in
                 guard active else {
@@ -227,6 +255,9 @@ struct WebViewerView_iOS: View {
                 controller.pushMode(app.mode)
                 controller.pushSelectedHighlight()
                 controller.applyZoom(app.zoom)
+                if controller.initCount > 0 {
+                    ink.documentOpened(url: document.pdfPath)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .vellumWebHistory)) { note in
                 guard isActive else { return }
@@ -239,6 +270,10 @@ struct WebViewerView_iOS: View {
     }
 
     private func attach() {
+        ink.app = app
+        ink.webController = controller
+        controller.ink = ink
+        controller.inkAnchorsShifted = { [weak ink] in ink?.anchorsShifted() }
         controller.attach(
             app: app, annotationStore: annotationStore, aiStore: aiStore,
             tabId: tabId, document: document, runtime: runtime)
@@ -332,11 +367,14 @@ final class VellumWebView: WKWebView, VellumShortcutResponder {
     }
 }
 
-/// Hosts the controller's WKWebView. UIKit counterpart of the macOS
-/// NSViewRepresentable — no AppKit involved.
+/// Hosts the controller's WKWebView with the Pencil ink overlay mounted as a
+/// sibling directly above it (plan decision 1) — below the SwiftUI popover
+/// layer. UIKit counterpart of the macOS NSViewRepresentable — no AppKit
+/// involved.
 private struct WebViewRepresentable_iOS: UIViewRepresentable {
     let controller: WebViewerController_iOS
     let isActive: Bool
+    let ink: WebInkController_iOS
 
     @Environment(AppStore.self) private var app
     @Environment(WorkspaceStore.self) private var workspace
@@ -344,7 +382,10 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> VellumWebView {
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .clear
+
         // The controller has owned its `WKWebView` outright since this file was
         // written, so there is no "build a fresh one" branch to guard: whether
         // the view already exists or is materialised here, the same instance
@@ -363,20 +404,30 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
             scrollView: webView.scrollView,
             action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
             controller: controller,
-            regionCaptureEnabled: isActive && app.mode == .snapshotRegion)
-        return webView
+            regionCaptureEnabled: isActive && app.mode == .snapshotRegion,
+            pencilSelectionEnabled: isActive && ink.isActive && ink.toolState.tool == .textHighlight)
+        webView.frame = container.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(webView)
+        let overlay = ink.attachOverlay(to: webView)
+        overlay.frame = container.bounds
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(overlay)
+        container.addInteraction(UIPencilInteraction(delegate: overlay))
+        return container
     }
 
-    func updateUIView(_ uiView: VellumWebView, context: Context) {
+    func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.configure(
-            hostView: uiView,
-            scrollView: uiView.scrollView,
+            hostView: controller.webView,
+            scrollView: controller.webView.scrollView,
             action: isActive ? readerChromeScrollAction : ReaderChromeScrollAction(),
             controller: controller,
-            regionCaptureEnabled: isActive && app.mode == .snapshotRegion)
+            regionCaptureEnabled: isActive && app.mode == .snapshotRegion,
+            pencilSelectionEnabled: isActive && ink.isActive && ink.toolState.tool == .textHighlight)
     }
 
-    static func dismantleUIView(_ uiView: VellumWebView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
         coordinator.detach()
     }
 
@@ -384,6 +435,8 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private let chromeScrollObserver = ReaderChromeNativeScrollObserver()
         private let regionCaptureGesture = RegionCaptureGestureRecognizer()
+        private let pencilSelectionGesture = UIPanGestureRecognizer()
+        private weak var controller: WebViewerController_iOS?
         private weak var scrollView: UIScrollView?
         private var offsetObservation: NSKeyValueObservation?
         private var zoomObservation: NSKeyValueObservation?
@@ -393,8 +446,20 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
             scrollView: UIScrollView,
             action: ReaderChromeScrollAction,
             controller: WebViewerController_iOS,
-            regionCaptureEnabled: Bool
+            regionCaptureEnabled: Bool,
+            pencilSelectionEnabled: Bool
         ) {
+            self.controller = controller
+            if pencilSelectionGesture.view !== hostView {
+                pencilSelectionGesture.view?.removeGestureRecognizer(pencilSelectionGesture)
+                pencilSelectionGesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+                pencilSelectionGesture.maximumNumberOfTouches = 1
+                pencilSelectionGesture.delegate = self
+                pencilSelectionGesture.addTarget(self, action: #selector(selectTextWithPencil(_:)))
+                hostView.addGestureRecognizer(pencilSelectionGesture)
+                scrollView.panGestureRecognizer.require(toFail: pencilSelectionGesture)
+            }
+            pencilSelectionGesture.isEnabled = pencilSelectionEnabled && !regionCaptureEnabled
             chromeScrollObserver.configure(
                 scrollView: scrollView,
                 action: action,
@@ -439,11 +504,34 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
             }
         }
 
+        @objc private func selectTextWithPencil(_ gesture: UIPanGestureRecognizer) {
+            guard let controller else { return }
+            var point = gesture.location(in: controller.webView)
+            let phase: String
+            switch gesture.state {
+            case .began:
+                let translation = gesture.translation(in: controller.webView)
+                point.x -= translation.x
+                point.y -= translation.y
+                phase = "begin"
+                controller.clearSelection()
+                controller.closeNotePopovers()
+            case .changed: phase = "move"
+            case .ended: phase = "end"
+            case .cancelled, .failed: phase = "cancel"
+            default: return
+            }
+            controller.postPencilSelection(phase: phase, point: point)
+        }
+
         nonisolated func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
             MainActor.assumeIsolated {
+                if gestureRecognizer === pencilSelectionGesture || other === pencilSelectionGesture {
+                    return false
+                }
                 let involvesCapture = gestureRecognizer === regionCaptureGesture
                     || other === regionCaptureGesture
                 guard involvesCapture else { return true }
@@ -459,6 +547,9 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
             zoomObservation?.invalidate()
             zoomObservation = nil
             regionCaptureGesture.detach()
+            pencilSelectionGesture.view?.removeGestureRecognizer(pencilSelectionGesture)
+            controller?.postPencilSelection(phase: "cancel", point: .zero)
+            controller = nil
             chromeScrollObserver.detach()
             scrollView = nil
         }
@@ -561,6 +652,18 @@ final class WebViewerController_iOS: NSObject {
         self.storage = storage
         super.init()
     }
+    // Ink anchor round trips (Phase 3): batch anchor capture and batch
+    // re-resolution, keyed by requestId like the locate/capture hooks.
+    @ObservationIgnored private var pendingInkAnchorCaptures:
+        [String: ([String: WebInkRecord.Anchor]) -> Void] = [:]
+    @ObservationIgnored private var pendingInkResolves: [String: ([String: CGRect]) -> Void] = [:]
+    /// The content script observed a layout shift that may have moved ink
+    /// anchors — wired to `WebInkController_iOS.anchorsShifted` by the view.
+    @ObservationIgnored var inkAnchorsShifted: (() -> Void)?
+    /// The live tab's web ink controller, wired by the view. Used to composite the
+    /// live ink over AI/scratchpad snapshots so the model (and a scratchpad
+    /// crop) sees exactly what the user sees.
+    @ObservationIgnored weak var ink: WebInkController_iOS?
 
     @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
     var webView: VellumWebView { _webView }
@@ -603,6 +706,7 @@ final class WebViewerController_iOS: NSObject {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true,
             in: Self.bridgeWorld))
+        configuration.ignoresViewportScaleLimits = true
         let webView = VellumWebView(frame: .zero, configuration: configuration)
         didCreateWebView = true
         webView.navigationDelegate = self
@@ -636,6 +740,12 @@ final class WebViewerController_iOS: NSObject {
         // `AiStore` holds only whichever document the pane last showed.
         aiStore.restorePageTexts(runtime.pageTexts)
         applyZoom(app.zoom)
+
+        // Claim the zoom slot: `zoomIn/Out/resetZoom` route through
+        // `zoomToHandler` whenever one is registered, and a previously focused
+        // PDF pane's handler would otherwise swallow web-tab zoom presses
+        // (its closure holds that pane's controller weakly — buttons go dead).
+        app.zoomToHandler = { [weak app] target in app?.setZoom(target) }
 
         // Global hooks used by the toolbar, sidebar, and AI tool execution
         // (window.__scrollToPage / __scrollToWebPosition / __captureWebPosition
@@ -723,6 +833,7 @@ final class WebViewerController_iOS: NSObject {
     /// monitor here. There is none on iOS — the equivalent gestures come through
     /// the content script — so the two calls below are the whole of it.
     func deactivate() {
+        postPencilSelection(phase: "cancel", point: .zero)
         clearSelection()
         closeNotePopovers()
     }
@@ -770,6 +881,10 @@ final class WebViewerController_iOS: NSObject {
         pendingLocates.removeAll()
         for resolve in pendingCaptures.values { resolve(nil) }
         pendingCaptures.removeAll()
+        for resolve in pendingInkAnchorCaptures.values { resolve([:]) }
+        pendingInkAnchorCaptures.removeAll()
+        for resolve in pendingInkResolves.values { resolve([:]) }
+        pendingInkResolves.removeAll()
         // Only clear the shared handler slots when no replacement viewer has
         // taken over (handlers hold self weakly, so a stale slot is inert).
         if let app, app.activeTabId == mountTabId || app.document == nil {
@@ -825,17 +940,19 @@ final class WebViewerController_iOS: NSObject {
             in: nil, in: Self.bridgeWorld)
     }
 
+    /// iOS `WKWebView.pageZoom` is unusable for reader zoom: the viewport
+    /// shrink-to-fit pass re-fits the zoomed layout (zoom-in reflows to a
+    /// *shorter* document, zoom-out leaks a visualViewport scale the native
+    /// side never sees on `scrollView.zoomScale`, and restoring 1.0 does not
+    /// restore the original layout — all measured in
+    /// `WebInkZoomDiagnosticTests`). Use WebKit's `viewScale` SPI via KVC
+    /// instead — Safari's own AA-menu Page Zoom path, the same call Firefox
+    /// for iOS ships: the CSS layout viewport shrinks by the factor and
+    /// renders scaled back up, text and images scale uniformly, layout
+    /// reflows symmetrically, and `scrollView.zoomScale` becomes
+    /// toolbar-zoom × pinch — one unified visual scale that the ink overlay,
+    /// popover math, and snapshot compositing all key off.
     func applyZoom(_ zoom: Double) {
-        // Safari's AA Page Zoom code path: WebKit's viewScale feeds
-        // ViewportConfiguration's layoutSizeScaleFactor, which shrinks the
-        // CSS layout viewport by the factor and renders it scaled back up —
-        // text, images, and responsive breakpoints all respond exactly like
-        // Safari, reflowed with no horizontal scroll. Reached via KVC (the
-        // "viewScale" key resolves to WebKit's _setViewScale:), the same way
-        // Firefox for iOS ships its page zoom. The alternatives fail:
-        // WKWebView.pageZoom is inverted by the iOS shrink-to-fit pass, and
-        // CSS zoom scales boxes but leaves font rendering unscaled on iOS
-        // WebKit (text stays put while images grow).
         guard webView.responds(to: NSSelectorFromString("_setViewScale:")) else { return }
         webView.setValue(CGFloat(zoom), forKey: "viewScale")
     }
@@ -915,14 +1032,17 @@ final class WebViewerController_iOS: NSObject {
     }
 
     func addHighlight(color: String) {
-        guard let selection = anchoringSelection, let annotationStore else { return }
+        guard let selection = anchoringSelection, let annotationStore,
+              let sessionId = mountTabId, app?.activeTabId == sessionId else { return }
         let input = CreateAnnotationInput(
             type: .highlight,
             pageNumber: selection.pageNumber,
             color: color,
             content: nil,
             positionData: selection.positionData)
-        Task { await annotationStore.addHighlight(input) }
+        if let queued = annotationStore.enqueueHighlight(input, sessionId: sessionId) {
+            runtime?.trackAnnotationWrite(queued.persistence)
+        }
     }
 
     func addSelectionNote(content: String) {
@@ -1163,6 +1283,11 @@ final class WebViewerController_iOS: NSObject {
         ])
     }
 
+    func postPencilSelection(phase: String, point: CGPoint) {
+        guard initCount > 0 else { return }
+        post("pencil-selection", ["phase": phase, "x": point.x, "y": point.y])
+    }
+
     func pushMode(_ mode: InteractionMode) {
         guard initCount > 0 else { return }
         post("set-mode", ["mode": mode.rawValue])
@@ -1316,6 +1441,77 @@ final class WebViewerController_iOS: NSObject {
             for: .mediaBox)
     }
 
+    // MARK: Ink anchors (Phase 3)
+
+    /// Batch anchor capture for freshly inked clusters: each point (zoom-1
+    /// CSS-px document space) resolves to the nearest text position plus its
+    /// current document rect. Ids missing from the result did not resolve.
+    func captureInkAnchors(_ points: [WebInkAnchorPoint]) async -> [String: WebInkRecord.Anchor] {
+        guard initCount > 0, !points.isEmpty else { return [:] }
+        return await withCheckedContinuation { continuation in
+            let requestId = UUID().uuidString.lowercased()
+            pendingInkAnchorCaptures[requestId] = { continuation.resume(returning: $0) }
+            post("anchor-at-point", [
+                "requestId": requestId,
+                "points": points.map {
+                    [
+                        "id": $0.id,
+                        "x": $0.x,
+                        "y": $0.y,
+                        "bottom": $0.bottom,
+                        "left": $0.left,
+                        "right": $0.right,
+                    ]
+                },
+            ])
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.finishInkAnchorCapture(requestId, with: [:])
+            }
+        }
+    }
+
+    private func finishInkAnchorCapture(
+        _ requestId: String, with value: [String: WebInkRecord.Anchor]
+    ) {
+        guard let resolve = pendingInkAnchorCaptures.removeValue(forKey: requestId) else { return }
+        resolve(value)
+    }
+
+    /// Batch re-resolution of stored ink anchors against the current DOM:
+    /// each resolved id maps to the anchor's CURRENT document rect (zoom-1
+    /// CSS px). Ids missing from the result did not resolve — their clusters
+    /// stay at stored coordinates.
+    func resolveInkAnchors(_ queries: [WebInkAnchorQuery]) async -> [String: CGRect] {
+        guard initCount > 0, !queries.isEmpty else { return [:] }
+        return await withCheckedContinuation { continuation in
+            let requestId = UUID().uuidString.lowercased()
+            pendingInkResolves[requestId] = { continuation.resume(returning: $0) }
+            post("resolve-anchors", [
+                "requestId": requestId,
+                "anchors": queries.map { query -> [String: Any] in
+                    [
+                        "id": query.id,
+                        "start": query.anchor.startOffset,
+                        "end": orNull(query.anchor.endOffset),
+                        "text": orNull(query.anchor.text),
+                        "prefix": orNull(query.anchor.prefix),
+                        "suffix": orNull(query.anchor.suffix),
+                    ]
+                },
+            ])
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.finishInkResolve(requestId, with: [:])
+            }
+        }
+    }
+
+    private func finishInkResolve(_ requestId: String, with value: [String: CGRect]) {
+        guard let resolve = pendingInkResolves.removeValue(forKey: requestId) else { return }
+        resolve(value)
+    }
+
     /// Snapshot of what the reader can currently see. There is no way to render
     /// an offscreen virtual page on its own — the archived document is one
     /// continuous DOM — so "current page" means the viewport.
@@ -1328,9 +1524,46 @@ final class WebViewerController_iOS: NSObject {
         let config = WKSnapshotConfiguration()
         config.rect = rect
         guard let image = try? await webView.takeSnapshot(configuration: config) else { return nil }
-        // Stamp the page that was actually on screen when the bytes were taken,
-        // never the one a caller asked for.
-        return aiSnapshot(from: image, page: max(1, app?.currentPage ?? 1))
+        // Composite Apple Pencil ink over the page bytes so the model sees what
+        // the user sees (WEB-INK-PLAN Phase 4). Stamp the page that was actually
+        // on screen when the bytes were taken, never the one a caller asked for.
+        let composited = compositeInk(over: image, snapshotRect: rect)
+        return aiSnapshot(from: composited, page: max(1, app?.currentPage ?? 1))
+    }
+
+    /// Paint the live ink drawing over a web-view snapshot. `rect` is the
+    /// snapshot region in web-view (viewport) points — the same rect handed to
+    /// `takeSnapshot`. The drawing lives in layout CSS px, and the overlay
+    /// renders a document point `d` at viewport coordinate `d·s − offset`
+    /// (s = `scrollView.zoomScale` — toolbar zoom × pinch under viewScale,
+    /// offset = `scrollView.contentOffset`), so the document region under
+    /// `rect` is `(rect + offset) / s`. Rendering that region and stretching
+    /// it back over the whole snapshot aligns the ink pixel-for-pixel.
+    private func compositeInk(over image: UIImage, snapshotRect rect: CGRect) -> UIImage {
+        guard let drawing = ink?.overlay?.canvas.drawing, !drawing.strokes.isEmpty else {
+            return image
+        }
+        let scroll = webView.scrollView
+        let s = max(scroll.zoomScale, 0.01)
+        let offset = scroll.contentOffset
+        let region = CGRect(
+            x: (rect.minX + offset.x) / s,
+            y: (rect.minY + offset.y) / s,
+            width: rect.width / s,
+            height: rect.height / s)
+        guard region.width > 0.5, region.height > 0.5 else { return image }
+        // Render the ink region at the snapshot's pixel density: the region is
+        // `rect.size / s` document points, drawn back onto `rect.size` points,
+        // so the effective per-point density is `image.scale · s`.
+        let inkImage = drawing.image(from: region, scale: image.scale * s)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+            inkImage.draw(in: CGRect(origin: .zero, size: image.size))
+        }
     }
 
     /// Encode to the same budget the PDF vision path uses (max side 1280, JPEG
@@ -1454,6 +1687,13 @@ final class WebViewerController_iOS: NSObject {
 
         case "selection":
             handleSelection(data, app: app)
+            if data["fromPencil"] as? Bool == true {
+                if let ink = runtime?.webInk,
+                   ink.isActive, ink.toolState.tool == .textHighlight {
+                    addHighlight(color: ink.toolState.textHighlightColorHex)
+                }
+                clearSelection()
+            }
 
         case "selection-cleared":
             selection = nil
@@ -1634,9 +1874,52 @@ final class WebViewerController_iOS: NSObject {
                 finishCapture(requestId, with: nil)
             }
 
+        case "ink-anchor-result":
+            guard let requestId = data["requestId"] as? String else { break }
+            var anchors: [String: WebInkRecord.Anchor] = [:]
+            for item in (data["anchors"] as? [[String: Any]]) ?? [] {
+                guard let id = item["id"] as? String,
+                      item["found"] as? Bool == true,
+                      let start = intValue(item["start"]),
+                      let rect = docRect(item["rect"]) else { continue }
+                anchors[id] = WebInkRecord.Anchor(
+                    startOffset: start,
+                    endOffset: intValue(item["end"]),
+                    text: item["text"] as? String,
+                    prefix: item["prefix"] as? String,
+                    suffix: item["suffix"] as? String,
+                    rect: WebInkRecord.Bounds(rect),
+                    page: intValue(item["pageNumber"]))
+            }
+            finishInkAnchorCapture(requestId, with: anchors)
+
+        case "ink-anchors-resolved":
+            guard let requestId = data["requestId"] as? String else { break }
+            var rects: [String: CGRect] = [:]
+            for item in (data["anchors"] as? [[String: Any]]) ?? [] {
+                guard let id = item["id"] as? String,
+                      item["found"] as? Bool == true,
+                      let rect = docRect(item["rect"]) else { continue }
+                rects[id] = rect
+            }
+            finishInkResolve(requestId, with: rects)
+
+        case "ink-anchors-shifted":
+            inkAnchorsShifted?()
+
         default:
             break
         }
+    }
+
+    /// A `{x, y, w, h}` document rect from a bridge payload.
+    private func docRect(_ value: Any?) -> CGRect? {
+        guard let dict = value as? [String: Any],
+              let x = doubleValue(dict["x"]),
+              let y = doubleValue(dict["y"]),
+              let w = doubleValue(dict["w"]),
+              let h = doubleValue(dict["h"]) else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
     }
 
     /// Rebind the tab to a new page and reload the reader — used by the
@@ -1670,6 +1953,11 @@ final class WebViewerController_iOS: NSObject {
 
     private func handleInit(_ data: [String: Any], app: AppStore) {
         guard let tabId = app.activeTabId, let currentDoc = app.document else { return }
+
+        // viewScale is per-page-load state in WebKit (MobileSafari re-applies
+        // it on every navigation commit) — re-assert so a follow link or
+        // reload keeps the reader's zoom.
+        applyZoom(app.zoom)
 
         let reportedUrl = data["url"] as? String
 

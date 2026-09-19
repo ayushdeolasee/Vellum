@@ -636,6 +636,234 @@ enum WebContentScript {
   }
 
   // ------------------------------------------------------------------
+  // Ink anchors (Pencil ink clusters → nearest text position)
+  //
+  // The native ink overlay stores strokes in zoom-1 CSS-pixel document
+  // space — the exact coordinate space of getBoundingClientRect() +
+  // window.scroll offsets here (pageZoom scales rendering, not JS
+  // coordinates). Each stroke cluster is anchored to the nearest text
+  // position, described exactly like a highlight (raw offset + snippet +
+  // text-quote context) so it re-resolves after reflows; the anchor's
+  // document rect at capture time is the reference point the app
+  // translates the cluster against after each relayout.
+  // ------------------------------------------------------------------
+
+  // Document rect of the first character at a raw offset, or null when the
+  // range can't be built or renders collapsed at the origin (detached node).
+  // Capture and re-resolution both measure through this one helper so the
+  // before/after rects the app subtracts are always commensurable.
+  function docRectOfRaw(offset) {
+    var range = rangeFromRaw(offset, Math.min(rawText.length, offset + 1));
+    if (!range) return null;
+    var rect = range.getBoundingClientRect();
+    if (!isFinite(rect.top) || !isFinite(rect.left)) return null;
+    if (rect.width === 0 && rect.height === 0 && rect.top === 0 && rect.left === 0) return null;
+    return {
+      x: rect.left + window.scrollX,
+      y: rect.top + window.scrollY,
+      w: rect.width,
+      h: rect.height,
+    };
+  }
+
+  // Full rendered fragment for the text node/visual line containing `offset`.
+  // A one-character rect is enough for re-resolution, but anchor capture also
+  // needs the line's horizontal extent to decide which of two touching rows a
+  // boundary-adjacent underline belongs to.
+  function lineFragmentRectOfRaw(offset, characterRect) {
+    var index = entryIndexForRaw(offset);
+    if (index === -1) return characterRect;
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(entries[index].node);
+      var rects = range.getClientRects();
+      if (!rects || rects.length === 0) return characterRect;
+      var characterCenter = characterRect.y + characterRect.h / 2;
+      var best = null;
+      var bestDistance = Infinity;
+      for (var i = 0; i < rects.length; i++) {
+        var rect = rects[i];
+        if (!isFinite(rect.top) || !isFinite(rect.left)) continue;
+        var top = rect.top + window.scrollY;
+        var center = top + rect.height / 2;
+        var distance = Math.abs(center - characterCenter);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = {
+            x: rect.left + window.scrollX,
+            y: top,
+            w: rect.width,
+            h: rect.height,
+          };
+        }
+      }
+      return best || characterRect;
+    } catch (err) {
+      return characterRect;
+    }
+  }
+
+  // Rendered document-Y at/just after a raw offset, skipping unmeasurable
+  // stretches (whitespace runs, display:none nodes).
+  function docTopNear(offset) {
+    var stride = 1;
+    for (var o = offset; o < rawText.length && o <= offset + 512; o += stride) {
+      var rect = docRectOfRaw(o);
+      if (rect) return { top: rect.y, offset: o };
+      stride = Math.min(64, stride * 2);
+    }
+    return null;
+  }
+
+  // Raw offset whose rendered document-Y is nearest `docY`, by binary search
+  // over the raw text (document-Y is monotone in raw offset for flowing
+  // article text; the occasional float/multi-column wobble only costs
+  // precision, and translation — not pinpointing — is what anchors are for).
+  // Used when the anchor point is outside the viewport, where
+  // caretRangeFromPoint cannot hit-test.
+  function rawOffsetNearDocY(docY) {
+    if (rawText.length === 0) return null;
+    var lo = 0;
+    var hi = rawText.length - 1;
+    var guard = 0;
+    while (lo < hi && guard++ < 48) {
+      var mid = (lo + hi) >> 1;
+      var probe = docTopNear(mid);
+      if (!probe) {
+        // Nothing measurable at/after mid within the scan window: the answer
+        // is before it.
+        hi = Math.max(lo, mid - 1);
+        continue;
+      }
+      if (probe.top < docY) {
+        lo = probe.offset + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return Math.max(0, Math.min(lo, rawText.length - 1));
+  }
+
+  // Raw offset for one document-space point: viewport hit-test when the
+  // point is on screen (precise in multi-column layouts), else the
+  // document-Y binary search.
+  function inkOffsetAtDocPoint(docX, docY) {
+    var vx = docX - window.scrollX;
+    var vy = docY - window.scrollY;
+    if (vx >= 0 && vx <= window.innerWidth && vy >= 0 && vy <= window.innerHeight) {
+      var candidate = rawOffsetAtPoint(vx, vy);
+      if (candidate !== null) {
+        var probe = rangeFromRaw(candidate, Math.min(rawText.length, candidate + 1));
+        // Recheck the resolved node — a caret over non-text content resolves
+        // to a nearby node that may itself be pinned chrome.
+        if (probe && !isPinned(probe.startContainer)) return candidate;
+      }
+      return null;
+    }
+    return rawOffsetNearDocY(docY);
+  }
+
+  // Text anchor for an ink cluster's vertical band (document space, zoom-1
+  // CSS px). The band alone cannot say which line the ink annotates — an
+  // underline sits BELOW its word (a caret hit at the band top lands in the
+  // next line's box), a circle surrounds its word, a strike crosses it — so
+  // probe several heights in and just above the band and score each distinct
+  // resolved line by vertical geometry. When two touching rows are both
+  // plausible, horizontal overlap between the stroke and the full visual text
+  // fragment breaks the tie. Optional bounds preserve compatibility with old
+  // archived snapshots whose cached scripts send only a point.
+  function inkAnchorAtDocPoint(docX, docTop, docBottom, docLeft, docRight) {
+    if (rawText.length === 0 || !isFinite(docX) || !isFinite(docTop)) return null;
+    if (!isFinite(docBottom) || docBottom < docTop) docBottom = docTop;
+    var hasHorizontalBand =
+      isFinite(docLeft) && isFinite(docRight) && docRight > docLeft;
+    var bandWidth = hasHorizontalBand ? docRight - docLeft : 0;
+    var probes = [
+      docTop + 1,
+      docTop - 5,
+      docTop - 12,
+      docTop - 22,
+      (docTop + docBottom) / 2,
+      docBottom - 1,
+    ];
+    var seenLines = {};
+    var best = null;
+    for (var pi = 0; pi < probes.length; pi++) {
+      var candidate = inkOffsetAtDocPoint(docX, probes[pi]);
+      if (candidate === null) continue;
+      var start = candidate;
+      while (start < rawText.length && isSpaceCode(rawText.charCodeAt(start))) start++;
+      if (start >= rawText.length) start = Math.max(0, rawText.length - 1);
+      var rect = docRectOfRaw(start);
+      if (!rect) continue;
+      var lineKey = Math.round(rect.y / 4);
+      if (seenLines[lineKey]) continue;
+      seenLines[lineKey] = true;
+      var lineTop = rect.y;
+      var lineBottom = rect.y + rect.h;
+      // Line boxes tile with no gap, so overlap alone cannot tell the
+      // annotated word from the next line — a stroke 1px into the next
+      // line's box "overlaps" it while the word above merely touches. The
+      // line's CENTER relative to the band top is the discriminator, and
+      // within a class, the distance from the line's bottom to the band top
+      // (an underline hugs its word's bottom edge).
+      var lineH = Math.max(8, rect.h);
+      var lineCenter = rect.y + rect.h / 2;
+      var score;
+      if (lineCenter < docTop) {
+        // Line sits above the band: the underlined word candidate. 0 when
+        // its bottom edge touches the band top, growing with the gap.
+        score = Math.min(2, Math.abs(docTop - lineBottom) / lineH);
+      } else if (lineCenter <= docBottom) {
+        // Line center inside the band: struck-through text, or the word
+        // inside a circle/box when the band is taller than a line.
+        score = docBottom - docTop > 1.5 * lineH ? 0.05 : 0.35;
+      } else if (lineTop <= docBottom) {
+        // The cluster touches the very top of the following line box. It can
+        // be an underline of that following line (Pencil bounds extend above
+        // the visible centerline), so keep it competitive and let horizontal
+        // overlap decide instead of categorically rejecting it.
+        score = 0.35;
+      } else {
+        // Center below the band: the next line's box. Last resort only.
+        score = 4 + Math.min(1, Math.max(0, lineTop - docBottom) / 200);
+      }
+      if (hasHorizontalBand) {
+        var fragment = lineFragmentRectOfRaw(start, rect);
+        var overlap = Math.max(
+          0,
+          Math.min(docRight, fragment.x + fragment.w) - Math.max(docLeft, fragment.x)
+        );
+        var coverage = Math.min(1, overlap / bandWidth);
+        score += 1 - coverage;
+      }
+      if (!best || score < best.score) best = { start: start, rect: rect, score: score };
+      if (best.score === 0) break;
+    }
+    if (!best) return null;
+    var start = best.start;
+    var end = Math.min(rawText.length, start + 160);
+    var text = collapseWs(rawText.slice(start, end)).trim();
+    if (!text) return null;
+    var ctx = quoteContext(start, end);
+    return {
+      start: start,
+      end: end,
+      text: text,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      rect: best.rect,
+    };
+  }
+
+  // Signal the app that ink anchors may have moved (reflow, hydration, SPA
+  // re-render). The app answers with a batched resolve-anchors pass; posting
+  // is cheap and the app no-ops when the document has no ink.
+  function reportInkShift() {
+    post("ink-anchors-shifted");
+  }
+
+  // ------------------------------------------------------------------
   // Highlight overlays (document-coordinate divs; pointer-events: none)
   // ------------------------------------------------------------------
 
@@ -1317,6 +1545,9 @@ enum WebContentScript {
     renderHighlights();
     if (findMatches.length > 0) renderFind();
     reportScroll(true);
+    // Resize / font load / observed layout change: ink clusters may have
+    // drifted from their text.
+    reportInkShift();
   }, 250);
 
   // ------------------------------------------------------------------
@@ -1468,10 +1699,61 @@ enum WebContentScript {
   // selection to the app shell.
   var lastSelectionKey = null;
 
-  function reportSelection() {
+  // Pencil drags use the same DOM selection and annotation menu as touch.
+  // Coordinates arrive in view points; hit-testing uses the layout viewport.
+  var pencilSelectionStart = null;
+  function pencilWordAtPoint(x, y) {
+    var visual = window.visualViewport;
+    var scale = visual && visual.scale > 0 ? visual.scale : 1;
+    x = x / scale + (visual ? visual.offsetLeft : 0);
+    y = y / scale + (visual ? visual.offsetTop : 0);
+    var offset = rawOffsetAtPoint(x, y);
+    if (offset === null || !rawText.length) return null;
+    offset = Math.min(offset, rawText.length - 1);
+    // Caret lookup may snap across whitespace; require nearby rendered text.
+    for (var candidate = offset; candidate >= Math.max(0, offset - 1); candidate--) {
+      if (/\s/.test(rawText[candidate])) continue;
+      var probe = rangeFromRaw(candidate, candidate + 1);
+      if (!probe) continue;
+      var rect = probe.getBoundingClientRect();
+      if (x < rect.left - 12 || x > rect.right + 12 || y < rect.top - 8 || y > rect.bottom + 8) continue;
+      var segment = new Intl.Segmenter(undefined, { granularity: "word" })
+        .segment(rawText).containing(candidate);
+      if (segment) return { start: segment.index, end: segment.index + segment.segment.length };
+    }
+    return null;
+  }
+
+  function selectWithPencil(d) {
+    if (d.phase === "cancel") {
+      if (pencilSelectionStart) window.getSelection().removeAllRanges();
+      pencilSelectionStart = null;
+      return;
+    }
+    var word = pencilWordAtPoint(d.x, d.y);
+    if (d.phase === "begin") pencilSelectionStart = word;
+    if (!pencilSelectionStart) return;
+    if (word) {
+      var range = rangeFromRaw(Math.min(pencilSelectionStart.start, word.start),
+        Math.max(pencilSelectionStart.end, word.end));
+      if (range) {
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    if (d.phase === "end") {
+      pencilSelectionStart = null;
+      lastSelectionKey = null;
+      reportSelection(true);
+      window.getSelection().removeAllRanges();
+    }
+  }
+
+  function reportSelection(fromPencil) {
     // A resize also changes/clears the native selection internally. Keep those
     // transient events from dismissing the selected highlight's editor.
-    if (resizing) return;
+    if (resizing || pencilSelectionStart) return;
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       lastSelectionKey = null;
@@ -1514,6 +1796,7 @@ enum WebContentScript {
 
     var ctx = quoteContext(start, end);
     post("selection", {
+      fromPencil: fromPencil === true,
       text: text,
       start: start,
       end: end,
@@ -1541,7 +1824,7 @@ enum WebContentScript {
   var lastTouchReport = 0;
   if (touchSelection) {
     document.addEventListener("selectionchange", function () {
-      if (resizing) return;
+      if (resizing || pencilSelectionStart) return;
       var sel = window.getSelection();
       if (!sel || sel.isCollapsed) return;
       var now = Date.now();
@@ -1555,7 +1838,7 @@ enum WebContentScript {
   document.addEventListener(
     "selectionchange",
     debounce(function () {
-      if (resizing) return;
+      if (resizing || pencilSelectionStart) return;
       var sel = window.getSelection();
       if (!sel || sel.isCollapsed) {
         lastSelectionKey = null;
@@ -1825,6 +2108,11 @@ enum WebContentScript {
         break;
       }
 
+      case "pencil-selection": {
+        selectWithPencil(d);
+        break;
+      }
+
       case "set-mode": {
         noteMode = d.mode === "note";
         try {
@@ -1943,6 +2231,76 @@ enum WebContentScript {
           offset: anchor ? anchor.offset : null,
           pageNumber: anchor ? anchor.pageNumber : null,
         });
+        break;
+      }
+
+      case "anchor-at-point": {
+        // Batch: one text anchor (raw offset + quote context + current
+        // document rect) per ink-cluster band, in zoom-1 CSS-px document
+        // space both ways.
+        var anchorPts = d.points || [];
+        var anchorsOut = [];
+        for (var api = 0; api < anchorPts.length; api++) {
+          var capturedAnchor = inkAnchorAtDocPoint(
+            Number(anchorPts[api].x),
+            Number(anchorPts[api].y),
+            Number(anchorPts[api].bottom),
+            Number(anchorPts[api].left),
+            Number(anchorPts[api].right)
+          );
+          anchorsOut.push(
+            capturedAnchor
+              ? {
+                  id: anchorPts[api].id,
+                  found: true,
+                  start: capturedAnchor.start,
+                  end: capturedAnchor.end,
+                  text: capturedAnchor.text,
+                  prefix: capturedAnchor.prefix,
+                  suffix: capturedAnchor.suffix,
+                  rect: capturedAnchor.rect,
+                  // Virtual page of the anchored text, for the sidebar
+                  // Handwriting jump list.
+                  pageNumber: pageForRaw(capturedAnchor.start),
+                }
+              : { id: anchorPts[api].id, found: false }
+          );
+        }
+        post("ink-anchor-result", { requestId: d.requestId, anchors: anchorsOut });
+        break;
+      }
+
+      case "resolve-anchors": {
+        // Batch re-resolution of stored ink anchors against the current DOM:
+        // same fuzzy machinery as highlights (offset validation, then scored
+        // quote search). Anchors without a stored quote still resolve by raw
+        // offset — correct across pure layout reflow, where offsets are
+        // stable and only the rect moves.
+        var anchorReqs = d.anchors || [];
+        var resolvedOut = [];
+        for (var ari = 0; ari < anchorReqs.length; ari++) {
+          var areq = anchorReqs[ari];
+          var hasStart = typeof areq.start === "number";
+          var resolvedAnchor = resolveHighlight({
+            start: hasStart ? areq.start : null,
+            end:
+              typeof areq.end === "number"
+                ? areq.end
+                : hasStart
+                  ? Math.min(rawText.length, areq.start + 1)
+                  : null,
+            text: typeof areq.text === "string" ? areq.text : "",
+            prefix: typeof areq.prefix === "string" ? areq.prefix : null,
+            suffix: typeof areq.suffix === "string" ? areq.suffix : null,
+          });
+          var resolvedRect = resolvedAnchor ? docRectOfRaw(resolvedAnchor.start) : null;
+          resolvedOut.push(
+            resolvedRect
+              ? { id: areq.id, found: true, start: resolvedAnchor.start, rect: resolvedRect }
+              : { id: areq.id, found: false }
+          );
+        }
+        post("ink-anchors-resolved", { requestId: d.requestId, anchors: resolvedOut });
         break;
       }
 
@@ -2202,6 +2560,7 @@ enum WebContentScript {
     // Late-rendering pages (client-side hydration): re-extract once settled.
     setTimeout(function () {
       initialize(false);
+      reportInkShift();
     }, 2000);
   }
 

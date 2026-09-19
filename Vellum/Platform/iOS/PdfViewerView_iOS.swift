@@ -105,7 +105,7 @@ struct PdfViewerView_iOS: View {
                 }
                 .overlay(alignment: .bottom) {
                     if ink.isActive {
-                        InkToolPalette_iOS(ink: ink) { ink.isActive = false }
+                        InkToolPalette_iOS(host: ink)
                             .padding(.bottom, 24)
                     }
                 }
@@ -154,6 +154,11 @@ struct PdfViewerView_iOS: View {
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
+                // KEEP Vellum ink annotations, exactly like `adopt`'s
+                // `stripEmbeddedAnnotations`: Pencil ink renders natively via
+                // PDFKit and is the seed source for the overlay canvases, so a
+                // blanket strip here erased persisted ink on cold reopen (ink
+                // drawn last session vanished on relaunch / fresh-from-Recents).
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
                     guard let document = PDFDocument(data: data) else {
                         return PreparedPdf(document: nil, handwritingPages: [])

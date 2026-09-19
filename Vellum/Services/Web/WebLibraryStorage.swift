@@ -195,14 +195,15 @@ actor WebLibraryStorage {
         snapshotHtml: String,
         assets: [CapturedAsset],
         pagesJson: Data,
-        annotations: [Annotation]
+        annotations: [Annotation],
+        inkJson: Data? = nil
     ) async throws -> (path: String, bytes: Int) {
         let data = try WebArchive.encodeArchive(
             manifest: manifest,
             snapshotHtml: snapshotHtml,
             assets: assets,
             pagesJson: pagesJson,
-            annotations: annotations)
+            annotations: annotations, inkJson: inkJson)
 
         await acquireIndex()
         defer { releaseIndex() }

@@ -275,6 +275,84 @@ final class WebStorageLocationTests: XCTestCase {
             "merged legacy copy is removed")
     }
 
+    // MARK: - Ink sidecar relocation (Phase 4)
+
+    private func inkCluster(_ id: String, byte: UInt8) -> WebInkRecord.Cluster {
+        WebInkRecord.Cluster(
+            id: id, drawing: Data([byte]),
+            bounds: WebInkRecord.Bounds(CGRect(x: 0, y: 0, width: 10, height: 10)),
+            anchor: nil)
+    }
+
+    private func makeInkRecord(
+        url: String, updatedAt: String, clusters: [WebInkRecord.Cluster]
+    ) -> WebInkRecord {
+        WebInkRecord(
+            version: 1, url: url, updatedAt: updatedAt,
+            layout: WebInkRecord.Layout(contentWidth: 980, docHeight: 1000),
+            clusters: clusters)
+    }
+
+    func testRelocateMovesInkSidecarAlongsideRecord() throws {
+        let url = "https://example.com/inked"
+        let key = try makeLocalRecord(url: url, title: "Inked")
+        let ink = makeInkRecord(
+            url: url, updatedAt: WebLibrary.rfc3339Now(), clusters: [inkCluster("a", byte: 1)])
+        try WebInkStore.writeRecord(ink, to: storeDir.appendingPathComponent("\(key).ink.json"))
+
+        WebLibrary.layoutOverride = prettyLayout
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
+
+        let fm = FileManager.default
+        // The sidecar rode along to the new records dir…
+        XCTAssertTrue(fm.fileExists(
+            atPath: prettyLayout.recordsDir.appendingPathComponent("\(key).ink.json").path))
+        XCTAssertFalse(fm.fileExists(
+            atPath: storeDir.appendingPathComponent("\(key).ink.json").path))
+        // …and the page record moved too (the ink sidecar didn't shadow it as
+        // a record: both end in `.json`).
+        XCTAssertTrue(fm.fileExists(
+            atPath: prettyLayout.recordsDir.appendingPathComponent("\(key).json").path))
+        XCTAssertEqual(WebInkStore.loadRecord(forKey: key), ink)
+        // The record listing must not have picked up the ink sidecar as a page.
+        XCTAssertEqual(WebLibrary.listSaved().count, 1)
+    }
+
+    func testRelocateMergesInkWhenBothCopiesExistNewerWins() throws {
+        let url = "https://example.com/inkrace"
+        let key = try makeLocalRecord(url: url, title: "Race")
+
+        // Destination (pretty) already holds an older sidecar (a fallback read
+        // wrote it there); the legacy source was inked more recently.
+        WebLibrary.layoutOverride = prettyLayout
+        try FileManager.default.createDirectory(
+            at: prettyLayout.recordsDir, withIntermediateDirectories: true)
+        let destInk = makeInkRecord(
+            url: url, updatedAt: "2026-01-01T00:00:00.000000+00:00",
+            clusters: [inkCluster("a", byte: 1)])
+        try WebInkStore.writeRecord(
+            destInk, to: prettyLayout.recordsDir.appendingPathComponent("\(key).ink.json"))
+
+        let srcInk = makeInkRecord(
+            url: url, updatedAt: "2026-02-01T00:00:00.000000+00:00",
+            clusters: [inkCluster("a", byte: 9), inkCluster("b", byte: 2)])
+        try WebInkStore.writeRecord(
+            srcInk, to: storeDir.appendingPathComponent("\(key).ink.json"))
+
+        XCTAssertTrue(WebStorageMigrator.relocateDirect(from: localLayout, to: prettyLayout))
+
+        let merged = try XCTUnwrap(WebInkStore.loadRecord(forKey: key))
+        XCTAssertEqual(merged.updatedAt, srcInk.updatedAt, "the newer source wins")
+        XCTAssertEqual(Set(merged.clusters.map(\.id)), ["a", "b"])
+        XCTAssertEqual(
+            merged.clusters.first(where: { $0.id == "a" })?.drawing, Data([9]),
+            "the newer source's cluster a replaced the older destination copy")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: storeDir.appendingPathComponent("\(key).ink.json").path),
+            "the merged source copy is removed")
+    }
+
     // MARK: - Removal in pretty layouts
 
     func testRemoveLocalSnapshotsClearsPrettyArchiveAndIndexEntry() throws {

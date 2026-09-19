@@ -260,7 +260,9 @@ enum WebLibrary {
     nonisolated(unsafe) private static var recordLocks: [String: NSLock] = [:]
     private static let recordLocksGuard = NSLock()
 
-    private static func recordLock(for path: URL) -> NSLock {
+    /// Internal (not private) so `WebInkStore` serializes its `<key>.ink.json`
+    /// writes through the same per-path registry.
+    static func recordLock(for path: URL) -> NSLock {
         recordLocksGuard.lock()
         defer { recordLocksGuard.unlock() }
         if let existing = recordLocks[path.path] { return existing }
@@ -403,11 +405,18 @@ enum WebLibrary {
         }
         var out = Set<String>()
         for name in names {
+            // Ink sidecars (`<key>.ink.json`) also end in `.json` but are NOT
+            // page records — they relocate through `WebInkStore.inkFileNames` /
+            // `adoptInkFile` and must never be treated as (or decoded as) a
+            // `WebPageRecord` here.
+            if name.hasSuffix(".ink.json") {
+                continue
+            }
             if name.hasSuffix(".json") {
                 out.insert(name)
             } else if let logical = WebICloud.logicalURL(
                 forPlaceholder: dir.appendingPathComponent(name)),
-                logical.pathExtension == "json"
+                logical.pathExtension == "json", !logical.lastPathComponent.hasSuffix(".ink.json")
             {
                 out.insert(logical.lastPathComponent)
             }
