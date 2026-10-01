@@ -6,24 +6,25 @@ import SwiftUI
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
+    @MainActor private var isTerminating = false
 
-    /// Finder double-click / drag-onto-dock for registered types (.pdf,
-    /// .vellumweb, .vellum). Routes into the focused pane's store the same way
-    /// ContentView.openFilePanel does — `openFiles` dispatches each extension
-    /// (bundle import, archive import, or plain PDF open).
+    /// Finder document opens and browser-extension webpage routes both arrive
+    /// here. Each target uses the same opener as the equivalent in-app action.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
-            Self.workspace?.openExternalFiles(urls)
+            guard !isTerminating, let workspace = Self.workspace else { return }
+            workspace.openExternalURLs(urls)
         }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
-            // External opens can still be restoring/importing when quit arrives.
-            // Drain them before snapshotting panes or deciding which sessions close.
+            isTerminating = true
             Task { @MainActor in
-                await workspace.awaitPendingExternalFileOpens()
+                // Finish external opens before snapshotting tabs or draining
+                // their persistence, including a cold launch followed by quit.
+                await workspace.awaitPendingExternalOpens()
                 let leaves = workspace.root.allLeaves()
                 for leaf in leaves { leaf.scratchpad.flush() }
                 await workspace.saveNowAfterPendingPositionRecords()

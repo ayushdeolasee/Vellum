@@ -237,7 +237,7 @@ struct VellumApp_iOS: App {
             return
         }
 
-        workspace.openExternalFiles([url])
+        workspace.openExternalURLs([url])
     }
 
     @MainActor
