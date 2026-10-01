@@ -198,6 +198,11 @@ struct InspectorTabSwitcher: View {
             ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
+                #if os(macOS)
+                if showTitles && tab != WorkspaceStore.SidebarTab.allCases.first {
+                    Spacer(minLength: 0)
+                }
+                #endif
                 Button {
                     selection = tab
                 } label: {
@@ -232,7 +237,11 @@ struct InspectorTabSwitcher: View {
                     // target is a touch requirement here too, and keeping the
                     // two platforms structurally identical is what stops the
                     // next port from re-introducing #112.
+                    #if os(macOS)
+                    .frame(maxWidth: showTitles ? nil : .infinity, maxHeight: .infinity)
+                    #else
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    #endif
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -258,6 +267,9 @@ struct InspectorTabSwitcher: View {
             }
         }
         .font(.callout)
+        #if os(macOS)
+        .frame(maxWidth: .infinity)
+        #endif
         .padding(InspectorLayout.trackPadding)
         // The recessed track behind the thumb, from the palette for the same
         // reason: `muted` is defined for both schemes and stays visible against
