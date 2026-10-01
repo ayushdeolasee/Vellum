@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 struct ContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
@@ -109,6 +110,7 @@ struct ContentView: View {
     /// the tab-cycle chords).
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         guard let window = event.window, window === hostWindow else { return false }
+        guard !sheets.sheetPresented, window.attachedSheet == nil else { return false }
         let app = focused.app
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = modifiers.contains(.command)
@@ -192,14 +194,13 @@ struct ContentView: View {
         if responder is NSTextView || responder is NSTextField || responder is NSSearchField {
             return true
         }
-        // The scratchpad editor is a WKWebView (CodeMirror), so typing there
-        // makes a private WebKit content view first responder rather than an
-        // NSTextView. Walk the responder's view ancestry for the scratchpad's
-        // marker WebView so bare-key shortcuts (e.g. `N`) don't fire mid-edit.
+        // Web content uses a private WebKit view as first responder. Let it
+        // own bare keys so HTML inputs in the reader or companion browser,
+        // as well as the scratchpad editor, do not trigger document tools.
         if let view = responder as? NSView {
             var ancestor: NSView? = view
             while let current = ancestor {
-                if current is ScratchpadWebView { return true }
+                if current is WKWebView { return true }
                 ancestor = current.superview
             }
         }

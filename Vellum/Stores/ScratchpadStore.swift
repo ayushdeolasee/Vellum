@@ -103,6 +103,18 @@ final class ScratchpadStore {
     /// few seconds; nil when no warning is showing.
     private(set) var dropWarning: String?
     private(set) var isPersistencePaused = false
+    /// Ephemeral identity for the editor bridge. It changes when an
+    /// authoritative note belongs to a different document or tab, so queued
+    /// WebKit messages cannot edit the note loaded after them.
+    private(set) var editorContext = UUID().uuidString
+    private var editorDocument: DocumentInfo?
+    private var editorSessionId: String?
+    private var resetsEditorContextOnLoad = false
+    var editorAcceptsChanges: Bool {
+        guard !isPersistencePaused else { return false }
+        guard let app else { return true }
+        return currentSessionId == app.activeTabId
+    }
 
     /// Weak like `AiStore.app` — the store is owned by the pane, which owns the
     /// AppStore too, so a strong reference here would be a cycle.
@@ -179,10 +191,15 @@ final class ScratchpadStore {
     @discardableResult
     func discardAndReload(for document: DocumentInfo?) -> Task<Void, Never> {
         invalidatePendingWrite(matchingKey: currentKey)
+        editorContext = UUID().uuidString
         if coordinator == nil {
             restoreDirect(document: document)
             return Task {}
         }
+        isPersistencePaused = true
+        // The loading editor may already have observed the invalidation token.
+        // Give the authoritative replacement its own history when it arrives.
+        resetsEditorContextOnLoad = true
         return Task { [weak self] in
             guard let self else { return }
             await self.restoreCoordinated(document: document)
@@ -206,6 +223,7 @@ final class ScratchpadStore {
         guard let coordinator else { return }
         stateGeneration &+= 1
         let generation = stateGeneration
+        isPersistencePaused = true
         currentDocument = document
         currentSessionId = app?.activeTabId
         guard let document else {
@@ -798,10 +816,37 @@ final class ScratchpadStore {
     }
 
     private func setLoaded(_ value: String) {
+        let sameDocument: Bool
+        switch (editorDocument, currentDocument) {
+        case (nil, nil): sameDocument = true
+        case let (previous?, current?):
+            if let previousId = previous.docId, !previousId.isEmpty,
+               let currentId = current.docId, !currentId.isEmpty {
+                sameDocument = previous.kind == current.kind && previousId == currentId
+            } else {
+                sameDocument = isSameDocument(previous, current)
+            }
+        default: sameDocument = false
+        }
+        if !sameDocument || editorSessionId != currentSessionId || resetsEditorContextOnLoad {
+            editorContext = UUID().uuidString
+        }
+        resetsEditorContextOnLoad = false
+        editorDocument = currentDocument
+        editorSessionId = currentSessionId
         persistedBaseline = value
         pendingRebaseBaseline = nil
         pendingMarkdownInsertions.removeAll()
         setRestored(value)
+    }
+
+    /// The editor's event carries the context that produced it, rather than
+    /// implicitly following the coordinator's newest SwiftUI binding.
+    @discardableResult
+    func acceptEditorChange(_ value: String, context: String) -> Bool {
+        guard context == editorContext, editorAcceptsChanges else { return false }
+        if text != value { text = value }
+        return true
     }
 
     private func loadCoordinatedAttachments(

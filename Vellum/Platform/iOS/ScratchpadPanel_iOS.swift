@@ -579,7 +579,7 @@ func scratchpadCapture(from data: Data) -> ScratchpadImageCapture? {
 /// Resolves `vellum-scratchpad://<id>` from this pane's staged byte resolver.
 /// It never reads an iCloud documents-root URL directly.
 final class ScratchpadAttachmentSchemeHandler: NSObject, WKURLSchemeHandler {
-    private let resolver: ScratchpadAttachmentResolver
+    var resolver: ScratchpadAttachmentResolver
 
     init(resolver: ScratchpadAttachmentResolver) {
         self.resolver = resolver
@@ -642,6 +642,7 @@ final class ScratchpadWebView: WKWebView, UIDropInteractionDelegate {
     }
 
     func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
+        let onImageDrop = onImageDrop
         for item in session.items {
             let provider = item.itemProvider
             guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else { continue }
@@ -649,9 +650,9 @@ final class ScratchpadWebView: WKWebView, UIDropInteractionDelegate {
             // completion already runs off-main) so a large drop can't stall the
             // UI, then report back on the main queue — mirroring the SwiftUI
             // item-provider path.
-            loadScratchpadCapture(from: provider) { [weak self] capture in
+            loadScratchpadCapture(from: provider) { capture in
                 guard let capture else { return }
-                DispatchQueue.main.async { self?.onImageDrop?(capture) }
+                DispatchQueue.main.async { onImageDrop?(capture) }
             }
         }
     }
@@ -687,9 +688,9 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
         config.userContentController = controller
         // Serve `vellum-scratchpad://<id>` image references from disk. The
         // configuration retains the handler, so a fresh instance is fine.
-        config.setURLSchemeHandler(
-            ScratchpadAttachmentSchemeHandler(resolver: store.attachmentResolver),
-            forURLScheme: ScratchpadAttachmentStore.scheme)
+        let attachmentHandler = ScratchpadAttachmentSchemeHandler(resolver: store.attachmentResolver)
+        context.coordinator.attachmentHandler = attachmentHandler
+        config.setURLSchemeHandler(attachmentHandler, forURLScheme: ScratchpadAttachmentStore.scheme)
 
         let webView = ScratchpadWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -702,13 +703,17 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
         context.coordinator.webView = webView
 
         // Route snapshot/drop insertions from the store into the editor.
-        store.insertMarkdownHandler = { [weak coordinator = context.coordinator] markdown in
-            coordinator?.enqueueInsert(markdown)
+        store.insertMarkdownHandler = { [weak coordinator = context.coordinator, weak store] markdown in
+            guard let store else { return }
+            coordinator?.enqueueInsert(markdown, store: store)
         }
         // Images dropped onto the editor body are consumed by the WebView (it
         // owns its own drop interaction, ahead of SwiftUI's onDrop).
+        let editorContext = store.editorContext
         webView.onImageDrop = { [weak store] capture in
-            store?.addImage(capture, label: "Image")
+            guard let store, store.editorContext == editorContext,
+                  store.editorAcceptsChanges else { return }
+            store.addImage(capture, label: "Image")
         }
 
         if let url = ScratchpadEditorResources.templateURL {
@@ -720,7 +725,19 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.apply(text: text, fontSize: fontSize, palette: palette)
+        context.coordinator.attachmentHandler?.resolver = store.attachmentResolver
+        store.insertMarkdownHandler = { [weak coordinator = context.coordinator, weak store] markdown in
+            guard let store else { return }
+            coordinator?.enqueueInsert(markdown, store: store)
+        }
+        let editorContext = store.editorContext
+        (webView as? ScratchpadWebView)?.onImageDrop = { [weak store] capture in
+            guard let store, store.editorContext == editorContext,
+                  store.editorAcceptsChanges else { return }
+            store.addImage(capture, label: "Image")
+        }
+        context.coordinator.apply(text: text, fontSize: fontSize, palette: palette,
+                                  context: store.editorContext, isEditable: store.editorAcceptsChanges)
     }
 
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -733,6 +750,7 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: ScratchpadLiveEditor
         weak var webView: WKWebView?
+        var attachmentHandler: ScratchpadAttachmentSchemeHandler?
 
         private var isReady = false
         /// The text the editor currently holds (last pushed or last reported).
@@ -749,24 +767,39 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
         /// Markdown snippets to append once the editor is ready. Buffered so a
         /// snapshot/drop that lands before `ready` isn't dropped on the floor.
         private var pendingInserts: [String] = []
+        private var editorContext: String
+        private var editorEditable = true
 
-        init(parent: ScratchpadLiveEditor) { self.parent = parent }
+        init(parent: ScratchpadLiveEditor) {
+            self.parent = parent
+            editorContext = parent.store.editorContext
+        }
 
-        func apply(text: String, fontSize: Double, palette: ThemePalette) {
+        func apply(text: String, fontSize: Double, palette: ThemePalette,
+                   context: String, isEditable: Bool) {
+            if context != editorContext {
+                pendingInserts.removeAll()
+                editorContext = context
+                editorText = nil
+            }
             let styleKey = "\(Int(fontSize))|\(hex(palette.foreground))|" +
                 "\(hex(palette.mutedForeground))|\(hex(palette.primary))|\(hex(palette.destructive))"
             if styleKey != appliedStyleKey {
                 appliedStyleKey = styleKey
                 pendingStyle = (fontSize, palette)
             }
-            if text != editorText { pendingText = text }
+            if text != editorText || isEditable != editorEditable { pendingText = text }
+            editorEditable = isEditable
             flush()
         }
 
         /// Queue a markdown block for insertion at the end of the note. The
         /// resulting edit comes back as a `change` message, so `text` and
         /// persistence update through the normal path.
-        func enqueueInsert(_ markdown: String) {
+        func enqueueInsert(_ markdown: String, store: ScratchpadStore) {
+            guard parent.store === store, store.editorAcceptsChanges else { return }
+            apply(text: parent.text, fontSize: parent.fontSize, palette: parent.palette,
+                  context: store.editorContext, isEditable: true)
             pendingInserts.append(markdown)
             flush()
         }
@@ -780,12 +813,13 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
             switch type {
             case "ready":
                 isReady = true
-                if pendingText == nil { pendingText = parent.text }
-                flush()
+                apply(text: parent.text, fontSize: parent.fontSize, palette: parent.palette,
+                      context: parent.store.editorContext, isEditable: parent.store.editorAcceptsChanges)
             case "change":
-                guard let text = body["text"] as? String else { return }
+                guard let text = body["text"] as? String,
+                      let context = body["context"] as? String,
+                      parent.store.acceptEditorChange(text, context: context) else { return }
                 editorText = text
-                if parent.text != text { parent.text = text }
             default:
                 break
             }
@@ -807,7 +841,8 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
             if let text = pendingText {
                 pendingText = nil
                 editorText = text
-                webView.evaluateJavaScript("window.ScratchpadEditor.setContent(\(jsString(text)));")
+                webView.evaluateJavaScript(
+                    "window.ScratchpadEditor.setContent(\(jsString(text)),\(jsString(editorContext)),\(editorEditable));")
             }
             if !pendingInserts.isEmpty {
                 let inserts = pendingInserts
@@ -824,7 +859,7 @@ private struct ScratchpadLiveEditor: UIViewRepresentable {
                         ScratchpadAttachmentStore.markPending(id)
                     }
                     webView.evaluateJavaScript(
-                        "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)));")
+                        "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)),\(jsString(editorContext)));")
                 }
             }
         }

@@ -146,34 +146,48 @@ final class AnnotationStore {
             isPinned: !annotation.pinned))
     }
 
-    func updateAnnotation(_ input: UpdateAnnotationInput) async {
-        guard let sessionId = app.activeTabId else { return }
+    /// Capture the tab before scheduling, then join the write on close/quit.
+    func saveNote(_ input: UpdateAnnotationInput, completion: @escaping @MainActor (Bool) -> Void) {
+        guard let sessionId = app.activeTabId else { completion(false); return }
+        let task = Task { [self] in
+            let saved = await updateAnnotation(input, sessionId: sessionId)
+            completion(saved)
+        }
+        app.registerDocumentPersistence(task, sessionId: sessionId)
+    }
+
+    @discardableResult
+    func updateAnnotation(_ input: UpdateAnnotationInput, sessionId origin: String? = nil) async -> Bool {
+        guard let sessionId = origin ?? app.activeTabId else { return false }
         let pendingCreate = pendingCreates[input.id]
         // Optimistic update
-        annotations = Annotation.sortedForDisplay(annotations.map { annotation in
-            guard annotation.id == input.id else { return annotation }
-            var next = annotation
-            if let color = input.color { next.color = color }
-            if let content = input.content { next.content = content }
-            if let positionData = input.positionData { next.positionData = positionData }
-            if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
-            if let isPinned = input.isPinned { next.isPinned = isPinned }
-            next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
-            return next
-        })
-        if let pendingCreate, !(await pendingCreate.value) { return }
-        guard app.activeTabId == sessionId else { return }
+        if app.activeTabId == sessionId {
+            annotations = Annotation.sortedForDisplay(annotations.map { annotation in
+                guard annotation.id == input.id else { return annotation }
+                var next = annotation
+                if let color = input.color { next.color = color }
+                if let content = input.content { next.content = content }
+                if let positionData = input.positionData { next.positionData = positionData }
+                if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
+                if let isPinned = input.isPinned { next.isPinned = isPinned }
+                next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+                return next
+            })
+        }
+        if let pendingCreate, !(await pendingCreate.value) { return false }
         do {
             let updated = try await sessions.updateAnnotation(sessionId: sessionId, input: input)
             if !updated {
                 throw SessionServiceError.invalidDocument("Annotation \(input.id) was not found")
             }
+            return true
         } catch {
             NSLog("[annotation-store] Failed to update annotation: \(error)")
             // Reload on failure to revert optimistic update
             if app.activeTabId == sessionId {
                 await loadAnnotations()
             }
+            return false
         }
     }
 

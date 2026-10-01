@@ -1,7 +1,7 @@
 // Entry point for the scratchpad live-preview editor. Bundled to a single IIFE
 // (window.ScratchpadEditor) that the Swift WKWebView host drives: it pushes
 // content/theme in, and receives change + ready messages back.
-import { EditorState, Prec } from "@codemirror/state";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
@@ -14,6 +14,8 @@ import { theme, highlight } from "./theme.js";
 
 let view = null;
 let suppressChange = false;
+let context = null;
+const editability = new Compartment();
 
 function loadOptionalScript(source, globalName) {
   if (window[globalName]) return Promise.resolve();
@@ -47,15 +49,16 @@ function post(type, payload) {
   if (handler) handler.postMessage(Object.assign({ type }, payload || {}));
 }
 
-function createEditor(parent) {
+function createState(doc, editable = true) {
   const listener = EditorView.updateListener.of((update) => {
     if (update.docChanged && !suppressChange) {
-      post("change", { text: update.state.doc.toString() });
+      post("change", { text: update.state.doc.toString(), context });
     }
   });
-  const state = EditorState.create({
-    doc: "",
+  return EditorState.create({
+    doc,
     extensions: [
+      editability.of([EditorState.readOnly.of(!editable), EditorView.editable.of(editable)]),
       history(),
       drawSelection(),
       EditorView.lineWrapping,
@@ -75,14 +78,25 @@ function createEditor(parent) {
       listener,
     ],
   });
-  view = new EditorView({ state, parent });
 }
 
 // Public API consumed by the Swift host.
 const api = {
-  setContent(text) {
+  setContent(text, nextContext, editable = true) {
     if (!view) return;
     const value = text == null ? "" : String(text);
+    if (context !== nextContext) {
+      context = nextContext;
+      // A different note gets its own undo history and selection. Ordinary
+      // edits/theme changes keep the existing state and caret below.
+      view.setState(createState(value, editable));
+      return;
+    }
+    if (view.state.readOnly !== !editable) {
+      view.dispatch({ effects: editability.reconfigure([
+        EditorState.readOnly.of(!editable), EditorView.editable.of(editable),
+      ]) });
+    }
     if (view.state.doc.toString() === value) return;
     suppressChange = true;
     view.dispatch({
@@ -95,8 +109,8 @@ const api = {
   // separated by a blank line, then reveal + focus it. Not suppressed: the
   // resulting doc change flows back to Swift as a normal `change` message, so
   // the note text + persistence update themselves.
-  insertSnippet(markdown) {
-    if (!view) return;
+  insertSnippet(markdown, expectedContext) {
+    if (!view || view.state.readOnly || expectedContext !== context) return;
     const text = markdown == null ? "" : String(markdown);
     if (!text) return;
     const doc = view.state.doc;
@@ -132,7 +146,7 @@ function boot() {
   // dynamically lets CodeMirror accept focus and typing without waiting for
   // another 300 KB of JavaScript on a cold WebKit process.
   beginLoadingPreviewLibraries();
-  createEditor(document.getElementById("editor"));
+  view = new EditorView({ state: createState(""), parent: document.getElementById("editor") });
   post("ready", {});
 }
 

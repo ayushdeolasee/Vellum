@@ -879,6 +879,10 @@ struct AiPanel: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        guard aiStore.settings.isConfigured() else {
+            aiStore.setErrorState("Set your \(aiStore.keyFieldLabel) and choose a model in AI settings.")
+            return
+        }
         let provider = aiStore.settings.provider
         guard !AiSharingConsent.needsConsent(for: provider) else {
             consentProvider = provider

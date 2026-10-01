@@ -137,6 +137,7 @@ struct WebViewerView: View {
                     ) {
                         WebNoteComposerView(
                             initialContent: composer.initialContent,
+                            availableWidth: max(0, proxy.size.width - 16),
                             onSubmit: { content in
                                 controller.createAnchoredNote(anchor: composer.anchor, content: content)
                                 controller.closeNoteComposer()
@@ -171,6 +172,7 @@ struct WebViewerView: View {
                 }
 
                 if let viewer = controller.noteViewer {
+                    let draftScope = controller.documentDraftScope
                     AnchoredPopover(
                         x: viewer.point.x, y: viewer.point.y,
                         placement: .above, containerSize: proxy.size
@@ -179,6 +181,17 @@ struct WebViewerView: View {
                         // carries one note's edit draft into another.
                         WebNoteViewerView(
                             annotationId: viewer.id,
+                            availableWidth: max(0, proxy.size.width - 16),
+                            initialDraft: controller.noteEditDraft(for: viewer.id),
+                            onDraftChange: {
+                                controller.updateNoteEditDraft($0, id: viewer.id, scope: draftScope)
+                            },
+                            onDiscardDraft: {
+                                controller.discardNoteEditDraft(id: viewer.id, scope: draftScope)
+                            },
+                            onSaveDraft: {
+                                controller.finishNoteEditDraft(id: viewer.id, scope: draftScope, savedText: $0)
+                            },
                             onClose: { controller.closeNoteViewer() })
                             .id(viewer.id)
                     }
@@ -262,11 +275,18 @@ struct WebViewerView: View {
     private func selectionPopover(containerSize: CGSize) -> some View {
         if controller.selection != nil || controller.selectionNoteDraft != nil,
            let position = controller.popoverPosition {
+            let draftScope = controller.documentDraftScope
+            let passage = controller.selectionIdentity
             AnchoredPopover(
                 x: position.x, y: position.y,
                 placement: .above, containerSize: containerSize
             ) {
                 WebSelectionPopover(
+                    initialDraft: controller.selectionNoteText,
+                    availableWidth: max(0, containerSize.width - 16),
+                    onDraftChange: {
+                        controller.updateSelectionNoteDraft($0, identity: passage, scope: draftScope)
+                    },
                     onHighlight: { color in controller.addHighlight(color: color) },
                     onNote: { content in controller.addSelectionNote(content: content) },
                     onBeginNote: { controller.beginSelectionNote() },
@@ -368,6 +388,9 @@ final class WebViewerController: NSObject {
     /// resulting "selection-cleared" would also unmount the popover (and the
     /// half-typed note) mid-compose.
     private(set) var selectionNoteDraft: WebSelection?
+    // Transient, scoped to this tab's document and passage/annotation. Native
+    // popovers mirror edits synchronously, so incidental dismissal loses no text.
+    @ObservationIgnored private let noteDraftState: WebNoteDraftState
     private(set) var noteComposer: WebNoteComposerState? {
         didSet {
             // Every placement reseeds the mirror below from its own initial
@@ -429,6 +452,11 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
+
+    init(draftState: WebNoteDraftState = WebNoteDraftState()) {
+        self.noteDraftState = draftState
+        super.init()
+    }
 
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
@@ -529,7 +557,6 @@ final class WebViewerController: NSObject {
     /// Release transient UI owned by an inactive mount while keeping the native
     /// view, history, scroll position, and extracted text intact.
     func deactivate() {
-        clearSelection()
         closeNotePopovers()
         removeEventMonitor()
     }
@@ -679,11 +706,64 @@ final class WebViewerController: NSObject {
 
     // MARK: Selection & note actions
 
+    /// Explicit dismissal or a completed selection action discards this draft.
     func clearSelection() {
+        if let identity = selectionIdentity {
+            noteDraftState.selectionTexts[documentDraftScope]?[identity] = nil
+        }
         selection = nil
         popoverPosition = nil
         selectionNoteDraft = nil
         post("clear-selection")
+    }
+
+    var documentDraftScope: String {
+        "\(mountTabId ?? "")|\(mountDocument?.pdfPath ?? "")"
+    }
+
+    var selectionNoteText: String? {
+        guard let identity = selectionIdentity else { return nil }
+        return noteDraftState.selectionTexts[documentDraftScope]?[identity]
+    }
+
+    func updateSelectionNoteDraft(_ text: String, identity: String?, scope: String) {
+        guard scope == documentDraftScope, let identity,
+              identity == selectionIdentity, selectionNoteDraft != nil else { return }
+        noteDraftState.selectionTexts[scope, default: [:]][identity] = text
+    }
+
+    /// Recover a selection note through the existing placement queue. If a
+    /// newer reply already owns that queue, keep this passage's draft locally.
+    private func returnSelectionNoteDraft() {
+        if selectionNoteDraft != nil, let identity = selectionIdentity,
+           let draft = selectionNoteText, let app, let sessionId = mountTabId,
+           let tab = app.tab(id: sessionId), tab.document?.pdfPath == mountDocument?.pdfPath {
+            if tab.pendingNoteContent == nil {
+                app.restorePendingNote(draft, forSessionId: sessionId)
+                noteDraftState.selectionTexts[documentDraftScope]?[identity] = nil
+            }
+        }
+        selection = nil
+        popoverPosition = nil
+        selectionNoteDraft = nil
+    }
+
+    func noteEditDraft(for id: String) -> String? {
+        noteDraftState.noteEdits[documentDraftScope]?[id]
+    }
+
+    func updateNoteEditDraft(_ text: String, id: String, scope: String) {
+        guard scope == documentDraftScope, noteViewer?.id == id else { return }
+        noteDraftState.noteEdits[scope, default: [:]][id] = text
+    }
+
+    func discardNoteEditDraft(id: String, scope: String) {
+        noteDraftState.noteEdits[scope]?[id] = nil
+    }
+
+    func finishNoteEditDraft(id: String, scope: String, savedText: String) {
+        guard noteDraftState.noteEdits[scope]?[id]?.trimmingCharacters(in: .whitespacesAndNewlines) == savedText else { return }
+        noteDraftState.noteEdits[scope]?[id] = nil
     }
 
     /// The selection popover's note field is opening. Pinning happens here, in
@@ -843,6 +923,7 @@ final class WebViewerController: NSObject {
         noteComposer = state
         app.finishNotePlacement(forSessionId: sessionId)
         if let stranded { app.restorePendingNote(stranded, forSessionId: sessionId) }
+        returnSelectionNoteDraft()
     }
 
     /// Dismissal the user did not ask for: a stray click on the page, a scroll
@@ -884,6 +965,10 @@ final class WebViewerController: NSObject {
             point: .zero, anchor: Self.testAnchor, openedAt: openedAt, initialContent: content)
     }
 
+    func openNoteViewerForTesting(id: String) {
+        noteViewer = WebNoteViewerState(id: id, point: .zero, openedAt: Date())
+    }
+
     /// Arms the page context menu, minus the event monitor `showContextMenu`
     /// installs (there is no window to monitor here).
     func openContextMenuForTesting(anchored: Bool = true) {
@@ -916,6 +1001,7 @@ final class WebViewerController: NSObject {
     /// clicking whitespace, and it used to lose the reply just as completely.
     func closeNotePopovers() {
         returnNoteComposerDraft()
+        returnSelectionNoteDraft()
         hideContextMenu()
         noteViewer = nil
         highlightEditor = nil
@@ -1269,9 +1355,7 @@ final class WebViewerController: NSObject {
             // in it takes first responder before mouseup reports the collapse)
             // a clear means what it says, so the pin releases itself.
             if selectionNoteDraft == nil || webViewHasFocus {
-                selection = nil
-                popoverPosition = nil
-                selectionNoteDraft = nil
+                returnSelectionNoteDraft()
             }
             // A plain click inside the page doubles as "click outside" for
             // the note popovers. The grace period keeps the event fired by
@@ -1323,6 +1407,7 @@ final class WebViewerController: NSObject {
             let point = frameToParent(
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             returnNoteComposerDraft()
+            returnSelectionNoteDraft()
             noteViewer = nil
             let found = data["found"] as? Bool ?? false
             showContextMenu(WebContextMenuState(
@@ -1338,11 +1423,13 @@ final class WebViewerController: NSObject {
                 x: doubleValue(data["x"]) ?? 0, y: doubleValue(data["y"]) ?? 0)
             if annotation?.type == .note {
                 returnNoteComposerDraft()
+                returnSelectionNoteDraft()
                 highlightEditor = nil
                 hideContextMenu()
                 noteViewer = WebNoteViewerState(id: id, point: point, openedAt: Date())
             } else if annotation?.type == .highlight {
                 returnNoteComposerDraft()
+                returnSelectionNoteDraft()
                 noteViewer = nil
                 hideContextMenu()
                 highlightEditor = WebHighlightEditorState(id: id, point: point, openedAt: Date())
@@ -1391,9 +1478,7 @@ final class WebViewerController: NSObject {
             // page underneath invalidates them — including a pinned note draft,
             // whose popover would otherwise hang at a stale anchor.
             if selection != nil || selectionNoteDraft != nil {
-                selection = nil
-                popoverPosition = nil
-                selectionNoteDraft = nil
+                returnSelectionNoteDraft()
                 post("clear-selection")
             }
             hideContextMenu()
@@ -1474,7 +1559,6 @@ final class WebViewerController: NSObject {
         // (redirect) or its crash-recovery reload (process crash) and recur.
         redirectReloadedUrl = nil
         processReloadedUrl = nil
-        clearSelection()
         closeNotePopovers()
         let outgoing = mountDocument?.pdfPath
         Task { [weak self] in
@@ -1619,9 +1703,6 @@ final class WebViewerController: NSObject {
         highlightEditor = nil
 
         let scale = app.zoom
-        popoverPosition = CGPoint(
-            x: (last.x + last.width / 2) * scale,
-            y: last.y * scale - 10)
         let next = WebSelection(
             text: text,
             pageNumber: intValue(data["pageNumber"]) ?? 1,
@@ -1640,8 +1721,11 @@ final class WebViewerController: NSObject {
         // release the pin, and a note typed for the old passage would anchor onto
         // this one. Re-reporting the same passage keeps the pin (and the note).
         if let draft = selectionNoteDraft, Self.identityKey(draft) != Self.identityKey(next) {
-            selectionNoteDraft = nil
+            returnSelectionNoteDraft()
         }
+        popoverPosition = CGPoint(
+            x: (last.x + last.width / 2) * scale,
+            y: last.y * scale - 10)
         selection = next
     }
 
