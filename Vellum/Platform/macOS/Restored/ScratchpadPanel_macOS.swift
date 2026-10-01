@@ -31,16 +31,32 @@ struct ScratchpadPanel: View {
     }
 
     var body: some View {
-        @Bindable var store = scratchpadStore
         return VStack(spacing: 0) {
             header
-            ScratchpadLiveEditor(
-                text: $store.text,
-                store: scratchpadStore,
-                fontSize: workspace.sidebarFontSize,
-                palette: palette,
-                dropsEnabled: workspace.sidebarTab == .scratchpad
-            )
+                .disabled(!scratchpadStore.isShowingCurrentDocument
+                          || scratchpadStore.isPersistencePaused)
+            Group {
+                if scratchpadStore.isShowingCurrentDocument {
+                    ScratchpadLiveEditor(
+                        text: scratchpadStore.text,
+                        store: scratchpadStore,
+                        generation: scratchpadStore.documentLoadGeneration,
+                        fontSize: workspace.sidebarFontSize,
+                        palette: palette,
+                        dropsEnabled: workspace.sidebarTab == .scratchpad
+                            && !scratchpadStore.isPersistencePaused
+                    )
+                    .id(ScratchpadEditorIdentity(
+                        store: ObjectIdentifier(scratchpadStore),
+                        generation: scratchpadStore.documentLoadGeneration))
+                    .disabled(scratchpadStore.isPersistencePaused)
+                } else if appStore.document != nil {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Color.clear
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!scratchpadStore.isPersistencePaused)
             .background(
@@ -632,9 +648,15 @@ final class ScratchpadWebView: WKWebView {
 /// network. Swift pushes content + theme in; the editor posts back `ready` and
 /// `change` messages. Two-way sync guards against echo loops so typing never
 /// resets the caret.
+private struct ScratchpadEditorIdentity: Hashable {
+    var store: ObjectIdentifier
+    var generation: Int
+}
+
 private struct ScratchpadLiveEditor: NSViewRepresentable {
-    @Binding var text: String
+    let text: String
     let store: ScratchpadStore
+    let generation: Int
     let fontSize: Double
     let palette: ThemePalette
     /// Whether the scratchpad is the visible sidebar tab — see
@@ -776,8 +798,9 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         /// resulting edit comes back as a `change` message, so `text` and
         /// persistence update through the normal path.
         func enqueueInsert(_ markdown: String, store: ScratchpadStore) {
-            guard parent.store === store, store.editorAcceptsChanges else { return }
-            apply(text: parent.text, fontSize: parent.fontSize, palette: parent.palette,
+            guard parent.store === store, store.editorAcceptsChanges,
+                  parent.generation == store.documentLoadGeneration else { return }
+            apply(text: store.text, fontSize: parent.fontSize, palette: parent.palette,
                   context: store.editorContext, isEditable: true)
             pendingInserts.append(markdown)
             flush()
@@ -797,7 +820,8 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
             case "change":
                 guard let text = body["text"] as? String,
                       let context = body["context"] as? String,
-                      parent.store.acceptEditorChange(text, context: context) else { return }
+                      parent.store.acceptEditorChange(
+                        text, context: context, generation: parent.generation) else { return }
                 editorText = text
             default:
                 break

@@ -111,10 +111,11 @@ final class ScratchpadStore {
     private var editorSessionId: String?
     private var resetsEditorContextOnLoad = false
     var editorAcceptsChanges: Bool {
-        guard !isPersistencePaused else { return false }
-        guard let app else { return true }
-        return currentSessionId == app.activeTabId
+        guard !isPersistencePaused, !isLoadingDocument else { return false }
+        guard app != nil else { return true }
+        return isShowingCurrentDocument
     }
+    private(set) var isLoadingDocument = false
 
     /// Weak like `AiStore.app` — the store is owned by the pane, which owns the
     /// AppStore too, so a strong reference here would be a cycle.
@@ -135,6 +136,7 @@ final class ScratchpadStore {
     /// with its own in-flight save.
     private var flushTail: Task<Void, Never>?
     private var stateGeneration = 0
+    private(set) var documentLoadGeneration = 0
     private var externalDeleteToken: ScratchpadExternalDeleteToken?
     /// Coordinated storage is intentionally write-on-change. A clean load must
     /// not stamp a PDF identity, touch metadata, or rewrite scratchpad.md merely
@@ -168,15 +170,21 @@ final class ScratchpadStore {
     /// text so switching tabs never drops an unsaved edit.
     @discardableResult
     func loadForDocument(_ document: DocumentInfo?) -> Task<Void, Never> {
+        let generation = beginDocumentLoad()
+        let sessionId = app?.activeTabId
         if coordinator == nil {
             flushDirect()
-            restoreDirect(document: document)
+            restoreDirect(document: document, sessionId: sessionId)
+            isLoadingDocument = false
             return Task {}
         }
         return Task { [weak self] in
             guard let self else { return }
+            defer { self.finishDocumentLoad(generation) }
             await self.enqueueCoordinatedFlush().value
-            await self.restoreCoordinated(document: document)
+            guard generation == self.documentLoadGeneration else { return }
+            await self.restoreCoordinated(
+                document: document, sessionId: sessionId, loadGeneration: generation)
         }
     }
 
@@ -190,10 +198,12 @@ final class ScratchpadStore {
     /// restore guard (so the reload itself never schedules a write).
     @discardableResult
     func discardAndReload(for document: DocumentInfo?) -> Task<Void, Never> {
+        let generation = beginDocumentLoad()
+        let sessionId = app?.activeTabId
         invalidatePendingWrite(matchingKey: currentKey)
-        editorContext = UUID().uuidString
         if coordinator == nil {
-            restoreDirect(document: document)
+            restoreDirect(document: document, sessionId: sessionId)
+            isLoadingDocument = false
             return Task {}
         }
         isPersistencePaused = true
@@ -202,7 +212,10 @@ final class ScratchpadStore {
         resetsEditorContextOnLoad = true
         return Task { [weak self] in
             guard let self else { return }
-            await self.restoreCoordinated(document: document)
+            defer { self.finishDocumentLoad(generation) }
+            guard generation == self.documentLoadGeneration else { return }
+            await self.restoreCoordinated(
+                document: document, sessionId: sessionId, loadGeneration: generation)
         }
     }
 
@@ -210,22 +223,24 @@ final class ScratchpadStore {
     /// to `document` and load its note from disk. Assumes the caller has already
     /// dealt with the previous document's in-memory text (either flushing it or
     /// deliberately discarding it) — this method itself never persists.
-    private func restoreDirect(document: DocumentInfo?) {
+    private func restoreDirect(document: DocumentInfo?, sessionId: String?) {
         let key = ScratchpadPersistence.documentKey(document)
         currentKey = key
         currentDocument = document
-        currentSessionId = app?.activeTabId
+        currentSessionId = sessionId
         setLoaded(key.map { ScratchpadPersistence.load(for: $0) } ?? "")
         pruneOrphanedAttachments()
     }
 
-    private func restoreCoordinated(document: DocumentInfo?) async {
+    private func restoreCoordinated(
+        document: DocumentInfo?, sessionId: String?, loadGeneration: Int
+    ) async {
         guard let coordinator else { return }
         stateGeneration &+= 1
         let generation = stateGeneration
         isPersistencePaused = true
         currentDocument = document
-        currentSessionId = app?.activeTabId
+        currentSessionId = sessionId
         guard let document else {
             currentKey = nil
             isPersistencePaused = false
@@ -242,7 +257,8 @@ final class ScratchpadStore {
             if pathKey != key {
                 guard await DocumentDataStore.rekey(
                     from: pathKey, to: key, coordinator: coordinator) else {
-                    guard generation == stateGeneration else { return }
+                    guard generation == stateGeneration,
+                          loadGeneration == documentLoadGeneration else { return }
                     isPersistencePaused = true
                     attachmentResolver.replace(with: [])
                     clearCoordinatedChanges()
@@ -253,11 +269,13 @@ final class ScratchpadStore {
                 }
             }
         }
-        guard generation == stateGeneration else { return }
+        guard generation == stateGeneration,
+              loadGeneration == documentLoadGeneration else { return }
 
         let migration = await ScratchpadPersistence.migrateLegacyIfNeeded(
             document: document, key: key, coordinator: coordinator)
-        guard generation == stateGeneration else { return }
+        guard generation == stateGeneration,
+              loadGeneration == documentLoadGeneration else { return }
         if case .retainedForRetry(let legacy) = migration {
             attachmentResolver.replace(with: legacy.attachments)
             clearCoordinatedChanges()
@@ -277,7 +295,8 @@ final class ScratchpadStore {
                     id: (value.name as NSString).deletingPathExtension.lowercased(),
                     name: value.name, data: value.data)
             }
-            guard generation == stateGeneration else { return }
+            guard generation == stateGeneration,
+                  loadGeneration == documentLoadGeneration else { return }
             attachmentResolver.replace(with: loaded)
             clearCoordinatedChanges()
             isPersistencePaused = false
@@ -285,7 +304,8 @@ final class ScratchpadStore {
             dropWarning = nil
             setLoaded(note)
         } catch {
-            guard generation == stateGeneration else { return }
+            guard generation == stateGeneration,
+                  loadGeneration == documentLoadGeneration else { return }
             isPersistencePaused = true
             attachmentResolver.replace(with: [])
             clearCoordinatedChanges()
@@ -394,17 +414,48 @@ final class ScratchpadStore {
     /// tab/document change, mirroring `AiStore.clearDocumentContext`).
     @discardableResult
     func clearDocumentContext() -> Task<Void, Never> {
+        let generation = beginDocumentLoad()
         if coordinator != nil {
             let task = flush()
             return Task { [weak self] in
                 await task.value
                 guard let self else { return }
+                defer { self.finishDocumentLoad(generation) }
+                guard generation == self.documentLoadGeneration else { return }
                 self.resetDocumentContext()
             }
         }
         _ = flush()
         resetDocumentContext()
+        isLoadingDocument = false
         return Task {}
+    }
+
+    private func beginDocumentLoad() -> Int {
+        documentLoadGeneration &+= 1
+        isLoadingDocument = true
+        editorContext = UUID().uuidString
+        resetsEditorContextOnLoad = true
+        cancelPendingSave()
+        return documentLoadGeneration
+    }
+
+    private func finishDocumentLoad(_ generation: Int) {
+        if generation == documentLoadGeneration { isLoadingDocument = false }
+    }
+
+    /// WebKit callbacks may arrive after the pane has switched sources.
+    var isShowingCurrentDocument: Bool {
+        guard !isLoadingDocument,
+              currentSessionId == app?.activeTabId,
+              let currentDocument, let document = app?.document else { return false }
+        return isSameDocument(currentDocument, document)
+    }
+
+    func updateFromEditor(_ value: String, generation: Int) {
+        guard isShowingCurrentDocument, !isPersistencePaused,
+              generation == documentLoadGeneration else { return }
+        text = value
     }
 
     private func resetDocumentContext() {
@@ -484,11 +535,15 @@ final class ScratchpadStore {
 
         showPersistentWarning(
             "Couldn't finish deleting this Scratchpad. Reloading the saved note…")
+        let generation = beginDocumentLoad()
+        defer { finishDocumentLoad(generation) }
         if coordinator == nil {
-            restoreDirect(document: currentDocument)
+            restoreDirect(document: currentDocument, sessionId: currentSessionId)
             isPersistencePaused = false
         } else {
-            await restoreCoordinated(document: currentDocument)
+            await restoreCoordinated(
+                document: currentDocument, sessionId: currentSessionId,
+                loadGeneration: generation)
         }
     }
 
@@ -843,8 +898,9 @@ final class ScratchpadStore {
     /// The editor's event carries the context that produced it, rather than
     /// implicitly following the coordinator's newest SwiftUI binding.
     @discardableResult
-    func acceptEditorChange(_ value: String, context: String) -> Bool {
+    func acceptEditorChange(_ value: String, context: String, generation: Int? = nil) -> Bool {
         guard context == editorContext, editorAcceptsChanges else { return false }
+        if let generation, generation != documentLoadGeneration { return false }
         if text != value { text = value }
         return true
     }

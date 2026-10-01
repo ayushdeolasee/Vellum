@@ -82,7 +82,7 @@
 	<key>UISupportsDocumentBrowser</key>
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
+	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>CFBundleDocumentTypes</key>

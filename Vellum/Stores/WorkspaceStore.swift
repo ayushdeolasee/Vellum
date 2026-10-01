@@ -306,6 +306,7 @@ final class WorkspaceStore {
     /// task. Both can arrive together; the route must not open into a workspace
     /// that is still replacing its pane tree from disk.
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
+    @ObservationIgnored private var externalOpenTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     // MARK: - Workspace-owned live tab runtimes
@@ -447,6 +448,45 @@ final class WorkspaceStore {
             }
         }
         await positions.flush()
+    }
+
+    /// System opens must survive startup and run in arrival order. On iOS,
+    /// copy provider URLs off-main before releasing their security-scoped access.
+    func openExternalURLs(_ urls: [URL]) {
+        #if os(macOS)
+        let incoming = urls.filter { $0.isFileURL || VellumExternalWebLink.parse($0) != nil }
+        #else
+        let incoming = urls.filter(\.isFileURL)
+        #endif
+        guard !incoming.isEmpty else { return }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await restoreFromDisk()
+            #if os(iOS)
+            let paths = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPicked(incoming)
+            }.value
+            guard !paths.isEmpty else { return }
+            let app = focusedPane.app
+            await app.openFiles(paths: paths)
+            if app.error == nil {
+                NotificationCenter.default.post(
+                    name: .vellumSystemRouteDidOpenDocument, object: nil)
+            }
+            #else
+            let app = focusedPane.app
+            if incoming.contains(where: { !$0.isFileURL }) {
+                await app.openIncomingURLs(incoming)
+            } else {
+                await app.openFiles(paths: incoming.map(\.path))
+            }
+            #endif
+        }
+    }
+
+    func awaitPendingExternalOpens() async {
+        await externalOpenTask?.value
     }
 
     func startStorageCoordinator() async {
@@ -799,6 +839,7 @@ final class WorkspaceStore {
     }
 
     func saveNowAfterPendingPositionRecords() async {
+        await awaitPendingExternalOpens()
         await awaitPendingPositionRecords()
         saveNow()
     }

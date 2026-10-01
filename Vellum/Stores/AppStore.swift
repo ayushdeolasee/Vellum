@@ -260,24 +260,42 @@ final class AppStore {
         isLoading = true
         error = nil
         do {
-            await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
-            let sessionId = UUID().uuidString.lowercased()
-            let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
-            if saveToLibrary {
-                do {
-                    try await sessions.setWebpageSaved(sessionId: sessionId, saved: true)
-                } catch {
-                    try? await sessions.closeFile(sessionId: sessionId)
-                    throw error
-                }
-            }
-            await adoptOpenedDocument(doc, sessionId: sessionId)
+            try await openOneUrl(url, saveToLibrary: saveToLibrary)
             isLoading = false
         } catch {
             isLoading = false
             self.error = error.localizedDescription
         }
     }
+
+    #if os(macOS)
+    /// Opens a mixed Finder/browser delivery in caller order under one loading
+    /// and error scope. File-only deliveries continue through `openFiles`.
+    func openIncomingURLs(_ urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        isLoading = true
+        error = nil
+        var errors: [String] = []
+        for url in urls {
+            if let webpage = VellumExternalWebLink.parse(url) {
+                do {
+                    try await openOneUrl(webpage.absoluteString)
+                } catch {
+                    errors.append("\(webpage.absoluteString): \(error.localizedDescription)")
+                }
+            } else if url.isFileURL {
+                do {
+                    try await openOneFile(path: url.path)
+                } catch {
+                    routeStorageRecoveryIfNeeded(error)
+                    errors.append("\(url.path): \(error.localizedDescription)")
+                }
+            }
+        }
+        isLoading = false
+        self.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+    }
+    #endif
 
     /// Rebind a webpage tab to a new URL (in-tab link navigation). Reuses the
     /// session id so annotation commands keep working against the same tab.
@@ -1031,6 +1049,21 @@ final class AppStore {
             return
         }
         try await openDocumentFile(path: path)
+    }
+
+    private func openOneUrl(_ url: String, saveToLibrary: Bool = false) async throws {
+        await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
+        let sessionId = UUID().uuidString.lowercased()
+        let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
+        if saveToLibrary {
+            do {
+                try await sessions.setWebpageSaved(sessionId: sessionId, saved: true)
+            } catch {
+                try? await sessions.closeFile(sessionId: sessionId)
+                throw error
+            }
+        }
+        await adoptOpenedDocument(doc, sessionId: sessionId)
     }
 
     private func routeStorageRecoveryIfNeeded(_ error: Error) {
