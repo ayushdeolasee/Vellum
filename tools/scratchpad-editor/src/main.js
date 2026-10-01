@@ -1,7 +1,7 @@
 // Entry point for the scratchpad live-preview editor. Bundled to a single IIFE
 // (window.ScratchpadEditor) that the Swift WKWebView host drives: it pushes
 // content/theme in, and receives change + ready messages back.
-import { EditorState, Prec } from "@codemirror/state";
+import { EditorState, Prec, Transaction } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, placeholder } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
@@ -88,6 +88,8 @@ const api = {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: value },
       selection: { anchor: Math.min(view.state.selection.main.anchor, value.length) },
+      // Restoring persisted notes is not an edit the user can undo.
+      annotations: Transaction.addToHistory.of(false),
     });
     suppressChange = false;
   },
