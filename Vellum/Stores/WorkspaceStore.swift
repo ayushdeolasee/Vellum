@@ -306,6 +306,7 @@ final class WorkspaceStore {
     /// task. Both can arrive together; the route must not open into a workspace
     /// that is still replacing its pane tree from disk.
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
+    @ObservationIgnored private var externalFileOpenTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     // MARK: - Workspace-owned live tab runtimes
@@ -447,6 +448,38 @@ final class WorkspaceStore {
             }
         }
         await positions.flush()
+    }
+
+    /// System file opens must survive startup and run in arrival order. On iOS,
+    /// copy provider URLs off-main before releasing their security-scoped access.
+    func openExternalFiles(_ urls: [URL]) {
+        let files = urls.filter(\.isFileURL)
+        guard !files.isEmpty else { return }
+        let previous = externalFileOpenTask
+        externalFileOpenTask = Task { @MainActor in
+            await previous?.value
+            await restoreFromDisk()
+            #if os(iOS)
+            let paths = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPicked(files)
+            }.value
+            #else
+            let paths = files.map(\.path)
+            #endif
+            guard !paths.isEmpty else { return }
+            let app = focusedPane.app
+            await app.openFiles(paths: paths)
+            #if os(iOS)
+            if app.error == nil {
+                NotificationCenter.default.post(
+                    name: .vellumSystemRouteDidOpenDocument, object: nil)
+            }
+            #endif
+        }
+    }
+
+    func awaitPendingExternalFileOpens() async {
+        await externalFileOpenTask?.value
     }
 
     func startStorageCoordinator() async {
@@ -799,6 +832,7 @@ final class WorkspaceStore {
     }
 
     func saveNowAfterPendingPositionRecords() async {
+        await awaitPendingExternalFileOpens()
         await awaitPendingPositionRecords()
         saveNow()
     }

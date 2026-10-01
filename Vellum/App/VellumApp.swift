@@ -12,53 +12,20 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     /// ContentView.openFilePanel does — `openFiles` dispatches each extension
     /// (bundle import, archive import, or plain PDF open).
     func application(_ application: NSApplication, open urls: [URL]) {
-        let paths = urls.map(\.path)
-        guard !paths.isEmpty else { return }
         MainActor.assumeIsolated {
-            guard let workspace = Self.workspace else { return }
-            let app = workspace.focusedPane.app
-            Task { await app.openFiles(paths: paths) }
+            Self.workspace?.openExternalFiles(urls)
         }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
-            let leaves = workspace.root.allLeaves()
-            let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
-            // Persist every pane's pending scratchpad edit (each pane owns its
-            // own note) before tearing down sessions.
-            for leaf in leaves { leaf.scratchpad.flush() }
-            guard hasTabs else {
-                // No open tabs, but a conversation or page-text write saved just
-                // before ⌘Q (the 200ms coalesced AI flush, or a detached
-                // page-text flush from the last tab's close) may still be in
-                // flight. Drain those on the terminateLater path — there is no
-                // per-tab position/close loop to run — so the final
-                // conversations.json / cache write always lands. Both awaits are
-                // no-ops when nothing is pending.
-                Task { @MainActor in
-                    await workspace.saveNowAfterPendingPositionRecords()
-                    // A tab closed moments ago finishes its position write and
-                    // session close behind the UI (AppStore.closeTab); it is no
-                    // longer in `tabs`, so nothing else here would await it.
-                    // Drained via the workspace registry, not per pane: a close
-                    // that collapsed its pane left no leaf to ask.
-                    await workspace.tabTeardowns.awaitAll()
-                    await workspace.positions.flush()
-                    await PageTextPersister.awaitInFlightFlushes()
-                    await AiPersistence.awaitPendingFlush()
-                    // Read-later work the user started behind the UI — the
-                    // auto-refresh preference, a move-to-collection, a
-                    // disconnect, thumbnail cleanup — is store-owned and joinable
-                    // for exactly this reason. Cancels in-flight syncs, waits for
-                    // the rest.
-                    await workspace.integrations.awaitQuiescence()
-                    sender.reply(toApplicationShouldTerminate: true)
-                }
-                return .terminateLater
-            }
+            // External opens can still be restoring/importing when quit arrives.
+            // Drain them before snapshotting panes or deciding which sessions close.
             Task { @MainActor in
+                await workspace.awaitPendingExternalFileOpens()
+                let leaves = workspace.root.allLeaves()
+                for leaf in leaves { leaf.scratchpad.flush() }
                 await workspace.saveNowAfterPendingPositionRecords()
                 // Tabs closed moments ago finish their position write and
                 // session close behind the UI (AppStore.closeTab) and are no
