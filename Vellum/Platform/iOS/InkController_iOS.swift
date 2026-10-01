@@ -2,91 +2,14 @@
 import Observation
 import PDFKit
 import PencilKit
-import SwiftUI
 import UIKit
 
-/// The Pencil ink tool. Highlighter is a translucent marker; pen is opaque.
-enum InkTool: String, CaseIterable, Sendable {
-    case pen, highlighter, eraser
-}
-
-/// Ink colors (Scriptorium-aligned). Pen inks are saturated; highlighter reuses
-/// the highlight palette.
-enum InkPalette {
-    static let penColors: [Color] = [
-        Color(hex: "#000000"), // true black (matches Notes)
-        Color(hex: "#45418f"), // indigo (brand)
-        Color(hex: "#b23a30"), // red
-        Color(hex: "#1f6f43"), // green
-        Color(hex: "#1f5fa8"), // blue
-    ]
-    static let highlighterColors: [Color] = HIGHLIGHT_COLORS.map { Color(hex: $0.value) }
-}
-
-/// What a double-tap on the Apple Pencil does. The user picks this in Settings
-/// (it overrides the system-wide Pencil preference, which iPadOS otherwise
-/// reserves for its own tools). Persisted as a raw string in UserDefaults.
-enum PencilDoubleTapAction: String, CaseIterable, Sendable {
-    /// Toggle the eraser: switch to it, or back to the previous tool if already erasing.
-    case eraser
-    /// Switch to the previously used tool (e.g. flip between pen and highlighter).
-    case lastTool
-
-    static let defaultsKey = "pencilDoubleTapAction"
-
-    static func current() -> PencilDoubleTapAction {
-        UserDefaults.standard.string(forKey: defaultsKey)
-            .flatMap(PencilDoubleTapAction.init(rawValue:)) ?? .eraser
-    }
-
-    var label: String {
-        switch self {
-        case .eraser: "Switch to eraser"
-        case .lastTool: "Switch to last tool"
-        }
-    }
-}
-
-/// Eraser behavior: `.pixel` (bitmap) erases only the ink under the pixels the
-/// eraser passes over; `.object` (vector) erases an entire stroke as soon as
-/// the eraser touches any point on it — GoodNotes calls these "Pixel" and
-/// "Object" erasers.
-enum EraserMode: String, Codable, Sendable {
-    case pixel, object
-}
-
-/// GoodNotes-style per-tool width presets: three slots per tool, one selected
-/// slot, plus the eraser mode — persisted together as a single JSON blob so a
-/// relaunch restores the exact palette state.
-struct InkWidthSettings: Codable, Equatable {
-    var penWidths: [CGFloat] = [2, 4, 8]
-    var highlighterWidths: [CGFloat] = [12, 20, 30]
-    var eraserWidths: [CGFloat] = [12, 24, 40]
-    var penSlot: Int = 0
-    var highlighterSlot: Int = 0
-    var eraserSlot: Int = 0
-    var eraserMode: EraserMode = .pixel
-
-    static let defaultsKey = "ink.widthSettings.v1"
-
-    static func loadFromDefaults() -> InkWidthSettings {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode(InkWidthSettings.self, from: data)
-        else { return InkWidthSettings() }
-        return decoded
-    }
-
-    func saveToDefaults() {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
-    }
-}
 
 /// Owns Pencil ink state and coordinates the live canvas with the display
 /// document (native `/Ink` rendering) and the on-disk PDF (durable persistence).
 @MainActor
 @Observable
-final class InkController_iOS {
+final class InkController_iOS: InkPaletteHost {
     var isActive = false {
         didSet {
             guard oldValue != isActive else { return }
@@ -138,30 +61,20 @@ final class InkController_iOS {
     static var scratchOutToErase: Bool {
         UserDefaults.standard.object(forKey: scratchOutToEraseKey) as? Bool ?? true
     }
-    var tool: InkTool = .pen {
-        didSet {
-            guard oldValue != tool else { return }
-            previousTool = oldValue
-            bumpTool()
-        }
+
+    /// Shared by PDF and webpage ink so the same palette behavior drives both.
+    @ObservationIgnored let toolState = InkToolState()
+
+    /// Compatibility accessors used by the PDF overlay provider.
+    var tool: InkTool {
+        get { toolState.tool }
+        set { toolState.tool = newValue }
     }
-    var penColor: Color = InkPalette.penColors[0]
-    var highlighterColor: Color = InkPalette.highlighterColors[0]
-    /// Per-tool width slots, selected slot, and eraser mode — persisted as one
-    /// JSON blob (see `InkWidthSettings`).
-    var widthSettings: InkWidthSettings = InkWidthSettings.loadFromDefaults() {
-        didSet {
-            guard oldValue != widthSettings else { return }
-            widthSettings.saveToDefaults()
-        }
-    }
-    /// When false (default) only the Pencil draws; a finger scrolls/zooms.
-    var allowFingerDrawing = false {
-        didSet {
-            guard oldValue != allowFingerDrawing else { return }
-            inkProvider.refreshPolicies()
-            bumpTool()
-        }
+    var textHighlightColorHex: String { toolState.textHighlightColorHex }
+
+    var allowFingerDrawing: Bool {
+        get { toolState.allowFingerDrawing }
+        set { toolState.allowFingerDrawing = newValue }
     }
 
     /// The PDFKit overlay provider: one live `PKCanvasView` per page.
@@ -169,10 +82,10 @@ final class InkController_iOS {
 
     init() {
         inkProvider.ink = self
+        toolState.onToolChanged = { [weak self] in self?.inkProvider.applyTool() }
+        toolState.onPolicyChanged = { [weak self] in self?.inkProvider.refreshPolicies() }
     }
 
-    /// Bumped when tool/color/width change so the canvas re-reads the PKTool.
-    private(set) var toolVersion = 0
     /// Bumped on every drawing mutation so undo/redo button state re-renders
     /// (UndoManager itself is not observable).
     private(set) var drawingVersion = 0
@@ -181,8 +94,6 @@ final class InkController_iOS {
     /// sidebar never has to walk every PDF page from SwiftUI's `body`.
     private(set) var handwritingPages: [Int] = []
     @ObservationIgnored private var handwritingDocumentID: ObjectIdentifier?
-    /// The tool in use before the last switch — the Pencil double-tap target.
-    @ObservationIgnored private var previousTool: InkTool = .eraser
 
     @ObservationIgnored weak var pdfController: PdfViewerControlleriOS?
     @ObservationIgnored weak var app: AppStore?
@@ -206,12 +117,7 @@ final class InkController_iOS {
     /// Apple Pencil double-tap: follow the user's in-app choice (Settings ▸
     /// Pencil), which overrides the system-wide preference iPadOS reports.
     func pencilDoubleTap(preferredAction: UIPencilPreferredAction) {
-        switch PencilDoubleTapAction.current() {
-        case .eraser:
-            tool = tool == .eraser ? previousTool : .eraser
-        case .lastTool:
-            tool = previousTool
-        }
+        toolState.pencilDoubleTap(preferredAction: preferredAction)
     }
 
     /// Clear the current page's ink (undoable).
@@ -267,93 +173,6 @@ final class InkController_iOS {
     /// launched PDF rewrite is still running.
     @ObservationIgnored private var drainTask: Task<Void, Never>?
 
-    var activeColor: Color {
-        get { tool == .highlighter ? highlighterColor : penColor }
-        set { if tool == .highlighter { highlighterColor = newValue } else { penColor = newValue } }
-    }
-    /// The three width presets for the active tool.
-    var activeWidths: [CGFloat] {
-        get {
-            switch tool {
-            case .pen: widthSettings.penWidths
-            case .highlighter: widthSettings.highlighterWidths
-            case .eraser: widthSettings.eraserWidths
-            }
-        }
-        set {
-            switch tool {
-            case .pen: widthSettings.penWidths = newValue
-            case .highlighter: widthSettings.highlighterWidths = newValue
-            case .eraser: widthSettings.eraserWidths = newValue
-            }
-        }
-    }
-    /// The selected slot (0...2) for the active tool.
-    var activeSlot: Int {
-        get {
-            switch tool {
-            case .pen: widthSettings.penSlot
-            case .highlighter: widthSettings.highlighterSlot
-            case .eraser: widthSettings.eraserSlot
-            }
-        }
-        set {
-            switch tool {
-            case .pen: widthSettings.penSlot = newValue
-            case .highlighter: widthSettings.highlighterSlot = newValue
-            case .eraser: widthSettings.eraserSlot = newValue
-            }
-        }
-    }
-    /// The current width for the active tool (its selected slot's value).
-    var activeWidth: CGFloat {
-        get {
-            let widths = activeWidths
-            let slot = activeSlot
-            guard widths.indices.contains(slot) else { return widths.first ?? 4 }
-            return widths[slot]
-        }
-        set {
-            var widths = activeWidths
-            let slot = activeSlot
-            guard widths.indices.contains(slot) else { return }
-            widths[slot] = newValue
-            activeWidths = widths
-        }
-    }
-    /// Set a specific slot's width for the active tool (used by the size
-    /// popover, which edits a slot without necessarily selecting it first).
-    func setWidth(_ width: CGFloat, forSlot slot: Int) {
-        var widths = activeWidths
-        guard widths.indices.contains(slot) else { return }
-        widths[slot] = width
-        activeWidths = widths
-        bumpTool()
-    }
-    /// Select a width slot for the active tool (GoodNotes-style: tapping an
-    /// unselected dot switches to it).
-    func selectWidthSlot(_ slot: Int) {
-        guard activeWidths.indices.contains(slot) else { return }
-        activeSlot = slot
-        bumpTool()
-    }
-    /// Cycle to the next width slot for the active tool (compact palette).
-    func cycleWidthSlot() {
-        let count = activeWidths.count
-        guard count > 0 else { return }
-        activeSlot = (activeSlot + 1) % count
-        bumpTool()
-    }
-    /// The eraser's pixel-vs-object mode.
-    var eraserMode: EraserMode {
-        get { widthSettings.eraserMode }
-        set { widthSettings.eraserMode = newValue }
-    }
-
-    func bumpTool() {
-        toolVersion &+= 1
-        inkProvider.applyTool()
-    }
 
     /// A page canvas was seeded with existing ink — nudge observers (the
     /// sidebar's Handwriting chips) that consult the canvas cache.
@@ -380,23 +199,7 @@ final class InkController_iOS {
     /// PencilKit clamps `PKInkingTool.width` — pen 0.88…25.66, marker 7.5…60 —
     /// and doesn't map it linearly onto rendered geometry, strokes drawn while
     /// zoomed in came out about half as thick as strokes drawn at 100%.)
-    var pkTool: PKTool {
-        switch tool {
-        case .pen:
-            return PKInkingTool(.pen, color: UIColor(penColor), width: activeWidth)
-        case .highlighter:
-            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: activeWidth)
-        case .eraser:
-            // Explicit width — the default reports 0 ("system default"), which
-            // leaves the erase radius an unknown.
-            switch eraserMode {
-            case .pixel:
-                return PKEraserTool(.bitmap, width: activeWidth)
-            case .object:
-                return PKEraserTool(.vector, width: activeWidth)
-            }
-        }
-    }
+    var pkTool: PKTool { toolState.pkTool(widthScale: 1) }
 
     // MARK: - Editing lifecycle
 

@@ -332,8 +332,12 @@ final class WorkspaceStore {
     /// sweeper.
     func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
         liveTabRuntimes[tabId] ?? {
+            #if os(iOS)
             let created = LiveTabRuntime(
-                tabId: tabId, webLibraryStorage: webLibraryStorage)
+                tabId: tabId, teardownRegistry: tabTeardowns, webLibraryStorage: webLibraryStorage)
+            #else
+            let created = LiveTabRuntime(tabId: tabId, webLibraryStorage: webLibraryStorage)
+            #endif
             liveTabRuntimes[tabId] = created
             return created
         }()
@@ -363,6 +367,25 @@ final class WorkspaceStore {
             await runtime.flushPdfText()
         }
     }
+
+    #if os(iOS)
+    /// Drain debounced Pencil edits for every open tab, including background
+    /// PDF and webpage tabs that are not represented by the focused-pane
+    /// inspector registry.
+    @discardableResult
+    func flushLiveInk() async -> Bool {
+        // Snapshot before the first suspension: a tab can close while a disk
+        // flush is awaited, which mutates `liveTabRuntimes`.
+        var webInkSucceeded = true
+        for runtime in Array(liveTabRuntimes.values) {
+            await runtime.ink.flushPendingInkAndWait()
+            webInkSucceeded = await runtime.webInk.flushPendingInkAndReportSuccess()
+                && webInkSucceeded
+        }
+        return webInkSucceeded
+    }
+
+    #endif
 
     /// Report a pane's current tab to the residency policy, which pins it. Keyed
     /// on the pane's `AppStore` identity so a split window pins one tab *per

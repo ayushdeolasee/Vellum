@@ -356,18 +356,16 @@ struct VellumApp_iOS: App {
             // close behind the UI (AppStore.closeTab) and are no longer in
             // `tabs`, so the per-tab loop below would miss them. Drained via the
             // workspace registry, not per pane: a close that collapsed its pane
-            // left no leaf to ask. Drain those before the open-tab snapshot.
-            await workspace.tabTeardowns.awaitAll()
+            // left no leaf to ask. First, because their last_page writes must
+            // land before the loop rewrites the same files.
+            let releasedInkSucceeded = await workspace.tabTeardowns.awaitAll()
+            // Every OPEN tab's PDF and webpage ink, not just the focused
+            // pane's inspector target.
+            let liveInkSucceeded = await workspace.flushLiveInk()
             await workspace.flushOpenTabPositions()
-            // Every OPEN tab's ink, not just the focused pane's. The registry
-            // now holds one controller per pane (the active tab's projection
-            // the inspector reads), while ink itself is per-tab state on the
-            // runtime — so iterating the registry would silently skip the
-            // debounced strokes of every background tab.
-            for pane in workspace.root.allLeaves() {
-                for tab in pane.app.tabs {
-                    await workspace.liveTabRuntime(for: tab.id).ink.flushPendingInkAndWait()
-                }
+            if !releasedInkSucceeded || !liveInkSucceeded {
+                WebInkController_iOS.log.error(
+                    "background ink flush incomplete; retaining failed work for the next barrier")
             }
             for pane in workspace.root.allLeaves() {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
