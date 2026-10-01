@@ -160,23 +160,26 @@ struct PaneView: View {
     // MARK: - Per-pane document lifecycle (moved from ContentView)
 
     private func loadDocumentState() async {
+        let identity = documentIdentity
+        let document = app.document
         // This task can run before the app root's startup task. Wait for the
         // coordinator here so restored documents never treat that launch race
         // as an unavailable identity migration.
         await workspace.startStorageCoordinator()
+        guard !Task.isCancelled, identity == documentIdentity else { return }
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
-        await pane.scratchpad.clearDocumentContext().value
-        guard let document = app.document else { return }
+        await pane.scratchpad.loadForDocument(document).value
+        guard !Task.isCancelled, identity == documentIdentity, document != nil else { return }
         await pane.annotations.loadAnnotations()
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, identity == documentIdentity else { return }
         await pane.ai.loadConversationForDocument(
-            app.document, coordinator: workspace.storageCoordinator)
+            document, coordinator: workspace.storageCoordinator)
+        guard !Task.isCancelled, identity == documentIdentity else { return }
         if let tabId = app.activeTabId,
            let runtime = workspace.existingLiveTabRuntime(for: tabId) {
             pane.ai.restorePageTexts(runtime.pageTexts)
         }
-        await pane.scratchpad.loadForDocument(app.document).value
     }
 
     private var documentIdentity: PaneDocumentIdentity {

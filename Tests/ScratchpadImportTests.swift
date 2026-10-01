@@ -606,6 +606,101 @@ final class ScratchpadImportTests: XCTestCase {
             markdown, authoritativeText: "notes without image"))
     }
 
+    func testPDFAndWebSwitchPreservesEditsAndRejectsPreviousEditors() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-source-switch-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let pdf = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/\(UUID().uuidString).pdf", title: "PDF",
+            pageCount: 1, lastPage: 1, docId: UUID().uuidString.lowercased())
+        let webPath = "https://example.com/\(UUID().uuidString)"
+        let web = DocumentInfo(
+            kind: .web, pdfPath: webPath, title: "Web",
+            docId: DocumentIdentity.sha256Hex(webPath))
+        let app = appShowing(pdf, tabID: "pdf-tab")
+        app.attachTab(PdfTab(
+            id: "web-tab", document: web, currentPage: 1, numPages: 1,
+            zoom: 1, visiblePages: [1], webVisibleRange: nil,
+            webVisibleBookmarks: [], mode: .view))
+        app.activateTab("pdf-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        await store.loadForDocument(pdf).value
+        let pdfGeneration = store.documentLoadGeneration
+        store.updateFromEditor("PDF notes", generation: pdfGeneration)
+
+        app.activateTab("web-tab")
+        XCTAssertFalse(store.isShowingCurrentDocument)
+        store.updateFromEditor("late PDF change", generation: pdfGeneration)
+        XCTAssertEqual(store.text, "PDF notes")
+        let loading = store.loadForDocument(web)
+        XCTAssertTrue(store.isLoadingDocument)
+        await loading.value
+        XCTAssertTrue(store.isShowingCurrentDocument)
+        XCTAssertTrue(store.text.isEmpty)
+        store.updateFromEditor("PDF notes", generation: pdfGeneration)
+        XCTAssertTrue(store.text.isEmpty)
+        store.updateFromEditor("Web notes", generation: store.documentLoadGeneration)
+
+        app.activateTab("pdf-tab")
+        await store.loadForDocument(pdf).value
+        XCTAssertEqual(store.text, "PDF notes")
+        store.updateFromEditor("late callback after returning to PDF", generation: pdfGeneration)
+        XCTAssertEqual(store.text, "PDF notes")
+        XCTAssertEqual(container.peek(documentURL(
+            root: root, key: DocumentIdentity.storageKey(for: web), name: "scratchpad.md")),
+            Data("Web notes".utf8))
+        XCTAssertEqual(container.peek(documentURL(
+            root: root, key: DocumentIdentity.storageKey(for: pdf), name: "scratchpad.md")),
+            Data("PDF notes".utf8))
+    }
+
+    func testLatestScratchpadLoadSupersedesQueuedClearAndEarlierLoad() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-rapid-switch-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let first = DocumentInfo(
+            kind: .pdf, pdfPath: "/tmp/\(UUID().uuidString).pdf", title: "First",
+            docId: UUID().uuidString.lowercased())
+        let latest = DocumentInfo(
+            kind: .web, pdfPath: "https://example.com/latest", title: "Latest",
+            docId: DocumentIdentity.sha256Hex("https://example.com/latest"))
+        let app = appShowing(first, tabID: "first-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        await store.loadForDocument(first).value
+        store.text = "pending first edit"
+        let firstKey = DocumentIdentity.storageKey(for: first)
+        let gate = ScratchpadOperationGate()
+        let blocker = Task {
+            await ScratchpadWriteCoordinator.shared.withExclusiveAccess(forKeys: [firstKey]) {
+                await gate.pause()
+            }
+        }
+        await gate.waitUntilStarted()
+        let clearing = store.clearDocumentContext()
+        let obsolete = store.loadForDocument(first)
+        app.attachTab(PdfTab(
+            id: "latest-tab", document: latest, currentPage: 1, numPages: 1,
+            zoom: 1, visiblePages: [1], webVisibleRange: nil,
+            webVisibleBookmarks: [], mode: .view))
+        let loading = store.loadForDocument(latest)
+        await gate.release()
+        await blocker.value
+        await clearing.value
+        await obsolete.value
+        await loading.value
+
+        XCTAssertFalse(store.isLoadingDocument)
+        XCTAssertTrue(store.isShowingCurrentDocument)
+        XCTAssertTrue(store.text.isEmpty)
+        XCTAssertEqual(container.peek(documentURL(
+            root: root, key: firstKey, name: "scratchpad.md")),
+            Data("pending first edit".utf8))
+    }
+
     // MARK: - Helpers
 
     private struct LegacyEntry: Codable {
