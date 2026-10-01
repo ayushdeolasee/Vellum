@@ -9,7 +9,7 @@ import Foundation
 
 /// Sidecar record persisted per webpage (`<appData>/web/<key>.json`).
 /// All fields default on decode except `url` (mirrors `#[serde(default)]`).
-struct WebPageRecord: Codable, Sendable {
+struct WebPageRecord: Codable, Equatable, Sendable {
     var url: String
     var title: String?
     var pageCount: Int?
@@ -209,13 +209,13 @@ enum WebLibrary {
 
     // MARK: - Record persistence
 
-    nonisolated(unsafe) static let jsonEncoderPretty: JSONEncoder = {
+    static let jsonEncoderPretty: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         return encoder
     }()
 
-    nonisolated(unsafe) static let jsonEncoderCompact: JSONEncoder = {
+    static let jsonEncoderCompact: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         return encoder
@@ -353,7 +353,7 @@ enum WebLibrary {
         rfc3339Formatter.string(from: Date())
     }
 
-    nonisolated(unsafe) private static let rfc3339Formatter: DateFormatter = {
+    private static let rfc3339Formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
@@ -405,8 +405,11 @@ enum WebLibrary {
         for name in names {
             if name.hasSuffix(".json") {
                 out.insert(name)
-            } else if name.hasPrefix("."), name.hasSuffix(".json.icloud") {
-                out.insert(String(name.dropFirst().dropLast(".icloud".count)))
+            } else if let logical = WebICloud.logicalURL(
+                forPlaceholder: dir.appendingPathComponent(name)),
+                logical.pathExtension == "json"
+            {
+                out.insert(logical.lastPathComponent)
             }
         }
         return out.sorted()

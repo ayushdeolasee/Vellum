@@ -461,10 +461,14 @@ actor WebLibraryStorage {
             layout.recordsDir,
             matching: SyncedItemFilter(fileExtension: "json", readyOnly: false))
         var out: [WebLibraryEntry] = []
-        for item in items where item.readiness.isReady {
+        for item in items {
+            guard !Task.isCancelled else { throw CancellationError() }
+            // Request missing sidecars without making Home wait for downloads.
+            // The metadata watcher invalidates Home when their bytes arrive.
+            // Archives stay on demand; discovery only needs the small records.
             guard let record = try? await container.read(
                 item.url,
-                materializing: .requireCurrent,
+                materializing: .downloadIfNeeded(timeout: 0),
                 { try JSONDecoder().decode(WebPageRecord.self, from: $0) }
             ), record.saved else { continue }
             let key = WebLibrary.pageKey(record.url)

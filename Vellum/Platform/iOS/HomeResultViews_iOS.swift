@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import QuickLookThumbnailing
 
 // The small, reusable pieces of the home screen's result list. Split out of
 // `WelcomeScreen_iOS` so the screen itself reads as layout.
@@ -44,6 +45,13 @@ enum HomeLayout {
     /// Minimum row height. iOS wants a 44pt touch target; the iPad's own list
     /// rows already use 52pt (`defaultMinListRowHeight`), so match those.
     static let rowMinHeight: CGFloat = 52
+
+    static func resultColumns(viewportWidth: CGFloat, accessibilitySize: Bool) -> [GridItem] {
+        let contentWidth = min(contentMaxWidth, viewportWidth - 2 * columnPadding)
+        return Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: 12, alignment: .top),
+            count: contentWidth >= 732 && !accessibilitySize ? 2 : 1)
+    }
 }
 
 extension View {
@@ -89,24 +97,25 @@ struct HomeResultRow: View {
                         Text(item.title)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(palette.foreground)
-                            .lineLimit(3)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
                         HomeBadgeStrip(badges: item.badges)
+                            .accessibilityHidden(true)
                     } else {
                         HStack(spacing: 6) {
                             Text(item.title)
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(palette.foreground)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
                             HomeBadgeStrip(badges: item.badges)
+                                .accessibilityHidden(true)
                         }
                     }
                     Text(item.subtitle)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .truncationMode(.middle)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                        .truncationMode(item.kind == .web ? .tail : .middle)
 
                     if dynamicTypeSize.isAccessibilitySize, !item.detail.isEmpty {
                         Text(item.detail)
@@ -143,8 +152,30 @@ struct HomeResultRow: View {
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
         .accessibilityValue(accessibilityValue)
-        .task(id: item.thumbnailURL) {
-            thumbnail = await integrations.thumbnailImage(for: item.thumbnailURL)
+        .task(id: item) {
+            thumbnail = nil
+            var loaded = await integrations.thumbnailImage(for: item.thumbnailURL)
+            if loaded == nil, !Task.isCancelled {
+                switch item.target {
+                case .file(let path, _) where item.kind == .pdf && !item.badges.contains(.missing):
+                    loaded = await HomeFileThumbnailLoader.shared.image(path: path)
+                case .url(let address) where item.kind == .web:
+                    if var url = URLComponents(string: address),
+                       ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                       url.host != nil {
+                        url.path = "/favicon.ico"
+                        url.query = nil
+                        url.fragment = nil
+                        url.user = nil
+                        url.password = nil
+                        loaded = await integrations.thumbnailImage(for: url.url)
+                    }
+                default:
+                    break
+                }
+            }
+            guard !Task.isCancelled else { return }
+            thumbnail = loaded
         }
         // Reached by long-press on iPad, which is the standard affordance for
         // destructive row actions.
@@ -168,10 +199,27 @@ struct HomeResultRow: View {
     }
 
     private var accessibilityValue: String {
+        var details: [String] = []
         if item.badges.contains(.capturedUnread) {
-            return "New, not yet opened. \(item.subtitle)"
+            details.append("New, not yet opened")
         }
-        return item.subtitle
+        details.append(item.subtitle)
+        if !item.detail.isEmpty {
+            details.append(item.detail)
+        }
+        if item.badges.contains(.missing) {
+            details.append("File not found at its last known location")
+        }
+        if item.badges.contains(.saved) {
+            details.append("Saved to your library")
+        }
+        if item.badges.contains(.offline) {
+            details.append("Available offline")
+        }
+        if item.badges.contains(.notes) {
+            details.append("Has notes or an AI conversation")
+        }
+        return details.filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     private var icon: some View {
@@ -193,6 +241,24 @@ struct HomeResultRow: View {
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator)
             }
+    }
+}
+
+/// Quick Look reads and renders the PDF away from the UI actor without opening
+/// a reader session or extracting page text. SwiftUI owns each request's task.
+private actor HomeFileThumbnailLoader {
+    static let shared = HomeFileThumbnailLoader()
+
+    func image(path: String) async -> sending UIImage? {
+        let url = URL(fileURLWithPath: path)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard !Task.isCancelled else { return nil }
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url, size: CGSize(width: 96, height: 96), scale: 1,
+            representationTypes: .thumbnail)
+        return try? await QLThumbnailGenerator.shared
+            .generateBestRepresentation(for: request).uiImage
     }
 }
 
@@ -267,7 +333,7 @@ struct HomeLinkActionRow: View {
                     Text(url)
                         .font(.footnote)
                         .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
                 }
 

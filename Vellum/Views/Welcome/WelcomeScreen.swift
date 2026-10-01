@@ -125,6 +125,12 @@ struct WelcomeScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
         .task { await store.load() }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .vellumSyncedLibraryChanged) {
+                guard !Task.isCancelled else { return }
+                await store.load()
+            }
+        }
         // One driver for every input that invalidates the results (query,
         // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
         // which is exactly the debounce semantics we want while typing.
@@ -416,21 +422,24 @@ struct WelcomeScreen: View {
                 .pickerStyle(.inline)
             }
         } label: {
-            Image(
-                systemName: searchFilterIsActive
+            Label(
+                "Search filters",
+                systemImage: searchFilterIsActive
                     ? "line.3.horizontal.decrease.circle.fill"
-                    : "line.3.horizontal.decrease")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(
-                    searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+                    : "line.3.horizontal.decrease"
+            )
+            .labelStyle(.iconOnly)
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(
+                searchFilterIsActive ? Color.accentColor : palette.mutedForeground)
+            // Size the rendered label so the entire slot activates the menu.
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Search filters")
-        .accessibilityLabel("Search filters")
         .accessibilityValue(searchFilterSummary)
         .accessibilityIdentifier("welcome.searchFilters")
     }

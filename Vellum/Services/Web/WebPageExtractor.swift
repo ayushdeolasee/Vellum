@@ -512,13 +512,25 @@ enum WebFetch {
             throw SessionServiceError.io("Response is too large to load")
         }
         var body = Data()
+        // Data.append per byte repeatedly crosses Foundation's storage layer.
+        // Keep a small Swift buffer, while still enforcing the decoded size cap
+        // during streaming rather than after an unbounded download.
+        var chunk = [UInt8]()
+        chunk.reserveCapacity(64 * 1024)
         do {
             for try await byte in bytes {
-                body.append(byte)
-                if body.count > cap {
+                guard body.count + chunk.count < cap else {
                     throw SessionServiceError.io("Response is too large to load")
                 }
+                chunk.append(byte)
+                if chunk.count == 64 * 1024 {
+                    try Task.checkCancellation()
+                    body.append(contentsOf: chunk)
+                    chunk.removeAll(keepingCapacity: true)
+                }
             }
+            try Task.checkCancellation()
+            body.append(contentsOf: chunk)
         } catch let error as SessionServiceError {
             throw error
         } catch {
@@ -830,17 +842,15 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         return out
     }
 
-    private var activeTasks: Set<ObjectIdentifier> = []
+    private var activeTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let id = ObjectIdentifier(urlSchemeTask)
-        activeTasks.insert(id)
         let request = urlSchemeTask.request
-        Task { @MainActor [weak self] in
+        activeTasks[id] = Task { @MainActor [weak self] in
             guard let self else { return }
             let response = await self.handleRequest(request)
-            guard self.activeTasks.contains(id) else { return }
-            self.activeTasks.remove(id)
+            guard !Task.isCancelled, self.activeTasks.removeValue(forKey: id) != nil else { return }
             let url = request.url ?? URL(string: "\(Self.scheme)://\(Self.snapshotHost)/")!
             guard let http = HTTPURLResponse(
                 url: url,
@@ -855,7 +865,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        activeTasks.remove(ObjectIdentifier(urlSchemeTask))
+        activeTasks.removeValue(forKey: ObjectIdentifier(urlSchemeTask))?.cancel()
     }
 
     // MARK: Routing
@@ -908,6 +918,9 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         let key = WebLibrary.pageKey(pageUrl)
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
         let record = await storage.loadRecord(forKey: key)
+        guard !Task.isCancelled else {
+            return WebProxyResponse(status: 204, headers: [:], body: Data())
+        }
         let recordSaved = record?.saved ?? false
         let snapshotOnly = record?.loadingPolicy == "snapshot-only"
 
@@ -920,6 +933,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         do {
             switch try await WebFetch.fetchPage(pageUrl) {
             case .html(let html, let finalUrl):
+                try Task.checkCancellation()
                 // Redirects change the page's effective identity: serve under
                 // the final URL so relative subresources resolve correctly and
                 // the app shell can rebind the tab to the canonical address.
@@ -934,6 +948,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                 } else {
                     let effectiveKey = WebLibrary.pageKey(effectiveUrl)
                     let effectiveRecord = await storage.loadRecord(forKey: effectiveKey)
+                    try Task.checkCancellation()
                     if effectiveRecord?.saved == true {
                         WebFetch.writeSnapshotAtomic(
                             path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
@@ -949,6 +964,10 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                     body: body)
             }
         } catch {
+            // A stopped navigation must not read or prepare an offline fallback.
+            guard !Task.isCancelled else {
+                return WebProxyResponse(status: 204, headers: [:], body: Data())
+            }
             // Offline / link-rot fallback: prefer the self-contained
             // .vellumweb snapshot, then the plain saved snapshot.
             if let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {

@@ -77,7 +77,7 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "phone-reader",
             title: "Use the iPhone reader",
             symbol: "iphone",
-            summary: "Tap the document to show or hide both reader bars. Scrolling toward later content also hides them, and a brief reverse scroll reveals them. The bottom bar holds page navigation, bookmarks, notes, the inspector, tabs, and More actions.",
+            summary: "Scroll toward later content to hide both reader bars. Swipe your finger downward deliberately to reveal them, even at the top of a document. Page taps leave the bars unchanged. The bottom bar holds page navigation, bookmarks, notes, the inspector, tabs, and More actions.",
             shortcut: nil,
             keywords: ["phone", "chrome", "page", "toolbar", "controls", "jump"]),
         HelpTopic(
@@ -181,6 +181,13 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             summary: "The assistant can jump to a page, add a note, and highlight text it finds. It cannot delete or edit anything you wrote.",
             shortcut: nil,
             keywords: ["tools", "agent", "edit", "actions", "write"]),
+        HelpTopic(
+            id: "ai-quiz",
+            title: "Quiz yourself",
+            symbol: "brain.head.profile",
+            summary: "Open the Quiz menu in the AI panel to start with the current page, attached material, or the whole document. You can also ask for a chapter or section in the composer. The assistant asks one question at a time and explains each answer from the source.",
+            shortcut: nil,
+            keywords: ["quiz", "study", "learn", "recall", "chapter", "questions"]),
         HelpTopic(
             id: "ask-ai",
             title: "Ask AI about a selection",

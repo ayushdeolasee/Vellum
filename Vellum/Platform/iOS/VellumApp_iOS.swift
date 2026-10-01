@@ -183,19 +183,29 @@ struct VellumApp_iOS: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(inkRegistry)
+                .environment(workspace.openAIModelCatalog)
                 .environment(workspace.openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
                 .tint(themeStore.palette.primary)
+                .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
+                    if RuntimeProfile.current.isDevelopment {
+                        DevelopmentBadge()
+                            .padding(.trailing, 12)
+                            .padding(.vertical, 4)
+                            .allowsHitTesting(false)
+                    }
+                }
         }
         .commands {
             VellumCommands_iOS(workspace: workspace)
         }
         .onChange(of: scenePhase) { _, phase in
-            // Persist the split layout and last_page for every open tab in
+            // Persist the split layout and reading position for every open tab in
             // every pane when leaving the foreground — the iOS analogue of the
             // macOS terminate hook.
             if phase == .background {
+                ScratchpadEditorPrewarmer.cancelWarmup()
                 flushOnBackground()
                 // Ask for the next background wake-up on the way out: a request
                 // submitted while in the foreground would be the one the system
@@ -327,9 +337,8 @@ struct VellumApp_iOS: App {
     }
 
     /// Scene-background flush. macOS drains these on `applicationShouldTerminate`;
-    /// iOS gets a `beginBackgroundTask` window instead so the last_page /
-    /// saveFile writes and the coalesced cache / conversation flushes complete
-    /// before the app is suspended.
+    /// iOS gets a `beginBackgroundTask` window so position, ink, scratchpad,
+    /// cache and conversation writes complete before the app is suspended.
     @MainActor
     private func flushOnBackground() {
         let workspace = self.workspace
@@ -343,12 +352,11 @@ struct VellumApp_iOS: App {
         let task = Task { @MainActor in
             defer { flushController.finish(generation: generation) }
             await workspace.saveNowAfterPendingPositionRecords()
-            // Tabs closed moments ago finish their metadata write and session
+            // Tabs closed moments ago finish their position write and session
             // close behind the UI (AppStore.closeTab) and are no longer in
             // `tabs`, so the per-tab loop below would miss them. Drained via the
             // workspace registry, not per pane: a close that collapsed its pane
-            // left no leaf to ask. First, because their last_page writes must
-            // land before the loop rewrites the same files.
+            // left no leaf to ask. Drain those before the open-tab snapshot.
             await workspace.tabTeardowns.awaitAll()
             await workspace.flushOpenTabPositions()
             // Every OPEN tab's ink, not just the focused pane's. The registry
@@ -364,19 +372,9 @@ struct VellumApp_iOS: App {
             for pane in workspace.root.allLeaves() {
                 // Commit the pane's latest debounced edit to the scratchpad cache.
                 await pane.scratchpad.flush().value
-                for tab in pane.app.tabs {
-                    if tab.document?.kind == .pdf {
-                        try? await workspace.sessions.setDocumentMetadata(
-                            sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
-                    }
-                    try? await workspace.sessions.saveFile(sessionId: tab.id)
-                }
             }
-            // Every runtime, not just the focused pane's handler: the metadata
-            // writes above changed each PDF's validation hash, and with live
-            // tabs there is one extractor per TAB rather than one per pane. The
-            // old `pane.app.flushPageTextCacheHandler?()` covered only whichever
-            // viewer last claimed that slot (issue #37 PR B).
+            // Positions were flushed above. Saving the current page must not
+            // rewrite every open PDF during iOS's limited background window.
             await workspace.flushLivePageTextCaches()
             // Drain the coalesced background flushes so a page-text cache write
             // (issue #37) or an in-flight conversation blob (do-not-reintroduce
@@ -439,7 +437,7 @@ final class BackgroundFlushController {
     }
 
     func expire(generation: Int) {
-        guard active?.generation == generation else { return }
+        guard self.generation == generation else { return }
         let expired = active
         active = nil
         self.generation += 1
@@ -469,7 +467,10 @@ final class BackgroundFlushToken: BackgroundFlushHandle {
 
     init(name: String, expiration: @escaping @MainActor @Sendable () -> Void) {
         id = UIApplication.shared.beginBackgroundTask(withName: name) {
-            Task { @MainActor in expiration() }
+            // UIKit calls this on the main actor and waits for it to return.
+            // Release the token here, before suspension, rather than enqueueing
+            // work that might not run before the background deadline.
+            expiration()
         }
     }
 

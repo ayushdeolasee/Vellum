@@ -64,7 +64,7 @@ struct ContentView_iOS: View {
         .sheet(isPresented: $addWebpagePresented) {
             AddWebpageSheet_iOS { url in
                 let app = workspace.focusedPane.app
-                Task { await app.openUrl(url) }
+                Task { await app.openUrl(url, saveToLibrary: true) }
             }
         }
         // Keyboard-shortcut / pane routing: ⌘O and every pane's "Open File…"

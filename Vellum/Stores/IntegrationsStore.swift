@@ -126,6 +126,10 @@ final class IntegrationsStore {
             else if loaded.corruptProviders.contains(provider) { update(provider) { $0.connection = .failed("The local cache is damaged. Sync Now to rebuild it."); $0.statusMessage = "Cache recovery needed" } }
             else if loaded.connectedProviders.contains(provider) { update(provider) { $0.connection = .connected; $0.statusMessage = "Connected — not synced yet" } }
         }
+        guard RuntimeProfile.current.syncEnabled else {
+            didStart = true
+            return
+        }
         guard !Task.isCancelled, !isQuiescing else {
             didStart = true
             return
@@ -174,7 +178,9 @@ final class IntegrationsStore {
     /// trigger: the prefetcher runs one pass at a time and skips whatever is
     /// already on disk.
     func prefetchOfflineCopies(policy: ReadLaterPrefetchPolicy = .foreground) async {
-        guard offlineReadingEnabled, !isQuiescing else { return }
+        guard RuntimeProfile.current.syncEnabled,
+              offlineReadingEnabled,
+              !isQuiescing else { return }
         if let prefetchTask {
             await prefetchTask.value
             return
@@ -198,6 +204,7 @@ final class IntegrationsStore {
     /// what the user never came back to. Sweeping LAST means an item downloaded
     /// moments ago is never a candidate of the same run.
     func backgroundRefresh(openDocumentPaths: Set<String> = []) async {
+        guard RuntimeProfile.current.syncEnabled else { return }
         await start()
         await refreshStaleProviders()
         await prefetchOfflineCopies(policy: .background)
@@ -206,6 +213,7 @@ final class IntegrationsStore {
     }
 
     func connect(provider: IntegrationProvider, token: String) async throws {
+        guard RuntimeProfile.current.syncEnabled else { throw IntegrationError.syncDisabled }
         let old = providers[provider]
         let priorOperation = operationTasks[provider]
         update(provider) { $0.connection = .connecting; $0.statusMessage = "Checking token…" }
@@ -233,7 +241,7 @@ final class IntegrationsStore {
     }
 
     func sync(_ provider: IntegrationProvider, forceFull: Bool = false) async {
-        guard !isQuiescing else { return }
+        guard RuntimeProfile.current.syncEnabled, !isQuiescing else { return }
         if let current = operationTasks[provider] {
             await current.task.value
             if forceFull { await sync(provider, forceFull: true) }
@@ -307,6 +315,7 @@ final class IntegrationsStore {
     }
 
     func disconnect(provider: IntegrationProvider, deleteDownloads: Bool, openDocumentPaths: Set<String> = []) async throws {
+        guard RuntimeProfile.current.syncEnabled else { throw IntegrationError.syncDisabled }
         try await engine.disconnect(provider: provider, deleteDownloads: deleteDownloads, openDocumentPaths: openDocumentPaths)
         operationTasks[provider]?.task.cancel(); operationTasks[provider] = nil
         providers[provider] = .init(provider: provider, connection: .disconnected, items: [], collections: [], lastSuccessfulSync: nil, lastFullSweep: nil, skippedRecordCount: 0, statusMessage: nil)
@@ -332,6 +341,7 @@ final class IntegrationsStore {
             await surfaceRevisionWarning(for: item)
             return existing
         }
+        guard RuntimeProfile.current.syncEnabled else { throw IntegrationError.syncDisabled }
         downloads[item.id] = .init(progress: nil, message: "Downloading \(item.title)…", isActive: true, sequence: nextSequence())
         do { let route = try await engine.download(item) { [weak self] value in await MainActor.run { guard let self else { return }; let old = self.downloads[item.id]; self.downloads[item.id] = .init(progress: value.map { max(old?.progress ?? 0, min(1, $0)) }, message: "Downloading \(item.title)…", isActive: true, sequence: old?.sequence ?? self.nextSequence()) } }; await surfaceRevisionWarning(for: item); return route }
         catch { downloads[item.id] = .init(progress: nil, message: error.localizedDescription, isActive: false, sequence: nextSequence()); throw error }
@@ -404,7 +414,8 @@ final class IntegrationsStore {
     /// the move landed, a follow-up full sync re-fetches the provider's
     /// authoritative state so neither the UI nor the cache stays stale.
     func move(_ item: ReadLaterItem, to collection: ReadLaterCollection) async {
-        guard item.provider == collection.provider,
+        guard RuntimeProfile.current.syncEnabled,
+              item.provider == collection.provider,
               !inFlightMoves.contains(item.id),
               let original = providers[item.provider]?.items.first(where: { $0.id == item.id }),
               original.collectionIDs != [collection.id] else { return }
@@ -617,10 +628,13 @@ final class IntegrationsStore {
     /// timer's sleep is suspended with the process, so returning to the
     /// foreground is the moment to re-check staleness. macOS gets this for free
     /// from the always-running timer.
-    func foregroundRefresh() async { await refreshStaleProviders() }
+    func foregroundRefresh() async {
+        guard RuntimeProfile.current.syncEnabled else { return }
+        await refreshStaleProviders()
+    }
 
     private func refreshStaleProviders() async {
-        guard autoRefreshEnabled else { return }
+        guard RuntimeProfile.current.syncEnabled, autoRefreshEnabled else { return }
         for provider in IntegrationProvider.allCases where providers[provider]?.canAutoRefresh == true {
             let state = providers[provider]
             let shouldRefresh = state?.lastSuccessfulSync == nil
@@ -631,7 +645,7 @@ final class IntegrationsStore {
             await sync(provider, forceFull: needsWeeklySweep)
         }
     }
-    private func restartAutoRefresh() { autoRefreshTask?.cancel(); autoRefreshTask = nil; guard autoRefreshEnabled else { return }; autoRefreshTask = Task { [weak self, scheduler, refreshInterval] in while !Task.isCancelled { do { try await scheduler.sleep(for: refreshInterval); try Task.checkCancellation() } catch { return }; await self?.refreshStaleProviders() } } }
+    private func restartAutoRefresh() { autoRefreshTask?.cancel(); autoRefreshTask = nil; guard RuntimeProfile.current.syncEnabled, autoRefreshEnabled else { return }; autoRefreshTask = Task { [weak self, scheduler, refreshInterval] in while !Task.isCancelled { do { try await scheduler.sleep(for: refreshInterval); try Task.checkCancellation() } catch { return }; await self?.refreshStaleProviders() } } }
     private func apply(_ snapshot: ProviderSnapshot, connection: IntegrationConnectionState, cleanThumbnails: Bool = true) {
         // Re-apply moves the provider hasn't confirmed yet, so a sync that was
         // already paginating when a move landed can't visibly bounce the item

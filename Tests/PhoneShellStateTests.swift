@@ -103,21 +103,6 @@ struct PhoneShellStateTests {
         #expect(shell.chromeVisible, "switcher return cleared partial travel")
     }
 
-    @Test("A document tap toggles bars while blocked interactions do not")
-    func documentTapTogglesChrome() async throws {
-        let (shell, app) = try await makeShell()
-        await app.openFile(path: "/tmp/phone-tap.pdf")
-        shell.didOpenDocument()
-
-        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
-        #expect(!shell.chromeVisible)
-        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
-        #expect(shell.chromeVisible)
-
-        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: true))
-        #expect(shell.chromeVisible, "selection and note interactions keep their chrome state")
-    }
-
     @Test(
         "Direct later/reverse travel hides and reveals both bars at 28 points",
         .bug("https://github.com/ayushdeolasee/Vellum/issues/192"))
@@ -132,7 +117,9 @@ struct PhoneShellStateTests {
         #expect(shell.chromeVisible)
         shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
         shell.handleReaderScroll(.changed(deltaY: 1, sourceInteractionBlocked: false))
-        #expect(shell.chromeVisible == false, "short direct pans accumulate")
+        #expect(shell.chromeVisible, "separate tiny swipes do not accumulate")
+        shell.handleReaderScroll(.changed(deltaY: 27, sourceInteractionBlocked: false))
+        #expect(!shell.chromeVisible)
         shell.handleReaderScroll(.ended)
         #expect(shell.chromeVisible == false, "hidden controls remain hidden at rest")
 
@@ -205,8 +192,6 @@ struct PhoneShellStateTests {
         shell.handleReaderScroll(.began(sourceInteractionBlocked: false))
         shell.handleReaderScroll(.changed(deltaY: 100, sourceInteractionBlocked: false))
         #expect(shell.chromeVisible)
-        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
-        #expect(shell.chromeVisible, "always-show also blocks tap-to-hide")
     }
 
     @Test("Every reader navigation arrival restores controls and clears partial travel")

@@ -11,6 +11,7 @@ import XCTest
 @MainActor
 final class WebLibraryStorageTests: XCTestCase {
     private var tempDir: URL!
+    private var coordinators: [StorageCoordinator] = []
 
     override func setUp() async throws {
         tempDir = FileManager.default.temporaryDirectory
@@ -20,6 +21,8 @@ final class WebLibraryStorageTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for coordinator in coordinators { await coordinator.stop() }
+        coordinators.removeAll()
         WebLibrary.storeDirOverride = nil
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
@@ -84,8 +87,10 @@ final class WebLibraryStorageTests: XCTestCase {
             modeProvider: { .icloud },
             effectiveModeProvider: { .icloud },
             rootResolver: { cloudRoot },
-            containerFactory: { container })
+            containerFactory: { container },
+            conflictArchiveRegistry: .init(load: { [] }, save: { _ in }))
         await coordinator.start()
+        coordinators.append(coordinator)
         let layout = WebStorageLayout.pretty(
             root: cloudRoot,
             recordsInRoot: true,
@@ -125,6 +130,26 @@ final class WebLibraryStorageTests: XCTestCase {
     }
 
     // MARK: - Explicit save
+
+    func testManuallyAddedPageIsDiscoverableBeforeOfflineCapture() async throws {
+        let (storage, _, _, _) = await coordinatedStorage()
+        let suite = "vellum-manual-add-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let previousRecents = AppDefaults.current.object(forKey: RecentFilesService.storageKey)
+        defer { AppDefaults.current.set(previousRecents, forKey: RecentFilesService.storageKey) }
+        let sessions = DocumentSessionManager(webBackend: WebSessionBackend(storage: storage))
+        let app = AppStore(
+            sessions: sessions,
+            capturedUnreadLedger: CapturedUnreadLedger(suiteName: suite))
+        await app.openUrl("https://example.com/manually-added", saveToLibrary: true)
+        XCTAssertNil(app.error)
+        let saved = try await storage.listSaved()
+        XCTAssertEqual(saved.map(\.url), ["https://example.com/manually-added"])
+        XCTAssertNotNil(saved.first?.savedAt)
+        XCTAssertEqual(saved.first?.hasSnapshot, false)
+        if let id = app.activeTabId { try await sessions.closeFile(sessionId: id) }
+    }
 
     // Opening no longer saves; annotating does — and it must set savedAt so the
     // library sort has a timestamp.
@@ -388,12 +413,17 @@ final class WebLibraryStorageTests: XCTestCase {
         XCTAssertEqual(container.existenceCheckCount, 0)
     }
 
-    func testCoordinatedListIsCurrentOnlyAndDoesNotMaterialize() async throws {
+    func testCoordinatedListRequestsIncomingRecordsButNotArchives() async throws {
         let (storage, _, container, layout) = await coordinatedStorage()
         let currentURL = "https://example.com/current"
         let staleURL = "https://example.com/stale"
         let legacyURL = "https://example.com/legacy"
-        for (url, readiness) in [(currentURL, ItemReadiness.current), (staleURL, .downloaded)] {
+        let incomingURL = "https://example.com/incoming"
+        let stalledURL = "https://example.com/stalled"
+        for (url, readiness) in [
+            (currentURL, ItemReadiness.current), (staleURL, .downloaded),
+            (incomingURL, .notDownloaded), (stalledURL, .notDownloaded),
+        ] {
             let key = WebLibrary.pageKey(url)
             var record = WebPageRecord(url: url)
             record.saved = true
@@ -404,6 +434,11 @@ final class WebLibraryStorageTests: XCTestCase {
                 data: data,
                 readiness: readiness)
         }
+        container.stallMaterialization(at: layout.recordsDir.appendingPathComponent(
+            "\(WebLibrary.pageKey(stalledURL)).json"))
+        container.seed(
+            layout.archivesDir.appendingPathComponent("offline.vellumweb"),
+            data: Data(), readiness: .notDownloaded)
         var legacy = WebPageRecord(url: legacyURL)
         legacy.saved = true
         legacy.savedAt = legacyURL
@@ -418,9 +453,9 @@ final class WebLibraryStorageTests: XCTestCase {
 
         let saved = try await storage.listSaved()
 
-        XCTAssertEqual(Set(saved.map(\.url)), Set([currentURL, legacyURL]))
+        XCTAssertEqual(Set(saved.map(\.url)), Set([currentURL, staleURL, incomingURL, legacyURL]))
         XCTAssertGreaterThan(container.metadataQueryCount, 0)
-        XCTAssertEqual(container.materializationCount, 0)
+        XCTAssertEqual(container.materializationCount, 3)
     }
 
     func testExplicitRecordLoadMaterializesDownloadedItem() async throws {

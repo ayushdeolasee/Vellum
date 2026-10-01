@@ -11,8 +11,6 @@ import UniformTypeIdentifiers
 
 struct PdfToolbar_iOS: View {
     var ink: InkController_iOS
-    var onOpenFile: () -> Void
-    var onAddWebpage: () -> Void
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
@@ -23,7 +21,6 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
-    @State private var showSettings = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -213,11 +210,6 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text("Enter a page number (1–\(appStore.numPages)).")
         }
-        // Extracted to `SettingsSheet_iOS` so this and Home's gear button
-        // present the identical sheet — including the environment injections a
-        // `.sheet` does not reliably inherit across the UIHostingController
-        // boundary — and cannot drift apart.
-        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -298,8 +290,6 @@ struct PdfToolbar_iOS: View {
                 }
                 Divider()
             }
-            Button(action: onOpenFile) { Label("Open File…", systemImage: "folder") }
-            Button(action: onAddWebpage) { Label("Add Webpage…", systemImage: "globe") }
             if !isWeb {
                 Button {
                     if let id = appStore.activeTabId {
@@ -375,25 +365,15 @@ struct PdfToolbar_iOS: View {
                 Divider()
                 MoveToCollectionMenu(item: item, integrations: integrations)
             }
-            Divider()
-            Button { showSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
         } label: {
-            // DO NOT port main's ZStack trick here (#129 packet 7 §2.10 G4).
-            // On AppKit a menu control paints its own hover highlight *beneath*
-            // any attached background, so main draws the glyph and the pill as
-            // ZStack siblings and drops the `Menu` itself to `.opacity(0.02)` as
-            // a transparent-but-still-hit-testable target. UIKit menus paint no
-            // such highlight under an attached background, so copying that would
-            // buy nothing and make this glyph 2% opaque. The system's own
-            // menu-open highlight is the touch feedback; `contentShape` below
-            // keeps the whole 44pt slot tappable, which is the part that matters.
-            Image(systemName: "ellipsis")
+            Label("More actions", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(palette.foreground)
+                // Size the rendered label so the entire slot activates the menu.
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
-        .accessibilityLabel("More actions")
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {

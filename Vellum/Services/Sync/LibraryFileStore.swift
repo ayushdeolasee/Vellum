@@ -21,6 +21,8 @@ struct LibraryFileEntry: Sendable, Equatable {
 
 enum LibraryFileError: Error, Sendable, Equatable {
     case notDownloaded(URL, ItemReadiness)
+    case outsideAllowedRoot(URL)
+    case symbolicLink(URL)
     case retryable
     case unavailable
     case nestedCoordination(URL)
@@ -30,10 +32,30 @@ enum LibraryFileError: Error, Sendable, Equatable {
 /// The existing local/custom-folder behavior, lifted behind the shared seam.
 struct DirectLibraryFileStore: LibraryFileStore {
     let isCoordinated = false
+    private let allowedRoot: URL?
+
+    init(allowedRoot: URL? = nil) {
+        self.allowedRoot = allowedRoot?.standardizedFileURL
+    }
 
     func read(_ url: URL) async throws -> Data? {
+        let url = try checkedURL(url)
         let fileManager = FileManager.default
+        if allowedRoot != nil,
+           !fileManager.fileExists(atPath: url.path) {
+            let placeholder = try checkedURL(WebICloud.placeholderURL(for: url))
+            if fileManager.fileExists(atPath: placeholder.path) {
+                _ = WebICloud.materialize(at: url, timeout: 0)
+                guard fileManager.fileExists(atPath: url.path) else {
+                    throw LibraryFileError.notDownloaded(url, .notDownloaded)
+                }
+            }
+        }
         guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let readiness = try readiness(of: url)
+        guard readiness.isReady else {
+            throw LibraryFileError.notDownloaded(url, readiness)
+        }
         do {
             return try Data(contentsOf: url)
         } catch {
@@ -42,6 +64,7 @@ struct DirectLibraryFileStore: LibraryFileStore {
     }
 
     func replace(_ url: URL, with data: Data) async throws {
+        let url = try checkedURL(url)
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
@@ -64,6 +87,7 @@ struct DirectLibraryFileStore: LibraryFileStore {
     }
 
     func remove(_ url: URL) async throws {
+        let url = try checkedURL(url)
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: url.path) else { return }
         do {
@@ -74,27 +98,126 @@ struct DirectLibraryFileStore: LibraryFileStore {
     }
 
     func list(_ directory: URL, suffix: String?) async throws -> [LibraryFileEntry] {
+        let directory = try checkedURL(directory)
         let urls: [URL]
         do {
             urls = try FileManager.default.contentsOfDirectory(
                 at: directory,
-                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles])
+                includingPropertiesForKeys: [
+                    .fileSizeKey,
+                    .contentModificationDateKey,
+                    .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
+                ],
+                options: allowedRoot == nil ? [.skipsHiddenFiles] : [])
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return []
         } catch {
             throw LibraryFileError.io(error.localizedDescription)
         }
-        return urls.compactMap { url in
-            if let suffix, !url.lastPathComponent.hasSuffix(suffix) { return nil }
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            return LibraryFileEntry(
+        var entries: [String: LibraryFileEntry] = [:]
+        for candidate in urls {
+            let candidate = try checkedURL(candidate)
+            let url: URL
+            let isPlaceholder: Bool
+            if let logical = WebICloud.logicalURL(forPlaceholder: candidate) {
+                guard allowedRoot != nil else { continue }
+                url = try checkedURL(logical)
+                isPlaceholder = true
+            } else {
+                guard !candidate.lastPathComponent.hasPrefix(".") else { continue }
+                url = candidate
+                isPlaceholder = false
+            }
+            if let suffix, !url.lastPathComponent.hasSuffix(suffix) { continue }
+            if isPlaceholder {
+                _ = WebICloud.materialize(at: url, timeout: 0)
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                entries[url.lastPathComponent] = LibraryFileEntry(
+                    url: url,
+                    name: url.lastPathComponent,
+                    readiness: .notDownloaded,
+                    byteSize: nil,
+                    contentModifiedAt: nil)
+                continue
+            }
+            let values: URLResourceValues
+            do {
+                values = try url.resourceValues(forKeys: [
+                    .fileSizeKey,
+                    .contentModificationDateKey,
+                    .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
+                ])
+            } catch {
+                throw LibraryFileError.io(error.localizedDescription)
+            }
+            entries[url.lastPathComponent] = LibraryFileEntry(
                 url: url,
                 name: url.lastPathComponent,
-                readiness: .current,
-                byteSize: values?.fileSize.map(Int64.init),
-                contentModifiedAt: values?.contentModificationDate)
-        }.sorted { $0.name < $1.name }
+                readiness: readiness(from: values),
+                byteSize: values.fileSize.map(Int64.init),
+                contentModifiedAt: values.contentModificationDate)
+        }
+        return entries.values.sorted { $0.name < $1.name }
+    }
+
+    private func checkedURL(_ url: URL) throws -> URL {
+        let candidate = url.standardizedFileURL
+        guard let allowedRoot else { return candidate }
+        guard Self.contains(candidate, within: allowedRoot) else {
+            throw LibraryFileError.outsideAllowedRoot(candidate)
+        }
+
+        if (try? FileManager.default.destinationOfSymbolicLink(atPath: allowedRoot.path)) != nil {
+            throw LibraryFileError.symbolicLink(allowedRoot)
+        }
+        var current = allowedRoot
+        let relativeComponents = candidate.pathComponents.dropFirst(
+            allowedRoot.pathComponents.count)
+        for component in relativeComponents {
+            current.appendPathComponent(component)
+            if (try? FileManager.default.destinationOfSymbolicLink(atPath: current.path)) != nil {
+                throw LibraryFileError.symbolicLink(current)
+            }
+        }
+
+        let resolvedRoot = allowedRoot.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+        guard Self.contains(resolvedCandidate, within: resolvedRoot) else {
+            throw LibraryFileError.outsideAllowedRoot(candidate)
+        }
+        return candidate
+    }
+
+    private func readiness(of url: URL) throws -> ItemReadiness {
+        guard allowedRoot != nil else { return .current }
+        do {
+            return readiness(from: try url.resourceValues(forKeys: [
+                .isUbiquitousItemKey,
+                .ubiquitousItemDownloadingStatusKey,
+            ]))
+        } catch {
+            throw LibraryFileError.io(error.localizedDescription)
+        }
+    }
+
+    private func readiness(from values: URLResourceValues) -> ItemReadiness {
+        guard allowedRoot != nil else { return .current }
+        guard values.isUbiquitousItem == true else { return .current }
+        switch values.ubiquitousItemDownloadingStatus {
+        case .current: return .current
+        case .downloaded: return .downloaded
+        default: return .notDownloaded
+        }
+    }
+
+    private static func contains(_ url: URL, within root: URL) -> Bool {
+        let rootComponents = root.pathComponents
+        let candidateComponents = url.pathComponents
+        return candidateComponents.count >= rootComponents.count
+            && Array(candidateComponents.prefix(rootComponents.count)) == rootComponents
     }
 }
 

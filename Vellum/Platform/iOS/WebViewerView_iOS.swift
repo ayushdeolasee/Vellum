@@ -1838,14 +1838,14 @@ final class WebViewerController_iOS: NSObject {
     }
 
     private func intValue(_ value: Any?) -> Int? {
-        if let number = value as? NSNumber, !(number is NSNull) {
+        if !(value is NSNull), let number = value as? NSNumber {
             return number.intValue
         }
         return nil
     }
 
     private func doubleValue(_ value: Any?) -> Double? {
-        if let number = value as? NSNumber, !(number is NSNull) {
+        if !(value is NSNull), let number = value as? NSNumber {
             return number.doubleValue
         }
         return nil
@@ -1862,6 +1862,13 @@ extension WebViewerController_iOS: WKScriptMessageHandler {
 }
 
 extension WebViewerController_iOS: WKNavigationDelegate, WKUIDelegate {
+    /// Scrolls the current page to an already JSON-encoded fragment without
+    /// waiting on WebKit while it is waiting for our navigation decision.
+    @MainActor
+    private static func setLocationHash(_ literal: String, in webView: WKWebView) {
+        webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         updateHistoryAvailability(webView)
     }
@@ -1925,7 +1932,7 @@ extension WebViewerController_iOS: WKNavigationDelegate, WKUIDelegate {
             // not the bridge world, so target the page world (nil = page).
             if let data = try? JSONEncoder().encode("#" + fragment),
                let literal = String(data: data, encoding: .utf8) {
-                webView.evaluateJavaScript("location.hash = \(literal);", completionHandler: nil)
+                Self.setLocationHash(literal, in: webView)
             }
             return .cancel
         }

@@ -92,6 +92,7 @@ struct PaneView_iOS: View {
         .environment(pane.ai)
         .environment(pane.scratchpad)
         // Window-global model catalog read by the in-panel AI settings.
+        .environment(workspace.openAIModelCatalog)
         .environment(workspace.openRouterCatalog)
         .background(PaneFocusCatcher_iOS(isActive: workspace.isSplit) {
             if !isFocused { workspace.focus(pane.id) }
@@ -165,10 +166,7 @@ struct PaneView_iOS: View {
     @ViewBuilder
     private func reader(ink: InkController_iOS) -> some View {
             VStack(spacing: 0) {
-                PdfToolbar_iOS(
-                    ink: ink,
-                    onOpenFile: requestOpenFile,
-                    onAddWebpage: requestAddWebpage)
+                PdfToolbar_iOS(ink: ink)
 
                 if app.findVisible {
                     FindBar()

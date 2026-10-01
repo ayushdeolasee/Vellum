@@ -39,10 +39,14 @@ enum KeychainStore {
     /// same "service/account" vault key as the real vault.
     private static let testStore = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
-    private static let vaultService = "com.vellum.vault"
+    private static var vaultService: String { RuntimeProfile.current.keychainVaultService }
     private static let vaultAccount = "vault"
     /// Service namespaces that previously stored one keychain item per secret.
-    private static let legacyServices = ["com.vellum.ai", "com.vellum.integrations"]
+    private static var legacyServices: [String] {
+        RuntimeProfile.current.isDevelopment && !isRunningTests
+            ? []
+            : ["com.vellum.ai", "com.vellum.integrations"]
+    }
 
     /// Vault contents plus the keychain item's modification date, used to
     /// detect writes from another running Vellum instance before overwriting.
@@ -168,14 +172,18 @@ enum KeychainStore {
     /// it can block the UI. Call this once at startup to move that work onto a
     /// background thread. Safe to call any number of times (the load is cached
     /// and serialized on `lock`), and a no-op under test, where the vault is
-    /// never touched at all.
-    static func prewarm() {
+    /// never touched at all. Development warms only its isolated vault;
+    /// production also migrates and removes legacy production credentials.
+    static func prewarm(profile: RuntimeProfile = .current) {
+        let allowsLegacyAccess = profile.allowsProductionServices
         DispatchQueue.global(qos: .userInitiated).async {
             lock.lock()
             defer { lock.unlock() }
             guard !usesTestStoreLocked else { return }
-            _ = loadVaultLocked()
-            purgeRemovedCredentialsLocked()
+            _ = loadVaultLocked(reconcileLegacy: allowsLegacyAccess)
+            if allowsLegacyAccess {
+                purgeRemovedCredentialsLocked()
+            }
         }
     }
 
@@ -216,11 +224,13 @@ enum KeychainStore {
     /// callers must treat that as "unavailable", never as "empty". Failures
     /// are not cached, so a denied prompt can be retried later in the launch.
     /// Call with `lock` held.
-    private static func loadVaultLocked() -> VaultState? {
+    private static func loadVaultLocked(reconcileLegacy: Bool = true) -> VaultState? {
         if let cache { return cache }
         guard let state = backendLocked.readVaultItem() else { return nil }
         cache = state
-        reconcileLegacyItemsLocked()
+        if reconcileLegacy {
+            reconcileLegacyItemsLocked()
+        }
         return cache
     }
 

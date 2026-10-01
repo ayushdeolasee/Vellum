@@ -119,6 +119,12 @@ struct PhoneHome_iOS: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
         .task { await reloadLibrary() }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .vellumSyncedLibraryChanged) {
+                guard !Task.isCancelled else { return }
+                await reloadLibrary()
+            }
+        }
         // One driver for every input that invalidates the results (query,
         // filter, sort). `.task(id:)` cancels the in-flight pass automatically,
         // which is exactly the debounce semantics we want while typing.
@@ -747,8 +753,8 @@ private struct ContinueReadingRow_iOS: View {
                     Text(item.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(palette.foreground)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .truncationMode(.middle)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .truncationMode(.tail)
 
                     Group {
                         if dynamicTypeSize.isAccessibilitySize {
@@ -776,7 +782,7 @@ private struct ContinueReadingRow_iOS: View {
                     }
                     .font(.footnote)
                     .foregroundStyle(palette.mutedForeground)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 }
 
                 Spacer(minLength: 8)

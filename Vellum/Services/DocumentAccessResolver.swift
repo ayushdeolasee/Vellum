@@ -508,7 +508,7 @@ private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
     let base = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask)[0]
     return base
-        .appendingPathComponent("Vellum", isDirectory: true)
+        .appendingPathComponent(RuntimeProfile.current.localStorageDirectoryName, isDirectory: true)
         .appendingPathComponent("Documents", isDirectory: true)
 }
 #endif

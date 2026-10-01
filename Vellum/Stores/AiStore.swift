@@ -580,7 +580,9 @@ final class AiStore {
         AiPersistence.saveSettings(settings)
         // Every other AiStore instance (other panes, the Settings window's own)
         // reloads from disk so the change is window-wide, not just local.
-        NotificationCenter.default.post(name: .vellumAiSettingsChanged, object: nil)
+        NotificationCenter.default.post(
+            name: .vellumAiSettingsChanged, object: nil,
+            userInfo: ["openaiApiKey": settings.openaiApiKey])
     }
 
     @discardableResult

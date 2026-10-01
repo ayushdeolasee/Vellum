@@ -282,11 +282,6 @@ final class PhoneShellStore {
     /// controls unexpectedly.
     func handleReaderScroll(_ event: ReaderChromeScrollEvent) {
         switch event {
-        case .tapped(let sourceInteractionBlocked):
-            resetChromeScrollGesture()
-            guard !sourceInteractionBlocked, !automaticChromeChangesBlocked else { return }
-            chromeVisible.toggle()
-
         case .began(let sourceInteractionBlocked):
             scrollGestureFrozen = sourceInteractionBlocked || automaticChromeChangesBlocked
             if scrollGestureFrozen { resetChromeScrollProgress() }
@@ -300,10 +295,7 @@ final class PhoneShellStore {
             accumulateReaderTravel(deltaY)
 
         case .ended:
-            // Keep valid partial travel across finger lifts: "accumulated"
-            // scrolling can be two short direct pans. Only the per-pan freeze
-            // latch ends here.
-            scrollGestureFrozen = false
+            resetChromeScrollGesture()
 
         case .reset:
             resetChromeScrollGesture()

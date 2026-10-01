@@ -3,7 +3,7 @@ import Testing
 
 @testable import Vellum
 
-@Suite("Library file-store seam")
+@Suite("Library file-store seam", .serialized)
 struct LibraryFileStoreTests {
     @Test("Direct storage round-trips atomically without leaving temporary files")
     func directRoundTrip() async throws {
@@ -21,6 +21,68 @@ struct LibraryFileStoreTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["record.json"])
         try await store.remove(target)
         #expect(try await store.read(target) == nil)
+    }
+
+    @Test("Rooted direct storage rejects symlinks and paths outside its root")
+    func rootedDirectStorageStaysInsideRoot() async throws {
+        let root = PositionFixtures.scratchDirectory("rooted-file-store")
+        let outside = PositionFixtures.scratchDirectory("outside-file-store")
+        defer {
+            PositionFixtures.remove(root)
+            PositionFixtures.remove(outside)
+        }
+        let outsideFile = outside.appendingPathComponent("outside.json")
+        let link = root.appendingPathComponent("linked.json")
+        try Data("keep".utf8).write(to: outsideFile)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outsideFile)
+        let store = DirectLibraryFileStore(allowedRoot: root)
+
+        await #expect(throws: LibraryFileError.symbolicLink(link.standardizedFileURL)) {
+            _ = try await store.list(root, suffix: nil)
+        }
+        await #expect(
+            throws: LibraryFileError.outsideAllowedRoot(outsideFile.standardizedFileURL)
+        ) {
+            _ = try await store.read(outsideFile)
+        }
+        #expect(try Data(contentsOf: outsideFile) == Data("keep".utf8))
+    }
+
+    @Test("Rooted storage requests hidden iCloud placeholders by logical name")
+    func rootedStorageDiscoversICloudPlaceholder() async throws {
+        let root = PositionFixtures.scratchDirectory("rooted-placeholder-store")
+        defer { PositionFixtures.remove(root) }
+        let logical = root.appendingPathComponent("evicted.json").standardizedFileURL
+        let placeholder = WebICloud.placeholderURL(for: logical)
+        try Data("placeholder".utf8).write(to: placeholder)
+        try Data("hidden".utf8).write(to: root.appendingPathComponent(".unrelated.json"))
+        try Data("other".utf8).write(
+            to: WebICloud.placeholderURL(
+                for: root.appendingPathComponent("unrelated.txt")))
+        let requests = MaterializationRequests()
+        WebICloud.materializeOverride = { url in
+            requests.record(url.standardizedFileURL)
+            return false
+        }
+        defer { WebICloud.materializeOverride = nil }
+        let store = DirectLibraryFileStore(allowedRoot: root)
+
+        let pending = try await store.list(root, suffix: ".json")
+        #expect(pending.map(\.name) == ["evicted.json"])
+        #expect(pending.first?.url == logical)
+        #expect(pending.first?.readiness == .notDownloaded)
+        await #expect(throws: LibraryFileError.notDownloaded(logical, .notDownloaded)) {
+            _ = try await store.read(logical)
+        }
+        #expect(requests.urls == [logical, logical])
+        #expect(FileManager.default.fileExists(atPath: placeholder.path))
+
+        let bytes = Data("current".utf8)
+        try bytes.write(to: logical)
+        let current = try await store.list(root, suffix: ".json")
+        #expect(current.map(\.name) == ["evicted.json"])
+        #expect(current.first?.readiness == .current)
+        #expect(try await store.read(logical) == bytes)
     }
 
     @Test("Coordinated storage uses metadata and coordinated primitives only")
@@ -68,5 +130,16 @@ struct LibraryFileStoreTests {
         await #expect(throws: LibraryFileError.retryable) {
             try await store.replace(target, with: Data("bytes".utf8))
         }
+    }
+}
+
+private final class MaterializationRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [URL] = []
+
+    var urls: [URL] { lock.withLock { recorded } }
+
+    func record(_ url: URL) {
+        lock.withLock { recorded.append(url) }
     }
 }

@@ -109,7 +109,7 @@ enum RetentionCoding {
     /// Deterministic bytes so the wire format is assertable byte for byte.
     /// Timestamps go through `PositionTimestamp`, i.e. the webpage sidecar's
     /// exact writer shape, rather than a third private copy of the formatter.
-    nonisolated(unsafe) static let encoder: JSONEncoder = {
+    static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .custom { date, encoder in
@@ -119,7 +119,7 @@ enum RetentionCoding {
         return encoder
     }()
 
-    nonisolated(unsafe) static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let raw = try decoder.singleValueContainer().decode(String.self)

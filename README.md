@@ -13,7 +13,7 @@ Safari sharing writes a small capture record to the App Group. The app later cre
 
 ## Chrome extension
 
-The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the macOS app. To install it locally, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `VellumChrome` folder. Pin **Open in Vellum** for one-click access.
+The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the macOS app. To install it locally, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `VellumChrome` folder. Pin **Open in Vellum** for one-click access. The distributed extension targets the production app (`vellum://`); Debug builds register only `vellum-dev://`.
 
 ## Current limits
 

@@ -6,16 +6,25 @@ import SwiftUI
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
+    @MainActor private var incomingURLsTask: Task<Void, Never>?
+    @MainActor private var isTerminating = false
+
+    @MainActor func awaitIncomingURLs() async {
+        await incomingURLsTask?.value
+    }
 
     /// Finder document opens and browser-extension webpage routes both arrive
     /// here. Each target uses the same opener as the equivalent in-app action.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
-            guard let workspace = Self.workspace else { return }
+            guard !isTerminating, let workspace = Self.workspace else { return }
             let app = workspace.focusedPane.app
             let hasWebpage = urls.contains { VellumExternalWebLink.parse($0) != nil }
             let filePaths = urls.filter(\.isFileURL).map(\.path)
-            Task {
+            guard hasWebpage || !filePaths.isEmpty else { return }
+            let previous = incomingURLsTask
+            incomingURLsTask = Task {
+                await previous?.value
                 if hasWebpage {
                     await app.openIncomingURLs(urls)
                 } else if !filePaths.isEmpty {
@@ -28,60 +37,23 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
-            let leaves = workspace.root.allLeaves()
-            let hasTabs = leaves.contains { !$0.app.tabs.isEmpty }
-            // Persist every pane's pending scratchpad edit (each pane owns its
-            // own note) before tearing down sessions.
-            for leaf in leaves { leaf.scratchpad.flush() }
-            guard hasTabs else {
-                // No open tabs, but a conversation or page-text write saved just
-                // before ⌘Q (the 200ms coalesced AI flush, or a detached
-                // page-text flush from the last tab's close) may still be in
-                // flight. Drain those on the terminateLater path — there is no
-                // per-tab metadata/close loop to run — so the final
-                // conversations.json / cache write always lands. Both awaits are
-                // no-ops when nothing is pending.
-                Task { @MainActor in
-                    await workspace.saveNowAfterPendingPositionRecords()
-                    // A tab closed moments ago finishes its metadata write and
-                    // session close behind the UI (AppStore.closeTab); it is no
-                    // longer in `tabs`, so nothing else here would await it.
-                    // Drained via the workspace registry, not per pane: a close
-                    // that collapsed its pane left no leaf to ask.
-                    await workspace.tabTeardowns.awaitAll()
-                    await workspace.positions.flush()
-                    await PageTextPersister.awaitInFlightFlushes()
-                    await AiPersistence.awaitPendingFlush()
-                    // Read-later work the user started behind the UI — the
-                    // auto-refresh preference, a move-to-collection, a
-                    // disconnect, thumbnail cleanup — is store-owned and joinable
-                    // for exactly this reason. Cancels in-flight syncs, waits for
-                    // the rest.
-                    await workspace.integrations.awaitQuiescence()
-                    sender.reply(toApplicationShouldTerminate: true)
-                }
-                return .terminateLater
-            }
+            isTerminating = true
             Task { @MainActor in
+                // Finish external opens before snapshotting tabs or draining
+                // their persistence, including a cold launch followed by quit.
+                await awaitIncomingURLs()
+                let leaves = workspace.root.allLeaves()
+                for leaf in leaves { leaf.scratchpad.flush() }
                 await workspace.saveNowAfterPendingPositionRecords()
-                // Tabs closed moments ago finish their metadata write and
+                // Tabs closed moments ago finish their position write and
                 // session close behind the UI (AppStore.closeTab) and are no
                 // longer in `tabs`, so the loop below would miss them. Drained
                 // via the workspace registry, not per pane: a close that
                 // collapsed its pane left no leaf to ask.
                 await workspace.tabTeardowns.awaitAll()
                 await workspace.flushOpenTabPositions(markClosed: true)
-                for leaf in leaves {
-                    for tab in leaf.app.tabs {
-                        if tab.document?.kind == .pdf {
-                            try? await workspace.sessions.setDocumentMetadata(
-                                sessionId: tab.id, key: "last_page", value: String(tab.currentPage))
-                        }
-                    }
-                }
-                // Metadata rewrites PDFs and changes their validation hashes.
-                // Flush every runtime after those writes (not only the focused
-                // pane's shared handler), then close the backend sessions.
+                // Reading positions are already durable in the position store.
+                // Do not rewrite every PDF just to save its current page.
                 await workspace.flushLivePageTextCaches()
                 for leaf in leaves {
                     for tab in leaf.app.tabs {
@@ -139,7 +111,7 @@ struct VellumApp: App {
     var body: some Scene {
         // Single window like the Tauri app — stores are app-wide singletons,
         // so multiple windows would fight over the same active-tab state.
-        Window("Vellum", id: "main") {
+        Window(RuntimeProfile.current.isDevelopment ? "Vellum Dev" : "Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
                 .task(priority: .utility) {
@@ -229,6 +201,7 @@ struct VellumApp: App {
                 .environment(themeStore)
                 .environment(workspace)
                 .environment(workspace.integrations)
+                .environment(workspace.openAIModelCatalog)
                 .environment(workspace.openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)
@@ -249,6 +222,7 @@ struct VellumApp: App {
                 .environment(workspace)
                 .environment(workspace.integrations)
                 .environment(workspace.settingsAi)
+                .environment(workspace.openAIModelCatalog)
                 .environment(workspace.openRouterCatalog)
                 .environment(\.palette, themeStore.palette)
                 .preferredColorScheme(themeStore.colorScheme)

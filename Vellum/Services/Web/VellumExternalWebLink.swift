@@ -2,7 +2,7 @@ import Foundation
 
 /// The narrow URL route used by browser extensions to hand one webpage to Vellum.
 enum VellumExternalWebLink {
-    static let scheme = "vellum"
+    static var scheme: String { RuntimeProfile.current.urlScheme }
     static let host = "open-url"
 
     static func url(for webpage: URL) -> URL? {
@@ -37,7 +37,7 @@ enum VellumExternalWebLink {
     private static func isSupported(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              url.host != nil
+              let host = url.host, !host.isEmpty
         else { return false }
         return true
     }

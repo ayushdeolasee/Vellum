@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 // One leaf pane: injects its own store-triple into its subtree, renders its tab
-// strip + document viewer, and hosts the per-pane document-load / autosave tasks
+// strip + document viewer, and hosts the per-pane document-load task
 // that used to live on ContentView. A click anywhere in the pane focuses it (via
 // a non-consuming mouse monitor, so PDF/web interaction still works).
 
@@ -82,7 +82,6 @@ struct PaneView: View {
             if !isFocused { workspace.focus(pane.id) }
         })
         .task(id: documentIdentity) { await loadDocumentState() }
-        .task(id: autosaveIdentity) { await runAutosave() }
         .onReceive(NotificationCenter.default.publisher(for: .vellumAnnotationsUpdated)) { _ in
             guard app.document != nil else { return }
             Task { await pane.annotations.loadAnnotations() }
@@ -180,29 +179,10 @@ struct PaneView: View {
         await pane.scratchpad.loadForDocument(app.document).value
     }
 
-    private func runAutosave() async {
-        guard let identity = autosaveIdentity else { return }
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(for: .seconds(30))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  app.activeTabId == identity.tabId,
-                  app.document != nil else { return }
-            try? await app.sessions.saveFile(sessionId: identity.tabId)
-        }
-    }
-
     private var documentIdentity: PaneDocumentIdentity {
         PaneDocumentIdentity(tabId: app.activeTabId, path: app.document?.pdfPath)
     }
 
-    private var autosaveIdentity: PaneAutosaveIdentity? {
-        guard let tabId = app.activeTabId, app.document != nil else { return nil }
-        return PaneAutosaveIdentity(tabId: tabId, path: app.document?.pdfPath)
-    }
 }
 
 /// Stable identity for one tab's expensive native viewer. Inactive hosts stay
@@ -327,10 +307,6 @@ private struct PaneIntegrationNotice: View {
     }
 }
 
-private struct PaneAutosaveIdentity: Hashable {
-    var tabId: String
-    var path: String?
-}
 
 /// Invisible view that focuses the pane on any mouse-down inside its bounds
 /// without consuming the event — so a click that selects PDF text or follows a
