@@ -68,7 +68,8 @@ struct ScratchpadPanel: View {
                     .strokeBorder(palette.borderStrong)
                     .allowsHitTesting(false)
             }
-            .padding(8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The drop outline and the whole-area drag destination live on the sidebar
@@ -147,7 +148,7 @@ struct ScratchpadPanel: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "note.text")
                     .font(.system(size: 15))
@@ -158,38 +159,43 @@ struct ScratchpadPanel: View {
                     .fixedSize()
             }
             .layoutPriority(1)
-            Spacer(minLength: 8)
-            if appStore.document != nil {
-                IconButton(
-                    variant: isCapturingRegion ? .active : .ghost,
-                    help: "Snapshot a region of the page into the note",
-                    action: toggleSnapshotRegion
-                ) {
-                    Image(systemName: "crop").font(.system(size: 15))
+            Spacer(minLength: 12)
+            HStack(spacing: 8) {
+                if appStore.document != nil {
+                    IconButton(
+                        variant: isCapturingRegion ? .active : .ghost,
+                        size: .md,
+                        help: "Snapshot a region of the page into the note",
+                        action: toggleSnapshotRegion
+                    ) {
+                        Image(systemName: "crop").font(.system(size: 15))
+                    }
+                    .accessibilityIdentifier("scratchpad.snapshotRegion")
+                    .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
                 }
-                .accessibilityIdentifier("scratchpad.snapshotRegion")
-                .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
+                IconButton(
+                    size: .md,
+                    help: "Export scratchpad as Markdown",
+                    disabled: scratchpadStore.text.isEmpty,
+                    action: { showsExportOptions = true }
+                ) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.exportMarkdown")
+                IconButton(
+                    size: .md,
+                    help: "Clear scratchpad note",
+                    disabled: scratchpadStore.text.isEmpty,
+                    action: clear
+                ) {
+                    Image(systemName: "trash").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.clear")
             }
-            IconButton(
-                help: "Export scratchpad as Markdown",
-                disabled: scratchpadStore.text.isEmpty,
-                action: { showsExportOptions = true }
-            ) {
-                Image(systemName: "square.and.arrow.up").font(.system(size: 15))
-            }
-            .accessibilityIdentifier("scratchpad.exportMarkdown")
-            IconButton(
-                help: "Clear scratchpad note",
-                disabled: scratchpadStore.text.isEmpty,
-                action: clear
-            ) {
-                Image(systemName: "trash").font(.system(size: 15))
-            }
-            .accessibilityIdentifier("scratchpad.clear")
         }
         .foregroundStyle(palette.foreground)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Divider() }
     }
 

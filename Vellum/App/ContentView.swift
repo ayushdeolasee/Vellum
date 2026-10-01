@@ -74,12 +74,12 @@ struct ContentView: View {
             .focusedSceneValue(
                 \.vellumFocus, sheets.sheetPresented ? nil : VellumFocus(workspace: workspace))
             .background(WindowAccessor { hostWindow = $0 })
-            .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
-                if RuntimeProfile.current.isDevelopment {
-                    DevelopmentBadge()
-                        .padding(.trailing, 64)
-                        .padding(.vertical, 4)
-                        .allowsHitTesting(false)
+            .toolbar {
+                ToolbarItem(placement: .status) {
+                    if RuntimeProfile.current.isDevelopment {
+                        DevelopmentBadge()
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .onAppear(perform: installKeyMonitor)

@@ -29,10 +29,23 @@ enum InspectorLayout {
 
     /// Inset applied to the switcher inside the inspector column.
     static let switcherHorizontalPadding: CGFloat = 12
+    #if os(macOS)
+    static let switcherVerticalPadding: CGFloat = 12
+    static let switcherHeight: CGFloat = 64
+    static let segmentSpacing: CGFloat = 4
+    static let trackPadding: CGFloat = 4
+    static let segmentCornerRadius: CGFloat = 12
+    static let trackCornerRadius: CGFloat = 16
+    #else
     static let switcherVerticalPadding: CGFloat = 8
     /// A real 44pt segment. Padding around a Button does not enlarge that
     /// Button's accessibility frame, so the control itself owns the HIG floor.
     static let switcherHeight: CGFloat = 44
+    static let segmentSpacing: CGFloat = 0
+    static let trackPadding: CGFloat = 2
+    static let segmentCornerRadius: CGFloat = 22
+    static let trackCornerRadius: CGFloat = 22
+    #endif
 
     /// Height of the inspector's header row — the control plus its inset,
     /// stopping above the divider. On iPad this is a layout fact only: main's
@@ -180,7 +193,7 @@ struct InspectorTabSwitcher: View {
     }
 
     private func segmentedControl(showTitles: Bool) -> some View {
-        HStack(spacing: 0) {
+        HStack(spacing: InspectorLayout.segmentSpacing) {
             ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
@@ -189,10 +202,21 @@ struct InspectorTabSwitcher: View {
                 } label: {
                     Group {
                         if showTitles {
+                            #if os(macOS)
+                            VStack(spacing: 6) {
+                                Image(systemName: tab.systemImage)
+                                    .font(.system(size: 16))
+                                    .frame(height: 18)
+                                Text(tab.title)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            #else
                             Label(tab.title, systemImage: tab.systemImage)
                                 .labelStyle(.titleAndIcon)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.85)
+                            #endif
                         } else {
                             Label(tab.title, systemImage: tab.systemImage)
                                 .labelStyle(.iconOnly)
@@ -206,7 +230,7 @@ struct InspectorTabSwitcher: View {
                     // target is a touch requirement here too, and keeping the
                     // two platforms structurally identical is what stops the
                     // next port from re-introducing #112.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -222,7 +246,9 @@ struct InspectorTabSwitcher: View {
                 .foregroundStyle(
                     SelectionStyle.foreground(palette, selected: isSelected, hovering: isHovering))
                 .selectionSurface(
-                    selected: isSelected, hovering: isHovering, in: Capsule(), palette: palette)
+                    selected: isSelected, hovering: isHovering,
+                    in: RoundedRectangle(cornerRadius: InspectorLayout.segmentCornerRadius),
+                    palette: palette)
                 .onHover { hovering = $0 ? tab : nil }
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -230,11 +256,13 @@ struct InspectorTabSwitcher: View {
             }
         }
         .font(.callout)
-        .padding(2)
+        .padding(InspectorLayout.trackPadding)
         // The recessed track behind the thumb, from the palette for the same
         // reason: `muted` is defined for both schemes and stays visible against
         // parchment, where a scheme-derived quaternary wash does not.
-        .background(palette.muted, in: Capsule())
+        .background(
+            palette.muted,
+            in: RoundedRectangle(cornerRadius: InspectorLayout.trackCornerRadius))
     }
 
     private var compactMenu: some View {
