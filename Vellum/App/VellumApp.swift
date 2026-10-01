@@ -6,31 +6,14 @@ import SwiftUI
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
-    @MainActor private var incomingURLsTask: Task<Void, Never>?
     @MainActor private var isTerminating = false
-
-    @MainActor func awaitIncomingURLs() async {
-        await incomingURLsTask?.value
-    }
 
     /// Finder document opens and browser-extension webpage routes both arrive
     /// here. Each target uses the same opener as the equivalent in-app action.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
             guard !isTerminating, let workspace = Self.workspace else { return }
-            let app = workspace.focusedPane.app
-            let hasWebpage = urls.contains { VellumExternalWebLink.parse($0) != nil }
-            let filePaths = urls.filter(\.isFileURL).map(\.path)
-            guard hasWebpage || !filePaths.isEmpty else { return }
-            let previous = incomingURLsTask
-            incomingURLsTask = Task {
-                await previous?.value
-                if hasWebpage {
-                    await app.openIncomingURLs(urls)
-                } else if !filePaths.isEmpty {
-                    await app.openFiles(paths: filePaths)
-                }
-            }
+            workspace.openExternalURLs(urls)
         }
     }
 
@@ -41,7 +24,7 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 // Finish external opens before snapshotting tabs or draining
                 // their persistence, including a cold launch followed by quit.
-                await awaitIncomingURLs()
+                await workspace.awaitPendingExternalOpens()
                 let leaves = workspace.root.allLeaves()
                 for leaf in leaves { leaf.scratchpad.flush() }
                 await workspace.saveNowAfterPendingPositionRecords()
