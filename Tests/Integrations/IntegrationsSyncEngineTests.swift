@@ -5,7 +5,7 @@ import Testing
 @Suite(.serialized)
 struct IntegrationsSyncEngineTests {
     @Test func lockedCredentialsKeepConnectionAndCacheThenRecoverWithoutReconnect() async throws {
-        let item = try makeIntegrationItem(provider: .readwise, id: "cached")
+        let item = try makeIntegrationItem(provider: .readwise, id: "cached", updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
         let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
             ProviderSnapshot(provider: .readwise, accountFingerprint: fingerprint,
                 connectionGeneration: generation, items: [item], collections: [],
