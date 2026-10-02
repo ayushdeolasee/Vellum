@@ -58,7 +58,9 @@ final class ScratchpadAttachmentResolver: @unchecked Sendable {
 
     func replace(with attachments: [ScratchpadStagedAttachment]) {
         lock.withLock {
-            values = Dictionary(uniqueKeysWithValues: attachments.map { ($0.id, $0) })
+            values = Dictionary(attachments.sorted { $0.name < $1.name }.map {
+                (ScratchpadAttachmentIdentity.canonicalID(forName: $0.name), $0)
+            }, uniquingKeysWith: { first, _ in first })
         }
     }
 
@@ -885,7 +887,9 @@ final class ScratchpadStore {
     private func replaceAttachmentsWithDurableSnapshot(
         _ loaded: [ScratchpadStagedAttachment]
     ) {
-        var merged = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
+        var merged = Dictionary(loaded.sorted { $0.name < $1.name }.map {
+            (ScratchpadAttachmentIdentity.canonicalID(forName: $0.name), $0)
+        }, uniquingKeysWith: { first, _ in first })
         let staged = attachmentResolver.snapshot()
         let dirty = dirtyAttachmentNames
         for attachment in staged where dirty.contains(attachment.name) {

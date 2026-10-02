@@ -201,6 +201,88 @@ final class VellumBundleTests: XCTestCase {
         XCTAssertThrowsError(try VellumBundle.read(at: url))
     }
 
+    func testDuplicateAttachmentIdentitiesAreRejectedBeforeInstallation() throws {
+        for names in [["a.png", "a.jpg"], ["A.png", "a.png"], ["a.png", "a.png"]] {
+            let documentBytes = Data("doc".utf8)
+            let image = Data([1, 2, 3])
+            var manifest = validPdfManifest(documentBytes: documentBytes)
+            manifest.attachments = names.map {
+                .init(path: "attachments/\($0)", bytes: image.count,
+                      sha256: WebArchive.sha256Hex(image))
+            }
+            let url = try packRawBundle(manifest: manifest, extraEntries:
+                [MiniZip.Entry(name: "document/d.pdf", data: documentBytes, stored: true)]
+                + names.map { MiniZip.Entry(name: "attachments/\($0)", data: image, stored: true) })
+            XCTAssertThrowsError(try VellumBundle.read(at: url))
+        }
+    }
+
+    func testWebArchiveRejectsOversizedSparseFileBeforeParsing() throws {
+        let url = scratch.appendingPathComponent("oversized.vellumweb")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(WebArchive.maxArchiveBytes + 1))
+        XCTAssertThrowsError(try WebArchive.readManifest(at: url))
+        XCTAssertThrowsError(try WebArchive.readArchive(at: url))
+    }
+
+    func testMiniZipRejectsDeclaredInflationAndDuplicateNames() throws {
+        let url = scratch.appendingPathComponent("bounded.zip")
+        let entry = MiniZip.Entry(name: "x", data: Data([1]), stored: true)
+        try MiniZip.write(entries: [entry, entry]).write(to: url)
+        XCTAssertThrowsError(try MiniZip(contentsOf: url, maxBytes: 4096,
+                                         maxEntries: 4, maxUncompressedBytes: 4))
+        var bytes = [UInt8](try MiniZip.write(entries: [entry]))
+        let central = try XCTUnwrap(bytes.indices.first { i in
+            i + 4 <= bytes.count && Array(bytes[i..<(i + 4)]) == [0x50, 0x4b, 0x01, 0x02]
+        })
+        for i in 24..<28 { bytes[central + i] = 0xff }
+        try Data(bytes).write(to: url)
+        XCTAssertThrowsError(try MiniZip(contentsOf: url, maxBytes: 4096,
+                                         maxEntries: 4, maxUncompressedBytes: 4))
+    }
+
+    func testAmbiguousAttachmentResolverIsDeterministicAndPreservesBytes() throws {
+        let first = ScratchpadStagedAttachment(id: "a", name: "a.jpg", data: Data([1]))
+        let second = ScratchpadStagedAttachment(id: "a", name: "a.png", data: Data([2]))
+        let resolver = ScratchpadAttachmentResolver()
+        resolver.replace(with: [second, first])
+        XCTAssertEqual(resolver.attachment(for: "a"), first)
+        resolver.replace(with: [first, second])
+        XCTAssertEqual(resolver.attachment(for: "a"), first)
+        for attachment in [first, second] {
+            try attachment.data.write(to: scratch.appendingPathComponent(attachment.name))
+        }
+        XCTAssertThrowsError(try ScratchpadAttachmentIdentity.uniqueNames([first.name, second.name]))
+        for attachment in [first, second] {
+            XCTAssertEqual(try Data(contentsOf: scratch.appendingPathComponent(attachment.name)), attachment.data)
+        }
+    }
+
+    func testAmbiguousExistingAttachmentsRefuseScratchpadSaveWithoutMutation() async throws {
+        let key = Self.canonicalDocId
+        try DocumentDataStore.saveScratchpad(forKey: key, text: "original note")
+        let directory = DocumentDataStore.attachmentsDir(forKey: key)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, bytes) in [("a.jpg", Data([1])), ("a.png", Data([2]))] {
+            try bytes.write(to: directory.appendingPathComponent(name))
+        }
+        let document = DocumentInfo(kind: .pdf, pdfPath: "/tmp/ambiguous.pdf",
+            title: "Test", pageCount: 1, lastPage: 1, docId: key)
+        let coordinator = StorageCoordinator(storeDir: root, modeProvider: { .local },
+            effectiveModeProvider: { .local }, rootResolver: { nil }, containerFactory: { nil })
+        let result = await ScratchpadPersistence.save(forKey: key, document: document,
+            schemeText: "changed note", expectedBaseline: "original note", attachments: [],
+            dirtyAttachmentNames: [], coordinator: coordinator)
+        XCTAssertNil(result)
+        XCTAssertEqual(DocumentDataStore.loadScratchpad(forKey: key), "original note")
+        for (name, bytes) in [("a.jpg", Data([1])), ("a.png", Data([2]))] {
+            XCTAssertEqual(try Data(contentsOf: DocumentDataStore.attachmentsDir(forKey: key)
+                .appendingPathComponent(name)), bytes)
+        }
+    }
+
     // MARK: - Zip-slip
 
     func testZipSlipRawEntryRejected() throws {
