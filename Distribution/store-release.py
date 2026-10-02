@@ -30,7 +30,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def run(*args, log=None):
+def run(*args, log=None, combine_output=False):
     command = [str(a) for a in args]
     if log is not None:
         # Compiler/transport logs may be large; stream them to the artifact.
@@ -40,9 +40,9 @@ def run(*args, log=None):
         require(result.returncode == 0, f"{args[0]} failed ({result.returncode}). See {log}")
         return b""
     result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, check=False)
+                            stderr=subprocess.STDOUT if combine_output else subprocess.PIPE, check=False)
     require(result.returncode == 0, f"{args[0]} failed ({result.returncode}). "
-            + result.stderr.decode(errors="replace")[-3000:])
+            + (result.stderr or result.stdout).decode(errors="replace")[-3000:])
     return result.stdout
 
 
@@ -88,7 +88,13 @@ def inspect_bundle(app, platform, version, build, exported):
             and info.get("CFBundleVersion") == build, f"Version/build mismatch: {identifier}")
     require(not any(key.startswith("SU") for key in info), f"Updater metadata in {identifier}")
     require(not any("sparkle" in p.name.lower() for p in app.rglob("*")), "Sparkle in Store app")
-    run("codesign", "--verify", "--deep", "--strict", app)
+    run("codesign", "--verify", "--deep", "--strict", "-R=anchor apple generic", app)
+    signature = run("codesign", "-d", "--verbose=4", app, combine_output=True).decode()
+    authorities = re.findall(r"^Authority=(.+)$", signature, flags=re.MULTILINE)
+    require(authorities, "No signing certificate authority")
+    if exported:
+        allowed_leaf = ("Apple Distribution:", "3rd Party Mac Developer Application:") if platform == "macos" else ("Apple Distribution:", "iPhone Distribution:")
+        require(authorities[0].startswith(allowed_leaf), "Export is not signed with a Store distribution certificate")
     entitlements = plistlib.loads(run("codesign", "-d", "--entitlements", ":-", app))
     require(entitlements.get("com.apple.developer.team-identifier") == TEAM, "Wrong signed team")
     app_identity = entitlements.get("application-identifier",
@@ -143,7 +149,7 @@ def inspect_bundle(app, platform, version, build, exported):
         require(manifests, "App privacy manifest missing")
     uuids = executable_uuids(executable)
     return {"bundle": identifier, "version": version, "build": build, "executable_uuids": uuids,
-            "architectures": architectures, "entitlements": entitlements,
+            "architectures": architectures, "signing_authorities": authorities, "entitlements": entitlements,
             "profile_uuid": profile.get("UUID"), "profile_expires": expiry.isoformat(),
             "privacy_manifests": manifests}
 
@@ -212,6 +218,8 @@ def archive(args):
                             "Unsafe exported ZIP path")
             run("ditto", "-x", "-k", package, unpacked)
         exported_records = inspect_apps(unpacked, args.platform, args.version, args.build, True)
+        require(all(record["executable_uuids"] in symbol_uuids for record in exported_records),
+                "Exported app/extension does not match preserved debug symbols")
     manifest = {"schema": 1, "created": now(), "commit": commit, "platform": args.platform,
                 "version": args.version, "build": args.build, "archive_command": command,
                 "xcode": run("xcodebuild", "-version").decode().strip(),
