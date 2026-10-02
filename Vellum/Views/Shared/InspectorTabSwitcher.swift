@@ -29,9 +29,16 @@ enum InspectorLayout {
 
     /// Inset applied to the switcher inside the inspector column.
     static let switcherHorizontalPadding: CGFloat = 12
+    #if os(macOS)
+    static let switcherVerticalPadding: CGFloat = 12
+    static let segmentSpacing: CGFloat = 4
+    static let trackPadding: CGFloat = 4
+    #else
     static let switcherVerticalPadding: CGFloat = 8
-    /// A real 44pt segment. Padding around a Button does not enlarge that
-    /// Button's accessibility frame, so the control itself owns the HIG floor.
+    static let segmentSpacing: CGFloat = 0
+    static let trackPadding: CGFloat = 2
+    #endif
+    /// The control owns its height rather than relying on outer padding.
     static let switcherHeight: CGFloat = 44
 
     /// Height of the inspector's header row — the control plus its inset,
@@ -168,7 +175,14 @@ struct InspectorTabSwitcher: View {
         GeometryReader { proxy in
             switch InspectorLayout.presentation(for: proxy.size.width) {
             case .fullLabels:
+                #if os(macOS)
+                ViewThatFits(in: .horizontal) {
+                    segmentedControl(showTitles: true)
+                    segmentedControl(showTitles: false)
+                }
+                #else
                 segmentedControl(showTitles: true)
+                #endif
             case .icons:
                 segmentedControl(showTitles: false)
             case .menu:
@@ -180,19 +194,36 @@ struct InspectorTabSwitcher: View {
     }
 
     private func segmentedControl(showTitles: Bool) -> some View {
-        HStack(spacing: 0) {
+        HStack(spacing: InspectorLayout.segmentSpacing) {
             ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
+                #if os(macOS)
+                if showTitles && tab != WorkspaceStore.SidebarTab.allCases.first {
+                    Spacer(minLength: 0)
+                }
+                #endif
                 Button {
                     selection = tab
                 } label: {
                     Group {
                         if showTitles {
+                            #if os(macOS)
+                            HStack(spacing: 6) {
+                                Image(systemName: tab.systemImage)
+                                    .frame(width: 14)
+                                Text(tab.title)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 4)
+                            #else
                             Label(tab.title, systemImage: tab.systemImage)
                                 .labelStyle(.titleAndIcon)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.85)
+                            #endif
                         } else {
                             Label(tab.title, systemImage: tab.systemImage)
                                 .labelStyle(.iconOnly)
@@ -206,7 +237,11 @@ struct InspectorTabSwitcher: View {
                     // target is a touch requirement here too, and keeping the
                     // two platforms structurally identical is what stops the
                     // next port from re-introducing #112.
+                    #if os(macOS)
+                    .frame(maxWidth: showTitles ? nil : .infinity, maxHeight: .infinity)
+                    #else
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    #endif
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -222,7 +257,9 @@ struct InspectorTabSwitcher: View {
                 .foregroundStyle(
                     SelectionStyle.foreground(palette, selected: isSelected, hovering: isHovering))
                 .selectionSurface(
-                    selected: isSelected, hovering: isHovering, in: Capsule(), palette: palette)
+                    selected: isSelected, hovering: isHovering,
+                    in: Capsule(),
+                    palette: palette)
                 .onHover { hovering = $0 ? tab : nil }
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -230,7 +267,10 @@ struct InspectorTabSwitcher: View {
             }
         }
         .font(.callout)
-        .padding(2)
+        #if os(macOS)
+        .frame(maxWidth: .infinity)
+        #endif
+        .padding(InspectorLayout.trackPadding)
         // The recessed track behind the thumb, from the palette for the same
         // reason: `muted` is defined for both schemes and stays visible against
         // parchment, where a scheme-derived quaternary wash does not.

@@ -29,7 +29,8 @@ final class LiveTabRuntime {
 
     let tabId: String
     var pdfController = PdfViewerController()
-    var webController = WebViewerController()
+    var webController: WebViewerController
+    @ObservationIgnored private let webNoteDraftState: WebNoteDraftState
     var pdfLoadState: PdfLoadState = .idle
     var pageTexts: [Int: String] = [:]
     private(set) var isEvicted = false
@@ -85,6 +86,9 @@ final class LiveTabRuntime {
 
     init(tabId: String, webLibraryStorage: WebLibraryStorage? = nil) {
         self.tabId = tabId
+        let drafts = WebNoteDraftState()
+        self.webNoteDraftState = drafts
+        self.webController = WebViewerController(draftState: drafts)
         _ = webLibraryStorage
     }
 
@@ -149,7 +153,7 @@ final class LiveTabRuntime {
         // and the WKWebView, so resetting alone would stop them without
         // releasing the memory this eviction is meant to reclaim.
         pdfController = PdfViewerController()
-        webController = WebViewerController()
+        webController = WebViewerController(draftState: webNoteDraftState)
         pdfLoadState = .idle
         preparedDocument = nil
         preparedSourceData = nil

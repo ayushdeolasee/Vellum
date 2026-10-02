@@ -14,12 +14,11 @@ import SwiftUI
 /// same `Keycap` for shortcuts, same palette, same `Radius` scale — so moving
 /// between the walkthrough and Help does not feel like moving between two apps.
 struct HelpCenterView_iOS: View {
+    /// The presentation owner defers the tour until its Help sheet has closed.
+    let onWalkthrough: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
     @State private var query = ""
-    /// Set when the user asks for the walkthrough, and acted on in
-    /// `onDisappear`. See `openWalkthrough`.
-    @State private var pendingWalkthrough = false
 
     private var results: [HelpTopic] { HelpTopic.search(query) }
 
@@ -45,15 +44,6 @@ struct HelpCenterView_iOS: View {
         }
         .presentationDetents([.large])
         .accessibilityIdentifier("help.window")
-        .onDisappear {
-            // One sheet at a time: both this and the walkthrough are presented
-            // from `VellumApp_iOS`'s root, and posting while Help is still up
-            // would be silently dropped by iOS. Posting from `onDisappear`
-            // means the dismissal has genuinely completed first.
-            guard pendingWalkthrough else { return }
-            pendingWalkthrough = false
-            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
-        }
     }
 
     @ViewBuilder
@@ -79,7 +69,7 @@ struct HelpCenterView_iOS: View {
     }
 
     private func openWalkthrough() {
-        pendingWalkthrough = true
+        onWalkthrough()
         dismiss()
     }
 }
