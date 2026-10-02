@@ -1301,6 +1301,19 @@ enum ConversationOperationJournal {
         }
     }
 
+    /// Called only after an explicit recovery replacement passes comparison
+    /// and exact read-back. A refused/unverified restore must never bless peer
+    /// bytes or alter Clear. Retain the digest so later unknown peer bytes still
+    /// require review, and never supersede an intent changed during restore.
+    static func recordVerifiedRestore(_ key: String, data: Data, expectedIntent: Intent?) throws {
+        try lock.withLock {
+            guard try readUnlocked(key) == expectedIntent else { throw CocoaError(.fileWriteUnknown) }
+            guard var intent = expectedIntent else { return }
+            intent.replacementDigest = DocumentIdentity.byteHash(data)
+            try write(intent, key: key)
+        }
+    }
+
     static func finish(_ key: String, id: UUID) throws {
         try lock.withLock {
             guard try readUnlocked(key)?.id == id else { return }

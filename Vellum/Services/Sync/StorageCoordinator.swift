@@ -347,6 +347,14 @@ actor StorageCoordinator {
               await admissionAllowed() else { throw ArchivedConflictError.documentOpenOrPending }
         // Compare the archived current bytes inside the same coordinated
         // writing accessor that replaces them, including expected absence.
+        let conversationKey = descriptor.originalURL.lastPathComponent == "conversations.json"
+            ? descriptor.storageKey : nil
+        let clearIntent: ConversationOperationJournal.Intent?
+        if let conversationKey {
+            clearIntent = try await Task.detached {
+                try ConversationOperationJournal.read(conversationKey)
+            }.value
+        } else { clearIntent = nil }
         guard await admissionAllowed() else { throw ArchivedConflictError.documentOpenOrPending }
         do {
             guard try await container.replace(descriptor.originalURL, with: replacement, ifCurrent: previousCurrent) else {
@@ -355,6 +363,12 @@ actor StorageCoordinator {
             }
             guard try await container.data(at: descriptor.originalURL) == replacement else {
                 throw ArchivedConflictError.replacementUnverified
+            }
+            if let conversationKey {
+                try await Task.detached {
+                    try ConversationOperationJournal.recordVerifiedRestore(
+                        conversationKey, data: replacement, expectedIntent: clearIntent)
+                }.value
             }
         } catch ArchivedConflictError.currentChanged {
             throw ArchivedConflictError.currentChanged
