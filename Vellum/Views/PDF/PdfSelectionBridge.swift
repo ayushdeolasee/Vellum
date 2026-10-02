@@ -840,14 +840,14 @@ final class PdfViewerController: HighlightResizeControlling {
     /// cache re-check happens *inside* the gate, so a page that the other loop
     /// filled while this request sat in the queue is skipped, not re-extracted.
     private func extractPage(
-        _ pageNumber: Int, from document: PDFDocument, tabId: String?,
+        _ pageNumber: Int, from document: PDFDocument, binding: DocumentBinding?,
         priority: PageTextExtractionGate.Priority
     ) async -> PageExtractionOutcome {
         // Starts at `.stale` so a caller cancelled while queued — the gate never
         // runs the body then — stops walking, same as a document change.
         var outcome = PageExtractionOutcome.stale
         _ = await PageTextExtractionGate.shared.extractText(priority: priority) { () -> String? in
-            guard self.document === document, self.app?.activeTabId == tabId,
+            guard self.document === document, self.app?.activeDocumentBinding == binding,
                   let ai = self.ai, let page = document.page(at: pageNumber - 1) else { return nil }
             guard ai.pageTexts[pageNumber] == nil else {
                 outcome = .alreadyCached
@@ -871,7 +871,7 @@ final class PdfViewerController: HighlightResizeControlling {
         previous?.cancel()
         guard let document, let ai, document.pageCount > 0 else { return }
         let docIdentity = ObjectIdentifier(document)
-        let tabId = self.tabId
+        let binding = self.tabId.flatMap { app?.documentBinding(for: $0) }
         let missingPages = (1...document.pageCount).filter { ai.pageTexts[$0] == nil }
         guard !missingPages.isEmpty else { return }
         let persister = self.persister
@@ -888,7 +888,7 @@ final class PdfViewerController: HighlightResizeControlling {
                         let stillNeeded = await MainActor.run {
                             guard let controller = walk.controller,
                                   controller.document.map(ObjectIdentifier.init) == docIdentity,
-                                  controller.app?.activeTabId == tabId,
+                                  controller.app?.activeDocumentBinding == binding,
                                   let ai = controller.ai else { return false }
                             return ai.pageTexts[pageNumber] == nil
                         }
@@ -900,7 +900,7 @@ final class PdfViewerController: HighlightResizeControlling {
                 let stillCurrent = await MainActor.run { [weak self] in
                     guard !Task.isCancelled, let self,
                           self.document.map(ObjectIdentifier.init) == docIdentity,
-                          self.app?.activeTabId == tabId,
+                          self.app?.activeDocumentBinding == binding,
                           let ai = self.ai else { return false }
                     if let text, ai.pageTexts[pageNumber] == nil,
                        let normalized = ai.setPageText(page: pageNumber, text: text) {
@@ -953,10 +953,10 @@ final class PdfViewerController: HighlightResizeControlling {
         // mid-pass (this handler slot may still be draining for an old tab).
         // Re-evaluated per iteration inside `extractPage`, since this loop now
         // suspends on the gate between pages.
-        let tabId = app?.activeTabId
+        let binding = app?.activeDocumentBinding
         for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
             switch await extractPage(
-                pageNumber, from: document, tabId: tabId, priority: .onDemand)
+                pageNumber, from: document, binding: binding, priority: .onDemand)
             {
             case .stale: return extracted
             case .alreadyCached: continue

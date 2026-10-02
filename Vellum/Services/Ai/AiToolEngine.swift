@@ -16,6 +16,27 @@ struct AiToolAction: Codable, Sendable {
     var args: AiToolArguments
 }
 
+/// Immutable document authority and captured services for one provider turn.
+@MainActor
+struct AiToolExecutionContext {
+    let binding: DocumentBinding
+    let document: DocumentInfo
+    let currentPage: Int
+    let pageCount: Int
+    let pageTexts: [Int: String]
+    let annotations: [Annotation]
+    let isCurrent: () -> Bool
+    let setActivity: (AiActivity) -> Void
+    let extract: (Set<Int>?) async throws -> [Int: String]
+    let locate: (Int, String) async -> LocatedText?
+    let createAnnotation: (CreateAnnotationInput) async throws -> Annotation
+    let navigate: (Int) -> Void
+
+    func checkCurrent() throws {
+        guard !Task.isCancelled, isCurrent() else { throw CancellationError() }
+    }
+}
+
 @MainActor
 final class AiToolEngine {
     /// Writes mutate the document/viewport (`goToPage`/`addNote`/`addHighlight`)
@@ -31,9 +52,9 @@ final class AiToolEngine {
     /// budgeted separately from writes and never counted against the write cap.
     private static let readTools: Set<String> = ["searchDocument", "getPageText", "getAnnotations"]
 
-    private unowned let store: AiStore
-    private unowned let app: AppStore
-    private unowned let annotations: AnnotationStore
+    private let context: AiToolExecutionContext
+    private var pageTexts: [Int: String]
+    private var annotations: [Annotation]
 
     /// Per-request counters (a fresh engine is created for every `sendMessage`).
     private var writeCount = 0
@@ -43,16 +64,16 @@ final class AiToolEngine {
     /// model-only; the transcript receives only short excerpts and page locators.
     private(set) var displayActions: [AiToolSummary] = []
 
-    init(store: AiStore, app: AppStore, annotations: AnnotationStore) {
-        self.store = store
-        self.app = app
-        self.annotations = annotations
+    init(context: AiToolExecutionContext) {
+        self.context = context
+        pageTexts = context.pageTexts
+        annotations = context.annotations
     }
 
     // `actionCount` is retained for call-site compatibility; budgeting now uses
     // the engine's own per-request read/write counters.
     func run(_ action: AiToolAction, sessionIdAtStart: String, actionCount: Int) async -> String {
-        if app.activeTabId != sessionIdAtStart {
+        if !context.isCurrent() || Task.isCancelled || context.binding.tabId != sessionIdAtStart {
             return "Skipped: the active document changed before this action ran."
         }
         let isRead = Self.readTools.contains(action.tool)
@@ -64,7 +85,9 @@ final class AiToolEngine {
             return "Skipped: action limit reached for this response."
         }
         do {
+            try context.checkCurrent()
             let result = try await execute(action)
+            try context.checkCurrent()
             if isRead {
                 readCount += 1
             } else {
@@ -74,6 +97,8 @@ final class AiToolEngine {
                 displayActions.append(summary)
             }
             return result
+        } catch is CancellationError {
+            return "Skipped: the request's document is no longer current."
         } catch {
             return "Action failed: \(String(describing: error))"
         }
@@ -82,10 +107,10 @@ final class AiToolEngine {
     private func execute(_ action: AiToolAction) async throws -> String {
         switch action.tool {
         case "getPageText":
-            return await getPageText(pageNumber: action.args.pageNumber)
+            return try await getPageText(pageNumber: action.args.pageNumber)
 
         case "searchDocument":
-            return await searchDocument(
+            return try await searchDocument(
                 query: action.args.text ?? "",
                 isRegex: action.args.isRegex ?? false
             )
@@ -95,7 +120,8 @@ final class AiToolEngine {
 
         case "goToPage":
             let page = clampPage(action.args.pageNumber)
-            app.goToPage(page)
+            try context.checkCurrent()
+            context.navigate(page)
             return "Navigated to page \(page)."
 
         case "addNote":
@@ -118,13 +144,15 @@ final class AiToolEngine {
                 suffix: nil,
                 viewportOffset: nil
             )
-            _ = await annotations.addNote(CreateAnnotationInput(
+            let created = try await context.createAnnotation(CreateAnnotationInput(
                 type: .note,
                 pageNumber: page,
                 color: nil,
                 content: text,
                 positionData: position
             ))
+            try context.checkCurrent()
+            annotations.append(created)
             return "Added note on page \(page)."
 
         case "addHighlight":
@@ -132,26 +160,24 @@ final class AiToolEngine {
             let query = action.args.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !query.isEmpty else { return "Skipped addHighlight: no text provided to locate." }
             let color = sanitizeColor(action.args.color)
-            let isWeb = app.document?.kind == .web
-            let located: LocatedText?
-            if isWeb {
-                located = await store.locateWebTextHandler?(requestedPage, query)
-            } else {
-                located = await store.locatePdfTextHandler?(requestedPage, query)
-            }
+            let isWeb = context.document.kind == .web
+            let located = await context.locate(requestedPage, query)
+            try context.checkCurrent()
             guard var located,
                   isWeb || !located.positionData.rects.isEmpty else {
                 return "Skipped addHighlight: couldn't find \"\(query)\" on page \(requestedPage)."
             }
             let resolvedPage = isWeb ? clampPage(Double(located.pageNumber)) : requestedPage
             if isWeb { located.positionData.selectedText = query }
-            _ = await annotations.addHighlight(CreateAnnotationInput(
+            let created = try await context.createAnnotation(CreateAnnotationInput(
                 type: .highlight,
                 pageNumber: resolvedPage,
                 color: color,
                 content: nil,
                 positionData: located.positionData
             ))
+            try context.checkCurrent()
+            annotations.append(created)
             return "Highlighted \"\(query)\" on page \(resolvedPage)."
 
         default:
@@ -222,18 +248,20 @@ final class AiToolEngine {
     /// Read one page's extracted text. Extracts on demand if the background
     /// walk hasn't reached it yet, so it never returns empty for a page that
     /// actually has a text layer.
-    private func getPageText(pageNumber: Double?) async -> String {
+    private func getPageText(pageNumber: Double?) async throws -> String {
         let page = clampPage(pageNumber)
-        if store.pageTexts[page] == nil {
-            store.setActivity(.indexing)
-            _ = await store.ensureExtracted(pages: [page])
+        if pageTexts[page] == nil {
+            context.setActivity(.indexing)
+            let extracted = try await context.extract([page])
+            try context.checkCurrent()
+            pageTexts.merge(extracted) { _, new in new }
         }
-        let text = store.pageTexts[page] ?? ""
+        let text = pageTexts[page] ?? ""
         guard !text.isEmpty else {
             return "Page \(page) has no extractable text (it may be a scanned image)."
         }
         var output = Self.boundedPageRead(page: page, text: text)
-        if let section = Self.annotationsSection(page: page, annotations: annotations.annotationsForPage(page)) {
+        if let section = Self.annotationsSection(page: page, annotations: annotations.filter { $0.pageNumber == page }) {
             output += "\n\n" + section
         }
         return output
@@ -244,7 +272,7 @@ final class AiToolEngine {
     /// carries the current page's annotations, so this is how the model reaches
     /// the rest.
     private func getAnnotations(pageNumber: Double?) -> String {
-        var list = (annotations.annotations).sorted { $0.pageNumber < $1.pageNumber }
+        var list = annotations.sorted { $0.pageNumber < $1.pageNumber }
         var scope = "in this document"
         if let pageNumber {
             let page = clampPage(pageNumber)
@@ -287,7 +315,7 @@ final class AiToolEngine {
     /// Ensures every page with a text layer is extracted first, then returns the
     /// top matches with surrounding context, output-capped and time-guarded
     /// against a pathological regex.
-    private func searchDocument(query: String, isRegex: Bool) async -> String {
+    private func searchDocument(query: String, isRegex: Bool) async throws -> String {
         // Literal queries get whitespace-collapsed to match `pageTexts` (which is
         // whitespace-normalized); regex queries are only trimmed so intentional
         // runs of spaces in the pattern aren't silently rewritten.
@@ -308,10 +336,11 @@ final class AiToolEngine {
 
         // A whole-document read: fill any pages the background walk hasn't
         // reached yet before grepping.
-        store.setActivity(.indexing)
-        _ = await store.ensureExtracted(pages: nil)
-
-        let snapshot = store.pageTexts
+        context.setActivity(.indexing)
+        let extracted = try await context.extract(nil)
+        try context.checkCurrent()
+        pageTexts.merge(extracted) { _, new in new }
+        let snapshot = pageTexts
         guard !snapshot.isEmpty else { return "No extractable text in this document yet." }
 
         // Run the grep off the main actor and race it against a deadline so a
@@ -321,7 +350,7 @@ final class AiToolEngine {
         // `maxPageScanCharacters`) — it doesn't fully prevent a pathological
         // pattern from burning that one page.
         do {
-            return try await withThrowingTaskGroup(of: String?.self) { group in
+            let result = try await withThrowingTaskGroup(of: String?.self) { group in
                 group.addTask { Self.performSearch(pages: snapshot, query: trimmed, isRegex: isRegex) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 3_000_000_000)
@@ -332,7 +361,10 @@ final class AiToolEngine {
                 // `performSearch` returns nil when it observed cancellation mid-scan.
                 return first ?? "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
             }
+            try context.checkCurrent()
+            return result
         } catch is SearchTimedOut {
+            try context.checkCurrent()
             return "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
         } catch is CancellationError {
             // The request was aborted (user cancel / tab switch). Don't stringify
@@ -404,8 +436,8 @@ final class AiToolEngine {
     }
 
     private func clampPage(_ value: Double?) -> Int {
-        let total = app.numPages
-        let fallback = total > 0 ? app.currentPage : 1
+        let total = context.pageCount
+        let fallback = total > 0 ? context.currentPage : 1
         guard let value, value.isFinite else { return max(1, fallback) }
         guard total > 0 else { return 1 }
         return min(total, max(1, Int(value.rounded())))

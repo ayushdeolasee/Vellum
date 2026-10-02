@@ -344,6 +344,10 @@ final class WorkspaceStore {
         }
     }
 
+    func cancelAIRequests() {
+        for pane in root.allLeaves() { pane.ai.cancelActiveRequest() }
+    }
+
     func beginTermination() { isTerminating = true }
     func cancelTermination() { isTerminating = false }
 

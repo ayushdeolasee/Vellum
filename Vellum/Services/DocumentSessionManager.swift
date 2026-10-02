@@ -65,6 +65,8 @@ final class DocumentSessionManager: SessionService {
         self.openWebSession = openWebSession
     }
 
+    func documentSession(sessionId: String) -> (any DocumentSession)? { sessions[sessionId] }
+
     private func session(_ id: String) throws -> any DocumentSession {
         guard let session = sessions[id] else {
             throw SessionServiceError.sessionNotFound(id)

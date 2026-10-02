@@ -288,6 +288,7 @@ struct VellumApp_iOS: App {
     @MainActor
     private func flushOnBackground() {
         let workspace = self.workspace
+        workspace.cancelAIRequests()
         let flushController = backgroundFlushController
         let generation = flushController.begin()
 

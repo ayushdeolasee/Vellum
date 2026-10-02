@@ -239,6 +239,7 @@ final class AppStore {
     /// color) lives on WorkspaceStore. Weak to avoid a retain cycle — the
     /// workspace owns the pane which owns this store.
     weak var workspace: WorkspaceStore?
+    @ObservationIgnored weak var aiStore: AiStore?
 
     /// Registered by the PDF viewer to zoom anchored on the viewport center
     /// (window.__zoomPdfTo in the original).
@@ -459,6 +460,22 @@ final class AppStore {
 
     func isCurrentDocumentBinding(_ binding: DocumentBinding) -> Bool {
         documentBinding(for: binding.tabId) == binding
+    }
+
+    /// Shared ownership for captured AI transcript/tool writes and lifecycle drains.
+    @discardableResult
+    func enqueueDocumentPersistence(
+        document: DocumentInfo, generation: UUID,
+        operation: @escaping @MainActor (DocumentInfo) async -> Void
+    ) -> Task<Void, Never> {
+        let registry = teardowns
+        return registry.enqueuePersistence(document: document, generation: generation) {
+            await operation(registry.durableDocument(for: document, generation: generation))
+        }
+    }
+
+    func awaitDocumentPersistence(for document: DocumentInfo) async {
+        await teardowns.awaitPersistence(for: document)
     }
 
     /// Rename the open document from the tab bar.
@@ -1677,6 +1694,7 @@ final class AppStore {
         findQuery = tab.findQuery
         findMatchCount = tab.findMatchCount
         findCurrentMatch = tab.findCurrentMatch
+        aiStore?.documentBindingDidChange()
     }
 
     private func applyEmptyActiveState() {
@@ -1694,6 +1712,7 @@ final class AppStore {
         webVisibleBookmarks = []
         regionCaptureTarget = .ai
         mode = .view
+        aiStore?.documentBindingDidChange()
     }
 
     private func updateActiveTab(_ mutate: (inout PdfTab) -> Void) {
@@ -1703,9 +1722,11 @@ final class AppStore {
 
     private func updateTab(_ tabId: String, _ mutate: (inout PdfTab) -> Void) {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let previousBinding = activeDocumentBinding
         var tab = tabs[index]
         mutate(&tab)
         tabs[index] = tab
+        if previousBinding != activeDocumentBinding { aiStore?.documentBindingDidChange() }
     }
 
     private static func readingPosition(for tab: PdfTab) -> ReadingPosition {

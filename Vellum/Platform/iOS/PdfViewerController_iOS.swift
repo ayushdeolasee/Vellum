@@ -690,6 +690,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         // is THIS MOUNT's tab (live tabs mount several viewers at once), so an
         // inactive tab's walk parks itself instead of racing the visible one.
         let tabId = self.tabId ?? app?.activeTabId
+        let binding = tabId.flatMap { app?.documentBinding(for: $0) }
         let docIdentity = ObjectIdentifier(document)
         let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
         let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
@@ -724,7 +725,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                     // queue is skipped, not re-extracted. Returning nil also
                     // tells the gate no read happened, so nothing is paced.
                     let stillNeeded = await MainActor.run { () -> Bool in
-                        guard let ai = walk.controller?.ai else { return false }
+                        guard let controller = walk.controller,
+                              controller.app?.activeDocumentBinding == binding,
+                              controller.document.map(ObjectIdentifier.init) == docIdentity,
+                              let ai = controller.ai else { return false }
                         return ai.pageTexts[pageNumber] == nil
                     }
                     guard stillNeeded,
@@ -741,7 +745,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                 let stillCurrent = await MainActor.run { [weak self] () -> Bool in
                     guard let self, let ai = self.ai,
                           self.document.map(ObjectIdentifier.init) == docIdentity,
-                          self.app?.activeTabId == tabId else { return false }
+                          self.app?.activeDocumentBinding == binding else { return false }
                     if ai.pageTexts[pageNumber] == nil,
                        let normalized = ai.setPageText(page: pageNumber, text: text) {
                         // Mirror onto the tab's runtime as well. `AiStore` holds

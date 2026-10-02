@@ -1644,6 +1644,7 @@ final class WebViewerController_iOS: NSObject {
     /// hatch for router-driven top-level loads, and window.open routing.
     func navigateTo(_ url: String) {
         guard let app, let tabId = app.activeTabId else { return }
+        if app.activeTabId == tabId { app.aiStore?.cancelActiveRequest() }
         // A pending auto-archive for the outgoing page must not fire against
         // the rebound session.
         cancelPendingArchive()

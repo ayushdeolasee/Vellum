@@ -895,13 +895,15 @@ struct AiPanel: View {
         // Capture the session and context synchronously, before any await, so
         // a tab switch during image capture can't send to the wrong tab
         // (mirrors the original's atomic submit -> sendMessage state read).
-        let sessionId = appStore.activeTabId
         let document = appStore.document
         let currentPage = appStore.currentPage
         let numPages = appStore.numPages
         let visiblePages = appStore.visiblePages
         let annotations = annotationStore.annotations
         let pageText = aiStore.pageTexts[currentPage]
+        guard let binding = appStore.activeDocumentBinding else { return }
+        let extract = aiStore.ensureExtractedHandler
+        let capture = aiStore.capturePageImageHandler
         let task = Task {
             // Resolve the page's text before the vision-fallback decision. On a
             // cache miss `pageText` is nil, which would wrongly attach an image
@@ -910,16 +912,17 @@ struct AiPanel: View {
             // already cached skip the extraction and behave as before.
             var resolvedPageText = pageText
             if resolvedPageText == nil {
-                _ = await aiStore.ensureExtracted(pages: [currentPage])
+                _ = await extract?([currentPage])
+                guard !Task.isCancelled, appStore.activeDocumentBinding == binding else { return }
                 resolvedPageText = aiStore.pageTexts[currentPage]
             }
             let image: AiPageImageSnapshot?
             if AiStore.shouldAutoAttachPageImage(pageText: resolvedPageText) {
-                image = await aiStore.capturePageImageHandler?(currentPage)
+                image = await capture?(currentPage)
             } else {
                 image = nil
             }
-            guard !Task.isCancelled, appStore.activeTabId == sessionId else { return }
+            guard !Task.isCancelled, appStore.activeDocumentBinding == binding else { return }
             let context = AiContextSnapshot(
                 title: document?.title,
                 numPages: numPages,

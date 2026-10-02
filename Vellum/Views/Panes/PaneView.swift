@@ -88,6 +88,9 @@ struct PaneView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarWillImport)) { note in
             guard let key = note.userInfo?["key"] as? String else { return }
+            if let document = app.document, DocumentIdentity.storageKey(for: document) == key {
+                pane.ai.cancelActiveRequest()
+            }
             pane.scratchpad.prepareForExternalImport(matchingKey: key)
         }
         .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarImported)) { note in
@@ -117,6 +120,7 @@ struct PaneView: View {
             let key = DocumentIdentity.storageKey(for: document)
             guard keys.contains(key) else { return }
             if note.userInfo?["chat"] as? Bool == true {
+                pane.ai.cancelActiveRequest(preservingHistory: false)
                 // Cache already invalidated by the poster; reload re-reads the now
                 // empty disk without writing.
                 Task {
@@ -162,6 +166,8 @@ struct PaneView: View {
     private func loadDocumentState() async {
         let identity = documentIdentity
         let document = app.document
+        if pane.ai.consumeOwnPromotionReload() { return }
+        pane.ai.cancelActiveRequest()
         // This task can run before the app root's startup task. Wait for the
         // coordinator here so restored documents never treat that launch race
         // as an unavailable identity migration.
@@ -183,7 +189,7 @@ struct PaneView: View {
     }
 
     private var documentIdentity: PaneDocumentIdentity {
-        PaneDocumentIdentity(tabId: app.activeTabId, path: app.document?.pdfPath)
+        PaneDocumentIdentity(tabId: app.activeTabId, path: app.document?.pdfPath, generation: app.activeDocumentBinding?.generation)
     }
 
 }
@@ -280,6 +286,7 @@ private struct LiveTabHost: View {
 private struct PaneDocumentIdentity: Hashable {
     var tabId: String?
     var path: String?
+    var generation: UUID?
 }
 
 /// Floating notice for the read-later item behind the open document (move

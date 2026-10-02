@@ -34,6 +34,7 @@ final class DocumentActionsTests: XCTestCase {
     private var lifecycleTasks: [Task<Void, Never>] = []
     private var apps: [AppStore] = []
     private var scratchpads: [ScratchpadStore] = []
+    private var aiStores: [AiStore] = []
     private var previousDocumentRoot: URL?
 
     override func setUp() async throws {
@@ -47,6 +48,7 @@ final class DocumentActionsTests: XCTestCase {
 
     override func tearDown() async throws {
         // A timeout must unblock and drain every parked close before deleting fixtures.
+        for store in aiStores { store.cancelActiveRequest() }
         for gate in positionGates { gate.release() }
         for gate in lifecycleGates { gate.release() }
         for task in lifecycleTasks { await task.value }
@@ -56,6 +58,7 @@ final class DocumentActionsTests: XCTestCase {
             await scratchpad.attachmentSweepTask?.value
         }
         await ScratchpadPersistence.awaitPendingFlush()
+        await AiPersistence.awaitPendingFlush()
         for workspace in workspaces {
             await workspace.awaitMaintenance()
             await workspace.tabTeardowns.awaitAll()
@@ -70,6 +73,7 @@ final class DocumentActionsTests: XCTestCase {
         lifecycleTasks = []
         apps = []
         scratchpads = []
+        aiStores = []
         workspaces = []
         DocumentDataStore.rootDirectoryOverride = previousDocumentRoot
         PdfDocIdRegistry.reset()
@@ -657,6 +661,248 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertFalse(workspace.scratchpadsAreSafeToTerminate(after: clean))
     }
 
+    func testAIStreamAndSuspendedReadCannotCrossSameTabNavigation() async throws {
+        try await withAIDefaults {
+            let read = LifecycleGate()
+            lifecycleGates.append(read)
+            let result = AIRequestFixtureState()
+            let fixture = try await aiFixture { engine, event in
+                event(.textDelta("accepted A text"))
+                result.outputs.append(await engine.run(
+                    AIRequestFixtureState.action("getPageText"), sessionIdAtStart: "ai", actionCount: 0))
+                event(.textDelta("LATE A TEXT"))
+                event(.status("Reading old A"))
+                result.outputs.append(await engine.run(
+                    AIRequestFixtureState.action("addNote", text: "wrong owner"), sessionIdAtStart: "ai", actionCount: 1))
+                return AiProviderResult(reply: "LATE A REPLY", actionResults: [])
+            }
+            fixture.ai.ensureExtractedHandler = { _ in
+                result.extractions += 1
+                if result.extractions == 2 { await read.pause() }
+                return 0
+            }
+            let request = Task { await fixture.ai.sendMessage("A question", context: fixture.context) }
+            lifecycleTasks.append(request)
+            try await read.waitUntilPaused()
+            XCTAssertTrue(fixture.ai.messages.contains { $0.content == "accepted A text" })
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.b.info.pdfPath)
+            fixture.ai.setPageText(page: 1, text: "PRIVATE B TEXT")
+            read.release()
+            await request.value
+            await fixture.app.awaitPendingTabTeardowns()
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertFalse(fixture.ai.isThinking)
+            XCTAssertTrue(fixture.annotations.annotations.isEmpty)
+            XCTAssertTrue(fixture.a.createdNotes.isEmpty)
+            XCTAssertTrue(fixture.b.createdNotes.isEmpty)
+            XCTAssertTrue(result.outputs.allSatisfy { $0.hasPrefix("Skipped") && !$0.contains("PRIVATE B TEXT") })
+            XCTAssertEqual(AiPersistence.loadConversation(for: fixture.a.info).map(\.content), ["A question", "accepted A text"])
+            XCTAssertTrue(AiPersistence.loadConversation(for: fixture.b.info).isEmpty)
+        }
+    }
+
+    func testAIReturnToSameDocumentCannotReviveOldRequestOrClearNewerLoading() async throws {
+        try await withAIDefaults {
+            let old = LifecycleGate()
+            let newer = LifecycleGate()
+            let otherPane = LifecycleGate()
+            lifecycleGates += [old, newer, otherPane]
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture { _, event in
+                state.calls += 1
+                if state.calls == 1 {
+                    event(.textDelta("first partial"))
+                    await old.pause()
+                    event(.textDelta("STALE DELTA"))
+                    return AiProviderResult(reply: "STALE RESULT", actionResults: [])
+                }
+                event(.status("Thinking newer"))
+                await newer.pause()
+                return AiProviderResult(reply: "new answer", actionResults: [])
+            }
+            let independent = try await aiFixture { _, event in
+                event(.status("Thinking another pane"))
+                await otherPane.pause()
+                return AiProviderResult(reply: "independent", actionResults: [])
+            }
+            let separate = Task { await independent.ai.sendMessage("other pane", context: independent.context) }
+            lifecycleTasks.append(separate)
+            try await otherPane.waitUntilPaused()
+            let first = Task { await fixture.ai.sendMessage("first", context: fixture.context) }
+            lifecycleTasks.append(first)
+            try await old.waitUntilPaused()
+            let original = try XCTUnwrap(fixture.app.activeDocumentBinding)
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.b.info.pdfPath)
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.a.info.pdfPath)
+            XCTAssertFalse(fixture.app.isCurrentDocumentBinding(original))
+            await fixture.ai.loadConversationForDocument(fixture.a.info)
+            let next = Task { await fixture.ai.sendMessage("second", context: fixture.context) }
+            lifecycleTasks.append(next)
+            try await newer.waitUntilPaused()
+            old.release()
+            await first.value
+            XCTAssertTrue(fixture.ai.isThinking, "an old completion cannot reset its successor")
+            XCTAssertTrue(independent.ai.isThinking, "request generations belong to one pane")
+            XCTAssertFalse(fixture.ai.messages.contains { $0.content.contains("STALE") })
+            newer.release()
+            otherPane.release()
+            await next.value
+            await separate.value
+            await fixture.app.awaitPendingTabTeardowns()
+            await independent.app.awaitPendingTabTeardowns()
+            XCTAssertEqual(AiPersistence.loadConversation(for: fixture.a.info).map(\.content),
+                           ["first", "first partial", "second", "new answer"])
+            XCTAssertEqual(independent.ai.messages.last?.content, "independent")
+            XCTAssertFalse(fixture.ai.isThinking)
+        }
+    }
+
+    func testAISuspendedLocatorAndAdmittedWriteKeepTheirCapturedBackend() async throws {
+        try await withAIDefaults {
+            let locator = LifecycleGate()
+            let write = LifecycleGate()
+            lifecycleGates += [locator, write]
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture(beforeCreate: { await write.pause() }) { engine, event in
+                state.calls += 1
+                if state.calls == 1 {
+                    state.outputs.append(await engine.run(
+                        AIRequestFixtureState.action("addHighlight", text: "phrase"), sessionIdAtStart: "ai", actionCount: 0))
+                } else {
+                    event(.textDelta("writing original A"))
+                    state.outputs.append(await engine.run(
+                        AIRequestFixtureState.action("addNote", text: "legitimate A note"), sessionIdAtStart: "ai", actionCount: 0))
+                }
+                return AiProviderResult(reply: "late answer", actionResults: [])
+            }
+            fixture.ai.locateWebTextHandler = { _, _ in
+                await locator.pause()
+                return LocatedText(positionData: PositionData(rects: [], pageWidth: 612, pageHeight: 792, selectedText: "phrase"), pageNumber: 1)
+            }
+            let first = Task { await fixture.ai.sendMessage("highlight", context: fixture.context) }
+            lifecycleTasks.append(first)
+            try await locator.waitUntilPaused()
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.b.info.pdfPath)
+            locator.release()
+            await first.value
+            XCTAssertTrue(fixture.a.createdNotes.isEmpty)
+            XCTAssertTrue(fixture.b.createdNotes.isEmpty)
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.a.info.pdfPath)
+            await fixture.ai.loadConversationForDocument(fixture.a.info)
+            let second = Task { await fixture.ai.sendMessage("note", context: fixture.context) }
+            lifecycleTasks.append(second)
+            try await write.waitUntilPaused()
+            XCTAssertTrue(fixture.annotations.annotations.contains { $0.content == "legitimate A note" })
+            // Navigation must join the admitted original-owner write. Its intent
+            // still cancels AI immediately, before the backend can be rebound.
+            let navigation = Task { _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.b.info.pdfPath) }
+            lifecycleTasks.append(navigation)
+            try await waitUntil { !fixture.ai.isThinking }
+            XCTAssertEqual(fixture.app.document?.pdfPath, fixture.a.info.pdfPath)
+            write.release()
+            await navigation.value
+            await second.value
+            await fixture.app.awaitPendingTabTeardowns()
+            XCTAssertEqual(fixture.a.createdNotes, ["legitimate A note"])
+            XCTAssertTrue(fixture.b.createdNotes.isEmpty)
+            XCTAssertTrue(fixture.annotations.annotations.isEmpty)
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertTrue(state.outputs.allSatisfy { $0.hasPrefix("Skipped") })
+            XCTAssertTrue(AiPersistence.loadConversation(for: fixture.a.info).contains { $0.content == "writing original A" })
+            XCTAssertTrue(AiPersistence.loadConversation(for: fixture.b.info).isEmpty)
+        }
+    }
+
+    func testAIConsentFailureRetryAndExplicitClearKeepTheRightHistory() async throws {
+        try await withAIDefaults {
+            let pending = LifecycleGate()
+            lifecycleGates.append(pending)
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture { _, event in
+                state.calls += 1
+                if state.calls == 1 {
+                    event(.textDelta("partial failure"))
+                    throw AiClientError.message("fixture failure")
+                }
+                if state.calls == 2 { return AiProviderResult(reply: "retry answer", actionResults: []) }
+                event(.textDelta("discarded partial"))
+                await pending.pause()
+                event(.textDelta("late cleared text"))
+                return AiProviderResult(reply: "late cleared answer", actionResults: [])
+            }
+            AiSharingConsent.revoke(for: .gemini)
+            await fixture.ai.sendMessage("blocked", context: fixture.context)
+            XCTAssertEqual(state.calls, 0)
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertFalse(fixture.ai.isThinking)
+            AiSharingConsent.grant(for: .gemini)
+            await fixture.ai.sendMessage("failure", context: fixture.context)
+            XCTAssertTrue(fixture.ai.messages.last?.content.contains("partial failure") == true)
+            XCTAssertEqual(fixture.ai.error, "fixture failure")
+            XCTAssertFalse(fixture.ai.isThinking)
+            await fixture.ai.sendMessage("retry", context: fixture.context)
+            XCTAssertEqual(fixture.ai.messages.last?.content, "retry answer")
+            await fixture.app.awaitPendingTabTeardowns()
+            let clearable = Task { await fixture.ai.sendMessage("clear me", context: fixture.context) }
+            lifecycleTasks.append(clearable)
+            try await pending.waitUntilPaused()
+            await fixture.app.awaitPendingTabTeardowns()
+            XCTAssertNotNil(fixture.ai.clearConversation())
+            pending.release()
+            await clearable.value
+            await fixture.app.awaitPendingTabTeardowns()
+            await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertFalse(fixture.ai.isThinking)
+            XCTAssertTrue(AiPersistence.loadConversation(for: fixture.a.info).isEmpty)
+        }
+    }
+
+    private func withAIDefaults(_ operation: () async throws -> Void) async throws {
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("ai-scope")
+        let name = "vellum.ai-scope-tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        try await AppDefaults.withDefaults(defaults) {
+            AiSharingConsent.grant(for: .gemini)
+            do { try await operation() }
+            catch {
+                await drainAITestWork()
+                throw error
+            }
+            await drainAITestWork()
+        }
+    }
+
+    private func drainAITestWork() async {
+        for store in aiStores { store.cancelActiveRequest() }
+        for gate in lifecycleGates { gate.release() }
+        for task in lifecycleTasks { await task.value }
+        for app in apps { await app.awaitPendingTabTeardowns() }
+        await AiPersistence.awaitPendingFlush()
+    }
+
+    private func aiFixture(
+        beforeCreate: (@MainActor () async -> Void)? = nil, generate: @escaping AiStore.Generate
+    ) async throws -> AIRequestFixture {
+        let a = AIRequestFixtureSession(info: testDocument("AI-A-\(UUID().uuidString)", kind: .web), beforeCreate: beforeCreate)
+        let b = AIRequestFixtureSession(info: testDocument("AI-B-\(UUID().uuidString)", kind: .web))
+        let manager = DocumentSessionManager(openWebSession: { url, _ in url == a.info.pdfPath ? a : b })
+        _ = try await manager.openWebDocument(url: a.info.pdfPath, sessionId: "ai")
+        let app = AppStore(sessions: manager)
+        apps.append(app)
+        app.attachTab(testTab(a.info, id: "ai"))
+        let annotations = AnnotationStore(app: app)
+        var settings = AiSettings()
+        settings.provider = .gemini
+        settings.apiKey = "isolated-unused-fixture-key"
+        let ai = AiStore(settings: settings, generate: generate)
+        ai.app = app
+        ai.annotationStore = annotations
+        aiStores.append(ai)
+        return AIRequestFixture(app: app, annotations: annotations, ai: ai, a: a, b: b)
+    }
+
     // MARK: - Helpers
 
     private func testDocument(_ name: String, kind: DocumentKind = .pdf) -> DocumentInfo {
@@ -832,4 +1078,52 @@ private final class LifecycleDocumentSession: DocumentSession {
 @MainActor
 private final class LifecycleRenameOutcome {
     var succeeds = false
+}
+
+@MainActor
+private struct AIRequestFixture {
+    let app: AppStore
+    let annotations: AnnotationStore
+    let ai: AiStore
+    let a: AIRequestFixtureSession
+    let b: AIRequestFixtureSession
+    var context: AiContextSnapshot {
+        AiContextSnapshot(title: "fixture", numPages: 1, currentPage: 1, visiblePages: [1], annotations: [], currentPageImage: nil)
+    }
+}
+
+@MainActor
+private final class AIRequestFixtureState {
+    var calls = 0
+    var extractions = 0
+    var outputs: [String] = []
+    static func action(_ tool: String, text: String? = nil) -> AiToolAction {
+        AiToolAction(tool: tool, args: AiToolArguments(pageNumber: 1, text: text))
+    }
+}
+
+@MainActor
+private final class AIRequestFixtureSession: DocumentSession {
+    let info: DocumentInfo
+    private let beforeCreate: (@MainActor () async -> Void)?
+    private(set) var createdNotes: [String] = []
+    init(info: DocumentInfo, beforeCreate: (@MainActor () async -> Void)? = nil) {
+        self.info = info
+        self.beforeCreate = beforeCreate
+    }
+    func save() async throws {}
+    func close() async throws {}
+    func readPdfBytes() async throws -> Data { Data() }
+    func annotations(pageNumber: Int?) async throws -> [Annotation] { [] }
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        await beforeCreate?()
+        createdNotes.append(input.content ?? input.positionData?.selectedText ?? "")
+        return Annotation(id: input.id ?? UUID().uuidString, type: input.type, pageNumber: input.pageNumber,
+                          color: input.color, content: input.content, positionData: input.positionData,
+                          createdAt: "", updatedAt: "")
+    }
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool { true }
+    func deleteAnnotation(id: String) async throws -> Bool { true }
+    func setMetadata(key: String, value: String) async throws {}
+    func ensureDocumentId() async throws -> String { info.docId ?? "" }
 }

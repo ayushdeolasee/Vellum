@@ -436,6 +436,7 @@ struct AiReferenceTarget: Equatable, Sendable {
     var kind: DocumentKind
     var path: String
     var documentId: String?
+    var bindingGeneration: UUID? = nil
 }
 
 /// Result of locating a phrase in a document (PDF text layer or web content
@@ -445,11 +446,47 @@ struct LocatedText: Sendable {
     var pageNumber: Int
 }
 
+/// Request-local output survives cancellation without consulting another
+/// document's mutable transcript. Authority stays immutable for the provider turn.
+@MainActor
+private final class AiDocumentRequest {
+    let token: UUID
+    let binding: DocumentBinding
+    let document: DocumentInfo
+    let coordinator: StorageCoordinator?
+    let messagesWithUser: [AiMessage]
+    let assistantId: String
+    var streamedText = ""
+    var providerTask: Task<AiProviderResult, Error>?
+
+    init(token: UUID = UUID(), binding: DocumentBinding, document: DocumentInfo,
+         coordinator: StorageCoordinator?, messagesWithUser: [AiMessage], assistantId: String) {
+        self.token = token
+        self.binding = binding
+        self.document = document
+        self.coordinator = coordinator
+        self.messagesWithUser = messagesWithUser
+        self.assistantId = assistantId
+    }
+
+    var accumulatedHistory: [AiMessage] {
+        let text = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AiPersistence.limitedMessages(messagesWithUser + (text.isEmpty ? [] : [
+            AiPersistence.makeMessage(role: .assistant, content: text, id: assistantId)
+        ]))
+    }
+}
+
 @MainActor
 @Observable
 final class AiStore {
     // Wired in by VellumApp; used by sendMessage's tool engine.
-    weak var app: AppStore?
+    weak var app: AppStore? {
+        didSet {
+            app?.aiStore = self
+            contextBinding = app?.activeDocumentBinding
+        }
+    }
     weak var annotationStore: AnnotationStore?
     /// Wired in by VellumApp; used to resolve OpenRouter model capabilities.
     weak var openRouterCatalog: OpenRouterCatalog?
@@ -480,6 +517,13 @@ final class AiStore {
     /// explicit clear can cancel it. Fire-and-forget requests aren't otherwise
     /// interruptible.
     private var sendTask: Task<Void, Never>?
+    @ObservationIgnored private var activeRequest: AiDocumentRequest?
+    @ObservationIgnored private var promotingRequestToken: UUID?
+    @ObservationIgnored private var promotionReloadBinding: DocumentBinding?
+    @ObservationIgnored private var contextLoadGeneration = UUID()
+    @ObservationIgnored private var contextBinding: DocumentBinding?
+    typealias Generate = @MainActor (AiToolEngine, @MainActor (AiStreamEvent) -> Void) async throws -> AiProviderResult
+    @ObservationIgnored private let generate: Generate?
     /// 1-indexed page → whitespace-normalized extracted text.
     private(set) var pageTexts: [Int: String] = [:]
     private(set) var settings = AiSettings()
@@ -556,8 +600,10 @@ final class AiStore {
     ///   and defeat the serialization the gate exists for.
     var ensureExtractedHandler: ((Set<Int>?) async -> Int)?
 
-    init() {
-        settings = AiPersistence.loadSettings()
+    init(settings: AiSettings? = nil, generate: Generate? = nil) {
+        self.generate = generate
+        self.settings = settings ?? AiPersistence.loadSettings()
+        guard settings == nil else { return }
         settingsObserver = NotificationCenter.default.addObserver(
             forName: .vellumAiSettingsChanged, object: nil, queue: .main
         ) { [weak self] _ in
@@ -587,6 +633,7 @@ final class AiStore {
 
     @discardableResult
     func addLocalMessage(role: AiRole, content: String, id: String? = nil) -> String {
+        if activeRequest != nil { cancelActiveRequest() }
         let message = AiPersistence.makeMessage(role: role, content: content, id: id)
         messages.append(message)
         AiPersistence.saveConversation(
@@ -596,6 +643,7 @@ final class AiStore {
     }
 
     func updateLocalMessage(id: String, content: String) {
+        if activeRequest != nil { cancelActiveRequest() }
         messages = messages.map { message in
             guard message.id == id else { return message }
             var next = message
@@ -622,7 +670,11 @@ final class AiStore {
     /// pacing. Idempotent with the background walk via `setPageText`'s dedupe.
     @discardableResult
     func ensureExtracted(pages: Set<Int>?) async -> Int {
-        await ensureExtractedHandler?(pages) ?? 0
+        let binding = app?.activeDocumentBinding
+        let handler = ensureExtractedHandler
+        let count = await handler?(pages) ?? 0
+        guard !Task.isCancelled, app?.activeDocumentBinding == binding else { return 0 }
+        return count
     }
 
     func setErrorState(_ error: String?) {
@@ -702,7 +754,7 @@ final class AiStore {
             sessionId: sessionId,
             kind: document.kind,
             path: document.pdfPath,
-            documentId: document.docId)
+            documentId: document.docId, bindingGeneration: app.activeDocumentBinding?.generation)
     }
 
     /// Attach bytes produced by an async page/region capture, but only if the
@@ -798,7 +850,7 @@ final class AiStore {
     /// silently dropped; folders and unreadable paths get the distinct "folder
     /// or unreadable" notice.
     func attachFiles(at urls: [URL]) {
-        let sessionId = app?.activeTabId
+        let target = currentReferenceTarget()
         Task { [weak self] in
             // iOS deviation from the Mac, and NOT optional: this app IS
             // sandboxed, and every URL that reaches here — from `.fileImporter`
@@ -817,7 +869,7 @@ final class AiStore {
                     return (name: url.lastPathComponent, attachment: aiFileAttachment(from: url))
                 }
             }.value
-            guard let self, self.app?.activeTabId == sessionId else { return }
+            guard let self, self.currentReferenceTarget() == target else { return }
 
             var rejected: [String] = []    // readable, but not an attachable image
             var unreadable: [String] = []  // folders / missing / unreadable paths
@@ -825,7 +877,7 @@ final class AiStore {
                 switch result.attachment {
                 case let .image(snapshot, name):
                     self.attachIfCurrent(
-                        AiReference(kind: .image(image: snapshot, name: name)), session: sessionId)
+                        AiReference(kind: .image(image: snapshot, name: name)), target: target)
                 case let .rejected(name):
                     rejected.append(name)
                 case nil:
@@ -859,12 +911,12 @@ final class AiStore {
 
     /// Normalize already-loaded image bytes off the main actor and attach them.
     func attachImage(data: Data, name: String) {
-        let sessionId = app?.activeTabId
+        let target = currentReferenceTarget()
         Task { [weak self] in
             let snapshot = await Task.detached(priority: .userInitiated) {
                 aiImageSnapshot(from: data)
             }.value
-            guard let self, let snapshot, self.app?.activeTabId == sessionId else { return }
+            guard let self, let snapshot, self.currentReferenceTarget() == target else { return }
             self.addReference(AiReference(kind: .image(image: snapshot, name: name)))
         }
     }
@@ -873,8 +925,8 @@ final class AiStore {
     /// composer — so a decode that finishes after the switch would otherwise drop
     /// document A's image into document B's next message. Same session capture
     /// `submit` uses.
-    private func attachIfCurrent(_ reference: AiReference, session: String?) {
-        guard app?.activeTabId == session else { return }
+    private func attachIfCurrent(_ reference: AiReference, target: AiReferenceTarget?) {
+        guard currentReferenceTarget() == target else { return }
         addReference(reference)
     }
 
@@ -882,29 +934,102 @@ final class AiStore {
     func loadConversationForDocument(
         _ document: DocumentInfo?, coordinator: StorageCoordinator? = nil
     ) async {
-        if let coordinator {
-            messages = await AiPersistence.loadConversation(
-                for: document, coordinator: coordinator)
-        } else {
-            messages = AiPersistence.loadConversation(for: document)
+        let binding = app?.activeDocumentBinding
+        if let app, let document {
+            guard let current = app.tabs.first(where: { $0.id == binding?.tabId })?.document,
+                  current.kind == document.kind, current.pdfPath == document.pdfPath,
+                  DocumentIdentity.storageKey(for: current) == DocumentIdentity.storageKey(for: document)
+            else { return }
         }
+        cancelActiveRequest()
+        let generation = UUID()
+        contextLoadGeneration = generation
+        if let document { await app?.awaitDocumentPersistence(for: document) }
+        guard !Task.isCancelled, contextLoadGeneration == generation,
+              app?.activeDocumentBinding == binding else { return }
+        let loaded: [AiMessage]
+        if let coordinator {
+            loaded = await AiPersistence.loadConversation(for: document, coordinator: coordinator)
+        } else {
+            loaded = AiPersistence.loadConversation(for: document)
+        }
+        guard !Task.isCancelled, contextLoadGeneration == generation,
+              app?.activeDocumentBinding == binding else { return }
+        messages = loaded
+        contextBinding = binding
         activity = .idle
         streamingMessageId = nil
         composerReferences = []
         error = nil
     }
 
-    /// Register the current in-flight request task so it can be cancelled.
+    /// The UI task may restart for our own docId promotion. Its content remains
+    /// the same; retain the immediate user bubble and original extraction state.
+    func consumeOwnPromotionReload() -> Bool {
+        guard let app, let binding = app.activeDocumentBinding else { return false }
+        if promotionReloadBinding == binding {
+            promotionReloadBinding = nil
+            return true
+        }
+        if let request = activeRequest, promotingRequestToken == request.token,
+           request.document.docId == nil, binding.docId != nil,
+           let current = app.tabs.first(where: { $0.id == binding.tabId })?.document,
+           current.kind == request.document.kind, current.pdfPath == request.document.pdfPath {
+            return true
+        }
+        return false
+    }
+
+    /// Called synchronously by model rebinding, including A→B→A in one UI frame.
+    func documentBindingDidChange() {
+        let binding = app?.activeDocumentBinding
+        guard contextBinding != binding else { return }
+        contextBinding = binding
+        if consumeOwnPromotionReload() { return }
+        cancelActiveRequest()
+        contextLoadGeneration = UUID()
+        messages = []
+        pageTexts = [:]
+        annotationStore?.clearAnnotations()
+        composerReferences = []
+        error = nil
+    }
+
     func registerSendTask(_ task: Task<Void, Never>?) {
+        if task != nil { cancelActiveRequest() }
         sendTask = task
     }
 
-    /// Cancel any in-flight request and stop the thinking indicator.
-    func cancelActiveRequest() {
+    /// Save only the captured owner's accepted output, then revoke authority.
+    /// Late callbacks cannot clear a successor's activity or schedule a save.
+    func cancelActiveRequest(preservingHistory: Bool = true) {
+        if let request = activeRequest {
+            request.providerTask?.cancel()
+            if preservingHistory {
+                persist(request.accumulatedHistory, for: request)
+                if app?.activeDocumentBinding == request.binding { messages = request.accumulatedHistory }
+            }
+        }
+        activeRequest = nil
+        promotingRequestToken = nil
+        promotionReloadBinding = nil
         sendTask?.cancel()
         sendTask = nil
         activity = .idle
         streamingMessageId = nil
+    }
+
+    private func isCurrent(_ request: AiDocumentRequest) -> Bool {
+        activeRequest === request && !Task.isCancelled
+            && app?.activeDocumentBinding == request.binding
+    }
+
+    private func persist(_ history: [AiMessage], for request: AiDocumentRequest) {
+        guard let app else { return }
+        app.enqueueDocumentPersistence(document: request.document, generation: request.binding.generation) { owner in
+            AiPersistence.saveConversation(for: owner, messages: history, coordinator: request.coordinator)
+            await AiPersistence.awaitPendingFlush()
+        }
     }
 
     /// Save an empty list (deleting the document's stored entry) and clear state.
@@ -921,7 +1046,7 @@ final class AiStore {
               let sessionId = app?.activeTabId else { return nil }
         let transaction = AiConversationClearTransaction(
             document: document, sessionId: sessionId, removedMessages: messages)
-        cancelActiveRequest()
+        cancelActiveRequest(preservingHistory: false)
         AiPersistence.saveConversation(
             for: document, messages: [],
             coordinator: app?.workspace?.storageCoordinator)
@@ -998,6 +1123,8 @@ final class AiStore {
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).
     func clearDocumentContext() {
+        cancelActiveRequest()
+        contextLoadGeneration = UUID()
         messages = []
         activity = .idle
         streamingMessageId = nil
@@ -1077,7 +1204,7 @@ final class AiStore {
     func sendMessage(_ input: String, context: AiContextSnapshot) async {
         let context = context
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
+        guard !Task.isCancelled, !trimmed.isEmpty,
               let app,
               let annotationStore,
               let sessionIdAtStart = app.activeTabId,
@@ -1114,246 +1241,241 @@ final class AiStore {
             return
         }
 
-        // The transcript keeps its own copy of what was attached — the composer
-        // chips are cleared on submit, so without this the sent message would
-        // give no sign it carried any context at all (issue #58). Pixels are
-        // stripped for storage; the model still receives the full-resolution
-        // images below, built from `context.references`.
-        //
-        // Hand the pixels to the session cache first: it is the only thing that
-        // survives the strip, and it's what makes tapping a snapshot or
-        // screenshot chip show the image for the rest of this session.
+        guard let initialBinding = app.activeDocumentBinding else { return }
+        if activeRequest != nil { cancelActiveRequest() }
+        contextLoadGeneration = UUID()
         rememberReferenceImages(context.references)
         let userMessage = AiPersistence.makeMessage(
-            role: .user,
-            content: trimmed,
-            references: context.references.map(\.strippingImageData)
-        )
+            role: .user, content: trimmed, references: context.references.map(\.strippingImageData))
         messages.append(userMessage)
-        // Empty assistant placeholder the stream fills in-place. Kept out of the
-        // persisted list until it has content so a mid-stream crash leaves no
-        // empty bubble behind on reload.
-        let assistantPlaceholder = AiPersistence.makeMessage(role: .assistant, content: "")
-        messages.append(assistantPlaceholder)
-        let assistantId = assistantPlaceholder.id
-        streamingMessageId = assistantId
+        let messagesWithUser = messages
+        let placeholder = AiPersistence.makeMessage(role: .assistant, content: "")
+        messages.append(placeholder)
+        streamingMessageId = placeholder.id
         activity = .thinking
         error = nil
-
-        // First AI message on a not-yet-stamped PDF: lazily stamp /VellumDocId
-        // through the session so this document's conversation lands in a stable,
-        // rename-proof `documents/<docId>/` folder rather than the path-hash
-        // fallback (mirrors ScratchpadStore's first-write stamp; design §3).
-        // Done AFTER the UI append (the stamp rewrites the whole PDF, which
-        // would visibly stall the composer on large files) but before the first
-        // persist so every save this turn targets the stamped key — no mid-turn
-        // rekey. Best-effort: a read-only PDF that can't be stamped keeps its
-        // nil docId and persists under the path key, which the next open's
-        // rekey carries over. syncDocumentId already no-ops once an id exists,
-        // so later messages skip the round-trip.
-        if documentAtStart.kind == .pdf, documentAtStart.docId?.isEmpty ?? true {
-            await app.syncDocumentId(sessionId: sessionIdAtStart)
-            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else {
-                // Abandon the turn: cancelled or the pane switched documents
-                // mid-stamp (its context reloads anyway). Mirror
-                // cancelActiveRequest's reset so no stream state dangles.
-                streamingMessageId = nil
-                activity = .idle
+        let preparing = AiDocumentRequest(
+            binding: initialBinding, document: documentAtStart,
+            coordinator: app.workspace?.storageCoordinator,
+            messagesWithUser: messagesWithUser, assistantId: placeholder.id)
+        activeRequest = preparing
+        // Keep the user bubble immediate while promotion is owned by the
+        // resource queue. Cancellation queues this captured history behind it.
+        var binding = initialBinding
+        if documentAtStart.kind == .pdf, documentAtStart.docId == nil {
+            promotingRequestToken = preparing.token
+            let promoted = await app.syncDocumentId(sessionId: sessionIdAtStart)
+            guard activeRequest === preparing, !Task.isCancelled,
+                  let promoted, app.activeDocumentBinding == promoted else {
+                if activeRequest === preparing { cancelActiveRequest() }
                 return
             }
+            binding = promoted
+            promotionReloadBinding = promoted == initialBinding ? nil : promoted
+            promotingRequestToken = nil
         }
-        let documentForPersist = app.document ?? documentAtStart
-        let messagesWithUser = Array(messages.dropLast())
-        AiPersistence.saveConversation(
-            for: documentForPersist, messages: messagesWithUser,
-            coordinator: app.workspace?.storageCoordinator)
+        guard activeRequest === preparing, !Task.isCancelled,
+              app.activeDocumentBinding == binding,
+              let document = app.tabs.first(where: { $0.id == binding.tabId })?.document else {
+            if activeRequest === preparing { cancelActiveRequest() }
+            return
+        }
+        let request = AiDocumentRequest(
+            token: preparing.token, binding: binding, document: document,
+            coordinator: preparing.coordinator, messagesWithUser: messagesWithUser,
+            assistantId: placeholder.id)
+        activeRequest = request
+        persist(messagesWithUser, for: request)
+        defer {
+            if activeRequest === request { cancelActiveRequest() }
+        }
 
-        // Image inputs: the auto page snapshot first, then any snapshot the user
-        // explicitly attached as a reference.
-        var images: [AiPageImageSnapshot] = []
-        if let pageImage = context.currentPageImage { images.append(pageImage) }
-        images.append(contentsOf: context.references.compactMap(\.image))
-
-        // Guarded main-actor sink for provider events.
+        let extract = ensureExtractedHandler
+        let locate = document.kind == .web ? locateWebTextHandler : locatePdfTextHandler
+        let backend = app.sessions.documentSession(sessionId: binding.tabId)
+        let valid: @MainActor () -> Bool = { [weak self] in self?.isCurrent(request) == true }
+        let execution = AiToolExecutionContext(
+            binding: binding, document: document, currentPage: context.currentPage,
+            pageCount: context.numPages, pageTexts: pageTexts, annotations: annotationStore.annotations,
+            isCurrent: valid,
+            setActivity: { [weak self] next in if valid() { self?.activity = next } },
+            extract: { [weak self] pages in
+                guard let self, valid() else { throw CancellationError() }
+                _ = await extract?(pages)
+                guard valid() else { throw CancellationError() }
+                return self.pageTexts
+            },
+            locate: { page, query in
+                guard valid() else { return nil }
+                let result = await locate?(page, query)
+                return valid() ? result : nil
+            },
+            createAnnotation: { input in
+                guard valid(), let backend,
+                      backend.info.kind == document.kind, backend.info.pdfPath == document.pdfPath
+                else { throw CancellationError() }
+                return try await annotationStore.createForAI(
+                    input, document: document, binding: binding, backend: backend, isCurrentRequest: valid)
+            },
+            navigate: { page in if valid() { app.goToPage(page) } })
+        let engine = AiToolEngine(context: execution)
         let onEvent: @MainActor (AiStreamEvent) -> Void = { [weak self] event in
-            guard let self, self.app?.activeTabId == sessionIdAtStart else { return }
+            guard let self, self.isCurrent(request) else { return }
             switch event {
             case .status(let label):
                 self.activity = label.lowercased().contains("read") ? .reading : .thinking
             case .textDelta(let delta):
-                self.appendStreamDelta(id: assistantId, delta)
+                request.streamedText += delta
+                self.appendStreamDelta(id: request.assistantId, delta)
                 self.activity = .streaming
-            case .toolStarted(let summary):
-                self.activity = .tool(summary)
-            case .toolFinished:
-                break
+            case .toolStarted(let summary): self.activity = .tool(summary)
+            case .toolFinished: break
             }
         }
-
         do {
-            // Pull model: the default slice only carries the current page, so
-            // make sure that page (and what's on screen) is extracted before the
-            // prompt is built — the background 1→N walk may not have reached a
-            // deep page the user jumped to. Whole-doc extraction happens lazily
-            // inside `searchDocument`. Sub-ms and invisible when already indexed.
             activity = .indexing
-            _ = await ensureExtracted(pages: Set([context.currentPage] + context.visiblePages))
-            guard !Task.isCancelled, app.activeTabId == sessionIdAtStart else { return }
+            let texts = try await execution.extract(Set([context.currentPage] + context.visiblePages))
+            try execution.checkCurrent()
             activity = .thinking
-
             let conversation = AiPrompts.buildConversationBlock(Self.promptHistory(from: messagesWithUser))
-            let parameters = AiPromptParameters(
+            let prompt = AiPrompts.buildNativeToolUserPrompt(AiPromptParameters(
                 conversation: conversation.isEmpty ? "(start of conversation)" : conversation,
-                context: AiPrompts.buildContextBlock(pageTexts: pageTexts, context: context),
-                latestUserRequest: trimmed
-            )
-            // Built once and shared by every provider path. Clients with an
-            // Anthropic-style cache_control breakpoint (OpenRouter, OpenCode Zen)
-            // send the stable/volatile halves as separate parts; the rest send
-            // `prompt.joined` (PR A.5).
-            let prompt = AiPrompts.buildNativeToolUserPrompt(parameters)
-            let engine = AiToolEngine(store: self, app: app, annotations: annotationStore)
-            let result: AiProviderResult
-            switch settingsAtStart.provider {
-            case .gemini:
-                let model = settingsAtStart.model.trimmingCharacters(in: .whitespacesAndNewlines)
-                result = try await GeminiClient().generate(
-                    apiKey: settingsAtStart.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                    model: model.isEmpty ? "gemini-3.1-flash-lite-preview" : model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: images,
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
-            case .openai:
-                let model = settingsAtStart.openaiModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                result = try await OpenAIClient().generate(
-                    apiKey: settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                    model: model.isEmpty ? "gpt-5.5" : model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: images,
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
-            case .openrouter:
-                let model = settingsAtStart.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !model.isEmpty else {
-                    throw AiClientError.message("Choose an OpenRouter model in AI settings.")
-                }
-                // Unknown ids (stale cache) default to permissive so we never
-                // silently strip a capability the model actually has.
-                let supportsVision = AiModelCatalog.supportsVision(
-                    provider: .openrouter, model: model, catalog: openRouterCatalog)
-                let supportsTools = openRouterCatalog?.model(for: model)?.supportsTools ?? true
-                result = try await OpenRouterClient().generate(
-                    apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                    model: model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: supportsVision ? images : [],
-                    allowTools: supportsTools,
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
-            case .opencode:
-                let model = settingsAtStart.opencodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !model.isEmpty else {
-                    throw AiClientError.message("Choose an OpenCode Zen model in AI settings.")
-                }
-                result = try await OpenCodeClient(gateway: .zen).generate(
-                    apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                    model: model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    // Only text-only open models drop the images (page snapshot +
-                    // user-attached references); the gateway rejects image parts
-                    // for models that can't read them.
-                    images: AiModelCatalog.supportsVision(
-                        provider: .opencode, model: model, catalog: openRouterCatalog) ? images : [],
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
-            case .opencodeGo:
-                let model = settingsAtStart.opencodeGoModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !model.isEmpty else {
-                    throw AiClientError.message("Choose an OpenCode Go model in AI settings.")
-                }
-                result = try await OpenCodeClient(gateway: .go).generate(
-                    apiKey: settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                    model: model,
-                    systemPrompt: try AiPrompts.nativeSystemPrompt(),
-                    prompt: prompt,
-                    images: AiModelCatalog.supportsVision(
-                        provider: .opencodeGo, model: model, catalog: openRouterCatalog) ? images : [],
-                    thinkingMode: settingsAtStart.reasoningEffort,
-                    sessionIdAtStart: sessionIdAtStart,
-                    toolEngine: engine,
-                    onEvent: onEvent
-                )
+                context: AiPrompts.buildContextBlock(pageTexts: texts, context: context), latestUserRequest: trimmed))
+            var images = context.currentPageImage.map { [$0] } ?? []
+            images.append(contentsOf: context.references.compactMap(\.image))
+            let provider = generate
+            let task = Task { @MainActor in
+                try execution.checkCurrent()
+                if let provider { return try await provider(engine, onEvent) }
+                return try await self.generateWithProvider(
+                    settingsAtStart: settingsAtStart, prompt: prompt, images: images,
+                    sessionIdAtStart: sessionIdAtStart, engine: engine, onEvent: onEvent)
             }
-
-            // Cancelled mid-request (e.g. the user cleared the conversation):
-            // drop the result without persisting or re-appending messages.
-            guard !Task.isCancelled else { return }
-
-            // The answer and the trace of what produced it are persisted as two
-            // separate things. Raw tool payloads remain model-only: they reach
-            // neither `content` nor the bounded excerpts in `toolSummaries`.
-            var assistantMessage = AiPersistence.makeMessage(
-                role: .assistant,
-                content: Self.assistantAnswerText(reply: result.reply),
-                id: assistantId
-            )
-            assistantMessage.toolSummaries = engine.displayActions.isEmpty
-                ? nil
-                : AiPersistence.sanitizeToolSummaries(engine.displayActions)
-            let completed = AiPersistence.limitedMessages(messagesWithUser + [
-                assistantMessage
-            ])
-            AiPersistence.saveConversation(
-                for: documentForPersist, messages: completed,
-                coordinator: app.workspace?.storageCoordinator)
-            if app.activeTabId == sessionIdAtStart {
-                messages = completed
-                activity = .idle
-                streamingMessageId = nil
-            }
+            request.providerTask = task
+            let result = try await task.value
+            try execution.checkCurrent()
+            var assistant = AiPersistence.makeMessage(
+                role: .assistant, content: Self.assistantAnswerText(reply: result.reply), id: request.assistantId)
+            assistant.toolSummaries = engine.displayActions.isEmpty ? nil : AiPersistence.sanitizeToolSummaries(engine.displayActions)
+            let completed = AiPersistence.limitedMessages(messagesWithUser + [assistant])
+            persist(completed, for: request)
+            messages = completed
+            activeRequest = nil
+            activity = .idle
+            streamingMessageId = nil
         } catch {
-            // A cancelled request surfaces here as a URLSession cancellation
-            // error — swallow it silently instead of showing a failure banner.
-            guard !Task.isCancelled else { return }
-
+            guard isCurrent(request) else { return }
+            if error is CancellationError { return }
             let detail = error.localizedDescription
-            // Keep whatever streamed before the failure; otherwise show the error
-            // in place of the empty placeholder.
-            let streamed = messages.first(where: { $0.id == assistantId })?.content
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let content = streamed.isEmpty
-                ? "I couldn't complete that request: \(detail)"
+            let streamed = request.streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = streamed.isEmpty ? "I couldn't complete that request: \(detail)"
                 : streamed + "\n\n_(interrupted: \(detail))_"
-            let failed = messagesWithUser + [
-                AiPersistence.makeMessage(role: .assistant, content: content, id: assistantId)
-            ]
-            AiPersistence.saveConversation(
-                for: documentForPersist, messages: failed,
-                coordinator: app.workspace?.storageCoordinator)
-            if app.activeTabId == sessionIdAtStart {
-                messages = failed
-                activity = .idle
-                streamingMessageId = nil
-                self.error = detail
-            }
+            let failed = AiPersistence.limitedMessages(messagesWithUser + [
+                AiPersistence.makeMessage(role: .assistant, content: content, id: request.assistantId)])
+            persist(failed, for: request)
+            messages = failed
+            activeRequest = nil
+            activity = .idle
+            streamingMessageId = nil
+            self.error = detail
         }
+    }
+
+    private func generateWithProvider(
+        settingsAtStart: AiSettings, prompt: AiUserPrompt, images: [AiPageImageSnapshot],
+        sessionIdAtStart: String, engine: AiToolEngine,
+        onEvent: @escaping @MainActor (AiStreamEvent) -> Void
+    ) async throws -> AiProviderResult {
+        let result: AiProviderResult
+        switch settingsAtStart.provider {
+        case .gemini:
+            let model = settingsAtStart.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            result = try await GeminiClient().generate(
+                apiKey: settingsAtStart.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: model.isEmpty ? "gemini-3.1-flash-lite-preview" : model,
+                systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                prompt: prompt,
+                images: images,
+                thinkingMode: settingsAtStart.reasoningEffort,
+                sessionIdAtStart: sessionIdAtStart,
+                toolEngine: engine,
+                onEvent: onEvent
+            )
+        case .openai:
+            let model = settingsAtStart.openaiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            result = try await OpenAIClient().generate(
+                apiKey: settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: model.isEmpty ? "gpt-5.5" : model,
+                systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                prompt: prompt,
+                images: images,
+                thinkingMode: settingsAtStart.reasoningEffort,
+                sessionIdAtStart: sessionIdAtStart,
+                toolEngine: engine,
+                onEvent: onEvent
+            )
+        case .openrouter:
+            let model = settingsAtStart.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty else {
+                throw AiClientError.message("Choose an OpenRouter model in AI settings.")
+            }
+            // Unknown ids (stale cache) default to permissive so we never
+            // silently strip a capability the model actually has.
+            let supportsVision = AiModelCatalog.supportsVision(
+                provider: .openrouter, model: model, catalog: openRouterCatalog)
+            let supportsTools = openRouterCatalog?.model(for: model)?.supportsTools ?? true
+            result = try await OpenRouterClient().generate(
+                apiKey: settingsAtStart.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: model,
+                systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                prompt: prompt,
+                images: supportsVision ? images : [],
+                allowTools: supportsTools,
+                thinkingMode: settingsAtStart.reasoningEffort,
+                sessionIdAtStart: sessionIdAtStart,
+                toolEngine: engine,
+                onEvent: onEvent
+            )
+        case .opencode:
+            let model = settingsAtStart.opencodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty else {
+                throw AiClientError.message("Choose an OpenCode Zen model in AI settings.")
+            }
+            result = try await OpenCodeClient(gateway: .zen).generate(
+                apiKey: settingsAtStart.opencodeApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: model,
+                systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                prompt: prompt,
+                // Only text-only open models drop the images (page snapshot +
+                // user-attached references); the gateway rejects image parts
+                // for models that can't read them.
+                images: AiModelCatalog.supportsVision(
+                    provider: .opencode, model: model, catalog: openRouterCatalog) ? images : [],
+                thinkingMode: settingsAtStart.reasoningEffort,
+                sessionIdAtStart: sessionIdAtStart,
+                toolEngine: engine,
+                onEvent: onEvent
+            )
+        case .opencodeGo:
+            let model = settingsAtStart.opencodeGoModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty else {
+                throw AiClientError.message("Choose an OpenCode Go model in AI settings.")
+            }
+            result = try await OpenCodeClient(gateway: .go).generate(
+                apiKey: settingsAtStart.opencodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: model,
+                systemPrompt: try AiPrompts.nativeSystemPrompt(),
+                prompt: prompt,
+                images: AiModelCatalog.supportsVision(
+                    provider: .opencodeGo, model: model, catalog: openRouterCatalog) ? images : [],
+                thinkingMode: settingsAtStart.reasoningEffort,
+                sessionIdAtStart: sessionIdAtStart,
+                toolEngine: engine,
+                onEvent: onEvent
+            )
+        }
+
+        return result
     }
 
     /// Append a streamed delta to the in-flight assistant message without

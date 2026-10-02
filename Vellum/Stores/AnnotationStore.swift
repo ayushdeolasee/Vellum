@@ -225,6 +225,52 @@ final class AnnotationStore {
         annotations.filter { $0.pageNumber == pageNumber }
     }
 
+    /// AI owns a concrete backend and a joinable resource write. No session-id
+    /// lookup after suspension can redirect this annotation to a replacement.
+    func createForAI(
+        _ input: CreateAnnotationInput, document: DocumentInfo, binding: DocumentBinding,
+        backend: any DocumentSession, isCurrentRequest: @escaping @MainActor () -> Bool
+    ) async throws -> Annotation {
+        guard isCurrentRequest(), app.activeDocumentBinding == binding else { throw CancellationError() }
+        var input = input
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = PdfDates.rfc3339Now()
+        input.id = id
+        input.createdAt = now
+        let optimistic = Annotation(
+            id: id, type: input.type, pageNumber: input.pageNumber,
+            color: input.color ?? resolvedDefaultColor(for: input.type), content: input.content,
+            positionData: input.positionData, createdAt: now, updatedAt: now)
+        annotations.append(optimistic)
+        var outcome: Result<Annotation, Error> = .failure(CancellationError())
+        let write = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { _ in
+            guard isCurrentRequest() else { return }
+            do { outcome = .success(try await backend.createAnnotation(input)) }
+            catch { outcome = .failure(error) }
+        }
+        pendingCreates[id] = Task {
+            await write.value
+            if case .success = outcome { return true }
+            return false
+        }
+        await write.value
+        defer { pendingCreates[id] = nil }
+        // A mutation admitted before cancellation stays durable for A. Reconcile
+        // only that same binding's UI; a successor request may share its document.
+        if app.activeDocumentBinding == binding {
+            switch outcome {
+            case .success(let saved):
+                if let index = annotations.firstIndex(where: { $0.id == id }), annotations[index] == optimistic {
+                    annotations[index] = saved
+                }
+            case .failure:
+                annotations.removeAll { $0.id == id }
+            }
+        }
+        guard isCurrentRequest(), app.activeDocumentBinding == binding else { throw CancellationError() }
+        return try outcome.get()
+    }
+
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
         guard let sessionId = app.activeTabId else { return nil }
 

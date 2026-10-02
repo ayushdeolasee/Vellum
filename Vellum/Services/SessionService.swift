@@ -21,6 +21,9 @@ enum SessionServiceError: Error, LocalizedError {
 
 @MainActor
 protocol SessionService: AnyObject {
+    /// Capture a concrete document backend instead of resolving a reused tab later.
+    func documentSession(sessionId: String) -> (any DocumentSession)?
+
     // Document lifecycle
     /// Revoke an unfinished open as soon as a tab closes or starts rebinding.
     func invalidatePendingOpen(sessionId: String)
@@ -55,6 +58,7 @@ protocol SessionService: AnyObject {
 }
 
 extension SessionService {
+    func documentSession(sessionId: String) -> (any DocumentSession)? { nil }
     func invalidatePendingOpen(sessionId: String) {}
 }
 
