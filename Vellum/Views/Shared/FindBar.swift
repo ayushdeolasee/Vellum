@@ -92,7 +92,7 @@ struct FindBar: View {
                 #endif
         }
         .buttonStyle(.plain)
-        .disabled(app.findMatchCount == 0)
+        .disabled(app.findIsSearching || app.findMatchCount == 0)
         .help("Previous match (⌘⇧G)")
         .accessibilityLabel("Previous match")
 
@@ -105,7 +105,7 @@ struct FindBar: View {
                 #endif
         }
         .buttonStyle(.plain)
-        .disabled(app.findMatchCount == 0)
+        .disabled(app.findIsSearching || app.findMatchCount == 0)
         .help("Next match (⌘G)")
         .accessibilityLabel("Next match")
 
@@ -123,6 +123,7 @@ struct FindBar: View {
 
     private var matchLabel: String {
         if app.findQuery.isEmpty { return "" }
+        if app.findIsSearching { return "Searching…" }
         if app.findMatchCount == 0 { return "No results" }
         return "\(app.findCurrentMatch) of \(app.findMatchCount)"
     }

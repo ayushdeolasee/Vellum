@@ -372,7 +372,16 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
               let data = runtime?.preparedSourceData else { return }
         let generation = findGeneration
         let previous = findTask
+        app.setFindSearching(true)
         findTask = Task { [weak self] in
+            defer {
+                // An older cancelled task must not clear a replacement search.
+                if let self, self.findGeneration == generation,
+                   self.document === document, self.app === app,
+                   app.activeDocumentBinding == binding {
+                    app.setFindSearching(false)
+                }
+            }
             await previous?.value
             do {
                 try Task.checkCancellation()
@@ -421,7 +430,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     func findClear() {
         findTask?.cancel()
         findGeneration = UUID()
-        if isSearchOwner { app?.setFindResults(count: 0, current: 0) }
+        if isSearchOwner {
+            app?.setFindSearching(false)
+            app?.setFindResults(count: 0, current: 0)
+        }
         findMatches = []
         findIndex = -1
         pdfView?.highlightedSelections = nil
