@@ -139,6 +139,7 @@ struct AiConversationClearTransaction: Equatable, Sendable {
     var document: DocumentInfo
     var sessionId: String
     var removedMessages: [AiMessage]
+    var bindingGeneration: UUID
 }
 
 /// Coarse phase of an in-flight request, surfaced by the panel's activity
@@ -636,9 +637,7 @@ final class AiStore {
         if activeRequest != nil { cancelActiveRequest() }
         let message = AiPersistence.makeMessage(role: role, content: content, id: id)
         messages.append(message)
-        AiPersistence.saveConversation(
-            for: app?.document, messages: messages,
-            coordinator: app?.workspace?.storageCoordinator)
+        persistCurrentMutation(messages)
         return message.id
     }
 
@@ -650,9 +649,7 @@ final class AiStore {
             next.content = content
             return next
         }
-        AiPersistence.saveConversation(
-            for: app?.document, messages: messages,
-            coordinator: app?.workspace?.storageCoordinator)
+        persistCurrentMutation(messages)
     }
 
     func setThinkingState(_ thinking: Bool) {
@@ -1032,93 +1029,93 @@ final class AiStore {
         }
     }
 
-    /// Save an empty list (deleting the document's stored entry) and clear state.
-    /// Returns the removed conversation so the caller can register a reliable
-    /// Undo. Composer attachments are deliberately left alone: they belong to
-    /// the next message, not to the transcript being cleared.
-    ///
-    /// Also cancels any in-flight request so a completing response can't
-    /// re-append the messages we just cleared.
+    /// Explicit edits join the captured owner lane after any older request history.
+    private func persistCurrentMutation(_ history: [AiMessage]) {
+        guard let app, let document = app.document,
+              let binding = app.activeDocumentBinding else { return }
+        let coordinator = app.workspace?.storageCoordinator
+        let limited = AiPersistence.limitedMessages(history)
+        app.enqueueDocumentPersistence(document: document, generation: binding.generation) { owner in
+            await AiPersistence.awaitPendingFlush()
+            AiPersistence.saveConversation(for: owner, messages: limited, coordinator: coordinator)
+            await AiPersistence.awaitPendingFlush()
+        }
+    }
+
     @discardableResult
     func clearConversation() -> AiConversationClearTransaction? {
-        guard !messages.isEmpty,
-              let document = app?.document,
-              let sessionId = app?.activeTabId else { return nil }
+        guard !messages.isEmpty, let app, let document = app.document,
+              let binding = app.activeDocumentBinding else { return nil }
         let transaction = AiConversationClearTransaction(
-            document: document, sessionId: sessionId, removedMessages: messages)
+            document: document, sessionId: binding.tabId, removedMessages: messages,
+            bindingGeneration: binding.generation)
         cancelActiveRequest(preservingHistory: false)
-        AiPersistence.saveConversation(
-            for: document, messages: [],
-            coordinator: app?.workspace?.storageCoordinator)
+        persistCurrentMutation([])
         messages = []
         error = nil
         return transaction
     }
 
-    /// Restore only the messages removed by this transaction. Messages created
-    /// after the clear stay at the end of the conversation.
+    /// Restore the captured owner's messages after its accepted pending writes.
     @discardableResult
     func undoClear(_ transaction: AiConversationClearTransaction) -> Bool {
-        guard let document = currentDocument(for: transaction) else { return false }
-        let current = AiPersistence.loadConversation(for: document)
-        let currentIds = Set(current.map(\.id))
-        let restored = transaction.removedMessages.filter { !currentIds.contains($0.id) } + current
-        AiPersistence.saveConversation(
-            for: document, messages: restored,
-            coordinator: app?.workspace?.storageCoordinator)
-        if isShowing(transaction, document: document) {
-            cancelActiveRequest()
-            // Read back rather than showing `restored`: the save applies the
-            // message/reference/tool-summary caps, so the un-capped array would
-            // display more than was persisted and silently shrink on the next
-            // tab switch.
-            messages = AiPersistence.loadConversation(for: document)
+        guard currentDocument(for: transaction) != nil, let app else { return false }
+        let showing = app.activeDocumentBinding?.tabId == transaction.sessionId
+        if showing { cancelActiveRequest() }
+        let visible = showing ? messages : nil
+        let coordinator = app.workspace?.storageCoordinator
+        app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { owner in
+            await AiPersistence.awaitPendingFlush()
+            let current: [AiMessage]
+            if let visible { current = visible }
+            else if let coordinator { current = await AiPersistence.loadConversation(for: owner, coordinator: coordinator) }
+            else { current = AiPersistence.loadConversation(for: owner) }
+            let ids = Set(current.map(\.id))
+            let restored = AiPersistence.limitedMessages(transaction.removedMessages.filter { !ids.contains($0.id) } + current)
+            AiPersistence.saveConversation(for: owner, messages: restored, coordinator: coordinator)
+            await AiPersistence.awaitPendingFlush()
+        }
+        if showing {
+            let ids = Set(messages.map(\.id))
+            messages = AiPersistence.limitedMessages(transaction.removedMessages.filter { !ids.contains($0.id) } + messages)
             error = nil
         }
         return true
     }
 
-    /// Remove only this transaction's original messages. Any messages added
-    /// after the clear (or after Undo) remain intact.
     @discardableResult
     func redoClear(_ transaction: AiConversationClearTransaction) -> Bool {
-        guard let document = currentDocument(for: transaction) else { return false }
+        guard currentDocument(for: transaction) != nil, let app else { return false }
+        let showing = app.activeDocumentBinding?.tabId == transaction.sessionId
+        if showing { cancelActiveRequest() }
         let removedIds = Set(transaction.removedMessages.map(\.id))
-        let remaining = AiPersistence.loadConversation(for: document)
-            .filter { !removedIds.contains($0.id) }
-        AiPersistence.saveConversation(
-            for: document, messages: remaining,
-            coordinator: app?.workspace?.storageCoordinator)
-        if isShowing(transaction, document: document) {
-            cancelActiveRequest()
-            messages = remaining
-            error = nil
+        let visible = showing ? messages.filter { !removedIds.contains($0.id) } : nil
+        let coordinator = app.workspace?.storageCoordinator
+        app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { owner in
+            await AiPersistence.awaitPendingFlush()
+            let remaining: [AiMessage]
+            if let visible { remaining = visible }
+            else if let coordinator {
+                remaining = await AiPersistence.loadConversation(for: owner, coordinator: coordinator).filter { !removedIds.contains($0.id) }
+            } else { remaining = AiPersistence.loadConversation(for: owner).filter { !removedIds.contains($0.id) } }
+            AiPersistence.saveConversation(for: owner, messages: remaining, coordinator: coordinator)
+            await AiPersistence.awaitPendingFlush()
         }
+        if showing, let visible { messages = visible; error = nil }
         return true
     }
 
-    /// Resolve through the transaction's tab rather than the clear-time
-    /// `DocumentInfo`: a first post-clear write can stamp the PDF and change its
-    /// storage key while this tab remains the same document. The path/kind guard
-    /// keeps a stale undo transaction from following a reused tab into another
-    /// document.
+    /// A later document at the same path must never inherit this Undo. A live
+    /// identity promotion is allowed only through the generation-scoped alias.
     private func currentDocument(for transaction: AiConversationClearTransaction) -> DocumentInfo? {
-        guard let document = app?.tabs.first(where: { $0.id == transaction.sessionId })?.document,
-              isSameDocument(document, transaction.document) else { return nil }
+        guard let app, let binding = app.documentBinding(for: transaction.sessionId),
+              let document = app.tabs.first(where: { $0.id == transaction.sessionId })?.document,
+              document.kind == transaction.document.kind,
+              document.pdfPath == transaction.document.pdfPath else { return nil }
+        if binding.generation == transaction.bindingGeneration { return document }
+        let owner = app.durableDocument(for: transaction.document, generation: transaction.bindingGeneration)
+        guard owner.docId != transaction.document.docId, owner.docId == document.docId else { return nil }
         return document
-    }
-
-    private func isShowing(
-        _ transaction: AiConversationClearTransaction, document targetDocument: DocumentInfo
-    ) -> Bool {
-        guard app?.activeTabId == transaction.sessionId, let activeDocument = app?.document else {
-            return false
-        }
-        return isSameDocument(activeDocument, targetDocument)
-    }
-
-    private func isSameDocument(_ lhs: DocumentInfo, _ rhs: DocumentInfo) -> Bool {
-        lhs.kind == rhs.kind && lhs.pdfPath == rhs.pdfPath
     }
 
     /// Wipes pageTexts, messages, activity, error (called on doc/tab change).

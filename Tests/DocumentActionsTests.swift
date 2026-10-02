@@ -858,6 +858,100 @@ final class DocumentActionsTests: XCTestCase {
         }
     }
 
+    func testAIExplicitMutationsFollowUnflushedPartialHistory() async throws {
+        try await withAIDefaults {
+            let gates = (0..<4).map { _ in LifecycleGate() }
+            lifecycleGates += gates
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture { _, event in
+                let index = state.calls
+                state.calls += 1
+                event(.textDelta("partial \(index)"))
+                await gates[index].pause()
+                event(.textDelta("late obsolete"))
+                return AiProviderResult(reply: "late obsolete", actionResults: [])
+            }
+            fixture.ai.addLocalMessage(role: .user, content: "original", id: "original")
+            let cleared = fixture.ai.clearConversation()
+            let transaction = try XCTUnwrap(cleared)
+            for index in 0..<4 {
+                let request = Task { await fixture.ai.sendMessage("turn \(index)", context: fixture.context) }
+                lifecycleTasks.append(request)
+                try await gates[index].waitUntilPaused()
+                // Deliberately no registry/persistence drain before the mutation.
+                switch index {
+                case 0:
+                    XCTAssertTrue(fixture.ai.undoClear(transaction))
+                    XCTAssertEqual(fixture.ai.messages.first?.id, "original")
+                case 1:
+                    XCTAssertTrue(fixture.ai.redoClear(transaction))
+                    XCTAssertFalse(fixture.ai.messages.contains { $0.id == "original" })
+                case 2:
+                    let user = try XCTUnwrap(fixture.ai.messages.last { $0.role == .user })
+                    fixture.ai.updateLocalMessage(id: user.id, content: "edited partial turn")
+                default:
+                    fixture.ai.addLocalMessage(role: .assistant, content: "local final", id: "local-final")
+                }
+                gates[index].release()
+                await request.value
+                await fixture.app.awaitPendingTabTeardowns()
+                await AiPersistence.awaitPendingFlush()
+                let key = DocumentIdentity.storageKey(for: fixture.a.info)
+                let bytes = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+                let durable = try JSONDecoder().decode([AiMessage].self, from: bytes)
+                XCTAssertEqual(durable, fixture.ai.messages)
+                XCTAssertFalse(durable.contains { $0.content.contains("obsolete") })
+                if index == 2 { XCTAssertTrue(durable.contains { $0.content == "edited partial turn" }) }
+                if index == 3 { XCTAssertEqual(durable.last?.id, "local-final") }
+            }
+        }
+    }
+
+    func testClearQueuedDuringPromotionUsesOnlyItsCapturedOwner() async throws {
+        try await withAIDefaults {
+            let stamp = LifecycleGate()
+            lifecycleGates.append(stamp)
+            var original = testDocument("Clear promotion")
+            original.docId = nil
+            let id = UUID().uuidString.lowercased()
+            let backend = LifecycleDocumentSession(info: original, resolveId: {
+                await stamp.pause()
+                return id
+            })
+            let sessions = DocumentSessionManager(openWebSession: { _, _ in backend })
+            _ = try await sessions.openWebDocument(url: original.pdfPath, sessionId: "clear-promotion")
+            let workspace = WorkspaceStore(sessions: sessions)
+            workspaces.append(workspace)
+            await workspace.startStorageCoordinator()
+            let pane = workspace.focusedPane
+            pane.app.attachTab(testTab(original, id: "clear-promotion"))
+            pane.ai.app = pane.app
+            aiStores.append(pane.ai)
+            await pane.ai.loadConversationForDocument(original, coordinator: workspace.storageCoordinator)
+            pane.ai.addLocalMessage(role: .user, content: "before promotion", id: "promotion-history")
+            let promotion = Task { _ = await pane.app.syncDocumentId(sessionId: "clear-promotion") }
+            lifecycleTasks.append(promotion)
+            try await stamp.waitUntilPaused()
+            let transaction = pane.ai.clearConversation()
+            stamp.release()
+            await promotion.value
+            await workspace.tabTeardowns.awaitAll()
+            let accepted = try XCTUnwrap(transaction)
+            let oldKey = DocumentIdentity.storageKey(for: original)
+            XCTAssertEqual(pane.app.document?.docId, id)
+            XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: oldKey))
+            XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: id))
+            XCTAssertTrue(pane.ai.undoClear(accepted))
+            await workspace.tabTeardowns.awaitAll()
+            let bytes = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: id))
+            XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: bytes).map(\.content), ["before promotion"])
+            await pane.app.closeTab("clear-promotion")
+            await workspace.tabTeardowns.awaitAll()
+            pane.app.attachTab(testTab(original, id: "clear-promotion"))
+            XCTAssertFalse(pane.ai.undoClear(accepted), "a new binding at the same locator cannot inherit this Undo")
+        }
+    }
+
     private func withAIDefaults(_ operation: () async throws -> Void) async throws {
         DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("ai-scope")
         let name = "vellum.ai-scope-tests.\(UUID().uuidString)"

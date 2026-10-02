@@ -474,6 +474,10 @@ final class AppStore {
         }
     }
 
+    func durableDocument(for document: DocumentInfo, generation: UUID) -> DocumentInfo {
+        teardowns.durableDocument(for: document, generation: generation)
+    }
+
     func awaitDocumentPersistence(for document: DocumentInfo) async {
         await teardowns.awaitPersistence(for: document)
     }
