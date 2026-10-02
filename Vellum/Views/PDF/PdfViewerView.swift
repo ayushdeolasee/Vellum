@@ -67,11 +67,14 @@ struct PdfViewerView: View {
                 guard let document = notification.object as? PDFDocument,
                       document === runtime.preparedDocument, isActive,
                       app.activeTabId == tabId else { return }
+                if app.error == "Unlock this PDF before searching." { app.error = nil }
                 app.setNumPages(document.pageCount)
                 if indexingIsActive, let data = runtime.preparedSourceData {
                     controller.startTextExtraction(data: data)
                 }
-                if !app.findQuery.isEmpty { controller.findQuery(app.findQuery) }
+                if app.findVisible, !app.findQuery.isEmpty {
+                    controller.findQuery(app.findQuery)
+                }
             }
             // Activity changes pause indexing without cancelling an in-flight
             // document load. A load finishing later reads the current state.
