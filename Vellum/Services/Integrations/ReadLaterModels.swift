@@ -223,7 +223,7 @@ struct IntegrationDownloadState: Hashable, Sendable {
 enum IntegrationError: LocalizedError, Equatable, Sendable {
     case syncDisabled
     case invalidCredential, tokenRejected, rateLimited, invalidResponse, malformedData
-    case credentialPersistenceFailed, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
+    case credentialUnavailable, credentialPersistenceFailed, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
     case unsupportedDestination, paginationDidNotAdvance
     case server(status: Int)
 
@@ -236,6 +236,7 @@ enum IntegrationError: LocalizedError, Equatable, Sendable {
         case .server(let status): "The service returned HTTP \(status)."
         case .invalidResponse: "The service returned an invalid response."
         case .malformedData: "The service returned data Vellum could not read."
+        case .credentialUnavailable: "Saved credentials are temporarily unavailable. Unlock your device and try again."
         case .credentialPersistenceFailed: "The token was valid, but Vellum could not save it in Keychain."
         case .disconnected: "This service is not connected."
         case .staleGeneration: "A newer connection replaced this request."

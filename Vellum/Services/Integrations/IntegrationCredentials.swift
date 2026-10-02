@@ -2,8 +2,15 @@ import Foundation
 
 protocol IntegrationCredentials: Sendable {
     func credential(for provider: IntegrationProvider) async -> String?
+    func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead
     func setCredential(_ credential: String, for provider: IntegrationProvider) async -> Bool
     func deleteCredential(for provider: IntegrationProvider) async -> Bool
+}
+
+extension IntegrationCredentials {
+    func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead {
+        await credential(for: provider).map(KeychainStore.CredentialRead.value) ?? .missing
+    }
 }
 
 struct KeychainIntegrationCredentials: IntegrationCredentials {
@@ -16,6 +23,13 @@ struct KeychainIntegrationCredentials: IntegrationCredentials {
         let account = account(for: provider)
         return await Task.detached(priority: .userInitiated) {
             KeychainStore.get(account, service: Self.service)
+        }.value
+    }
+
+    func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead {
+        let account = account(for: provider)
+        return await Task.detached(priority: .userInitiated) {
+            KeychainStore.read(account, service: Self.service)
         }.value
     }
 

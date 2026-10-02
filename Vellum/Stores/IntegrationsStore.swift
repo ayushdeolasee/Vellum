@@ -118,7 +118,13 @@ final class IntegrationsStore {
     private func performStart() async {
         let loaded = await engine.load(); autoRefreshEnabled = loaded.autoRefreshEnabled; offlineReadingEnabled = loaded.offlineReadingEnabled; defaultRaindropCollectionID = loaded.defaultRaindropCollectionID
         for provider in IntegrationProvider.allCases {
-            if loaded.authenticationRequiredProviders.contains(provider) {
+            if loaded.unavailableCredentialProviders.contains(provider) {
+                if let snapshot = loaded.snapshots[provider] { apply(snapshot, connection: .offlineCache) }
+                update(provider) {
+                    $0.connection = .offlineCache
+                    $0.statusMessage = IntegrationError.credentialUnavailable.localizedDescription
+                }
+            } else if loaded.authenticationRequiredProviders.contains(provider) {
                 if let snapshot = loaded.snapshots[provider] { apply(snapshot, connection: .tokenRejected) }
                 else { update(provider) { $0.connection = .tokenRejected } }
                 update(provider) { $0.statusMessage = "Authentication required — reconnect in Settings" }

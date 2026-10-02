@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import PDFKit
 
-struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true; var defaultRaindropCollectionID: String? = nil }
+struct LoadedIntegrations: Sendable { var snapshots: [IntegrationProvider: ProviderSnapshot]; var connectedProviders: Set<IntegrationProvider>; var authenticationRequiredProviders: Set<IntegrationProvider>; var unavailableCredentialProviders: Set<IntegrationProvider> = []; var corruptProviders: Set<IntegrationProvider>; var autoRefreshEnabled: Bool; var offlineReadingEnabled: Bool = true; var defaultRaindropCollectionID: String? = nil }
 
 actor IntegrationsSyncEngine {
     private let credentials: any IntegrationCredentials
@@ -50,8 +50,17 @@ actor IntegrationsSyncEngine {
         self.credentials = credentials; self.cache = cache; self.preferences = preferences; self.readwise = readwise ?? ReadwiseClient(http: http); self.raindrop = raindrop ?? RaindropClient(http: http); self.downloader = downloader; self.now = now; self.maximumPDFBytes = maximumPDFBytes
     }
 
+    private func availableCredential(for provider: IntegrationProvider) async throws -> String? {
+        switch await credentials.readCredential(for: provider) {
+        case .value(let token): return token
+        case .missing: return nil
+        case .unavailable: throw IntegrationError.credentialUnavailable
+        }
+    }
+
     func load() async -> LoadedIntegrations {
         await cache.sweepStaleArtifacts(now: now())
+        var unavailableCredentials: Set<IntegrationProvider> = []
         var snapshots: [IntegrationProvider: ProviderSnapshot] = [:], connected: Set<IntegrationProvider> = [], authenticationRequired: Set<IntegrationProvider> = [], corrupt: Set<IntegrationProvider> = []
         for provider in IntegrationProvider.allCases {
             let metadata = preferences.metadata(for: provider)
@@ -61,10 +70,16 @@ actor IntegrationsSyncEngine {
             case .corrupt: corrupt.insert(provider)
             default: break
             }
-            if let token = await credentials.credential(for: provider), Self.fingerprint(token) == fingerprint { connected.insert(provider) }
-            else { authenticationRequired.insert(provider) }
+            switch await credentials.readCredential(for: provider) {
+            case .value(let token) where Self.fingerprint(token) == fingerprint:
+                connected.insert(provider)
+            case .unavailable:
+                unavailableCredentials.insert(provider)
+            case .value, .missing:
+                authenticationRequired.insert(provider)
+            }
         }
-        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled, defaultRaindropCollectionID: preferences.defaultRaindropCollectionID)
+        return .init(snapshots: snapshots, connectedProviders: connected, authenticationRequiredProviders: authenticationRequired, unavailableCredentialProviders: unavailableCredentials, corruptProviders: corrupt, autoRefreshEnabled: preferences.autoRefreshEnabled, offlineReadingEnabled: preferences.offlineReadingEnabled, defaultRaindropCollectionID: preferences.defaultRaindropCollectionID)
     }
 
     func setAutoRefreshEnabled(_ enabled: Bool) { preferences.autoRefreshEnabled = enabled }
@@ -188,7 +203,7 @@ actor IntegrationsSyncEngine {
     func move(_ item: ReadLaterItem, toCollectionVendorID vendorID: String) async throws {
         guard transitioningProviders.contains(item.provider) == false else { throw IntegrationError.staleGeneration }
         let metadata = preferences.metadata(for: item.provider)
-        guard metadata.enabled, let fingerprint = metadata.accountFingerprint, let token = await credentials.credential(for: item.provider), Self.fingerprint(token) == fingerprint else { throw IntegrationError.disconnected }
+        guard metadata.enabled, let fingerprint = metadata.accountFingerprint, let token = try await availableCredential(for: item.provider), Self.fingerprint(token) == fingerprint else { throw IntegrationError.disconnected }
         switch item.provider {
         case .raindrop: try await raindrop.moveItem(token: token, itemID: item.vendorID, collectionVendorID: vendorID)
         case .readwise: try await readwise.moveItem(token: token, itemID: item.vendorID, locationVendorID: vendorID)
@@ -337,7 +352,7 @@ actor IntegrationsSyncEngine {
 
     private func performSync(provider: IntegrationProvider, mode: IntegrationSyncMode, progress: (@Sendable (ProviderSnapshot) async -> Void)?) async throws -> ProviderSnapshot {
         let metadata = preferences.metadata(for: provider)
-        guard metadata.enabled, let fingerprint = metadata.accountFingerprint, let token = await credentials.credential(for: provider), Self.fingerprint(token) == fingerprint else { throw IntegrationError.disconnected }
+        guard metadata.enabled, let fingerprint = metadata.accountFingerprint, let token = try await availableCredential(for: provider), Self.fingerprint(token) == fingerprint else { throw IntegrationError.disconnected }
         let loaded = await cache.load(provider: provider)
         var committed: ProviderSnapshot
         if case .snapshot(let value) = loaded, value.connectionGeneration == metadata.generation, value.accountFingerprint == fingerprint { committed = value } else { committed = .empty(provider: provider, fingerprint: fingerprint, generation: metadata.generation) }
@@ -425,7 +440,7 @@ actor IntegrationsSyncEngine {
 
     private func performDownload(_ item: ReadLaterItem, generation: Int, fingerprint: String, progress: @escaping @Sendable (Double?) async -> Void) async throws -> ExternalOpenRoute {
         guard let strategy = item.pdfRetrieval else { return .web(item.sourceURL) }
-        guard let token = await credentials.credential(for: item.provider) else { throw IntegrationError.disconnected }
+        guard let token = try await availableCredential(for: item.provider) else { throw IntegrationError.disconnected }
         let source: URL
         switch strategy { case .readwiseItem(let id): guard let value = try await readwise.rawSourceURL(token: token, itemID: id) else { throw IntegrationError.notPDF }; source = value; case .raindropURL(let url): source = url }
         try ensureCurrent(item.provider, generation, fingerprint)

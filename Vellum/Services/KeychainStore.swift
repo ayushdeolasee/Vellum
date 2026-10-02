@@ -124,12 +124,29 @@ enum KeychainStore {
         backendOverride ?? .live
     }
 
-    /// Returns the stored secret for an account, or nil if absent/unreadable.
-    static func get(_ account: String, service: String = service) -> String? {
+    enum CredentialRead: Equatable, Sendable {
+        case value(String)
+        case missing
+        case unavailable
+    }
+
+    /// A locked/denied/corrupt vault is retryable, never proof of a missing token.
+    static func read(_ account: String, service: String = service) -> CredentialRead {
         lock.lock()
         defer { lock.unlock() }
-        if usesTestStoreLocked { return testStore.withLock { $0[vaultKey(account, service)] } }
-        return currentVaultLocked()?.entries[vaultKey(account, service)]
+        if usesTestStoreLocked {
+            return testStore.withLock { values in
+                values[vaultKey(account, service)].map(CredentialRead.value) ?? .missing
+            }
+        }
+        guard let vault = currentVaultLocked() else { return .unavailable }
+        return vault.entries[vaultKey(account, service)].map(CredentialRead.value) ?? .missing
+    }
+
+    /// Compatibility for foreground AI callers that do not expose availability.
+    static func get(_ account: String, service: String = service) -> String? {
+        guard case .value(let value) = read(account, service: service) else { return nil }
+        return value
     }
 
     /// Stores (or updates) the secret for an account. An empty value deletes it.
@@ -364,6 +381,15 @@ enum KeychainStore {
               let data = item[kSecValueData as String] as? Data,
               let entries = try? JSONDecoder().decode([String: String].self, from: data)
         else { return nil }
+#if os(iOS)
+        // Existing installations migrate in place after an unlocked read. Never
+        // delete/recreate the vault or relax it before its bytes can be read.
+        if item[kSecAttrAccessible as String] as? String != kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String {
+            guard SecItemUpdate(vaultBaseQuery() as CFDictionary,
+                [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary) == errSecSuccess
+            else { return nil }
+        }
+#endif
         return VaultState(entries: entries, modDate: item[kSecAttrModificationDate as String] as? Date)
     }
 
@@ -381,11 +407,17 @@ enum KeychainStore {
 
     private static func liveWriteVault(_ entries: [String: String]) -> Bool {
         guard let data = try? JSONEncoder().encode(entries) else { return false }
-        let status = SecItemUpdate(
-            vaultBaseQuery() as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        var attributes: [String: Any] = [kSecValueData as String: data]
+#if os(iOS)
+        // The single device-local vault supports read-later background refresh.
+        // This policy also applies to AI keys sharing that vault; it never syncs
+        // or migrates their secrets to another device.
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+#endif
+        let status = SecItemUpdate(vaultBaseQuery() as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var addQuery = vaultBaseQuery()
-            addQuery[kSecValueData as String] = data
+            addQuery.merge(attributes) { _, new in new }
             addQuery[kSecAttrLabel as String] = "Vellum"
             return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }

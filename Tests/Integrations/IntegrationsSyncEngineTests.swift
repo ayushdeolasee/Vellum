@@ -4,6 +4,34 @@ import Testing
 
 @Suite(.serialized)
 struct IntegrationsSyncEngineTests {
+    @Test func lockedCredentialsKeepConnectionAndCacheThenRecoverWithoutReconnect() async throws {
+        let item = try makeIntegrationItem(provider: .readwise, id: "cached")
+        let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+            ProviderSnapshot(provider: .readwise, accountFingerprint: fingerprint,
+                connectionGeneration: generation, items: [item], collections: [],
+                committedBoundary: nil, tentativePagination: nil, lastSuccessfulSync: nil,
+                lastFullSweep: nil, skippedRecordCount: 0)
+        }
+        defer { harness.cleanup() }
+        let engine = IntegrationsSyncEngine(credentials: harness.credentials, cache: harness.cache,
+            preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+            readwise: ScriptedReadwiseService(), raindrop: ScriptedRaindropService())
+        await harness.credentials.setAvailable(false)
+        let locked = await engine.load()
+        #expect(locked.unavailableCredentialProviders.contains(.readwise))
+        #expect(!locked.authenticationRequiredProviders.contains(.readwise))
+        #expect(locked.snapshots[.readwise]?.items.map(\.id) == [item.id])
+        await #expect(throws: IntegrationError.credentialUnavailable) {
+            try await engine.sync(provider: .readwise)
+        }
+        await harness.credentials.setAvailable(true)
+        let unlocked = await engine.load()
+        #expect(unlocked.connectedProviders.contains(.readwise))
+        #expect(unlocked.unavailableCredentialProviders.isEmpty)
+        #expect(await harness.credentials.credential(for: .readwise) == harness.token)
+        #expect(unlocked.snapshots[.readwise]?.items.map(\.id) == [item.id])
+    }
+
     @Test func readwisePersistsTentativePagesAndResumesWithoutAdvancingWatermark() async throws {
         let boundary = Date(timeIntervalSince1970: 1_700_000_000)
         let oldItem = try makeIntegrationItem(provider: .readwise, id: "old", updatedAt: boundary)

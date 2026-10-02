@@ -29,6 +29,21 @@ struct KeychainStoreTests {
     private let aiService = "com.vellum.ai"
     private let integrationsService = "com.vellum.integrations"
 
+    @Test("Cold unavailable credentials remain retryable and distinct from missing")
+    func unavailableCredentialRecoversAfterUnlock() {
+        let fake = FakeKeychain()
+        fake.seedVault(["com.vellum.integrations/read-later.readwise": "retained-token"])
+        fake.vaultIsReadable = false
+        KeychainStore.withBackend(fake.backend) {
+            #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .unavailable)
+            #expect(fake.writeCount == 0)
+            #expect(fake.deleteCount == 0)
+            fake.vaultIsReadable = true
+            #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .value("retained-token"))
+            #expect(KeychainStore.read("not-configured", service: integrationsService) == .missing)
+        }
+    }
+
     // MARK: - Legacy migration
 
     @Test("Legacy per-secret items are folded into the vault and then removed")
