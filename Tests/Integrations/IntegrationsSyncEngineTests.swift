@@ -988,6 +988,7 @@ private struct IntegrationEngineHarness {
 
     static func make(
         provider: IntegrationProvider,
+        isolation: isolated (any Actor)? = #isolation,
         snapshot: (String, Int) throws -> ProviderSnapshot
     ) async throws -> Self {
         let root = try IntegrationTemporaryRoot.make()
