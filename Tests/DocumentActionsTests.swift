@@ -512,6 +512,60 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(newPosition?.title, "B title")
     }
 
+    func testPromotionIncludesExistingPaneOwnerButExcludesLaterReplacement() async throws {
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("two-pane-promotion")
+        let stamp = LifecycleGate()
+        lifecycleGates.append(stamp)
+        var original = testDocument("Shared PDF")
+        original.docId = nil
+        let id = UUID().uuidString.lowercased()
+        let session = LifecycleDocumentSession(info: original, resolveId: {
+            await stamp.pause()
+            return id
+        })
+        let sessions = DocumentSessionManager(openWebSession: { _, _ in session })
+        _ = try await sessions.openWebDocument(url: original.pdfPath, sessionId: "pane-a")
+        _ = try await sessions.openWebDocument(url: original.pdfPath, sessionId: "pane-b")
+        let workspace = WorkspaceStore(sessions: sessions)
+        workspaces.append(workspace)
+        await workspace.startStorageCoordinator()
+        let coordinator = workspace.storageCoordinator
+        let appA = workspace.focusedPane.app
+        appA.attachTab(testTab(original, id: "pane-a"))
+        workspace.splitFocused(.horizontal)
+        let appB = workspace.focusedPane.app
+        appB.attachTab(testTab(original, id: "pane-b"))
+        XCTAssertNotEqual(appA.activeDocumentBinding?.generation, appB.activeDocumentBinding?.generation)
+        try await DocumentDataStore.touch(document: original, force: true, coordinator: coordinator)
+        let oldKey = DocumentIdentity.storageKey(for: original)
+        let promotion = Task { _ = await appA.syncDocumentId(sessionId: "pane-a") }
+        lifecycleTasks.append(promotion)
+        try await stamp.waitUntilPaused()
+        let rename = Task { await appB.renameDocument(tabId: "pane-b", title: "From pane B") }
+        lifecycleTasks.append(rename)
+        try await waitUntil { appB.document?.title == "From pane B" }
+        await appB.closeTab("pane-b")
+        stamp.release()
+        await promotion.value
+        await workspace.tabTeardowns.awaitAll()
+        let meta = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator)
+        XCTAssertEqual(meta?.title, "From pane B")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: DocumentDataStore.documentDir(forKey: oldKey).path))
+        let promotedPosition = await workspace.positions.store.resume(for: .pdf(stableIdentifier: id))
+        let stalePosition = await workspace.positions.store.resume(for: .pdfPath(original.pdfPath))
+        XCTAssertEqual(promotedPosition?.title, "From pane B")
+        XCTAssertNil(stalePosition)
+
+        // A new owner admitted after the snapshot never follows the old PDF.
+        appB.attachTab(testTab(original, id: "replacement-b"))
+        try await DocumentDataStore.touch(document: original, force: true, coordinator: coordinator)
+        await appB.renameDocument(tabId: "replacement-b", title: "Replacement B")
+        let unchanged = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator)
+        let replacement = try await DocumentDataStore.loadMeta(forKey: oldKey, coordinator: coordinator)
+        XCTAssertEqual(unchanged?.title, "From pane B")
+        XCTAssertEqual(replacement?.title, "Replacement B")
+    }
+
     func testOutOfOrderNavigationCannotReplaceTheAdmittedBackend() async throws {
         let slow = LifecycleGate()
         let successor = LifecycleGate()

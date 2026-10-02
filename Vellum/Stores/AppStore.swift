@@ -37,6 +37,7 @@ final class TabTeardownRegistry {
     private struct Entry {
         let documentPath: String
         let documentKey: DocumentKey?
+        let generation: UUID?
         let task: Task<Void, Never>
     }
 
@@ -49,9 +50,9 @@ final class TabTeardownRegistry {
         return result
     }
 
-    func recordPromotion(from document: DocumentInfo, generation: UUID, to id: String) {
+    func recordPromotion(from document: DocumentInfo, generations: Set<UUID>, to id: String) {
         let oldKey = DocumentIdentity.storageKey(for: document)
-        promotedKeys[generation] = id
+        for generation in generations { promotedKeys[generation] = id }
         if let failure = failedRenames.removeValue(forKey: oldKey) {
             failedRenames[id] = failure
         }
@@ -70,6 +71,7 @@ final class TabTeardownRegistry {
     /// abandon a rename and reopen/import wait for the same document's writes.
     func enqueuePersistence(
         document: DocumentInfo,
+        generation: UUID? = nil,
         operation: @escaping @MainActor () async -> Void
     ) -> Task<Void, Never> {
         let pending = persistenceTasks(for: document)
@@ -79,7 +81,7 @@ final class TabTeardownRegistry {
             await operation()
             finish(tabId: id)
         }
-        register(tabId: id, document: document, task: task)
+        register(tabId: id, document: document, generation: generation, task: task)
         return task
     }
 
@@ -90,6 +92,13 @@ final class TabTeardownRegistry {
         }.map(\.task)
     }
 
+    func registeredGenerations(for document: DocumentInfo) -> Set<UUID> {
+        let key = DocumentPositionService.key(for: document)
+        return Set(entries.values.filter {
+            $0.documentKey == key || $0.documentPath == document.pdfPath
+        }.compactMap(\.generation))
+    }
+
     func awaitPersistence(for document: DocumentInfo) async {
         for task in persistenceTasks(for: document) { await task.value }
     }
@@ -97,10 +106,11 @@ final class TabTeardownRegistry {
     /// True when no teardown or document persistence is pending.
     var isEmpty: Bool { entries.isEmpty }
 
-    func register(tabId: String, document: DocumentInfo, task: Task<Void, Never>) {
+    func register(tabId: String, document: DocumentInfo, generation: UUID? = nil, task: Task<Void, Never>) {
         entries[tabId] = Entry(
             documentPath: document.pdfPath,
             documentKey: DocumentPositionService.key(for: document),
+            generation: generation,
             task: task)
     }
 
@@ -429,7 +439,7 @@ final class AppStore {
         let positions = workspace?.positions
         let registry = teardowns
         guard let generation = documentBinding(for: tabId)?.generation else { return }
-        _ = registry.enqueuePersistence(document: doc) {
+        _ = registry.enqueuePersistence(document: doc, generation: generation) {
             await positions?.recordTitle(
                 document: registry.durableDocument(for: doc, generation: generation), title: trimmed)
         }
@@ -484,7 +494,7 @@ final class AppStore {
         let persist = renamePersistence
         let registry = teardowns
         let workspace = self.workspace
-        let task = registry.enqueuePersistence(document: original) { [weak self] in
+        let task = registry.enqueuePersistence(document: original, generation: binding.generation) { [weak self] in
             await workspace?.awaitMaintenance()
             let owner = registry.durableDocument(for: original, generation: binding.generation)
             let ownerKey = DocumentIdentity.storageKey(for: owner)
@@ -529,8 +539,19 @@ final class AppStore {
         else { return nil }
         guard original.kind == .pdf, original.docId == nil else { return binding }
         let registry = teardowns
+        // Capture existing owners now, before any suspension. Their queued work
+        // follows this promotion; a later replacement binding does not.
+        let owners = workspace?.root.allLeaves().flatMap { $0.app.tabs } ?? tabs
+        var generations = registry.registeredGenerations(for: original)
+        generations.insert(binding.generation)
+        for owner in owners {
+            guard let document = owner.document, document.pdfPath == original.pdfPath,
+                  DocumentIdentity.storageKey(for: document) == binding.storageKey else { continue }
+            generations.insert(owner.documentBindingGeneration)
+        }
+        let ownerGenerations = generations
         var resultingBinding: DocumentBinding?
-        let task = registry.enqueuePersistence(document: original) { [self] in
+        let task = registry.enqueuePersistence(document: original, generation: binding.generation) { [self] in
             await workspace?.awaitMaintenance()
             guard isCurrentDocumentBinding(binding) else { return }
             guard let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else {
@@ -547,7 +568,7 @@ final class AppStore {
                     return
                 }
             }
-            registry.recordPromotion(from: original, generation: binding.generation, to: id)
+            registry.recordPromotion(from: original, generations: ownerGenerations, to: id)
             guard isCurrentDocumentBinding(binding) else { return }
             updateTab(sessionId) { $0.document?.docId = id }
             if activeTabId == sessionId { document?.docId = id }
@@ -1747,6 +1768,7 @@ final class AppStore {
         teardowns.register(
             tabId: tabId,
             document: closingDocument,
+            generation: tab.documentBindingGeneration,
             task: Task { [weak workspace] in
                 await workspace?.awaitMaintenance()
                 for task in pendingPersistence { await task.value }
