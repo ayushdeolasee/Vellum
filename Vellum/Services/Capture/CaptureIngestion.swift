@@ -151,6 +151,10 @@ actor CaptureIngestion {
         try await performRecovery { [inbox] in try await inbox.export(entry) }
     }
 
+    func discardExport(_ url: URL) async throws {
+        try await performRecovery { [inbox] in try await inbox.discardExport(url) }
+    }
+
     /// A recovery sheet can disappear while its operation runs. The service
     /// retains every handle so lifecycle code and tests can still join it.
     private func performRecovery<T: Sendable>(

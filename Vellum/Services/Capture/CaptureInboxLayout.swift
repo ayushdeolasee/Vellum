@@ -85,7 +85,38 @@ enum CaptureInboxFiles {
         defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw CaptureInboxError.io("Capture storage is busy.") }
         defer { flock(descriptor, LOCK_UN) }
+        try recoverOrphanedTemps(layout: layout)
         return try operation()
+    }
+
+    /// Writers create and publish temps while holding this same lock. Once we
+    /// acquire it, every leftover temp belongs to an interrupted write. Preserve
+    /// even incomplete/future bytes in failed, where recovery and quota see them.
+    private static func recoverOrphanedTemps(layout: CaptureInboxLayout) throws {
+        let temporary = try files(in: layout.tmp)
+        guard !temporary.isEmpty else { return }
+        var published = try files(in: layout.pending) + files(in: layout.failed)
+        for source in temporary {
+            _ = try regularFileSize(source)
+            var sourceStat = stat()
+            guard lstat(source.path, &sourceStat) == 0 else { continue }
+            // A crash after link publication but before unlink leaves two names
+            // for the same bytes. Keep the published copy and remove only its
+            // redundant temp name, rather than counting another save request.
+            let alreadyPublished = published.contains { destination in
+                var destinationStat = stat()
+                return lstat(destination.path, &destinationStat) == 0
+                    && sourceStat.st_dev == destinationStat.st_dev
+                    && sourceStat.st_ino == destinationStat.st_ino
+            }
+            if alreadyPublished {
+                try FileManager.default.removeItem(at: source)
+            } else {
+                let destination = availableDestination(in: layout.failed, name: source.lastPathComponent)
+                try publish(source, to: destination)
+                published.append(destination)
+            }
+        }
     }
 
     static func files(in directory: URL) throws -> [URL] {

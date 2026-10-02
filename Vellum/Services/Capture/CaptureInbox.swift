@@ -38,6 +38,7 @@ actor CaptureInbox {
     private let pageKey: @Sendable (String) -> String
     private var drainTask: Task<CaptureDrainReport, Never>?
     private var drainGeneration = 0
+    private var ownedExports: Set<URL> = []
 
     struct RecoveryEntry: Identifiable, Sendable {
         enum State: Sendable, Equatable { case pending, failed }
@@ -182,7 +183,9 @@ actor CaptureInbox {
     // MARK: - Internals
 
     private func pendingFiles() -> [URL] {
-        (try? CaptureInboxFiles.files(in: layout.pending)) ?? []
+        (try? CaptureInboxFiles.withLock(layout: layout) {
+            try CaptureInboxFiles.files(in: layout.pending)
+        }) ?? []
     }
 
     /// Joining before a destructive mutation prevents delete/retry from racing
@@ -202,8 +205,9 @@ actor CaptureInbox {
     }
 
     func recoveryEntries() throws -> [RecoveryEntry] {
-        let pending = try CaptureInboxFiles.files(in: layout.pending)
-        let failed = try CaptureInboxFiles.files(in: layout.failed)
+        let (pending, failed) = try CaptureInboxFiles.withLock(layout: layout) {
+            (try CaptureInboxFiles.files(in: layout.pending), try CaptureInboxFiles.files(in: layout.failed))
+        }
         return (pending.map { ($0, RecoveryEntry.State.pending) }
             + failed.map { ($0, RecoveryEntry.State.failed) }).map { url, state in
             let size = (try? CaptureInboxFiles.regularFileSize(url)) ?? 0
@@ -274,11 +278,21 @@ actor CaptureInbox {
             // Copy streams the file without decoding it, including oversized or
             // future-format captures that this version cannot retry.
             try FileManager.default.copyItem(at: entry.id, to: destination)
+            ownedExports.insert(destination)
             return destination
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
+    }
+
+    /// Only URLs minted by this inbox can authorize deletion of an export
+    /// directory; capture originals and arbitrary caller paths are never removed.
+    func discardExport(_ url: URL) throws {
+        guard ownedExports.contains(url) else { return }
+        do { try FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile { }
+        ownedExports.remove(url)
     }
 
     private func validate(_ entry: RecoveryEntry) throws {

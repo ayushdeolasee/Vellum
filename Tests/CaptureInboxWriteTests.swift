@@ -46,6 +46,49 @@ struct CaptureInboxWriteTests {
         #expect(report == CaptureDrainReport())
     }
 
+    @Test("Crash-orphan temps preserve valid and partial bytes, participate in quota, and never overwrite recovery")
+    func orphanTempsRecoverBeforeAdmission() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-orphans")
+        defer { CaptureFixtures.remove(layout) }
+        try layout.createDirectories()
+        let valid = try CaptureCoding.encode(CaptureFixtures.record())
+        let partial = Data("{\"schema_ver".utf8)
+        let existing = Data("kept recovery".utf8)
+        try valid.write(to: layout.tmp.appendingPathComponent("valid.json"))
+        try partial.write(to: layout.tmp.appendingPathComponent("partial.json"))
+        try existing.write(to: layout.failed.appendingPathComponent("valid.json"))
+        let published = layout.pending.appendingPathComponent("published.json")
+        try valid.write(to: published)
+        // Simulate death between link publication and removal of the temp name.
+        try FileManager.default.linkItem(at: published, to: layout.tmp.appendingPathComponent("linked.json"))
+        let writer = CaptureInboxWriter(layout: layout,
+            capacity: CaptureInboxCapacity(maximumBytes: Int64.max, maximumEntries: 4))
+        #expect(throws: CaptureInboxError.capacityExceeded) { try writer.write(CaptureFixtures.record()) }
+        #expect(CaptureFixtures.names(in: layout.tmp).isEmpty)
+        #expect(CaptureFixtures.names(in: layout.pending) == ["published.json"])
+        #expect(CaptureFixtures.names(in: layout.failed).count == 3)
+        #expect(try Data(contentsOf: layout.failed.appendingPathComponent("valid.json")) == existing)
+        let inbox = CaptureInbox(layout: layout)
+        let entries = try await inbox.recoveryEntries()
+        let recovered = try #require(entries.first { $0.state == .failed && $0.canRetry })
+        let damaged = try #require(entries.first { $0.id.lastPathComponent == "partial.json" })
+        #expect(!damaged.canRetry)
+        let validExport = try await inbox.export(recovered)
+        let damagedExport = try await inbox.export(damaged)
+        #expect(try Data(contentsOf: validExport) == valid)
+        #expect(try Data(contentsOf: damagedExport) == partial)
+        try await inbox.discardExport(validExport)
+        try await inbox.discardExport(damagedExport)
+        #expect(!FileManager.default.fileExists(atPath: validExport.deletingLastPathComponent().path))
+        #expect(!FileManager.default.fileExists(atPath: damagedExport.deletingLastPathComponent().path))
+        // A caller URL cannot authorize cleanup of a retained capture directory.
+        try await inbox.discardExport(recovered.id)
+        #expect(FileManager.default.fileExists(atPath: recovered.id.path))
+        try await inbox.retry(recovered)
+        #expect(await inbox.drain { _, key in .ingested(key) } == CaptureDrainReport(ingested: 1, deduped: 1))
+        #expect(try Data(contentsOf: layout.failed.appendingPathComponent("partial.json")) == partial)
+    }
+
     @Test("Two captures in the same millisecond produce two distinct files")
     func sameMillisecondCapturesCoexist() throws {
         let layout = CaptureFixtures.scratchLayout("capture-write")

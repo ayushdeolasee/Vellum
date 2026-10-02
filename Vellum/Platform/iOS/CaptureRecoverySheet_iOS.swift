@@ -100,11 +100,17 @@ struct CaptureRecoverySheet_iOS: View {
         isWorking = true
         errorMessage = nil
         Task {
-            defer { isWorking = false }
             do {
                 let copy = try await ingestion.export(entry)
-                DocumentPickerCoordinator_iOS.shared.presentExport(urls: [copy])
-            } catch { errorMessage = error.localizedDescription }
+                DocumentPickerCoordinator_iOS.shared.presentExport(urls: [copy]) {
+                    defer { isWorking = false }
+                    do { try await ingestion.discardExport(copy) }
+                    catch { errorMessage = error.localizedDescription }
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+                isWorking = false
+            }
             await reload()
         }
     }

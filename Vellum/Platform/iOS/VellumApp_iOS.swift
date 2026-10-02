@@ -303,6 +303,8 @@ struct VellumApp_iOS: App {
             defer { flushController.finish(generation: generation) }
             await workspace.awaitMaintenance()
             guard flushController.isCurrent(generation), !Task.isCancelled else { return }
+            await DocumentPickerCoordinator_iOS.shared.awaitPendingExportCompletions()
+            guard flushController.isCurrent(generation), !Task.isCancelled else { return }
             await workspace.captureIngestion?.prepareForBackground()
             await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their position write and session
