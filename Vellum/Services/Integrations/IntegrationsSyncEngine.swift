@@ -111,16 +111,23 @@ actor IntegrationsSyncEngine {
         cancelDownloads(provider)
 
         var cacheMutationStarted = false
+        var credentialMayHaveCommitted = false
         do {
             try Task.checkCancellation()
             preferences.persist(.init(enabled: true, generation: generation, accountFingerprint: fingerprint), for: provider)
             cacheMutationStarted = true
             try await cache.save(initial)
             try Task.checkCancellation()
-            guard await credentials.setCredential(token, for: provider) else { throw IntegrationError.credentialPersistenceFailed }
+            switch await credentials.writeCredential(token, for: provider) {
+            case .saved: break
+            case .failed: throw IntegrationError.credentialPersistenceFailed
+            case .needsReview:
+                credentialMayHaveCommitted = true
+                throw IntegrationError.credentialUpdateNeedsReview
+            }
             return initial
         } catch {
-            if cacheMutationStarted {
+            if cacheMutationStarted, !credentialMayHaveCommitted {
                 preferences.persist(oldMetadata, for: provider)
                 await restoreCache(oldSnapshot, provider: provider)
             }

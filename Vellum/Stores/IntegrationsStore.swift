@@ -238,7 +238,18 @@ final class IntegrationsStore {
             // Restore only while nothing newer owns the provider: same operation
             // in the slot as before the await (or still none at all).
             let shouldRestore = operationTasks[provider]?.id == priorOperation?.id
-            if shouldRestore, providers[provider]?.connection == .connecting, let old {
+            if error as? IntegrationError == .credentialUpdateNeedsReview, shouldRestore {
+                let loaded = await engine.load()
+                // The attempted credential owns metadata after an uncertain
+                // write. Keep its cache and expose recovery, not the old account.
+                guard operationTasks[provider]?.id == priorOperation?.id,
+                      providers[provider]?.connection == .connecting else { throw error }
+                if let snapshot = loaded.snapshots[provider] { apply(snapshot, connection: .offlineCache) }
+                update(provider) {
+                    $0.connection = .offlineCache
+                    $0.statusMessage = error.localizedDescription
+                }
+            } else if shouldRestore, providers[provider]?.connection == .connecting, let old {
                 providers[provider] = old
                 itemsRevisions[provider, default: 0] += 1
             }

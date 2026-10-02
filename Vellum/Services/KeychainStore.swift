@@ -167,6 +167,11 @@ enum KeychainStore {
         case value(String)
         case missing
         case unavailable
+
+        fileprivate var storedValue: String? {
+            if case .value(let value) = self { return value }
+            return nil
+        }
     }
 
     /// A locked/denied/corrupt vault is retryable, never proof of a missing token.
@@ -292,31 +297,100 @@ enum KeychainStore {
         return value
     }
 
+    enum CredentialWrite: Equatable, Sendable {
+        case saved
+        /// The previous destination was preserved or restored and verified.
+        case failed
+        /// A write may have committed, but cleanup/restoration could not verify.
+        case needsReview
+    }
+
+    /// Integration callers must distinguish a restored failure from a write
+    /// whose installed bytes cannot safely be rolled back.
+    static func writeCredential(_ account: String, _ value: String, service: String = service) -> CredentialWrite {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return delete(account, service: service) ? .saved : .failed }
+        lock.lock()
+        defer { lock.unlock() }
+        if usesTestStoreLocked {
+            testStore.withLock { $0[vaultKey(account, service)] = trimmed }
+            return .saved
+        }
+        guard isBackgroundIntegration(account, service: service) else {
+            return commitLocked([vaultKey(account, service): trimmed]) ? .saved : .failed
+        }
+        let backend = backendLocked
+        let key = vaultKey(account, service)
+        // Resolve legacy reads before acquiring the transaction lock: legacy
+        // reconciliation can itself commit. No destination changes on denial.
+        let source: CredentialRead = readSharedLocked(account, service: service)
+        guard source != .unavailable, !legacyIsUnresolved(key: key, service: service) else { return .failed }
+        let legacy: LegacyItem?
+        switch backend.legacyRead(account, service) {
+        case .missing: legacy = nil
+        case .value(let item): legacy = item
+        case .unavailable: return .failed
+        }
+        guard backend.acquireCommitLock() else { return .failed }
+        defer { backend.releaseCommitLock() }
+        let previous = backend.readIntegration(account)
+        guard previous != .unavailable, let fresh = backend.readVaultItem() else { return .failed }
+        let expected = source.storedValue
+        guard fresh.entries[key] == expected else { return .failed }
+        cache = fresh
+
+        func sourceIsRestorable() -> Bool {
+            guard let current = backend.readVaultItem() else { return false }
+            if current.entries[key] == expected { cache = current; return true }
+            // Cleanup may already have removed the only foreground copy.
+            // Restore it before removing a newly installed destination.
+            guard current.entries[key] == nil, let expected,
+                  commitLocked([key: expected], holdingCommitLock: true, expectedMissing: [key]),
+                  let verified = backend.readVaultItem(), verified.entries[key] == expected else { return false }
+            cache = verified
+            return true
+        }
+        func rollback() -> CredentialWrite {
+            let installed = backend.readIntegration(account)
+            if installed == previous { return .failed }
+            // Compare-value admission: never overwrite a newer writer or guess
+            // at bytes whose read is denied, even after a successful write call.
+            guard installed == .value(trimmed) else { return .needsReview }
+            if previous == .missing, !sourceIsRestorable() { return .needsReview }
+            switch previous {
+            case .value(let value): _ = backend.writeIntegration(account, value)
+            case .missing: _ = backend.deleteIntegration(account)
+            case .unavailable: return .needsReview
+            }
+            guard backend.readIntegration(account) == previous else { return .needsReview }
+            return .failed
+        }
+
+        let written = backend.writeIntegration(account, trimmed)
+        guard written, backend.readIntegration(account) == .value(trimmed) else { return rollback() }
+        let expectedValues = expected.map { [key: $0] } ?? [:]
+        let expectedMissing: Set<String> = expected == nil ? [key] : []
+        guard commitLocked([key: nil], holdingCommitLock: true,
+                           expectedValues: expectedValues, expectedMissing: expectedMissing),
+              let verified = backend.readVaultItem(), verified.entries[key] == nil else { return rollback() }
+        cache = verified
+        switch backend.legacyRead(account, service) {
+        case .missing: return .saved
+        case .unavailable: return rollback()
+        case .value(let current):
+            guard current == legacy else { return rollback() }
+            backend.legacyDelete(account, service)
+            if case .missing = backend.legacyRead(account, service) { return .saved }
+            return rollback()
+        }
+    }
+
     /// Stores (or updates) the secret for an account. An empty value deletes it.
     /// Returns `true` only when the Keychain reflects the requested state, so
     /// callers can avoid dropping the plaintext copy before the write lands.
     @discardableResult
     static func set(_ account: String, _ value: String, service: String = service) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return delete(account, service: service)
-        }
-        lock.lock()
-        defer { lock.unlock() }
-        if usesTestStoreLocked {
-            testStore.withLock { $0[vaultKey(account, service)] = trimmed }
-            return true
-        }
-        if isBackgroundIntegration(account, service: service) {
-            let backend = backendLocked
-            guard backend.acquireCommitLock() else { return false }
-            let verified = backend.writeIntegration(account, trimmed)
-                && backend.readIntegration(account) == .value(trimmed)
-            backend.releaseCommitLock()
-            guard verified else { return false }
-            return removeSharedIntegrationLocked(account)
-        }
-        return commitLocked([vaultKey(account, service): trimmed])
+        writeCredential(account, value, service: service) == .saved
     }
 
     /// Removes the secret for an account. Returns `true` when the account is

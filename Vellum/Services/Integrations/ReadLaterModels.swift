@@ -223,7 +223,7 @@ struct IntegrationDownloadState: Hashable, Sendable {
 enum IntegrationError: LocalizedError, Equatable, Sendable {
     case syncDisabled
     case invalidCredential, tokenRejected, rateLimited, invalidResponse, malformedData
-    case credentialUnavailable, credentialPersistenceFailed, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
+    case credentialUnavailable, credentialPersistenceFailed, credentialUpdateNeedsReview, disconnected, staleGeneration, downloadTooLarge, notPDF, existingDownload, downloadsAreOpen
     case unsupportedDestination, paginationDidNotAdvance
     case server(status: Int)
 
@@ -237,6 +237,7 @@ enum IntegrationError: LocalizedError, Equatable, Sendable {
         case .invalidResponse: "The service returned an invalid response."
         case .malformedData: "The service returned data Vellum could not read."
         case .credentialUnavailable: "Saved credentials are temporarily unavailable. Unlock your device and try again, or reconnect in Settings."
+        case .credentialUpdateNeedsReview: "The credential update could not be verified or restored. Unlock your device and reconnect in Settings to finish it; the previous connection was not restored."
         case .credentialPersistenceFailed: "The token was valid, but Vellum could not save it in Keychain."
         case .disconnected: "This service is not connected."
         case .staleGeneration: "A newer connection replaced this request."

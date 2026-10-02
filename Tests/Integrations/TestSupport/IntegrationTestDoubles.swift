@@ -8,6 +8,7 @@ actor InMemoryIntegrationCredentials: IntegrationCredentials {
     private let setSucceeds: Bool
     private let deleteSucceeds: Bool
     private var isAvailable = true
+    private var writeOutcome: KeychainStore.CredentialWrite?
 
     init(_ values: [IntegrationProvider: String] = [:], setSucceeds: Bool = true, deleteSucceeds: Bool = true) {
         self.values = values
@@ -17,6 +18,14 @@ actor InMemoryIntegrationCredentials: IntegrationCredentials {
 
     func credential(for provider: IntegrationProvider) async -> String? { values[provider] }
     func setAvailable(_ available: Bool) { isAvailable = available }
+    func setWriteOutcome(_ outcome: KeychainStore.CredentialWrite?) { writeOutcome = outcome }
+    func writeCredential(_ credential: String, for provider: IntegrationProvider) async -> KeychainStore.CredentialWrite {
+        if let writeOutcome {
+            if writeOutcome != .failed { values[provider] = credential }
+            return writeOutcome
+        }
+        return setCredential(credential, for: provider) ? .saved : .failed
+    }
     func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead {
         guard isAvailable else { return .unavailable }
         return values[provider].map(KeychainStore.CredentialRead.value) ?? .missing

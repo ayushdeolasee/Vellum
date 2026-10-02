@@ -423,6 +423,37 @@ struct IntegrationsSyncEngineTests {
         guard case .snapshot = await harness.cache.load(provider: .readwise) else { Issue.record("Expected the snapshot to remain"); return }
     }
 
+    @Test @MainActor func uncertainReconnectDoesNotRestoreAnOldCredentialFingerprint() async throws {
+        for outcome in [KeychainStore.CredentialWrite.failed, .needsReview] {
+            let harness = try await IntegrationEngineHarness.make(provider: .readwise) { fingerprint, generation in
+                .empty(provider: .readwise, fingerprint: fingerprint, generation: generation)
+            }
+            defer { harness.cleanup() }
+            await harness.credentials.setWriteOutcome(outcome)
+            let engine = IntegrationsSyncEngine(credentials: harness.credentials, cache: harness.cache,
+                preferences: try makeIntegrationPreferences(suiteName: harness.suiteName),
+                readwise: ScriptedReadwiseService(), raindrop: ScriptedRaindropService())
+            let expectedError: IntegrationError = outcome == .failed ? .credentialPersistenceFailed : .credentialUpdateNeedsReview
+            let store = IntegrationsStore(engine: engine)
+            await #expect(throws: expectedError) {
+                try await store.connect(provider: .readwise, token: "new-token")
+            }
+            if outcome == .needsReview {
+                #expect(store.providers[.readwise]?.connection == .offlineCache)
+                #expect(store.providers[.readwise]?.statusMessage == expectedError.localizedDescription)
+            }
+            let metadata = IntegrationPreferences(defaults: harness.defaults).metadata(for: .readwise)
+            let expectedFingerprint = outcome == .failed ? harness.fingerprint : integrationFingerprint("new-token")
+            #expect(metadata.accountFingerprint == expectedFingerprint)
+            #expect(await harness.credentials.credential(for: .readwise) == (outcome == .failed ? harness.token : "new-token"))
+            if case .snapshot(let snapshot) = await harness.cache.load(provider: .readwise) {
+                #expect(snapshot.accountFingerprint == expectedFingerprint)
+            } else if outcome == .needsReview {
+                Issue.record("Uncertain installed credential must retain attempted connection cache")
+            }
+        }
+    }
+
     @Test func credentialDeletionFailureDoesNotDisableOrDeleteTheProvider() async throws {
         let date = Date(timeIntervalSince1970: 1_700_000_000)
         let item = try makeIntegrationItem(provider: .readwise, id: "cached", updatedAt: date)

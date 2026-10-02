@@ -135,7 +135,7 @@ struct KeychainStoreTests {
             #expect(fake.vaultEntries?[key] == "new-source")
             fake.vaultDeleteSucceeds = false
             #expect(!KeychainStore.set("read-later.readwise", "reconnected", service: integrationsService))
-            #expect(fake.integrationItems["read-later.readwise"] == "reconnected")
+            #expect(fake.integrationItems["read-later.readwise"] == "original")
             #expect(fake.vaultEntries?[key] == "new-source")
             #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .unavailable)
             fake.vaultDeleteSucceeds = true
@@ -186,6 +186,54 @@ struct KeychainStoreTests {
                 #expect(fake.writeCount == 0)
                 #expect(fake.deleteCount == 0)
             }
+        }
+    }
+
+    @Test("Destination-only reconnect failures restore old bytes, uncertain rollback is explicit")
+    func reconnectRollbackAndUncertainty() {
+        for verificationFailure in [false, true] {
+            let fake = FakeKeychain()
+            fake.seedVault(["com.vellum.ai/gemini": "retained-ai"])
+            fake.integrationItems["read-later.readwise"] = "old-token"
+            fake.makeVaultUnreadableOnIntegrationWrite = !verificationFailure
+            fake.integrationVerificationResults = verificationFailure ? [false, true] : []
+            KeychainStore.withBackend(fake.backend, separateIntegrations: true) {
+                #expect(KeychainStore.writeCredential("read-later.readwise", "new-token", service: integrationsService) == .failed)
+                #expect(fake.integrationItems["read-later.readwise"] == "old-token")
+                #expect(fake.integrationWriteCount == 2)
+                #expect(fake.maximumLockDepth == 1)
+                #expect(fake.lockDepth == 0)
+                fake.vaultIsReadable = true
+                #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .value("old-token"))
+                #expect(fake.vaultEntries == ["com.vellum.ai/gemini": "retained-ai"])
+            }
+        }
+        let fake = FakeKeychain()
+        fake.seedVault(["com.vellum.ai/gemini": "retained-ai"])
+        fake.integrationItems["read-later.readwise"] = "old-token"
+        fake.makeVaultUnreadableOnIntegrationWrite = true
+        fake.integrationWriteResults = [true, false]
+        KeychainStore.withBackend(fake.backend, separateIntegrations: true) {
+            #expect(KeychainStore.writeCredential("read-later.readwise", "new-token", service: integrationsService) == .needsReview)
+            #expect(fake.integrationItems["read-later.readwise"] == "new-token")
+            #expect(fake.lockDepth == 0)
+        }
+    }
+
+    @Test("Failed legacy cleanup restores the sole foreground source before deleting a new destination")
+    func reconnectRollbackPreservesSoleSource() {
+        let fake = FakeKeychain()
+        let key = "com.vellum.integrations/read-later.readwise"
+        fake.seedVault([key: "old-token"])
+        // A legacy denial introduced after destination verification forces a
+        // failure after source cleanup has already committed.
+        fake.denyLegacyOnIntegrationWrite = "read-later.readwise"
+        KeychainStore.withBackend(fake.backend, separateIntegrations: true) {
+            #expect(KeychainStore.writeCredential("read-later.readwise", "new-token", service: integrationsService) == .failed)
+            #expect(fake.integrationItems.isEmpty)
+            #expect(fake.vaultEntries?[key] == "old-token")
+            #expect(fake.maximumLockDepth == 1)
+            #expect(fake.lockDepth == 0)
         }
     }
 
@@ -521,6 +569,12 @@ private final class FakeKeychain: @unchecked Sendable {
     var integrationIsReadable = true
     var integrationWriteSucceeds = true
     var integrationVerificationSucceeds = true
+    var integrationVerificationResults: [Bool] = []
+    var integrationWriteResults: [Bool] = []
+    var makeVaultUnreadableOnIntegrationWrite = false
+    var denyLegacyOnIntegrationWrite: String?
+    private(set) var integrationWriteCount = 0
+    private(set) var maximumLockDepth = 0
     var changeVaultOnIntegrationWrite: [String: String]?
     var preserveVaultDateOnIntegrationWrite = false
     private var awaitingIntegrationVerification = false
@@ -613,6 +667,7 @@ private final class FakeKeychain: @unchecked Sendable {
             acquireCommitLock: { [self] in
                 guard commitLockIsAvailable else { return false }
                 lockDepth += 1
+                maximumLockDepth = max(maximumLockDepth, lockDepth)
                 return true
             },
             releaseCommitLock: { [self] in
@@ -622,13 +677,25 @@ private final class FakeKeychain: @unchecked Sendable {
                 guard integrationIsReadable else { return .unavailable }
                 if awaitingIntegrationVerification {
                     awaitingIntegrationVerification = false
-                    if !integrationVerificationSucceeds { return .unavailable }
+                    let verifies = integrationVerificationResults.isEmpty
+                        ? integrationVerificationSucceeds : integrationVerificationResults.removeFirst()
+                    if !verifies { return .unavailable }
                 }
                 return integrationItems[account].map(KeychainStore.CredentialRead.value) ?? .missing
             },
             writeIntegration: { [self] account, value in
-                guard integrationWriteSucceeds else { return false }
+                integrationWriteCount += 1
+                let succeeds = integrationWriteResults.isEmpty ? integrationWriteSucceeds : integrationWriteResults.removeFirst()
+                guard succeeds else { return false }
                 integrationItems[account] = value
+                if makeVaultUnreadableOnIntegrationWrite {
+                    makeVaultUnreadableOnIntegrationWrite = false
+                    vaultIsReadable = false
+                }
+                if let denied = denyLegacyOnIntegrationWrite {
+                    denyLegacyOnIntegrationWrite = nil
+                    unreadableLegacyAccounts.insert(denied)
+                }
                 if let changed = changeVaultOnIntegrationWrite {
                     changeVaultOnIntegrationWrite = nil
                     seedVault(changed, at: preserveVaultDateOnIntegrationWrite ? vaultModDate : nil)
