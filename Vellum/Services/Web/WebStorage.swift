@@ -76,7 +76,13 @@ enum WebStorageSettings {
         let defaults = AppDefaults.current
         defaults.set(mode.rawValue, forKey: modeKey)
         if mode == .custom {
-            if let customBookmark { defaults.set(customBookmark, forKey: customBookmarkKey) }
+            if let customBookmark {
+                defaults.set(customBookmark, forKey: customBookmarkKey)
+            } else if let customPath,
+                      customPath != defaults.string(forKey: customPathKey) {
+                // A new path must never keep resolving the previous folder's bookmark.
+                defaults.removeObject(forKey: customBookmarkKey)
+            }
             if let customPath { defaults.set(customPath, forKey: customPathKey) }
         }
     }
@@ -172,14 +178,11 @@ enum WebStorageSettings {
     /// (once per URL, held for the process — the folder is active for the whole
     /// session while custom mode is selected). Returns nil when the bookmark is
     /// unresolvable (folder deleted / permission revoked) so the mode degrades.
-    private static func resolveBookmark(_ data: Data) -> URL? {
-        var stale = false
-        guard let url = try? URL(
-            resolvingBookmarkData: data,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale)
-        else { return nil }
+    fileprivate static func resolveBookmark(
+        _ data: Data, refresh: (Data) -> Void = setCustomBookmark
+    ) -> URL? {
+        guard let resolved = SecurityScopedBookmark.resolve(data) else { return nil }
+        let url = resolved.url
         customLock.lock()
         let alreadyAccessing = accessedCustomURLs.contains(url)
         customLock.unlock()
@@ -193,8 +196,8 @@ enum WebStorageSettings {
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
               isDir.boolValue else { return nil }
         // Refresh a stale bookmark so a moved/renamed folder keeps resolving.
-        if stale, let fresh = try? url.bookmarkData() {
-            setCustomBookmark(fresh)
+        if resolved.isStale, let fresh = SecurityScopedBookmark.make(for: url) {
+            refresh(fresh)
         }
         return url
     }
@@ -525,25 +528,100 @@ enum WebICloud {
 /// mid-session switch). Every step is per-file and skip-if-done, so it is safe
 /// to re-run at any time.
 enum WebStorageMigrator {
-    /// Remember the source of an in-flight relocation (mode plus, for custom,
-    /// the concrete folder — the preference may already point elsewhere) so an
-    /// interrupted move resumes at next launch.
-    static func recordPendingRelocation(mode: WebStorageMode, customPath: String?) {
-        let marker = mode == .custom ? "\(mode.rawValue)|\(customPath ?? "")" : mode.rawValue
-        AppDefaults.current.set(marker, forKey: WebStorageSettings.pendingRelocationKey)
+    private static let pendingLock = NSRecursiveLock()
+
+    struct PendingRelocation: Codable {
+        let mode: String
+        let customPath: String?
+        var bookmark: Data?
+        var generation: UUID?
     }
 
-    static func clearPendingRelocation() {
-        AppDefaults.current.removeObject(forKey: WebStorageSettings.pendingRelocationKey)
+    static var pendingMarker: String? {
+        pendingLock.withLock {
+            AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey)
+        }
+    }
+
+    static var pendingRelocation: PendingRelocation? {
+        pendingMarker.flatMap(decodePendingRelocation)
+    }
+
+    private static func decodePendingRelocation(_ raw: String) -> PendingRelocation? {
+        if let decoded = try? JSONDecoder().decode(PendingRelocation.self, from: Data(raw.utf8)) {
+            return decoded
+        }
+        let parts = raw.split(separator: "|", maxSplits: 1).map(String.init)
+        guard let mode = parts.first, WebStorageMode(rawValue: mode) != nil else { return nil }
+        return PendingRelocation(mode: mode, customPath: parts.count == 2 ? parts[1] : nil,
+                                 bookmark: nil, generation: nil)
+    }
+
+    @discardableResult
+    private static func savePendingRelocation(_ pending: PendingRelocation, replacing expected: String? = nil) -> String? {
+        pendingLock.withLock {
+            if let expected, pendingMarker != expected { return nil }
+            guard let data = try? JSONEncoder().encode(pending),
+                  let marker = String(data: data, encoding: .utf8) else { return nil }
+            AppDefaults.current.set(marker, forKey: WebStorageSettings.pendingRelocationKey)
+            return marker
+        }
+    }
+
+    /// Capture source access before the active custom bookmark changes to the destination.
+    static func recordPendingRelocation(mode: WebStorageMode, customPath: String?) {
+        pendingLock.withLock {
+            _ = savePendingRelocation(PendingRelocation(
+                mode: mode.rawValue, customPath: customPath,
+                bookmark: mode == .custom
+                    ? AppDefaults.current.data(forKey: WebStorageSettings.customBookmarkKey) : nil,
+                generation: UUID()))
+        }
+    }
+
+    /// Publish source intent and destination preferences together, before the
+    /// background resolver takes a snapshot. No file I/O occurs under this lock.
+    static func beginRelocation(
+        from previous: WebStorageMode, previousCustomPath: String?,
+        to mode: WebStorageMode, customPath: String?, customBookmark: Data?
+    ) {
+        pendingLock.withLock {
+            recordPendingRelocation(mode: previous, customPath: previousCustomPath)
+            WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
+        }
+    }
+
+    /// Reauthorize a legacy source without changing the active storage destination.
+    static func reconnectPendingCustomSource(path: String, bookmark: Data, expectedMarker: String) -> Bool {
+        pendingLock.withLock {
+            guard pendingMarker == expectedMarker, var pending = decodePendingRelocation(expectedMarker),
+                  pending.mode == WebStorageMode.custom.rawValue,
+                  let previousPath = pending.customPath,
+                  URL(fileURLWithPath: previousPath).standardizedFileURL
+                    == URL(fileURLWithPath: path).standardizedFileURL else { return false }
+            pending.bookmark = bookmark
+            return savePendingRelocation(pending, replacing: expectedMarker) != nil
+        }
+    }
+
+    static func clearPendingRelocation(matching expected: String? = nil) {
+        pendingLock.withLock {
+            if let expected, pendingMarker != expected { return }
+            AppDefaults.current.removeObject(forKey: WebStorageSettings.pendingRelocationKey)
+        }
     }
 
     /// Launch-time pass: resume any interrupted relocation, then fold whatever
     /// still sits in the legacy local store into the active layout.
     static func sweepAtLaunchDirectForTests() {
+        let marker = pendingMarker
         let active = WebLibrary.activeLayout
-        if let source = pendingRelocationSource(), relocateDirect(from: source, to: active) {
-            clearPendingRelocation()
+        if let marker, let snapshot = pendingRelocationSource(for: marker),
+           pendingMarker == snapshot.marker,
+           relocateDirect(from: snapshot.layout, to: active) {
+            clearPendingRelocation(matching: snapshot.marker)
         }
+        guard pendingMarker == nil else { return }
         let localLayout = WebStorageLayout.local(storeDir: WebLibrary.storeDir)
         if active != localLayout {
             _ = relocateDirect(from: localLayout, to: active)
@@ -553,21 +631,26 @@ enum WebStorageMigrator {
     /// Production launch sweep. Each leg borrows its direct/coordinated file
     /// stores from the coordinator while normal storage traffic is stopped.
     static func sweepAtLaunch(coordinator: StorageCoordinator) async {
+        let marker = pendingMarker
         let active = WebLibrary.activeLayout
-        if let source = pendingRelocationSource() {
+        if let marker, let snapshot = pendingRelocationSource(for: marker) {
+            guard pendingMarker == snapshot.marker else { return }
+            let source = snapshot.layout
             let moved = await coordinator.performExclusiveStorageRelocation(
                 from: source,
                 to: active
             ) { sourceContext, destinationContext in
-                guard let sourceContext, let destinationContext else { return false }
+                guard let sourceContext, let destinationContext,
+                      pendingMarker == snapshot.marker else { return false }
                 return await relocate(
                     from: source,
                     to: active,
                     sourceStore: sourceContext.fileStore,
                     destinationStore: destinationContext.fileStore)
             }
-            if moved { clearPendingRelocation() }
+            if moved { clearPendingRelocation(matching: snapshot.marker) }
         }
+        guard pendingMarker == nil else { return }
 
         #if os(macOS)
         if WebStorageSettings.chosenMode == .icloud,
@@ -630,24 +713,47 @@ enum WebStorageMigrator {
     /// currently unreachable (iCloud signed out, external folder unmounted):
     /// resolving a degraded source to the local layout would make the resume
     /// a local→local no-op that clears the marker and strands the real files.
-    private static func pendingRelocationSource() -> WebStorageLayout? {
-        guard let raw = AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey) else {
-            return nil
-        }
-        let parts = raw.split(separator: "|", maxSplits: 1).map(String.init)
-        guard let mode = WebStorageMode(rawValue: parts[0]) else { return nil }
+    private struct PendingSource: Sendable {
+        let layout: WebStorageLayout
+        let marker: String
+    }
+
+    private static func pendingRelocationSource(for raw: String) -> PendingSource? {
+        var marker = raw
+        guard var pending = decodePendingRelocation(raw),
+              let mode = WebStorageMode(rawValue: pending.mode) else { return nil }
+        let layout: WebStorageLayout
         switch mode {
         case .custom:
-            guard parts.count == 2, !parts[1].isEmpty else { return nil }
-            let root = URL(fileURLWithPath: parts[1], isDirectory: true)
+            guard let path = pending.customPath, !path.isEmpty else { return nil }
+            let root: URL
+            if let bookmark = pending.bookmark {
+                guard let scoped = WebStorageSettings.resolveBookmark(bookmark, refresh: { fresh in
+                    pending.bookmark = fresh
+                    if let refreshed = savePendingRelocation(pending, replacing: marker) {
+                        marker = refreshed
+                    }
+                }) else { return nil }
+                root = scoped
+            } else {
+                #if MAC_APP_STORE
+                // A raw path cannot restore sandbox access after relaunch. Keep the
+                // marker until Settings reauthorizes the original source folder.
+                return nil
+                #else
+                root = URL(fileURLWithPath: path, isDirectory: true)
+                #endif
+            }
             guard FileManager.default.fileExists(atPath: root.path) else { return nil }
-            return .pretty(root: root, recordsInRoot: false, localStoreDir: WebLibrary.storeDir)
+            layout = .pretty(root: root, recordsInRoot: false, localStoreDir: WebLibrary.storeDir)
         case .icloud:
             guard let root = WebStorageSettings.icloudVellumRoot else { return nil }
-            return .pretty(root: root, recordsInRoot: true, localStoreDir: WebLibrary.storeDir)
+            layout = .pretty(root: root, recordsInRoot: true, localStoreDir: WebLibrary.storeDir)
         case .local:
-            return .local(storeDir: WebLibrary.storeDir)
+            layout = .local(storeDir: WebLibrary.storeDir)
         }
+        guard pendingMarker == marker else { return nil }
+        return PendingSource(layout: layout, marker: marker)
     }
 
     /// Move records and managed archives from one layout to another. Returns

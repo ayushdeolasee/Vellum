@@ -69,9 +69,11 @@ struct VellumCommands: Commands {
         // MARK: App-wide
         // This remains available with a document open, unlike the Home toolbar
         // control, and shares its durable state with that control.
+        #if !MAC_APP_STORE
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…", action: appWorkspace.updateChecker.check)
         }
+        #endif
 
         // MARK: File
         CommandGroup(replacing: .newItem) {

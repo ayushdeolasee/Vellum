@@ -72,7 +72,9 @@ struct WelcomeScreen: View {
         let removal: HomeSearchRemoval
     }
 
+    #if !MAC_APP_STORE
     private var updateChecker: UpdateChecker { workspace.updateChecker }
+    #endif
 
     /// The calm first-run hero, shown only once we KNOW there is nothing to
     /// browse — never while the first load is still in flight, or the screen
@@ -596,6 +598,7 @@ struct WelcomeScreen: View {
                 .font(.headline)
                 .foregroundStyle(palette.foreground)
             Spacer()
+            #if !MAC_APP_STORE
             Button(action: updateChecker.check) {
                 Label("Check for Updates", systemImage: "arrow.clockwise")
                     .labelStyle(.iconOnly)
@@ -603,6 +606,7 @@ struct WelcomeScreen: View {
             .buttonStyle(.borderless)
             .help("Check for updates")
             .accessibilityIdentifier("welcome.checkForUpdates")
+            #endif
 
             Button(action: showSettings) {
                 Label("Settings", systemImage: "gearshape")

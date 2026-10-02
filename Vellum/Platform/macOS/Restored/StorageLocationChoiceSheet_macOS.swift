@@ -80,6 +80,7 @@ enum WebStorageRelocator {
     static func apply(
         mode: WebStorageMode,
         customPath: String? = nil,
+        customBookmark: Data? = nil,
         coordinator: StorageCoordinator
     ) {
         let previous = WebStorageSettings.chosenMode ?? .local
@@ -87,8 +88,9 @@ enum WebStorageRelocator {
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
         let sourceReachable = previous == .local || WebStorageSettings.root(for: previous) != nil
 
-        WebStorageMigrator.recordPendingRelocation(mode: previous, customPath: previousCustomPath)
-        WebStorageSettings.setMode(mode, customPath: customPath)
+        WebStorageMigrator.beginRelocation(
+            from: previous, previousCustomPath: previousCustomPath,
+            to: mode, customPath: customPath, customBookmark: customBookmark)
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
@@ -158,8 +160,28 @@ enum WebStorageRelocator {
         }
     }
 
-    /// Folder picker for the custom mode; returns the chosen path or nil.
-    static func pickCustomFolder() -> String? {
+    static func reconnectPreviousFolder(coordinator: StorageCoordinator) async {
+        guard let marker = WebStorageMigrator.pendingMarker,
+              let selection = await pickCustomFolder() else { return }
+        guard WebStorageMigrator.reconnectPendingCustomSource(
+            path: selection.path, bookmark: selection.bookmarkData, expectedMarker: marker
+        ) else {
+            status = Status(
+                needsRecovery: true,
+                message: "Choose the original source folder to resume this move. The destination has not changed.")
+            NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+            return
+        }
+        await sweepAtLaunch(coordinator: coordinator)
+    }
+
+    struct CustomFolderSelection: Sendable {
+        let path: String
+        let bookmarkData: Data
+    }
+
+    /// Keep the chosen folder accessible after relaunch, including in App Sandbox.
+    static func pickCustomFolder() async -> CustomFolderSelection? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -168,7 +190,18 @@ enum WebStorageRelocator {
         panel.prompt = "Choose"
         panel.message = "Vellum will keep offline copies of your web pages in this folder."
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url.path
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let bookmark = await Task.detached(priority: .userInitiated, operation: {
+            SecurityScopedBookmark.make(for: url)
+        }).value else {
+            let alert = NSAlert()
+            alert.messageText = "The folder could not be saved."
+            alert.informativeText = "Choose an accessible folder so Vellum can reopen it after relaunch. Your storage location has not changed."
+            alert.runModal()
+            return nil
+        }
+        return CustomFolderSelection(path: url.path, bookmarkData: bookmark)
     }
 }
 
@@ -220,12 +253,15 @@ struct StorageLocationChoiceSheet: View {
                 disabled: false,
                 identifier: "storageChoice.custom"
             ) {
-                guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                WebStorageRelocator.apply(
-                    mode: .custom,
-                    customPath: path,
-                    coordinator: workspace.storageCoordinator)
-                dismiss()
+                Task {
+                    guard let selection = await WebStorageRelocator.pickCustomFolder() else { return }
+                    WebStorageRelocator.apply(
+                        mode: .custom,
+                        customPath: selection.path,
+                        customBookmark: selection.bookmarkData,
+                        coordinator: workspace.storageCoordinator)
+                    dismiss()
+                }
             }
 
             choiceCard(

@@ -58,8 +58,14 @@ schemes:
       targets:
         - name: VellumMacTests
           parallelizable: false
-targets:
-  VellumMac:
+  Vellum Mac App Store:
+    build:
+      targets:
+        VellumMacStore: all
+    run:
+      config: Debug
+targetTemplates:
+  MacApp:
     type: application
     platform: macOS
     productName: Vellum
@@ -69,7 +75,6 @@ targets:
           - "Resources/PrivacyInfo.xcprivacy"
     dependencies:
       - package: SwiftMath
-      - package: Sparkle
     settings:
       base:
         PRODUCT_NAME: Vellum
@@ -79,9 +84,7 @@ targets:
         CURRENT_PROJECT_VERSION: "4"
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
         ENABLE_HARDENED_RUNTIME: "YES"
-        ENABLE_APP_SANDBOX: "NO"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Vellum/Resources/Info.plist
         INFOPLIST_PREPROCESS: "YES"
@@ -91,6 +94,23 @@ targets:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev
           APP_DISPLAY_NAME: Vellum Dev
+targets:
+  VellumMac:
+    templates: [MacApp]
+    dependencies:
+      - package: Sparkle
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
+        ENABLE_APP_SANDBOX: "NO"
+  VellumMacStore:
+    templates: [MacApp]
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS-store.entitlements
+        ENABLE_APP_SANDBOX: "YES"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MAC_APP_STORE
+        INFOPLIST_PREPROCESSOR_DEFINITIONS: ICLOUD_CONTAINER_KEY=$(ICLOUD_CONTAINER_IDENTIFIER) MAC_APP_STORE=1
   VellumMacTests:
     type: bundle.unit-test
     platform: macOS

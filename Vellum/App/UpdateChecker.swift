@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) && !MAC_APP_STORE
 import Sparkle
 
 @MainActor

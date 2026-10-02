@@ -38,6 +38,59 @@ final class DocumentsRelocationTests: XCTestCase {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
 
+    func testPendingCustomMoveRetainsSourceBookmarkAndReconnectsWithoutChangingDestination() throws {
+        let defaults = AppDefaults.current
+        let keys = [WebStorageSettings.modeKey, WebStorageSettings.customPathKey,
+                    WebStorageSettings.customBookmarkKey, WebStorageSettings.pendingRelocationKey]
+        let prior = keys.map { ($0, defaults.object(forKey: $0)) }
+        defer {
+            for (key, value) in prior {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let source = tempDir.appendingPathComponent("source").path
+        let destination = tempDir.appendingPathComponent("destination").path
+        let sourceBookmark = Data([1, 2, 3])
+        let destinationBookmark = Data([4, 5, 6])
+        WebStorageSettings.setMode(.custom, customPath: source, customBookmark: sourceBookmark)
+        WebStorageMigrator.recordPendingRelocation(mode: .custom, customPath: source)
+        WebStorageSettings.setMode(.custom, customPath: destination, customBookmark: destinationBookmark)
+        XCTAssertEqual(WebStorageMigrator.pendingRelocation?.customPath, source)
+        XCTAssertEqual(WebStorageMigrator.pendingRelocation?.bookmark, sourceBookmark)
+
+        // An old path-only marker needs explicit reauthorization of that source.
+        defaults.set("custom|" + source, forKey: WebStorageSettings.pendingRelocationKey)
+        let marker = try XCTUnwrap(WebStorageMigrator.pendingMarker)
+        XCTAssertFalse(WebStorageMigrator.reconnectPendingCustomSource(
+            path: destination, bookmark: destinationBookmark, expectedMarker: marker))
+        XCTAssertEqual(WebStorageMigrator.pendingMarker, marker)
+        XCTAssertTrue(WebStorageMigrator.reconnectPendingCustomSource(
+            path: source, bookmark: sourceBookmark, expectedMarker: marker))
+        XCTAssertEqual(WebStorageMigrator.pendingRelocation?.bookmark, sourceBookmark)
+        XCTAssertEqual(defaults.data(forKey: WebStorageSettings.customBookmarkKey), destinationBookmark)
+        XCTAssertEqual(defaults.string(forKey: WebStorageSettings.customPathKey), destination)
+    }
+
+    func testOldRelocationCompletionCannotClearAReplacementRequest() throws {
+        let defaults = AppDefaults.current
+        let previous = defaults.object(forKey: WebStorageSettings.pendingRelocationKey)
+        defer {
+            if let previous { defaults.set(previous, forKey: WebStorageSettings.pendingRelocationKey) }
+            else { defaults.removeObject(forKey: WebStorageSettings.pendingRelocationKey) }
+        }
+        WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
+        let oldMarker = try XCTUnwrap(WebStorageMigrator.pendingMarker)
+        // Even identical source settings identify a distinct relocation attempt.
+        WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
+        let newMarker = try XCTUnwrap(WebStorageMigrator.pendingMarker)
+        XCTAssertNotEqual(oldMarker, newMarker)
+        WebStorageMigrator.clearPendingRelocation(matching: oldMarker)
+        XCTAssertEqual(WebStorageMigrator.pendingMarker, newMarker)
+        WebStorageMigrator.clearPendingRelocation(matching: newMarker)
+        XCTAssertNil(WebStorageMigrator.pendingMarker)
+    }
+
     // The documents/ home for the local (Application Support) layout, derived
     // from the overridden store dir just as production derives it from appData.
     private var localDocuments: URL { WebStorageLayout.localDocumentsDir(storeDir: storeDir) }

@@ -380,11 +380,13 @@ private struct OverflowMenu: View {
                 }
             }
 
+            #if !MAC_APP_STORE
             Section {
                 Button(action: workspace.updateChecker.check) {
                     Label("Check for Updates…", systemImage: "arrow.clockwise")
                 }
             }
+            #endif
         } label: {
             Label("More", systemImage: "ellipsis")
                 // Icon-only keeps the pod the same circle as the neighboring

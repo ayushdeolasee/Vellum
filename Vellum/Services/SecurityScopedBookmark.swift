@@ -18,8 +18,13 @@ enum SecurityScopedBookmark {
     /// what fails silently for locations that can't be bookmarked (some
     /// network volumes, already-unreachable paths, etc.).
     static func make(for url: URL) -> Data? {
-        try? url.bookmarkData(
-            options: [],
+        #if os(macOS)
+        let options: URL.BookmarkCreationOptions = [.withSecurityScope]
+        #else
+        let options: URL.BookmarkCreationOptions = []
+        #endif
+        return try? url.bookmarkData(
+            options: options,
             includingResourceValuesForKeys: nil,
             relativeTo: nil)
     }
@@ -43,9 +48,14 @@ enum SecurityScopedBookmark {
     /// corrupted data) — callers fall back to the last known raw path.
     static func resolve(_ data: Data) -> Resolved? {
         var isStale = false
+        #if os(macOS)
+        let options: URL.BookmarkResolutionOptions = [.withSecurityScope]
+        #else
+        let options: URL.BookmarkResolutionOptions = []
+        #endif
         guard let url = try? URL(
             resolvingBookmarkData: data,
-            options: [],
+            options: options,
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         ) else { return nil }
