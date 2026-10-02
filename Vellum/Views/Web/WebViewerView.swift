@@ -430,6 +430,8 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
 
+    @ObservationIgnored private lazy var schemeHandler = VellumWebSchemeHandler()
+
     @ObservationIgnored private lazy var _webView: WKWebView = makeWebView()
     var webView: WKWebView { _webView }
 
@@ -448,7 +450,6 @@ final class WebViewerController: NSObject {
         // on — not `attach`, which can race the representable's `makeNSView`.
         didCreateWebView = true
         let configuration = WKWebViewConfiguration()
-        let schemeHandler = VellumWebSchemeHandler()
         configuration.setURLSchemeHandler(
             schemeHandler, forURLScheme: VellumWebSchemeHandler.scheme)
         configuration.setURLSchemeHandler(
@@ -491,6 +492,7 @@ final class WebViewerController: NSObject {
         self.runtime = runtime
         mountTabId = tabId
         mountDocument = document
+        schemeHandler.bind(to: document.pdfPath)
         if attached {
             aiStore.restorePageTexts(runtime.pageTexts)
             activateSharedHandlers()
@@ -617,6 +619,7 @@ final class WebViewerController: NSObject {
     private func detach() {
         guard attached else { return }
         attached = false
+        schemeHandler.bind(to: nil)
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
         for resolve in pendingCaptures.values { resolve(nil) }
@@ -1483,6 +1486,7 @@ final class WebViewerController: NSObject {
                   let self, self.mountTabId == tabId, app.containsTab(id: tabId)
             else { return }
             self.mountDocument = rebound
+            self.schemeHandler.bind(to: rebound.pdfPath)
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.initCount = 0
@@ -1529,6 +1533,7 @@ final class WebViewerController: NSObject {
                       let self, self.mountTabId == tabId, app.containsTab(id: tabId)
                 else { return }
                 self.mountDocument = rebound
+            self.schemeHandler.bind(to: rebound.pdfPath)
                 // Server redirect: the destination's HTML was served under
                 // the pre-redirect request URL, so window.location still
                 // shows the old path and strict client routers would hydrate
@@ -1816,7 +1821,7 @@ extension WebViewerController: WKNavigationDelegate, WKUIDelegate {
         guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
         initCount = 0
         webView.load(URLRequest(
-            url: VellumWebSchemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
+            url: schemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }
 }
 

@@ -27,6 +27,60 @@ final class WebLibraryStorageTests: XCTestCase {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
     }
 
+    func testReaderArchiveCapabilitiesStayWithOwnerAcrossRebindAndSuspend() async throws {
+        let pages = ["https://example.com/a", "https://example.com/b"]
+        let keys = try pages.map { try makeRecord(url: $0, saved: true, openedMonthsAgo: 0) }
+        for (index, key) in keys.enumerated() {
+            let directory = WebLibrary.archiveDir(forKey: key)
+            try FileManager.default.createDirectory(at: directory.appendingPathComponent("assets"),
+                                                     withIntermediateDirectories: true)
+            try Data("private-\(index)".utf8).write(to: directory.appendingPathComponent("assets/image.png"))
+            try "<p>snapshot-\(index)</p>".write(to: directory.appendingPathComponent("snapshot.html"),
+                                               atomically: true, encoding: .utf8)
+        }
+        let first = VellumWebSchemeHandler()
+        let second = VellumWebSchemeHandler()
+        first.bind(to: pages[0])
+        second.bind(to: pages[1])
+        let firstSnapshot = first.snapshotUrl(forKey: keys[0])
+        let secondSnapshot = second.snapshotUrl(forKey: keys[1])
+        let firstAsset = URL(string: "vellum-web://assets.vellum.invalid/\(keys[0])/\(firstSnapshot.lastPathComponent)/image.png")!
+        let secondAsset = URL(string: "vellum-web://assets.vellum.invalid/\(keys[1])/\(secondSnapshot.lastPathComponent)/image.png")!
+        var response = await first.handleRequest(URLRequest(url: firstAsset))
+        XCTAssertEqual(String(decoding: response.body, as: UTF8.self), "private-0")
+        XCTAssertEqual(response.headers["Cache-Control"], "no-store")
+        for foreign in [secondAsset, secondSnapshot] {
+            response = await first.handleRequest(URLRequest(url: foreign))
+            XCTAssertEqual(response.status, 403)
+        }
+        response = await first.handleRequest(URLRequest(url: firstSnapshot))
+        XCTAssertEqual(response.status, 200)
+        var request = URLRequest(url: firstAsset)
+        request.setValue("vellum-web://example.com.evil.invalid", forHTTPHeaderField: "Origin")
+        response = await first.handleRequest(request)
+        XCTAssertEqual(response.status, 403)
+        request.setValue("vellum-web://example.com", forHTTPHeaderField: "Origin")
+        response = await first.handleRequest(request)
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["Access-Control-Allow-Origin"], "vellum-web://example.com")
+        first.bind(to: nil)
+        response = await first.handleRequest(URLRequest(url: firstAsset))
+        XCTAssertEqual(response.status, 403)
+        // A preserved live tab can resume existing HTML without broken images.
+        first.bind(to: pages[0])
+        response = await first.handleRequest(URLRequest(url: firstAsset))
+        XCTAssertEqual(response.status, 200)
+        first.bind(to: pages[1])
+        response = await first.handleRequest(URLRequest(url: firstAsset))
+        XCTAssertEqual(response.status, 403)
+        // Even the other reader's same-document capability is not transferable.
+        response = await first.handleRequest(URLRequest(url: secondAsset))
+        XCTAssertEqual(response.status, 403)
+        first.bind(to: pages[0])
+        response = await first.handleRequest(URLRequest(url: firstAsset))
+        XCTAssertEqual(response.status, 403)
+    }
+
     // MARK: - Helpers
 
     /// Timestamp `months` months in the past, in the record writer's format.
