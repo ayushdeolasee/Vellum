@@ -370,6 +370,11 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard !query.isEmpty, let document, let app,
               let binding = app.activeDocumentBinding, binding.tabId == tabId,
               let data = runtime?.preparedSourceData else { return }
+        guard !document.isLocked else {
+            app.error = "Unlock this PDF before searching."
+            return
+        }
+        let password = (document as? PdfViewerDocument)?.privateCopyPassword
         let generation = findGeneration
         let previous = findTask
         app.setFindSearching(true)
@@ -386,7 +391,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
             do {
                 try Task.checkCancellation()
                 try await Task.sleep(for: .milliseconds(250))
-                let result = await PdfSearch(data: data).matches(query: query)
+                let result = try await PdfSearch(data: data, password: password).matches(query: query)
                 try Task.checkCancellation()
                 guard let self, self.findGeneration == generation,
                       self.document === document, self.app === app,
@@ -730,7 +735,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     /// pays the copy parse.
     func startTextExtraction(data: Data) {
         extractionTask?.cancel()
-        guard let document else { return }
+        guard let document, !document.isLocked else { return }
         let pageCount = document.pageCount
         guard pageCount >= 1 else { return }
         // Generation guards: a stale walk must stop writing into the shared
@@ -743,8 +748,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         let cachedPages = Set((ai?.pageTexts ?? [:]).keys)
         let missingPages = (1...pageCount).filter { !cachedPages.contains($0) }
         guard !missingPages.isEmpty else { return }
+        let password = (document as? PdfViewerDocument)?.privateCopyPassword
         extractionTask = Task.detached(priority: .utility) { [weak self] in
-            guard let copy = PDFDocument(data: data) else { return }
+            guard !Task.isCancelled,
+                  let copy = try? PdfViewerPreparation.privateDocument(data: data, password: password) else { return }
             // The gate's `offMain:` body must be `@Sendable` (that is what keeps
             // it off the main actor), and neither `PDFDocument` nor the
             // controller is `Sendable`. `PdfExtractionWalkContext` carries both
@@ -827,10 +834,11 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     @discardableResult
     func ensureExtracted(pages: Set<Int>?) async -> Int {
         guard let document, let ai, let app, let binding = app.activeDocumentBinding,
-              binding.tabId == tabId, let data = runtime?.preparedSourceData, document.pageCount > 0 else { return 0 }
+              binding.tabId == tabId, let data = runtime?.preparedSourceData,
+              !document.isLocked, document.pageCount > 0 else { return 0 }
         let targets = pages?.filter { $0 >= 1 && $0 <= document.pageCount }.sorted()
             ?? Array(1...document.pageCount)
-        let reader = PdfTextReader(data: data)
+        let reader = PdfTextReader(data: data, password: (document as? PdfViewerDocument)?.privateCopyPassword)
         var extracted = 0
         for page in targets {
             guard !Task.isCancelled, self.document === document, self.app === app,
@@ -851,7 +859,8 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         guard let document, let app, let binding = app.activeDocumentBinding,
               binding.tabId == tabId, let data = runtime?.preparedSourceData,
               pageNumber >= 1, pageNumber <= document.pageCount else { return nil }
-        let result = await PdfTextReader(data: data).locate(pageNumber: pageNumber, query: query)
+        let result = await PdfTextReader(data: data, password: (document as? PdfViewerDocument)?.privateCopyPassword)
+            .locate(pageNumber: pageNumber, query: query)
         guard !Task.isCancelled, self.document === document, self.app === app,
               app.activeDocumentBinding == binding else { return nil }
         return result

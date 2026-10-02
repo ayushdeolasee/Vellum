@@ -8,16 +8,68 @@ import XCTest
 final class PdfSearchTests: XCTestCase {
     func testPrivateSearchFindsCaseInsensitiveUTF16RangesAndCancels() async throws {
         let data = try pdfData("Café needle NEEDLE")
-        let result = await PdfSearch(data: data).matches(query: "needle")
+        let result = try await PdfSearch(data: data).matches(query: "needle")
         XCTAssertEqual(result.matches.count, 2)
         let document = try XCTUnwrap(PDFDocument(data: data))
         for match in result.matches {
             XCTAssertEqual(document.page(at: match.page)?.selection(for: match.range)?.string?.lowercased(), "needle")
         }
-        let cancelled = Task { await PdfSearch(data: data).matches(query: "needle") }
+        let cancelled = Task { try await PdfSearch(data: data).matches(query: "needle") }
         cancelled.cancel()
-        let empty = await cancelled.value
+        let empty = try await cancelled.value
         XCTAssertTrue(empty.matches.isEmpty)
+    }
+
+    func testNativeUnlockCredentialsUnlockPrivateFindAndAIReaders() async throws {
+        let password = "synthetic-test-password"
+        let data = try pdfData("Synthetic needle", password: password)
+        let document = try XCTUnwrap(PdfViewerDocument(data: data))
+        XCTAssertTrue(document.isLocked)
+        XCTAssertFalse(document.unlock(withPassword: "incorrect"))
+        XCTAssertNil(document.privateCopyPassword)
+        do {
+            _ = try await PdfSearch(data: data).matches(query: "needle")
+            XCTFail("A locked copy must report failure rather than an empty search")
+        } catch PdfViewerPreparation.PrivateDocumentError.locked { }
+        let lockedText = await PdfTextReader(data: data).text(pageNumber: 1)
+        XCTAssertNil(lockedText)
+        let wrongPasswordText = await PdfTextReader(data: data, password: "incorrect").text(pageNumber: 1)
+        XCTAssertNil(wrongPasswordText)
+
+        XCTAssertTrue(document.unlock(withPassword: password))
+        // PDFKit returns true for any subsequent password once unlocked.
+        _ = document.unlock(withPassword: "incorrect")
+        XCTAssertEqual(document.privateCopyPassword, password)
+        XCTAssertTrue(try XCTUnwrap(PDFDocument(data: data)).isLocked,
+                      "The retained source must remain encrypted")
+
+        let info = DocumentInfo(kind: .pdf, pdfPath: "/isolated-encrypted-fixture.pdf", title: "Encrypted",
+                                pageCount: 1, lastPage: 1, docId: UUID().uuidString)
+        let app = AppStore(sessions: DocumentSessionManager())
+        app.attachTab(PdfTab(id: "encrypted", document: info, currentPage: 1, numPages: 1, zoom: 1,
+                             visiblePages: [], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        let annotations = AnnotationStore(app: app)
+        let ai = AiStore(settings: AiSettings())
+        let runtime = LiveTabRuntime(tabId: "encrypted")
+        runtime.adoptPreparedPdf(document, byteCount: data.count, sourceData: data)
+        let controller = runtime.pdfController
+        controller.adopt(document: document, app: app, annotationStore: annotations, ai: ai,
+                         initialPage: 1, tabId: "encrypted", runtime: runtime)
+        controller.pdfView = PDFView()
+        controller.pdfView?.document = document
+        controller.findQuery("needle")
+        await controller.awaitPendingSearch()
+        XCTAssertEqual(app.findMatchCount, 1)
+        XCTAssertFalse(app.findIsSearching)
+        let count = await controller.ensureExtracted(pages: [1])
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(ai.pageTexts[1]?.contains("Synthetic needle") == true)
+        let located = await controller.locateText(pageNumber: 1, query: "needle")
+        XCTAssertFalse(located?.positionData.rects.isEmpty ?? true)
+        controller.reset()
+        runtime.invalidateLoadedPdf()
+        XCTAssertNil(runtime.preparedDocument)
+        XCTAssertNil(runtime.preparedSourceData)
     }
 
     func testClearAndRebindingRejectOldQueryAndSnapshotIsBudgeted() async throws {
@@ -104,11 +156,14 @@ final class PdfSearchTests: XCTestCase {
         XCTAssertEqual(extractions, 1)
     }
 
-    private func pdfData(_ text: String) throws -> Data {
+    private func pdfData(_ text: String, password: String? = nil) throws -> Data {
         let bytes = NSMutableData()
         let consumer = try XCTUnwrap(CGDataConsumer(data: bytes))
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &box, nil))
+        let options = password.map {
+            [kCGPDFContextUserPassword: $0, kCGPDFContextOwnerPassword: $0 + "-owner"] as CFDictionary
+        }
+        let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &box, options))
         context.beginPDFPage(nil)
         let font = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
         let attributed = NSAttributedString(string: text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])

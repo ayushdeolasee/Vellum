@@ -378,6 +378,11 @@ final class PdfViewerController: HighlightResizeControlling {
         guard !query.isEmpty, let document, let app,
               let binding = app.activeDocumentBinding, binding.tabId == tabId,
               let data = runtime?.preparedSourceData else { return }
+        guard !document.isLocked else {
+            app.error = "Unlock this PDF before searching."
+            return
+        }
+        let password = (document as? PdfViewerDocument)?.privateCopyPassword
         let generation = findGeneration
         let previous = findTask
         app.setFindSearching(true)
@@ -394,7 +399,7 @@ final class PdfViewerController: HighlightResizeControlling {
             do {
                 try Task.checkCancellation()
                 try await Task.sleep(for: .milliseconds(250))
-                let result = await PdfSearch(data: data).matches(query: query)
+                let result = try await PdfSearch(data: data, password: password).matches(query: query)
                 try Task.checkCancellation()
                 guard let self, self.findGeneration == generation,
                       self.document === document, self.app === app,
@@ -870,15 +875,17 @@ final class PdfViewerController: HighlightResizeControlling {
     func startTextExtraction(data: Data) {
         let previous = extractionTask
         previous?.cancel()
-        guard let document, let ai, document.pageCount > 0 else { return }
+        guard let document, let ai, !document.isLocked, document.pageCount > 0 else { return }
         let docIdentity = ObjectIdentifier(document)
         let binding = self.tabId.flatMap { app?.documentBinding(for: $0) }
         let missingPages = (1...document.pageCount).filter { ai.pageTexts[$0] == nil }
         guard !missingPages.isEmpty else { return }
         let persister = self.persister
+        let password = (document as? PdfViewerDocument)?.privateCopyPassword
         extractionTask = Task.detached(priority: .utility) { [weak self] in
             await previous?.value
-            guard !Task.isCancelled, let copy = PDFDocument(data: data) else { return }
+            guard !Task.isCancelled,
+                  let copy = try? PdfViewerPreparation.privateDocument(data: data, password: password) else { return }
             let walk = PdfExtractionWalkContext(controller: self, copy: copy)
             for pageNumber in missingPages {
                 try? await Task.sleep(for: .milliseconds(16))
@@ -922,10 +929,11 @@ final class PdfViewerController: HighlightResizeControlling {
     @discardableResult
     func ensureExtracted(pages: Set<Int>?) async -> Int {
         guard let document, let ai, let app, let binding = app.activeDocumentBinding,
-              binding.tabId == tabId, let data = runtime?.preparedSourceData, document.pageCount > 0 else { return 0 }
+              binding.tabId == tabId, let data = runtime?.preparedSourceData,
+              !document.isLocked, document.pageCount > 0 else { return 0 }
         let targets = pages?.filter { $0 >= 1 && $0 <= document.pageCount }.sorted()
             ?? Array(1...document.pageCount)
-        let reader = PdfTextReader(data: data)
+        let reader = PdfTextReader(data: data, password: (document as? PdfViewerDocument)?.privateCopyPassword)
         var extracted = 0
         for page in targets {
             guard !Task.isCancelled, self.document === document, self.app === app,
@@ -950,7 +958,8 @@ final class PdfViewerController: HighlightResizeControlling {
         guard let document, let app, let binding = app.activeDocumentBinding,
               binding.tabId == tabId, let data = runtime?.preparedSourceData,
               pageNumber >= 1, pageNumber <= document.pageCount else { return nil }
-        let result = await PdfTextReader(data: data).locate(pageNumber: pageNumber, query: query)
+        let result = await PdfTextReader(data: data, password: (document as? PdfViewerDocument)?.privateCopyPassword)
+            .locate(pageNumber: pageNumber, query: query)
         guard !Task.isCancelled, self.document === document, self.app === app,
               app.activeDocumentBinding == binding else { return nil }
         return result
