@@ -402,6 +402,7 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var mountTabId: String?
     @ObservationIgnored private var mountDocument: DocumentInfo?
     @ObservationIgnored private var attached = false
+    @ObservationIgnored private var mountGeneration = UUID()
     /// True once this controller has ever built and loaded its `WKWebView`. The
     /// view is created lazily, so a controller belonging to a tab the user has
     /// never opened costs nothing and must not be charged for one.
@@ -619,6 +620,7 @@ final class WebViewerController: NSObject {
     private func detach() {
         guard attached else { return }
         attached = false
+        mountGeneration = UUID()
         schemeHandler.bind(to: nil)
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
@@ -1481,9 +1483,12 @@ final class WebViewerController: NSObject {
         clearSelection()
         closeNotePopovers()
         let outgoing = mountDocument?.pdfPath
+        let generation = mountGeneration
         Task { [weak self] in
             guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                  let self, self.mountTabId == tabId, app.containsTab(id: tabId)
+                  let self, self.attached, self.mountGeneration == generation,
+                  self.mountTabId == tabId, app.activeTabId == tabId,
+                  app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath
             else { return }
             self.mountDocument = rebound
             self.schemeHandler.bind(to: rebound.pdfPath)
@@ -1528,12 +1533,15 @@ final class WebViewerController: NSObject {
             // belong to the outgoing document.
             cancelPendingArchive()
             closeNotePopovers()
+            let generation = mountGeneration
             Task { [weak self] in
                 guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
-                      let self, self.mountTabId == tabId, app.containsTab(id: tabId)
+                      let self, self.attached, self.mountGeneration == generation,
+                      self.mountTabId == tabId, app.activeTabId == tabId,
+                      app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath
                 else { return }
                 self.mountDocument = rebound
-            self.schemeHandler.bind(to: rebound.pdfPath)
+                self.schemeHandler.bind(to: rebound.pdfPath)
                 // Server redirect: the destination's HTML was served under
                 // the pre-redirect request URL, so window.location still
                 // shows the old path and strict client routers would hydrate

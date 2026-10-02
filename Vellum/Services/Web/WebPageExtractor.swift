@@ -930,7 +930,9 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
             let asset = host == Self.assetHost
             guard parts.count == (asset ? 4 : 3), parts[0].isEmpty,
                   parts[1] == owner.key, parts[2] == owner.token.uuidString,
-                  request.value(forHTTPHeaderField: "Origin").map({ $0 == owner.origin }) ?? true
+                  request.value(forHTTPHeaderField: "Origin").map({
+                      $0 == owner.origin || $0 == "\(Self.scheme)://\(Self.snapshotHost)"
+                  }) ?? true
             else { return .html(403, "<h1>Reader resource unavailable</h1>") }
             if asset {
                 let rest = "\(owner.key)/\(parts[3])"
