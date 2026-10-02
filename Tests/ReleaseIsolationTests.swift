@@ -33,6 +33,22 @@ final class ReleaseIsolationTests: XCTestCase {
         XCTAssertEqual(resolved, directory.standardizedFileURL.resolvingSymlinksInPath())
     }
 
+    func testUIRootRejectsLiveStorageDirectoriesAndTheirChildren() {
+        for kind in [FileManager.SearchPathDirectory.documentDirectory,
+                     .applicationSupportDirectory, .cachesDirectory] {
+            guard let directory = FileManager.default.urls(for: kind, in: .userDomainMask).first else {
+                XCTFail("Missing standard directory: \(kind)")
+                continue
+            }
+            for root in [directory, directory.appendingPathComponent("Documents")] {
+                XCTAssertThrowsError(try UITestLaunchConfiguration.validatedStorageRoot(
+                    arguments: ["--ui-test-storage-root", root.path]), root.path)
+            }
+        }
+        XCTAssertThrowsError(try UITestLaunchConfiguration.validatedStorageRoot(
+            arguments: ["--ui-test-storage-root", FileManager.default.temporaryDirectory.path]))
+    }
+
     func testDefaultBookmarkWriteDoesNotChangeExplicitLibrary() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

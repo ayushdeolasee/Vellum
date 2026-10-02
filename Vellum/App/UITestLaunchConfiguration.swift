@@ -28,14 +28,13 @@ enum UITestLaunchConfiguration {
         }
         let root = URL(fileURLWithPath: path, isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
-        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first?.resolvingSymlinksInPath()
-        // A reset root must never cover the user's home or application-support data.
-        guard root.path != "/", root != home,
-              !home.path.hasPrefix(root.path + "/"),
-              support.map({ $0.path.hasPrefix(root.path + "/") || root.path.hasPrefix($0.path + "/") || root == $0 }) != true
-        else { throw ConfigurationError.invalidStorageRoot }
+        let temporary = FileManager.default.temporaryDirectory
+            .standardizedFileURL.resolvingSymlinksInPath()
+        // Accept only a dedicated child of the process scratch directory. A denylist
+        // of home/Application Support still permits Documents, caches, and App Groups.
+        guard root != temporary, root.path.hasPrefix(temporary.path + "/") else {
+            throw ConfigurationError.invalidStorageRoot
+        }
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), !isDirectory.boolValue {
             throw ConfigurationError.invalidStorageRoot
