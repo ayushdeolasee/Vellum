@@ -312,9 +312,9 @@ final class DocumentActionsTests: XCTestCase {
 
     func testFailedRenameStaysAssociatedWithItsDocumentAndCanRetry() async throws {
         let registry = TabTeardownRegistry()
-        var succeeds = false
+        let outcome = LifecycleRenameOutcome()
         let app = AppStore(sessions: DocumentSessionManager(), teardowns: registry,
-            renamePersistence: { _, _ in succeeds })
+            renamePersistence: { _, _ in outcome.succeeds })
         apps.append(app)
         let original = testDocument("Retry")
         app.attachTab(testTab(original, id: "retry"))
@@ -324,7 +324,7 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertNotNil(app.renameFailures[key])
         let replacement = testDocument("Other")
         app.attachTab(testTab(replacement, id: "other"))
-        succeeds = true
+        outcome.succeeds = true
         await app.renameDocument(tabId: "retry", title: "Requested title")
         XCTAssertNil(registry.failedRenames[key])
         XCTAssertEqual(app.document, replacement)
@@ -802,4 +802,9 @@ private final class LifecycleDocumentSession: DocumentSession {
         if let resolveId { return await resolveId() }
         return info.docId ?? ""
     }
+}
+
+@MainActor
+private final class LifecycleRenameOutcome {
+    var succeeds = false
 }
