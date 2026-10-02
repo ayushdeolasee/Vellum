@@ -5,7 +5,7 @@ Vellum is a SwiftUI reader for PDFs and web articles. It combines PDFKit reading
 ## Targets
 
 - **iPhone and iPad:** the universal iOS 26 app includes Safari sharing and widgets.
-- **macOS:** the same project generates separate direct-distribution and sandboxed Mac App Store targets for macOS 26.
+- **macOS:** the Developer ID app for macOS 26 uses Sparkle for direct-distribution updates.
 
 The phone layout has a search-first Home, a full-screen reader, a pull-up inspector, and a card switcher for open documents. Continue Reading stores the last position for handoff, and read-later integrations can prefetch offline copies with retention rules.
 
@@ -40,11 +40,11 @@ xcodebuild -project Vellum.xcodeproj -scheme Vellum \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test
 ```
 
-The generated `Vellum`, `Vellum Mac`, and `Vellum Mac App Store` schemes share this source tree. Use Debug configuration and an isolated derived-data directory per worktree and Mac distribution target. Launch development builds with `--disable-sync` for UI-only work.
+The generated `Vellum` and `Vellum Mac` schemes share this source tree. Use Debug configuration and an isolated derived-data directory per worktree and Mac distribution target. Launch development builds with `--disable-sync` for UI-only work.
 
 ## Release artifacts
 
-[Store operations](Distribution/store-operations.html) documents the separate archive, local verification, Apple validation, and upload commands. Each artifact records its commit, explicit version/build, signed bundle identities, entitlements, architectures, privacy manifests, and matching symbols. Validation and upload reuse the exported package; no command pushes a version commit or releases the app. Signed device acceptance and App Store metadata remain separate gates.
+[Release operations](Distribution/store-operations.html) documents local archive/verification, explicit Mac notarization and Sparkle signing/promotion, and the separate iOS Store validation/upload commands. Each artifact records its commit, explicit version/build, signed bundle identities, entitlements, architectures, privacy manifests, and matching symbols. External commands reuse verified private snapshots. Mac stapling produces a separately pinned final DMG and signed appcast before GitHub promotion; iOS validation/upload retain the unchanged IPA. Signed device acceptance, Mac installation/update proof and iOS App Store metadata remain separate gates.
 
 ## Layout
 

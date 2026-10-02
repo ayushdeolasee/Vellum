@@ -1,0 +1,2 @@
+# Release-tool public Ed25519 verification only; not an application dependency.
+cryptography==50.0.2
