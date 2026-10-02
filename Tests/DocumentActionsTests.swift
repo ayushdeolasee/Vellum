@@ -598,6 +598,7 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(b.createdNotes, ["at B"])
         XCTAssertTrue(a.createdNotes.isEmpty)
 
+        slow.arm()
         let closing = Task { _ = await app.webNavigated(tabId: "navigation", url: a.info.pdfPath) }
         lifecycleTasks.append(closing)
         try await slow.waitUntilPaused()
@@ -755,6 +756,9 @@ private final class GatedPositionWrite {
 private final class LifecycleGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var isReleased = false
+
+    /// Explicitly rearm a reused gate after its prior task has been joined.
+    func arm() { precondition(continuation == nil); isReleased = false }
 
     func pause() async {
         // Cleanup can arrive before a background-priority task reaches its gate.
