@@ -742,7 +742,7 @@ enum WebHtml {
 
 // MARK: - vellum-web:// scheme handler (lib.rs handle_vellum_web_request)
 
-private struct WebProxyResponse {
+struct WebProxyResponse: Sendable {
     var status: Int
     var headers: [String: String]
     var body: Data
