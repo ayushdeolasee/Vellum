@@ -45,6 +45,20 @@ struct SyncedContainerFakeTests {
         #expect(container.maxAccessorDepth == 1)
     }
 
+    @Test("Guarded replacement distinguishes missing bytes and rejects changed contents")
+    func guardedReplacementComparesAtomically() async throws {
+        let target = url("guarded.json")
+        let container = FakeSyncedContainer()
+        #expect(try await container.replace(target, with: Data(), ifCurrent: nil))
+        #expect(try await !container.replace(target, with: Data("wrong".utf8), ifCurrent: nil))
+        #expect(container.peek(target) == Data())
+        #expect(try await container.replace(target, with: Data("new".utf8), ifCurrent: Data()))
+        #expect(try await !container.replace(target, with: Data("wrong".utf8), ifCurrent: Data()))
+        #expect(container.peek(target) == Data("new".utf8))
+        #expect(container.coordinatedWriteCount == 2)
+        #expect(container.maxAccessorDepth == 1)
+    }
+
     @Test("Listing a directory never enumerates it or checks existence directly")
     func listingUsesTheMetadataQueryOnly() async throws {
         let container = FakeSyncedContainer()

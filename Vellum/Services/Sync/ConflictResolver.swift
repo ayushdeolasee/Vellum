@@ -36,11 +36,13 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             return .merged(event.url)
         }
         if event.url.lastPathComponent == "conversations.json" {
-            guard let merged = try await mergeConversations(event, reading: reading) else {
-                return .deferred
+            switch try await mergeConversations(event, reading: reading) {
+            case .merged(let data):
+                try await archive(event.url, data)
+                return .merged(event.url)
+            case .deferred: return .deferred
+            case .preserve: break
             }
-            try await archive(event.url, merged)
-            return .merged(event.url)
         }
         if event.url.lastPathComponent == "meta.json",
            let merged = try await mergeMeta(event, reading: reading) {
@@ -77,13 +79,21 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             return nil
         }
 
+        var losers: [WebPageRecord] = []
+        let ids = Set(merged.annotations.map(\.id))
+        guard ids.count == merged.annotations.count else { return nil }
         for version in event.losingVersions {
             let bytes = try await reading(version)
-            guard let loser = try? decoder.decode(WebPageRecord.self, from: bytes) else {
-                return nil
-            }
-            mergeWebPageRecord(&merged, loser)
+            guard let loser = try? decoder.decode(WebPageRecord.self, from: bytes) else { return nil }
+            let losingIDs = Set(loser.annotations.map(\.id))
+            // Absence has no version information. It may mean either a new
+            // addition or a deletion, and a differing saved flag may be an unsave.
+            // Decide for every version before writing any automatic merge.
+            guard loser.saved == merged.saved, losingIDs == ids,
+                  losingIDs.count == loser.annotations.count else { return nil }
+            losers.append(loser)
         }
+        for loser in losers { mergeWebPageRecord(&merged, loser) }
         return try WebLibrary.jsonEncoderPretty.encode(merged)
     }
 
@@ -113,32 +123,35 @@ struct PreserveLosersConflictResolver: ConflictResolver {
         current.openedAt = current.openedAt ?? incoming.openedAt
     }
 
+    private enum ConversationMerge {
+        case merged(Data)
+        case preserve
+        case deferred
+    }
+
     private func mergeConversations(
         _ event: ConflictEvent,
         reading: @Sendable (ConflictVersion) async throws -> Data
-    ) async throws -> Data? {
-        guard let currentVersion = event.currentVersion else { return nil }
+    ) async throws -> ConversationMerge {
+        guard let currentVersion = event.currentVersion else { return .deferred }
         let currentBytes = try await reading(currentVersion)
         guard let current = try? JSONDecoder().decode([AiMessage].self, from: currentBytes)
-        else { return nil }
-        var byID: [String: AiMessage] = [:]
-        for message in current where byID[message.id] == nil {
-            byID[message.id] = message
-        }
+        else { return .deferred }
+        let ids = Set(current.map(\.id))
+        guard ids.count == current.count else { return .preserve }
         for version in event.losingVersions {
             let bytes = try await reading(version)
-            guard let incoming = try? JSONDecoder().decode([AiMessage].self, from: bytes) else {
-                return nil
-            }
-            for message in incoming where byID[message.id] == nil {
-                byID[message.id] = message
-            }
+            guard let incoming = try? JSONDecoder().decode([AiMessage].self, from: bytes)
+            else { return .deferred }
+            let losingIDs = Set(incoming.map(\.id))
+            guard losingIDs == ids, losingIDs.count == incoming.count else { return .preserve }
         }
-        let merged = AiPersistence.limitedMessages(
-            byID.values.sorted {
-                $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt
-            })
-        return try JSONEncoder().encode(merged)
+        // Same-ID edits retain the existing current-wins rule. Changed ID
+        // membership cannot be distinguished from Clear without a new format.
+        let merged = AiPersistence.limitedMessages(current.sorted {
+            $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt
+        })
+        return .merged(try JSONEncoder().encode(merged))
     }
 
     private func mergeMeta(

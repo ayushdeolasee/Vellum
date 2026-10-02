@@ -119,6 +119,9 @@ final class TabTeardownRegistry {
         entries[tabId] = nil
     }
 
+    /// Capture existing work before admitting another registered resource task.
+    func pendingTasksSnapshot() -> [Task<Void, Never>] { entries.values.map(\.task) }
+
     /// Await every pending teardown. The scene-background flush drains this so
     /// suspending right after closing a tab still persists its reading
     /// position — including a tab whose close collapsed its pane. (macOS drains
@@ -200,7 +203,7 @@ final class AppStore {
     private(set) var document: DocumentInfo?
     private(set) var isLoading = false
     /// Count concurrent opens/navigation, including the interval before a tab
-    /// has DocumentInfo. Import cannot admit against an unseen backend open.
+    /// has DocumentInfo. A recovery restore cannot admit against a hidden open.
     private var pendingDocumentAdmissions = 0
     private var pendingBundleImports = 0
     var hasPendingDocumentAdmission: Bool { pendingDocumentAdmissions > 0 }
@@ -631,11 +634,13 @@ final class AppStore {
     /// is workspace-owned.
     private func awaitTeardowns(ofDocumentAt path: String) async {
         await workspace?.awaitMaintenance()
+        await workspace?.awaitConflictRecovery()
         await teardowns.awaitTeardowns(ofDocumentAt: path)
     }
 
     private func awaitTeardowns(forDocumentKey key: DocumentKey) async {
         await workspace?.awaitMaintenance()
+        await workspace?.awaitConflictRecovery()
         await teardowns.awaitTeardowns(forDocumentKey: key)
     }
 
@@ -863,6 +868,7 @@ final class AppStore {
     func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
         pendingDocumentAdmissions += 1
         defer { pendingDocumentAdmissions -= 1 }
+        await workspace?.awaitConflictRecovery()
         var restoredTabIds: [Int: String] = [:]
 
         for (descriptorIndex, descriptor) in descriptors.enumerated() {
@@ -1481,6 +1487,7 @@ final class AppStore {
         }.value
         let (destination, key) = prepared
         await workspace?.awaitMaintenance()
+        await workspace?.awaitConflictRecovery()
         try await assertImportDestinationClosed(destination, key: key)
         guard !importOwnerApps.contains(where: { $0.pendingDocumentAdmissions > $0.pendingBundleImports }) else {
             throw SessionServiceError.io("Wait for documents to finish opening, then retry the import. The existing document has been kept.")

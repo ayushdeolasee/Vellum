@@ -29,6 +29,10 @@ protocol SyncedContainer: Sendable {
     /// replace.
     func replace(_ url: URL, with data: Data) async throws
 
+    /// Compare and replace inside one coordinated writing accessor. Nil means
+    /// the destination must still be absent. False means no bytes were changed.
+    func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool
+
     func remove(_ url: URL) async throws
 
     /// The ONLY discovery API. Backed by a metadata query, never by directory
@@ -49,6 +53,11 @@ protocol SyncedContainer: Sendable {
 }
 
 extension SyncedContainer {
+    /// Adapters without an atomic comparison cannot safely restore a copy.
+    func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool {
+        false
+    }
+
     func read<T: Sendable>(_ url: URL, _ body: @Sendable (Data) throws -> T) async throws -> T {
         try await read(url, materializing: .requireCurrent, body)
     }

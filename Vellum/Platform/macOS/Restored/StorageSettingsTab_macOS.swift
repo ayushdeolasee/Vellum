@@ -21,6 +21,8 @@ struct StorageSettingsTab: View {
     @State private var webRecordBytes: Int64 = 0
     @State private var legacyScratchpad: [LegacyRow] = []
     @State private var legacyAi: [LegacyRow] = []
+    @State private var archivedConflicts: [StorageCoordinator.ArchivedConflict] = []
+    @State private var showsConflictsSheet = false
     @State private var isLoading = true
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
@@ -70,6 +72,7 @@ struct StorageSettingsTab: View {
             storageLocationSection
             summaryTilesSection
             documentsSection
+            if !archivedConflicts.isEmpty { syncConflictsSection }
             if hasOrphanSection { orphansSection }
             housekeepingSection
             removeStoredDataSection
@@ -83,8 +86,33 @@ struct StorageSettingsTab: View {
         .onReceive(NotificationCenter.default.publisher(for: .vellumStorageRelocationChanged)) { _ in
             handleRelocationStatusChange()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .vellumStorageConflictArchivesChanged)) { _ in
+            Task { archivedConflicts = await workspace.storageCoordinator.archivedConflicts() }
+        }
+        .sheet(isPresented: $showsConflictsSheet) {
+            StorageConflictsView(conflicts: $archivedConflicts)
+                .frame(minWidth: 440, minHeight: 420)
+        }
         .onDisappear {
             relocationReloadTask?.cancel()
+        }
+    }
+
+    private var syncConflictsSection: some View {
+        Section {
+            Button {
+                showsConflictsSheet = true
+            } label: {
+                HStack {
+                    Label("Sync conflicts", systemImage: "arrow.triangle.branch")
+                    Spacer()
+                    Text("\(archivedConflicts.filter(\.needsReview).count) need review")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("storage.conflicts")
+        } footer: {
+            Text("The current copy remains in use. Review preserved versions before choosing which changes to keep.")
         }
     }
 
@@ -522,6 +550,7 @@ struct StorageSettingsTab: View {
         legacyScratchpad = listing.legacyScratchpad
         legacyAi = listing.legacyAi
         cacheEntries = cache
+        archivedConflicts = await workspace.storageCoordinator.archivedConflicts()
         isLoading = false
     }
 

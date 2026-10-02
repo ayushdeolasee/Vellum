@@ -66,14 +66,43 @@ actor StorageCoordinator {
         var archiveURL: URL
         var originalURL: URL
         var detectedAt: Date
+        var reviewedAt: Date? = nil
 
+        var needsReview: Bool { reviewedAt == nil }
+        var storageKey: String? {
+            let name = originalURL.lastPathComponent
+            let parent = originalURL.deletingLastPathComponent()
+            let candidate: String
+            if ["conversations.json", "scratchpad.md", "meta.json"].contains(name) {
+                candidate = parent.lastPathComponent
+            } else if parent.lastPathComponent == "attachments" {
+                candidate = parent.deletingLastPathComponent().lastPathComponent
+            } else if parent.lastPathComponent == "records", originalURL.pathExtension == "json" {
+                candidate = originalURL.deletingPathExtension().lastPathComponent
+            } else {
+                return nil
+            }
+            return DocumentIdentity.isCanonicalKey(candidate) ? candidate : nil
+        }
         var id: URL { archiveURL.standardizedFileURL }
         var displayName: String { originalURL.lastPathComponent }
         var archiveName: String { archiveURL.lastPathComponent }
     }
 
-    enum ArchivedConflictError: Error, Sendable, Equatable {
+    enum ArchivedConflictError: LocalizedError, Sendable, Equatable {
         case noLongerAvailable
+        case documentOpenOrPending
+        case replacementUnverified
+        case currentChanged
+
+        var errorDescription: String? {
+            switch self {
+            case .noLongerAvailable: "This preserved copy is no longer available in the selected storage."
+            case .documentOpenOrPending: "Close the affected document and save pending changes before restoring a copy."
+            case .currentChanged: "The current copy could not be confirmed for recovery. Nothing was replaced; review the current and preserved copies before trying again."
+            case .replacementUnverified: "Storage could not confirm the restored copy. Reopen the document to check it; the previous current copy and preserved versions remain available for review."
+            }
+        }
     }
 
     struct ConflictArchiveRegistry: Sendable {
@@ -249,6 +278,108 @@ actor StorageCoordinator {
             finishOperation()
             throw error
         }
+    }
+
+    /// Acknowledging the current copy keeps all recovery bytes available.
+    func keepCurrentForArchivedConflict(_ conflict: ArchivedConflict) throws {
+        guard let record = archivedConflictRecords[conflict.id],
+              record.generation == storageGeneration else {
+            throw ArchivedConflictError.noLongerAvailable
+        }
+        markReviewed(originalURL: record.descriptor.originalURL)
+    }
+
+    /// Serialize restoration with storage lifecycle work and stop ordinary
+    /// writers/conflict delivery while reading, backing up and replacing bytes.
+    /// The workspace admission check is repeated after I/O, before replacement.
+    func restoreArchivedConflict(
+        _ conflict: ArchivedConflict,
+        admissionAllowed: @escaping @Sendable () async -> Bool = { true }
+    ) async throws {
+        let result: Result<Void, any Error> = await performExclusiveStorageOperation {
+            do {
+                try await self.restoreArchivedConflictImpl(conflict, admissionAllowed: admissionAllowed)
+                return .success(())
+            } catch { return .failure(error) }
+        }
+        try result.get()
+    }
+
+    private func restoreArchivedConflictImpl(
+        _ conflict: ArchivedConflict,
+        admissionAllowed: @Sendable () async -> Bool
+    ) async throws {
+        guard let record = archivedConflictRecords[conflict.id],
+              record.generation == storageGeneration,
+              let container = access.container else {
+            throw ArchivedConflictError.noLongerAvailable
+        }
+        guard await admissionAllowed() else { throw ArchivedConflictError.documentOpenOrPending }
+        let descriptor = record.descriptor
+        let replacement = try await container.data(
+            at: descriptor.archiveURL, materializing: .downloadIfNeeded(timeout: 10))
+        let originalItems = try await container.list(
+            descriptor.originalURL.deletingLastPathComponent(),
+            matching: SyncedItemFilter(namePrefix: descriptor.originalURL.lastPathComponent))
+        let originalExists = originalItems.contains {
+            $0.url.standardizedFileURL == descriptor.originalURL.standardizedFileURL
+        }
+        var previousCurrent: Data?
+        if originalExists {
+            let current = try await container.data(
+                at: descriptor.originalURL, materializing: .downloadIfNeeded(timeout: 10))
+            previousCurrent = current
+            let backupURL = PreserveLosersConflictResolver.archiveURL(
+                for: descriptor.originalURL,
+                version: ConflictVersion(id: "before-restore-\(UUID().uuidString.lowercased())"))
+            try await container.replace(backupURL, with: current)
+            guard try await container.data(at: backupURL) == current else {
+                throw SyncedContainerError.io("The current copy could not be verified for recovery")
+            }
+            var backup = ArchivedConflict(archiveURL: backupURL,
+                originalURL: descriptor.originalURL, detectedAt: .now)
+            backup.reviewedAt = .now
+            archivedConflictRecords[backup.id] = ArchivedConflictRecord(
+                descriptor: backup, generation: storageGeneration)
+            rememberArchivedConflicts([backup])
+        }
+        guard archivedConflictRecords[conflict.id] != nil,
+              await admissionAllowed() else { throw ArchivedConflictError.documentOpenOrPending }
+        // Compare the archived current bytes inside the same coordinated
+        // writing accessor that replaces them, including expected absence.
+        guard await admissionAllowed() else { throw ArchivedConflictError.documentOpenOrPending }
+        do {
+            guard try await container.replace(descriptor.originalURL, with: replacement, ifCurrent: previousCurrent) else {
+                markReviewed(originalURL: descriptor.originalURL, reviewedAt: nil)
+                throw ArchivedConflictError.currentChanged
+            }
+            guard try await container.data(at: descriptor.originalURL) == replacement else {
+                throw ArchivedConflictError.replacementUnverified
+            }
+        } catch ArchivedConflictError.currentChanged {
+            throw ArchivedConflictError.currentChanged
+        } catch {
+            // A coordinated replacement can commit before reporting an error,
+            // and its verification read can fail independently. Do not claim
+            // that the old current copy is still installed or blindly roll it
+            // back over a peer's newer bytes. Keep both recovery copies and
+            // require review; callers must reload clean caches from storage.
+            markReviewed(originalURL: descriptor.originalURL, reviewedAt: nil)
+            throw ArchivedConflictError.replacementUnverified
+        }
+        markReviewed(originalURL: descriptor.originalURL)
+    }
+
+    private func markReviewed(originalURL: URL, reviewedAt: Date? = .now) {
+        var updated: [ArchivedConflict] = []
+        for (id, var record) in archivedConflictRecords
+        where record.descriptor.originalURL.standardizedFileURL == originalURL.standardizedFileURL {
+            record.descriptor.reviewedAt = reviewedAt
+            archivedConflictRecords[id] = record
+            updated.append(record.descriptor)
+        }
+        rememberArchivedConflicts(updated)
+        NotificationCenter.default.post(name: .vellumStorageConflictArchivesChanged, object: nil)
     }
 
     /// Permanently remove a preserved version through its originating synced
@@ -736,6 +867,10 @@ actor StorageCoordinator {
         lifecycle = .starting
         await waitForQuiescenceUnbounded()
         await cancelAndJoinRuntimeTasks()
+        // Runtime invalidation advances the generation and clears descriptors.
+        // Recovery in the unchanged container must rediscover validated archives
+        // before looking them up; reconfiguration rediscovers in its new root.
+        if !reconfigureAfter { await rediscoverArchivedConflicts() }
 
         let result = await operation()
 

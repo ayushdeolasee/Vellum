@@ -450,6 +450,326 @@ struct StorageCoordinatorTests {
         #expect(container.existenceCheckCount == 0)
     }
 
+    @Test("Review keeps bytes and Restore archives the current copy before replacement")
+    func reviewedConflictRestorationIsRecoverable() async throws {
+        let storeDir = scratch("conflict-restore")
+        let root = scratch("conflict-root")
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("abc123/conversations.json")
+        let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
+        let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: original, detectedAt: .now)
+        let registryState = ConflictArchiveRegistryState()
+        registryState.registry.save([descriptor])
+        let container = FakeSyncedContainer()
+        container.seed(original, data: Data("current".utf8))
+        container.seed(archive, data: Data("preserved".utf8))
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registryState.registry)
+        await coordinator.start()
+        #expect(await coordinator.archivedConflicts().first?.needsReview == true)
+        do {
+            try await coordinator.restoreArchivedConflict(descriptor, admissionAllowed: { false })
+            Issue.record("an open document must reject restoration")
+        } catch { }
+        #expect(container.peek(original) == Data("current".utf8))
+        container.failNextWrite(with: .io("backup denied"))
+        do {
+            try await coordinator.restoreArchivedConflict(descriptor)
+            Issue.record("backup failure must reject restoration")
+        } catch { }
+        #expect(container.peek(original) == Data("current".utf8))
+        #expect(container.peek(archive) == Data("preserved".utf8))
+        #expect(await coordinator.archivedConflicts().first?.needsReview == true)
+        try await coordinator.restoreArchivedConflict(descriptor)
+        #expect(container.peek(original) == Data("preserved".utf8))
+        let restored = await coordinator.archivedConflicts()
+        let backup = try #require(restored.first { $0.archiveURL != archive })
+        #expect(container.peek(backup.archiveURL) == Data("current".utf8))
+        #expect(restored.allSatisfy { !$0.needsReview })
+        #expect(registryState.registry.load().allSatisfy { !$0.needsReview })
+        try await coordinator.keepCurrentForArchivedConflict(backup)
+        #expect(container.peek(backup.archiveURL) == Data("current".utf8))
+        // Older registry descriptors decode as needing review without migration.
+        let decoded = try JSONDecoder().decode(StorageCoordinator.ArchivedConflict.self,
+                                               from: JSONEncoder().encode(descriptor))
+        #expect(decoded.needsReview)
+    }
+
+    @Test("A provider failure after replacement retains both copies and needs review", arguments: [false, true])
+    func committedRestoreFailureRemainsReviewable(onReadBack: Bool) async throws {
+        let storeDir = scratch("restore-postcommit")
+        let root = scratch("restore-root")
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("abc12345/conversations.json")
+        let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
+        var descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: original, detectedAt: .now)
+        descriptor.reviewedAt = .now
+        let registryState = ConflictArchiveRegistryState()
+        registryState.registry.save([descriptor])
+        let container = FakeSyncedContainer()
+        container.seed(original, data: Data("current".utf8))
+        container.seed(archive, data: Data("preserved".utf8))
+        container.failAfterNextReplacement(at: original, onReadBack: onReadBack)
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registryState.registry)
+        await coordinator.start()
+        do {
+            try await coordinator.restoreArchivedConflict(descriptor)
+            Issue.record("an unverified replacement must report uncertainty")
+        } catch let error as StorageCoordinator.ArchivedConflictError {
+            #expect(error == .replacementUnverified)
+        }
+        #expect(container.peek(original) == Data("preserved".utf8))
+        let copies = await coordinator.archivedConflicts()
+        let backup = try #require(copies.first { $0.archiveURL != archive })
+        #expect(container.peek(backup.archiveURL) == Data("current".utf8))
+        #expect(container.peek(archive) == Data("preserved".utf8))
+        #expect(copies.allSatisfy { $0.needsReview })
+        #expect(registryState.registry.load().allSatisfy { $0.needsReview })
+    }
+
+    @MainActor
+    @Test("Chat remains pending while its dirty snapshot is in flight")
+    func chatPendingIncludesInFlightSnapshot() async throws {
+        let storeDir = scratch("pending-chat")
+        let root = scratch("pending-chat-root")
+        let key = UUID().uuidString.lowercased()
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
+        let gate = AsyncGate()
+        let container = FakeSyncedContainer(beforeReplace: { url in
+            if url == original { await gate.enterAndWait() }
+        })
+        container.seed(original, data: try JSONEncoder().encode([AiMessage]()))
+        installRoot(root)
+        let previousOverride = DocumentDataStore.rootDirectoryOverride
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            DocumentDataStore.rootDirectoryOverride = previousOverride
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud })
+        await coordinator.start()
+        let document = DocumentInfo(kind: .pdf, pdfPath: root.appendingPathComponent("closed.pdf").path,
+            title: nil, pageCount: nil, lastPage: nil, docId: key)
+        _ = await AiPersistence.loadConversation(for: document, coordinator: coordinator)
+        AiPersistence.saveConversation(for: document,
+            messages: [AiPersistence.makeMessage(role: .user, content: "draft")], coordinator: coordinator)
+        let flush = Task { @MainActor in await AiPersistence.awaitPendingFlush() }
+        do { try await gate.waitUntilEntered(timeout: .seconds(3)) }
+        catch {
+            await gate.release()
+            _ = await flush.value
+            throw error
+        }
+        #expect(AiPersistence.hasPendingChanges(forKey: key))
+        #expect(AiPersistence.hasPendingChanges)
+        await gate.release()
+        #expect(await flush.value)
+        #expect(!AiPersistence.hasPendingChanges(forKey: key))
+    }
+
+    @MainActor
+    @Test("Workspace recovery joins resource work and reloads a committed but unverified copy")
+    func workspaceRestoreDrainsAndInvalidatesCleanCache() async throws {
+        let storeDir = scratch("workspace-restore")
+        let root = scratch("workspace-restore-root")
+        let key = UUID().uuidString.lowercased()
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("\(key)/conversations.json")
+        let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
+        let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: original, detectedAt: .now)
+        let registryState = ConflictArchiveRegistryState()
+        registryState.registry.save([descriptor])
+        let old = try JSONEncoder().encode([AiPersistence.makeMessage(role: .user, content: "current")])
+        let restored = try JSONEncoder().encode([AiPersistence.makeMessage(role: .user, content: "preserved")])
+        let container = FakeSyncedContainer()
+        container.seed(original, data: old)
+        container.seed(archive, data: restored)
+        container.failAfterNextReplacement(at: original, onReadBack: true)
+        installRoot(root)
+        let previousOverride = DocumentDataStore.rootDirectoryOverride
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            DocumentDataStore.rootDirectoryOverride = previousOverride
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registryState.registry)
+        await coordinator.start()
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
+        let document = DocumentInfo(kind: .pdf, pdfPath: root.appendingPathComponent("closed.pdf").path,
+            title: nil, pageCount: nil, lastPage: nil, docId: key)
+        #expect(await AiPersistence.loadConversation(for: document, coordinator: coordinator).first?.content == "current")
+        let gate = AsyncGate()
+        let earlier = Task { @MainActor in
+            await gate.enterAndWait()
+            workspace.tabTeardowns.finish(tabId: "earlier")
+        }
+        workspace.tabTeardowns.register(tabId: "earlier", document: document, task: earlier)
+        do { try await gate.waitUntilEntered(timeout: .seconds(3)) }
+        catch {
+            await gate.release()
+            await earlier.value
+            throw error
+        }
+        let recovery = Task { @MainActor in try await workspace.restoreArchivedConflict(descriptor) }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(container.peek(original) == old)
+        #expect(!workspace.tabTeardowns.isEmpty)
+        await gate.release()
+        await earlier.value
+        do {
+            try await recovery.value
+            Issue.record("an unverified replacement must report uncertainty")
+        } catch let error as StorageCoordinator.ArchivedConflictError {
+            #expect(error == .replacementUnverified)
+        }
+        await workspace.tabTeardowns.awaitAll()
+        #expect(workspace.tabTeardowns.isEmpty)
+        #expect(!AiPersistence.hasPendingChanges(forKey: key))
+        #expect(await AiPersistence.loadConversation(for: document, coordinator: coordinator).first?.content == "preserved")
+    }
+
+    @Test("Restore comparison rejects a peer write arriving at the replacement accessor")
+    func restoreRejectsPeerWriteAtReplacement() async throws {
+        let storeDir = scratch("restore-peer-race")
+        let root = scratch("restore-peer-root")
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("abc12345/conversations.json")
+        let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/conversations.loser.json")
+        let descriptor = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: original, detectedAt: .now)
+        let registry = ConflictArchiveRegistryState()
+        registry.registry.save([descriptor])
+        let gate = AsyncGate()
+        let container = FakeSyncedContainer(beforeReplace: { url in
+            if url == original { await gate.enterAndWait() }
+        })
+        container.seed(original, data: Data("current".utf8))
+        container.seed(archive, data: Data("preserved".utf8))
+        installRoot(root)
+        defer {
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registry.registry)
+        await coordinator.start()
+        let available = await coordinator.archivedConflicts()
+        try #require(available.contains { $0.id == descriptor.id })
+        let restore = Task { try await coordinator.restoreArchivedConflict(descriptor) }
+        do { try await gate.waitUntilEntered(timeout: .seconds(3)) }
+        catch {
+            await gate.release()
+            restore.cancel()
+            _ = try? await restore.value
+            throw error
+        }
+        // This arrives after the backup and final admission check.
+        container.seed(original, data: Data("peer latest".utf8))
+        await gate.release()
+        do {
+            try await restore.value
+            Issue.record("a peer write must reject the replacement")
+        } catch let error as StorageCoordinator.ArchivedConflictError {
+            #expect(error == .currentChanged)
+        }
+        #expect(container.peek(original) == Data("peer latest".utf8))
+        #expect(container.peek(archive) == Data("preserved".utf8))
+        let copies = await coordinator.archivedConflicts()
+        let backup = try #require(copies.first { $0.archiveURL != archive })
+        #expect(container.peek(backup.archiveURL) == Data("current".utf8))
+        let allNeedReview = copies.allSatisfy { $0.needsReview }
+        #expect(allNeedReview)
+        // An adapter which has not implemented atomic comparison fails closed.
+        let unsupported = BlockingRecoveryContainer(base: container)
+        #expect(try await !unsupported.replace(original, with: Data("unsafe".utf8), ifCurrent: Data("peer latest".utf8)))
+        #expect(container.peek(original) == Data("peer latest".utf8))
+    }
+
+    @MainActor
+    @Test("Attachment recovery uses its document owner and unknown layouts reject open drafts")
+    func attachmentRestoreRejectsOpenDraft() async throws {
+        let storeDir = scratch("restore-attachment")
+        let root = scratch("restore-attachment-root")
+        let key = UUID().uuidString.lowercased()
+        let attachmentId = UUID().uuidString.lowercased()
+        let layout = WebStorageLayout.pretty(root: root.appendingPathComponent("Documents/Vellum"),
+                                             recordsInRoot: true, localStoreDir: storeDir)
+        let original = layout.documentsDir.appendingPathComponent("\(key)/attachments/\(attachmentId).png")
+        let archive = original.deletingLastPathComponent().appendingPathComponent("conflicts/\(attachmentId).loser.png")
+        let attachment = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: original, detectedAt: .now)
+        let unknown = StorageCoordinator.ArchivedConflict(archiveURL: archive,
+            originalURL: layout.documentsDir.appendingPathComponent("\(key)/unknown/\(attachmentId).png"), detectedAt: .now)
+        #expect(attachment.storageKey == key)
+        #expect(unknown.storageKey == nil)
+        let container = FakeSyncedContainer()
+        container.seed(original, data: Data("current image".utf8))
+        container.seed(archive, data: Data("preserved image".utf8))
+        installRoot(root)
+        let previousOverride = DocumentDataStore.rootDirectoryOverride
+        DocumentDataStore.rootDirectoryOverride = nil
+        defer {
+            DocumentDataStore.rootDirectoryOverride = previousOverride
+            VellumUbiquityContainerRoot.resetCacheForTests()
+            try? FileManager.default.removeItem(at: storeDir)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
+            factory: { container }, effectiveMode: { .icloud })
+        await coordinator.start()
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
+        let pane = workspace.focusedPane
+        let document = DocumentInfo(kind: .pdf, pdfPath: root.appendingPathComponent("open.pdf").path,
+            title: nil, pageCount: 1, lastPage: 1, docId: key)
+        pane.app.attachTab(PdfTab(id: "open", document: document, currentPage: 1, numPages: 1,
+            zoom: 1, visiblePages: [], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        await pane.scratchpad.loadForDocument(document).value
+        pane.scratchpad.text = "open draft"
+        #expect(pane.scratchpad.hasPendingChanges(forKey: key))
+        for descriptor in [attachment, unknown] {
+            do {
+                try await workspace.restoreArchivedConflict(descriptor)
+                Issue.record("an open affected document must reject recovery")
+            } catch WorkspaceStore.ConflictRecoveryError.documentOpen { }
+        }
+        #expect(pane.scratchpad.text == "open draft")
+        #expect(container.peek(original) == Data("current image".utf8))
+        await pane.scratchpad.flush().value
+        await ScratchpadPersistence.awaitPendingFlush()
+        await workspace.tabTeardowns.awaitAll()
+    }
+
     @Test("Preserved conflict archives return when iCloud storage is reselected")
     func archivedConflictsSurviveReconfigureAwayAndBack() async throws {
         let storeDir = scratch("storage-conflict-reconfigure")
@@ -1360,6 +1680,18 @@ private actor AsyncGate {
         if didEnter { return }
         await withCheckedContinuation { continuation in
             enteredWaiters.append(continuation)
+        }
+    }
+
+    enum WaitError: Error { case neverEntered }
+
+    /// A failed operation may return before reaching its injected suspension.
+    /// Polling bounds that failure without leaving a continuation parked.
+    func waitUntilEntered(timeout: Duration) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !didEnter {
+            guard ContinuousClock.now < deadline else { throw WaitError.neverEntered }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 

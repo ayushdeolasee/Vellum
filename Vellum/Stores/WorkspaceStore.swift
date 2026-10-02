@@ -377,6 +377,123 @@ final class WorkspaceStore {
         return root.allLeaves().allSatisfy { !$0.scratchpad.hasUncommittedChanges }
     }
 
+    @ObservationIgnored private var conflictRecoveryTask: Task<Void, any Error>?
+
+    enum ConflictRecoveryError: LocalizedError {
+        case alreadyRunning
+        case appClosing
+        case documentOpen
+        case pendingChanges
+
+        var errorDescription: String? {
+            switch self {
+            case .appClosing: "Vellum is finishing pending saves. Wait until closing finishes before reviewing copies."
+            case .alreadyRunning: "Another preserved copy is being restored. Wait for it to finish."
+            case .documentOpen: "Finish opening documents, then close the affected document before restoring a preserved copy. Your open drafts have not changed."
+            case .pendingChanges: "This document has unsaved notes or chat. Restore storage access and save them before restoring a copy."
+            }
+        }
+    }
+
+    /// New opens join the same recovery operation before adopting a document.
+    /// Recovery itself joins the teardown registry directly, avoiding self-wait.
+    func awaitConflictRecovery() async {
+        try? await conflictRecoveryTask?.value
+    }
+
+    private func conflictDocumentIsClosed(_ conflict: StorageCoordinator.ArchivedConflict) -> Bool {
+        guard !root.allLeaves().contains(where: { $0.app.hasPendingDocumentAdmission }) else { return false }
+        let documents = root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
+        guard let key = conflict.storageKey else { return documents.isEmpty }
+        return !documents.contains { DocumentIdentity.storageKey(for: $0) == key }
+    }
+
+    private func conflictHasPendingDrafts(_ conflict: StorageCoordinator.ArchivedConflict) -> Bool {
+        let chatPending = conflict.storageKey.map { AiPersistence.hasPendingChanges(forKey: $0) }
+            ?? AiPersistence.hasPendingChanges
+        return chatPending || root.allLeaves().contains {
+            $0.scratchpad.hasPendingChanges(forKey: conflict.storageKey)
+        }
+    }
+
+    func keepCurrentForArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
+        try await performConflictOperation(conflict) {
+            try await self.storageCoordinator.keepCurrentForArchivedConflict(conflict)
+        }
+    }
+
+    func deleteArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
+        try await performConflictOperation(conflict) {
+            try await self.storageCoordinator.deleteArchivedConflict(conflict)
+        }
+    }
+
+    func restoreArchivedConflict(_ conflict: StorageCoordinator.ArchivedConflict) async throws {
+        guard conflictDocumentIsClosed(conflict) else { throw ConflictRecoveryError.documentOpen }
+        try await performConflictOperation(conflict) {
+            await ScratchpadPersistence.awaitPendingFlush()
+            await AiPersistence.awaitPendingFlush()
+            guard self.conflictDocumentIsClosed(conflict) else { throw ConflictRecoveryError.documentOpen }
+            guard !self.conflictHasPendingDrafts(conflict) else { throw ConflictRecoveryError.pendingChanges }
+            do {
+                try await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
+                    forKeys: conflict.storageKey.map { [$0] } ?? []
+                ) {
+                    try await self.storageCoordinator.restoreArchivedConflict(conflict) {
+                        await MainActor.run {
+                            self.conflictDocumentIsClosed(conflict) && !self.conflictHasPendingDrafts(conflict)
+                        }
+                    }
+                }
+            } catch StorageCoordinator.ArchivedConflictError.replacementUnverified {
+                // The write may already have committed. Reload clean state on
+                // the next open without dropping any new failed-write draft.
+                self.refreshAfterConflictReplacement(conflict)
+                throw StorageCoordinator.ArchivedConflictError.replacementUnverified
+            }
+            self.refreshAfterConflictReplacement(conflict)
+        }
+    }
+
+    /// Every user recovery mutation is joinable by opens, quit and background
+    /// drains. Capture earlier tasks before registering this task to avoid
+    /// waiting on its own drain handle.
+    private func performConflictOperation(
+        _ conflict: StorageCoordinator.ArchivedConflict,
+        operation: @escaping @MainActor () async throws -> Void
+    ) async throws {
+        // Join startup before registering recovery: startup may itself open a
+        // document, whose admission joins recovery. Registering first deadlocks.
+        await awaitMaintenance()
+        guard !isTerminating else { throw ConflictRecoveryError.appClosing }
+        guard conflictRecoveryTask == nil else { throw ConflictRecoveryError.alreadyRunning }
+        let pending = tabTeardowns.pendingTasksSnapshot()
+        let recoveryId = "conflict-recovery-\(UUID().uuidString)"
+        let task = Task { @MainActor [self] in
+            defer { tabTeardowns.finish(tabId: recoveryId) }
+            for previous in pending { await previous.value }
+            try await operation()
+        }
+        conflictRecoveryTask = task
+        let drain = Task { @MainActor in _ = try? await task.value }
+        tabTeardowns.register(tabId: recoveryId,
+            document: DocumentInfo(kind: .pdf, pdfPath: conflict.originalURL.path,
+                title: nil, pageCount: nil, lastPage: nil, docId: conflict.storageKey), task: drain)
+        defer { conflictRecoveryTask = nil }
+        try await task.value
+    }
+
+    private func refreshAfterConflictReplacement(_ conflict: StorageCoordinator.ArchivedConflict) {
+        if let key = conflict.storageKey {
+            if !AiPersistence.hasPendingChanges(forKey: key) {
+                AiPersistence.invalidateCachedConversation(forKey: key)
+            }
+            NotificationCenter.default.post(name: .vellumDocumentSidecarImported,
+                object: nil, userInfo: ["key": key])
+        }
+        NotificationCenter.default.post(name: .vellumAnnotationsUpdated, object: nil)
+    }
+
     // MARK: - Workspace-owned live tab runtimes
     //
     // Every open tab gets a `LiveTabRuntime` that owns its PDFView/WKWebView, so

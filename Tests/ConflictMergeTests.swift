@@ -8,13 +8,12 @@ struct ConflictMergeTests {
     private static let current = ConflictVersion(id: "current", isCurrent: true)
     private static let loser = ConflictVersion(id: "loser")
 
-    @Test("Conversation conflicts union messages while the current side wins collisions")
+    @Test("Same-ID conversation edits keep current message contents")
     func conversationsUnionByID() async throws {
         let target = URL(fileURLWithPath: "/Vellum/.vellum/documents/key/conversations.json")
         let current = [message("same", "current", "2026-08-05T09:00:00Z")]
         let loser = [
             message("same", "loser", "2026-08-05T08:00:00Z"),
-            message("new", "new", "2026-08-05T10:00:00Z"),
         ]
         let container = FakeSyncedContainer()
         container.seed(target, data: try JSONEncoder().encode(current))
@@ -28,8 +27,77 @@ struct ConflictMergeTests {
             [AiMessage].self, from: #require(container.peek(target)))
 
         #expect(resolution == .merged(target))
-        #expect(merged.map(\.id) == ["same", "new"])
+        #expect(merged.map(\.id) == ["same"])
         #expect(merged.first?.content == "current")
+    }
+
+    @Test("Clear and addition ambiguity preserves conversations in both conflict orders")
+    func conversationMembershipNeedsReview() async throws {
+        let target = URL(fileURLWithPath: "/Vellum/.vellum/documents/key/conversations.json")
+        let history = [message("old", "old", "2026-08-05T10:00:00Z")]
+        for (current, losing) in [(history, [AiMessage]()), ([AiMessage](), history)] {
+            let currentBytes = try JSONEncoder().encode(current)
+            let losingBytes = try JSONEncoder().encode(losing)
+            let container = FakeSyncedContainer()
+            container.seed(target, data: currentBytes)
+            container.injectConflict(at: target, versions: [Self.current, Self.loser],
+                                     payloads: ["loser": losingBytes])
+            let resolution = try await container.resolveConflict(event(target))
+            let archive = PreserveLosersConflictResolver.archiveURL(for: target, version: Self.loser)
+            #expect(resolution == .keptCurrent(archivedLosers: [archive]))
+            #expect(container.peek(target) == currentBytes)
+            #expect(container.peek(archive) == losingBytes)
+            // A repeated event has the same outcome without unioning either copy.
+            container.injectConflict(at: target, versions: [Self.current, Self.loser],
+                                     payloads: ["loser": losingBytes])
+            _ = try await container.resolveConflict(event(target))
+            #expect(container.peek(target) == currentBytes)
+        }
+    }
+
+    @Test("Unsave and annotation membership ambiguity preserves every web version")
+    func webMembershipNeedsReviewBeforeAnyMerge() async throws {
+        let target = URL(fileURLWithPath: "/Vellum/.vellum/records/key.json")
+        let cases: [(Bool, Bool, [String], [String])] = [
+            (false, true, ["a"], ["a"]),
+            (true, true, [], ["a"]),
+            (true, true, ["a"], ["a", "b"]),
+        ]
+        for (saved, losingSaved, ids, losingIDs) in cases {
+            var first = WebPageRecord(url: "https://example.com/article")
+            first.saved = saved
+            first.annotations = ids.map(annotation)
+            var second = first
+            second.saved = losingSaved
+            second.annotations = losingIDs.map(annotation)
+            for (current, losing) in [(first, second), (second, first)] {
+                let currentBytes = try WebLibrary.jsonEncoderPretty.encode(current)
+                let losingBytes = try WebLibrary.jsonEncoderPretty.encode(losing)
+                // A same-membership edit comes before the ambiguous version.
+                // It must not be committed before all versions are considered.
+                var edited = current
+                edited.title = "metadata edit"
+                let editVersion = ConflictVersion(id: "edited")
+                let versions = [Self.current, editVersion, Self.loser]
+                let container = FakeSyncedContainer()
+                container.seed(target, data: currentBytes)
+                container.injectConflict(at: target, versions: versions, payloads: [
+                    "edited": try WebLibrary.jsonEncoderPretty.encode(edited), "loser": losingBytes])
+                let resolution = try await container.resolveConflict(
+                    ConflictEvent(url: target, detectedAt: .now, versions: versions))
+                let archives = [editVersion, Self.loser].map {
+                    PreserveLosersConflictResolver.archiveURL(for: target, version: $0)
+                }
+                #expect(resolution == .keptCurrent(archivedLosers: archives))
+                #expect(container.peek(target) == currentBytes)
+                #expect(container.peek(archives[1]) == losingBytes)
+            }
+        }
+    }
+
+    private func annotation(_ id: String) -> Annotation {
+        Annotation(id: id, type: .note, pageNumber: 1, color: nil, content: id,
+                   positionData: nil, createdAt: "2026-08-05T10:00:00Z", updatedAt: "2026-08-05T10:00:00Z")
     }
 
     @Test("An unreadable current conversation defers without touching its bytes")
