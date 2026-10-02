@@ -402,7 +402,12 @@ final class DocumentActionsTests: XCTestCase {
     }
 
     func testStartupIsOwnedBeforeItsFirstAwaitAndTerminationRejectsLateStarts() async throws {
-        let workspace = await scratchpadWorkspace()
+        let coordinator = StorageCoordinator(
+            storeDir: tempDirectory.appendingPathComponent("startup-owned-local"),
+            modeProvider: { .local }, effectiveModeProvider: { .local },
+            rootResolver: { nil }, containerFactory: { nil })
+        let workspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
+        workspaces.append(workspace)
         let startup = LifecycleGate()
         let cleanup = LifecycleGate()
         lifecycleGates += [startup, cleanup]
@@ -412,14 +417,19 @@ final class DocumentActionsTests: XCTestCase {
             await cleanup.pause()
             cleaned = true
         })
-        try await startup.waitUntilPaused()
+        // Quit owns the registered startup before that background-priority
+        // task begins. Joining it also supplies real termination's priority
+        // donation instead of testing background scheduler throughput.
         workspace.beginTermination()
         XCTAssertFalse(workspace.startMaintenance { XCTFail("late startup admitted") })
         var drained = false
         let drain = Task { await workspace.awaitMaintenance(); drained = true }
         lifecycleTasks.append(drain)
+        try await startup.waitUntilPaused(label: "startup before first suspension")
+        XCTAssertFalse(drained)
+        XCTAssertFalse(cleaned)
         startup.release()
-        try await cleanup.waitUntilPaused()
+        try await cleanup.waitUntilPaused(label: "startup cleanup during termination")
         XCTAssertFalse(drained)
         XCTAssertFalse(cleaned)
         cleanup.release()
@@ -427,7 +437,7 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(cleaned)
         XCTAssertTrue(drained)
 
-        let lateWorkspace = WorkspaceStore(sessions: DocumentSessionManager())
+        let lateWorkspace = WorkspaceStore(sessions: DocumentSessionManager(), storageCoordinator: coordinator)
         workspaces.append(lateWorkspace)
         lateWorkspace.beginTermination()
         XCTAssertFalse(lateWorkspace.startMaintenance { XCTFail("late startup admitted") })
@@ -767,10 +777,13 @@ private final class LifecycleGate {
         await withCheckedContinuation { continuation = $0 }
     }
 
-    func waitUntilPaused() async throws {
+    func waitUntilPaused(label: String? = nil) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while continuation == nil {
-            guard ContinuousClock.now < deadline else { throw GateError.didNotArrive }
+            guard ContinuousClock.now < deadline else {
+                if let label { throw GateError.namedGateDidNotArrive(label) }
+                throw GateError.didNotArrive
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
@@ -782,7 +795,10 @@ private final class LifecycleGate {
         pending?.resume()
     }
 
-    enum GateError: Error { case didNotArrive }
+    enum GateError: Error {
+        case didNotArrive
+        case namedGateDidNotArrive(String)
+    }
 }
 
 @MainActor
