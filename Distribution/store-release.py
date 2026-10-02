@@ -598,16 +598,20 @@ def promote(args):
             assets.append(asset)
         # gh can only create an absent release; never upload with --clobber.
         run("gh", "release", "create", tag, *assets,
-            "--repo", REPOSITORY, "--verify-tag", "--latest",
+            "--repo", REPOSITORY, "--verify-tag", "--draft",
             "--title", "Vellum " + manifest["version"], "--notes", args.notes,
-            log=directory / "github-promote.log")
+            log=directory / "github-stage.log")
         require(all(sha(asset) == final["update_files"][asset.name]["sha256"] for asset in assets),
                 "Promotion snapshot changed")
     verify_tag()
     verify_final(directory)
     require(sha(directory / "final-artifact.json") == digest, "Final manifest changed during promotion")
+    # Keep the release unpublished until every final provenance/byte check passes.
+    run("gh", "release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest",
+        log=directory / "github-promote.log")
     write_json(directory / "github-promotion.json", {"time": now(), "final_manifest_sha256": digest,
-        "package_sha256": final["package_sha256"], "log_sha256": sha(directory / "github-promote.log")})
+        "package_sha256": final["package_sha256"], "stage_log_sha256": sha(directory / "github-stage.log"),
+        "log_sha256": sha(directory / "github-promote.log")})
     print("GitHub promotion recorded. Check the stable feed and download routes before release sign-off.")
 
 

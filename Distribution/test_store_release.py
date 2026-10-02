@@ -179,6 +179,8 @@ class DirectReleaseTests(unittest.TestCase):
             keychain_profile="SyntheticProfile", sparkle_tool=self.tool, sparkle_account="SyntheticAccount",
             notes="Synthetic release")
         self.calls = []
+        self.draft_created = False
+        self.published = False
 
     def appcast(self, updates):
         package = updates / self.package.name
@@ -219,10 +221,18 @@ class DirectReleaseTests(unittest.TestCase):
         if command[:2] == ("git", "ls-remote"):
             return f"{self.manifest['commit']}\trefs/tags/v0.1.2\n".encode()
         if command[:3] == ("gh", "release", "create"):
+            self.assertIn("--draft", command)
+            self.assertNotIn("--latest", command)
+            self.draft_created = True
             for name in (self.package.name, "Vellum.dmg", "appcast.xml"):
                 submitted = next(Path(arg) for arg in command if str(arg).endswith("/" + name))
                 self.assertNotEqual(submitted.parent, self.directory / "updates")
                 self.assertEqual(submitted.read_bytes(), (self.directory / "updates" / name).read_bytes())
+        if command[:3] == ("gh", "release", "edit"):
+            self.assertTrue(self.draft_created)
+            self.assertIn("--draft=false", command)
+            self.assertIn("--latest", command)
+            self.published = True
         return b""
 
     def prepare_final(self):
@@ -406,11 +416,18 @@ class DirectReleaseTests(unittest.TestCase):
     def test_promotion_only_sends_private_verified_assets_and_never_rebuilds(self):
         self.prepare_final()
         self.calls.clear()
-        with patch.object(release, "run", side_effect=self.external_tool):
+        def tool(*command, **kwargs):
+            if command[:3] == ("gh", "release", "edit"):
+                self.assertEqual(verify.call_count, 2)
+                self.assertEqual(self.calls[-1][:2], ("git", "ls-remote"))
+            return self.external_tool(*command, **kwargs)
+        with patch.object(release, "run", side_effect=tool), \
+             patch.object(release, "verify_final", wraps=release.verify_final) as verify:
             release.promote(self.args)
             with self.assertRaisesRegex(ValueError, "already recorded"):
                 release.promote(self.args)
-        self.assertEqual([str(c[0]) for c in self.calls], ["git", "gh", "git"])
+        self.assertEqual([str(c[0]) for c in self.calls], ["git", "gh", "git", "gh"])
+        self.assertTrue(self.published)
         self.assertTrue((self.directory / "github-promotion.json").exists())
 
     def test_original_mutation_during_promotion_cannot_swap_snapshot_or_record_success(self):
@@ -424,6 +441,8 @@ class DirectReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "assets changed"):
                 release.promote(self.args)
         self.assertFalse((self.directory / "github-promotion.json").exists())
+        self.assertTrue(self.draft_created)
+        self.assertFalse(self.published)
 
     def test_altool_rejects_mac_channel_before_credentials_or_transport(self):
         self.args.command = "validate"
