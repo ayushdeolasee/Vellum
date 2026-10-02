@@ -253,7 +253,9 @@ function normalizeReleaseValue(value) {
 }
 
 function recordEvent(context, env, event, source, version = "", build = "") {
-  context.waitUntil(writeEvent(env, event, source, version, build).catch(() => {}));
+  context.waitUntil(writeEvent(env, event, source, version, build).catch(() => {
+    console.error("Unable to record aggregate analytics event");
+  }));
 }
 
 async function writeEvent(env, event, source, version = "", build = "") {
@@ -278,7 +280,8 @@ async function analyticsHealth(request, env) {
   try {
     const counts = await env.DB.prepare(
       `SELECT
-       (SELECT COUNT(*) FROM analytics_events WHERE created_at >= date('now')) AS analyticsToday,
+       (SELECT COUNT(*) FROM analytics_events WHERE created_at >= date('now') AND created_at < date('now', '+1 day')) AS analyticsToday,
+       (SELECT event_count FROM analytics_daily_budget WHERE day = date('now')) AS analyticsBudgetToday,
        (SELECT COUNT(*) FROM analytics_events WHERE created_at < datetime('now', '-3 months')) AS analyticsOverdue,
        (SELECT COUNT(*) FROM testflight_signups WHERE created_at < datetime('now', '-12 months')) AS signupsOverdue`,
     ).first();

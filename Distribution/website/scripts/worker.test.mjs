@@ -101,8 +101,44 @@ test("all analytics routes share the rate gate and atomic daily insert budget", 
     const plan = f.database.prepare("EXPLAIN QUERY PLAN SELECT event_count FROM analytics_daily_budget WHERE day = date('now')").all();
     assert.ok(plan.some((row) => /SEARCH analytics_daily_budget USING PRIMARY KEY/.test(row.detail)));
     const health = await worker.fetch(request("/api/analytics-health", undefined, auth), f.env, f.context);
-    assert.deepEqual(await health.json(), { analyticsToday: 5000, analyticsOverdue: 0, signupsOverdue: 0, analyticsDailyLimit: 5000 });
+    assert.deepEqual(await health.json(), { analyticsToday: 5000, analyticsBudgetToday: 5000, analyticsOverdue: 0, signupsOverdue: 0, analyticsDailyLimit: 5000 });
   } finally { globalThis.fetch = originalFetch; f.database.close(); }
+});
+
+test("private health distinguishes today's stored rows from the controlling quota counter", async () => {
+  const f = fixture();
+  try {
+    f.database.exec("INSERT INTO analytics_events(event,source,created_at) VALUES ('first_launch','fixture',datetime('now')), ('first_launch','fixture',datetime('now','+1 day'))");
+    f.database.exec("UPDATE analytics_daily_budget SET event_count = 5000 WHERE day = date('now')");
+    let response = await worker.fetch(request("/api/analytics-health", undefined, auth), f.env, f.context);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { analyticsToday: 1, analyticsBudgetToday: 5000, analyticsOverdue: 0, signupsOverdue: 0, analyticsDailyLimit: 5000 });
+    assert.equal((await worker.fetch(request("/api/analytics", event), f.env, f.context)).status, 429);
+    f.database.exec("DELETE FROM analytics_daily_budget WHERE day = date('now')");
+    response = await worker.fetch(request("/api/analytics-health", undefined, auth), f.env, f.context);
+    assert.equal((await response.json()).analyticsBudgetToday, null);
+    f.database.exec("DROP TABLE analytics_daily_budget");
+    assert.equal((await worker.fetch(request("/api/analytics-health", undefined, auth), f.env, f.context)).status, 503);
+  } finally { f.database.close(); }
+});
+
+test("GET analytics failures log only a fixed message while downloads and appcasts remain available", async () => {
+  const f = fixture();
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const logs = [];
+  globalThis.fetch = async () => new Response("<rss />");
+  console.error = (...args) => logs.push(args);
+  try {
+    f.env.ANALYTICS_RATE_LIMITER.limit = async () => { throw new Error("sensitive fixture detail"); };
+    assert.equal((await worker.fetch(request("/download/mac?source=sensitive-fixture"), f.env, f.context)).status, 302);
+    await Promise.all(f.pending);
+    f.env.ANALYTICS_RATE_LIMITER.limit = async () => ({ success: true });
+    f.env.DB.prepare = () => { throw new Error("sensitive database fixture"); };
+    assert.equal((await worker.fetch(request("/updates/appcast.xml"), f.env, f.context)).status, 200);
+    await Promise.all(f.pending);
+    assert.deepEqual(logs, [["Unable to record aggregate analytics event"], ["Unable to record aggregate analytics event"]]);
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; f.database.close(); }
 });
 
 test("scheduled retention removes expired analytics and waitlist without any incoming event", async () => {
