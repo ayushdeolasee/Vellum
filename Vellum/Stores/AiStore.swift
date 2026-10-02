@@ -1198,14 +1198,20 @@ final class AiStore {
 
     /// Full send pipeline: key check, context block, provider dispatch, tool
     /// loop, persistence — see SPECS-ai.md "sendMessage pipeline".
-    func sendMessage(_ input: String, context: AiContextSnapshot) async {
-        let context = context
+    func sendMessage(
+        _ input: String, context: AiContextSnapshot,
+        expectedBinding: DocumentBinding? = nil,
+        preparePageImage: (@MainActor () async -> AiPageImageSnapshot?)? = nil,
+        onAccepted: (@MainActor () -> Void)? = nil
+    ) async {
+        var context = context
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !Task.isCancelled, !trimmed.isEmpty,
               let app,
               let annotationStore,
               let sessionIdAtStart = app.activeTabId,
               let documentAtStart = app.document else { return }
+        if let expectedBinding, app.activeDocumentBinding != expectedBinding { return }
 
         let settingsAtStart = settings
         if settingsAtStart.provider == .openai,
@@ -1256,6 +1262,16 @@ final class AiStore {
             coordinator: app.workspace?.storageCoordinator,
             messagesWithUser: messagesWithUser, assistantId: placeholder.id)
         activeRequest = preparing
+        // Transfer the draft before slow page preparation. Cancellation now
+        // persists its user bubble and references under this captured owner.
+        onAccepted?()
+        if let preparePageImage {
+            context.currentPageImage = await preparePageImage()
+            guard isCurrent(preparing) else {
+                if activeRequest === preparing { cancelActiveRequest() }
+                return
+            }
+        }
         // Keep the user bubble immediate while promotion is owned by the
         // resource queue. Cancellation queues this captured history behind it.
         var binding = initialBinding

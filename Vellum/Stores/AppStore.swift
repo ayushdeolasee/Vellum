@@ -1479,7 +1479,9 @@ final class AppStore {
         let task = teardowns.enqueuePersistence(document: document) { [self] in
             do {
                 try await assertImportDestinationClosed(destination, key: key)
-                await AiPersistence.awaitPendingFlush()
+                guard await AiPersistence.awaitPendingFlush() else {
+                    throw SessionServiceError.io("Existing conversation changes could not be saved. Restore storage access and retry the import.")
+                }
                 let installedKey = try await Self.writeImportedDocument(imported, to: destination)
                 guard installedKey == key else {
                     throw SessionServiceError.io("The imported document identity could not be confirmed. Its sidecar was kept unchanged.")

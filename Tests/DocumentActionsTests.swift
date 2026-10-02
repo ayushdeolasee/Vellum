@@ -813,6 +813,48 @@ final class DocumentActionsTests: XCTestCase {
         }
     }
 
+    func testAcceptedDraftSurvivesCancelledPagePreparation() async throws {
+        try await withAIDefaults {
+            let preparation = LifecycleGate()
+            lifecycleGates.append(preparation)
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture { _, _ in
+                state.calls += 1
+                return AiProviderResult(reply: "unexpected provider call", actionResults: [])
+            }
+            let binding = try XCTUnwrap(fixture.app.activeDocumentBinding)
+            let reference = AiReference(kind: .selection(text: "attached words", page: 1))
+            var context = fixture.context
+            context.references = [reference]
+            state.draft = "question before preparation"
+            let send = Task {
+                await fixture.ai.sendMessage(state.draft, context: context, expectedBinding: binding,
+                    preparePageImage: { await preparation.pause(); return nil },
+                    onAccepted: { state.draft = "" })
+            }
+            lifecycleTasks.append(send)
+            try await preparation.waitUntilPaused()
+            XCTAssertEqual(state.draft, "")
+            XCTAssertTrue(fixture.ai.messages.contains { $0.content == "question before preparation" })
+            _ = await fixture.app.webNavigated(tabId: "ai", url: fixture.b.info.pdfPath)
+            preparation.release()
+            await send.value
+            await fixture.app.awaitPendingTabTeardowns()
+            await AiPersistence.awaitPendingFlush()
+            let saved = try XCTUnwrap(AiPersistence.loadConversation(for: fixture.a.info)
+                .first { $0.content == "question before preparation" })
+            XCTAssertEqual(saved.references, [reference])
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertTrue(AiPersistence.loadConversation(for: fixture.b.info).isEmpty)
+            XCTAssertEqual(state.calls, 0)
+            state.draft = "not accepted for B"
+            await fixture.ai.sendMessage(state.draft, context: context, expectedBinding: binding,
+                onAccepted: { state.draft = "" })
+            XCTAssertEqual(state.draft, "not accepted for B")
+            XCTAssertEqual(state.calls, 0)
+        }
+    }
+
     func testAIConsentFailureRetryAndExplicitClearKeepTheRightHistory() async throws {
         try await withAIDefaults {
             let pending = LifecycleGate()
@@ -1056,6 +1098,51 @@ final class DocumentActionsTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: bytes).map(\.content), ["imported history"])
             for tab in app.tabs { await app.closeTab(tab.id) }
             await app.awaitPendingTabTeardowns()
+        }
+    }
+
+    func testImportRefusesParkedConversationWritesBeforeReplacingPayload() async throws {
+        try await withAIDefaults {
+            let imported = try importedFixture()
+            let destination = tempDirectory.appendingPathComponent("closed-original.pdf")
+            makePDF(at: destination, pages: 2)
+            try PdfMetadata.stampDocumentId(atPath: destination.path, id: imported.manifest.docId)
+            let originalBytes = try Data(contentsOf: destination)
+            let document = DocumentInfo(kind: .pdf, pdfPath: destination.path, title: "Closed original",
+                pageCount: 2, lastPage: 1, docId: imported.manifest.docId)
+            let key = DocumentIdentity.storageKey(for: document)
+            let previous = AiPersistence.makeMessage(role: .user, content: "previous durable history")
+            AiPersistence.saveConversation(for: document, messages: [previous])
+            let initialFlush = await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(initialFlush)
+            let directory = DocumentDataStore.documentDir(forKey: key)
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+            let latest = AiPersistence.makeMessage(role: .user, content: "unsaved original history")
+            AiPersistence.saveConversation(for: document, messages: [latest])
+            let parked = await AiPersistence.awaitPendingFlush()
+            XCTAssertFalse(parked)
+            XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: key))
+            let app = AppStore(sessions: DocumentSessionManager())
+            apps.append(app)
+            do {
+                _ = try await app.importVellumBundle(imported, to: destination) { _ in
+                    XCTFail("parked writes must be refused before payload replacement or prompting")
+                    return .keepLocal
+                }
+                XCTFail("expected failed-drain import refusal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Existing conversation changes")) }
+            XCTAssertEqual(try Data(contentsOf: destination), originalBytes)
+            XCTAssertEqual(AiPersistence.loadConversation(for: document), [latest])
+            XCTAssertTrue(AiPersistence.hasPendingChanges)
+            let retained = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+            XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: retained), [previous])
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            let recovered = await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(recovered)
+            XCTAssertFalse(AiPersistence.hasPendingChanges(forKey: key))
+            let durable = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
+            XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: durable), [latest])
         }
     }
 
@@ -1309,6 +1396,7 @@ private struct AIRequestFixture {
 
 @MainActor
 private final class AIRequestFixtureState {
+    var draft = ""
     var calls = 0
     var extractions = 0
     var outputs: [String] = []
