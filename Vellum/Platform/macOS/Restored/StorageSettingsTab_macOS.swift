@@ -354,7 +354,7 @@ struct StorageSettingsTab: View {
     private var currentLocationPath: String? {
         switch storageMode {
         case .icloud: return WebStorageSettings.icloudVellumRoot?.path
-        case .custom: return UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
+        case .custom: return AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
         case .local: return nil
         }
     }

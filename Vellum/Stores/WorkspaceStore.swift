@@ -198,11 +198,11 @@ final class WorkspaceStore {
     private static let sidebarFontSizeKey = "sidebarFontSize"
 
     var sidebarFontSize: Double = {
-        let stored = UserDefaults.standard.double(forKey: WorkspaceStore.sidebarFontSizeKey)
+        let stored = AppDefaults.current.double(forKey: WorkspaceStore.sidebarFontSizeKey)
         return stored == 0 ? 14 : min(WorkspaceStore.maxSidebarFontSize, max(WorkspaceStore.minSidebarFontSize, stored))
     }() {
         didSet {
-            UserDefaults.standard.set(sidebarFontSize, forKey: Self.sidebarFontSizeKey)
+            AppDefaults.current.set(sidebarFontSize, forKey: Self.sidebarFontSizeKey)
         }
     }
 
@@ -219,21 +219,21 @@ final class WorkspaceStore {
     static let defaultHighlightColorKey = "vellum.defaultHighlightColor"
 
     var defaultHighlightColor: String = {
-        let stored = UserDefaults.standard.string(forKey: WorkspaceStore.defaultHighlightColorKey)
+        let stored = AppDefaults.current.string(forKey: WorkspaceStore.defaultHighlightColorKey)
         if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
             return stored
         }
         return HIGHLIGHT_COLORS[0].value
     }() {
         didSet {
-            UserDefaults.standard.set(defaultHighlightColor, forKey: Self.defaultHighlightColorKey)
+            AppDefaults.current.set(defaultHighlightColor, forKey: Self.defaultHighlightColorKey)
         }
     }
 
     /// The persisted default highlight color read without an instance (services
     /// that create annotations off the main store, e.g. web sidecars, the AI).
     static func storedDefaultHighlightColor() -> String {
-        let stored = UserDefaults.standard.string(forKey: defaultHighlightColorKey)
+        let stored = AppDefaults.current.string(forKey: defaultHighlightColorKey)
         if let stored, HIGHLIGHT_COLORS.contains(where: { $0.value.caseInsensitiveCompare(stored) == .orderedSame }) {
             return stored
         }

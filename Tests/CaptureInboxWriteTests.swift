@@ -37,7 +37,7 @@ struct CaptureInboxWriteTests {
         try Data("{\"schema_ver".utf8).write(
             to: layout.tmp.appendingPathComponent("half.json"))
 
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
         #expect(await inbox.pendingCount() == 0)
         let report = await inbox.drain { _, _ in
             Issue.record("a temp file must never reach ingest")

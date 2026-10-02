@@ -11,7 +11,7 @@ import Testing
 // `.serialized` because both `WebLibrary.storeDirOverride` and
 // `PositionLayout.rootOverride` are process-global.
 
-@Suite("Position store — never touches the sidecar", .serialized)
+@Suite("Position store — never touches the sidecar", .serialized, .isolatedStorage)
 struct PositionSidecarIsolationTests {
     private let pageURL = "https://example.com/spec-150"
 

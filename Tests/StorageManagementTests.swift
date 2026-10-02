@@ -28,8 +28,8 @@ final class StorageManagementTests: XCTestCase {
     override func tearDown() async throws {
         DocumentDataStore.rootDirectoryOverride = nil
         AppDefaults.current.removeObject(forKey: ScratchpadPersistence.notesKey)
-        UserDefaults.standard.removeObject(forKey: AiPersistence.conversationsKey)
-        UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
+        AppDefaults.current.removeObject(forKey: AiPersistence.conversationsKey)
+        AppDefaults.current.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
         if let base { try? FileManager.default.removeItem(at: base) }
     }
 
@@ -308,7 +308,7 @@ final class StorageManagementTests: XCTestCase {
         {"/tmp/a.pdf":[{"role":"user","content":"hi"}],\
         "/tmp/b.pdf":[{"role":"assistant","content":"hello there"}]}
         """
-        UserDefaults.standard.set(blob, forKey: AiPersistence.conversationsKey)
+        AppDefaults.current.set(blob, forKey: AiPersistence.conversationsKey)
 
         let listed = AiPersistence.listLegacyEntries()
         XCTAssertEqual(Set(listed.map(\.key)), ["/tmp/a.pdf", "/tmp/b.pdf"])
@@ -322,7 +322,7 @@ final class StorageManagementTests: XCTestCase {
     // MARK: - Retention mapping
 
     func testRetentionDefaultsToSixMonths() {
-        UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
+        AppDefaults.current.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
         XCTAssertEqual(StorageHousekeeping.retentionMonths, 6)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let expected = Calendar.current.date(byAdding: .month, value: -6, to: now)

@@ -82,7 +82,7 @@ struct WorkspaceState: Codable, Equatable {
 enum WorkspaceService {
     private static let storageKey = "vellum.workspace"
 
-    /// Reads and writes go through `AppDefaults`, not `UserDefaults.standard`,
+    /// Reads and writes go through `AppDefaults`, not `AppDefaults.current`,
     /// so a test cannot persist over the developer's own window layout. Nothing
     /// used to stop it: `save` had no seam, and tests stayed out of real
     /// defaults only because `WorkspaceStore.scheduleSave` happens to bail on

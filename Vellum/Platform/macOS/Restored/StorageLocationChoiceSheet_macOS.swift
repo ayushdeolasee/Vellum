@@ -46,7 +46,7 @@ enum WebStorageRelocator {
     /// destination while this is still queued — and awaits completion, since
     /// callers go on to walk the store this sweep is still moving.
     static func sweepAtLaunch(coordinator: StorageCoordinator) async {
-        let isResuming = UserDefaults.standard.string(
+        let isResuming = AppDefaults.current.string(
             forKey: WebStorageSettings.pendingRelocationKey
         ) != nil
         if isResuming {
@@ -65,7 +65,7 @@ enum WebStorageRelocator {
             await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
         }.value
         if isResuming, generation == relocationGeneration {
-            if UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
+            if AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey) == nil {
                 status = Status(message: "Interrupted storage move recovered successfully.")
             } else {
                 status = Status(
@@ -83,7 +83,7 @@ enum WebStorageRelocator {
         coordinator: StorageCoordinator
     ) {
         let previous = WebStorageSettings.chosenMode ?? .local
-        let previousCustomPath = UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
+        let previousCustomPath = AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
         let sourceReachable = previous == .local || WebStorageSettings.root(for: previous) != nil
 

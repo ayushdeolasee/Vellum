@@ -40,7 +40,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         try writer.write(
             CaptureFixtures.record(
@@ -65,7 +65,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
         let log = IngestLog()
 
         try writer.write(
@@ -95,7 +95,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
         let log = IngestLog()
 
         try writer.write(
@@ -126,7 +126,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         let url = try writer.write(CaptureFixtures.record())
         let existedDuringIngest = Locked(false)
@@ -145,7 +145,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         let url = try writer.write(CaptureFixtures.record())
         let failed = await inbox.drain { _, _ in throw IngestFailure() }
@@ -165,7 +165,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         try layout.createDirectories()
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         let name = "0001754159999000-33333333-3333-4333-8333-333333333333.json"
         try Data("{\"source_url\": \"https://example.com/x\"".utf8).write(
@@ -205,7 +205,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
         let log = IngestLog()
 
         try writer.write(
@@ -238,7 +238,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
         let log = IngestLog()
 
         let raw = "https://example.com/post?utm_campaign=spring&id=7#top"
@@ -259,7 +259,7 @@ struct CaptureInboxDrainTests {
     func emptyDrainIsNoOp() async throws {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         let report = await inbox.drain { _, _ in
             Issue.record("an empty inbox must not call ingest")
@@ -274,7 +274,7 @@ struct CaptureInboxDrainTests {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
         let writer = CaptureInboxWriter(layout: layout)
-        let inbox = CaptureInbox(layout: layout)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
 
         // The extension writes `source_url` raw, so a share sheet handing over
         // something the web library can't key — a Files item, say — does reach

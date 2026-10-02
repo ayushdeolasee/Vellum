@@ -12,7 +12,7 @@ import Testing
 // `.serialized` because the ledger and the prefetch state both resolve their
 // paths through `RetentionLayout.directoryOverride`, which is process-global.
 
-@Suite("Read-later autopull — prefetch, retention and eviction wiring", .serialized)
+@Suite("Read-later autopull — prefetch, retention and eviction wiring", .serialized, .isolatedStorage)
 struct ReadLaterPrefetcherTests {
     private let now = RetentionFixtures.date("2026-08-02T09:00:00.000000+00:00")
 
@@ -359,7 +359,7 @@ struct ReadLaterPrefetcherTests {
 
 }
 
-@Suite("Read-later autopull — the eviction tombstone file", .serialized)
+@Suite("Read-later autopull — the eviction tombstone file", .serialized, .isolatedStorage)
 struct ReadLaterPrefetchStateTests {
     private let writtenAt = RetentionFixtures.date("2026-08-02T18:40:11.014000+00:00")
 

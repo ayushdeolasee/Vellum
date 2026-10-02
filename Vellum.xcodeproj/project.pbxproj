@@ -62,6 +62,7 @@
 		0E393DAB5F03396B5BB1C127 /* PdfInk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B1C1908D5C4C66BDFFB61EC /* PdfInk.swift */; };
 		0E5F33F0A2BEBDF0F3711833 /* DevelopmentBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B548C3BA28798C5F0AFF7B2D /* DevelopmentBadge.swift */; };
 		0EB130C7FC1B6257A9BFFB1B /* editor.bundle.js in Resources */ = {isa = PBXBuildFile; fileRef = 88261ED7614D2528C41ED0E5 /* editor.bundle.js */; };
+		0EC2A47480605717E9754456 /* StorageIsolationTrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */; };
 		0F0F504F7CBFAF9B6D3AC159 /* CaptureInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DE9C753D4C5E74504BBF8D /* CaptureInbox.swift */; };
 		0F7057983C78815EF2BCF1BE /* CaptureAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2216013CE2774BE07A765BDC /* CaptureAppDelegate.swift */; };
 		0FBBA332C2F8513F0687F0F6 /* ContentView_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */; };
@@ -207,6 +208,7 @@
 		4254F0BE577C113D920024C9 /* DocumentAccessBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FACFDED0229C75659621FEE /* DocumentAccessBookmarkStore.swift */; };
 		42BD28D226EFA7D32EF3E989 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */; };
 		43C780BABA587B2775DFC01E /* StorageInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */; };
+		44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */; };
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
 		45629F4BBD2AE0E0C9CAF397 /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
 		458A524FC53473F480002FB3 /* PdfViewerController_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255FC27E3D72C2319E07E6BC /* PdfViewerController_iOS.swift */; };
@@ -307,6 +309,7 @@
 		6CE72787F2F742DD13FB3F6D /* InspectorTabSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A82232CED8811F2320FD91 /* InspectorTabSwitcher.swift */; };
 		6CF8BF0A5F97F4B8149B388C /* PdfRegionRenderer_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A983BCE1C6F0EFD91050061B /* PdfRegionRenderer_iOS.swift */; };
 		6D20F18A2314AAFEEE5AAF6B /* CaptureRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CAEFA877A742FE4B9D31369 /* CaptureRecord.swift */; };
+		6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 717C1543B2E8976D6267F8A5 /* DocumentActionsTests.swift */; };
 		6D737237057DD944A4616889 /* ModelSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B43A2E8F7A54C9B8E4E160D /* ModelSelector.swift */; };
 		6DA01497B4E058B2932E4826 /* ScratchpadPanel_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */; };
 		6E8905EC7401E44BEBE09884 /* LiveTabRuntime_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E6AB46224F2E9D0978B22E /* LiveTabRuntime_macOS.swift */; };
@@ -444,6 +447,7 @@
 		9EECA809ACF9D63A2A40199C /* RenameDocumentSheet_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76731D87C0B0381DBFFBF420 /* RenameDocumentSheet_macOS.swift */; };
 		9F5CAD5AFC6A96BE225C8494 /* AiFileAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */; };
 		9F5DD0BA29D30BFFCF4D641A /* HelpCenterView_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 737CCBBD4F608834E796B9BE /* HelpCenterView_macOS.swift */; };
+		A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C305C285A13A9D254605DD25 /* ReleaseIsolationTests.swift */; };
 		A2D1AC2B2C6A9CE030404D0A /* FixtureLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75EE68092E30567B435AD54 /* FixtureLoader.swift */; };
 		A30B3663BD8E4C469F237F66 /* ConnectServiceSheet_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1DAAEBD7AD58F5AE7FA6C1 /* ConnectServiceSheet_macOS.swift */; };
 		A3CF6AA8554F7127CAC435D4 /* KeyboardShortcuts_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C4B2A34AE7B5D089B26884 /* KeyboardShortcuts_iOS.swift */; };
@@ -496,6 +500,7 @@
 		B325508C2DB7E97DB2C02889 /* RetentionLedgerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47DC45229291BFD95CEC006 /* RetentionLedgerTests.swift */; };
 		B370CC64C56C8E29DC8A4C42 /* WebStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF653B1B8741B61DBE9B55EE /* WebStorage.swift */; };
 		B3DA8203EC8840A14F4D6AFD /* StorageRelocationInventoryReloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7968C20D5E48A1B564CD3A45 /* StorageRelocationInventoryReloadPolicy.swift */; };
+		B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5DD549A406B0F92F0CC6B8 /* DocumentAccessBookmarkStoreTests.swift */; };
 		B40539229B7FA2B662AEDA7C /* PhoneShell_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */; };
 		B42768975D72D52CBA514F02 /* AiSharingConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C693EB2623BEEF5646B6DF3 /* AiSharingConsent.swift */; };
 		B462FF7C885DECBBCA1D7909 /* ModelSelector_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5DA195F4FAB34BD661D698 /* ModelSelector_macOS.swift */; };
@@ -677,6 +682,7 @@
 		F99239B9C21BA6FE876AD605 /* CaptureBackgroundSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABFD477181A3E9AC72066F6F /* CaptureBackgroundSession.swift */; };
 		F9DA8014506FBB48C440F718 /* AiStreaming.swift in Sources */ = {isa = PBXBuildFile; fileRef = E201F2530645C6348ECC59AA /* AiStreaming.swift */; };
 		FBBE27A980D304C976EE251D /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8909CC21C72AF947D20B4B6C /* AppStore.swift */; };
+		FBE964CB7F407B6DE2E76114 /* ReleaseIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C305C285A13A9D254605DD25 /* ReleaseIsolationTests.swift */; };
 		FCC3585E3064DAB9548B0343 /* TabResidency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E69330A4F460353FBCB25AB /* TabResidency.swift */; };
 		FCCD055ACE5DE347755A52FC /* PdfSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F791F226FCC023AA19F7365 /* PdfSessionBackend.swift */; };
 		FD1DCC734064FFB5C7B6D1AD /* ConflictMergeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CD6895A36A8C66D6921770 /* ConflictMergeTests.swift */; };
@@ -705,6 +711,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 28AB06FA6634E009DA9B6034;
 			remoteInfo = VellumWidgets;
+		};
+		7996BDDDB4886C3DDD51E11B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0C9BCB1EF43154BF1DE74BAE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B6F72C0F8B7E5879E563183C;
+			remoteInfo = VellumMac;
 		};
 		8248CBA0A20E015F864F18FD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -935,6 +948,7 @@
 		855C0D42BC41F2C175BA8F81 /* SyncedContainerReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerReadinessTests.swift; sourceTree = "<group>"; };
 		86FE3DB21F9C987943472B41 /* SyncedContainerConflictTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContainerConflictTests.swift; sourceTree = "<group>"; };
 		8764C0B9C595EB79CC9B28F0 /* PaneView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneView_iOS.swift; sourceTree = "<group>"; };
+		87AA78FB673FD2D7ECC9228D /* VellumMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VellumMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		87B047D633C0555E833CCB73 /* CaptureRecordBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecordBuilder.swift; sourceTree = "<group>"; };
 		87B22387C1A8E19F0316151E /* PdfViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView.swift; sourceTree = "<group>"; };
 		87E65624BC3B634F20597254 /* IntegrationsCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsCacheTests.swift; sourceTree = "<group>"; };
@@ -948,6 +962,7 @@
 		8A774391C8C286453B790F75 /* MarkdownMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMessage.swift; sourceTree = "<group>"; };
 		8AE579DDEEDCD328B5704AF0 /* RecentDocumentsWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentDocumentsWidget.swift; sourceTree = "<group>"; };
 		8B1C1908D5C4C66BDFFB61EC /* PdfInk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfInk.swift; sourceTree = "<group>"; };
+		8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageIsolationTrait.swift; sourceTree = "<group>"; };
 		8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabRuntime.swift; sourceTree = "<group>"; };
 		8C33B518BE736FCF7077F63A /* PdfDocIdRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfDocIdRegistry.swift; sourceTree = "<group>"; };
 		8CD27558DB4D8DB212826B68 /* PaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneView.swift; sourceTree = "<group>"; };
@@ -1034,6 +1049,7 @@
 		C21D7E5EC3C32E20B0FDC7DB /* PdfMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfMetadata.swift; sourceTree = "<group>"; };
 		C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadPanel_iOS.swift; sourceTree = "<group>"; };
 		C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Italic.woff2"; sourceTree = "<group>"; };
+		C305C285A13A9D254605DD25 /* ReleaseIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseIsolationTests.swift; sourceTree = "<group>"; };
 		C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiClient.swift; sourceTree = "<group>"; };
 		C47DC45229291BFD95CEC006 /* RetentionLedgerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetentionLedgerTests.swift; sourceTree = "<group>"; };
 		C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSettingsPanel.swift; sourceTree = "<group>"; };
@@ -1284,6 +1300,7 @@
 			children = (
 				9D58D6980122701CBA30200F /* Vellum.app */,
 				D17A0D59B372839D9486FE7E /* Vellum.app */,
+				87AA78FB673FD2D7ECC9228D /* VellumMacTests.xctest */,
 				F7EB2CAD9B62427704761B66 /* VellumShare.appex */,
 				775C6AD8C83907CD1B8F65B2 /* VellumTests.xctest */,
 				B90FF0B5EC9E9949FF46B5C9 /* VellumWidgets.appex */,
@@ -1374,6 +1391,7 @@
 				4E826FD6201A813D8310F984 /* PositionWireFormatTests.swift */,
 				5BBD3C6F730DC9A2EDE0154F /* PositionWiringTests.swift */,
 				BB2C2905E4A08861E42C2EED /* RecentsResolveTests.swift */,
+				C305C285A13A9D254605DD25 /* ReleaseIsolationTests.swift */,
 				03D33C5F37CE04627454515D /* RelocationCoordinationTests.swift */,
 				B778A6D627FC3EA9CC5E9CF5 /* RetentionEngineTests.swift */,
 				C47DC45229291BFD95CEC006 /* RetentionLedgerTests.swift */,
@@ -1600,6 +1618,7 @@
 				CE2FEB56AF83B86BE5EE77D1 /* FakeSyncedContainer.swift */,
 				CEECB8C58BF7A46A3DA5958D /* PositionTestSupport.swift */,
 				532C0DFF5803CDB1E4EDF9D8 /* RetentionTestSupport.swift */,
+				8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */,
 			);
 			path = TestSupport;
 			sourceTree = "<group>";
@@ -2029,6 +2048,24 @@
 			productReference = D17A0D59B372839D9486FE7E /* Vellum.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C247656B78D40FAEC04A795B /* VellumMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8AA3034A7DFA7675D32CAB30 /* Build configuration list for PBXNativeTarget "VellumMacTests" */;
+			buildPhases = (
+				BC67C5366F9421B438706306 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CB85F838929CD0379B8D5992 /* PBXTargetDependency */,
+			);
+			name = VellumMacTests;
+			packageProductDependencies = (
+			);
+			productName = VellumMacTests;
+			productReference = 87AA78FB673FD2D7ECC9228D /* VellumMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -2058,6 +2095,10 @@
 						DevelopmentTeam = 9DCG97VASG;
 						ProvisioningStyle = Automatic;
 					};
+					C247656B78D40FAEC04A795B = {
+						DevelopmentTeam = 9DCG97VASG;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 545F98C5AEAB337EC64858B5 /* Build configuration list for PBXProject "Vellum" */;
@@ -2080,6 +2121,7 @@
 			targets = (
 				15BDAAE9AA57BC95F9AD6FBB /* Vellum */,
 				B6F72C0F8B7E5879E563183C /* VellumMac */,
+				C247656B78D40FAEC04A795B /* VellumMacTests */,
 				A2777796A94ECB5D3412C2DE /* VellumShare */,
 				65E775B7223FE8550067535A /* VellumTests */,
 				28AB06FA6634E009DA9B6034 /* VellumWidgets */,
@@ -2456,6 +2498,17 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BC67C5366F9421B438706306 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */,
+				6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */,
+				A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */,
+				44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BF0A340894FBDD78876EEC2F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -2794,6 +2847,7 @@
 				82523B24868B7DBDABB7F7DE /* ReadLaterPrefetcherTests.swift in Sources */,
 				D863FFFE97E69782D6DF4B7F /* ReadwiseClientTests.swift in Sources */,
 				17CEDFD80E708ADD26650928 /* RecentsResolveTests.swift in Sources */,
+				FBE964CB7F407B6DE2E76114 /* ReleaseIsolationTests.swift in Sources */,
 				53CEA523EEE45C0AB2057F98 /* RelocationCoordinationTests.swift in Sources */,
 				EFC3AA79C9FED94D8AE14A38 /* RetentionEngineTests.swift in Sources */,
 				B325508C2DB7E97DB2C02889 /* RetentionLedgerTests.swift in Sources */,
@@ -2807,6 +2861,7 @@
 				6FF504D4444288CAFA641BF6 /* SettingsNavigationTests.swift in Sources */,
 				5C8961829A34AFE52B690D6F /* SheetPresenceIOSTests.swift in Sources */,
 				F0AEA35EEC47E6386F0D9816 /* StorageCoordinatorTests.swift in Sources */,
+				0EC2A47480605717E9754456 /* StorageIsolationTrait.swift in Sources */,
 				ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */,
 				983EA8431E811B2013AC9EAF /* StorageRecoveryRoutingTests.swift in Sources */,
 				E1012542A479C72D5AE7D8EC /* StorageRelocationContextTests.swift in Sources */,
@@ -2844,6 +2899,11 @@
 			target = 15BDAAE9AA57BC95F9AD6FBB /* Vellum */;
 			targetProxy = 8248CBA0A20E015F864F18FD /* PBXContainerItemProxy */;
 		};
+		CB85F838929CD0379B8D5992 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B6F72C0F8B7E5879E563183C /* VellumMac */;
+			targetProxy = 7996BDDDB4886C3DDD51E11B /* PBXContainerItemProxy */;
+		};
 		E51345FA74BB5770533FACDD /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A2777796A94ECB5D3412C2DE /* VellumShare */;
@@ -2877,6 +2937,25 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		23155DA3A92E17F94605644D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.ayushdeolasee.vellum.dev.mac-tests";
+				SDKROOT = macosx;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum";
+			};
+			name = Debug;
 		};
 		28F3A177CF7F85C8D15B007D /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -3245,6 +3324,25 @@
 			};
 			name = Release;
 		};
+		F2253D8F394C6C4209303553 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.ayushdeolasee.vellum.dev.mac-tests";
+				SDKROOT = macosx;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -3280,6 +3378,15 @@
 			buildConfigurations = (
 				5730AEB8C52F04623E01A87E /* Debug */,
 				CA2E0313BD0C2E8FB794CEF6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8AA3034A7DFA7675D32CAB30 /* Build configuration list for PBXNativeTarget "VellumMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				23155DA3A92E17F94605644D /* Debug */,
+				F2253D8F394C6C4209303553 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

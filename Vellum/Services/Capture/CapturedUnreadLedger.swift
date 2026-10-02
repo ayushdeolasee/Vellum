@@ -16,7 +16,7 @@ actor CapturedUnreadLedger {
         suiteName: String? = nil,
         defaultsKey: String = "capture.unread-web-keys"
     ) {
-        defaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        defaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? AppDefaults.current
         self.defaultsKey = defaultsKey
     }
 

@@ -19,11 +19,13 @@ struct VellumApp_iOS: App {
     @State private var showHelp = false
     @State private var backgroundFlushController: BackgroundFlushController
     @State private var systemRouteHandoff: VellumSystemRouteHandoff
+    private let uiTestDocumentPath: String?
     private let captureIngestion: CaptureIngestion?
     private let widgetSnapshotPublisher: VellumWidgetSnapshotPublisher
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        uiTestDocumentPath = UITestLaunchConfiguration.prepare()
         // Moves the first vault read off the main thread before anything asks
         // for a token.
         KeychainStore.prewarm()
@@ -31,7 +33,7 @@ struct VellumApp_iOS: App {
         let sessions = DocumentSessionManager()
         let storageCoordinator = StorageCoordinator()
         let webLibraryStorage = WebLibraryStorage(coordinator: storageCoordinator)
-        let captureIngestion = CaptureInboxLayout.resolve().map {
+        let captureIngestion = (!TestEnvironment.isHostedTestProcess && RuntimeProfile.current.syncEnabled ? CaptureInboxLayout.resolve() : nil).map {
             CaptureIngestion(layout: $0, storage: webLibraryStorage)
         }
         let integrations = IntegrationsStore(
@@ -61,7 +63,8 @@ struct VellumApp_iOS: App {
         _backgroundFlushController = State(initialValue: BackgroundFlushController())
         _systemRouteHandoff = State(initialValue: .shared)
         self.captureIngestion = captureIngestion
-        widgetSnapshotPublisher = VellumWidgetSnapshotPublisher()
+        widgetSnapshotPublisher = VellumWidgetSnapshotPublisher(
+            store: !TestEnvironment.isHostedTestProcess && RuntimeProfile.current.syncEnabled ? .resolve() : nil)
 
         // Background URLSession completion is delivered through UIApplicationDelegate,
         // while every foreground/launch trigger below calls the same actor-owned,
@@ -80,11 +83,13 @@ struct VellumApp_iOS: App {
         // in a `.task`. The handler asks the integrations store for the same
         // refresh + prefetch + retention-sweep pass the foreground runs, minus
         // the documents that are currently open in a tab.
-        ReadLaterBackgroundRefresh.register { [integrations, workspace] in
-            let openPaths = Set(
-                workspace.root.allLeaves()
-                    .flatMap { $0.app.tabs }.compactMap(\.document).map(\.pdfPath))
-            await integrations.backgroundRefresh(openDocumentPaths: openPaths)
+        if !TestEnvironment.isHostedTestProcess {
+            ReadLaterBackgroundRefresh.register { [integrations, workspace] in
+                let openPaths = Set(
+                    workspace.root.allLeaves()
+                        .flatMap { $0.app.tabs }.compactMap(\.document).map(\.pdfPath))
+                await integrations.backgroundRefresh(openDocumentPaths: openPaths)
+            }
         }
     }
 
@@ -99,6 +104,7 @@ struct VellumApp_iOS: App {
                 // work: start() loads the cached snapshots, so the providers'
                 // items are on screen before the TTL sweep starts churning.
                 .task {
+                    guard !TestEnvironment.isHostedTestProcess else { return }
                     await workspace.integrations.start()
                     await publishWidgetSnapshot()
                 }
@@ -109,8 +115,14 @@ struct VellumApp_iOS: App {
                 .task(id: workspace.integrations.searchRevision) {
                     await publishWidgetSnapshot()
                 }
-                .task { await launchMaintenance() }
                 .task {
+                    await launchMaintenance()
+                    if let uiTestDocumentPath {
+                        await workspace.focusedPane.app.openFile(path: uiTestDocumentPath)
+                    }
+                }
+                .task {
+                    guard !TestEnvironment.isHostedTestProcess else { return }
                     await workspace.startStorageCoordinator()
                     _ = await captureIngestion?.drain()
                 }
@@ -253,6 +265,7 @@ struct VellumApp_iOS: App {
     /// the first-launch storage choice if the user hasn't made one yet.
     @MainActor
     private func launchMaintenance() async {
+        guard !TestEnvironment.isHostedTestProcess else { return }
         // The root also starts integrations in its own task for fast UI data,
         // but maintenance must join that same startup before it snapshots the
         // queue. Otherwise a cold launch can prefetch an empty initial store.

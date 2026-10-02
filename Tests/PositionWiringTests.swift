@@ -3,7 +3,7 @@ import Testing
 
 @testable import Vellum
 
-@Suite("Position store — app wiring", .serialized)
+@Suite("Position store — app wiring", .serialized, .isolatedStorage)
 @MainActor
 struct PositionWiringTests {
     private let pageURL = "https://example.com/spec-154"
@@ -375,13 +375,13 @@ struct PositionWiringTests {
             _ = try seedSidecar(openedAt: nil, savedAt: nil)
             try Data("snapshot".utf8).write(
                 to: WebLibrary.snapshotPath(forKey: WebLibrary.pageKey(pageURL)))
-            let previous = UserDefaults.standard.object(forKey: StorageHousekeeping.retentionMonthsKey)
-            UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
+            let previous = AppDefaults.current.object(forKey: StorageHousekeeping.retentionMonthsKey)
+            AppDefaults.current.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
             defer {
                 if let previous {
-                    UserDefaults.standard.set(previous, forKey: StorageHousekeeping.retentionMonthsKey)
+                    AppDefaults.current.set(previous, forKey: StorageHousekeeping.retentionMonthsKey)
                 } else {
-                    UserDefaults.standard.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
+                    AppDefaults.current.removeObject(forKey: StorageHousekeeping.retentionMonthsKey)
                 }
             }
 

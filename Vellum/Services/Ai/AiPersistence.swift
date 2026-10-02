@@ -953,7 +953,7 @@ enum AiPersistence {
     }
 
     private static func readConversations() -> [ConversationEntry] {
-        guard let raw = UserDefaults.standard.string(forKey: conversationsKey),
+        guard let raw = AppDefaults.current.string(forKey: conversationsKey),
               let data = raw.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return [] }
@@ -1014,7 +1014,7 @@ enum AiPersistence {
                   let value = String(data: valueData, encoding: .utf8) else { continue }
             pairs.append("\(key):\(value)")
         }
-        UserDefaults.standard.set("{" + pairs.joined(separator: ",") + "}", forKey: conversationsKey)
+        AppDefaults.current.set("{" + pairs.joined(separator: ",") + "}", forKey: conversationsKey)
     }
 
     /// JSONSerialization uses a Dictionary, so recover the source object's key

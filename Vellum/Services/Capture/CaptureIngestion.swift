@@ -51,6 +51,7 @@ actor CaptureIngestion {
     init(
         layout: CaptureInboxLayout,
         storage: WebLibraryStorage,
+        clock: PositionClock = SystemPositionClock(),
         unreadLedger: CapturedUnreadLedger = .shared,
         syncEnabled: Bool = RuntimeProfile.current.syncEnabled,
         fetch: @escaping Fetch = { url in
@@ -71,7 +72,7 @@ actor CaptureIngestion {
             NotificationCenter.default.post(name: .vellumCapturedLibraryChanged, object: nil)
         }
     ) {
-        inbox = CaptureInbox(layout: layout)
+        inbox = CaptureInbox(layout: layout, clock: clock)
         self.storage = storage
         self.unreadLedger = unreadLedger
         self.syncEnabled = syncEnabled

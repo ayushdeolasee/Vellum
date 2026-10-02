@@ -18,8 +18,8 @@ final class WalkthroughSettingsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        priorValue = UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey)
-        UserDefaults.standard.removeObject(forKey: WalkthroughSettings.seenKey)
+        priorValue = AppDefaults.current.object(forKey: WalkthroughSettings.seenKey)
+        AppDefaults.current.removeObject(forKey: WalkthroughSettings.seenKey)
         // `removeObject` clears the app's OWN defaults domain and nothing else.
         // A simulator that has had `defaults write com.ayushdeolasee.vellum
         // walkthrough.seen -bool true` run against it — the usual way to skip
@@ -27,16 +27,16 @@ final class WalkthroughSettingsTests: XCTestCase {
         // device-wide, where it outlives an uninstall and still answers
         // `bool(forKey:)` after the removal above. Shadow it with an explicit
         // false so these tests measure the flag rather than the machine.
-        if UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey) != nil {
-            UserDefaults.standard.set(false, forKey: WalkthroughSettings.seenKey)
+        if AppDefaults.current.object(forKey: WalkthroughSettings.seenKey) != nil {
+            AppDefaults.current.set(false, forKey: WalkthroughSettings.seenKey)
         }
     }
 
     override func tearDown() {
         if let priorValue {
-            UserDefaults.standard.set(priorValue, forKey: WalkthroughSettings.seenKey)
+            AppDefaults.current.set(priorValue, forKey: WalkthroughSettings.seenKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: WalkthroughSettings.seenKey)
+            AppDefaults.current.removeObject(forKey: WalkthroughSettings.seenKey)
         }
         super.tearDown()
     }
@@ -62,7 +62,7 @@ final class WalkthroughSettingsTests: XCTestCase {
         // process, so the flag has to survive as a plain persisted bool rather
         // than as in-memory state.
         WalkthroughSettings.markSeen()
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: WalkthroughSettings.seenKey))
+        XCTAssertTrue(AppDefaults.current.bool(forKey: WalkthroughSettings.seenKey))
         XCTAssertFalse(WalkthroughSettings.needsFirstRun)
     }
 }

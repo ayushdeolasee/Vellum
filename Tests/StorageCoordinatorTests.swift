@@ -3,7 +3,7 @@ import Testing
 
 @testable import Vellum
 
-@Suite("StorageCoordinator orchestration", .serialized)
+@Suite("StorageCoordinator orchestration", .serialized, .isolatedStorage)
 struct StorageCoordinatorTests {
     private let records = URL(fileURLWithPath: "/vellum/records", isDirectory: true)
 
@@ -394,7 +394,7 @@ struct StorageCoordinatorTests {
 
         await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
 
-        #expect(UserDefaults.standard.string(
+        #expect(AppDefaults.current.string(
             forKey: WebStorageSettings.pendingRelocationKey) != nil)
         #expect(container.metadataQueryCount > 0)
         #expect(container.coordinatedRemoveCount == 0)
@@ -1072,7 +1072,7 @@ struct StorageCoordinatorTests {
 }
 
 #if os(iOS)
-@Suite("iOS background flush controller", .serialized)
+@Suite("iOS background flush controller", .serialized, .isolatedStorage)
 @MainActor
 struct BackgroundFlushControllerTests {
     @Test("Foreground invalidation cancels stale flush and ends token once")

@@ -522,7 +522,7 @@ struct PdfKitView_iOS: UIViewRepresentable {
 
         @objc private func twoFingerTapped(_ gesture: UITapGestureRecognizer) {
             guard let view, !ink.isActive,
-                  UserDefaults.standard.object(forKey: "twoFingerNoteTap") as? Bool ?? true
+                  AppDefaults.current.object(forKey: "twoFingerNoteTap") as? Bool ?? true
             else { return }
             controller.handleNoteTap(atTopLeft: gesture.location(in: view))
         }

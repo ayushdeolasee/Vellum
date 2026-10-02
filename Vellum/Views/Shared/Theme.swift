@@ -229,7 +229,7 @@ final class ThemeStore {
     }
 
     init() {
-        let stored = UserDefaults.standard.string(forKey: Self.storageKey)
+        let stored = AppDefaults.current.string(forKey: Self.storageKey)
             .flatMap(AppTheme.init(rawValue:))
         // Existing light/dark preferences migrate untouched; a fresh install
         // (no stored value) defaults to System so it tracks macOS out of the box.
@@ -300,7 +300,7 @@ final class ThemeStore {
 
     func setTheme(_ theme: AppTheme) {
         self.theme = theme
-        UserDefaults.standard.set(theme.rawValue, forKey: Self.storageKey)
+        AppDefaults.current.set(theme.rawValue, forKey: Self.storageKey)
         // Re-read the OS appearance so a switch into System resolves correctly
         // even if the KVO callback lands a frame later.
         systemIsDark = Self.currentSystemIsDark()

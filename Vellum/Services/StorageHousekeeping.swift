@@ -15,7 +15,7 @@ enum StorageHousekeeping {
     /// Selected retention in months, or nil for "Never" (skip eviction).
     /// Defaults to six months when the user has never chosen (design §8 default).
     static var retentionMonths: Int? {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.current
         guard defaults.object(forKey: retentionMonthsKey) != nil else { return defaultMonths }
         let value = defaults.integer(forKey: retentionMonthsKey)
         return value <= 0 ? nil : value
@@ -23,7 +23,7 @@ enum StorageHousekeeping {
 
     /// Persist the retention choice. `nil` stores the "Never" sentinel (0).
     static func setRetentionMonths(_ months: Int?) {
-        UserDefaults.standard.set(months ?? 0, forKey: retentionMonthsKey)
+        AppDefaults.current.set(months ?? 0, forKey: retentionMonthsKey)
     }
 
     /// The eviction cutoff for the current policy, or nil when retention is

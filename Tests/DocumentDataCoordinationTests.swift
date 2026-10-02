@@ -4,7 +4,7 @@ import Testing
 @testable import Vellum
 
 @MainActor
-@Suite("Document data — coordinated storage", .serialized)
+@Suite("Document data — coordinated storage", .serialized, .isolatedStorage)
 struct DocumentDataCoordinationTests {
     private let cloudRoot = URL(fileURLWithPath: "/test-cloud/Vellum", isDirectory: true)
     private let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

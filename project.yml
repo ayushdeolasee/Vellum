@@ -45,13 +45,19 @@ schemes:
     test:
       config: Debug
       targets:
-        - VellumTests
+        - name: VellumTests
+          parallelizable: false
   Vellum Mac:
     build:
       targets:
         VellumMac: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: VellumMacTests
+          parallelizable: false
 targets:
   VellumMac:
     type: application
@@ -85,6 +91,24 @@ targets:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev
           APP_DISPLAY_NAME: Vellum Dev
+  VellumMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/DocumentActionsTests.swift
+      - path: Tests/DocumentAccessBookmarkStoreTests.swift
+      - path: Tests/ReleaseIsolationTests.swift
+      - path: Tests/TestSupport/StorageIsolationTrait.swift
+    dependencies:
+      - target: VellumMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev.mac-tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Vellum.app/Contents/MacOS/Vellum
+        BUNDLE_LOADER: $(TEST_HOST)
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "YES"
+        GCC_TREAT_WARNINGS_AS_ERRORS: "YES"
   VellumTests:
     type: bundle.unit-test
     platform: iOS

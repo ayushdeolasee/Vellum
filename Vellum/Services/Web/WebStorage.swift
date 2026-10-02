@@ -48,7 +48,7 @@ enum WebStorageSettings {
     /// Nil until the user has made the first-launch choice.
     static var chosenMode: WebStorageMode? {
         if let modeOverride { return modeOverride }
-        guard let raw = UserDefaults.standard.string(forKey: modeKey) else { return nil }
+        guard let raw = AppDefaults.current.string(forKey: modeKey) else { return nil }
         return WebStorageMode(rawValue: raw)
     }
 
@@ -73,7 +73,7 @@ enum WebStorageSettings {
     static var needsFirstLaunchChoice: Bool { chosenMode == nil }
 
     static func setMode(_ mode: WebStorageMode, customPath: String? = nil, customBookmark: Data? = nil) {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.current
         defaults.set(mode.rawValue, forKey: modeKey)
         if mode == .custom {
             if let customBookmark { defaults.set(customBookmark, forKey: customBookmarkKey) }
@@ -83,7 +83,7 @@ enum WebStorageSettings {
 
     /// Persist the security-scoped bookmark for a user-picked custom folder.
     static func setCustomBookmark(_ data: Data) {
-        UserDefaults.standard.set(data, forKey: customBookmarkKey)
+        AppDefaults.current.set(data, forKey: customBookmarkKey)
     }
 
     // MARK: iCloud ubiquity container (resolved off-main, cached)
@@ -154,12 +154,12 @@ enum WebStorageSettings {
     static var customRoot: URL? {
         if let customRootOverride { return customRootOverride }
         // iOS: a user-picked folder is a security-scoped bookmark, not a path.
-        if let data = UserDefaults.standard.data(forKey: customBookmarkKey),
+        if let data = AppDefaults.current.data(forKey: customBookmarkKey),
            let url = resolveBookmark(data) {
             return url
         }
         // Fallback: a plain stored path (tests / non-scoped folders).
-        guard let path = UserDefaults.standard.string(forKey: customPathKey),
+        guard let path = AppDefaults.current.string(forKey: customPathKey),
               !path.isEmpty else { return nil }
         let url = URL(fileURLWithPath: path, isDirectory: true)
         var isDir: ObjCBool = false
@@ -213,11 +213,11 @@ enum WebStorageSettings {
     /// behavior, now opt-in). Off by default.
     static var autoSavePages: Bool {
         if let autoSavePagesOverride { return autoSavePagesOverride }
-        return UserDefaults.standard.bool(forKey: autoSaveKey)
+        return AppDefaults.current.bool(forKey: autoSaveKey)
     }
 
     static func setAutoSavePages(_ on: Bool) {
-        UserDefaults.standard.set(on, forKey: autoSaveKey)
+        AppDefaults.current.set(on, forKey: autoSaveKey)
     }
 }
 
@@ -530,11 +530,11 @@ enum WebStorageMigrator {
     /// interrupted move resumes at next launch.
     static func recordPendingRelocation(mode: WebStorageMode, customPath: String?) {
         let marker = mode == .custom ? "\(mode.rawValue)|\(customPath ?? "")" : mode.rawValue
-        UserDefaults.standard.set(marker, forKey: WebStorageSettings.pendingRelocationKey)
+        AppDefaults.current.set(marker, forKey: WebStorageSettings.pendingRelocationKey)
     }
 
     static func clearPendingRelocation() {
-        UserDefaults.standard.removeObject(forKey: WebStorageSettings.pendingRelocationKey)
+        AppDefaults.current.removeObject(forKey: WebStorageSettings.pendingRelocationKey)
     }
 
     /// Launch-time pass: resume any interrupted relocation, then fold whatever
@@ -631,7 +631,7 @@ enum WebStorageMigrator {
     /// resolving a degraded source to the local layout would make the resume
     /// a local→local no-op that clears the marker and strands the real files.
     private static func pendingRelocationSource() -> WebStorageLayout? {
-        guard let raw = UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey) else {
+        guard let raw = AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey) else {
             return nil
         }
         let parts = raw.split(separator: "|", maxSplits: 1).map(String.init)

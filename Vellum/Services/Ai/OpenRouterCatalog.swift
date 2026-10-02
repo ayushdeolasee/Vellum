@@ -110,17 +110,17 @@ final class OpenRouterCatalog {
     // MARK: - Cache
 
     private static func loadCache() -> [OpenRouterModel] {
-        guard let data = UserDefaults.standard.data(forKey: cacheKey) else { return [] }
+        guard let data = AppDefaults.current.data(forKey: cacheKey) else { return [] }
         return parse(data)
     }
 
     private static func saveCache(_ data: Data) {
-        UserDefaults.standard.set(data, forKey: cacheKey)
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: cacheStampKey)
+        AppDefaults.current.set(data, forKey: cacheKey)
+        AppDefaults.current.set(Date().timeIntervalSince1970, forKey: cacheStampKey)
     }
 
     private static func cacheIsStale() -> Bool {
-        let stamp = UserDefaults.standard.double(forKey: cacheStampKey)
+        let stamp = AppDefaults.current.double(forKey: cacheStampKey)
         guard stamp > 0 else { return true }
         return Date().timeIntervalSince1970 - stamp > maxCacheAge
     }

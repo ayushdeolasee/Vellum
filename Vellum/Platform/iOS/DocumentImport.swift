@@ -9,7 +9,8 @@ import UniformTypeIdentifiers
 /// unpack, so they are staged into tmp/ instead.
 enum DocumentImport {
     static var libraryDirectory: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let docs = TestEnvironment.storageRoot
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("Documents", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

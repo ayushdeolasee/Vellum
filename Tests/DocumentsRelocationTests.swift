@@ -221,7 +221,7 @@ final class DocumentsRelocationTests: XCTestCase {
             "the sweep resumed the documents move")
         XCTAssertFalse(exists(localDocuments.appendingPathComponent("doc-resume")))
         XCTAssertNil(
-            UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey),
+            AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey),
             "the resume clears the pending marker")
     }
 
@@ -329,7 +329,7 @@ final class DocumentsRelocationTests: XCTestCase {
         WebStorageMigrator.recordPendingRelocation(mode: .local, customPath: nil)
         WebStorageMigrator.sweepAtLaunchDirectForTests()
         XCTAssertNotNil(
-            UserDefaults.standard.string(forKey: WebStorageSettings.pendingRelocationKey),
+            AppDefaults.current.string(forKey: WebStorageSettings.pendingRelocationKey),
             "the skipped move keeps the pending marker")
     }
 
