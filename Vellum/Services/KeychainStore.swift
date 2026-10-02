@@ -5,13 +5,14 @@ import os
 /// Thin wrapper over the macOS Keychain for generic Vellum credentials.
 /// Callers choose a service namespace; the AI service remains the default.
 ///
-/// All secrets are physically stored inside ONE keychain item — a JSON "vault"
+/// macOS secrets share one item; iOS integration tokens have separate
+/// background items. Foreground secrets use a JSON "vault"
 /// mapping "service/account" to the secret. macOS grants keychain access per
 /// item and per read, and this app is ad-hoc signed (new signature every
 /// build), so one item per secret meant one password prompt per secret per
 /// read. A single vault item, read once per launch and cached, caps that at
 /// one prompt total. Legacy per-secret items are folded into the vault on the
-/// first load of every launch until none remain.
+/// first load, with unresolved migration retried later in the same process.
 enum KeychainStore {
     static let service = "com.vellum.ai"
 
@@ -62,6 +63,17 @@ enum KeychainStore {
         var modDate: Date?
     }
 
+    enum LegacyAccountsRead: Sendable {
+        case accounts([String])
+        case unavailable
+    }
+
+    enum LegacyRead: Sendable {
+        case value(LegacyItem)
+        case missing
+        case unavailable
+    }
+
     /// Every Security-framework and file-lock call the vault logic makes,
     /// behind function properties. Production always runs `.live`; the seam
     /// exists so the read-modify-write rules that carry the real risk — legacy
@@ -80,14 +92,17 @@ enum KeychainStore {
         /// Removes the vault item. True also when it was already absent.
         var deleteVault: @Sendable () -> Bool
         /// Account names stored under a legacy per-secret service.
-        var legacyAccounts: @Sendable (_ service: String) -> [String]
-        /// A legacy item's value and modification date, nil when unreadable.
-        var legacyRead: @Sendable (_ account: String, _ service: String) -> LegacyItem?
+        var legacyAccounts: @Sendable (_ service: String) -> LegacyAccountsRead
+        /// A legacy item's value/date, distinguishing absence from denial.
+        var legacyRead: @Sendable (_ account: String, _ service: String) -> LegacyRead
         var legacyDelete: @Sendable (_ account: String, _ service: String) -> Void
         /// Cross-process commit lock. False means it was not acquired within
         /// the deadline, and the commit must fail rather than race.
         var acquireCommitLock: @Sendable () -> Bool
         var releaseCommitLock: @Sendable () -> Void
+        var readIntegration: @Sendable (String) -> CredentialRead = { _ in .unavailable }
+        var writeIntegration: @Sendable (String, String) -> Bool = { _, _ in false }
+        var deleteIntegration: @Sendable (String) -> Bool = { _ in false }
 
         static let live = Backend(
             readVaultItem: { KeychainStore.liveReadVaultItem() },
@@ -98,7 +113,10 @@ enum KeychainStore {
             legacyRead: { KeychainStore.liveLegacyRead(account: $0, service: $1) },
             legacyDelete: { KeychainStore.liveLegacyDelete(account: $0, service: $1) },
             acquireCommitLock: { KeychainStore.liveAcquireCommitLock() },
-            releaseCommitLock: { KeychainStore.liveReleaseCommitLock() })
+            releaseCommitLock: { KeychainStore.liveReleaseCommitLock() },
+            readIntegration: { KeychainStore.liveReadIntegration($0) },
+            writeIntegration: { KeychainStore.liveWriteIntegration($0, value: $1) },
+            deleteIntegration: { KeychainStore.liveDeleteIntegration($0) })
     }
 
     private static let lock = NSLock()
@@ -106,6 +124,27 @@ enum KeychainStore {
     /// launch (plus a re-read whenever the item's mod date says another
     /// instance wrote it). Guarded by `lock`; nil until the first load.
     nonisolated(unsafe) private static var cache: VaultState?
+    nonisolated(unsafe) private static var unresolvedLegacyServices: Set<String> = []
+    nonisolated(unsafe) private static var unresolvedLegacyKeys: Set<String> = []
+    #if DEBUG
+    nonisolated(unsafe) private static var separateIntegrationsOverride: Bool?
+    #endif
+
+    private static var separatesIntegrations: Bool {
+        #if DEBUG
+        if let separateIntegrationsOverride { return separateIntegrationsOverride }
+        #endif
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+    private static let integrationService = "com.vellum.integrations"
+    private static func isBackgroundIntegration(_ account: String, service: String) -> Bool {
+        separatesIntegrations && service == integrationService
+            && ["read-later.readwise", "read-later.raindrop"].contains(account)
+    }
     /// Non-nil only while a test drives the vault logic through a fake
     /// keychain. Guarded by `lock`.
     nonisolated(unsafe) private static var backendOverride: Backend?
@@ -139,8 +178,112 @@ enum KeychainStore {
                 values[vaultKey(account, service)].map(CredentialRead.value) ?? .missing
             }
         }
-        guard let vault = currentVaultLocked() else { return .unavailable }
-        return vault.entries[vaultKey(account, service)].map(CredentialRead.value) ?? .missing
+        if isBackgroundIntegration(account, service: service) {
+            return readIntegrationLocked(account)
+        }
+        return readSharedLocked(account, service: service)
+    }
+
+    private static func readSharedLocked(_ account: String, service: String) -> CredentialRead {
+        let wasLoaded = cache != nil
+        guard var vault = currentVaultLocked() else { return .unavailable }
+        let key = vaultKey(account, service)
+        if let value = vault.entries[key] { return .value(value) }
+        if wasLoaded, legacyIsUnresolved(key: key, service: service) {
+            reconcileLegacyItemsLocked()
+            vault = cache ?? vault
+            if let value = vault.entries[key] { return .value(value) }
+        }
+        return legacyIsUnresolved(key: key, service: service) ? .unavailable : .missing
+    }
+
+    private static func legacyIsUnresolved(key: String, service: String) -> Bool {
+        unresolvedLegacyServices.contains(service) || unresolvedLegacyKeys.contains(key)
+    }
+
+    /// Integration items alone need locked-device background access. A cold
+    /// foreground vault read is required before copying a source credential;
+    /// a warm plaintext cache is not evidence that migration is unlocked.
+    private static func readIntegrationLocked(_ account: String) -> CredentialRead {
+        let backend = backendLocked
+        switch backend.readIntegration(account) {
+        case .value(let value):
+            // Locked source bytes do not revoke a verified background copy.
+            // Once readable, conflicting source bytes are never guessed away.
+            if let fresh = backend.readVaultItem() {
+                cache = fresh
+                reconcileLegacyItemsLocked()
+                if let source = cache?.entries[vaultKey(account, integrationService)] {
+                    guard source == value else { return .unavailable }
+                    if backend.acquireCommitLock() {
+                        defer { backend.releaseCommitLock() }
+                        guard backend.readIntegration(account) == .value(value) else { return .unavailable }
+                        let removed = commitLocked([vaultKey(account, integrationService): nil],
+                            holdingCommitLock: true, expectedValues: [vaultKey(account, integrationService): value])
+                        if !removed, sourceConflictsLocked(account, value: value) { return .unavailable }
+                    }
+                }
+            }
+            return .value(value)
+        case .unavailable: return .unavailable
+        case .missing: break
+        }
+        guard let fresh = backend.readVaultItem() else { return .unavailable }
+        cache = fresh
+        reconcileLegacyItemsLocked()
+        switch readSharedLocked(account, service: integrationService) {
+        case .missing: return .missing
+        case .unavailable: return .unavailable
+        case .value(let value):
+            guard backend.acquireCommitLock() else { return .unavailable }
+            defer { backend.releaseCommitLock() }
+            // Another process may have installed the destination while we waited.
+            switch backend.readIntegration(account) {
+            case .value(let installed):
+                return installed == value ? .value(installed) : .unavailable
+            case .unavailable: return .unavailable
+            case .missing: break
+            }
+            let key = vaultKey(account, integrationService)
+            guard let source = backend.readVaultItem(), source.entries[key] == value,
+                  backend.writeIntegration(account, value),
+                  backend.readIntegration(account) == .value(value) else { return .unavailable }
+            // An interruption before cleanup leaves two valid copies. Never
+            // remove the source unless the separately protected copy verifies.
+            let removed = commitLocked([key: nil], holdingCommitLock: true, expectedValues: [key: value])
+            if !removed, sourceConflictsLocked(account, value: value) { return .unavailable }
+            return .value(value)
+        }
+    }
+
+    private static func sourceConflictsLocked(_ account: String, value: String) -> Bool {
+        guard let source = backendLocked.readVaultItem(),
+              let stored = source.entries[vaultKey(account, integrationService)] else { return false }
+        return stored != value
+    }
+
+    private static func removeSharedIntegrationLocked(_ account: String) -> Bool {
+        let key = vaultKey(account, integrationService)
+        // Resolve any legacy copy before removing it; denial is not absence.
+        let expected: [String: String]
+        let absent: Set<String>
+        switch readSharedLocked(account, service: integrationService) {
+        case .unavailable: return false
+        case .value(let value): expected = [key: value]; absent = []
+        case .missing: expected = [:]; absent = [key]
+        }
+        guard !legacyIsUnresolved(key: key, service: integrationService),
+              commitLocked([key: nil], expectedValues: expected, expectedMissing: absent),
+              let verified = backendLocked.readVaultItem(), verified.entries[key] == nil else { return false }
+        cache = verified
+        switch backendLocked.legacyRead(account, integrationService) {
+        case .missing: return true
+        case .unavailable: return false
+        case .value:
+            backendLocked.legacyDelete(account, integrationService)
+            if case .missing = backendLocked.legacyRead(account, integrationService) { return true }
+            return false
+        }
     }
 
     /// Compatibility for foreground AI callers that do not expose availability.
@@ -164,6 +307,16 @@ enum KeychainStore {
             testStore.withLock { $0[vaultKey(account, service)] = trimmed }
             return true
         }
+        if isBackgroundIntegration(account, service: service) {
+            let backend = backendLocked
+            guard backend.acquireCommitLock() else { return false }
+            let verified = backend.writeIntegration(account, trimmed)
+                && backend.readIntegration(account) == .value(trimmed)
+            backend.releaseCommitLock()
+            guard verified else { return false }
+            _ = removeSharedIntegrationLocked(account)
+            return true
+        }
         return commitLocked([vaultKey(account, service): trimmed])
     }
 
@@ -176,6 +329,18 @@ enum KeychainStore {
         if usesTestStoreLocked {
             testStore.withLock { $0[vaultKey(account, service)] = nil }
             return true
+        }
+        if isBackgroundIntegration(account, service: service) {
+            let backend = backendLocked
+            let destination = backend.readIntegration(account)
+            guard destination != .unavailable, removeSharedIntegrationLocked(account),
+                  backend.acquireCommitLock() else { return false }
+            defer { backend.releaseCommitLock() }
+            let key = vaultKey(account, service)
+            guard let source = backend.readVaultItem(), source.entries[key] == nil,
+                  case .missing = backend.legacyRead(account, service),
+                  backend.readIntegration(account) == destination else { return false }
+            return backend.deleteIntegration(account)
         }
         return commitLocked([vaultKey(account, service): nil])
     }
@@ -254,7 +419,7 @@ enum KeychainStore {
     /// Applies account mutations (value = nil deletes) on top of the current
     /// vault and persists the result as the single keychain item. Call with
     /// `lock` held.
-    private static func commitLocked(_ mutations: [String: String?]) -> Bool {
+    private static func commitLocked(_ mutations: [String: String?], holdingCommitLock: Bool = false, expectedValues: [String: String] = [:], expectedMissing: Set<String> = []) -> Bool {
         let backend = backendLocked
         // A vault that exists but can't be read must fail the write: rewriting
         // from an empty in-memory copy would destroy every other secret.
@@ -266,8 +431,8 @@ enum KeychainStore {
         // Fail closed when the lock is unavailable: an unserialized write
         // could revert another instance's secrets, while a failed set() just
         // leaves the caller's plaintext fallback in place for a later retry.
-        guard backend.acquireCommitLock() else { return false }
-        defer { backend.releaseCommitLock() }
+        if !holdingCommitLock, !backend.acquireCommitLock() { return false }
+        defer { if !holdingCommitLock { backend.releaseCommitLock() } }
         // Another instance may have rewritten the vault since we cached it.
         // The modification date is readable without an access prompt, so
         // detect that case and re-read before mutating — a whole-item write
@@ -277,6 +442,8 @@ enum KeychainStore {
             guard let fresh = backend.readVaultItem() else { return false }
             state = fresh
         }
+        guard expectedValues.allSatisfy({ state.entries[$0.key] == $0.value }),
+              expectedMissing.allSatisfy({ state.entries[$0] == nil }) else { return false }
         var entries = state.entries
         for (key, value) in mutations {
             if let value {
@@ -300,25 +467,37 @@ enum KeychainStore {
     }
 
     /// Folds any leftover per-secret legacy items into the vault. Runs on the
-    /// first vault load of every launch (enumeration is prompt-free), so an
-    /// item whose migration was previously denied or failed keeps being
-    /// retried until it lands. A legacy item is deleted only once its value is
-    /// provably preserved. Call with `lock` held, after `cache` is populated.
+    /// first vault load, and again for missing keys whose migration failed.
+    /// A denied enumeration/read or failed copy is not evidence of absence.
+    /// A legacy item is deleted only once its value is provably preserved. Call with `lock` held, after `cache` is populated.
     private static func reconcileLegacyItemsLocked() {
         let backend = backendLocked
+        unresolvedLegacyServices = []
+        unresolvedLegacyKeys = []
         var mutations: [String: String?] = [:]
         var resolved: [(service: String, account: String)] = []
         let entries = cache?.entries ?? [:]
         let vaultDate = cache?.modDate
         for legacyService in legacyServices {
-            for account in backend.legacyAccounts(legacyService) {
+            guard case .accounts(let accounts) = backend.legacyAccounts(legacyService) else {
+                unresolvedLegacyServices.insert(legacyService)
+                continue
+            }
+            for account in accounts {
                 let key = vaultKey(account, legacyService)
                 // Read before deciding anything. A pre-vault build writes only
                 // legacy items, so running one after a migration leaves an item
                 // whose value is NEWER than the vault's copy of the same key;
                 // deleting it because "the vault already has that key" threw
                 // away the token the user had just entered.
-                guard let legacy = backend.legacyRead(account, legacyService) else { continue }
+                let legacy: LegacyItem
+                switch backend.legacyRead(account, legacyService) {
+                case .value(let item): legacy = item
+                case .missing: continue
+                case .unavailable:
+                    unresolvedLegacyKeys.insert(key)
+                    continue
+                }
                 guard !legacy.value.isEmpty else {
                     backend.legacyDelete(account, legacyService)
                     continue
@@ -349,10 +528,14 @@ enum KeychainStore {
             }
         }
         guard !mutations.isEmpty else { return }
-        if commitLocked(mutations) {
+        if commitLocked(mutations), let verified = backend.readVaultItem(),
+           mutations.allSatisfy({ verified.entries[$0.key] == $0.value }) {
+            cache = verified
             for item in resolved {
                 backend.legacyDelete(item.account, item.service)
             }
+        } else {
+            unresolvedLegacyKeys.formUnion(mutations.keys)
         }
     }
 
@@ -382,11 +565,13 @@ enum KeychainStore {
               let entries = try? JSONDecoder().decode([String: String].self, from: data)
         else { return nil }
 #if os(iOS)
-        // Existing installations migrate in place after an unlocked read. Never
-        // delete/recreate the vault or relax it before its bytes can be read.
-        if item[kSecAttrAccessible as String] as? String != kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String {
+        // AI credentials remain foreground-only. Existing shared source bytes
+        // are read while unlocked before migrating integrations separately.
+        let accessibility = item[kSecAttrAccessible as String] as? String
+        if accessibility != kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String,
+           accessibility != kSecAttrAccessibleWhenUnlocked as String {
             guard SecItemUpdate(vaultBaseQuery() as CFDictionary,
-                [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary) == errSecSuccess
+                [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary) == errSecSuccess
             else { return nil }
         }
 #endif
@@ -409,10 +594,8 @@ enum KeychainStore {
         guard let data = try? JSONEncoder().encode(entries) else { return false }
         var attributes: [String: Any] = [kSecValueData as String: data]
 #if os(iOS)
-        // The single device-local vault supports read-later background refresh.
-        // This policy also applies to AI keys sharing that vault; it never syncs
-        // or migrates their secrets to another device.
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        // The shared foreground vault must not broaden AI key accessibility.
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 #endif
         let status = SecItemUpdate(vaultBaseQuery() as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -430,7 +613,7 @@ enum KeychainStore {
     }
 
     /// Lists the account names stored under a legacy service.
-    private static func liveLegacyAccounts(in service: String) -> [String] {
+    private static func liveLegacyAccounts(in service: String) -> LegacyAccountsRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -438,14 +621,16 @@ enum KeychainStore {
             kSecReturnAttributes as String: true,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else { return [] }
-        return items.compactMap { $0[kSecAttrAccount as String] as? String }
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .accounts([]) }
+        guard status == errSecSuccess, let items = result as? [[String: Any]],
+              items.allSatisfy({ $0[kSecAttrAccount as String] is String }) else { return .unavailable }
+        return .accounts(items.compactMap { $0[kSecAttrAccount as String] as? String })
     }
 
     /// The value AND modification date of a legacy item: reconciliation needs
     /// the date to resolve a conflict with the vault's copy of the same key.
-    private static func liveLegacyRead(account: String, service: String) -> LegacyItem? {
+    private static func liveLegacyRead(account: String, service: String) -> LegacyRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -455,11 +640,49 @@ enum KeychainStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess,
               let item = result as? [String: Any],
               let data = item[kSecValueData as String] as? Data,
-              let value = String(data: data, encoding: .utf8) else { return nil }
-        return LegacyItem(value: value, modDate: item[kSecAttrModificationDate as String] as? Date)
+              let value = String(data: data, encoding: .utf8) else { return .unavailable }
+        return .value(LegacyItem(value: value, modDate: item[kSecAttrModificationDate as String] as? Date))
+    }
+
+    private static func integrationQuery(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: vaultService + ".background-integrations",
+         kSecAttrAccount as String: account]
+    }
+
+    private static func liveReadIntegration(_ account: String) -> CredentialRead {
+        var query = integrationQuery(account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess, let data = result as? Data,
+              let value = String(data: data, encoding: .utf8), !value.isEmpty else { return .unavailable }
+        return .value(value)
+    }
+
+    private static func liveWriteIntegration(_ account: String, value: String) -> Bool {
+        var attributes: [String: Any] = [kSecValueData as String: Data(value.utf8)]
+        #if os(iOS)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
+        let query = integrationQuery(account)
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            return SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil) == errSecSuccess
+        }
+        return status == errSecSuccess
+    }
+
+    private static func liveDeleteIntegration(_ account: String) -> Bool {
+        let status = SecItemDelete(integrationQuery(account) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private static func liveLegacyDelete(account: String, service: String) {
@@ -518,10 +741,16 @@ enum KeychainStore {
     /// test exercises the real vault code paths — against a fake keychain, so
     /// the login keychain is still never touched. The override is
     /// process-global; suites that use it must be `.serialized`.
-    static func withBackend(_ backend: Backend, _ body: () throws -> Void) rethrows {
+    static func withBackend(_ backend: Backend, separateIntegrations: Bool = false, _ body: () throws -> Void) rethrows {
         lock.lock()
         let previousBackend = backendOverride
         let previousCache = cache
+        let previousServices = unresolvedLegacyServices
+        let previousKeys = unresolvedLegacyKeys
+        let previousSeparation = separateIntegrationsOverride
+        unresolvedLegacyServices = []
+        unresolvedLegacyKeys = []
+        separateIntegrationsOverride = separateIntegrations
         backendOverride = backend
         cache = nil
         lock.unlock()
@@ -529,6 +758,9 @@ enum KeychainStore {
             lock.lock()
             backendOverride = previousBackend
             cache = previousCache
+            unresolvedLegacyServices = previousServices
+            unresolvedLegacyKeys = previousKeys
+            separateIntegrationsOverride = previousSeparation
             lock.unlock()
         }
         try body()

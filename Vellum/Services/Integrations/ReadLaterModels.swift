@@ -236,7 +236,7 @@ enum IntegrationError: LocalizedError, Equatable, Sendable {
         case .server(let status): "The service returned HTTP \(status)."
         case .invalidResponse: "The service returned an invalid response."
         case .malformedData: "The service returned data Vellum could not read."
-        case .credentialUnavailable: "Saved credentials are temporarily unavailable. Unlock your device and try again."
+        case .credentialUnavailable: "Saved credentials are temporarily unavailable. Unlock your device and try again, or reconnect in Settings."
         case .credentialPersistenceFailed: "The token was valid, but Vellum could not save it in Keychain."
         case .disconnected: "This service is not connected."
         case .staleGeneration: "A newer connection replaced this request."
