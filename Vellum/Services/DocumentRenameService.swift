@@ -143,13 +143,14 @@ enum DocumentRenameService {
         var succeeded = true
         if let key = target.storageKey {
             if let coordinator = storage?.coordinator {
-                do {
-                    if try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator) != nil {
-                        if !(await DocumentDataStore.setTitle(forKey: key, title: title, coordinator: coordinator)) {
-                            succeeded = false
-                        }
-                    }
-                } catch { succeeded = false }
+                let saved = await ScratchpadWriteCoordinator.shared.withExclusiveAccess(forKeys: [key]) {
+                    do {
+                        guard try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator) != nil
+                        else { return true }
+                        return await DocumentDataStore.setTitle(forKey: key, title: title, coordinator: coordinator)
+                    } catch { return false }
+                }
+                if !saved { succeeded = false }
             } else {
                 let saved = await Task.detached(priority: .userInitiated) {
                     guard DocumentDataStore.loadMeta(forKey: key) != nil else { return true }

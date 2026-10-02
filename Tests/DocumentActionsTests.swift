@@ -401,6 +401,176 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(drained)
     }
 
+    func testStartupIsOwnedBeforeItsFirstAwaitAndTerminationRejectsLateStarts() async throws {
+        let workspace = await scratchpadWorkspace()
+        let startup = LifecycleGate()
+        let cleanup = LifecycleGate()
+        lifecycleGates += [startup, cleanup]
+        var cleaned = false
+        XCTAssertTrue(workspace.startMaintenance {
+            await startup.pause()
+            await cleanup.pause()
+            cleaned = true
+        })
+        try await startup.waitUntilPaused()
+        workspace.beginTermination()
+        XCTAssertFalse(workspace.startMaintenance { XCTFail("late startup admitted") })
+        var drained = false
+        let drain = Task { await workspace.awaitMaintenance(); drained = true }
+        lifecycleTasks.append(drain)
+        startup.release()
+        try await cleanup.waitUntilPaused()
+        XCTAssertFalse(drained)
+        XCTAssertFalse(cleaned)
+        cleanup.release()
+        await drain.value
+        XCTAssertTrue(cleaned)
+        XCTAssertTrue(drained)
+
+        let lateWorkspace = WorkspaceStore(sessions: DocumentSessionManager())
+        workspaces.append(lateWorkspace)
+        lateWorkspace.beginTermination()
+        XCTAssertFalse(lateWorkspace.startMaintenance { XCTFail("late startup admitted") })
+        lateWorkspace.cancelTermination()
+        XCTAssertTrue(lateWorkspace.startMaintenance {})
+    }
+
+    func testPromotionSerializesQueuedRenamesThroughStampAndRekey() async throws {
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("promotion")
+        let stamp = LifecycleGate()
+        let rekey = LifecycleGate()
+        lifecycleGates += [stamp, rekey]
+        var original = testDocument("Promotion")
+        original.docId = nil
+        let id = UUID().uuidString.lowercased()
+        let session = LifecycleDocumentSession(info: original, resolveId: {
+            await stamp.pause()
+            return id
+        })
+        let sessions = DocumentSessionManager(openWebSession: { _, _ in session })
+        _ = try await sessions.openWebDocument(url: original.pdfPath, sessionId: "promotion")
+        let workspace = WorkspaceStore(sessions: sessions)
+        workspaces.append(workspace)
+        await workspace.startStorageCoordinator()
+        let coordinator = workspace.storageCoordinator
+        let app = workspace.focusedPane.app
+        app.attachTab(testTab(original, id: "promotion"))
+        let oldKey = DocumentIdentity.storageKey(for: original)
+        try await DocumentDataStore.touch(document: original, force: true, coordinator: coordinator)
+        try await DocumentDataStore.saveScratchpad(forKey: oldKey, text: "original note", coordinator: coordinator)
+        var promoted = false
+        let promotion = Task { _ = await app.syncDocumentId(sessionId: "promotion"); promoted = true }
+        lifecycleTasks.append(promotion)
+        try await stamp.waitUntilPaused()
+        let first = Task { await app.renameDocument(tabId: "promotion", title: "During stamp") }
+        lifecycleTasks.append(first)
+        try await waitUntil { app.document?.title == "During stamp" }
+        let blocker = Task {
+            await ScratchpadWriteCoordinator.shared.withExclusiveAccess(forKeys: [oldKey, id]) {
+                await rekey.pause()
+            }
+        }
+        lifecycleTasks.append(blocker)
+        try await rekey.waitUntilPaused()
+        stamp.release()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertFalse(promoted)
+        let latest = Task { await app.renameDocument(tabId: "promotion", title: "Latest") }
+        lifecycleTasks.append(latest)
+        try await waitUntil { app.document?.title == "Latest" }
+        rekey.release()
+        await latest.value
+        await promotion.value
+        XCTAssertEqual(app.document?.docId, id)
+        XCTAssertEqual(app.document?.title, "Latest")
+        let meta = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator)
+        let note = try await DocumentDataStore.loadScratchpad(forKey: id, coordinator: coordinator)
+        XCTAssertEqual(meta?.title, "Latest")
+        XCTAssertEqual(note, "original note")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: DocumentDataStore.documentDir(forKey: oldKey).path))
+        XCTAssertTrue(workspace.tabTeardowns.isEmpty)
+    }
+
+    func testOutOfOrderNavigationCannotReplaceTheAdmittedBackend() async throws {
+        let slow = LifecycleGate()
+        let successor = LifecycleGate()
+        lifecycleGates += [slow, successor]
+        let original = testDocument("Original", kind: .web)
+        let a = LifecycleDocumentSession(info: testDocument("A", kind: .web))
+        let b = LifecycleDocumentSession(info: testDocument("B", kind: .web))
+        let sessions = DocumentSessionManager(openWebSession: { url, _ in
+            if url == a.info.pdfPath { await slow.pause(); return a }
+            await successor.pause()
+            return b
+        })
+        let app = AppStore(sessions: sessions)
+        apps.append(app)
+        app.attachTab(testTab(original, id: "navigation"))
+        let first = Task { _ = await app.webNavigated(tabId: "navigation", url: a.info.pdfPath) }
+        lifecycleTasks.append(first)
+        try await slow.waitUntilPaused()
+        let second = Task { _ = await app.webNavigated(tabId: "navigation", url: b.info.pdfPath) }
+        lifecycleTasks.append(second)
+        try await successor.waitUntilPaused()
+        successor.release()
+        await second.value
+        slow.release()
+        await first.value
+        XCTAssertEqual(app.document?.pdfPath, b.info.pdfPath)
+        XCTAssertEqual(sessions.sessions["navigation"]?.info.pdfPath, b.info.pdfPath)
+        _ = try await sessions.createAnnotation(sessionId: "navigation", input: CreateAnnotationInput(
+            type: .note, pageNumber: 1, color: nil, content: "at B", positionData: nil))
+        XCTAssertEqual(b.createdNotes, ["at B"])
+        XCTAssertTrue(a.createdNotes.isEmpty)
+
+        let closing = Task { _ = await app.webNavigated(tabId: "navigation", url: a.info.pdfPath) }
+        lifecycleTasks.append(closing)
+        try await slow.waitUntilPaused()
+        await app.closeTab("navigation")
+        await app.awaitPendingTabTeardowns()
+        slow.release()
+        await closing.value
+        XCTAssertNil(sessions.sessions["navigation"], "a closed tab cannot admit a late open")
+    }
+
+    func testFinalQuitCheckRejectsLateEditsAndNewPanesAfterOtherDrains() async throws {
+        let workspace = await scratchpadWorkspace()
+        let document = testDocument("Late edit")
+        workspace.focusedPane.app.attachTab(testTab(document, id: "late-edit"))
+        let scratchpad = workspace.focusedPane.scratchpad
+        await scratchpad.loadForDocument(document).value
+        scratchpad.text = "before quit"
+        let initiallySafe = await workspace.flushScratchpadsForTermination()
+        XCTAssertTrue(initiallySafe)
+        let snapshot = workspace.scratchpadTerminationSnapshot
+        let otherDrain = LifecycleGate()
+        lifecycleGates.append(otherDrain)
+        var safeToQuit = true
+        let quit = Task {
+            await otherDrain.pause()
+            safeToQuit = workspace.scratchpadsAreSafeToTerminate(after: snapshot)
+        }
+        lifecycleTasks.append(quit)
+        try await otherDrain.waitUntilPaused()
+        scratchpad.text = "during another drain"
+        // Even a successful autosave cannot make the original quit snapshot current.
+        await scratchpad.flush().value
+        otherDrain.release()
+        await quit.value
+        XCTAssertFalse(safeToQuit)
+        XCTAssertEqual(scratchpad.text, "during another drain")
+        let clean = workspace.scratchpadTerminationSnapshot
+        XCTAssertTrue(workspace.scratchpadsAreSafeToTerminate(after: clean))
+        workspace.splitFocused(.horizontal)
+        XCTAssertFalse(workspace.scratchpadsAreSafeToTerminate(after: clean))
+        workspace.focusedPane.app.attachTab(testTab(testDocument("New pane"), id: "new-pane"))
+        let added = workspace.focusedPane.scratchpad
+        scratchpads.append(added)
+        await added.loadForDocument(workspace.focusedPane.app.document).value
+        added.text = "new pane draft"
+        XCTAssertFalse(workspace.scratchpadsAreSafeToTerminate(after: clean))
+    }
+
     // MARK: - Helpers
 
     private func testDocument(_ name: String, kind: DocumentKind = .pdf) -> DocumentInfo {
@@ -529,4 +699,32 @@ private final class LifecycleGate {
     }
 
     enum GateError: Error { case didNotArrive }
+}
+
+@MainActor
+private final class LifecycleDocumentSession: DocumentSession {
+    let info: DocumentInfo
+    private let resolveId: (@MainActor () async -> String)?
+    private(set) var createdNotes: [String] = []
+    init(info: DocumentInfo, resolveId: (@MainActor () async -> String)? = nil) {
+        self.info = info
+        self.resolveId = resolveId
+    }
+    func save() async throws {}
+    func close() async throws {}
+    func readPdfBytes() async throws -> Data { Data() }
+    func annotations(pageNumber: Int?) async throws -> [Annotation] { [] }
+    func createAnnotation(_ input: CreateAnnotationInput) async throws -> Annotation {
+        createdNotes.append(input.content ?? "")
+        return Annotation(id: UUID().uuidString, type: input.type, pageNumber: input.pageNumber,
+                          color: input.color, content: input.content, positionData: input.positionData,
+                          createdAt: "", updatedAt: "")
+    }
+    func updateAnnotation(_ input: UpdateAnnotationInput) async throws -> Bool { true }
+    func deleteAnnotation(id: String) async throws -> Bool { true }
+    func setMetadata(key: String, value: String) async throws {}
+    func ensureDocumentId() async throws -> String {
+        if let resolveId { return await resolveId() }
+        return info.docId ?? ""
+    }
 }

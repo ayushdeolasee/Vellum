@@ -22,6 +22,8 @@ enum SessionServiceError: Error, LocalizedError {
 @MainActor
 protocol SessionService: AnyObject {
     // Document lifecycle
+    /// Revoke an unfinished open as soon as a tab closes or starts rebinding.
+    func invalidatePendingOpen(sessionId: String)
     func openFile(path: String, sessionId: String) async throws -> DocumentInfo
     func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo
     func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo
@@ -50,6 +52,10 @@ protocol SessionService: AnyObject {
     /// Resolve the document's stable identity, lazily stamping /VellumDocId into
     /// a PDF that has none. Web documents return their sha256 URL-hash key.
     func ensureDocumentId(sessionId: String) async throws -> String
+}
+
+extension SessionService {
+    func invalidatePendingOpen(sessionId: String) {}
 }
 
 extension Notification.Name {

@@ -23,19 +23,21 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             guard let workspace = Self.workspace else { return .terminateNow }
             guard !isTerminating else { return .terminateLater }
             isTerminating = true
+            workspace.beginTermination()
             terminationTask = Task { @MainActor in
                 await workspace.awaitMaintenance()
                 // Finish external opens before snapshotting tabs or draining
                 // their persistence, including a cold launch followed by quit.
                 await workspace.awaitPendingExternalOpens()
-                let leaves = workspace.root.allLeaves()
                 guard await workspace.flushScratchpadsForTermination() else {
                     workspace.focusedPane.app.error = "Quit canceled because a Scratchpad edit could not be saved. Your draft remains open; restore storage access and try again."
                     isTerminating = false
+                    workspace.cancelTermination()
                     terminationTask = nil
                     sender.reply(toApplicationShouldTerminate: false)
                     return
                 }
+                let scratchpadSnapshot = workspace.scratchpadTerminationSnapshot
                 await workspace.saveNowAfterPendingPositionRecords()
                 // Tabs closed moments ago finish their position write and
                 // session close behind the UI (AppStore.closeTab) and are no
@@ -47,17 +49,21 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // Reading positions are already durable in the position store.
                 // Do not rewrite every PDF just to save its current page.
                 await workspace.flushLivePageTextCaches()
-                for leaf in leaves {
-                    for tab in leaf.app.tabs {
-                        try? await workspace.sessions.closeFile(sessionId: tab.id)
-                    }
-                }
                 // Also drain detached flushes from controllers dropped by a
                 // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
                 await AiPersistence.awaitPendingFlush()
                 // Same for the read-later stores' background work (see above).
                 await workspace.integrations.awaitQuiescence()
+                guard workspace.tabTeardowns.isEmpty,
+                      workspace.scratchpadsAreSafeToTerminate(after: scratchpadSnapshot) else {
+                    workspace.focusedPane.app.error = "Quit canceled because document edits changed while saving. Your drafts remain open; try Quit again."
+                    isTerminating = false
+                    workspace.cancelTermination()
+                    terminationTask = nil
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
@@ -98,6 +104,7 @@ struct VellumApp: App {
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         VellumAppDelegate.workspace = workspace
+        workspace.startLaunchMaintenance(includeReadLater: false)
     }
 
     var body: some Scene {
@@ -111,51 +118,7 @@ struct VellumApp: App {
                 }
                 .task {
                     guard !TestEnvironment.isHostedTestProcess else { return }
-                    await workspace.startStorageCoordinator()
-                    await workspace.integrations.start()
-                    await workspace.integrations.prefetchOfflineCopies()
-                    // Launch-time TTL eviction of derived data (issue #37 PR B /
-                    // issue #29): the extracted-text cache, plus web-snapshot
-                    // artifacts for pages the user never saved or annotated.
-                    // Time-based only — never because a source file is missing.
-                    // The open-documents snapshot excludes restored tabs; a
-                    // document opened AFTER it is still safe because the cache
-                    // actor serializes (its lookup either stamps lastOpened
-                    // first, excluding it by age, or re-extracts once after the
-                    // eviction) and the web store re-archives on the open
-                    // debounce. Evict off-main at low priority.
-                    let openDocuments = workspace.root.allLeaves()
-                        .flatMap { $0.app.tabs }.compactMap(\.document)
-                    // The text cache excludes open documents by STORAGE KEY now
-                    // (docId when stamped, else path hash) — the same key their
-                    // lookup/persister used.
-                    let openKeys = Set(
-                        openDocuments.filter { $0.kind == .pdf }
-                            .map { DocumentIdentity.storageKey(for: $0) })
-                    let openWebUrls = Set(
-                        openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
-                    let positions = workspace.positions
-                    workspace.startMaintenance {
-                        // Finish any interrupted storage-location move and fold
-                        // legacy-local strays into the active layout before the
-                        // evictors walk the store. Routed through the relocator
-                        // so it can't run concurrently with a location change
-                        // the user makes in the first-launch sheet below. The
-                        // sweep runs regardless of the retention policy.
-                        await WebStorageRelocator.sweepAtLaunch(
-                            coordinator: workspace.storageCoordinator)
-                        // TTL eviction of derived data, using the user's chosen
-                        // retention window (Settings ▸ Storage ▸ Housekeeping;
-                        // "Never" skips it). Excludes currently-open documents.
-                        await StorageHousekeeping.runCleanup(
-                            openPdfKeys: openKeys,
-                            openWebUrls: openWebUrls,
-                            webLastOpened: { await positions.lastOpenedForWebURL($0) },
-                            webStorage: workspace.webLibraryStorage)
-                    }
-                    await Task.detached(priority: .utility) {
-                        WebStorageSettings.resolveICloudRoot()
-                    }.value
+                    await workspace.awaitMaintenance()
                     showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
                     // Only one sheet at a time. On a true first launch the
                     // storage choice goes first — it decides where everything

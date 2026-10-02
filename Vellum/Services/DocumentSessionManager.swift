@@ -34,13 +34,35 @@ final class DocumentSessionManager: SessionService {
     let webBackend: WebSessionBackend
 
     private(set) var sessions: [String: any DocumentSession] = [:]
+    private var openGenerations: [String: UUID] = [:]
+    private let openWebSession: (@MainActor (String, String) async throws -> any DocumentSession)?
+
+    func invalidatePendingOpen(sessionId: String) {
+        openGenerations[sessionId] = nil
+    }
+
+    private func beginOpen(_ sessionId: String) -> UUID {
+        let generation = UUID()
+        openGenerations[sessionId] = generation
+        return generation
+    }
+
+    private func admit(_ session: any DocumentSession, sessionId: String, generation: UUID) throws -> DocumentInfo {
+        guard !Task.isCancelled, openGenerations[sessionId] == generation else {
+            throw CancellationError()
+        }
+        sessions[sessionId] = session
+        return session.info
+    }
 
     init(
         pdfBackend: PdfSessionBackend = PdfSessionBackend(),
-        webBackend: WebSessionBackend = WebSessionBackend()
+        webBackend: WebSessionBackend = WebSessionBackend(),
+        openWebSession: (@MainActor (String, String) async throws -> any DocumentSession)? = nil
     ) {
         self.pdfBackend = pdfBackend
         self.webBackend = webBackend
+        self.openWebSession = openWebSession
     }
 
     private func session(_ id: String) throws -> any DocumentSession {
@@ -64,23 +86,27 @@ final class DocumentSessionManager: SessionService {
     // MARK: - Lifecycle
 
     func openFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        let generation = beginOpen(sessionId)
         let session = try await pdfBackend.open(path: path, sessionId: sessionId)
-        sessions[sessionId] = session
-        return session.info
+        return try admit(session, sessionId: sessionId, generation: generation)
     }
 
     func openWebDocument(url: String, sessionId: String) async throws -> DocumentInfo {
-        // Rebind: in-tab navigation reuses the session id against a new URL.
-        let session = try await webBackend.openWebDocument(
-            url: url, sessionId: sessionId, replacing: sessions[sessionId] as? WebDocumentSession)
-        sessions[sessionId] = session
-        return session.info
+        let generation = beginOpen(sessionId)
+        let session: any DocumentSession
+        if let openWebSession {
+            session = try await openWebSession(url, sessionId)
+        } else {
+            session = try await webBackend.openWebDocument(
+                url: url, sessionId: sessionId, replacing: sessions[sessionId] as? WebDocumentSession)
+        }
+        return try admit(session, sessionId: sessionId, generation: generation)
     }
 
     func openVellumwebFile(path: String, sessionId: String) async throws -> DocumentInfo {
+        let generation = beginOpen(sessionId)
         let session = try await webBackend.openVellumwebFile(path: path, sessionId: sessionId)
-        sessions[sessionId] = session
-        return session.info
+        return try admit(session, sessionId: sessionId, generation: generation)
     }
 
     func saveFile(sessionId: String) async throws {
@@ -88,6 +114,7 @@ final class DocumentSessionManager: SessionService {
     }
 
     func closeFile(sessionId: String) async throws {
+        openGenerations[sessionId] = nil
         guard let session = sessions[sessionId] else { return }
         sessions[sessionId] = nil
         try await session.close()
