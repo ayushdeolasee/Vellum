@@ -489,6 +489,27 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertEqual(note, "original note")
         XCTAssertFalse(FileManager.default.fileExists(atPath: DocumentDataStore.documentDir(forKey: oldKey).path))
         XCTAssertTrue(workspace.tabTeardowns.isEmpty)
+
+        // A fresh unstamped document at the same locator cannot inherit A's
+        // promotion. Its new generation owns the path key until it is stamped.
+        await app.closeTab("promotion")
+        await workspace.tabTeardowns.awaitAll()
+        let replacement = DocumentInfo(kind: .pdf, pdfPath: original.pdfPath,
+                                       title: "Replacement", pageCount: 1, lastPage: 1, docId: nil)
+        app.attachTab(testTab(replacement, id: "replacement"))
+        try await DocumentDataStore.touch(document: replacement, force: true, coordinator: coordinator)
+        await app.renameDocument(tabId: "replacement", title: "B title")
+        let oldOwner = try await DocumentDataStore.loadMeta(forKey: id, coordinator: coordinator)
+        let newOwner = try await DocumentDataStore.loadMeta(forKey: oldKey, coordinator: coordinator)
+        XCTAssertEqual(oldOwner?.title, "Latest")
+        XCTAssertEqual(newOwner?.title, "B title")
+        XCTAssertNil(app.document?.docId)
+        await app.closeTab("replacement")
+        await workspace.tabTeardowns.awaitAll()
+        let oldPosition = await workspace.positions.store.resume(for: .pdf(stableIdentifier: id))
+        let newPosition = await workspace.positions.store.resume(for: .pdfPath(replacement.pdfPath))
+        XCTAssertEqual(oldPosition?.title, "Latest")
+        XCTAssertEqual(newPosition?.title, "B title")
     }
 
     func testOutOfOrderNavigationCannotReplaceTheAdmittedBackend() async throws {

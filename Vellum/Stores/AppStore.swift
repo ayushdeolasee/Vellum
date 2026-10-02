@@ -41,18 +41,17 @@ final class TabTeardownRegistry {
     }
 
     @ObservationIgnored private var entries: [String: Entry] = [:]
-    @ObservationIgnored private var promotedKeys: [String: String] = [:]
+    @ObservationIgnored private var promotedKeys: [UUID: String] = [:]
 
-    func durableDocument(for document: DocumentInfo) -> DocumentInfo {
+    func durableDocument(for document: DocumentInfo, generation: UUID) -> DocumentInfo {
         var result = document
-        let key = DocumentIdentity.storageKey(for: document)
-        if let promoted = promotedKeys[key] { result.docId = promoted }
+        if let promoted = promotedKeys[generation] { result.docId = promoted }
         return result
     }
 
-    func recordPromotion(from document: DocumentInfo, to id: String) {
+    func recordPromotion(from document: DocumentInfo, generation: UUID, to id: String) {
         let oldKey = DocumentIdentity.storageKey(for: document)
-        promotedKeys[oldKey] = id
+        promotedKeys[generation] = id
         if let failure = failedRenames.removeValue(forKey: oldKey) {
             failedRenames[id] = failure
         }
@@ -429,8 +428,10 @@ final class AppStore {
         }
         let positions = workspace?.positions
         let registry = teardowns
+        guard let generation = documentBinding(for: tabId)?.generation else { return }
         _ = registry.enqueuePersistence(document: doc) {
-            await positions?.recordTitle(document: registry.durableDocument(for: doc), title: trimmed)
+            await positions?.recordTitle(
+                document: registry.durableDocument(for: doc, generation: generation), title: trimmed)
         }
     }
 
@@ -470,7 +471,7 @@ final class AppStore {
     /// `DocumentRenameService.apply` directly for a document that may have no
     /// open tab at all.
     func renameDocument(tabId: String, title: String) async {
-        guard documentBinding(for: tabId) != nil,
+        guard let binding = documentBinding(for: tabId),
               let original = tabs.first(where: { $0.id == tabId })?.document else { return }
         let normalized = DocumentRenameService.normalized(title)
 
@@ -485,7 +486,7 @@ final class AppStore {
         let workspace = self.workspace
         let task = registry.enqueuePersistence(document: original) { [weak self] in
             await workspace?.awaitMaintenance()
-            let owner = registry.durableDocument(for: original)
+            let owner = registry.durableDocument(for: original, generation: binding.generation)
             let ownerKey = DocumentIdentity.storageKey(for: owner)
             let target = DocumentRenameService.Target(
                 kind: owner.kind, locator: owner.pdfPath,
@@ -546,7 +547,7 @@ final class AppStore {
                     return
                 }
             }
-            registry.recordPromotion(from: original, to: id)
+            registry.recordPromotion(from: original, generation: binding.generation, to: id)
             guard isCurrentDocumentBinding(binding) else { return }
             updateTab(sessionId) { $0.document?.docId = id }
             if activeTabId == sessionId { document?.docId = id }
@@ -1750,7 +1751,7 @@ final class AppStore {
                 await workspace?.awaitMaintenance()
                 for task in pendingPersistence { await task.value }
                 await pendingPositionRecordTask?.value
-                let durableDocument = teardowns.durableDocument(for: closingDocument)
+                let durableDocument = teardowns.durableDocument(for: closingDocument, generation: tab.documentBindingGeneration)
                 await positions?.recordMoved(
                     document: durableDocument,
                     position: Self.readingPosition(for: tab))
