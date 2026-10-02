@@ -754,13 +754,17 @@ private final class GatedPositionWrite {
 @MainActor
 private final class LifecycleGate {
     private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
 
     func pause() async {
+        // Cleanup can arrive before a background-priority task reaches its gate.
+        // Remember it so timeout teardown cannot park that task forever later.
+        guard !isReleased else { return }
         await withCheckedContinuation { continuation = $0 }
     }
 
     func waitUntilPaused() async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while continuation == nil {
             guard ContinuousClock.now < deadline else { throw GateError.didNotArrive }
             try await Task.sleep(for: .milliseconds(10))
@@ -768,6 +772,7 @@ private final class LifecycleGate {
     }
 
     func release() {
+        isReleased = true
         let pending = continuation
         continuation = nil
         pending?.resume()
