@@ -1456,7 +1456,21 @@ final class AppStore {
         resolveScratchpadConflict: @escaping @MainActor (String) async throws -> VellumBundle.ScratchpadDecision
     ) async throws -> (path: String, failedAttachments: [String]) {
         let prepared = await Task.detached(priority: .userInitiated) {
-            let destination = destination.resolvingSymlinksInPath().standardizedFileURL
+            // Use the same realpath identity as the reopen/teardown boundary.
+            // Foundation can retain /var where realpath returns /private/var;
+            // a new destination must inherit its existing ancestor's identity.
+            var ancestor = destination
+            var missingComponents: [String] = []
+            while (try? PdfDocumentLoader.canonicalize(ancestor.path)) == nil {
+                missingComponents.append(ancestor.lastPathComponent)
+                let parent = ancestor.deletingLastPathComponent()
+                guard parent.path != ancestor.path else { break }
+                ancestor = parent
+            }
+            let canonical = (try? PdfDocumentLoader.canonicalize(ancestor.path)) ?? ancestor.path
+            let destination = missingComponents.reversed().reduce(URL(fileURLWithPath: canonical)) {
+                $0.appendingPathComponent($1)
+            }
             var key = imported.manifest.docId
             if imported.manifest.kind == "pdf",
                let provider = CGDataProvider(data: imported.documentData as CFData),
