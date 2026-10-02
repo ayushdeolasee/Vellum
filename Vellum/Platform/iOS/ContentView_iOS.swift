@@ -188,6 +188,9 @@ private struct PaneShell_iOS: View {
                 PaneTreeView(node: workspace.root)
             }
         }
+        // Fill the home-indicator area with the active screen instead of the
+        // shell background. Keep the keyboard safe area and inspector controls.
+        .ignoresSafeArea(.container, edges: .bottom)
         .inspector(isPresented: inspectorPresented) {
             SidebarContent_iOS(ink: inkRegistry.controllers[workspace.focusedPaneId])
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in

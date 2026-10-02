@@ -795,6 +795,8 @@ struct AiPanel_iOS: View {
         HStack(alignment: .bottom, spacing: 8) {
             attachMenu
             TextField("Ask about this document…", text: $input, axis: .vertical)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.leading)
                 .font(.system(size: 15))
                 .foregroundStyle(palette.foreground)
                 .lineLimit(1...5)
@@ -802,7 +804,8 @@ struct AiPanel_iOS: View {
                 .onSubmit(submit)
                 .focused($composerFocused)
                 .padding(.horizontal, 4)
-                .frame(minHeight: 40)
+                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                .accessibilityIdentifier("aiPanel.composer")
                 // A native text input can consume the UIKit drop before the
                 // panel-level destination sees it. Register the same handler
                 // directly on the composer so "drop anywhere" is literal.
