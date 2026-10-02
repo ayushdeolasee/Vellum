@@ -272,6 +272,7 @@
 		56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA50A523F4D87396EC11A8B /* StorageHousekeeping.swift */; };
 		5716E0D875F1A5AD2EC02604 /* TabResidencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22F535D1F42D4D7C29D060EC /* TabResidencyTests.swift */; };
 		57FE634EDFF56D52C341AFF8 /* CapturedUnreadLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB1654654F4215F8C48E255 /* CapturedUnreadLedger.swift */; };
+		5807872696DF59C307A538C6 /* CaptureRecoverySheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78ABD962869166C5242446E /* CaptureRecoverySheet_iOS.swift */; };
 		5863B1EFB0D85D3AFACE6D45 /* WebPageExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E209F0AEC418389859234E /* WebPageExtractor.swift */; };
 		586DEDDBFC05F26D2998EF4F /* DocumentRenameService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236D6A7A9EA6BF08E9D6FB10 /* DocumentRenameService.swift */; };
 		5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */; };
@@ -478,6 +479,7 @@
 		A839E098CFCBE5AD28FECCA9 /* PhoneShell_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */; };
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		A8F90F19745170170BF9B13A /* VellumCommands_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */; };
+		A99BCC8FD87700AB08B1C6AC /* CaptureRecoverySheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78ABD962869166C5242446E /* CaptureRecoverySheet_iOS.swift */; };
 		AA5DCBC0B5F97BC2DEF95C39 /* PositionCoalescingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B668A374C9761E4C84D702 /* PositionCoalescingTests.swift */; };
 		AA66D58816F45E06D45E790E /* VellumExternalWebLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26AEE820D7F76A6A92314015 /* VellumExternalWebLinkTests.swift */; };
 		AAAFAFF384C09649E3E31D93 /* ConnectServiceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033CBF675FDE5C67C943F0EB /* ConnectServiceSheet.swift */; };
@@ -1162,6 +1164,7 @@
 		F52D1C3512CC3036812C1B2B /* WalkthroughContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughContent.swift; sourceTree = "<group>"; };
 		F6DF2CB6E68C17483659E62D /* PositionMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionMerge.swift; sourceTree = "<group>"; };
 		F6E8BC3466322166B4D7419C /* VellumWidgetComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetComponents.swift; sourceTree = "<group>"; };
+		F78ABD962869166C5242446E /* CaptureRecoverySheet_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoverySheet_iOS.swift; sourceTree = "<group>"; };
 		F7EB2CAD9B62427704761B66 /* VellumShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = VellumShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8BEC014138483BE0B9DC274 /* KaTeX_SansSerif-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Regular.woff2"; sourceTree = "<group>"; };
 		FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictResolver.swift; sourceTree = "<group>"; };
@@ -1212,6 +1215,7 @@
 			children = (
 				0317C551D2245591754B389C /* AiPanel_iOS.swift */,
 				F062F6AD131F0C0181F9A45B /* BundleImportPrompts_iOS.swift */,
+				F78ABD962869166C5242446E /* CaptureRecoverySheet_iOS.swift */,
 				D7F2184C5148E76963CD7389 /* ChromeTapCatcher_iOS.swift */,
 				2488488DF1D1AA471A896B4C /* ContentView_iOS.swift */,
 				0E27C5349B9DFE95B31A08AE /* DocumentExportActions_iOS.swift */,
@@ -2270,6 +2274,7 @@
 				EB84EADC707DE136E349331A /* CaptureIngestion.swift in Sources */,
 				6D20F18A2314AAFEEE5AAF6B /* CaptureRecord.swift in Sources */,
 				49FB34C0C31E434E5C90F150 /* CaptureRecordBuilder.swift in Sources */,
+				A99BCC8FD87700AB08B1C6AC /* CaptureRecoverySheet_iOS.swift in Sources */,
 				57FE634EDFF56D52C341AFF8 /* CapturedUnreadLedger.swift in Sources */,
 				81DD6A7482A614E55A6134AB /* ChromeTapCatcher_iOS.swift in Sources */,
 				A7D58B42FC20036A8AF5E218 /* ComposerReferences.swift in Sources */,
@@ -2562,6 +2567,7 @@
 				9719BF8D50174E4D7294DB57 /* CaptureIngestion.swift in Sources */,
 				347C30E5ED0E3E6C2E3D6073 /* CaptureRecord.swift in Sources */,
 				131F1C91F0FF0D74AE5DCBC2 /* CaptureRecordBuilder.swift in Sources */,
+				5807872696DF59C307A538C6 /* CaptureRecoverySheet_iOS.swift in Sources */,
 				33966D8701222ABAA03D11E5 /* CapturedUnreadLedger.swift in Sources */,
 				A621DD544ED35968DE4D0C6D /* ChromeTapCatcher_iOS.swift in Sources */,
 				19026EE9153EC91FE9D3DB80 /* ComposerReferences.swift in Sources */,

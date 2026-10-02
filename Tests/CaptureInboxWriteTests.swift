@@ -112,4 +112,60 @@ struct CaptureInboxWriteTests {
             #expect(isDirectory.boolValue)
         }
     }
+    @Test("Concurrent writers count pending and failed intent against one budget")
+    func concurrentAdmissionPreservesExistingIntent() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-capacity")
+        defer { CaptureFixtures.remove(layout) }
+        try layout.createDirectories()
+        let old = layout.failed.appendingPathComponent("old.json")
+        let original = try CaptureCoding.encode(CaptureFixtures.record())
+        try original.write(to: old)
+        let capacity = CaptureInboxCapacity(maximumBytes: 65_536, maximumEntries: 2)
+        let accepted = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<20 {
+                group.addTask {
+                    do {
+                        _ = try CaptureInboxWriter(layout: layout, capacity: capacity).write(
+                            CaptureFixtures.record(captureID: UUID().uuidString.lowercased()))
+                        return true
+                    } catch CaptureInboxError.capacityExceeded { return false }
+                    catch { Issue.record("Unexpected writer failure: \(error)"); return false }
+                }
+            }
+            var total = 0
+            for await success in group where success { total += 1 }
+            return total
+        }
+        #expect(accepted == 1)
+        #expect(CaptureFixtures.names(in: layout.pending).count == 1)
+        #expect(try Data(contentsOf: old) == original)
+        // Lowering a limit below existing usage refuses only the new capture.
+        do {
+            try CaptureInboxWriter(layout: layout,
+                capacity: CaptureInboxCapacity(maximumBytes: 1, maximumEntries: 1_000))
+                .write(CaptureFixtures.record(captureID: UUID().uuidString.lowercased()))
+            Issue.record("new capture must be refused above the byte budget")
+        } catch let error as CaptureInboxError { #expect(error == .capacityExceeded) }
+        #expect(try Data(contentsOf: old) == original)
+        #expect(CaptureFixtures.names(in: layout.pending).count == 1)
+        #expect(CaptureInboxCapacity().maximumBytes == 256 * 1024 * 1024)
+        #expect(CaptureInboxCapacity().maximumEntries == 1_000)
+    }
+
+    @Test("Publishing a colliding capture never overwrites existing bytes")
+    func writerCollisionPreservesOriginal() throws {
+        let layout = CaptureFixtures.scratchLayout("capture-collision")
+        defer { CaptureFixtures.remove(layout) }
+        let writer = CaptureInboxWriter(layout: layout)
+        let record = CaptureFixtures.record()
+        let original = try writer.write(record)
+        let bytes = try Data(contentsOf: original)
+        var changed = record
+        changed.title = "Different capture with the same filename"
+        do { try writer.write(changed); Issue.record("collision must refuse replacement") }
+        catch { }
+        #expect(try Data(contentsOf: original) == bytes)
+        #expect(CaptureFixtures.names(in: layout.tmp).isEmpty)
+    }
+
 }

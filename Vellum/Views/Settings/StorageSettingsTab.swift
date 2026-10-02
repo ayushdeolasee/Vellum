@@ -33,6 +33,7 @@ struct StorageSettingsTab: View {
     @State private var isLoading = true
     @State private var showsOrphansSheet = false
     @State private var showsConflictsSheet = false
+    @State private var showsCaptureRecoverySheet = false
 
     @State private var sortOrder: StorageInventory.SortOrder = .size
     @State private var searchText = ""
@@ -86,6 +87,7 @@ struct StorageSettingsTab: View {
     private var formContent: some View {
         Form {
             storageLocationSection
+            if workspace.captureIngestion != nil { captureRecoverySection }
             if !archivedConflicts.isEmpty { syncConflictsSection }
             summaryTilesSection
             documentsSection
@@ -127,6 +129,22 @@ struct StorageSettingsTab: View {
         }
         .sheet(isPresented: $showsConflictsSheet) {
             StorageConflictsSheet_iOS(conflicts: $archivedConflicts)
+        }
+        .sheet(isPresented: $showsCaptureRecoverySheet) {
+            if let ingestion = workspace.captureIngestion {
+                CaptureRecoverySheet_iOS(ingestion: ingestion)
+            }
+        }
+    }
+
+    private var captureRecoverySection: some View {
+        Section {
+            Button { showsCaptureRecoverySheet = true } label: {
+                Label("Unsaved captures", systemImage: "tray")
+            }
+            .accessibilityIdentifier("storage.captures")
+        } footer: {
+            Text("Retry, export or delete pages shared to Vellum that have not been saved yet.")
         }
     }
 
