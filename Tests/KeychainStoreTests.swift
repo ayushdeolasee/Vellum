@@ -133,6 +133,12 @@ struct KeychainStoreTests {
             #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .unavailable)
             #expect(fake.integrationItems["read-later.readwise"] == "original")
             #expect(fake.vaultEntries?[key] == "new-source")
+            fake.vaultDeleteSucceeds = false
+            #expect(!KeychainStore.set("read-later.readwise", "reconnected", service: integrationsService))
+            #expect(fake.integrationItems["read-later.readwise"] == "reconnected")
+            #expect(fake.vaultEntries?[key] == "new-source")
+            #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .unavailable)
+            fake.vaultDeleteSucceeds = true
             #expect(KeychainStore.set("read-later.readwise", "reconnected", service: integrationsService))
             #expect(KeychainStore.read("read-later.readwise", service: integrationsService) == .value("reconnected"))
             fake.seedVault([key: "retained-source"])
@@ -157,6 +163,29 @@ struct KeychainStoreTests {
             #expect(fake.vaultEntries?[key] == "changed-during-copy")
             #expect(fake.integrationItems["read-later.readwise"] == "original")
             #expect(fake.deleteCount == 0)
+        }
+    }
+
+    @Test("Cleanup comparisons reread source bytes even with an unchanged modification date")
+    func separateIntegrationCleanupChecksSameTimestamp() {
+        for sourceInitiallyPresent in [false, true] {
+            let fake = FakeKeychain()
+            let key = "com.vellum.integrations/read-later.readwise"
+            var original = ["com.vellum.ai/gemini": "cached-ai"]
+            if sourceInitiallyPresent { original[key] = "old-source" }
+            fake.seedVault(original)
+            let timestamp = fake.vaultModDate
+            fake.changeVaultOnIntegrationWrite = ["com.vellum.ai/gemini": "cached-ai", key: "concurrent-source"]
+            fake.preserveVaultDateOnIntegrationWrite = true
+            KeychainStore.withBackend(fake.backend, separateIntegrations: true) {
+                #expect(KeychainStore.get("gemini") == "cached-ai")
+                #expect(!KeychainStore.set("read-later.readwise", "requested-token", service: integrationsService))
+                #expect(fake.vaultModDate == timestamp)
+                #expect(fake.vaultEntries?[key] == "concurrent-source")
+                #expect(fake.integrationItems["read-later.readwise"] == "requested-token")
+                #expect(fake.writeCount == 0)
+                #expect(fake.deleteCount == 0)
+            }
         }
     }
 
@@ -493,6 +522,7 @@ private final class FakeKeychain: @unchecked Sendable {
     var integrationWriteSucceeds = true
     var integrationVerificationSucceeds = true
     var changeVaultOnIntegrationWrite: [String: String]?
+    var preserveVaultDateOnIntegrationWrite = false
     private var awaitingIntegrationVerification = false
     var commitLockIsAvailable = true
     /// service -> account -> item.
@@ -601,7 +631,7 @@ private final class FakeKeychain: @unchecked Sendable {
                 integrationItems[account] = value
                 if let changed = changeVaultOnIntegrationWrite {
                     changeVaultOnIntegrationWrite = nil
-                    seedVault(changed)
+                    seedVault(changed, at: preserveVaultDateOnIntegrationWrite ? vaultModDate : nil)
                 }
                 awaitingIntegrationVerification = true
                 return true

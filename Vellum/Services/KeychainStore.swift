@@ -314,8 +314,7 @@ enum KeychainStore {
                 && backend.readIntegration(account) == .value(trimmed)
             backend.releaseCommitLock()
             guard verified else { return false }
-            _ = removeSharedIntegrationLocked(account)
-            return true
+            return removeSharedIntegrationLocked(account)
         }
         return commitLocked([vaultKey(account, service): trimmed])
     }
@@ -437,8 +436,10 @@ enum KeychainStore {
         // The modification date is readable without an access prompt, so
         // detect that case and re-read before mutating — a whole-item write
         // from a stale cache would revert the other instance's secrets. The
-        // fresh read can prompt, but only in this rare conflict case.
-        if backend.probeModDate() != state.modDate {
+        // Compare-and-set cleanup always reads fresh bytes, even if another
+        // writer's modification timestamp is identical at Keychain precision.
+        if !expectedValues.isEmpty || !expectedMissing.isEmpty
+            || backend.probeModDate() != state.modDate {
             guard let fresh = backend.readVaultItem() else { return false }
             state = fresh
         }
@@ -564,17 +565,7 @@ enum KeychainStore {
               let data = item[kSecValueData as String] as? Data,
               let entries = try? JSONDecoder().decode([String: String].self, from: data)
         else { return nil }
-#if os(iOS)
-        // AI credentials remain foreground-only. Existing shared source bytes
-        // are read while unlocked before migrating integrations separately.
-        let accessibility = item[kSecAttrAccessible as String] as? String
-        if accessibility != kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String,
-           accessibility != kSecAttrAccessibleWhenUnlocked as String {
-            guard SecItemUpdate(vaultBaseQuery() as CFDictionary,
-                [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary) == errSecSuccess
-            else { return nil }
-        }
-#endif
+
         return VaultState(entries: entries, modDate: item[kSecAttrModificationDate as String] as? Date)
     }
 
@@ -592,16 +583,17 @@ enum KeychainStore {
 
     private static func liveWriteVault(_ entries: [String: String]) -> Bool {
         guard let data = try? JSONEncoder().encode(entries) else { return false }
-        var attributes: [String: Any] = [kSecValueData as String: data]
-#if os(iOS)
-        // The shared foreground vault must not broaden AI key accessibility.
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-#endif
+        // Existing vaults may use an even stronger accessibility class.
+        // Updating bytes must preserve it; only a new vault chooses a policy.
+        let attributes: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(vaultBaseQuery() as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var addQuery = vaultBaseQuery()
             addQuery.merge(attributes) { _, new in new }
             addQuery[kSecAttrLabel as String] = "Vellum"
+#if os(iOS)
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+#endif
             return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }
         return status == errSecSuccess
