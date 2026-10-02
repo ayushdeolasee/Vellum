@@ -36,13 +36,6 @@ final class PdfSearchTests: XCTestCase {
         let wrongPasswordText = await PdfTextReader(data: data, password: "incorrect").text(pageNumber: 1)
         XCTAssertNil(wrongPasswordText)
 
-        XCTAssertTrue(document.unlock(withPassword: password))
-        // PDFKit returns true for any subsequent password once unlocked.
-        _ = document.unlock(withPassword: "incorrect")
-        XCTAssertEqual(document.privateCopyPassword, password)
-        XCTAssertTrue(try XCTUnwrap(PDFDocument(data: data)).isLocked,
-                      "The retained source must remain encrypted")
-
         let info = DocumentInfo(kind: .pdf, pdfPath: "/isolated-encrypted-fixture.pdf", title: "Encrypted",
                                 pageCount: 1, lastPage: 1, docId: UUID().uuidString)
         let app = AppStore(sessions: DocumentSessionManager())
@@ -58,9 +51,22 @@ final class PdfSearchTests: XCTestCase {
         controller.pdfView = PDFView()
         controller.pdfView?.document = document
         controller.findQuery("needle")
+        XCTAssertEqual(app.error, "Unlock this PDF before searching.")
+        XCTAssertTrue(document.unlock(withPassword: password))
+        // PDFKit returns true for any subsequent password once unlocked.
+        _ = document.unlock(withPassword: "incorrect")
+        XCTAssertEqual(document.privateCopyPassword, password)
+        XCTAssertTrue(try XCTUnwrap(PDFDocument(data: data)).isLocked,
+                      "The retained source must remain encrypted")
+        controller.findQuery("needle")
         await controller.awaitPendingSearch()
         XCTAssertEqual(app.findMatchCount, 1)
         XCTAssertFalse(app.findIsSearching)
+        XCTAssertNil(app.error)
+        app.error = "Unrelated save failure"
+        controller.findQuery("needle")
+        await controller.awaitPendingSearch()
+        XCTAssertEqual(app.error, "Unrelated save failure")
         let count = await controller.ensureExtracted(pages: [1])
         XCTAssertEqual(count, 1)
         XCTAssertTrue(ai.pageTexts[1]?.contains("Synthetic needle") == true)

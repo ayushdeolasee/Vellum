@@ -406,6 +406,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
                 pdfView.highlightedSelections = selections.isEmpty ? nil : selections
                 self.focusCurrentMatch()
                 app.setFindResults(count: selections.count, current: selections.isEmpty ? 0 : 1)
+                if app.error == "Unlock this PDF before searching." { app.error = nil }
                 if result.truncated { app.error = "Showing the first 1,000 matches. Use a more specific search to see fewer results." }
             } catch {
                 // Clearing or rebinding cancels this generation; errors must not
