@@ -3,18 +3,19 @@
 set -euo pipefail
 
 repo_root="${0:A:h:h}"
-publish=false
 
 if [[ "${1:-}" == "--publish" ]]; then
-  publish=true
+  print -u2 "Publishing by rebuilding has been removed. Use Distribution/release.sh for the App Store route."
+  print -u2 "For direct distribution, promote the existing verified package separately; never rebuild a tested release."
+  exit 2
 elif [[ -n "${1:-}" ]]; then
-  print -u2 "Usage: Distribution/release-macos.sh [--publish]"
+  print -u2 "Usage: Distribution/release-macos.sh (prepare direct-distribution artifacts only)"
   exit 2
 fi
 
 cd "$repo_root"
 
-for command_name in xcodebuild xcbeautify diskutil codesign xcrun security gh git ditto lipo; do
+for command_name in xcodebuild xcbeautify diskutil codesign xcrun security git ditto lipo; do
   if ! command -v "$command_name" >/dev/null; then
     print -u2 "Missing required command: $command_name"
     exit 1
@@ -58,12 +59,6 @@ tag="v$version"
 release_dir_base="$repo_root/build/releases/Vellum-$version-$build"
 release_dir="$release_dir_base"
 retry_number=2
-
-if [[ "$publish" == true ]] \
-  && gh release view "$tag" --repo ayushdeolasee/Vellum >/dev/null 2>&1; then
-  print -u2 "Release stopped: GitHub release $tag already exists."
-  exit 1
-fi
 
 while [[ -e "$release_dir" ]]; do
   release_dir="$release_dir_base-retry-$retry_number"
@@ -218,24 +213,4 @@ print "Verified release artifacts:"
 print "  $dmg_path"
 print "  $appcast_path"
 
-if [[ "$publish" != true ]]; then
-  print "Not published. Re-run with --publish after testing these artifacts."
-  exit 0
-fi
-
-if gh release view "$tag" --repo ayushdeolasee/Vellum >/dev/null 2>&1; then
-  print -u2 "Release stopped: GitHub release $tag already exists."
-  exit 1
-fi
-
-print "Publishing GitHub release $tag..."
-gh release create "$tag" \
-  "$dmg_path#Vellum.dmg" \
-  "$appcast_path#appcast.xml" \
-  --repo ayushdeolasee/Vellum \
-  --target "$(git rev-parse HEAD)" \
-  --title "Vellum $version" \
-  --generate-notes \
-  --latest
-
-print "Published Vellum $version: https://github.com/ayushdeolasee/Vellum/releases/tag/$tag"
+print "Not published. Preserve these exact artifacts and their symbols for separate direct-distribution review."
