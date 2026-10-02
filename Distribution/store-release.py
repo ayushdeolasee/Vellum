@@ -90,6 +90,8 @@ def inspect_bundle(app, platform, version, build, exported):
     require(not any("sparkle" in p.name.lower() for p in app.rglob("*")), "Sparkle in Store app")
     run("codesign", "--verify", "--deep", "--strict", "-R=anchor apple generic", app)
     signature = run("codesign", "-d", "--verbose=4", app, combine_output=True).decode()
+    signing_teams = re.findall(r"^TeamIdentifier=(.+)$", signature, flags=re.MULTILINE)
+    require(signing_teams == [TEAM], "Signing certificate belongs to a different or unknown team")
     authorities = re.findall(r"^Authority=(.+)$", signature, flags=re.MULTILINE)
     require(authorities, "No signing certificate authority")
     if exported:
@@ -149,7 +151,8 @@ def inspect_bundle(app, platform, version, build, exported):
         require(manifests, "App privacy manifest missing")
     uuids = executable_uuids(executable)
     return {"bundle": identifier, "version": version, "build": build, "executable_uuids": uuids,
-            "architectures": architectures, "signing_authorities": authorities, "entitlements": entitlements,
+            "architectures": architectures, "signing_team": signing_teams[0],
+            "signing_authorities": authorities, "entitlements": entitlements,
             "profile_uuid": profile.get("UUID"), "profile_expires": expiry.isoformat(),
             "privacy_manifests": manifests}
 

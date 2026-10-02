@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 import os
+import plistlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -58,6 +59,20 @@ class StoreReleaseTests(unittest.TestCase):
         (self.directory / "export/unrecorded").write_bytes(b"extra")
         with self.assertRaises(ValueError):
             release.verify(self.directory)
+
+    def test_bundle_rejects_another_certificate_team_before_trusting_entitlements(self):
+        app = self.directory / "OtherTeam.app"
+        app.mkdir()
+        (app / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": release.BUNDLE,
+            "CFBundleShortVersionString": "0.1.2", "CFBundleVersion": "5"}))
+        for team in ("TeamIdentifier=OTHERTEAM\n", ""):
+            with self.subTest(team=team):
+                signature = ("Authority=Apple Distribution: Fixture\n" + team).encode()
+                with patch.object(release, "run", side_effect=[b"", signature]) as tool:
+                    with self.assertRaisesRegex(ValueError, "Signing certificate"):
+                        release.inspect_bundle(app, "ios", "0.1.2", "5", True)
+                    self.assertEqual(tool.call_count, 2)
 
     @patch.dict(os.environ, {"VELLUM_TEST_ASC_PASSWORD": "synthetic-secret"})
     def test_upload_requires_validation_of_current_manifest(self):
