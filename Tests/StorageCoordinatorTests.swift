@@ -713,7 +713,7 @@ struct StorageCoordinatorTests {
         #expect(await AiPersistence.loadConversation(for: document, coordinator: coordinator) == [message])
         #expect(await AiPersistence.acceptClear(for: document, coordinator: coordinator))
         #expect(await AiPersistence.awaitPendingFlush())
-        let clearIntent = try #require(ConversationOperationJournal.read(key))
+        let clearIntent = try #require(try ConversationOperationJournal.read(key))
         #expect(clearIntent.deletionCommitted)
         #expect(clearIntent.replacementDigest == nil)
         #expect(container.peek(original) == nil)
@@ -725,7 +725,7 @@ struct StorageCoordinatorTests {
         #expect(container.peek(original) == restored)
         #expect(container.peek(archive) == restored)
         #expect(await coordinator.archivedConflicts().allSatisfy { !$0.needsReview })
-        let reconciled = try #require(ConversationOperationJournal.read(key))
+        let reconciled = try #require(try ConversationOperationJournal.read(key))
         #expect(reconciled.id == clearIntent.id)
         #expect(ConversationOperationJournal.replacementCommitted(reconciled, data: restored))
         // A benign same-ID conflict must keep even JSON formatting intact so
@@ -875,7 +875,7 @@ struct StorageCoordinatorTests {
                 try FileManager.default.setAttributes([.posixPermissions: 0o555],
                                                       ofItemAtPath: ConversationOperationJournal.directory.path)
             }
-            let expectedIntent = try #require(ConversationOperationJournal.read(key))
+            let expectedIntent = try #require(try ConversationOperationJournal.read(key))
             await gate.release()
             do {
                 try await restore.value
