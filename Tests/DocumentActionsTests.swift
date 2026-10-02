@@ -349,7 +349,7 @@ final class DocumentActionsTests: XCTestCase {
         try await gate.waitUntilPaused()
         scratchpad.text = "latest note"
         let image = Data([1, 2, 3, 4])
-        scratchpad.addImage(.init(data: image, fileExtension: "png", mediaType: "image/png"), label: "fixture")
+        scratchpad.addImage(.init(data: image, fileExtension: "png", mediaType: "image/png", width: 1, height: 1), label: "fixture")
         var finished = false
         var safeToQuit = false
         let quit = Task { safeToQuit = await workspace.flushScratchpadsForTermination(); finished = true }
