@@ -24,7 +24,7 @@ actor InMemoryIntegrationCredentials: IntegrationCredentials {
             if writeOutcome != .failed { values[provider] = credential }
             return writeOutcome
         }
-        return setCredential(credential, for: provider) ? .saved : .failed
+        return await setCredential(credential, for: provider) ? .saved : .failed
     }
     func readCredential(for provider: IntegrationProvider) async -> KeychainStore.CredentialRead {
         guard isAvailable else { return .unavailable }
