@@ -38,13 +38,13 @@ final class SafeClearTests: XCTestCase {
     override func tearDown() async throws {
         await app.awaitPendingTabTeardowns()
         await AiPersistence.awaitPendingFlush()
-        await AiPersistence.awaitPendingFlush()
         // Drain every sweep this test armed before the next one installs its own
         // attachment directory: `collectGarbage` resolves `directory` when it
         // runs, so a sweep that outlived its test would scan the NEXT test's
         // pool with this test's reference set (#111).
         for store in scratchpadStores { await store.attachmentSweepTask?.value }
         scratchpadStores.removeAll()
+        try? FileManager.default.removeItem(at: ConversationOperationJournal.directory)
         DocumentDataStore.rootDirectoryOverride = nil
         ScratchpadAttachmentStore.directoryOverride = nil
         ScratchpadAttachmentStore.resetPending()
@@ -86,7 +86,8 @@ final class SafeClearTests: XCTestCase {
         store.addLocalMessage(role: .user, content: "old question", id: "old-question")
         store.addLocalMessage(role: .assistant, content: "old answer", id: "old-answer")
 
-        let transaction = try XCTUnwrap(store.clearConversation())
+        let cleared = await store.clearConversation()
+        let transaction = try XCTUnwrap(cleared)
         store.addLocalMessage(role: .user, content: "new work", id: "new-work")
         XCTAssertTrue(store.undoClear(transaction))
         XCTAssertEqual(store.messages.map(\.content), ["old question", "old answer", "new work"])
@@ -293,8 +294,9 @@ final class SafeClearTests: XCTestCase {
                       "an attachment written after the snapshot belongs to a later edit")
     }
 
-    func testEmptyClearsAreNoOps() {
-        XCTAssertNil(AiStore().clearConversation())
+    func testEmptyClearsAreNoOps() async {
+        let cleared = await AiStore().clearConversation()
+        XCTAssertNil(cleared)
         XCTAssertNil(ScratchpadStore().clearText())
     }
 

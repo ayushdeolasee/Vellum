@@ -89,9 +89,12 @@ struct DirectLibraryFileStore: LibraryFileStore {
     func remove(_ url: URL) async throws {
         let url = try checkedURL(url)
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: url.path) else { return }
         do {
             try fileManager.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // A failed existence probe also means inaccessible, not just absent.
+            // Only the removal operation can establish idempotent success.
+            return
         } catch {
             throw LibraryFileError.io(error.localizedDescription)
         }

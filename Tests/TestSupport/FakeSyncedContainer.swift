@@ -51,13 +51,19 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     let conflicts: AsyncStream<ConflictEvent>
     private let sink: AsyncStream<ConflictEvent>.Continuation
     private let clock: PositionClock
+    private let beforeReplace: (@Sendable (URL) async -> Void)?
+    private let beforeRemove: (@Sendable (URL) async throws -> Void)?
     private var resolver: any ConflictResolver = PreserveLosersConflictResolver()
 
-    init(resolver: (any ConflictResolver)? = nil, clock: PositionClock = SystemPositionClock()) {
+    init(resolver: (any ConflictResolver)? = nil, clock: PositionClock = SystemPositionClock(),
+         beforeReplace: (@Sendable (URL) async -> Void)? = nil,
+         beforeRemove: (@Sendable (URL) async throws -> Void)? = nil) {
         let (stream, sink) = AsyncStream<ConflictEvent>.makeStream()
         self.conflicts = stream
         self.sink = sink
         self.clock = clock
+        self.beforeReplace = beforeReplace
+        self.beforeRemove = beforeRemove
         self.resolver =
             resolver
             ?? PreserveLosersConflictResolver(archive: { [unowned self] url, data in
@@ -176,6 +182,7 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     }
 
     func replace(_ url: URL, with data: Data) async throws {
+        await beforeReplace?(url)
         try await SyncedContainerAccessor.guarded(url) {
             enterAccessor()
             defer { exitAccessor() }
@@ -196,6 +203,7 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     }
 
     func remove(_ url: URL) async throws {
+        try await beforeRemove?(url)
         try await SyncedContainerAccessor.guarded(url) {
             enterAccessor()
             defer { exitAccessor() }

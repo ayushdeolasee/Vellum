@@ -195,6 +195,42 @@ struct DocumentDataCoordinationTests {
         #expect(container.existenceCheckCount == 0)
     }
 
+    @Test("An in-flight failed AI write retries at the promoted owner, never its old key")
+    func failedFlushFollowsPromotedOwner() async throws {
+        let document = DocumentInfo(kind: .pdf, pdfPath: "/tmp/flush-promotion-\(UUID().uuidString).pdf",
+            title: "Promotion", pageCount: 1, lastPage: 1, docId: nil)
+        let oldKey = DocumentIdentity.storageKey(for: document)
+        var promoted = document
+        promoted.docId = UUID().uuidString.lowercased()
+        let newKey = DocumentIdentity.storageKey(for: promoted)
+        let oldURL = cloudRoot.appendingPathComponent(".vellum/documents/\(oldKey)/conversations.json")
+        let newURL = cloudRoot.appendingPathComponent(".vellum/documents/\(newKey)/conversations.json")
+        let gate = ConversationFlushGate()
+        let container = FakeSyncedContainer(beforeReplace: { url in
+            if url == oldURL { await gate.pause() }
+        })
+        let coordinator = makeCoordinator(container: container)
+        await coordinator.start()
+        AiPersistence.saveConversation(for: document,
+            messages: [AiPersistence.makeMessage(role: .user, content: "older snapshot")], coordinator: coordinator)
+        let flush = Task { await AiPersistence.awaitPendingFlush() }
+        do { try await gate.waitUntilPaused() }
+        catch { gate.release(); _ = await flush.value; throw error }
+        AiPersistence.saveConversation(for: promoted,
+            messages: [AiPersistence.makeMessage(role: .user, content: "latest promoted snapshot")], coordinator: coordinator)
+        container.failNextWrite(with: .io("gated old snapshot failed"))
+        gate.release()
+        let saved = await flush.value
+        #expect(saved)
+        #expect(!AiPersistence.hasPendingChanges(forKey: oldKey))
+        #expect(!AiPersistence.hasPendingChanges(forKey: newKey))
+        #expect(container.peek(oldURL) == nil)
+        let bytes = try #require(container.peek(newURL))
+        #expect(try JSONDecoder().decode([AiMessage].self, from: bytes).map(\.content) == ["latest promoted snapshot"])
+        AiPersistence.invalidateCachedConversation(forKey: oldKey)
+        AiPersistence.invalidateCachedConversation(forKey: newKey)
+    }
+
     private func makeCoordinator(
         container: FakeSyncedContainer,
         storeDir: URL = URL(fileURLWithPath: "/test-local/web", isDirectory: true)
@@ -223,4 +259,26 @@ private struct CoordinatedRelinkAdapter: DocumentAccessAdapter {
     func stopAccessing(_ url: URL) {}
     func fileExists(_ url: URL) -> Bool { true }
     func documentId(atPath path: String) -> String? { nil }
+}
+
+@MainActor
+private final class ConversationFlushGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+    func pause() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func waitUntilPaused() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while continuation == nil {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
 }

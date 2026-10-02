@@ -304,7 +304,7 @@ final class DocumentsRelocationTests: XCTestCase {
 
         // Empty-note removal is also refused (placeholder left intact).
         DocumentDataStore.removeScratchpad(forKey: key)
-        DocumentDataStore.removeConversations(forKey: key)
+        XCTAssertThrowsError(try DocumentDataStore.removeConversations(forKey: key))
         XCTAssertTrue(exists(notePlaceholder), "evicted note placeholder is preserved")
         XCTAssertTrue(exists(chatPlaceholder), "evicted chat placeholder is preserved")
 

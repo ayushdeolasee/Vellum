@@ -53,12 +53,13 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 // Also drain detached flushes from controllers dropped by a
                 // recent close/eviction, then the coalesced AI conversation write.
                 await PageTextPersister.awaitInFlightFlushes()
-                await AiPersistence.awaitPendingFlush()
+                let chatSaved = await AiPersistence.awaitPendingFlush()
                 // Same for the read-later stores' background work (see above).
                 await workspace.integrations.awaitQuiescence()
-                guard workspace.tabTeardowns.isEmpty,
+                guard chatSaved, !AiPersistence.hasPendingChanges,
+                      workspace.tabTeardowns.isEmpty,
                       workspace.scratchpadsAreSafeToTerminate(after: scratchpadSnapshot) else {
-                    workspace.focusedPane.app.error = "Quit canceled because document edits changed while saving. Your drafts remain open; try Quit again."
+                    workspace.focusedPane.app.error = "Quit canceled because document changes are still waiting to be saved. Your drafts remain open; restore storage access and try Quit again."
                     isTerminating = false
                     workspace.cancelTermination()
                     terminationTask = nil
