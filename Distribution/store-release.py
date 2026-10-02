@@ -31,12 +31,18 @@ def require(condition, message):
 
 
 def run(*args, log=None):
-    result = subprocess.run([str(a) for a in args], cwd=ROOT, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, check=False)
+    command = [str(a) for a in args]
     if log is not None:
-        Path(log).write_bytes(result.stdout + result.stderr)
+        # Compiler/transport logs may be large; stream them to the artifact.
+        with Path(log).open("wb") as output:
+            result = subprocess.run(command, cwd=ROOT, stdout=output,
+                                    stderr=subprocess.STDOUT, check=False)
+        require(result.returncode == 0, f"{args[0]} failed ({result.returncode}). See {log}")
+        return b""
+    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, check=False)
     require(result.returncode == 0, f"{args[0]} failed ({result.returncode}). "
-            + (f"See {log}" if log else result.stderr.decode(errors="replace")[-3000:]))
+            + result.stderr.decode(errors="replace")[-3000:])
     return result.stdout
 
 
@@ -166,7 +172,7 @@ def archive(args):
     require(not run("git", "status", "--porcelain").strip(), "Commit working-tree changes first")
     output = args.directory.resolve()
     require(not output.exists(), "Use a new directory; previous artifacts are never overwritten")
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, mode=0o700)
     commit = run("git", "rev-parse", "HEAD").decode().strip()
     archive_path = output / "Vellum.xcarchive"
     scheme = "Vellum Mac App Store" if args.platform == "macos" else "Vellum"
