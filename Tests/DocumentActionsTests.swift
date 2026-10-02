@@ -952,6 +952,126 @@ final class DocumentActionsTests: XCTestCase {
         }
     }
 
+    func testImportRefusesOpenDestinationAndIncomingOwnerWithoutChangingAI() async throws {
+        try await withAIDefaults {
+            let pending = LifecycleGate()
+            lifecycleGates.append(pending)
+            let destination = tempDirectory.appendingPathComponent("import-owner.pdf")
+            makePDF(at: destination, pages: 1)
+            var original = testDocument("Original owner")
+            original.pdfPath = destination.path
+            try PdfMetadata.stampDocumentId(atPath: destination.path, id: try XCTUnwrap(original.docId))
+            let originalBytes = try Data(contentsOf: destination)
+            let state = AIRequestFixtureState()
+            let fixture = try await aiFixture(document: original) { engine, event in
+                event(.textDelta("original owner partial"))
+                await pending.pause()
+                state.outputs.append(await engine.run(
+                    AIRequestFixtureState.action("addNote", text: "original owner note"), sessionIdAtStart: "ai", actionCount: 0))
+                return AiProviderResult(reply: "original owner reply", actionResults: [])
+            }
+            let request = Task { await fixture.ai.sendMessage("original question", context: fixture.context) }
+            lifecycleTasks.append(request)
+            try await pending.waitUntilPaused()
+            let reference = AiReference(kind: .selection(text: "unsent draft reference", page: 1))
+            fixture.ai.addReference(reference)
+            let incoming = try importedFixture()
+            let visible = fixture.ai.messages
+            do {
+                _ = try await fixture.app.importVellumBundle(incoming, to: destination) { _ in
+                    XCTFail("an open destination must be refused before its merge prompt")
+                    return .keepLocal
+                }
+                XCTFail("expected open destination refusal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Close this document")) }
+            XCTAssertEqual(try Data(contentsOf: destination), originalBytes)
+            XCTAssertEqual(fixture.ai.messages, visible)
+            XCTAssertEqual(fixture.ai.composerReferences, [reference])
+            XCTAssertTrue(fixture.ai.isThinking)
+
+            // The same incoming stable owner in another pane is protected even
+            // when inactive and located at an entirely different path.
+            let workspace = WorkspaceStore(sessions: fixture.app.sessions)
+            workspaces.append(workspace)
+            fixture.app.workspace = workspace
+            var sameOwner = testDocument("Other incoming owner")
+            sameOwner.docId = incoming.manifest.docId
+            workspace.focusedPane.app.attachTab(testTab(sameOwner, id: "incoming-owner"))
+            workspace.focusedPane.app.newStartTab()
+            let otherDestination = tempDirectory.appendingPathComponent("not-yet-written.pdf")
+            do {
+                _ = try await fixture.app.importVellumBundle(incoming, to: otherDestination) { _ in .keepLocal }
+                XCTFail("expected inactive incoming-owner refusal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Close this document")) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: otherDestination.path))
+            pending.release()
+            await request.value
+            await fixture.app.awaitPendingTabTeardowns()
+            XCTAssertEqual(fixture.a.createdNotes, ["original owner note"])
+            XCTAssertEqual(try Data(contentsOf: destination), originalBytes)
+            XCTAssertFalse(fixture.ai.messages.contains { $0.content == "imported history" })
+            XCTAssertEqual(fixture.ai.composerReferences, [reference])
+        }
+    }
+
+    func testClosedOwnerImportRemainsRegisteredAcrossItsMergePrompt() async throws {
+        try await withAIDefaults {
+            let prompt = LifecycleGate()
+            lifecycleGates.append(prompt)
+            let imported = try importedFixture()
+            let destination = tempDirectory.appendingPathComponent("registered-import.pdf")
+            let alternate = tempDirectory.appendingPathComponent("same-owner-other-path.pdf")
+            try imported.documentData.write(to: alternate)
+            let sessions = DocumentSessionManager()
+            let app = AppStore(sessions: sessions)
+            apps.append(app)
+            let outcome = LifecycleRenameOutcome()
+            let importing = Task {
+                do {
+                    _ = try await app.importVellumBundle(imported, to: destination) { _ in
+                        await prompt.pause()
+                        return .keepLocal
+                    }
+                    outcome.succeeds = true
+                } catch { XCTFail("closed owner import failed: \(error)") }
+            }
+            lifecycleTasks.append(importing)
+            try await prompt.waitUntilPaused()
+            XCTAssertEqual(PdfMetadata.documentId(atPath: destination.path), imported.manifest.docId)
+            XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: imported.manifest.docId))
+            let opening = Task { await app.openFile(path: destination.path) }
+            lifecycleTasks.append(opening)
+            let alternateOpening = Task { await app.openFile(path: alternate.path) }
+            lifecycleTasks.append(alternateOpening)
+            try await waitUntil { sessions.sessions.count == 1 }
+            XCTAssertTrue(app.tabs.isEmpty, "both path and newly discovered stable-owner opens must join the whole import")
+            prompt.release()
+            await importing.value
+            await opening.value
+            await alternateOpening.value
+            await app.awaitPendingTabTeardowns()
+            XCTAssertTrue(outcome.succeeds)
+            XCTAssertEqual(app.document?.docId, imported.manifest.docId)
+            let bytes = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: imported.manifest.docId))
+            XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: bytes).map(\.content), ["imported history"])
+            for tab in app.tabs { await app.closeTab(tab.id) }
+            await app.awaitPendingTabTeardowns()
+        }
+    }
+
+    private func importedFixture() throws -> VellumBundle.Imported {
+        let path = tempDirectory.appendingPathComponent("incoming-\(UUID().uuidString).pdf")
+        makePDF(at: path, pages: 1)
+        let id = UUID().uuidString.lowercased()
+        try PdfMetadata.stampDocumentId(atPath: path.path, id: id)
+        let content = VellumBundle.Content(kind: .pdf, docId: id, documentFile: "incoming.pdf",
+            documentData: try Data(contentsOf: path), title: "Imported", scratchpad: nil, attachments: [],
+            conversations: try JSONEncoder().encode([AiPersistence.makeMessage(role: .user, content: "imported history")]))
+        let bundle = tempDirectory.appendingPathComponent("fixture-\(UUID().uuidString).vellum")
+        try VellumBundle.write(content, to: bundle)
+        return try VellumBundle.read(at: bundle)
+    }
+
     private func withAIDefaults(_ operation: () async throws -> Void) async throws {
         DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("ai-scope")
         let name = "vellum.ai-scope-tests.\(UUID().uuidString)"
@@ -977,9 +1097,10 @@ final class DocumentActionsTests: XCTestCase {
     }
 
     private func aiFixture(
+        document: DocumentInfo? = nil,
         beforeCreate: (@MainActor () async -> Void)? = nil, generate: @escaping AiStore.Generate
     ) async throws -> AIRequestFixture {
-        let a = AIRequestFixtureSession(info: testDocument("AI-A-\(UUID().uuidString)", kind: .web), beforeCreate: beforeCreate)
+        let a = AIRequestFixtureSession(info: document ?? testDocument("AI-A-\(UUID().uuidString)", kind: .web), beforeCreate: beforeCreate)
         let b = AIRequestFixtureSession(info: testDocument("AI-B-\(UUID().uuidString)", kind: .web))
         let manager = DocumentSessionManager(openWebSession: { url, _ in url == a.info.pdfPath ? a : b })
         _ = try await manager.openWebDocument(url: a.info.pdfPath, sessionId: "ai")

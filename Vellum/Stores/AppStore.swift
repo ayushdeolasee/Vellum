@@ -199,6 +199,11 @@ final class AppStore {
     // Active document state
     private(set) var document: DocumentInfo?
     private(set) var isLoading = false
+    /// Count concurrent opens/navigation, including the interval before a tab
+    /// has DocumentInfo. Import cannot admit against an unseen backend open.
+    private var pendingDocumentAdmissions = 0
+    private var pendingBundleImports = 0
+    var hasPendingDocumentAdmission: Bool { pendingDocumentAdmissions > 0 }
     var error: String?
 
     // Active viewport state
@@ -297,6 +302,8 @@ final class AppStore {
     // MARK: - Opening documents
 
     func openFile(path: String) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         isLoading = true
         error = nil
         do {
@@ -310,6 +317,8 @@ final class AppStore {
     }
 
     func openFiles(paths: [String]) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         guard !paths.isEmpty else { return }
         isLoading = true
         error = nil
@@ -327,6 +336,8 @@ final class AppStore {
     }
 
     func openUrl(_ url: String, saveToLibrary: Bool = false) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         isLoading = true
         error = nil
         do {
@@ -342,6 +353,8 @@ final class AppStore {
     /// Opens a mixed Finder/browser delivery in caller order under one loading
     /// and error scope. File-only deliveries continue through `openFiles`.
     func openIncomingURLs(_ urls: [URL]) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         guard !urls.isEmpty else { return }
         isLoading = true
         error = nil
@@ -371,6 +384,8 @@ final class AppStore {
     /// session id so annotation commands keep working against the same tab.
     @discardableResult
     func webNavigated(tabId: String, url: String) async -> DocumentInfo? {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         guard let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .web else {
             return nil
         }
@@ -697,6 +712,8 @@ final class AppStore {
     /// Unlike the normal open path this deliberately does not deduplicate by
     /// location: Duplicate means two independently navigable workspaces.
     func duplicateTab(_ tabId: String) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let source = tabs[sourceIndex]
         guard let sourceDocument = source.document else {
@@ -844,12 +861,15 @@ final class AppStore {
     /// stopped persisting them, so a descriptor without a document is an old
     /// saved file and its `New Tab` placeholder is not worth resurrecting.
     func restoreTabs(_ descriptors: [TabDescriptor], activeIndex: Int?) async {
+        pendingDocumentAdmissions += 1
+        defer { pendingDocumentAdmissions -= 1 }
         var restoredTabIds: [Int: String] = [:]
 
         for (descriptorIndex, descriptor) in descriptors.enumerated() {
             guard let savedDocument = descriptor.document else { continue }
             let sessionId = UUID().uuidString.lowercased()
             do {
+                await teardowns.awaitPersistence(for: savedDocument)
                 var opened: DocumentInfo
                 if savedDocument.kind == .web {
                     if savedDocument.pdfPath.lowercased().hasSuffix(".vellumweb") {
@@ -870,6 +890,7 @@ final class AppStore {
                         try? await sessions.closeFile(sessionId: sessionId)
                     }
                 }
+                await teardowns.awaitPersistence(for: opened)
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
                 opened.title = savedDocument.title ?? opened.title
@@ -1302,27 +1323,29 @@ final class AppStore {
         // Atomic write: stage the bytes in a temp sibling, rename over the
         // destination. Replacing an existing file never deletes it first, so a
         // failed import leaves the prior file intact.
-        let parent = destination.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        } catch {
-            throw SessionServiceError.io(
-                "Failed to prepare the import destination: \(error.localizedDescription)")
-        }
-        let tmp = parent.appendingPathComponent(
-            ".\(destination.lastPathComponent).import-\(UUID().uuidString.lowercased())")
-        do {
-            try imported.documentData.write(to: tmp)
-        } catch {
-            try? FileManager.default.removeItem(at: tmp)
-            throw SessionServiceError.io(
-                "Failed to write the imported document: \(error.localizedDescription)")
-        }
-        guard rename(tmp.path, destination.path) == 0 else {
-            try? FileManager.default.removeItem(at: tmp)
-            throw SessionServiceError.io(
-                "Failed to write the imported document: could not replace the destination")
-        }
+        try await Task.detached(priority: .userInitiated) {
+            let parent = destination.deletingLastPathComponent()
+            do {
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            } catch {
+                throw SessionServiceError.io(
+                    "Failed to prepare the import destination: \(error.localizedDescription)")
+            }
+            let tmp = parent.appendingPathComponent(
+                ".\(destination.lastPathComponent).import-\(UUID().uuidString.lowercased())")
+            do {
+                try imported.documentData.write(to: tmp)
+            } catch {
+                try? FileManager.default.removeItem(at: tmp)
+                throw SessionServiceError.io(
+                    "Failed to write the imported document: \(error.localizedDescription)")
+            }
+            guard rename(tmp.path, destination.path) == 0 else {
+                try? FileManager.default.removeItem(at: tmp)
+                throw SessionServiceError.io(
+                    "Failed to write the imported document: could not replace the destination")
+            }
+        }.value
 
         // An imported PDF that carries no /VellumDocId would, on reopen, resolve
         // to sha256(path) and then be stamped a FRESH UUID — orphaning the
@@ -1394,6 +1417,88 @@ final class AppStore {
         return (destination.path, failedAttachments)
     }
 
+    /// Replacing an open payload would leave its captured backend pointed at
+    /// different bytes. Ask the user to close every owner instead of rebinding
+    /// an active document and risking its notes or conversation.
+    private var importOwnerApps: [AppStore] {
+        let stores = workspace?.root.allLeaves().map(\.app) ?? []
+        return stores.contains(where: { $0 === self }) ? stores : stores + [self]
+    }
+
+    private func assertImportDestinationClosed(_ destination: URL, key: String) async throws {
+        while true {
+            let owners = importOwnerApps
+            let documents = owners.flatMap { $0.tabs.compactMap(\.document) }
+            let matchingPath = await Task.detached(priority: .userInitiated) {
+                let path = destination.resolvingSymlinksInPath().standardizedFileURL.path
+                return documents.contains { document in
+                    guard document.kind == .pdf || document.pdfPath.hasPrefix("/") else { return false }
+                    return URL(fileURLWithPath: document.pdfPath)
+                        .resolvingSymlinksInPath().standardizedFileURL.path == path
+                }
+            }.value
+            // Tabs can change during canonicalization. Check the current owners,
+            // including inactive tabs, before admitting the replacement.
+            guard owners.map(ObjectIdentifier.init) == importOwnerApps.map(ObjectIdentifier.init),
+                  documents == owners.flatMap({ $0.tabs.compactMap(\.document) }) else { continue }
+            guard !matchingPath,
+                  !documents.contains(where: { DocumentIdentity.storageKey(for: $0) == key }) else {
+                throw SessionServiceError.io("Close this document in every pane before importing a replacement. Your open document and its changes have been kept.")
+            }
+            return
+        }
+    }
+
+    /// One joinable resource operation covers the payload, stamp, merge prompt
+    /// and sidecar. New opens cannot acquire the destination halfway through.
+    func importVellumBundle(
+        _ imported: VellumBundle.Imported, to destination: URL,
+        resolveScratchpadConflict: @escaping @MainActor (String) async throws -> VellumBundle.ScratchpadDecision
+    ) async throws -> (path: String, failedAttachments: [String]) {
+        let prepared = await Task.detached(priority: .userInitiated) {
+            let destination = destination.resolvingSymlinksInPath().standardizedFileURL
+            var key = imported.manifest.docId
+            if imported.manifest.kind == "pdf",
+               let provider = CGDataProvider(data: imported.documentData as CFData),
+               let raw = CGPDFDocument(provider), let embedded = PdfMetadata.documentId(raw) {
+                key = embedded
+            }
+            return (destination, key)
+        }.value
+        let (destination, key) = prepared
+        await workspace?.awaitMaintenance()
+        try await assertImportDestinationClosed(destination, key: key)
+        guard !importOwnerApps.contains(where: { $0.pendingDocumentAdmissions > $0.pendingBundleImports }) else {
+            throw SessionServiceError.io("Wait for documents to finish opening, then retry the import. The existing document has been kept.")
+        }
+        let document = DocumentInfo(kind: imported.manifest.kind == "web" ? .web : .pdf,
+            pdfPath: destination.path, title: imported.manifest.title, pageCount: nil, lastPage: nil, docId: key)
+        let coordinator = workspace?.storageCoordinator
+        var outcome: Result<(path: String, failedAttachments: [String]), Error> = .failure(
+            SessionServiceError.io("The imported document was not installed"))
+        let task = teardowns.enqueuePersistence(document: document) { [self] in
+            do {
+                try await assertImportDestinationClosed(destination, key: key)
+                await AiPersistence.awaitPendingFlush()
+                let installedKey = try await Self.writeImportedDocument(imported, to: destination)
+                guard installedKey == key else {
+                    throw SessionServiceError.io("The imported document identity could not be confirmed. Its sidecar was kept unchanged.")
+                }
+                let decision = try await resolveScratchpadConflict(key)
+                try await assertImportDestinationClosed(destination, key: key)
+                if let coordinator {
+                    outcome = .success(try await Self.finishImportedBundle(imported, to: destination,
+                        key: key, coordinator: coordinator, resolveScratchpadConflict: { _ in decision }))
+                } else {
+                    outcome = .success(try Self.finishImportedBundle(imported, to: destination,
+                        key: key, resolveScratchpadConflict: { _ in decision }))
+                }
+            } catch { outcome = .failure(error) }
+        }
+        await task.value
+        return try outcome.get()
+    }
+
     /// Production import path. The document payload is already installed; its
     /// class-B sidecar must use the workspace's coordinated storage boundary.
     @MainActor
@@ -1462,6 +1567,8 @@ final class AppStore {
     /// so the document lands in `DocumentImport.libraryDirectory` — the same
     /// place every picked PDF is copied to.
     private func importVellumBundle(bundlePath: String) async throws -> String? {
+        pendingBundleImports += 1
+        defer { pendingBundleImports -= 1 }
         do {
             return try await importVellumBundleShowingErrors(bundlePath: bundlePath)
         } catch {
@@ -1476,43 +1583,21 @@ final class AppStore {
     }
 
     private func importVellumBundleShowingErrors(bundlePath: String) async throws -> String? {
-        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        let imported = try await Task.detached(priority: .userInitiated) {
+            try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        }.value
         let destination = DocumentImport.bundleDestination(
             documentFile: imported.manifest.documentFile, docId: imported.manifest.docId)
 
-        // Re-importing over a document whose tab was just closed: that tab's
-        // teardown is a full read + atomic rewrite of this exact file, so a
-        // rename(2) landing after ours would put PRE-import bytes back. The
-        // open path guards itself the same way; the import writes first, so it
-        // has to guard too.
-        await awaitTeardowns(ofDocumentAt: destination.path)
-
-        let key = try await Self.writeImportedDocument(imported, to: destination)
-
-        // Resolve the scratchpad conflict BEFORE installSidecar, because the
-        // codec's resolver is synchronous (NSAlert.runModal on the Mac) and an
-        // iOS alert can only be awaited.
-        var decision = VellumBundle.ScratchpadDecision.keepLocal
-        let coordinator = workspace?.storageCoordinator
-        if let incoming = imported.scratchpad, !incoming.isEmpty,
-           let coordinator,
-           try await DocumentDataStore.scratchpadExists(
-                forKey: key, coordinator: coordinator),
-           try await DocumentDataStore.loadScratchpad(
-                forKey: key, coordinator: coordinator) != incoming {
-            decision = await BundleImportPrompts_iOS.scratchpadConflict(
-                title: imported.manifest.title ?? "this document")
-        }
-
-        let result: (path: String, failedAttachments: [String])
-        if let coordinator {
-            let resolvedDecision = decision
-            result = try await Self.finishImportedBundle(
-                imported, to: destination, key: key, coordinator: coordinator
-            ) { _ in resolvedDecision }
-        } else {
-            result = try Self.finishImportedBundle(
-                imported, to: destination, key: key) { _ in decision }
+        let result = try await importVellumBundle(imported, to: destination) { [self] key in
+            if let incoming = imported.scratchpad, !incoming.isEmpty,
+               let coordinator = workspace?.storageCoordinator,
+               try await DocumentDataStore.scratchpadExists(forKey: key, coordinator: coordinator),
+               try await DocumentDataStore.loadScratchpad(forKey: key, coordinator: coordinator) != incoming {
+                return await BundleImportPrompts_iOS.scratchpadConflict(
+                    title: imported.manifest.title ?? "this document")
+            }
+            return .keepLocal
         }
 
         // Never a silent success with broken image refs: name the attachments
@@ -1525,7 +1610,11 @@ final class AppStore {
     #else
     /// Import a `.vellum` bundle after the user chooses where its document lands.
     private func importVellumBundle(bundlePath: String) async throws -> String? {
-        let imported = try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        pendingBundleImports += 1
+        defer { pendingBundleImports -= 1 }
+        let imported = try await Task.detached(priority: .userInitiated) {
+            try VellumBundle.read(at: URL(fileURLWithPath: bundlePath))
+        }.value
         let manifest = imported.manifest
         let kind: DocumentKind = manifest.kind == "web" ? .web : .pdf
 
@@ -1539,62 +1628,42 @@ final class AppStore {
         }
         guard panel.runModal() == .OK, let destination = panel.url else { return nil }
 
-        await awaitTeardowns(ofDocumentAt: destination.path)
-        let key = try await Self.writeImportedDocument(imported, to: destination)
-
-        let coordinator = workspace?.storageCoordinator
-        var decision = VellumBundle.ScratchpadDecision.keepLocal
-        let hasDifferentScratchpad: Bool
-        if let incoming = imported.scratchpad, !incoming.isEmpty {
-            if let coordinator {
-                let exists = try await DocumentDataStore.scratchpadExists(
-                    forKey: key, coordinator: coordinator)
-                let current: String?
-                if exists {
-                    current = try await DocumentDataStore.loadScratchpad(
+        let result = try await importVellumBundle(imported, to: destination) { [self] key in
+            let coordinator = workspace?.storageCoordinator
+            var decision = VellumBundle.ScratchpadDecision.keepLocal
+            let hasDifferentScratchpad: Bool
+            if let incoming = imported.scratchpad, !incoming.isEmpty {
+                if let coordinator {
+                    let exists = try await DocumentDataStore.scratchpadExists(
                         forKey: key, coordinator: coordinator)
+                    let current: String?
+                    if exists {
+                        current = try await DocumentDataStore.loadScratchpad(
+                            forKey: key, coordinator: coordinator)
+                    } else {
+                        current = nil
+                    }
+                    hasDifferentScratchpad = exists && current != incoming
                 } else {
-                    current = nil
+                    hasDifferentScratchpad = DocumentDataStore.scratchpadExists(forKey: key)
+                        && DocumentDataStore.loadScratchpad(forKey: key) != incoming
                 }
-                hasDifferentScratchpad = exists && current != incoming
             } else {
-                hasDifferentScratchpad = DocumentDataStore.scratchpadExists(forKey: key)
-                    && DocumentDataStore.loadScratchpad(forKey: key) != incoming
+                hasDifferentScratchpad = false
             }
-        } else {
-            hasDifferentScratchpad = false
-        }
-        if hasDifferentScratchpad {
-            let title = imported.manifest.title ?? "this document"
-            let alert = NSAlert()
-            alert.messageText = "Notes already exist for \(title)"
-            alert.informativeText =
-                "This document already has notes on this Mac. Keep the notes you have, "
-                + "or replace them with the imported notes? Your highlights and reading "
-                + "position are not affected either way."
-            alert.addButton(withTitle: "Keep My Notes")
-            alert.addButton(withTitle: "Use Imported Notes")
-            decision = alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
-        }
-        let resolvedDecision = decision
-        let resolveConflict: @Sendable (String) -> VellumBundle.ScratchpadDecision = {
-            _ in resolvedDecision
-        }
-
-        let result: (path: String, failedAttachments: [String])
-        if let coordinator {
-            result = try await Self.finishImportedBundle(
-                imported,
-                to: destination,
-                key: key,
-                coordinator: coordinator,
-                resolveScratchpadConflict: resolveConflict)
-        } else {
-            result = try Self.finishImportedBundle(
-                imported,
-                to: destination,
-                key: key,
-                resolveScratchpadConflict: resolveConflict)
+            if hasDifferentScratchpad {
+                let title = imported.manifest.title ?? "this document"
+                let alert = NSAlert()
+                alert.messageText = "Notes already exist for \(title)"
+                alert.informativeText =
+                    "This document already has notes on this Mac. Keep the notes you have, "
+                    + "or replace them with the imported notes? Your highlights and reading "
+                    + "position are not affected either way."
+                alert.addButton(withTitle: "Keep My Notes")
+                alert.addButton(withTitle: "Use Imported Notes")
+                decision = alert.runModal() == .alertFirstButtonReturn ? .keepLocal : .useImported
+            }
+            return decision
         }
 
         if !result.failedAttachments.isEmpty {
@@ -1612,6 +1681,10 @@ final class AppStore {
     #endif
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+        // Parsing a second PDF path can reveal the same stable owner only
+        // after opening its backend. Do not expose that session to UI/AI until
+        // a registered import of its sidecar has finished.
+        await teardowns.awaitPersistence(for: doc)
         var doc = doc
         if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
             doc.title = failure.title
