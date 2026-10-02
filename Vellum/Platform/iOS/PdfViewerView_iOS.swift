@@ -241,6 +241,9 @@ struct PdfViewerView_iOS: View {
         app.scrollToPageHandler = { [weak controller] page in
             MainActor.assumeIsolated { controller?.scrollToPage(page) }
         }
+        aiStore.ensureExtractedHandler = { [weak controller] pages in
+            await controller?.ensureExtracted(pages: pages) ?? 0
+        }
         aiStore.locatePdfTextHandler = { [weak controller] page, query in
             await controller?.locateText(pageNumber: page, query: query)
         }
@@ -267,6 +270,7 @@ struct PdfViewerView_iOS: View {
     private func unregisterHandlers() {
         app.zoomToHandler = nil
         app.scrollToPageHandler = nil
+        aiStore.ensureExtractedHandler = nil
         aiStore.locatePdfTextHandler = nil
         aiStore.capturePageImageHandler = nil
         app.findQueryHandler = nil

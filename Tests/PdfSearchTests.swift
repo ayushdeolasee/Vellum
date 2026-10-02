@@ -40,6 +40,12 @@ final class PdfSearchTests: XCTestCase {
                          initialPage: 1, tabId: "search", runtime: runtime)
         controller.pdfView = PDFView()
         controller.pdfView?.document = document
+        let extracted = await controller.ensureExtracted(pages: [1])
+        XCTAssertEqual(extracted, 1)
+        XCTAssertTrue(ai.pageTexts[1]?.contains("needle") == true)
+        let located = await controller.locateText(pageNumber: 1, query: "NEEDLE")
+        XCTAssertEqual(located?.pageNumber, 1)
+        XCTAssertFalse(located?.positionData.rects.isEmpty ?? true)
         controller.findQuery("needle")
         controller.findClear()
         await controller.awaitPendingSearch()
@@ -52,6 +58,10 @@ final class PdfSearchTests: XCTestCase {
         replacement.id = "replacement"
         replacement.document = DocumentInfo(kind: .web, pdfPath: "https://example.invalid/", title: nil, pageCount: 1, lastPage: 1)
         app.attachTab(replacement)
+        let staleLocation = await controller.locateText(pageNumber: 1, query: "needle")
+        XCTAssertNil(staleLocation)
+        let staleExtraction = await controller.ensureExtracted(pages: [1])
+        XCTAssertEqual(staleExtraction, 0)
         await controller.awaitPendingSearch()
         XCTAssertEqual(app.findMatchCount, 0)
         controller.findClear()

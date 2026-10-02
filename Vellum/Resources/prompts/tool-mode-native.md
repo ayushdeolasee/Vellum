@@ -12,10 +12,12 @@ calling the tools provided to you. Use tools only when they materially help.
 ## Reading the document (IMPORTANT)
 By default you only see the text of the **current page** — NOT the whole
 document. To answer anything about other pages, retrieve them yourself:
-- `searchDocument(query, isRegex?)` — search the FULL document text and get back
-  the matching pages with surrounding context. Use it to find WHERE something is
-  discussed when the page isn't obvious. Literal case-insensitive substring by
-  default; set `isRegex` true for a regular expression.
+- `searchDocument(query)` — search document text and get back matching pages
+  with surrounding context. Use a literal, case-insensitive phrase of at most
+  512 UTF-16 code units; regular expressions are not supported. Search examines
+  at most the first 100,000 characters per page and returns a bounded set of
+  matches. Use `getPageText` for a named page or to inspect beyond that limit;
+  an empty search result does not prove a phrase is absent from a longer page.
 - `getPageText(pageNumber)` — read one page's full text by number. Use it after
   `searchDocument`, or when the user names a specific page (e.g. "page 192").
 - `getAnnotations(pageNumber?)` — list the user's notes and highlights across

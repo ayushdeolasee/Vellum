@@ -813,19 +813,37 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     // MARK: - AI highlight locator
 
-    func locateText(pageNumber: Int, query: String) async -> LocatedText? {
-        guard let document, pageNumber >= 1, pageNumber <= document.pageCount,
-              let page = document.page(at: pageNumber - 1) else { return nil }
-        // Same Live Text hazard as the extraction walk: on a scanned page this
-        // `page.string` runs OCR, so it takes the gate rather than racing a walk
-        // that is mid-compile (see PageTextExtractionGate). Main-actor caller,
-        // main-actor body — the synchronous overload.
-        let extracted = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
-            page.string ?? ""
+    @discardableResult
+    func ensureExtracted(pages: Set<Int>?) async -> Int {
+        guard let document, let ai, let app, let binding = app.activeDocumentBinding,
+              binding.tabId == tabId, let data = runtime?.preparedSourceData, document.pageCount > 0 else { return 0 }
+        let targets = pages?.filter { $0 >= 1 && $0 <= document.pageCount }.sorted()
+            ?? Array(1...document.pageCount)
+        let reader = PdfTextReader(data: data)
+        var extracted = 0
+        for page in targets {
+            guard !Task.isCancelled, self.document === document, self.app === app,
+                  app.activeDocumentBinding == binding, self.ai === ai else { break }
+            guard ai.pageTexts[page] == nil else { continue }
+            let text = await reader.text(pageNumber: page)
+            guard !Task.isCancelled, self.document === document, self.app === app,
+                  app.activeDocumentBinding == binding, self.ai === ai else { break }
+            guard let text, let normalized = ai.setPageText(page: page, text: text) else { continue }
+            runtime?.pageTexts[page] = normalized
+            persister?.noteExtracted(page: page, text: normalized)
+            extracted += 1
         }
-        guard let pageString = extracted, !pageString.isEmpty else { return nil }
-        return PdfTextLocator.locate(
-            pageNumber: pageNumber, query: query, in: document, pageString: pageString)
+        return extracted
+    }
+
+    func locateText(pageNumber: Int, query: String) async -> LocatedText? {
+        guard let document, let app, let binding = app.activeDocumentBinding,
+              binding.tabId == tabId, let data = runtime?.preparedSourceData,
+              pageNumber >= 1, pageNumber <= document.pageCount else { return nil }
+        let result = await PdfTextReader(data: data).locate(pageNumber: pageNumber, query: query)
+        guard !Task.isCancelled, self.document === document, self.app === app,
+              app.activeDocumentBinding == binding else { return nil }
+        return result
     }
 
     // MARK: - AI page snapshot
