@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vellum website operations</title>
+<style>
+body { max-width: 880px; margin: 40px auto; padding: 0 24px; font: 16px/1.55 system-ui, sans-serif; color: #202529; }
+h1,h2 { line-height: 1.2; } table { border-collapse: collapse; width: 100%; } td,th { padding: 10px; border: 1px solid #ccc; text-align: left; } code,pre { font-size: 14px; } pre { padding: 14px; background: #f3f4f5; white-space: pre-wrap; }
+</style>
+<h1>Website operations</h1>
+<p>Owner: Ayush Deolasee. This procedure accompanies the website worker. Local checks do not establish production configuration, alert delivery, importer behavior, or measured production traffic.</p>
+<h2>Analytics budget</h2>
+<table>
+<tr><th>Control</th><th>Configured behavior</th></tr>
+<tr><td>Schema</td><td>Public POST accepts only event, version and build; event must be first_launch. Version/build contain 1–32 release characters. Body is at most 1,024 UTF-8 bytes, including streamed bodies.</td></tr>
+<tr><td>Rate gate</td><td>All event writes, including download and appcast GETs, share one constant key. Binding allows approximately 60 attempts/minute per Cloudflare location. No IP, device or installation identifier is used. This is not a global request quota.</td></tr>
+<tr><td>Daily row cap</td><td>One atomic conditional insert permits at most 5,000 analytics rows per UTC day across all event types. POST returns 429 when capped; downloads and update responses still work. A missing/broken binding prevents analytics writes.</td></tr>
+<tr><td>Retention</td><td>Cron at 03:17 UTC daily deletes analytics older than three calendar months and waitlist rows older than twelve calendar months, including invited rows. No subsequent signup/event is needed. Normal scheduling adds up to one day to those cutoffs.</td></tr>
+</table>
+<p>The numeric limits are provisional, not derived from live traffic. The daily cap limits retained event rows, not all D1 billable writes: indexes and retention also cost writes. The indexed daily count scans today's rows on each allowed rate attempt; 5,000 accepted events alone can entail about 12.5 million counted rows, and capped attempts still perform reads. Worker invocations, invalid payload traffic, update proxy fetches, waitlist writes and D1 read quota are not globally capped here. These controls reduce analytics writes but do not establish a complete account spending ceiling. Unauthenticated counts can still be polluted or exhausted.</p>
+<p>Before enabling this revision in production, the owner must record the Worker/D1 plan, existing WAF/bot/edge rate controls, the uniqueness of rate namespace 308 within the account, normal traffic, and an appropriate read/write/request budget. If the measured read allowance cannot support the count-based cap, lower the cap or replace counting with an atomic counter before deployment. Do not assume edge settings are present.</p>
+<h2>Daily checks and alerts</h2>
+<p>The authenticated GET <code>/api/analytics-health</code> uses the existing export bearer token and returns only analyticsToday, analyticsDailyLimit, analyticsOverdue and signupsOverdue. It never returns identities or event payloads. Fetch it with a private client that obtains the token from the established Keychain store; do not paste the token into shell history, reports or URLs. No new token or tracking key is required.</p>
+<p>Check Cron Past Events after 03:17 UTC. Successful cleanup logs only aggregate deletion counts; a rejected database operation fails the scheduled handler rather than logging success. Overdue counts should clear after a successful run; newly expired rows between daily runs are expected. If a run is missed, verify the cron/binding and replay the deletion queries below, then verify the counts again. Record run time and aggregate counts only.</p>
+<p>Configure and test notifications for Worker errors/usage and D1 rows read/written in the Cloudflare account before rollout. Use warning thresholds at 80% of the owner's approved account quotas/spending budget, accounting for all other workloads, and notify the owner on failed or missing daily cleanup. Cloudflare availability depends on the account plan. Neither alert settings nor delivery have been inspected or changed by this implementation. The health route is reporting, not an automated alert service.</p>
+<h2>Retention recovery and early deletion</h2>
+<p>From <code>Distribution/website</code>, first run the following SQL against an isolated local database to verify the intended cutoff. Only after separately authorizing production maintenance should the owner run the same queries against the deployed D1 database. The scheduled job performs them in a D1 batch.</p>
+<pre>DELETE FROM analytics_events
+WHERE created_at &lt; datetime('now', '-3 months');
+DELETE FROM testflight_signups
+WHERE created_at &lt; datetime('now', '-12 months');</pre>
+<p>When the beta ends or records are no longer needed for invitations, the owner must remove the applicable waitlist records earlier, as promised in the privacy policy. Individual deletion requests use an exact email match with a bound SQL parameter in a private database client. Do not place identities in logs or command history. Apple holds its own copy of information already imported to App Store Connect.</p>
+<h2>CSV identity handling</h2>
+<p>The authenticated export retains the existing First Name, Last Name, Email Address columns and UTF-8 encoding. Before independent CSV quoting, an apostrophe is added to formula-leading (=, +, -, @) cells, including prefixes hidden behind whitespace or control characters. Leading tab/CR/LF cells are also marked as text. Ordinary commas, quotes, newlines and Unicode values round-trip as CSV data without changing their content.</p>
+<p>The apostrophe is intentional and may appear literally in a data-only importer. A formula-prefixed email gains a prefix and must not be treated as the original invitation address. Apple CSV import has not been exercised here; validate its current sample/template and harmless fixtures before uploading real records. For unusual prefixed identities, use the original record through a private database client and enter it directly into Apple's form, instead of stripping the guard and reopening the CSV in a spreadsheet. Do not resave protected CSV through a spreadsheet without rechecking cell prefixes.</p>
+<h2>Local verification</h2>
+<pre># From repository root; Node 22.13+ with built-in SQLite.
+node --test Distribution/website/scripts/worker.test.mjs
+
+# From Distribution/website; isolated local D1 only.
+wrangler d1 migrations apply vellum-testflight-signups --local --persist-to /tmp/vellum-worker-check
+wrangler dev --local --persist-to /tmp/vellum-worker-check --test-scheduled
+# Trigger the scheduled handler through the local URL printed by your Wrangler version.
+# Wrangler 4.131 uses /__scheduled; current versions document /cdn-cgi/local/scheduled.
+
+# Bundle/config validation only; no upload.
+wrangler deploy --dry-run --outdir /tmp/vellum-worker-bundle</pre>
+<p>Apply migration 0003 with the worker rollout so waitlist expiration uses its created_at index. No production deploy, migration, load exercise, account settings change, alert delivery test or real tester import is authorized by these local verification commands.</p>
+<h2>Primary references</h2>
+<ul>
+<li><a href="https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/">Cloudflare rate binding semantics</a></li>
+<li><a href="https://developers.cloudflare.com/workers/configuration/cron-triggers/">Cron configuration and local testing</a></li>
+<li><a href="https://developers.cloudflare.com/d1/observability/billing/">D1 billable metrics and notifications</a></li>
+<li><a href="https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers">Apple external tester CSV import</a></li>
+</ul>
+</html>
