@@ -120,6 +120,7 @@ final class DocumentActionsTests: XCTestCase {
         let paneA = workspace.focusedPane
         await paneA.app.openFile(path: file.path)
         let tabId = try XCTUnwrap(paneA.app.activeTabId)
+        let document = try XCTUnwrap(paneA.app.document)
         paneA.app.setCurrentPage(4)
         await workspace.awaitPendingPositionRecords()
         workspace.splitFocused(.horizontal)
@@ -137,7 +138,7 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(workspace.tabTeardowns.isEmpty)
 
         // The drain returned only after the write landed on disk.
-        let document = DocumentInfo(kind: .pdf, pdfPath: file.path, title: nil, pageCount: 5, lastPage: nil)
+        // Opening promotes path identity to a stable docId; read the same owner.
         let reopened = DocumentPositionService(
             storage: FilePositionStorage(root: positionRoot), timer: ManualPositionTimer())
         let persisted = await reopened.resumePosition(for: document)
