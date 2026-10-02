@@ -102,6 +102,7 @@ targets:
     platform: macOS
     sources:
       - path: Tests/DocumentActionsTests.swift
+      - path: Tests/PdfSearchTests.swift
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
       - path: Tests/ReleaseIsolationTests.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift

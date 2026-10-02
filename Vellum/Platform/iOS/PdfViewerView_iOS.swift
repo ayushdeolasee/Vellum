@@ -137,9 +137,11 @@ struct PdfViewerView_iOS: View {
         runtime.pdfLoadState = .loading
         if isActive { aiStore.clearDocumentContext() }
         do {
-            // The persistent text cache is keyed by the current PDF bytes, so
-            // read them even when this tab can reuse an already prepared PDF.
-            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+            // Search and extraction use the exact display snapshot. An external
+            // replacement must not supply ranges for a retained older PDF.
+            let data: Data
+            if let loaded = runtime.preparedSourceData { data = loaded }
+            else { data = try await app.sessions.readPdfBytes(sessionId: tabId) }
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             let document: PDFDocument
             if let cached = runtime.preparedDocument {
@@ -171,7 +173,7 @@ struct PdfViewerView_iOS: View {
                 }
                 // The byte count is what the residency policy costs this tab at
                 // when ranking eviction candidates against its byte budget.
-                runtime.adoptPreparedPdf(parsed, byteCount: data.count)
+                runtime.adoptPreparedPdf(parsed, byteCount: data.count, sourceData: data)
                 ink.adoptHandwritingPages(prepared.handwritingPages, for: parsed)
                 document = parsed
             }
@@ -297,17 +299,12 @@ struct PdfViewerView_iOS: View {
         }
     }
 
-    /// Pick the background text walk back up where the last deactivation parked
-    /// it. The bytes are re-read rather than kept on the controller: the iPad
-    /// walk runs over a PRIVATE `PDFDocument(data:)` copy (that is what keeps it
-    /// off the main actor), so retaining the data would mean a second full copy
-    /// of every large scanned PDF alive for the life of the tab — precisely the
-    /// footprint the residency ceilings exist to bound. Fully-indexed documents
-    /// never pay the read at all.
+    /// Resume using the display snapshot. Its byte cost is included in the
+    /// runtime residency budget and released with the prepared document.
     private func resumeTextExtraction(pageCount: Int) async {
         guard runtime.pageTexts.count < pageCount else { return }
         let generation = runtime.documentGeneration
-        guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
+        guard let data = runtime.preparedSourceData else { return }
         guard !Task.isCancelled, indexingIsActive, app.activeTabId == tabId,
               runtime.documentGeneration == generation else { return }
         controller.startTextExtraction(data: data)

@@ -95,6 +95,8 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     @ObservationIgnored private var findMatches: [PDFSelection] = []
     @ObservationIgnored private var findIndex = -1
+    @ObservationIgnored private var findTask: Task<Void, Never>?
+    @ObservationIgnored private var findGeneration = UUID()
 
     var isNoteMode: Bool { app?.mode == .note }
 
@@ -139,6 +141,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         tabId: String,
         runtime: LiveTabRuntime
     ) {
+        if self.app !== app || self.tabId != tabId { findClear() }
         self.app = app
         self.annotationStore = annotationStore
         self.ai = ai
@@ -147,6 +150,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     }
 
     func reset() {
+        findClear()
         extractionTask?.cancel()
         extractionTask = nil
         flushAndDropPersister()
@@ -362,16 +366,41 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     // MARK: - Find
 
     func findQuery(_ query: String) {
-        guard let document, let pdfView else { return }
-        let matches = document.findString(query, withOptions: [.caseInsensitive])
-        for match in matches {
-            match.color = UIColor.systemYellow.withAlphaComponent(0.5)
+        findClear()
+        guard !query.isEmpty, let document, let app,
+              let binding = app.activeDocumentBinding, binding.tabId == tabId,
+              let data = runtime?.preparedSourceData else { return }
+        let generation = findGeneration
+        let previous = findTask
+        findTask = Task { [weak self] in
+            await previous?.value
+            do {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(250))
+                let result = await PdfSearch(data: data).matches(query: query)
+                try Task.checkCancellation()
+                guard let self, self.findGeneration == generation,
+                      self.document === document, self.app === app,
+                      app.activeDocumentBinding == binding, let pdfView = self.pdfView else { return }
+                let selections = result.matches.compactMap { match in
+                    guard match.page >= 0, match.page < document.pageCount else { return nil as PDFSelection? }
+                    return document.page(at: match.page)?.selection(for: match.range)
+                }
+                for selection in selections { selection.color = UIColor.systemYellow.withAlphaComponent(0.5) }
+                self.findMatches = selections
+                self.findIndex = selections.isEmpty ? -1 : 0
+                pdfView.highlightedSelections = selections.isEmpty ? nil : selections
+                self.focusCurrentMatch()
+                app.setFindResults(count: selections.count, current: selections.isEmpty ? 0 : 1)
+                if result.truncated { app.error = "Showing the first 1,000 matches. Use a more specific search to see fewer results." }
+            } catch {
+                // Clearing or rebinding cancels this generation; errors must not
+                // publish into a replacement document.
+                guard let self, !Task.isCancelled, self.findGeneration == generation,
+                      self.document === document, app.activeDocumentBinding == binding else { return }
+                app.error = "The document could not be searched. Try opening it again."
+            }
         }
-        findMatches = matches
-        pdfView.highlightedSelections = matches.isEmpty ? nil : matches
-        findIndex = matches.isEmpty ? -1 : 0
-        focusCurrentMatch()
-        app?.setFindResults(count: matches.count, current: matches.isEmpty ? 0 : 1)
     }
 
     func findStep(_ delta: Int) {
@@ -385,7 +414,14 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         app?.setFindResults(count: count, current: findIndex + 1)
     }
 
+    private var isSearchOwner: Bool { app?.activeTabId == tabId && tabId != nil }
+
+    func awaitPendingSearch() async { await findTask?.value }
+
     func findClear() {
+        findTask?.cancel()
+        findGeneration = UUID()
+        if isSearchOwner { app?.setFindResults(count: 0, current: 0) }
         findMatches = []
         findIndex = -1
         pdfView?.highlightedSelections = nil
@@ -661,6 +697,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     /// Registered via `flushDetached` so the suspend path can await writes
     /// whose controller is already gone.
     func flushAndDropPersister() {
+        findClear()
         guard let persister else { return }
         self.persister = nil
         persister.flushDetached()
@@ -768,6 +805,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     /// Stop speculative indexing and register its partial cache flush so the
     /// scene-background barrier can await it before suspension.
     func pauseTextExtraction() {
+        findClear()
         extractionTask?.cancel()
         extractionTask = nil
         persister?.flushDetached()
