@@ -130,6 +130,7 @@ final class ScratchpadStore {
     /// not stamp a PDF identity, touch metadata, or rewrite scratchpad.md merely
     /// because the pane switched or the app entered the background.
     private var hasCoordinatedChanges = false
+    var hasUncommittedChanges: Bool { hasCoordinatedChanges }
     private var coordinatedChangeRevision = 0
     /// Last authoritative text loaded/saved for this pane. When a first edit
     /// stamps a PDF and rekey merges a distinct durable-key note, this lets the

@@ -308,6 +308,26 @@ final class WorkspaceStore {
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var externalOpenTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
+
+    func startMaintenance(_ operation: @escaping @Sendable () async -> Void) {
+        guard maintenanceTask == nil else { return }
+        maintenanceTask = Task.detached(priority: .background, operation: operation)
+    }
+
+    func awaitMaintenance() async {
+        await maintenanceTask?.value
+    }
+
+    /// Join pane flushes and the shared lane before deciding whether quit is
+    /// safe. Failed/paused commits leave drafts open and cancel termination.
+    func flushScratchpadsForTermination() async -> Bool {
+        let leaves = root.allLeaves()
+        let tasks = leaves.map { $0.scratchpad.flush() }
+        for task in tasks { await task.value }
+        await ScratchpadPersistence.awaitPendingFlush()
+        return leaves.allSatisfy { !$0.scratchpad.hasUncommittedChanges }
+    }
 
     // MARK: - Workspace-owned live tab runtimes
     //

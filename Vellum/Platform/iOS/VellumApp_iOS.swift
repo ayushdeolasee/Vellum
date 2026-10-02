@@ -294,7 +294,7 @@ struct VellumApp_iOS: App {
             WebStorageSettings.resolveICloudRoot()
         }.value
 
-        Task.detached(priority: .background) {
+        workspace.startMaintenance {
             // Startup autopull runs before retention. The app's other sync
             // triggers join the same store-owned prefetch task, and the
             // prefetcher serializes a sweep that arrives during I/O.
@@ -346,6 +346,7 @@ struct VellumApp_iOS: App {
 
         let task = Task { @MainActor in
             defer { flushController.finish(generation: generation) }
+            await workspace.awaitMaintenance()
             await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their position write and session
             // close behind the UI (AppStore.closeTab) and are no longer in

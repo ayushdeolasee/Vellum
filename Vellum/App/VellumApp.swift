@@ -7,6 +7,7 @@ import SwiftUI
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
     @MainActor private var isTerminating = false
+    @MainActor private var terminationTask: Task<Void, Never>?
 
     /// Finder document opens and browser-extension webpage routes both arrive
     /// here. Each target uses the same opener as the equivalent in-app action.
@@ -20,13 +21,21 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             guard let workspace = Self.workspace else { return .terminateNow }
+            guard !isTerminating else { return .terminateLater }
             isTerminating = true
-            Task { @MainActor in
+            terminationTask = Task { @MainActor in
+                await workspace.awaitMaintenance()
                 // Finish external opens before snapshotting tabs or draining
                 // their persistence, including a cold launch followed by quit.
                 await workspace.awaitPendingExternalOpens()
                 let leaves = workspace.root.allLeaves()
-                for leaf in leaves { leaf.scratchpad.flush() }
+                guard await workspace.flushScratchpadsForTermination() else {
+                    workspace.focusedPane.app.error = "Quit canceled because a Scratchpad edit could not be saved. Your draft remains open; restore storage access and try again."
+                    isTerminating = false
+                    terminationTask = nil
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
                 await workspace.saveNowAfterPendingPositionRecords()
                 // Tabs closed moments ago finish their position write and
                 // session close behind the UI (AppStore.closeTab) and are no
@@ -126,7 +135,7 @@ struct VellumApp: App {
                     let openWebUrls = Set(
                         openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
                     let positions = workspace.positions
-                    Task.detached(priority: .background) {
+                    workspace.startMaintenance {
                         // Finish any interrupted storage-location move and fold
                         // legacy-local strays into the active layout before the
                         // evictors walk the store. Routed through the relocator

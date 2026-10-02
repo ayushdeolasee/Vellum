@@ -31,6 +31,7 @@ private func resolveExistingDocumentPath(_ path: String) -> String? {
 ///   and the teardown must remain reachable — for the reopen guard and for the
 ///   quit drain — after the store that started it is gone.
 @MainActor
+@Observable
 final class TabTeardownRegistry {
     /// One in-flight teardown, keyed by canonical document path and identity.
     private struct Entry {
@@ -39,9 +40,46 @@ final class TabTeardownRegistry {
         let task: Task<Void, Never>
     }
 
-    private var entries: [String: Entry] = [:]
+    @ObservationIgnored private var entries: [String: Entry] = [:]
+    struct FailedRename {
+        let title: String?
+        let message: String
+    }
+    private(set) var failedRenames: [String: FailedRename] = [:]
 
-    /// True when no teardown is pending.
+    func recordRenameFailure(forKey key: String, title: String?, message: String?) {
+        failedRenames[key] = message.map { FailedRename(title: title, message: $0) }
+    }
+
+    /// Immutable resource work, shared with teardown so a collapsed pane cannot
+    /// abandon a rename and reopen/import wait for the same document's writes.
+    func enqueuePersistence(
+        document: DocumentInfo,
+        operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never> {
+        let pending = persistenceTasks(for: document)
+        let id = UUID().uuidString
+        let task = Task { @MainActor in
+            for previous in pending { await previous.value }
+            await operation()
+            finish(tabId: id)
+        }
+        register(tabId: id, document: document, task: task)
+        return task
+    }
+
+    func persistenceTasks(for document: DocumentInfo) -> [Task<Void, Never>] {
+        let key = DocumentPositionService.key(for: document)
+        return entries.values.filter {
+            $0.documentKey == key || $0.documentPath == document.pdfPath
+        }.map(\.task)
+    }
+
+    func awaitPersistence(for document: DocumentInfo) async {
+        for task in persistenceTasks(for: document) { await task.value }
+    }
+
+    /// True when no teardown or document persistence is pending.
     var isEmpty: Bool { entries.isEmpty }
 
     func register(tabId: String, document: DocumentInfo, task: Task<Void, Never>) {
@@ -62,8 +100,8 @@ final class TabTeardownRegistry {
     /// the same registry from `applicationShouldTerminate`; iOS has no quit, so
     /// `flushOnBackground` is the equivalent last chance.)
     func awaitAll() async {
-        for entry in Array(entries.values) {
-            await entry.task.value
+        while !entries.isEmpty {
+            for entry in Array(entries.values) { await entry.task.value }
         }
     }
 
@@ -100,6 +138,14 @@ final class TabTeardownRegistry {
             await entry.task.value
         }
     }
+}
+
+/// A captured document authority, distinct from the reusable tab/session id.
+struct DocumentBinding: Equatable, Sendable {
+    let tabId: String
+    let docId: String?
+    let storageKey: String
+    let generation: UUID
 }
 
 @MainActor
@@ -199,6 +245,9 @@ final class AppStore {
     private let capturedUnreadLedger: CapturedUnreadLedger
     @ObservationIgnored private var pendingPositionRecords: [String: PendingPositionRecord] = [:]
     @ObservationIgnored private var positionRecordTask: Task<Void, Never>?
+    @ObservationIgnored private let renamePersistence: (@MainActor (DocumentRenameService.Target, String?) async -> Bool)?
+    /// The workspace registry retains failures even after a pane closes.
+    var renameFailures: [String: String] { teardowns.failedRenames.mapValues(\.message) }
 
     private struct PendingPositionRecord {
         var document: DocumentInfo
@@ -209,12 +258,14 @@ final class AppStore {
         sessions: SessionService,
         teardowns: TabTeardownRegistry = TabTeardownRegistry(),
         documentAccess: DocumentAccessResolver = .live,
-        capturedUnreadLedger: CapturedUnreadLedger = .shared
+        capturedUnreadLedger: CapturedUnreadLedger = .shared,
+        renamePersistence: (@MainActor (DocumentRenameService.Target, String?) async -> Bool)? = nil
     ) {
         self.sessions = sessions
         self.teardowns = teardowns
         self.documentAccess = documentAccess
         self.capturedUnreadLedger = capturedUnreadLedger
+        self.renamePersistence = renamePersistence
     }
 
     // MARK: - Opening documents
@@ -297,21 +348,33 @@ final class AppStore {
         guard let tab = tabs.first(where: { $0.id == tabId }), tab.document?.kind == .web else {
             return nil
         }
+        let navigationGeneration = UUID()
+        updateTab(tabId) { $0.documentBindingGeneration = navigationGeneration }
+        func isCurrentNavigation() -> Bool {
+            documentBinding(for: tabId)?.generation == navigationGeneration
+        }
         do {
             if let outgoing = tab.document {
+                await teardowns.awaitPersistence(for: outgoing)
+                guard isCurrentNavigation() else { return nil }
                 await workspace?.positions.recordMoved(
                     document: outgoing,
                     position: Self.readingPosition(for: tab))
+                guard isCurrentNavigation() else { return nil }
                 if shouldMarkDocumentClosedAfterRemoving(outgoing, excludingTabIds: [tabId]) {
                     await workspace?.positions.recordClosed(document: outgoing)
                 }
             }
             await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
+            guard isCurrentNavigation() else { return nil }
             let doc = try await sessions.openWebDocument(url: url, sessionId: tabId)
+            guard isCurrentNavigation() else { return nil }
             RecentFilesService.record(doc)
             let resume = await workspace?.positions.resumePosition(for: doc)
+            guard isCurrentNavigation() else { return nil }
             let page = resume?.page ?? doc.lastPage ?? 1
             await workspace?.positions.recordOpened(document: doc, tabOrdinal: tabIndex(tabId))
+            guard isCurrentNavigation() else { return nil }
             updateTab(tabId) { tab in
                 tab.document = doc
                 tab.currentPage = page
@@ -330,7 +393,7 @@ final class AppStore {
             }
             return doc
         } catch {
-            self.error = error.localizedDescription
+            if isCurrentNavigation() { self.error = error.localizedDescription }
             return nil
         }
     }
@@ -347,7 +410,26 @@ final class AppStore {
         if activeTabId == tabId {
             document = doc
         }
-        Task { await workspace?.positions.recordTitle(document: doc, title: trimmed) }
+        let positions = workspace?.positions
+        _ = teardowns.enqueuePersistence(document: doc) {
+            await positions?.recordTitle(document: doc, title: trimmed)
+        }
+    }
+
+    func documentBinding(for tabId: String) -> DocumentBinding? {
+        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else { return nil }
+        return DocumentBinding(
+            tabId: tabId, docId: document.docId,
+            storageKey: DocumentIdentity.storageKey(for: document),
+            generation: tab.documentBindingGeneration)
+    }
+
+    var activeDocumentBinding: DocumentBinding? {
+        activeTabId.flatMap { documentBinding(for: $0) }
+    }
+
+    func isCurrentDocumentBinding(_ binding: DocumentBinding) -> Bool {
+        documentBinding(for: binding.tabId) == binding
     }
 
     /// Rename the open document from the tab bar.
@@ -370,41 +452,47 @@ final class AppStore {
     /// `DocumentRenameService.apply` directly for a document that may have no
     /// open tab at all.
     func renameDocument(tabId: String, title: String) async {
-        guard let tab = tabs.first(where: { $0.id == tabId }), let document = tab.document else {
-            return
-        }
+        guard let binding = documentBinding(for: tabId),
+              let original = tabs.first(where: { $0.id == tabId })?.document else { return }
         let normalized = DocumentRenameService.normalized(title)
         let target = DocumentRenameService.Target(
-            kind: document.kind,
-            locator: document.pdfPath,
-            recordedPath: document.pdfPath,
-            storageKey: DocumentIdentity.storageKey(for: document))
+            kind: original.kind, locator: original.pdfPath,
+            recordedPath: original.pdfPath, storageKey: binding.storageKey)
 
-        // `apply` reports whether it wrote anything. The in-memory update below
-        // is what the UI reads either way, so the result is intentionally
-        // discarded — named here so it isn't an unused-expression warning.
-        if let storage = workspace?.webLibraryStorage {
-            _ = await DocumentRenameService.apply(
-                target, title: normalized, storage: storage)
-        } else {
-            _ = await Task.detached(priority: .userInitiated) {
-                DocumentRenameService.apply(target, title: normalized)
-            }.value
+        // Apply only the requested field before storage can suspend. Completion
+        // never restores a captured DocumentInfo over a newly bound document.
+        updateTab(tabId) { $0.document?.title = normalized }
+        if activeTabId == tabId { document?.title = normalized }
+        let storage = workspace?.webLibraryStorage
+        let positions = workspace?.positions
+        let persist = renamePersistence
+        let registry = teardowns
+        let workspace = self.workspace
+        let task = registry.enqueuePersistence(document: original) { [weak self] in
+            await workspace?.awaitMaintenance()
+            let saved: Bool
+            if let persist {
+                saved = await persist(target, normalized)
+            } else {
+                saved = await DocumentRenameService.persistOpenDocument(
+                    target, title: normalized, storage: storage)
+            }
+            if let normalized, saved {
+                var renamed = original
+                renamed.title = normalized
+                await positions?.recordTitle(document: renamed, title: normalized)
+            }
+            if saved {
+                let previousFailure = registry.failedRenames[binding.storageKey]?.message
+                registry.recordRenameFailure(forKey: binding.storageKey, title: normalized, message: nil)
+                if self?.error == previousFailure { self?.error = nil }
+            } else {
+                let message = "Couldn't save the title for \(original.title ?? original.pdfPath). Reopen that document and retry Rename."
+                registry.recordRenameFailure(forKey: binding.storageKey, title: normalized, message: message)
+                self?.error = message
+            }
         }
-
-        var updated = document
-        updated.title = normalized
-        updateTab(tabId) { $0.document = updated }
-        if activeTabId == tabId { document_setActive(updated) }
-        if let normalized, !normalized.isEmpty {
-            await workspace?.positions.recordTitle(document: updated, title: normalized)
-        }
-    }
-
-    /// Split out so `renameDocument` reads as one thought; assigning
-    /// `self.document` inline shadows the local `document` binding above it.
-    private func document_setActive(_ info: DocumentInfo) {
-        document = info
+        await task.value
     }
 
     /// After a PDF mutation may have lazily stamped /VellumDocId, pull the
@@ -416,7 +504,19 @@ final class AppStore {
     func syncDocumentId(sessionId: String) async {
         guard let tab = tabs.first(where: { $0.id == sessionId }),
               tab.document?.kind == .pdf, tab.document?.docId == nil else { return }
-        guard let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else { return }
+        guard let original = tab.document, let binding = documentBinding(for: sessionId) else { return }
+        await teardowns.awaitPersistence(for: original)
+        guard isCurrentDocumentBinding(binding),
+              let id = try? await sessions.ensureDocumentId(sessionId: sessionId), !id.isEmpty else { return }
+        guard isCurrentDocumentBinding(binding) else { return }
+        let previousKey = binding.storageKey
+        if previousKey != id, let coordinator = workspace?.storageCoordinator {
+            guard await DocumentDataStore.rekey(from: previousKey, to: id, coordinator: coordinator) else {
+                error = "Couldn't safely adopt this document's identity. Please retry."
+                return
+            }
+        }
+        guard isCurrentDocumentBinding(binding) else { return }
         updateTab(sessionId) { tab in
             if tab.document != nil, tab.document?.docId == nil {
                 tab.document?.docId = id
@@ -440,10 +540,12 @@ final class AppStore {
     /// pane, not just this one. See `TabTeardownRegistry` for why the registry
     /// is workspace-owned.
     private func awaitTeardowns(ofDocumentAt path: String) async {
+        await workspace?.awaitMaintenance()
         await teardowns.awaitTeardowns(ofDocumentAt: path)
     }
 
     private func awaitTeardowns(forDocumentKey key: DocumentKey) async {
+        await workspace?.awaitMaintenance()
         await teardowns.awaitTeardowns(forDocumentKey: key)
     }
 
@@ -1436,6 +1538,10 @@ final class AppStore {
 
     private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
         var doc = doc
+        if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
+            doc.title = failure.title
+            error = failure.message
+        }
         // This is intentionally device-local. Opening a captured page must not
         // rewrite its shared WebLibrary sidecar or contend with note saves.
         await capturedUnreadLedger.markOpened(document: doc)
@@ -1597,6 +1703,7 @@ final class AppStore {
             workspace?.removeLiveTabRuntime(for: tab.id)
             return
         }
+        let pendingPersistence = teardowns.persistenceTasks(for: closingDocument)
         let runtime = workspace?.existingLiveTabRuntime(for: tab.id)
         let sessions = self.sessions
         let workspace = self.workspace
@@ -1607,6 +1714,8 @@ final class AppStore {
             tabId: tabId,
             document: closingDocument,
             task: Task { [weak workspace] in
+                await workspace?.awaitMaintenance()
+                for task in pendingPersistence { await task.value }
                 await pendingPositionRecordTask?.value
                 await positions?.recordMoved(
                     document: closingDocument,
