@@ -12,6 +12,7 @@ export default {
     const results = await env.DB.batch([
       env.DB.prepare("DELETE FROM analytics_events WHERE created_at < datetime('now', '-3 months')"),
       env.DB.prepare("DELETE FROM testflight_signups WHERE created_at < datetime('now', '-12 months')"),
+      env.DB.prepare("DELETE FROM analytics_daily_budget WHERE day < date('now', '-3 months')"),
     ]);
     // Only aggregate counts: no names, email addresses, IPs, or request bodies.
     console.log("Retention completed", {
@@ -260,13 +261,14 @@ async function writeEvent(env, event, source, version = "", build = "") {
   // Cloudflare's binding is approximate and per location, not a global quota.
   const { success } = await env.ANALYTICS_RATE_LIMITER.limit({ key: ANALYTICS_RATE_KEY });
   if (!success) return false;
-  // The conditional insert is a single SQLite statement: concurrent events
-  // cannot exceed the daily row cap by racing a separate count then insert.
+  // The keyed check reads at most one daily counter. Migration 0004's trigger
+  // increments it in this same SQLite statement transaction, so concurrent
+  // events cannot race the cap and failed inserts do not consume quota.
   const result = await env.DB.prepare(
-    `INSERT INTO analytics_events (event, source, version, build)
-     SELECT ?, ?, ?, ?
-     WHERE (SELECT COUNT(*) FROM analytics_events
-            WHERE created_at >= date('now')) < ?`,
+    `INSERT INTO analytics_events (event, source, version, build, created_at)
+     SELECT ?, ?, ?, ?, datetime('now')
+     WHERE COALESCE((SELECT event_count FROM analytics_daily_budget
+                     WHERE day = date('now')), 0) < ?`,
   ).bind(event, source, version, build, ANALYTICS_DAILY_LIMIT).run();
   return result.meta.changes > 0;
 }

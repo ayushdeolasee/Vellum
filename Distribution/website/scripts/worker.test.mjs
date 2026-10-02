@@ -97,6 +97,9 @@ test("all analytics routes share the rate gate and atomic daily insert budget", 
     assert.equal(statuses.filter((status) => status === 204).length, 1);
     assert.equal(statuses.filter((status) => status === 429).length, 19);
     assert.equal(f.database.prepare("SELECT COUNT(*) AS n FROM analytics_events").get().n, 5000);
+    assert.equal(f.database.prepare("SELECT event_count FROM analytics_daily_budget WHERE day = date('now')").get().event_count, 5000);
+    const plan = f.database.prepare("EXPLAIN QUERY PLAN SELECT event_count FROM analytics_daily_budget WHERE day = date('now')").all();
+    assert.ok(plan.some((row) => /SEARCH analytics_daily_budget USING PRIMARY KEY/.test(row.detail)));
     const health = await worker.fetch(request("/api/analytics-health", undefined, auth), f.env, f.context);
     assert.deepEqual(await health.json(), { analyticsToday: 5000, analyticsOverdue: 0, signupsOverdue: 0, analyticsDailyLimit: 5000 });
   } finally { globalThis.fetch = originalFetch; f.database.close(); }
@@ -112,6 +115,7 @@ test("scheduled retention removes expired analytics and waitlist without any inc
     await worker.scheduled({}, f.env);
     assert.equal(f.database.prepare("SELECT COUNT(*) AS n FROM analytics_events").get().n, 1);
     assert.equal(f.database.prepare("SELECT COUNT(*) AS n FROM testflight_signups").get().n, 1);
+    assert.equal(f.database.prepare("SELECT COUNT(*) AS n FROM analytics_daily_budget").get().n, 1);
     assert.equal(f.keys.length, 0);
     assert.equal((await worker.fetch(request("/api/analytics-health"), f.env, f.context)).status, 404);
   } finally { f.database.close(); }
