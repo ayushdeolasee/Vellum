@@ -178,7 +178,7 @@ final class WorkspaceStore {
     /// document; only its `settings` are used. Changes broadcast to every pane.
     let settingsAi: AiStore
 
-    #if os(macOS) && !MAC_APP_STORE
+    #if os(macOS)
     /// One app-wide Sparkle controller shared by every update command.
     let updateChecker = UpdateChecker()
     #endif

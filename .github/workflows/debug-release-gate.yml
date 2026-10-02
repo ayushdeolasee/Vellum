@@ -30,12 +30,6 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/mac-derived-data"
           -resultBundlePath "$RUNNER_TEMP/mac-tests.xcresult"
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
-      - name: Mac App Store Debug build
-        run: >-
-          xcodebuild -project Vellum.xcodeproj -scheme 'Vellum Mac App Store'
-          -configuration Debug -destination 'platform=macOS'
-          -derivedDataPath "$RUNNER_TEMP/store-derived-data"
-          CODE_SIGNING_ALLOWED=NO build
       - uses: actions/upload-artifact@v4
         if: always()
         with:

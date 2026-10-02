@@ -736,13 +736,7 @@ enum WebStorageMigrator {
                 }) else { return nil }
                 root = scoped
             } else {
-                #if MAC_APP_STORE
-                // A raw path cannot restore sandbox access after relaunch. Keep the
-                // marker until Settings reauthorizes the original source folder.
-                return nil
-                #else
                 root = URL(fileURLWithPath: path, isDirectory: true)
-                #endif
             }
             guard FileManager.default.fileExists(atPath: root.path) else { return nil }
             layout = .pretty(root: root, recordsInRoot: false, localStoreDir: WebLibrary.storeDir)
