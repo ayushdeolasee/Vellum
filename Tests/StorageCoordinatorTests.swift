@@ -526,10 +526,13 @@ struct StorageCoordinatorTests {
         container.seed(target, data: Data("current".utf8))
         container.injectConflict(at: target, versions: [Self.current, Self.loser])
         await resolver.waitForCount(1)
+        // The resolver signals before the coordinator parks the retryable result.
+        await coordinator.awaitQuiescence()
         #expect(await coordinator.currentStatus().pendingConflicts == 1)
 
         await coordinator.foreground()
         await resolver.waitForCount(2)
+        await coordinator.awaitQuiescence()
         #expect(await coordinator.currentStatus().pendingConflicts == 1)
 
         await coordinator.foreground()
@@ -538,6 +541,7 @@ struct StorageCoordinatorTests {
         let status = await coordinator.currentStatus()
         #expect(status.pendingConflicts == 0)
         #expect(status.lastError == nil)
+        await coordinator.stop()
     }
 
     @Test("Conflict emitted while suspended is rescanned and drained on foreground")
