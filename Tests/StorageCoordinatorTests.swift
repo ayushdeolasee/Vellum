@@ -682,7 +682,9 @@ struct StorageCoordinatorTests {
         let registry = ConflictArchiveRegistryState()
         registry.registry.save([descriptor])
         let message = AiPersistence.makeMessage(role: .user, content: "explicitly restored history")
-        let restored = try JSONEncoder().encode([message])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let restored = try encoder.encode([message])
         let container = FakeSyncedContainer()
         container.seed(original, data: restored)
         container.seed(archive, data: restored)
@@ -726,6 +728,20 @@ struct StorageCoordinatorTests {
         let reconciled = try #require(ConversationOperationJournal.read(key))
         #expect(reconciled.id == clearIntent.id)
         #expect(ConversationOperationJournal.replacementCommitted(reconciled, data: restored))
+        // A benign same-ID conflict must keep even JSON formatting intact so
+        // it cannot invalidate the just-verified Clear replacement digest.
+        var incomingMessage = message
+        incomingMessage.content = "same-ID peer edit"
+        let incoming = try JSONEncoder().encode([incomingMessage])
+        let resolver = PreserveLosersConflictResolver { url, data in
+            try await container.replace(url, with: data)
+        }
+        let event = ConflictEvent(url: original, detectedAt: .now, versions: [Self.current, Self.loser])
+        #expect(try await resolver.resolve(event) { version in
+            version.isCurrent ? restored : incoming
+        } == .merged(original))
+        #expect(container.peek(original) == restored)
+        #expect(ConversationOperationJournal.replacementCommitted(reconciled, data: container.peek(original)))
         AiPersistence.resetMemoryForTests()
         #expect(await AiPersistence.loadConversation(for: document, coordinator: coordinator) == [message])
         #expect(AiPersistence.conversationNotice(for: document) == nil)

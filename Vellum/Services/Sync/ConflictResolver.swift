@@ -146,12 +146,11 @@ struct PreserveLosersConflictResolver: ConflictResolver {
             let losingIDs = Set(incoming.map(\.id))
             guard losingIDs == ids, losingIDs.count == incoming.count else { return .preserve }
         }
-        // Same-ID edits retain the existing current-wins rule. Changed ID
-        // membership cannot be distinguished from Clear without a new format.
-        let merged = AiPersistence.limitedMessages(current.sorted {
-            $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt
-        })
-        return .merged(try JSONEncoder().encode(merged))
+        // Same-ID edits retain current bytes, including the digest used to
+        // confirm a replacement after Clear. Re-encoding unchanged messages
+        // would turn that verified copy into unknown data on the next load.
+        // Changed membership cannot be distinguished from Clear.
+        return .merged(currentBytes)
     }
 
     private func mergeMeta(
