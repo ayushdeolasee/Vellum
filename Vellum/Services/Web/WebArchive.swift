@@ -918,7 +918,7 @@ struct MiniZip {
         }
 
         let entryCount = u16(eocd + 10)
-        guard entryCount <= maxEntries else { throw invalid("too many archive entries") }
+        guard entryCount <= maxEntries else { throw invalid("too many entries in archive") }
         var declaredBytes = 0
         var cursor = u32(eocd + 16)
         var entries: [String: CentralEntry] = [:]
