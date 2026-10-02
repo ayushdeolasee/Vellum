@@ -12,6 +12,15 @@ final class ReleaseIsolationTests: XCTestCase {
                           || url.standardizedFileURL.path.hasPrefix(root), url.path)
         }
         XCTAssertFalse(AppDefaults.current === UserDefaults.standard)
+#if os(iOS)
+        let imported = DocumentImport.libraryDirectory
+        XCTAssertTrue(imported.path.hasPrefix(root))
+        XCTAssertNotEqual(imported.standardizedFileURL.path.lowercased(),
+                          DocumentDataStore.rootDirectory.standardizedFileURL.path.lowercased())
+        let probe = imported.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: probe) }
+        try Data("isolated import".utf8).write(to: probe)
+#endif
     }
 
     func testUIRootValidationRejectsFallbackAndLeavesSentinelUntouched() throws {
