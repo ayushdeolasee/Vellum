@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("store_release", Path(__file__).with_name("store-release.py"))
@@ -82,6 +83,38 @@ class StoreReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release.apple_action(self.args)
         self.assertFalse((self.directory / "apple-validation.json").exists())
+
+    def test_source_changes_during_packaging_cannot_finish_a_manifest(self):
+        for mutation in ("commit", "dirty"):
+            with self.subTest(mutation=mutation):
+                directory = self.directory / mutation
+                exported = False
+                args = argparse.Namespace(directory=directory, platform="ios", version="0.1.2", build="5")
+
+                def tool(*command, log=None):
+                    nonlocal exported
+                    if command[:3] == ("git", "rev-parse", "HEAD"):
+                        return b"new-commit" if exported and mutation == "commit" else b"original-commit"
+                    if command[:3] == ("git", "status", "--porcelain"):
+                        return b" M source.swift" if exported and mutation == "dirty" else b""
+                    if command[:2] == ("xcodebuild", "archive"):
+                        symbol = directory / "Vellum.xcarchive/dSYMs/Vellum.app.dSYM/Contents/Resources/DWARF/Vellum"
+                        symbol.parent.mkdir(parents=True)
+                        symbol.write_bytes(b"symbols")
+                    elif command[:2] == ("xcodebuild", "-exportArchive"):
+                        (directory / "export").mkdir()
+                        with zipfile.ZipFile(directory / "export/Vellum.ipa", "w") as package:
+                            package.writestr("Payload/Vellum.app/fixture", "fixture")
+                        exported = True
+                    return b""
+
+                records = [{"executable_uuids": [("FIXTURE", "arm64")]}]
+                with patch.object(release, "run", side_effect=tool), \
+                     patch.object(release, "inspect_apps", return_value=records), \
+                     patch.object(release, "executable_uuids", return_value=records[0]["executable_uuids"]):
+                    with self.assertRaisesRegex(ValueError, "Source changed"):
+                        release.archive(args)
+                self.assertFalse((directory / "artifact.json").exists())
 
     @patch.dict(os.environ, {"VELLUM_TEST_ASC_PASSWORD": "synthetic-secret"})
     def test_validate_and_upload_only_submit_the_recorded_package(self):

@@ -220,6 +220,9 @@ def archive(args):
         exported_records = inspect_apps(unpacked, args.platform, args.version, args.build, True)
         require(all(record["executable_uuids"] in symbol_uuids for record in exported_records),
                 "Exported app/extension does not match preserved debug symbols")
+    require(run("git", "rev-parse", "HEAD").decode().strip() == commit
+            and not run("git", "status", "--porcelain").strip(),
+            "Source changed during archive/export; this candidate has no completed manifest")
     manifest = {"schema": 1, "created": now(), "commit": commit, "platform": args.platform,
                 "version": args.version, "build": args.build, "archive_command": command,
                 "xcode": run("xcodebuild", "-version").decode().strip(),
