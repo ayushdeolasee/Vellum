@@ -525,9 +525,6 @@ struct StorageCoordinatorTests {
         let previousDocumentOverride = DocumentDataStore.rootDirectoryOverride
         WebLibrary.storeDirOverride = storeDir
         DocumentDataStore.rootDirectoryOverride = nil
-        _ = try ConversationOperationJournal.beginClear("abc12345", legacyPath: "/tmp/closed.pdf")
-        try ConversationOperationJournal.completeClear("abc12345")
-        let clearIntent = try ConversationOperationJournal.read("abc12345")
         defer {
             WebLibrary.storeDirOverride = previousStoreOverride
             DocumentDataStore.rootDirectoryOverride = previousDocumentOverride
@@ -535,6 +532,9 @@ struct StorageCoordinatorTests {
             try? FileManager.default.removeItem(at: storeDir)
             try? FileManager.default.removeItem(at: root)
         }
+        _ = try ConversationOperationJournal.beginClear("abc12345", legacyPath: "/tmp/closed.pdf")
+        try ConversationOperationJournal.completeClear("abc12345")
+        let clearIntent = try ConversationOperationJournal.read("abc12345")
         let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
             factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registryState.registry)
         await coordinator.start()
@@ -781,9 +781,6 @@ struct StorageCoordinatorTests {
         let previousDocumentOverride = DocumentDataStore.rootDirectoryOverride
         WebLibrary.storeDirOverride = storeDir
         DocumentDataStore.rootDirectoryOverride = nil
-        _ = try ConversationOperationJournal.beginClear("abc12345", legacyPath: "/tmp/closed.pdf")
-        try ConversationOperationJournal.completeClear("abc12345")
-        let clearIntent = try ConversationOperationJournal.read("abc12345")
         defer {
             WebLibrary.storeDirOverride = previousStoreOverride
             DocumentDataStore.rootDirectoryOverride = previousDocumentOverride
@@ -791,6 +788,9 @@ struct StorageCoordinatorTests {
             try? FileManager.default.removeItem(at: storeDir)
             try? FileManager.default.removeItem(at: root)
         }
+        _ = try ConversationOperationJournal.beginClear("abc12345", legacyPath: "/tmp/closed.pdf")
+        try ConversationOperationJournal.completeClear("abc12345")
+        let clearIntent = try ConversationOperationJournal.read("abc12345")
         let coordinator = coordinator(chosenMode: .icloud, storeDir: storeDir,
             factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registry.registry)
         await coordinator.start()
@@ -866,35 +866,36 @@ struct StorageCoordinatorTests {
             factory: { container }, effectiveMode: { .icloud }, conflictArchiveRegistry: registry.registry)
         await coordinator.start()
         let restore = Task { try await coordinator.restoreArchivedConflict(descriptor) }
-        do { try await gate.waitUntilEntered(timeout: .seconds(3)) }
-        catch {
+        do {
+            try await gate.waitUntilEntered(timeout: .seconds(3))
+            if newerClear {
+                _ = try ConversationOperationJournal.beginClear(key, legacyPath: "/tmp/newer-clear.pdf")
+                try ConversationOperationJournal.completeClear(key)
+            } else {
+                try FileManager.default.setAttributes([.posixPermissions: 0o555],
+                                                      ofItemAtPath: ConversationOperationJournal.directory.path)
+            }
+            let expectedIntent = try #require(ConversationOperationJournal.read(key))
+            await gate.release()
+            do {
+                try await restore.value
+                Issue.record("a failed journal reconciliation must report uncertainty")
+            } catch let error as StorageCoordinator.ArchivedConflictError {
+                #expect(error == .replacementUnverified)
+            }
+            #expect(container.peek(original) == Data("preserved".utf8))
+            #expect(container.peek(archive) == Data("preserved".utf8))
+            #expect(try ConversationOperationJournal.read(key) == expectedIntent)
+            let copies = await coordinator.archivedConflicts()
+            let backup = try #require(copies.first { $0.archiveURL != archive })
+            #expect(container.peek(backup.archiveURL) == Data("current".utf8))
+            #expect(copies.allSatisfy { $0.needsReview })
+            #expect(registry.registry.load().allSatisfy { $0.needsReview })
+        } catch {
             await gate.release()
             _ = try? await restore.value
             throw error
         }
-        if newerClear {
-            _ = try ConversationOperationJournal.beginClear(key, legacyPath: "/tmp/newer-clear.pdf")
-            try ConversationOperationJournal.completeClear(key)
-        } else {
-            try FileManager.default.setAttributes([.posixPermissions: 0o555],
-                                                  ofItemAtPath: ConversationOperationJournal.directory.path)
-        }
-        let expectedIntent = try #require(ConversationOperationJournal.read(key))
-        await gate.release()
-        do {
-            try await restore.value
-            Issue.record("a failed journal reconciliation must report uncertainty")
-        } catch let error as StorageCoordinator.ArchivedConflictError {
-            #expect(error == .replacementUnverified)
-        }
-        #expect(container.peek(original) == Data("preserved".utf8))
-        #expect(container.peek(archive) == Data("preserved".utf8))
-        #expect(try ConversationOperationJournal.read(key) == expectedIntent)
-        let copies = await coordinator.archivedConflicts()
-        let backup = try #require(copies.first { $0.archiveURL != archive })
-        #expect(container.peek(backup.archiveURL) == Data("current".utf8))
-        #expect(copies.allSatisfy { $0.needsReview })
-        #expect(registry.registry.load().allSatisfy { $0.needsReview })
     }
 
     @MainActor
