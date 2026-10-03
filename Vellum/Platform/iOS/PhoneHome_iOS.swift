@@ -60,6 +60,7 @@ struct PhoneHome_iOS: View {
     @State private var continueReading: [ContinueReadingItem] = []
     @State private var showSettings = false
     @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var externalCollectionID: String?
     @State private var externalSortByName = false
     @FocusState private var searchFocused: Bool
@@ -95,6 +96,7 @@ struct PhoneHome_iOS: View {
     private var showsFirstRun: Bool {
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
+            && store.failures.isEmpty
             && integrations.connectedProviders.isEmpty
     }
 
@@ -169,7 +171,13 @@ struct PhoneHome_iOS: View {
         }
         .homeLibraryPresentations(actions, toastAlignment: .bottom)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
-        .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
         .accessibilityIdentifier("phone.home")
     }
 
@@ -255,7 +263,7 @@ struct PhoneHome_iOS: View {
                 }
 
                 searchCapsule
-                if browsedProvider == nil, appStore.error != nil {
+                if appStore.error != nil {
                     errorBanner.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
