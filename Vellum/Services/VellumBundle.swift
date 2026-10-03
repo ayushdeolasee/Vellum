@@ -258,7 +258,8 @@ enum VellumBundle {
             throw SessionServiceError.invalidDocument("Bundle is too large to open")
         }
 
-        let zip = try MiniZip(contentsOf: path)
+        let zip = try MiniZip(contentsOf: path, maxBytes: maxArchiveBytes,
+                              maxEntries: maxEntries, maxUncompressedBytes: maxTotalUncompressedBytes)
 
         // Pre-parse guard #2/#3 (central-directory shape): a crafted directory
         // can list millions of entries or declare petabytes of payload. Bound
@@ -326,6 +327,7 @@ enum VellumBundle {
         }
         var attachments: [(name: String, data: Data)] = []
         var totalAttachmentBytes = 0
+        var attachmentIDs = Set<String>()
         for attachment in manifest.attachments {
             guard attachment.path.hasPrefix("attachments/") else {
                 throw SessionServiceError.invalidDocument("Bundle attachment path is not under attachments/")
@@ -333,6 +335,9 @@ enum VellumBundle {
             let rest = String(attachment.path.dropFirst("attachments/".count))
             guard let safe = safeName(rest) else {
                 throw SessionServiceError.invalidDocument("Bundle has an unsafe attachment path")
+            }
+            guard attachmentIDs.insert(ScratchpadAttachmentIdentity.canonicalID(forName: safe)).inserted else {
+                throw SessionServiceError.invalidDocument("Bundle has duplicate attachment identities")
             }
             let data = try zip.readCapped(attachment.path, cap: maxAttachmentBytes)
             totalAttachmentBytes += data.count
@@ -386,6 +391,7 @@ enum VellumBundle {
         forKey key: String,
         resolveScratchpadConflict resolveConflict: (_ title: String) -> ScratchpadDecision
     ) throws -> [String] {
+        _ = try ScratchpadAttachmentIdentity.uniqueNames(imported.attachments.map(\.name))
         if let incoming = imported.scratchpad, !incoming.isEmpty {
             if !DocumentDataStore.scratchpadExists(forKey: key) {
                 try DocumentDataStore.saveScratchpad(forKey: key, text: incoming)
@@ -404,14 +410,15 @@ enum VellumBundle {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             // Existing ids (by stem) are never overwritten — the local copy of a
             // given attachment id is authoritative.
-            let existingStems = Set(
+            var existingStems = Set(
                 ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
-                    .map { ($0 as NSString).deletingPathExtension.lowercased() })
+                    .map { ScratchpadAttachmentIdentity.canonicalID(forName: $0) })
             for (name, data) in imported.attachments {
-                let stem = (name as NSString).deletingPathExtension.lowercased()
+                let stem = ScratchpadAttachmentIdentity.canonicalID(forName: name)
                 if existingStems.contains(stem) { continue }
                 do {
                     try data.write(to: dir.appendingPathComponent(name))
+                    existingStems.insert(stem)
                 } catch {
                     failedAttachments.append(name)
                 }
@@ -435,6 +442,7 @@ enum VellumBundle {
         coordinator: StorageCoordinator,
         resolveScratchpadConflict resolveConflict: (_ title: String) -> ScratchpadDecision
     ) async throws -> [String] {
+        _ = try ScratchpadAttachmentIdentity.uniqueNames(imported.attachments.map(\.name))
         if let incoming = imported.scratchpad, !incoming.isEmpty {
             if try await DocumentDataStore.scratchpadExists(
                 forKey: key, coordinator: coordinator) == false
@@ -456,15 +464,16 @@ enum VellumBundle {
         if !imported.attachments.isEmpty {
             let existingNames = try await DocumentDataStore.listAttachmentNames(
                 forKey: key, coordinator: coordinator)
-            let existingStems = Set(existingNames.map {
-                ($0 as NSString).deletingPathExtension.lowercased()
+            var existingStems = Set(existingNames.map {
+                ScratchpadAttachmentIdentity.canonicalID(forName: $0)
             })
             for (name, data) in imported.attachments {
-                let stem = (name as NSString).deletingPathExtension.lowercased()
+                let stem = ScratchpadAttachmentIdentity.canonicalID(forName: name)
                 if existingStems.contains(stem) { continue }
                 do {
                     try await DocumentDataStore.saveAttachment(
                         forKey: key, name: name, data: data, coordinator: coordinator)
+                    existingStems.insert(stem)
                 } catch {
                     failedAttachments.append(name)
                 }

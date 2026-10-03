@@ -145,6 +145,18 @@ enum WebArchive {
     static let maxManifestBytes = 4 * 1024 * 1024
     static let maxAnnotationsBytes = 32 * 1024 * 1024
 
+    // Existing payload budgets, including worst-case JSON escaping of extracted
+    // page text (six bytes per source byte), plus ZIP/compression overhead.
+    static let maxTotalUncompressedBytes = maxManifestBytes + maxAnnotationsBytes
+        + 7 * WebFetch.maxResponseBytes + maxTotalAssetBytes
+    static let maxArchiveBytes = maxTotalUncompressedBytes + 8 * 1024 * 1024
+    static let maxEntries = maxAssets + 4
+
+    private static func openArchive(at path: URL) throws -> MiniZip {
+        try MiniZip(contentsOf: path, maxBytes: maxArchiveBytes,
+                    maxEntries: maxEntries, maxUncompressedBytes: maxTotalUncompressedBytes)
+    }
+
     static let assetPlaceholder = "__VELLUM_ASSET__"
 
     static func sha256Hex(_ bytes: Data) -> String {
@@ -511,7 +523,11 @@ enum WebArchive {
     }
 
     static func readManifest(at path: URL) throws -> ArchiveManifest {
-        let zip = try MiniZip(contentsOf: path)
+        let zip = try openArchive(at: path)
+        return try readManifest(from: zip)
+    }
+
+    private static func readManifest(from zip: MiniZip) throws -> ArchiveManifest {
         let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
         let manifest: ArchiveManifest
         do {
@@ -532,9 +548,9 @@ enum WebArchive {
     }
 
     static func readArchive(at path: URL) throws -> ImportedArchive {
-        let zip = try MiniZip(contentsOf: path)
+        let zip = try openArchive(at: path)
 
-        let manifest = try readManifest(at: path)
+        let manifest = try readManifest(from: zip)
 
         let snapshotBytes = try zip.readCapped(
             "snapshot/index.html", cap: WebFetch.maxResponseBytes)
@@ -849,20 +865,26 @@ struct MiniZip {
 
     func contains(_ name: String) -> Bool { entries[name] != nil }
 
-    init(contentsOf path: URL) throws {
-        do {
-            data = try Data(contentsOf: path)
-        } catch {
-            throw SessionServiceError.io("Failed to open archive: \(error.localizedDescription)")
+    init(contentsOf path: URL, maxBytes: Int, maxEntries: Int,
+         maxUncompressedBytes: Int) throws {
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        // Inspect the opened file before allocation, then enforce the bound again
+        // while reading in case another writer grows it after the size check.
+        guard try handle.seekToEnd() <= UInt64(maxBytes) else {
+            throw Self.invalid("archive exceeds its size limit")
         }
-        do {
-            (entries, orderedNames) = try Self.parseCentralDirectory(data)
-        } catch let error as SessionServiceError {
-            throw error
-        } catch {
-            throw SessionServiceError.invalidDocument(
-                "Not a valid .vellumweb archive: \(error.localizedDescription)")
+        try handle.seek(toOffset: 0)
+        var bytes = Data()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            guard chunk.count <= maxBytes - bytes.count else {
+                throw Self.invalid("archive exceeds its size limit")
+            }
+            bytes.append(chunk)
         }
+        data = bytes
+        (entries, orderedNames) = try Self.parseCentralDirectory(
+            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
     }
 
     private static func invalid(_ detail: String) -> SessionServiceError {
@@ -870,7 +892,7 @@ struct MiniZip {
     }
 
     private static func parseCentralDirectory(
-        _ data: Data
+        _ data: Data, maxEntries: Int, maxUncompressedBytes: Int
     ) throws -> ([String: CentralEntry], [String]) {
         let bytes = [UInt8](data)
         guard bytes.count >= 22 else { throw invalid("file too small") }
@@ -896,6 +918,8 @@ struct MiniZip {
         }
 
         let entryCount = u16(eocd + 10)
+        guard entryCount <= maxEntries else { throw invalid("too many entries in archive") }
+        var declaredBytes = 0
         var cursor = u32(eocd + 16)
         var entries: [String: CentralEntry] = [:]
         var names: [String] = []
@@ -906,6 +930,10 @@ struct MiniZip {
             let method = UInt16(u16(cursor + 10))
             let compressedSize = u32(cursor + 20)
             let uncompressedSize = u32(cursor + 24)
+            guard uncompressedSize <= maxUncompressedBytes - declaredBytes else {
+                throw invalid("declared archive data exceeds its size limit")
+            }
+            declaredBytes += uncompressedSize
             let nameLen = u16(cursor + 28)
             let extraLen = u16(cursor + 30)
             let commentLen = u16(cursor + 32)
@@ -914,7 +942,8 @@ struct MiniZip {
                 throw invalid("bad central directory record")
             }
             let name = String(decoding: bytes[(cursor + 46)..<(cursor + 46 + nameLen)], as: UTF8.self)
-            if entries[name] == nil { names.append(name) }
+            guard entries[name] == nil else { throw invalid("duplicate archive entry") }
+            names.append(name)
             entries[name] = CentralEntry(
                 method: method,
                 compressedSize: compressedSize,

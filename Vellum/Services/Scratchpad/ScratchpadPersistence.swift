@@ -1,6 +1,26 @@
 import Foundation
 import os
 
+enum ScratchpadAttachmentIdentity {
+    static func canonicalID(forName name: String) -> String {
+        (name as NSString).deletingPathExtension.precomposedStringWithCanonicalMapping.lowercased()
+    }
+
+    /// Ambiguous existing bytes remain on disk for recovery; saving must not
+    /// choose a different image for an already-referenced identity.
+    static func uniqueNames(_ names: [String]) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for name in names {
+            let id = canonicalID(forName: name)
+            guard result[id] == nil else {
+                throw LibraryFileError.io("Multiple Scratchpad attachments use the same identity. Recover the conflicting images before saving.")
+            }
+            result[id] = name
+        }
+        return result
+    }
+}
+
 struct ScratchpadStagedAttachment: Equatable, Sendable {
     var id: String
     var name: String
@@ -144,6 +164,11 @@ enum ScratchpadPersistence {
                     expectedBaseline: expectedBaseline,
                     edited: schemeText)
 
+                let existingNames = try await DocumentDataStore.listAttachmentNames(
+                    forKey: key, coordinator: coordinator)
+                let namesByID = try ScratchpadAttachmentIdentity.uniqueNames(existingNames)
+                _ = try ScratchpadAttachmentIdentity.uniqueNames(attachments.map(\.name))
+
                 // Attachment bytes are durable and verified before the markdown
                 // that references them becomes visible at the destination.
                 for attachment in attachments where dirtyAttachmentNames.contains(attachment.name) {
@@ -155,12 +180,7 @@ enum ScratchpadPersistence {
                         == attachment.data else { return nil }
                 }
 
-                let existingNames = try await DocumentDataStore.listAttachmentNames(
-                    forKey: key, coordinator: coordinator)
-                var extensions = Dictionary(uniqueKeysWithValues: existingNames.map {
-                    (($0 as NSString).deletingPathExtension.lowercased(),
-                     ($0 as NSString).pathExtension)
-                })
+                var extensions = namesByID.mapValues { ($0 as NSString).pathExtension }
                 for attachment in attachments {
                     extensions[attachment.id.lowercased()] =
                         (attachment.name as NSString).pathExtension
@@ -281,13 +301,9 @@ enum ScratchpadPersistence {
                 let snapshot = try legacySnapshot(entry)
                 var migratedText = snapshot.text
                 var migratedAttachments: [ScratchpadStagedAttachment] = []
-                var namesByStem: [String: String] = [:]
-                for name in try await DocumentDataStore.listAttachmentNames(
-                    forKey: key, coordinator: coordinator)
-                {
-                    let stem = (name as NSString).deletingPathExtension.lowercased()
-                    if namesByStem[stem] == nil { namesByStem[stem] = name }
-                }
+                var namesByStem = try ScratchpadAttachmentIdentity.uniqueNames(
+                    try await DocumentDataStore.listAttachmentNames(forKey: key, coordinator: coordinator))
+                _ = try ScratchpadAttachmentIdentity.uniqueNames(snapshot.attachments.map(\.name))
 
                 // Existing attachment ids are authoritative. Equal bytes can be
                 // reused; a differing legacy attachment receives a deterministic
@@ -334,8 +350,9 @@ enum ScratchpadPersistence {
                     migratedAttachments.append(attachment)
                 }
 
-                let byID = Dictionary(uniqueKeysWithValues:
-                    migratedAttachments.map { ($0.id.lowercased(), $0) })
+                _ = try ScratchpadAttachmentIdentity.uniqueNames(migratedAttachments.map(\.name))
+                let byID = Dictionary(migratedAttachments.map { ($0.id.lowercased(), $0) },
+                                      uniquingKeysWith: { first, _ in first })
                 let legacyRelative = schemeToRelative(migratedText) {
                     byID[$0.lowercased()].map { ($0.name as NSString).pathExtension }
                 }
