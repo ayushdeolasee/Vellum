@@ -11,6 +11,14 @@ enum WebAmber {
     static let amber500 = Color(hex: "#f59e0b")
 }
 
+/// Small unsaved text outlives a reclaimed WKWebView. The tab runtime keeps
+/// this reference and passes it to each replacement web controller.
+@MainActor
+final class WebNoteDraftState {
+    var selectionTexts: [String: [String: String]] = [:]
+    var noteEdits: [String: [String: String]] = [:]
+}
+
 // MARK: - Anchored positioning (useAnchoredPosition)
 
 enum WebPopoverPlacement {
@@ -78,7 +86,11 @@ private struct PopoverCard<Content: View>: View {
 
     var body: some View {
         content()
-            .glassEffect(.regular, in: .rect(cornerRadius: Radius.lg))
+            .background(palette.surface, in: .rect(cornerRadius: Radius.lg))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.lg)
+                    .strokeBorder(palette.border, lineWidth: 1)
+            }
     }
 }
 
@@ -144,6 +156,9 @@ private struct SmallGhostButton: View {
                 .font(.system(size: 12))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
+                #if os(iOS)
+                .frame(minWidth: 44, minHeight: 44)
+                #endif
                 .foregroundStyle(hovering ? palette.foreground : palette.mutedForeground)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.md))
@@ -168,6 +183,9 @@ private struct SmallPrimaryButton: View {
                 .font(.system(size: 12, weight: .medium))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
+                #if os(iOS)
+                .frame(minWidth: 44, minHeight: 44)
+                #endif
                 .foregroundStyle(palette.primaryForeground)
                 .background(hovering ? palette.primaryHover : palette.primary)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.md))
@@ -184,6 +202,7 @@ private struct SmallPrimaryButton: View {
 
 struct WebNoteComposerView: View {
     var initialContent: String = ""
+    var availableWidth: CGFloat? = nil
     var onSubmit: (String) -> Void
     var onClose: () -> Void
     /// Reports edits upward so an unasked-for dismissal (stray tap, scroll)
@@ -196,11 +215,13 @@ struct WebNoteComposerView: View {
 
     init(
         initialContent: String = "",
+        availableWidth: CGFloat? = nil,
         onSubmit: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
         onDraftChange: @escaping (String) -> Void = { _ in }
     ) {
         self.initialContent = initialContent
+        self.availableWidth = availableWidth
         self.onSubmit = onSubmit
         self.onClose = onClose
         self.onDraftChange = onDraftChange
@@ -237,7 +258,7 @@ struct WebNoteComposerView: View {
                 }
             }
             .padding(8)
-            .frame(width: 288)
+            .frame(width: min(288, availableWidth ?? 288))
         }
     }
 
@@ -296,6 +317,11 @@ struct WebContextMenuView: View {
 
 struct WebNoteViewerView: View {
     let annotationId: String
+    var availableWidth: CGFloat? = nil
+    var initialDraft: String? = nil
+    var onDraftChange: (String) -> Void = { _ in }
+    var onDiscardDraft: () -> Void = {}
+    var onSaveDraft: (String) -> Void = { _ in }
     var onClose: () -> Void
 
     @Environment(AnnotationStore.self) private var annotationStore
@@ -304,6 +330,7 @@ struct WebNoteViewerView: View {
     @State private var isEditing = false
     @State private var text = ""
     @State private var initialized = false
+    @State private var saving = false
 
     private var annotation: Annotation? {
         annotationStore.annotations.first { $0.id == annotationId }
@@ -324,6 +351,7 @@ struct WebNoteViewerView: View {
                         }
                         Spacer()
                         DeleteNoteButton {
+                            onDiscardDraft()
                             Task { await annotationStore.deleteAnnotation(id: annotation.id) }
                             onClose()
                         }
@@ -331,13 +359,13 @@ struct WebNoteViewerView: View {
 
                     if isEditing {
                         NoteTextEditor(
-                            text: $text,
+                            text: Binding(get: { text }, set: { text = $0; onDraftChange($0) }),
                             onSubmit: { save(annotation) },
-                            onClose: onClose)
+                            onClose: cancel)
                         HStack(spacing: 6) {
                             Spacer()
-                            SmallGhostButton(title: "Cancel", action: onClose)
-                            SmallPrimaryButton(title: "Save") { save(annotation) }
+                            SmallGhostButton(title: "Cancel", action: cancel)
+                            SmallPrimaryButton(title: "Save", disabled: saving) { save(annotation) }
                         }
                     } else {
                         ScrollView {
@@ -373,28 +401,43 @@ struct WebNoteViewerView: View {
                     }
                 }
                 .padding(8)
-                .frame(width: 288)
+                .frame(width: min(288, availableWidth ?? 288))
             }
             .onAppear {
                 guard !initialized else { return }
                 initialized = true
                 // Open straight into editing when the note has no content yet.
                 let content = annotation.content ?? ""
-                text = content
-                isEditing = content.isEmpty
+                text = initialDraft ?? content
+                isEditing = initialDraft != nil || content.isEmpty
             }
         }
     }
 
     private func save(_ annotation: Annotation) {
+        guard !saving else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed != (annotation.content ?? "") {
-            Task {
-                await annotationStore.updateAnnotation(
-                    UpdateAnnotationInput(id: annotation.id, color: nil, content: trimmed, positionData: nil))
+            saving = true
+            annotationStore.saveNote(
+                UpdateAnnotationInput(id: annotation.id, color: nil, content: trimmed, positionData: nil)
+            ) { saved in
+                saving = false
+                // Keep the draft on failure or if typing continued during I/O.
+                guard saved,
+                      text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+                onSaveDraft(trimmed)
+                isEditing = false
             }
+        } else {
+            onSaveDraft(trimmed)
+            isEditing = false
         }
-        isEditing = false
+    }
+
+    private func cancel() {
+        onDiscardDraft()
+        onClose()
     }
 }
 
@@ -428,6 +471,9 @@ private struct DeleteNoteButton: View {
 /// The highlight/note popover shown above a text selection. Hangs above and
 /// centered on the anchor point (translate(-50%, -100%)).
 struct WebSelectionPopover: View {
+    var initialDraft: String? = nil
+    var availableWidth: CGFloat? = nil
+    var onDraftChange: (String) -> Void = { _ in }
     var onHighlight: (String) -> Void
     var onNote: (String) -> Void
     /// Fired as the note field opens, so the controller can pin the selection
@@ -446,48 +492,39 @@ struct WebSelectionPopover: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                ForEach(HIGHLIGHT_COLORS) { color in
-                    SwatchButton(color: color) {
-                        // The action must run before onClose: onClose clears
-                        // controller.selection, which addHighlight reads.
-                        onHighlight(color.value)
-                        onClose()
-                    }
-                }
-                Rectangle()
-                    .fill(palette.border)
-                    .frame(width: 1, height: 20)
-                    .padding(.horizontal, 4)
-                NoteToggleButton {
-                    showNoteInput.toggle()
-                    // Must run here, not from the field's onAppear: the pin has
-                    // to be taken while the page still holds the selection.
-                    if showNoteInput { onBeginNote() }
-                }
-                .accessibilityIdentifier("webSelectionPopover.addNote")
-                #if os(macOS)
-                DictionaryLookupButton {
-                    onDictionaryLookup()
-                    onClose()
-                }
-                .accessibilityIdentifier("webSelectionPopover.dictionaryLookup")
-                #endif
-                AskAiButton {
-                    // Same ordering trap as the swatches: onClose drops both the
-                    // live selection and the pinned draft, and the reference is
-                    // built from one of them.
-                    onAskAi()
-                    onClose()
-                }
-                .accessibilityIdentifier("webSelectionPopover.askAi")
+            #if os(iOS)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(44), spacing: 0), count: 5),
+                alignment: .leading,
+                spacing: 0
+            ) {
+                controlItems
             }
-            .padding(6)
-            .darkGlassSurface(in: .capsule)
+            .frame(width: 220)
+            .padding(4)
+            .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            #else
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) { controlItems }
+                    .padding(6)
+                    .fixedSize()
+                    .darkGlassSurface(in: .capsule)
+                VStack(spacing: 4) {
+                    HStack(spacing: 4) { colorItems }
+                    HStack(spacing: 4) { actionItems }
+                }
+                .padding(6)
+                .fixedSize()
+                .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
+            }
+            .frame(width: min(256, availableWidth ?? 256))
+            #endif
 
             if showNoteInput {
                 HStack(spacing: 6) {
-                    TextField("Add a note...", text: $noteText)
+                    TextField("Add a note...", text: Binding(
+                        get: { noteText }, set: { noteText = $0; onDraftChange($0) }
+                    ))
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .padding(.horizontal, 8)
@@ -507,10 +544,65 @@ struct WebSelectionPopover: View {
                     SmallPrimaryButton(title: "Add", action: submitNote)
                 }
                 .padding(8)
-                .frame(width: 256)
+                .frame(width: min(256, availableWidth ?? 256))
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
+        .onAppear {
+            if let initialDraft {
+                noteText = initialDraft
+                showNoteInput = true
+                onBeginNote()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var controlItems: some View {
+        colorItems
+        #if os(macOS)
+        Rectangle()
+            .fill(palette.border)
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
+        #endif
+        actionItems
+    }
+
+    private var colorItems: some View {
+        ForEach(HIGHLIGHT_COLORS) { color in
+            SwatchButton(color: color) {
+                // Preserve the anchor until the action consumes it.
+                onHighlight(color.value)
+                onClose()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionItems: some View {
+        NoteToggleButton {
+            if showNoteInput {
+                onClose()
+                return
+            }
+            showNoteInput = true
+            // Pin while the page still holds the selection.
+            if showNoteInput { onBeginNote() }
+        }
+        .accessibilityIdentifier("webSelectionPopover.addNote")
+        #if os(macOS)
+        DictionaryLookupButton {
+            onDictionaryLookup()
+            onClose()
+        }
+        .accessibilityIdentifier("webSelectionPopover.dictionaryLookup")
+        #endif
+        AskAiButton {
+            onAskAi()
+            onClose()
+        }
+        .accessibilityIdentifier("webSelectionPopover.askAi")
     }
 
     private func submitNote() {
@@ -565,11 +657,17 @@ private struct SwatchButton: View {
                     Circle().strokeBorder(palette.border, lineWidth: 1)
                 }
                 .scaleEffect(hovering ? 1.10 : 1)
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Highlight \(color.name)")
+        .accessibilityLabel("Highlight \(color.name)")
     }
 }
 
@@ -587,11 +685,17 @@ private struct NoteToggleButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Add note")
+        .accessibilityLabel("Add note")
     }
 }
 
@@ -611,10 +715,16 @@ private struct AskAiButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Ask AI about this")
+        .accessibilityLabel("Ask AI about this")
     }
 }
