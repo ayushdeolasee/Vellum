@@ -17,6 +17,7 @@ struct VellumApp_iOS: App {
     @State private var showStorageChoice = false
     @State private var showWalkthrough = false
     @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var backgroundFlushController: BackgroundFlushController
     @State private var systemRouteHandoff: VellumSystemRouteHandoff
     private let uiTestDocumentPath: String?
@@ -187,8 +188,12 @@ struct VellumApp_iOS: App {
                         await workspace.reconfigureStorageCoordinator()
                     }
                 }
-                .sheet(isPresented: $showHelp) {
-                    HelpCenterView_iOS()
+                .sheet(isPresented: $showHelp, onDismiss: {
+                    guard walkthroughAfterHelp else { return }
+                    walkthroughAfterHelp = false
+                    showWalkthrough = true
+                }) {
+                    HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
                         .environment(\.palette, themeStore.palette)
                         .preferredColorScheme(themeStore.colorScheme)
                         .tint(themeStore.palette.primary)

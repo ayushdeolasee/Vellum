@@ -182,14 +182,16 @@ struct WalkthroughSheet_iOS: View {
     /// The only dismiss affordance present on every page. Its visible glyph can
     /// scale while the interactive frame remains at least 44×44pt.
     private var closeButton: some View {
-        Button("Close the walkthrough", systemImage: "xmark") { dismiss() }
-            .labelStyle(.iconOnly)
-            .font(.body.weight(.medium))
-            .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
-            .contentShape(Rectangle())
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .accessibilityIdentifier("walkthrough.close")
+        Button { dismiss() } label: {
+            Label("Close the walkthrough", systemImage: "xmark")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.medium))
+                .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.cancelAction)
+        .accessibilityIdentifier("walkthrough.close")
     }
 
     @ViewBuilder
@@ -270,12 +272,14 @@ struct WalkthroughSheet_iOS: View {
     }
 
     private var skipButton: some View {
-        Button("Skip") { dismiss() }
-            .font(.body)
-            .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
-            .contentShape(Rectangle())
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("walkthrough.skip")
+        Button { dismiss() } label: {
+            Text("Skip")
+                .font(.body)
+                .frame(minWidth: Self.controlSide, minHeight: Self.controlSide)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("walkthrough.skip")
     }
 
     private var backButton: some View {

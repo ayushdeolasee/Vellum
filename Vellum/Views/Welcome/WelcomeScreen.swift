@@ -90,6 +90,7 @@ struct WelcomeScreen: View {
         // the switcher away, leaving no way back.
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
+            && store.failures.isEmpty
             && integrations.connectedProviders.isEmpty
     }
 
@@ -108,12 +109,7 @@ struct WelcomeScreen: View {
     }
 
     var body: some View {
-        // #70's Home chrome — title, update affordances, settings gear — stays
-        // above BOTH layouts exactly as it did on main. The search revamp
-        // replaces only what used to live below this divider.
         VStack(spacing: 0) {
-            homeHeader
-            Divider()
             Group {
                 if showsFirstRun {
                     firstRunLayout
@@ -292,6 +288,29 @@ struct WelcomeScreen: View {
     }
 
     private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                libraryHeading.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 12)
+                libraryOpenButtons
+                libraryUtilityActions
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                libraryHeading
+                ViewThatFits(in: .horizontal) {
+                    libraryOpenButtons
+                    VStack(alignment: .leading, spacing: 8) {
+                        libraryOpenPDFButton
+                        libraryAddWebpageButton
+                    }
+                }
+                libraryUtilityActions
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var libraryHeading: some View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: "doc.text")
                 .font(.system(size: 20, weight: .regular))
@@ -304,27 +323,42 @@ struct WelcomeScreen: View {
                 Text("Everything you've read, in one place.")
                     .font(.system(size: 12))
                     .foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
 
-            Spacer(minLength: 12)
+    private var libraryOpenButtons: some View {
+        HStack(spacing: 14) {
+            libraryOpenPDFButton
+            libraryAddWebpageButton
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
 
-            TextButton(disabled: appStore.isLoading, action: openDocuments) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14))
-                Text(appStore.isLoading ? "Opening…" : "Open a PDF")
-            }
-            .accessibilityIdentifier("welcome.openPdf")
+    private var libraryOpenPDFButton: some View {
+        TextButton(disabled: appStore.isLoading, action: openDocuments) {
+            Image(systemName: "folder")
+                .font(.system(size: 14))
+            Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+        }
+        .accessibilityIdentifier("welcome.openPdf")
+    }
 
-            TextButton(variant: .secondary, disabled: appStore.isLoading) {
-                NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
-            } label: {
-                Image(systemName: "globe")
-                    .font(.system(size: 14))
-                Text("Add Webpage")
-            }
-            .help("Open a webpage by URL (⌘L)")
-            .accessibilityIdentifier("welcome.addWebpage")
+    private var libraryAddWebpageButton: some View {
+        TextButton(variant: .secondary, disabled: appStore.isLoading) {
+            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+        } label: {
+            Image(systemName: "globe")
+                .font(.system(size: 14))
+            Text("Add Webpage")
+        }
+        .help("Open a webpage by URL (⌘L)")
+        .accessibilityIdentifier("welcome.addWebpage")
+    }
 
+    private var libraryUtilityActions: some View {
+        HStack(spacing: 14) {
             // #65's walkthrough entry point. Returning users get the compact
             // icon form — this header is already dense, and they've seen the
             // offer before; the first-run hero spells it out as a text link
@@ -335,6 +369,8 @@ struct WelcomeScreen: View {
                     .font(.system(size: 14))
             }
             .accessibilityIdentifier("welcome.walkthrough")
+
+            homeActions
         }
     }
 
@@ -586,35 +622,22 @@ struct WelcomeScreen: View {
         }
     }
 
-    // MARK: - Home chrome (from #70)
+    // MARK: - Home actions
 
-    /// The window's Home bar. Carried over from #70 unchanged: it is the app's
-    /// only settings entry point outside ⌘, so it has to survive the revamp.
-    private var homeHeader: some View {
+    /// Shared by the library heading and first-run heading, so Home has one
+    /// title while Settings and update checks remain reachable in both states.
+    private var homeActions: some View {
         HStack(spacing: 8) {
-            Text("Home")
-                .font(.headline)
-                .foregroundStyle(palette.foreground)
-            Spacer()
-            Button(action: updateChecker.check) {
-                Label("Check for Updates", systemImage: "arrow.clockwise")
-                    .labelStyle(.iconOnly)
+            IconButton(help: "Check for updates", action: updateChecker.check) {
+                Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
-            .help("Check for updates")
             .accessibilityIdentifier("welcome.checkForUpdates")
 
-            Button(action: showSettings) {
-                Label("Settings", systemImage: "gearshape")
-                    .labelStyle(.iconOnly)
+            IconButton(help: "Settings… (⌘,)", action: showSettings) {
+                Image(systemName: "gearshape")
             }
-            .buttonStyle(.borderless)
-            .help("Settings… (⌘,)")
             .accessibilityIdentifier("welcome.settings")
         }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .background(palette.background)
     }
 
     private func showSettings() {
@@ -761,32 +784,57 @@ struct WelcomeScreen: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: Radius.xxl))
                 .padding(.bottom, 12)
 
-            Wordmark(size: 36)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    Wordmark(size: 36)
+                    homeActions
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(spacing: 8) {
+                    Wordmark(size: 36)
+                    homeActions
+                }
+            }
 
             Text("A quiet place to read, annotate, and think alongside your documents.")
                 .font(.system(size: 14))
                 .foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center)
                 .padding(.top, 8)
         }
     }
 
     private var openControls: some View {
-        HStack(spacing: 12) {
-            TextButton(size: .lg, disabled: appStore.isLoading, action: openDocuments) {
-                Image(systemName: "folder")
-                    .font(.system(size: 18))
-                Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                firstRunOpenPDFButton
+                openPDFShortcut
             }
-            .accessibilityIdentifier("welcome.openPdf")
-
-            HStack(spacing: 4) {
-                Text("or press")
-                Keycap(keys: "⌘O")
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(spacing: 8) {
+                firstRunOpenPDFButton
+                openPDFShortcut
             }
-            .font(.system(size: 12))
-            .foregroundStyle(palette.mutedForeground)
         }
         .padding(.top, 28)
+    }
+
+    private var firstRunOpenPDFButton: some View {
+        TextButton(size: .lg, disabled: appStore.isLoading, action: openDocuments) {
+            Image(systemName: "folder")
+                .font(.system(size: 18))
+            Text(appStore.isLoading ? "Opening…" : "Open a PDF")
+        }
+        .accessibilityIdentifier("welcome.openPdf")
+    }
+
+    private var openPDFShortcut: some View {
+        HStack(spacing: 4) {
+            Text("or press")
+            Keycap(keys: "⌘O")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(palette.mutedForeground)
     }
 
     /// First-run readers land on this screen with nothing open, so the empty

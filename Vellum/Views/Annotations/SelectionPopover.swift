@@ -11,6 +11,7 @@ import AppKit
 
 struct SelectionPopover: View {
     let selection: PdfTextSelection
+    var availableWidth: CGFloat? = nil
     let onClose: () -> Void
 
     @Environment(AnnotationStore.self) private var annotationStore
@@ -38,11 +39,23 @@ struct SelectionPopover: View {
             .padding(4)
             .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             #else
-            HStack(spacing: 4) {
-                controlItems
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    controlItems
+                }
+                .padding(6)
+                .fixedSize()
+                .darkGlassSurface(in: .capsule)
+
+                VStack(spacing: 4) {
+                    HStack(spacing: 4) { colorItems }
+                    HStack(spacing: 4) { actionItems }
+                }
+                .padding(6)
+                .fixedSize()
+                .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
-            .padding(6)
-            .darkGlassSurface(in: .capsule)
+            .frame(width: min(256, availableWidth ?? 256))
             #endif
 
             if showNoteInput {
@@ -62,7 +75,7 @@ struct SelectionPopover: View {
                         .controlSize(.small)
                 }
                 .padding(8)
-                .frame(width: 256)
+                .frame(width: min(256, availableWidth ?? 256))
                 .darkGlassSurface(in: .rect(cornerRadius: Radius.lg))
             }
         }
@@ -70,6 +83,19 @@ struct SelectionPopover: View {
 
     @ViewBuilder
     private var controlItems: some View {
+        colorItems
+
+        #if os(macOS)
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
+        #endif
+
+        actionItems
+    }
+
+    private var colorItems: some View {
         ForEach(HIGHLIGHT_COLORS) { color in
             HighlightSwatchButton(
                 color: color,
@@ -79,13 +105,11 @@ struct SelectionPopover: View {
                 handleHighlight(color.value)
             }
         }
+    }
 
-        #if os(macOS)
-        Rectangle()
-            .fill(.quaternary)
-            .frame(width: 1, height: 20)
-            .padding(.horizontal, 4)
-        #else
+    @ViewBuilder
+    private var actionItems: some View {
+        #if os(iOS)
         // The system callout is suppressed on iPad (it collided with this
         // popover), so copy lives here instead.
         Button {

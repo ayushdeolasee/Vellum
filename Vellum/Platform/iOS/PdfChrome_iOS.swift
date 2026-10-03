@@ -676,14 +676,15 @@ private struct TabChip_iOS: View {
     /// The tab whose rename sheet is open — nil the rest of the time.
     @State private var renamingTab: PdfTab?
 
-    /// Kept as the chip's OWN derivation rather than routing through
-    /// `TabPresentation.title(for:)`: this prettifies an untitled webpage's URL
-    /// into a host/slug, which main's helper does not. See the note on
-    /// `TabPresentation` for why the overview uses the other one (packet 4
-    /// §2.12.1 — smaller blast radius, and the two agree for every PDF).
+    /// Honor renamed titles while keeping the friendly host/slug fallback
+    /// for webpages that do not carry a usable title.
     private var title: String {
         if let doc = tab.document {
             if doc.kind == .web {
+                if let title = doc.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !title.isEmpty {
+                    return title
+                }
                 return RecentFilesService.webpageDisplayName(for: doc.pdfPath)
             }
             return doc.title ?? RecentFilesService.fileName(for: doc.pdfPath)
