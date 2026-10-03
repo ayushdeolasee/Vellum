@@ -354,7 +354,7 @@ struct StorageSettingsTab: View {
     private var currentLocationPath: String? {
         switch storageMode {
         case .icloud: return WebStorageSettings.icloudVellumRoot?.path
-        case .custom: return UserDefaults.standard.string(forKey: WebStorageSettings.customPathKey)
+        case .custom: return AppDefaults.current.string(forKey: WebStorageSettings.customPathKey)
         case .local: return nil
         }
     }
@@ -717,7 +717,7 @@ struct StorageSettingsTab: View {
     // MARK: - Confirmation dialogs
 
     private func applyDialogs<Content: View>(_ content: Content) -> some View {
-        content
+        let documentDialogs = content
             .confirmationDialog(
                 pendingDeleteNotes.map { "Delete notes for \"\($0.title)\"?" } ?? "",
                 isPresented: bindingFor($pendingDeleteNotes), presenting: pendingDeleteNotes
@@ -748,6 +748,7 @@ struct StorageSettingsTab: View {
             } message: { _ in
                 Text("This permanently deletes this document's notes, attachments and AI chat, along with its cached text and offline copy. Highlights saved inside the document file itself are not affected. This cannot be undone.")
             }
+        let recoveryDialogs = documentDialogs
             .confirmationDialog(
                 pendingOrphanDelete.map { "Delete data for \"\($0.title)\"?" } ?? "",
                 isPresented: bindingFor($pendingOrphanDelete), presenting: pendingOrphanDelete
@@ -777,6 +778,7 @@ struct StorageSettingsTab: View {
             } message: {
                 Text("This removes the downloaded copy of every web page. Your saved-pages list, highlights, and notes are not affected — pages just load from the network (and re-download) the next time you open them.")
             }
+        return recoveryDialogs
             .confirmationDialog(
                 pendingLocation.map { "Move Vellum storage to \($0.label)?" } ?? "",
                 isPresented: bindingFor($pendingLocation),

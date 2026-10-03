@@ -35,7 +35,7 @@ enum PencilDoubleTapAction: String, CaseIterable, Sendable {
     static let defaultsKey = "pencilDoubleTapAction"
 
     static func current() -> PencilDoubleTapAction {
-        UserDefaults.standard.string(forKey: defaultsKey)
+        AppDefaults.current.string(forKey: defaultsKey)
             .flatMap(PencilDoubleTapAction.init(rawValue:)) ?? .eraser
     }
 
@@ -70,7 +70,7 @@ struct InkWidthSettings: Codable, Equatable {
     static let defaultsKey = "ink.widthSettings.v1"
 
     static func loadFromDefaults() -> InkWidthSettings {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+        guard let data = AppDefaults.current.data(forKey: defaultsKey),
               let decoded = try? JSONDecoder().decode(InkWidthSettings.self, from: data)
         else { return InkWidthSettings() }
         return decoded
@@ -78,7 +78,7 @@ struct InkWidthSettings: Codable, Equatable {
 
     func saveToDefaults() {
         guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        AppDefaults.current.set(data, forKey: Self.defaultsKey)
     }
 }
 
@@ -124,7 +124,7 @@ final class InkController_iOS {
     /// Defaults to on. Persisted under `autoHideSidebarKey`.
     static let autoHideSidebarKey = "autoHideSidebarWhileInking"
     static var autoHideSidebarWhileInking: Bool {
-        UserDefaults.standard.object(forKey: autoHideSidebarKey) as? Bool ?? true
+        AppDefaults.current.object(forKey: autoHideSidebarKey) as? Bool ?? true
     }
 
     /// User preference: whether scribbling over existing ink with the pen erases
@@ -136,7 +136,7 @@ final class InkController_iOS {
     /// `scratchOutToEraseKey`.
     static let scratchOutToEraseKey = "ink.scratchOutToErase"
     static var scratchOutToErase: Bool {
-        UserDefaults.standard.object(forKey: scratchOutToEraseKey) as? Bool ?? true
+        AppDefaults.current.object(forKey: scratchOutToEraseKey) as? Bool ?? true
     }
     var tool: InkTool = .pen {
         didSet {

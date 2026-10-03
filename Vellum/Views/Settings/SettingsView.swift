@@ -245,12 +245,12 @@ private struct GeneralSettingsTab: View {
 private struct ReadingSettingsTab: View {
     @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
-    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey)
+    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey, store: AppDefaults.current)
     private var alwaysShowReaderControls = false
-    @AppStorage("twoFingerNoteTap") private var twoFingerNoteTap = true
-    @AppStorage(PencilDoubleTapAction.defaultsKey) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
-    @AppStorage(InkController_iOS.autoHideSidebarKey) private var autoHideSidebarWhileInking = true
-    @AppStorage(InkController_iOS.scratchOutToEraseKey) private var scratchOutToErase = true
+    @AppStorage("twoFingerNoteTap", store: AppDefaults.current) private var twoFingerNoteTap = true
+    @AppStorage(PencilDoubleTapAction.defaultsKey, store: AppDefaults.current) private var pencilDoubleTap = PencilDoubleTapAction.eraser.rawValue
+    @AppStorage(InkController_iOS.autoHideSidebarKey, store: AppDefaults.current) private var autoHideSidebarWhileInking = true
+    @AppStorage(InkController_iOS.scratchOutToEraseKey, store: AppDefaults.current) private var scratchOutToErase = true
     #endif
 
     var body: some View {

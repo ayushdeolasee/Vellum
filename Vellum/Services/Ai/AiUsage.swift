@@ -149,7 +149,7 @@ enum AiUsageLedger {
     }
 
     private static func load() -> [String: Entry] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        guard let data = AppDefaults.current.data(forKey: key),
               let entries = try? JSONDecoder().decode([String: Entry].self, from: data)
         else { return [:] }
         return entries
@@ -157,6 +157,6 @@ enum AiUsageLedger {
 
     private static func save(_ entries: [String: Entry]) {
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        AppDefaults.current.set(data, forKey: key)
     }
 }

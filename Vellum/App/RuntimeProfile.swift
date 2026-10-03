@@ -19,7 +19,8 @@ enum RuntimeProfile: Sendable {
     var allowsProductionServices: Bool { self == .production }
 
     var syncEnabled: Bool {
-        !ProcessInfo.processInfo.arguments.contains("--disable-sync")
+        let arguments = ProcessInfo.processInfo.arguments
+        return !arguments.contains("--disable-sync") && !arguments.contains("--ui-testing")
     }
 
     var cloudContainerIdentifier: String {

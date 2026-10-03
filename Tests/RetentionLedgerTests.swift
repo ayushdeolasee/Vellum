@@ -11,7 +11,7 @@ import Testing
 // `.serialized` because the coexistence test drives `WebLibrary.storeDirOverride`
 // and `RetentionLayout.directoryOverride`, both process-global.
 
-@Suite("Read-later retention — ledger and sweep", .serialized)
+@Suite("Read-later retention — ledger and sweep", .serialized, .isolatedStorage)
 struct RetentionLedgerTests {
     private let added = RetentionFixtures.date("2026-07-20T09:00:00.000000+00:00")
     private let lastRead = RetentionFixtures.date("2026-07-30T21:14:02.000000+00:00")

@@ -63,8 +63,8 @@ struct ModelSelector: View {
     @State private var isPresented = false
     @State private var query = ""
     // Persisted so the picker reopens to the last-used sort tab + direction.
-    @AppStorage("modelSelector.sort") private var sortRaw = ModelSort.name.rawValue
-    @AppStorage("modelSelector.ascending") private var ascending = ModelSort.name.defaultAscending
+    @AppStorage("modelSelector.sort", store: AppDefaults.current) private var sortRaw = ModelSort.name.rawValue
+    @AppStorage("modelSelector.ascending", store: AppDefaults.current) private var ascending = ModelSort.name.defaultAscending
     @State private var providerFilter: String?
     @State private var imageFilter: ImageFilter = .all
     @State private var toolsFilter: ToolsFilter = .all

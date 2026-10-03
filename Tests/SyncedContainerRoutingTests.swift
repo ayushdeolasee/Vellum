@@ -10,7 +10,7 @@ import Testing
 //
 // Serialized: it drives `WebStorageSettings`' process-global overrides.
 
-@Suite("Coordination seam — routing and identity", .serialized)
+@Suite("Coordination seam — routing and identity", .serialized, .isolatedStorage)
 struct SyncedContainerRoutingTests {
     /// Proof the factory was never reached, not just that the result looks right.
     private final class FactoryProbe: @unchecked Sendable {

@@ -52,38 +52,20 @@ enum AppDefaults {
         let defaults: UserDefaults
     }
 
-    /// `.standard` in production; a private scratch suite under test.
-    nonisolated(unsafe) private static let base: UserDefaults = {
-        guard isHostedInTestBundle else { return .standard }
-        let name = "com.vellum.tests.defaults"
-        guard let scratch = UserDefaults(suiteName: name) else {
-            // Fail closed: silently falling back to `.standard` would hand the
-            // whole test suite the real user's recents and workspace, which is
-            // exactly what this type exists to prevent.
-            fatalError("could not open the scratch defaults suite '\(name)'")
-        }
-        // Start every test process from empty. A domain that accumulated state
-        // across runs would be its own source of order-dependent flakes.
-        scratch.removePersistentDomain(forName: name)
-        return scratch
-    }()
+    private static let testDomain = "com.vellum.tests.defaults.\(UUID().uuidString)"
 
-    /// True inside a hosted XCTest bundle — the case that matters here, because
-    /// such a bundle runs within the app process and shares its defaults.
-    ///
-    /// Deliberately NARROWER than `KeychainStore`'s equivalent, which also
-    /// counts `--ui-testing` app launches. A UI-test launch runs under the
-    /// `UITesting` build configuration, so it already has its own bundle
-    /// identifier and therefore its own defaults domain, and its harness seeds
-    /// that domain on purpose (`UITestLaunchConfiguration.prepare` writes
-    /// `vellum.workspace` for the corrupt-restoration test). Redirecting it
-    /// here would hide those seeds from the app under test. The keychain has no
-    /// such per-configuration partition, which is why its guard is broader.
-    private static let isHostedInTestBundle: Bool = {
-        let env = ProcessInfo.processInfo.environment
-        return env["XCTestConfigurationFilePath"] != nil
-            || env["XCTestSessionIdentifier"] != nil
-            || env["XCTestBundlePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
+    /// Explicit UI-test reset can only reach the isolated test domain.
+    static func resetTestDomain() {
+        guard TestEnvironment.storageRoot != nil else { return }
+        base.removePersistentDomain(forName: testDomain)
+    }
+
+    nonisolated(unsafe) private static let base: UserDefaults = {
+        guard TestEnvironment.storageRoot != nil else { return .standard }
+        guard let scratch = UserDefaults(suiteName: testDomain) else {
+            fatalError("Could not open isolated defaults suite")
+        }
+        scratch.removePersistentDomain(forName: testDomain)
+        return scratch
     }()
 }

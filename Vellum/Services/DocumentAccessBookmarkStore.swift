@@ -41,9 +41,7 @@ final class DocumentAccessBookmarkStore: @unchecked Sendable {
     var directory: URL {
         if let directoryOverride { return directoryOverride }
         if let root = Self.rootDirectoryOverride { return root }
-        if let root = UITestLaunchConfiguration.storageRoot {
-            return root.appendingPathComponent("DocumentAccess", isDirectory: true)
-        }
+        if let root = TestEnvironment.storageRoot { return root.appendingPathComponent("DocumentAccess", isDirectory: true) }
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

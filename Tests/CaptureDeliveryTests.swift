@@ -3,6 +3,7 @@ import Testing
 
 @testable import Vellum
 
+@Suite(.isolatedStorage)
 struct CaptureDeliveryTests {
     @Test("Disabled sync leaves pending captures untouched without fetching")
     func disabledSyncLeavesPendingCaptureUntouched() async throws {
@@ -24,7 +25,7 @@ struct CaptureDeliveryTests {
 
         #expect(await ingestion.drain() == CaptureDrainReport())
         #expect(await counter.count == 0)
-        #expect(await CaptureInbox(layout: layout).pendingCount() == 1)
+        #expect(await CaptureInbox(layout: layout, clock: CaptureFixtures.clock).pendingCount() == 1)
     }
 
     @Test("DOM limit has an exact boundary and reports URL-only fallback")
@@ -117,6 +118,7 @@ struct CaptureDeliveryTests {
         let ingestion = CaptureIngestion(
             layout: layout,
             storage: storage,
+            clock: CaptureFixtures.clock,
             unreadLedger: ledger,
             fetch: { url in
                 await fetchCounter.called()

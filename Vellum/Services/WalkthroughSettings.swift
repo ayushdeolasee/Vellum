@@ -22,7 +22,7 @@ enum WalkthroughSettings {
     /// is exactly what `bool(forKey:)` returns, so a fresh install needs no
     /// registered default.
     static var hasSeenWalkthrough: Bool {
-        UserDefaults.standard.bool(forKey: seenKey)
+        AppDefaults.current.bool(forKey: seenKey)
     }
 
     /// True on a fresh install, and only until the sheet actually appears.
@@ -40,7 +40,7 @@ enum WalkthroughSettings {
     @discardableResult
     static func markSeen() -> Bool {
         guard !hasSeenWalkthrough else { return false }
-        UserDefaults.standard.set(true, forKey: seenKey)
+        AppDefaults.current.set(true, forKey: seenKey)
         return true
     }
 }

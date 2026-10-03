@@ -72,7 +72,7 @@ private func recent(
         openedAt: ISO8601DateFormatter.recentTimestamp.string(from: Date()), docId: docId)
 }
 
-@Suite("Rename: title normalization")
+@Suite("Rename: title normalization", .isolatedStorage)
 struct DocumentRenameNormalizationTests {
     /// Blank means "stop overriding", never "the title is empty". An empty
     /// title renders as a nameless row that cannot be read, clicked with
@@ -91,7 +91,7 @@ struct DocumentRenameNormalizationTests {
     }
 }
 
-@Suite("Rename: target mapping")
+@Suite("Rename: target mapping", .isolatedStorage)
 struct DocumentRenameTargetTests {
     /// A moved PDF's recents record is still filed under the path it was
     /// recorded at, so that — not the re-resolved one — is what the recents
@@ -140,7 +140,7 @@ struct DocumentRenameTargetTests {
 /// `DocumentDataStore.rootDirectoryOverride` and `.serialized` only orders
 /// tests within one suite. That is the same bug as #102 in the storage seams;
 /// this branch fixes the defaults half.
-@Suite("Rename: persistence", .serialized, .scratchDefaults)
+@Suite("Rename: persistence", .serialized, .scratchDefaults, .isolatedStorage)
 struct DocumentRenamePersistenceTests {
     private let stores = ScratchStores()
 
@@ -328,7 +328,7 @@ struct DocumentRenamePersistenceTests {
 }
 
 @MainActor
-@Suite("Rename: availability")
+@Suite("Rename: availability", .isolatedStorage)
 struct DocumentRenameAvailabilityTests {
     private func item(section: HomeSearchSection) -> HomeSearchItem {
         HomeSearchItem(

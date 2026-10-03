@@ -101,6 +101,7 @@ struct VellumApp: App {
                     await AnonymousAnalytics.shared.reportFirstLaunchIfNeeded()
                 }
                 .task {
+                    guard !TestEnvironment.isHostedTestProcess else { return }
                     await workspace.startStorageCoordinator()
                     await workspace.integrations.start()
                     await workspace.integrations.prefetchOfflineCopies()

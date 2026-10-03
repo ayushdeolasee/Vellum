@@ -3,7 +3,7 @@ import Testing
 
 @testable import Vellum
 
-@Suite("StorageCoordinator orchestration", .serialized)
+@Suite("StorageCoordinator orchestration", .serialized, .isolatedStorage)
 struct StorageCoordinatorTests {
     private let records = URL(fileURLWithPath: "/vellum/records", isDirectory: true)
 
@@ -394,7 +394,7 @@ struct StorageCoordinatorTests {
 
         await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
 
-        #expect(UserDefaults.standard.string(
+        #expect(AppDefaults.current.string(
             forKey: WebStorageSettings.pendingRelocationKey) != nil)
         #expect(container.metadataQueryCount > 0)
         #expect(container.coordinatedRemoveCount == 0)
@@ -526,10 +526,13 @@ struct StorageCoordinatorTests {
         container.seed(target, data: Data("current".utf8))
         container.injectConflict(at: target, versions: [Self.current, Self.loser])
         await resolver.waitForCount(1)
+        // The resolver signals before the coordinator parks the retryable result.
+        await coordinator.awaitQuiescence()
         #expect(await coordinator.currentStatus().pendingConflicts == 1)
 
         await coordinator.foreground()
         await resolver.waitForCount(2)
+        await coordinator.awaitQuiescence()
         #expect(await coordinator.currentStatus().pendingConflicts == 1)
 
         await coordinator.foreground()
@@ -538,6 +541,7 @@ struct StorageCoordinatorTests {
         let status = await coordinator.currentStatus()
         #expect(status.pendingConflicts == 0)
         #expect(status.lastError == nil)
+        await coordinator.stop()
     }
 
     @Test("Conflict emitted while suspended is rescanned and drained on foreground")
@@ -1072,7 +1076,7 @@ struct StorageCoordinatorTests {
 }
 
 #if os(iOS)
-@Suite("iOS background flush controller", .serialized)
+@Suite("iOS background flush controller", .serialized, .isolatedStorage)
 @MainActor
 struct BackgroundFlushControllerTests {
     @Test("Foreground invalidation cancels stale flush and ends token once")

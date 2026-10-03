@@ -37,14 +37,14 @@ final class WalkthroughLayoutTests: XCTestCase {
     // isolation.
     override func setUp() async throws {
         try await super.setUp()
-        priorSeen = UserDefaults.standard.object(forKey: WalkthroughSettings.seenKey)
+        priorSeen = AppDefaults.current.object(forKey: WalkthroughSettings.seenKey)
     }
 
     override func tearDown() async throws {
         if let priorSeen {
-            UserDefaults.standard.set(priorSeen, forKey: WalkthroughSettings.seenKey)
+            AppDefaults.current.set(priorSeen, forKey: WalkthroughSettings.seenKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: WalkthroughSettings.seenKey)
+            AppDefaults.current.removeObject(forKey: WalkthroughSettings.seenKey)
         }
         try await super.tearDown()
     }

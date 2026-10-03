@@ -82,17 +82,17 @@ actor StorageCoordinator {
 
         static let live = ConflictArchiveRegistry(
             load: {
-                guard let data = UserDefaults.standard.data(
+                guard let data = AppDefaults.current.data(
                     forKey: "vellum.storage.conflictArchives.v1")
                 else { return [] }
                 return (try? JSONDecoder().decode([ArchivedConflict].self, from: data)) ?? []
             },
             save: { conflicts in
                 if conflicts.isEmpty {
-                    UserDefaults.standard.removeObject(
+                    AppDefaults.current.removeObject(
                         forKey: "vellum.storage.conflictArchives.v1")
                 } else if let data = try? JSONEncoder().encode(conflicts) {
-                    UserDefaults.standard.set(
+                    AppDefaults.current.set(
                         data,
                         forKey: "vellum.storage.conflictArchives.v1")
                 }

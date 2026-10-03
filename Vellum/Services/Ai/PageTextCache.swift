@@ -99,6 +99,7 @@ actor PageTextCache {
     /// Class-C home: ~/Library/Caches/com.ayushdeolasee.vellum/text — evictable
     /// without loss, never synced, guilt-free TTL cleanup.
     static var defaultDirectory: URL {
+        if let root = TestEnvironment.storageRoot { return root.appendingPathComponent("text", isDirectory: true) }
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let bundleId = Bundle.main.bundleIdentifier ?? "com.ayushdeolasee.vellum"

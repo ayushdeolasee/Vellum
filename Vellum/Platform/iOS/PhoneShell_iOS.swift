@@ -49,7 +49,7 @@ private struct PhoneShellRoot_iOS: View {
 
     @State private var addWebpagePresented = false
     @State private var isImporting = false
-    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey)
+    @AppStorage(ReaderControlPreferences.alwaysShowReaderControlsKey, store: AppDefaults.current)
     private var alwaysShowReaderControls = false
 
     /// A one-shot request to put the keyboard in Home's search field, raised

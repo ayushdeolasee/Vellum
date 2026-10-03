@@ -5,6 +5,9 @@ import Foundation
 /// Shared fixtures for the capture-inbox suites. Capture ids are fixed so file
 /// names — and therefore the tie-break rules that read them — are assertable.
 enum CaptureFixtures {
+    static var clock: ManualPositionClock {
+        ManualPositionClock(date("2026-08-02T18:30:00.000000+00:00"))
+    }
     static func date(_ rfc3339: String) -> Date {
         guard let date = CaptureTimestamp.parse(rfc3339) else {
             fatalError("fixture timestamp is not RFC3339: \(rfc3339)")

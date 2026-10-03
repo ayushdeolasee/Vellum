@@ -56,7 +56,14 @@ final class SheetPresenceIOSTests: XCTestCase {
     // state, while the async overload inherits the class's isolation.
     override func setUp() async throws {
         try await super.setUp()
-        let scene = try XCTUnwrap(Self.foregroundScene)
+        // Hosted tests may start before UIKit activates the first scene. Yield
+        // the main actor while waiting, and fail with a bounded diagnostic.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while Self.foregroundScene == nil, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let scene = try XCTUnwrap(Self.foregroundScene, "The isolated test host did not activate its window scene")
         window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
         root = UIViewController()
@@ -78,8 +85,8 @@ final class SheetPresenceIOSTests: XCTestCase {
             root.dismiss(animated: false)
             waitUntil(timeout: 1) { self.root.presentedViewController == nil }
         }
-        window.isHidden = true
-        window.rootViewController = nil
+        window?.isHidden = true
+        window?.rootViewController = nil
         window = nil
         root = nil
         try await super.tearDown()

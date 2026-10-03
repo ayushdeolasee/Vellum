@@ -24,7 +24,7 @@ import Testing
 // read/write counts asserted below — give it an `InMemoryIntegrationCredentials`
 // -style double instead of the real store.
 
-@Suite("Keychain vault", .serialized)
+@Suite("Keychain vault", .serialized, .isolatedStorage)
 struct KeychainStoreTests {
     private let aiService = "com.vellum.ai"
     private let integrationsService = "com.vellum.integrations"

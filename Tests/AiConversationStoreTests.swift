@@ -18,7 +18,7 @@ final class AiConversationStoreTests: XCTestCase {
         root = base.appendingPathComponent("documents")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         DocumentDataStore.rootDirectoryOverride = root
-        UserDefaults.standard.removeObject(forKey: AiPersistence.conversationsKey)
+        AppDefaults.current.removeObject(forKey: AiPersistence.conversationsKey)
     }
 
     override func tearDown() async throws {
@@ -26,7 +26,7 @@ final class AiConversationStoreTests: XCTestCase {
         // detached write can't recreate it.
         await AiPersistence.awaitPendingFlush()
         DocumentDataStore.rootDirectoryOverride = nil
-        UserDefaults.standard.removeObject(forKey: AiPersistence.conversationsKey)
+        AppDefaults.current.removeObject(forKey: AiPersistence.conversationsKey)
         if let root { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
     }
 
@@ -464,12 +464,12 @@ final class AiConversationStoreTests: XCTestCase {
             }
         }
         let data = try JSONSerialization.data(withJSONObject: object)
-        UserDefaults.standard.set(
+        AppDefaults.current.set(
             String(decoding: data, as: UTF8.self), forKey: AiPersistence.conversationsKey)
     }
 
     private func blobKeys() -> Set<String> {
-        guard let raw = UserDefaults.standard.string(forKey: AiPersistence.conversationsKey),
+        guard let raw = AppDefaults.current.string(forKey: AiPersistence.conversationsKey),
               let data = raw.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return [] }

@@ -348,7 +348,7 @@ struct RelocationCoordinationTests {
 
         #expect(!first)
         #expect(container.peek(staleRecordURL) != nil)
-        #expect(UserDefaults.standard.string(
+        #expect(AppDefaults.current.string(
             forKey: WebStorageSettings.pendingRelocationKey) != nil)
         #expect(try await destinationStore.read(
             destination.recordsDir.appendingPathComponent("\(currentKey).json")) != nil)

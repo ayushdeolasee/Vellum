@@ -563,9 +563,7 @@ private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
 }
 #else
 private let defaultDocumentLibraryDirectory: @Sendable () -> URL = {
-    if let root = UITestLaunchConfiguration.storageRoot {
-        return root.appendingPathComponent("Documents", isDirectory: true)
-    }
+    if let root = TestEnvironment.storageRoot { return root.appendingPathComponent("Documents", isDirectory: true) }
     let base = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask)[0]
     return base
