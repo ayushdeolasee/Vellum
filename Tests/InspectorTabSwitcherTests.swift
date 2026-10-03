@@ -79,7 +79,7 @@ final class InspectorTabSwitcherTests: XCTestCase {
     }
 
     /// The header's height is a TOUCH-TARGET fact on iOS. The segment itself is
-    /// 44pt; the surrounding padding positions it but does not count toward the
+    /// 44pt inside the track's padding; the surrounding inset does not count toward the
     /// Button's accessibility frame.
     ///
     /// (Main names this `…IsTheStripTheCatcherMustCover` because there the
@@ -88,9 +88,9 @@ final class InspectorTabSwitcherTests: XCTestCase {
     /// so there is no catcher this number serves and the name would send the
     /// next reader looking for one that does not exist.)
     func testHeaderHeightMatchesTheSwitcherPlusItsInset() {
-        XCTAssertEqual(InspectorLayout.switcherHeight, 44)
-        XCTAssertEqual(InspectorLayout.switcherVerticalPadding, 8)
-        XCTAssertEqual(InspectorLayout.headerHeight, 60)
+        XCTAssertEqual(InspectorLayout.switcherHeight - InspectorLayout.trackPadding * 2, 44)
+        XCTAssertEqual(InspectorLayout.switcherVerticalPadding, 12)
+        XCTAssertEqual(InspectorLayout.headerHeight, 76)
         // Stated as the relationship too, so a padding change cannot leave the
         // two literals above quietly inconsistent.
         XCTAssertEqual(

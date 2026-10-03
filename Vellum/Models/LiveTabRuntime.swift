@@ -40,6 +40,7 @@ final class LiveTabRuntime {
     /// remount.
     var webController: WebViewerController_iOS
     private let webLibraryStorage: WebLibraryStorage
+    @ObservationIgnored private let webNoteDraftState: WebNoteDraftState
 
     /// The pane used to own one `InkController_iOS` (registered in
     /// `InkRegistry_iOS` by pane id). That was correct while exactly one tab per
@@ -119,7 +120,9 @@ final class LiveTabRuntime {
     ) {
         self.tabId = tabId
         self.webLibraryStorage = webLibraryStorage
-        self.webController = WebViewerController_iOS(storage: webLibraryStorage)
+        let drafts = WebNoteDraftState()
+        self.webNoteDraftState = drafts
+        self.webController = WebViewerController_iOS(storage: webLibraryStorage, draftState: drafts)
     }
 
     /// Adopt a freshly parsed display document. `byteCount` is the size of the
@@ -192,7 +195,7 @@ final class LiveTabRuntime {
         // and the WKWebView, so resetting alone would stop them without
         // releasing the memory this eviction is meant to reclaim.
         pdfController = PdfViewerControlleriOS()
-        webController = WebViewerController_iOS(storage: webLibraryStorage)
+        webController = WebViewerController_iOS(storage: webLibraryStorage, draftState: webNoteDraftState)
         ink = InkController_iOS()
         pdfLoadState = .idle
         preparedDocument = nil
