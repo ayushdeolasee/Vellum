@@ -515,8 +515,6 @@ private struct AiSettingsTab: View {
         .formStyle(.grouped)
         #if os(iOS)
         .contentMargins(.bottom, settingsBottomNavigationClearance, for: .scrollContent)
-        #else
-        .scrollDisabled(true)
         #endif
         .onChange(of: aiStore.settings.provider) { _, _ in validationState = .idle }
         .onChange(of: aiStore.activeModelName) { _, _ in validationState = .idle }

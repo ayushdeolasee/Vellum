@@ -51,6 +51,13 @@ final class TabTeardownRegistry {
             task: task)
     }
 
+    func tasks(for document: DocumentInfo) -> [Task<Void, Never>] {
+        let key = DocumentPositionService.key(for: document)
+        return entries.values.filter {
+            $0.documentPath == document.pdfPath || (key != nil && $0.documentKey == key)
+        }.map(\.task)
+    }
+
     /// Called by each teardown task as its last step.
     func finish(tabId: String) {
         entries[tabId] = nil
@@ -299,6 +306,10 @@ final class AppStore {
         }
         do {
             if let outgoing = tab.document {
+                for task in teardowns.tasks(for: outgoing) { await task.value }
+                guard tabs.first(where: { $0.id == tabId })?.document?.pdfPath == outgoing.pdfPath else {
+                    return nil
+                }
                 await workspace?.positions.recordMoved(
                     document: outgoing,
                     position: Self.readingPosition(for: tab))
@@ -307,6 +318,9 @@ final class AppStore {
                 }
             }
             await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
+            guard tabs.first(where: { $0.id == tabId })?.document?.pdfPath == tab.document?.pdfPath else {
+                return nil
+            }
             let doc = try await sessions.openWebDocument(url: url, sessionId: tabId)
             RecentFilesService.record(doc)
             let resume = await workspace?.positions.resumePosition(for: doc)
@@ -1590,6 +1604,17 @@ final class AppStore {
             ?? containsOpenDocument(key: key, excludingTabIds: excludingTabIds))
     }
 
+    /// Keep UI-started writes reachable after their view or pane disappears.
+    func registerDocumentPersistence(_ task: Task<Void, Never>, sessionId: String) {
+        guard let document = tabs.first(where: { $0.id == sessionId })?.document else { return }
+        let persistenceId = UUID().uuidString
+        let registry = teardowns
+        registry.register(tabId: persistenceId, document: document, task: Task {
+            await task.value
+            registry.finish(tabId: persistenceId)
+        })
+    }
+
     private func registerTeardown(for tab: PdfTab, markDocumentClosed: Bool) {
         let pendingPositionRecordTask = positionRecordTask
         pendingPositionRecords[tab.id] = nil
@@ -1597,6 +1622,7 @@ final class AppStore {
             workspace?.removeLiveTabRuntime(for: tab.id)
             return
         }
+        let pendingDocumentTasks = teardowns.tasks(for: closingDocument)
         let runtime = workspace?.existingLiveTabRuntime(for: tab.id)
         let sessions = self.sessions
         let workspace = self.workspace
@@ -1607,6 +1633,7 @@ final class AppStore {
             tabId: tabId,
             document: closingDocument,
             task: Task { [weak workspace] in
+                for task in pendingDocumentTasks { await task.value }
                 await pendingPositionRecordTask?.value
                 await positions?.recordMoved(
                     document: closingDocument,

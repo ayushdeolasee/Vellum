@@ -58,6 +58,7 @@ struct ScratchpadPanel: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(!scratchpadStore.isPersistencePaused)
             .background(
                 palette.surfaceMuted,
                 in: RoundedRectangle(cornerRadius: Radius.md)
@@ -67,7 +68,8 @@ struct ScratchpadPanel: View {
                     .strokeBorder(palette.borderStrong)
                     .allowsHitTesting(false)
             }
-            .padding(8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The drop outline and the whole-area drag destination live on the sidebar
@@ -146,7 +148,7 @@ struct ScratchpadPanel: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "note.text")
                     .font(.system(size: 15))
@@ -157,38 +159,43 @@ struct ScratchpadPanel: View {
                     .fixedSize()
             }
             .layoutPriority(1)
-            Spacer(minLength: 8)
-            if appStore.document != nil {
-                IconButton(
-                    variant: isCapturingRegion ? .active : .ghost,
-                    help: "Snapshot a region of the page into the note",
-                    action: toggleSnapshotRegion
-                ) {
-                    Image(systemName: "crop").font(.system(size: 15))
+            Spacer(minLength: 12)
+            HStack(spacing: 8) {
+                if appStore.document != nil {
+                    IconButton(
+                        variant: isCapturingRegion ? .active : .ghost,
+                        size: .md,
+                        help: "Snapshot a region of the page into the note",
+                        action: toggleSnapshotRegion
+                    ) {
+                        Image(systemName: "crop").font(.system(size: 15))
+                    }
+                    .accessibilityIdentifier("scratchpad.snapshotRegion")
+                    .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
                 }
-                .accessibilityIdentifier("scratchpad.snapshotRegion")
-                .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
+                IconButton(
+                    size: .md,
+                    help: "Export scratchpad as Markdown",
+                    disabled: scratchpadStore.text.isEmpty,
+                    action: { showsExportOptions = true }
+                ) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.exportMarkdown")
+                IconButton(
+                    size: .md,
+                    help: "Clear scratchpad note",
+                    disabled: scratchpadStore.text.isEmpty,
+                    action: clear
+                ) {
+                    Image(systemName: "trash").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.clear")
             }
-            IconButton(
-                help: "Export scratchpad as Markdown",
-                disabled: scratchpadStore.text.isEmpty,
-                action: { showsExportOptions = true }
-            ) {
-                Image(systemName: "square.and.arrow.up").font(.system(size: 15))
-            }
-            .accessibilityIdentifier("scratchpad.exportMarkdown")
-            IconButton(
-                help: "Clear scratchpad note",
-                disabled: scratchpadStore.text.isEmpty,
-                action: clear
-            ) {
-                Image(systemName: "trash").font(.system(size: 15))
-            }
-            .accessibilityIdentifier("scratchpad.clear")
         }
         .foregroundStyle(palette.foreground)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -520,10 +527,10 @@ final class ScratchpadWebView: WKWebView {
     /// this WebView. The scratchpad only accepts images, so we take over every
     /// drop here (no `super` fall-through to WebKit's own drag handling) and
     /// route anything that isn't a usable image to `onUnsupportedDrop`.
-    var onImageDrop: ((ScratchpadImageCapture) -> Void)?
+    var onImageDrop: (@MainActor @Sendable (ScratchpadImageCapture) -> Void)?
     /// Called when a non-image (or undecodable image) is dropped, so the panel
     /// can tell the user only image files are accepted.
-    var onUnsupportedDrop: (() -> Void)?
+    var onUnsupportedDrop: (@MainActor @Sendable () -> Void)?
 
     /// False while another sidebar tab is in front. The panels stay mounted in
     /// a ZStack with the scratchpad frontmost, and SwiftUI's `opacity(0)` /
@@ -600,6 +607,8 @@ final class ScratchpadWebView: WKWebView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard acceptsDrops else { return false }
+        let onImageDrop = onImageDrop
+        let onUnsupportedDrop = onUnsupportedDrop
         // Read the pasteboard on the main thread (it's tied to the drag event),
         // but push the heavy decode/resize/encode off it so a large drop can't
         // stall the UI — mirroring the SwiftUI item-provider path — then report
@@ -608,14 +617,13 @@ final class ScratchpadWebView: WKWebView {
             onUnsupportedDrop?()
             return true
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async {
             let capture = scratchpadCapture(from: data)
             DispatchQueue.main.async {
-                guard let self else { return }
                 if let capture {
-                    self.onImageDrop?(capture)
+                    onImageDrop?(capture)
                 } else {
-                    self.onUnsupportedDrop?()
+                    onUnsupportedDrop?()
                 }
             }
         }
@@ -683,11 +691,16 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         installInsertHandler(on: store, coordinator: context.coordinator)
         // Images dropped onto the editor body are consumed by the WebView (it
         // is the drag destination over its own area, ahead of SwiftUI's onDrop).
+        let editorContext = store.editorContext
         webView.onImageDrop = { [weak store] capture in
-            store?.addImage(capture, label: "Image")
+            guard let store, store.editorContext == editorContext,
+                  store.editorAcceptsChanges else { return }
+            store.addImage(capture, label: "Image")
         }
         webView.onUnsupportedDrop = { [weak store] in
-            store?.warnUnsupportedDrop()
+            guard let store, store.editorContext == editorContext,
+                  store.editorAcceptsChanges else { return }
+            store.warnUnsupportedDrop()
         }
 
         if let url = Self.templateURL {
@@ -705,8 +718,22 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         // ownership after any transient remake churn — so the store's handler
         // always points at the editor the user is actually looking at.
         installInsertHandler(on: store, coordinator: context.coordinator)
-        (webView as? ScratchpadWebView)?.acceptsDrops = dropsEnabled
-        context.coordinator.apply(text: text, fontSize: fontSize, palette: palette)
+        if let editor = webView as? ScratchpadWebView {
+            editor.acceptsDrops = dropsEnabled && !store.isPersistencePaused
+            let editorContext = store.editorContext
+            editor.onImageDrop = { [weak store] capture in
+                guard let store, store.editorContext == editorContext,
+                      store.editorAcceptsChanges else { return }
+                store.addImage(capture, label: "Image")
+            }
+            editor.onUnsupportedDrop = { [weak store] in
+                guard let store, store.editorContext == editorContext,
+                      store.editorAcceptsChanges else { return }
+                store.warnUnsupportedDrop()
+            }
+        }
+        context.coordinator.apply(text: text, fontSize: fontSize, palette: palette,
+                                  context: store.editorContext, isEditable: store.editorAcceptsChanges)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -717,8 +744,9 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
 
     /// Point `store.insertMarkdownHandler` at the current editor coordinator.
     private func installInsertHandler(on store: ScratchpadStore, coordinator: Coordinator) {
-        store.insertMarkdownHandler = { [weak coordinator] markdown in
-            coordinator?.enqueueInsert(markdown)
+        store.insertMarkdownHandler = { [weak coordinator, weak store] markdown in
+            guard let store else { return }
+            coordinator?.enqueueInsert(markdown, store: store)
         }
     }
 
@@ -746,24 +774,40 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         /// Markdown snippets to append once the editor is ready. Buffered so a
         /// snapshot/drop that lands before `ready` isn't dropped on the floor.
         private var pendingInserts: [String] = []
+        private var editorContext: String
+        private var editorEditable = true
 
-        init(parent: ScratchpadLiveEditor) { self.parent = parent }
+        init(parent: ScratchpadLiveEditor) {
+            self.parent = parent
+            editorContext = parent.store.editorContext
+        }
 
-        func apply(text: String, fontSize: Double, palette: ThemePalette) {
+        func apply(text: String, fontSize: Double, palette: ThemePalette,
+                   context: String, isEditable: Bool) {
+            if context != editorContext {
+                pendingInserts.removeAll()
+                editorContext = context
+                editorText = nil
+            }
             let styleKey = "\(Int(fontSize))|\(hex(palette.foreground))|" +
                 "\(hex(palette.mutedForeground))|\(hex(palette.primary))|\(hex(palette.destructive))"
             if styleKey != appliedStyleKey {
                 appliedStyleKey = styleKey
                 pendingStyle = (fontSize, palette)
             }
-            if text != editorText { pendingText = text }
+            if text != editorText || isEditable != editorEditable { pendingText = text }
+            editorEditable = isEditable
             flush()
         }
 
         /// Queue a markdown block for insertion at the end of the note. The
         /// resulting edit comes back as a `change` message, so `text` and
         /// persistence update through the normal path.
-        func enqueueInsert(_ markdown: String) {
+        func enqueueInsert(_ markdown: String, store: ScratchpadStore) {
+            guard parent.store === store, store.editorAcceptsChanges,
+                  parent.generation == store.documentLoadGeneration else { return }
+            apply(text: store.text, fontSize: parent.fontSize, palette: parent.palette,
+                  context: store.editorContext, isEditable: true)
             pendingInserts.append(markdown)
             flush()
         }
@@ -777,13 +821,14 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
             switch type {
             case "ready":
                 isReady = true
-                if pendingText == nil { pendingText = parent.text }
-                flush()
+                apply(text: parent.text, fontSize: parent.fontSize, palette: parent.palette,
+                      context: parent.store.editorContext, isEditable: parent.store.editorAcceptsChanges)
             case "change":
-                guard let text = body["text"] as? String else { return }
+                guard let text = body["text"] as? String,
+                      let context = body["context"] as? String,
+                      parent.store.acceptEditorChange(
+                        text, context: context, generation: parent.generation) else { return }
                 editorText = text
-                parent.store.updateFromEditor(
-                    text, generation: parent.generation)
             default:
                 break
             }
@@ -805,7 +850,8 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
             if let text = pendingText {
                 pendingText = nil
                 editorText = text
-                webView.evaluateJavaScript("window.ScratchpadEditor.setContent(\(jsString(text)));")
+                webView.evaluateJavaScript(
+                    "window.ScratchpadEditor.setContent(\(jsString(text)),\(jsString(editorContext)),\(editorEditable));")
             }
             if !pendingInserts.isEmpty {
                 let inserts = pendingInserts
@@ -823,7 +869,7 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
                         ScratchpadAttachmentStore.markPending(id)
                     }
                     webView.evaluateJavaScript(
-                        "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)));")
+                        "window.ScratchpadEditor.insertSnippet(\(jsString(markdown)),\(jsString(editorContext)));")
                 }
             }
         }

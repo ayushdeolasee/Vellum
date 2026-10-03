@@ -64,6 +64,7 @@ struct WelcomeLibrary_iOS: View {
     @State private var actions: HomeLibraryActions_iOS
     @State private var showSettings = false
     @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var externalCollectionID: String?
     @State private var externalSortByName = false
     @FocusState private var searchFocused: Bool
@@ -78,6 +79,7 @@ struct WelcomeLibrary_iOS: View {
         // the list would also take the switcher away, leaving no way back.
         guard browsedProvider == nil else { return false }
         return !store.isLoading && store.libraryIsEmpty && !store.isSearching
+            && store.failures.isEmpty
             && integrations.connectedProviders.isEmpty
     }
 
@@ -180,7 +182,13 @@ struct WelcomeLibrary_iOS: View {
         // stays bottom-trailing, where it was before the extraction.
         .homeLibraryPresentations(actions)
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
-        .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
     }
 
     // MARK: - Library layout
@@ -563,17 +571,19 @@ struct WelcomeLibrary_iOS: View {
                     Text(PhoneHome_iOS.tagline)
                         .font(compact ? .headline : .title3)
                         .foregroundStyle(palette.mutedForeground)
+                        .multilineTextAlignment(.center)
                 }
 
-                HStack(spacing: 12) {
-                    TextButton(variant: .primary, size: .lg, action: onOpen) {
-                        Label("Open a PDF", systemImage: "doc.badge.plus")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        firstRunOpenPDFButton
+                        firstRunAddWebpageButton
                     }
-                    .accessibilityIdentifier("welcome.openPdf")
-                    TextButton(variant: .secondary, size: .lg, action: onAddWebpage) {
-                        Label("Add Webpage", systemImage: "globe")
+                    .fixedSize(horizontal: true, vertical: false)
+                    VStack(spacing: 12) {
+                        firstRunOpenPDFButton
+                        firstRunAddWebpageButton
                     }
-                    .accessibilityIdentifier("welcome.addWebpage")
                 }
 
                 errorBanner
@@ -585,6 +595,20 @@ struct WelcomeLibrary_iOS: View {
             .padding(.top, compact ? 32 : 72)
             .padding(.bottom, 48)
         }
+    }
+
+    private var firstRunOpenPDFButton: some View {
+        TextButton(variant: .primary, size: .lg, action: onOpen) {
+            Label("Open a PDF", systemImage: "doc.badge.plus")
+        }
+        .accessibilityIdentifier("welcome.openPdf")
+    }
+
+    private var firstRunAddWebpageButton: some View {
+        TextButton(variant: .secondary, size: .lg, action: onAddWebpage) {
+            Label("Add Webpage", systemImage: "globe")
+        }
+        .accessibilityIdentifier("welcome.addWebpage")
     }
 
     private var walkthroughLink: some View {

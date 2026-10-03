@@ -4,7 +4,7 @@ import Testing
 
 @testable import Vellum
 
-@Suite("Document access bookmarks")
+@Suite("Document access bookmarks", .serialized)
 struct DocumentAccessBookmarkStoreTests {
     @Test("Local bookmark store round-trips entries atomically")
     func localStoreRoundTrips() throws {
