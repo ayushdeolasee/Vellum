@@ -32,6 +32,8 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     private var suspended = false
     private var pendingWriteError: SyncedContainerError?
     private var pendingListError: SyncedContainerError?
+    private var postCommitFailure: (url: URL, error: SyncedContainerError, onReadBack: Bool)?
+    private var pendingReadErrors: [URL: SyncedContainerError] = [:]
 
     private var reads = 0
     private var writes = 0
@@ -111,6 +113,12 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
         lock.withLock { pendingWriteError = error }
     }
 
+    /// Model a provider error after bytes have committed, including an
+    /// independently unavailable verification read.
+    func failAfterNextReplacement(at url: URL, onReadBack: Bool) {
+        lock.withLock { postCommitFailure = (url, .io("provider failed after commit"), onReadBack) }
+    }
+
     func cancelNextWrite() {
         failNextWrite(with: .cancelled)
     }
@@ -182,11 +190,20 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
     }
 
     func replace(_ url: URL, with data: Data) async throws {
+        _ = try await replaceImpl(url, with: data, expected: nil, checksCurrent: false)
+    }
+
+    func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool {
+        try await replaceImpl(url, with: data, expected: expected, checksCurrent: true)
+    }
+
+    private func replaceImpl(_ url: URL, with data: Data, expected: Data?, checksCurrent: Bool) async throws -> Bool {
         await beforeReplace?(url)
-        try await SyncedContainerAccessor.guarded(url) {
+        return try await SyncedContainerAccessor.guarded(url) {
             enterAccessor()
             defer { exitAccessor() }
-            try lock.withLock {
+            return try lock.withLock {
+                if checksCurrent, entries[url]?.data != expected { return false }
                 // Both counters move together because there is exactly one
                 // write path and it is always `.forReplacing`.
                 writes += 1
@@ -198,6 +215,12 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
                 entries[url] = Entry(
                     data: data, readiness: .current, modifiedAt: clock.now(), uploaded: false,
                     stalled: false)
+                if let failure = postCommitFailure, failure.url == url {
+                    postCommitFailure = nil
+                    if failure.onReadBack { pendingReadErrors[url] = failure.error }
+                    else { throw failure.error }
+                }
+                return true
             }
         }
     }
@@ -297,6 +320,7 @@ final class FakeSyncedContainer: SyncedContainer, @unchecked Sendable {
 
     private func materialize(_ url: URL, _ materializing: Materialization) throws -> Data {
         try lock.withLock {
+            if let error = pendingReadErrors.removeValue(forKey: url) { throw error }
             guard let entry = entries[url] else {
                 throw SyncedContainerError.io("no such item: \(url.lastPathComponent)")
             }

@@ -337,7 +337,7 @@ struct StorageSettingsTab: View {
                 HStack {
                     Label("Sync conflicts", systemImage: "arrow.triangle.branch")
                     Spacer()
-                    Text("\(archivedConflicts.count)")
+                    Text("\(archivedConflicts.filter(\.needsReview).count) need review")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                     Image(systemName: "chevron.right")
@@ -348,7 +348,7 @@ struct StorageSettingsTab: View {
             }
             .accessibilityIdentifier("storage.conflicts")
         } footer: {
-            Text("Vellum preserved losing versions that could not be merged safely.")
+            Text("The current copy remains in use. Review preserved versions before choosing which changes to keep.")
         }
     }
 

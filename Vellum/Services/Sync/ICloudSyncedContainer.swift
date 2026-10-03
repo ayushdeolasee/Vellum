@@ -117,10 +117,19 @@ actor ICloudSyncedContainer: SyncedContainer {
 
     func replace(_ url: URL, with data: Data) async throws {
         try await SyncedContainerAccessor.guarded(url) {
-            try await coordinatedReplace(url, with: data)
+            _ = try await coordinatedReplace(url, with: data)
             // These bytes are current on local disk right now; the metadata
             // query won't say so for up to its batching interval.
             locallyCurrent.insert(url.standardizedFileURL)
+        }
+    }
+
+    func replace(_ url: URL, with data: Data, ifCurrent expected: Data?) async throws -> Bool {
+        try await SyncedContainerAccessor.guarded(url) {
+            if expected != nil { try await ensureReady(url, .requireCurrent) }
+            let replaced = try await coordinatedReplace(url, with: data, comparison: .current(expected))
+            if replaced { locallyCurrent.insert(url.standardizedFileURL) }
+            return replaced
         }
     }
 
@@ -290,10 +299,14 @@ actor ICloudSyncedContainer: SyncedContainer {
         }
     }
 
-    private func coordinatedReplace(_ url: URL, with data: Data) async throws {
+    private enum ReplacementComparison: Sendable { case current(Data?) }
+
+    private func coordinatedReplace(
+        _ url: URL, with data: Data, comparison: ReplacementComparison? = nil
+    ) async throws -> Bool {
         let presenter = self.presenter
         let queue = self.coordinationQueue
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, any Error>) in
             let coordinator = NSFileCoordinator(filePresenter: presenter)
             // `.forReplacing` is the only option this adapter ever uses: every
             // Vellum write is a tmp+rename onto the destination, never an
@@ -306,6 +319,20 @@ actor ICloudSyncedContainer: SyncedContainer {
                     return
                 }
                 let destination = box.value.url
+                if case .current(let expected) = comparison {
+                    let current: Data?
+                    do { current = try Data(contentsOf: destination) }
+                    catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                        current = nil
+                    } catch {
+                        continuation.resume(throwing: Self.mapped(error, url: url))
+                        return
+                    }
+                    guard current == expected else {
+                        continuation.resume(returning: false)
+                        return
+                    }
+                }
                 let fileManager = FileManager.default
                 let tmp = destination.appendingPathExtension("tmp")
                 do {
@@ -321,7 +348,7 @@ actor ICloudSyncedContainer: SyncedContainer {
                     continuation.resume(throwing: SyncedContainerError.io("rename failed for \(destination.path)"))
                     return
                 }
-                continuation.resume()
+                continuation.resume(returning: true)
             }
         }
     }

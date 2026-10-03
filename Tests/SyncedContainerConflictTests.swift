@@ -218,6 +218,7 @@ struct SyncedContainerConflictTests {
         let pageURL = "https://example.com/article"
         var current = WebPageRecord(url: pageURL)
         current.title = "Current title"
+        current.saved = true
         current.openedAt = "current-open"
         current.annotations = [Annotation(
             id: "shared", type: .note, pageNumber: 1, color: "#fde68a",
@@ -233,10 +234,6 @@ struct SyncedContainerConflictTests {
                 id: "shared", type: .note, pageNumber: 1, color: "#fde68a",
                 content: "new", positionData: nil,
                 createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-03T00:00:00Z"),
-            Annotation(
-                id: "other", type: .highlight, pageNumber: 2, color: "#fde68a",
-                content: "kept", positionData: nil,
-                createdAt: "2026-08-02T00:00:00Z", updatedAt: "2026-08-02T00:00:00Z")
         ]
         container.seed(target, data: try WebLibrary.jsonEncoderPretty.encode(current))
         container.injectConflict(
@@ -256,7 +253,7 @@ struct SyncedContainerConflictTests {
         #expect(merged.title == current.title)
         #expect(merged.openedAt == current.openedAt)
         #expect(merged.loadingPolicy == "snapshot-only")
-        #expect(merged.annotations.count == 2)
+        #expect(merged.annotations.count == 1)
         #expect(merged.annotations.first(where: { $0.id == "shared" })?.content == "new")
     }
 

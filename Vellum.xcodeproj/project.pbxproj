@@ -160,6 +160,7 @@
 		2E571A6857F9CA8EA709937C /* VellumDeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A06AA119CD408C8DC6DAFFA /* VellumDeepLink.swift */; };
 		2FA4D503D5FF464B1317F679 /* SentReferenceChips_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02269B75EB688D2DA06FD7BA /* SentReferenceChips_macOS.swift */; };
 		2FCA7CA3DF295F9623469F7E /* VellumCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90614A8F48AEDB52A5B7FE1E /* VellumCommands.swift */; };
+		2FCDF2DC65621AF9496BAFF0 /* StorageConflictsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE319B126FF57AEDB947C37F /* StorageConflictsView.swift */; };
 		2FD04E95831817142999844C /* WalkthroughSheet_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB54B0AC03B4EA455E625BF3 /* WalkthroughSheet_macOS.swift */; };
 		30697DAAD7C5C3F695319D1C /* HomeSearchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B7D1E617157C08AD0AB7246 /* HomeSearchStore.swift */; };
 		30AD8539C97B4A1146188956 /* SidebarDropCatcher_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8C2FE7E64BD765B9DBEB4A4 /* SidebarDropCatcher_macOS.swift */; };
@@ -518,6 +519,7 @@
 		B9DD62EE40C2696A805767EA /* CaptureRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CAEFA877A742FE4B9D31369 /* CaptureRecord.swift */; };
 		BB0A1B4DE77B66B53CA02E08 /* PdfRegionRenderer_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A983BCE1C6F0EFD91050061B /* PdfRegionRenderer_iOS.swift */; };
 		BB32E9568E02ABA6EE29C0F2 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C283744BF352A2D7CDB6FB52 /* KaTeX_Main-Italic.woff2 */; };
+		BB4B64E8ADCF7B4039E9E13B /* StorageConflictsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE319B126FF57AEDB947C37F /* StorageConflictsView.swift */; };
 		BB776BF184FBD5A0469377E2 /* AiPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90963B42EE17356826E8DE90 /* AiPrompts.swift */; };
 		BB9970E2422C59088E25A2AD /* KaTeX_Math-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 20B2D17372EC7164FEB6B7AF /* KaTeX_Math-Italic.woff2 */; };
 		BD31BC1F3FB2299BEC39F054 /* AiToolSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4AF0117D296B571E62111BB /* AiToolSummary.swift */; };
@@ -1012,6 +1014,7 @@
 		ABFD477181A3E9AC72066F6F /* CaptureBackgroundSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureBackgroundSession.swift; sourceTree = "<group>"; };
 		ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebNotePopovers.swift; sourceTree = "<group>"; };
 		ADF2F5E26E4CED26B69FC6D6 /* AiToolEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiToolEngine.swift; sourceTree = "<group>"; };
+		AE319B126FF57AEDB947C37F /* StorageConflictsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageConflictsView.swift; sourceTree = "<group>"; };
 		AEA5B44F62915EF18EEE22C2 /* IntegrationThumbnailCache_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationThumbnailCache_macOS.swift; sourceTree = "<group>"; };
 		AEC0C786A891A12086DE4A53 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
 		B06DA428592587D5CC42B840 /* KaTeX_Size2-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size2-Regular.woff2"; sourceTree = "<group>"; };
@@ -1767,6 +1770,7 @@
 				A35446F16BAA2884CAF8327A /* DisconnectServiceSheet.swift */,
 				53899B1157FB1D317B24206F /* IntegrationsSettingsTab.swift */,
 				54417DBF142FD33E6B2F6672 /* SettingsView.swift */,
+				AE319B126FF57AEDB947C37F /* StorageConflictsView.swift */,
 				43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */,
 				672A0EE8F8913FD534AAF5B2 /* StorageLocationChoiceSheet.swift */,
 				72276AEF5468523548FD8BB7 /* StorageLocationCopy.swift */,
@@ -2427,6 +2431,7 @@
 				30AD8539C97B4A1146188956 /* SidebarDropCatcher_macOS.swift in Sources */,
 				27F5B9A72AF7C2A4F4FD1D9F /* StickyNoteOverlay.swift in Sources */,
 				9952D353E84E3E8B863A3028 /* StorageConflictsSheet_iOS.swift in Sources */,
+				2FCDF2DC65621AF9496BAFF0 /* StorageConflictsView.swift in Sources */,
 				C581473609C170896F09B1E2 /* StorageCoordinator.swift in Sources */,
 				BDCA776FEABD1AA03677E0CF /* StorageHousekeeping.swift in Sources */,
 				4699F1AB7628D3BF43F34108 /* StorageInventory.swift in Sources */,
@@ -2716,6 +2721,7 @@
 				0615AA46C525E261B0AE29BC /* SidebarDropCatcher_macOS.swift in Sources */,
 				7A22F35E2A3DE9629E53A11D /* StickyNoteOverlay.swift in Sources */,
 				48A5BA847518B11A7747B870 /* StorageConflictsSheet_iOS.swift in Sources */,
+				BB4B64E8ADCF7B4039E9E13B /* StorageConflictsView.swift in Sources */,
 				DC90959CCEECB144053DE7D1 /* StorageCoordinator.swift in Sources */,
 				56FC925BB362E1EA594F963B /* StorageHousekeeping.swift in Sources */,
 				43C780BABA587B2775DFC01E /* StorageInventory.swift in Sources */,

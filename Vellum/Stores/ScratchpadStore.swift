@@ -143,6 +143,14 @@ final class ScratchpadStore {
     /// because the pane switched or the app entered the background.
     private var hasCoordinatedChanges = false
     var hasUncommittedChanges: Bool { hasCoordinatedChanges }
+    /// A closed pane can still own a failed-save draft; recovery must not
+    /// replace its file merely because its tab has disappeared.
+    func hasPendingChanges(forKey key: String?) -> Bool {
+        guard hasCoordinatedChanges else { return false }
+        guard let key else { return true }
+        return currentKey == key || currentDocument.map { DocumentIdentity.storageKey(for: $0) == key } == true
+    }
+
     private var coordinatedChangeRevision = 0
     private(set) var editRevision = 0
     /// Last authoritative text loaded/saved for this pane. When a first edit
