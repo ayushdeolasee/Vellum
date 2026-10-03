@@ -130,7 +130,7 @@ struct AiPanel: View {
                 .accessibilityAddTraits(settingsOpen ? .isSelected : [])
                 IconButton(
                     help: "Clear AI conversation",
-                    disabled: aiStore.messages.isEmpty,
+                    disabled: aiStore.messages.isEmpty || aiStore.isClearingConversation,
                     action: clearConversation
                 ) {
                     Image(systemName: "trash").font(.system(size: 15))
@@ -153,9 +153,10 @@ struct AiPanel: View {
     /// undo, so gating the clear itself on one would leave the only clear
     /// affordance permanently disabled wherever it is absent.
     private func clearConversation() {
-        guard let transaction = aiStore.clearConversation() else { return }
-        guard let undoManager else { return }
-        registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+        Task { @MainActor in
+            guard let transaction = await aiStore.clearConversation(), let undoManager else { return }
+            registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+        }
     }
 
     private var configureAiBanner: some View {
@@ -204,7 +205,7 @@ struct AiPanel: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(appStore.document == nil || aiStore.isThinking)
+        .disabled(appStore.document == nil || aiStore.isThinking || aiStore.isClearingConversation)
         .help("Start a quiz")
         .accessibilityLabel("Start a quiz")
         .accessibilityHint("Choose a scope to prepare an editable quiz request")
@@ -212,7 +213,7 @@ struct AiPanel: View {
     }
 
     private func startQuiz(_ scope: AiQuizScope) {
-        guard !aiStore.isThinking else { return }
+        guard !aiStore.isThinking && !aiStore.isClearingConversation else { return }
         let request = AiPrompts.quizRequest(for: scope)
         input += input.isEmpty ? request : "\n\n\(request)"
         promptFocusRequest = UUID().uuidString
@@ -231,6 +232,9 @@ struct AiPanel: View {
                         }
                     }
                     if aiStore.isThinking && aiStore.activity != .streaming { activityPill }
+                    if aiStore.isClearingConversation {
+                        Label("Saving Clear…", systemImage: "clock").font(.caption).foregroundStyle(palette.mutedForeground)
+                    }
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
@@ -464,7 +468,7 @@ struct AiPanel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!input.isEmpty || aiStore.isThinking)
+        .disabled(!input.isEmpty || aiStore.isThinking || aiStore.isClearingConversation)
         .accessibilityHint("Places this question in the composer for you to edit and send")
     }
 
@@ -870,7 +874,7 @@ struct AiPanel: View {
     }
 
     private var canSend: Bool {
-        guard !aiStore.isThinking else { return false }
+        guard !aiStore.isThinking && !aiStore.isClearingConversation else { return false }
         return !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !aiStore.composerReferences.isEmpty
     }
@@ -879,7 +883,7 @@ struct AiPanel: View {
         let submittedInput = input
         let trimmed = submittedInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
-        guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking && !aiStore.isClearingConversation else { return }
         guard aiStore.settings.isConfigured() else {
             aiStore.setErrorState("Set your \(aiStore.keyFieldLabel) and choose a model in AI settings.")
             return

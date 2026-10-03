@@ -393,28 +393,43 @@ enum DocumentDataStore {
     static func saveConversationsData(forKey key: String, data: Data) throws {
         let path = conversationsPath(forKey: key)
         try guardEvicted(at: path, label: "AI conversations")
+        let operation = try ConversationOperationJournal.prepareReplacement(key, data: data)
         try writeAtomic(data, to: path, label: "conversations")
+        if let operation { try ConversationOperationJournal.finish(key, id: operation) }
     }
 
     static func saveConversationsData(
         forKey key: String, data: Data, coordinator: StorageCoordinator
     ) async throws {
+        let operation = try await Task.detached {
+            try ConversationOperationJournal.prepareReplacement(key, data: data)
+        }.value
         try await replaceData(
             data, forKey: key, relativeName: "conversations.json",
             coordinator: coordinator)
+        if let operation {
+            try await Task.detached { try ConversationOperationJournal.finish(key, id: operation) }.value
+        }
     }
 
-    /// Delete conversations.json (delete-means-delete; §8). Best-effort — a
-    /// missing file is already the desired end state. Skips an iCloud-evicted
-    /// copy so an empty save can't delete real chat that hasn't downloaded.
-    static func removeConversations(forKey key: String) {
-        removeSyncedFile(forKey: key, relativeName: "conversations.json")
+    /// Delete conversations only when their current bytes are available. Missing
+    /// files are idempotent success; other failures must keep the clear pending.
+    static func removeConversations(forKey key: String) throws {
+        var paths = [conversationsPath(forKey: key)]
+        if let fallback = fallbackDocumentDir(forKey: key) {
+            paths.append(fallback.appendingPathComponent("conversations.json"))
+        }
+        for path in paths { try guardEvicted(at: path, label: "AI conversations") }
+        for path in paths {
+            do { try FileManager.default.removeItem(at: path) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile { }
+        }
     }
 
     static func removeConversations(
         forKey key: String, coordinator: StorageCoordinator
-    ) async {
-        try? await removeData(
+    ) async throws {
+        try await removeData(
             forKey: key, relativeName: "conversations.json", coordinator: coordinator,
             refuseUnavailable: true)
     }
@@ -1008,10 +1023,18 @@ enum DocumentDataStore {
     /// acquires its /VellumDocId and its data must migrate off the path-hash
     /// fallback folder. When `newKey` already has a folder (a prior session
     /// stamped it), the two are merged file-by-file, newest modification wins.
-    static func rekey(from oldKey: String, to newKey: String) {
-        guard oldKey != newKey else { return }
-        moveOrMergeDirectory(
-            from: documentDir(forKey: oldKey), into: documentDir(forKey: newKey))
+    @discardableResult
+    static func rekey(from oldKey: String, to newKey: String) -> Bool {
+        guard oldKey != newKey else { return true }
+        do {
+            let operation = try ConversationOperationJournal.copyForRekey(from: oldKey, to: newKey)
+            guard moveOrMergeDirectory(from: documentDir(forKey: oldKey), into: documentDir(forKey: newKey)) else { return false }
+            if let operation { try ConversationOperationJournal.finish(oldKey, id: operation) }
+            return true
+        } catch {
+            NSLog("[Vellum] Conversation clear identity migration failed: %@", String(describing: error))
+            return false
+        }
     }
 
     /// Coordinated path-hash → durable-id rekey. The class-B schema is small
@@ -1029,8 +1052,16 @@ enum DocumentDataStore {
         return await ScratchpadWriteCoordinator.shared.withExclusiveAccess(
             forKeys: [oldKey, newKey]
         ) {
-            await rekeyExclusively(
-                from: oldKey, to: newKey, coordinator: coordinator)
+            do {
+                let operation = try await Task.detached {
+                    try ConversationOperationJournal.copyForRekey(from: oldKey, to: newKey)
+                }.value
+                guard await rekeyExclusively(from: oldKey, to: newKey, coordinator: coordinator) else { return false }
+                if let operation {
+                    try await Task.detached { try ConversationOperationJournal.finish(oldKey, id: operation) }.value
+                }
+                return true
+            } catch { return false }
         }
     }
 

@@ -888,8 +888,8 @@ final class DocumentActionsTests: XCTestCase {
             let clearable = Task { await fixture.ai.sendMessage("clear me", context: fixture.context) }
             lifecycleTasks.append(clearable)
             try await pending.waitUntilPaused()
-            await fixture.app.awaitPendingTabTeardowns()
-            XCTAssertNotNil(fixture.ai.clearConversation())
+            let cleared = await fixture.ai.clearConversation()
+            XCTAssertNotNil(cleared)
             pending.release()
             await clearable.value
             await fixture.app.awaitPendingTabTeardowns()
@@ -914,7 +914,7 @@ final class DocumentActionsTests: XCTestCase {
                 return AiProviderResult(reply: "late obsolete", actionResults: [])
             }
             fixture.ai.addLocalMessage(role: .user, content: "original", id: "original")
-            let cleared = fixture.ai.clearConversation()
+            let cleared = await fixture.ai.clearConversation()
             let transaction = try XCTUnwrap(cleared)
             for index in 0..<4 {
                 let request = Task { await fixture.ai.sendMessage("turn \(index)", context: fixture.context) }
@@ -937,7 +937,8 @@ final class DocumentActionsTests: XCTestCase {
                 gates[index].release()
                 await request.value
                 await fixture.app.awaitPendingTabTeardowns()
-                await AiPersistence.awaitPendingFlush()
+                let flushed = await AiPersistence.awaitPendingFlush()
+                XCTAssertTrue(flushed)
                 let key = DocumentIdentity.storageKey(for: fixture.a.info)
                 let bytes = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: key))
                 let durable = try JSONDecoder().decode([AiMessage].self, from: bytes)
@@ -974,15 +975,21 @@ final class DocumentActionsTests: XCTestCase {
             let promotion = Task { _ = await pane.app.syncDocumentId(sessionId: "clear-promotion") }
             lifecycleTasks.append(promotion)
             try await stamp.waitUntilPaused()
-            let transaction = pane.ai.clearConversation()
+            var transaction: AiConversationClearTransaction?
+            let clear = Task { transaction = await pane.ai.clearConversation() }
+            lifecycleTasks.append(clear)
+            try await waitUntil { pane.ai.isClearingConversation }
             stamp.release()
             await promotion.value
+            await clear.value
             await workspace.tabTeardowns.awaitAll()
             let accepted = try XCTUnwrap(transaction)
             let oldKey = DocumentIdentity.storageKey(for: original)
             XCTAssertEqual(pane.app.document?.docId, id)
             XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: oldKey))
             XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: id))
+            XCTAssertNil(try ConversationOperationJournal.read(oldKey))
+            XCTAssertTrue(try XCTUnwrap(ConversationOperationJournal.read(id)).deletionCommitted)
             XCTAssertTrue(pane.ai.undoClear(accepted))
             await workspace.tabTeardowns.awaitAll()
             let bytes = try XCTUnwrap(DocumentDataStore.loadConversationsData(forKey: id))
@@ -1098,6 +1105,76 @@ final class DocumentActionsTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode([AiMessage].self, from: bytes).map(\.content), ["imported history"])
             for tab in app.tabs { await app.closeTab(tab.id) }
             await app.awaitPendingTabTeardowns()
+        }
+    }
+
+    func testDelayedClearFailureCannotWarnTheNewBlankDocument() async throws {
+        try await withAIDefaults {
+            let removal = LifecycleGate()
+            lifecycleGates.append(removal)
+            let fixture = try await aiFixture { _, _ in AiProviderResult(reply: "unused", actionResults: []) }
+            let previousWebRoot = WebLibrary.storeDirOverride
+            let previousRoot = DocumentDataStore.rootDirectoryOverride
+            WebLibrary.storeDirOverride = tempDirectory.appendingPathComponent("clear-warning-local")
+            DocumentDataStore.rootDirectoryOverride = nil
+            defer {
+                WebLibrary.storeDirOverride = previousWebRoot
+                DocumentDataStore.rootDirectoryOverride = previousRoot
+            }
+            let cloud = tempDirectory.appendingPathComponent("clear-warning-cloud")
+            let key = DocumentIdentity.storageKey(for: fixture.a.info)
+            let url = cloud.appendingPathComponent(".vellum/documents/\(key)/conversations.json")
+            let recovery = LifecycleRenameOutcome()
+            let container = FakeSyncedContainer(beforeRemove: { target in
+                if target == url {
+                    await removal.pause()
+                    if !(await recovery.succeeds) { throw SyncedContainerError.io("gated clear removal failed") }
+                }
+            })
+            let coordinator = StorageCoordinator(storeDir: WebLibrary.storeDir,
+                modeProvider: { .icloud }, effectiveModeProvider: { .icloud },
+                rootResolver: { cloud }, containerFactory: { container })
+            let workspace = WorkspaceStore(sessions: fixture.app.sessions, storageCoordinator: coordinator)
+            workspaces.append(workspace)
+            fixture.app.workspace = workspace
+            await coordinator.start()
+            await fixture.ai.loadConversationForDocument(fixture.a.info, coordinator: coordinator)
+            fixture.ai.addLocalMessage(role: .user, content: "clear A only")
+            await fixture.app.awaitPendingTabTeardowns()
+            let before = try XCTUnwrap(container.peek(url))
+            let clear = Task { _ = await fixture.ai.clearConversation() }
+            lifecycleTasks.append(clear)
+            do { try await removal.waitUntilPaused() }
+            catch {
+                recovery.succeeds = true
+                removal.release()
+                await clear.value
+                _ = await AiPersistence.awaitPendingFlush()
+                AiPersistence.invalidateCachedConversation(forKey: key)
+                throw error
+            }
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            var blankDocument = fixture.b.info
+            blankDocument.docId = DocumentIdentity.sha256Hex(blankDocument.pdfPath)
+            fixture.app.attachTab(testTab(blankDocument, id: "blank-B"))
+            await fixture.ai.loadConversationForDocument(blankDocument, coordinator: coordinator)
+            XCTAssertNil(fixture.ai.error)
+            removal.release()
+            await clear.value
+            XCTAssertEqual(fixture.app.document, blankDocument)
+            XCTAssertTrue(fixture.ai.messages.isEmpty)
+            XCTAssertNil(fixture.ai.error, "A's delayed clear error must not enter B")
+            XCTAssertEqual(container.peek(url), before)
+            XCTAssertNotNil(AiPersistence.conversationNotice(for: fixture.a.info))
+            // Restore the fake provider and join its retry before overrides
+            // leave scope; this case never touches a real cloud container.
+            recovery.succeeds = true
+            let retried = await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(retried)
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            await fixture.app.awaitPendingTabTeardowns()
+            await workspace.tabTeardowns.awaitAll()
+            await coordinator.stop(timeout: 0)
         }
     }
 
@@ -1312,15 +1389,13 @@ private final class GatedPositionWrite {
 
 @MainActor
 private final class LifecycleGate {
-    private var continuation: CheckedContinuation<Void, Never>?
     private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
 
     /// Explicitly rearm a reused gate after its prior task has been joined.
     func arm() { precondition(continuation == nil); isReleased = false }
 
     func pause() async {
-        // Cleanup can arrive before a background-priority task reaches its gate.
-        // Remember it so timeout teardown cannot park that task forever later.
         guard !isReleased else { return }
         await withCheckedContinuation { continuation = $0 }
     }

@@ -71,7 +71,9 @@ final class AiConversationStoreTests: XCTestCase {
         AiPersistence.saveConversation(
             for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "cached")])
         XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["cached"])
+        XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: DocumentIdentity.storageKey(for: doc)))
         await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(AiPersistence.hasPendingChanges(forKey: DocumentIdentity.storageKey(for: doc)))
     }
 
     /// A cold load (no prior save this process) reads and decodes the folder file.
@@ -121,6 +123,148 @@ final class AiConversationStoreTests: XCTestCase {
 
     // MARK: - Failed flush must not lose data
 
+    func testFailedClearRemainsPendingUntilRemovalSucceeds() async throws {
+        // Exercise both production's coordinated overload and the local seam.
+        for (coordinated, permissions) in [(false, 0o555), (true, 0o555), (false, 0o000), (true, 0o000)] {
+            let document = pdfDocument()
+            let key = DocumentIdentity.storageKey(for: document)
+            let coordinator = coordinated ? StorageCoordinator(
+                storeDir: root, modeProvider: { .local }, effectiveModeProvider: { .local },
+                rootResolver: { nil }, containerFactory: { nil }) : nil
+            AiPersistence.saveConversation(for: document,
+                messages: [AiPersistence.makeMessage(role: .user, content: "old history")],
+                coordinator: coordinator)
+            let saved = await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(saved)
+            let directory = DocumentDataStore.documentDir(forKey: key)
+            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: directory.path)
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            }
+            AiPersistence.saveConversation(for: document, messages: [], coordinator: coordinator)
+            let cleared = await AiPersistence.awaitPendingFlush()
+            XCTAssertFalse(cleared)
+            XCTAssertTrue(AiPersistence.hasPendingChanges)
+            XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            XCTAssertEqual(try fileMessages(forKey: key).first?.content, "old history")
+            let retried = await AiPersistence.awaitPendingFlush()
+            XCTAssertTrue(retried)
+            XCTAssertFalse(AiPersistence.hasPendingChanges)
+            XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
+            // A second removal of an already absent file is successful.
+            try DocumentDataStore.removeConversations(forKey: key)
+            AiPersistence.invalidateCachedConversation(forKey: key)
+            XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+        }
+    }
+
+    func testAcceptedClearSurvivesColdLoadAndLegacyFallback() async throws {
+        let document = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: document)
+        let old = AiPersistence.makeMessage(role: .user, content: "old history")
+        AiPersistence.saveConversation(for: document, messages: [old])
+        let result1 = await AiPersistence.awaitPendingFlush()
+        XCTAssertTrue(result1)
+        let legacy = try JSONEncoder().encode([document.pdfPath: [old]])
+        AppDefaults.current.set(String(decoding: legacy, as: UTF8.self), forKey: AiPersistence.conversationsKey)
+        let directory = DocumentDataStore.documentDir(forKey: key)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+        let accepted = await AiPersistence.acceptClear(for: document, coordinator: nil)
+        XCTAssertTrue(accepted)
+        let result2 = await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(result2)
+        XCTAssertNotNil(try ConversationOperationJournal.read(key))
+        XCTAssertEqual(try fileMessages(forKey: key), [old])
+        AiPersistence.resetMemoryForTests()
+        // Old folder bytes and a stale legacy blob cannot undo accepted Clear.
+        AppDefaults.current.set(String(decoding: legacy, as: UTF8.self), forKey: AiPersistence.conversationsKey)
+        XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+        XCTAssertNotNil(AiPersistence.conversationNotice(for: document))
+        let result3 = await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(result3)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        let result4 = await AiPersistence.awaitPendingFlush()
+        XCTAssertTrue(result4)
+        AiPersistence.resetMemoryForTests()
+        AppDefaults.current.set(String(decoding: legacy, as: UTF8.self), forKey: AiPersistence.conversationsKey)
+        XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+        XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key))
+        XCTAssertFalse(AiPersistence.hasPendingChanges)
+        // A cloud peer can reinstall the cleared folder after deletion, not
+        // merely the legacy preference blob. Neither identical old history nor
+        // unknown new remote history is sufficient proof of a replacement.
+        let path = DocumentDataStore.conversationsPath(forKey: key)
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for restored in [[old], [AiPersistence.makeMessage(role: .assistant, content: "unconfirmed peer work")]] {
+            let data = try JSONEncoder().encode(restored)
+            try data.write(to: path, options: .atomic)
+            AiPersistence.resetMemoryForTests()
+            XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+            XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: key))
+            XCTAssertNotNil(AiPersistence.conversationNotice(for: document))
+            let restoredFlush = await AiPersistence.awaitPendingFlush()
+            XCTAssertFalse(restoredFlush)
+            XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: key), data)
+            XCTAssertThrowsError(try ConversationOperationJournal.suppressesConversation(key, data: data))
+        }
+        // An authoritative absent file resolves the uncertainty without ever
+        // deleting the preserved peer bytes in an automatic retry.
+        try FileManager.default.removeItem(at: path)
+        AiPersistence.resetMemoryForTests()
+        XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+        XCTAssertFalse(AiPersistence.hasPendingChanges)
+        // Undo/new work retires the clear only after its replacement commits.
+        AiPersistence.saveConversation(for: document, messages: [old])
+        let result5 = await AiPersistence.awaitPendingFlush()
+        XCTAssertTrue(result5)
+        XCTAssertNil(try ConversationOperationJournal.read(key))
+        AiPersistence.resetMemoryForTests()
+        XCTAssertEqual(AiPersistence.loadConversation(for: document), [old])
+    }
+
+    func testClearJournalFailureAndInterruptedReplacementAreConservative() async throws {
+        let document = pdfDocument()
+        let key = DocumentIdentity.storageKey(for: document)
+        let old = AiPersistence.makeMessage(role: .user, content: "original")
+        AiPersistence.saveConversation(for: document, messages: [old])
+        let result6 = await AiPersistence.awaitPendingFlush()
+        XCTAssertTrue(result6)
+        let journal = ConversationOperationJournal.directory
+        try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: journal.path)
+        let rejected = await AiPersistence.acceptClear(for: document, coordinator: nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: journal.path)
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(AiPersistence.loadConversation(for: document), [old])
+        let replacement = [AiPersistence.makeMessage(role: .assistant, content: "restored/new work")]
+        let data = try JSONEncoder().encode(replacement)
+        _ = try ConversationOperationJournal.beginClear(key, legacyPath: document.pdfPath)
+        _ = try ConversationOperationJournal.prepareReplacement(key, data: data)
+        // Crash after committing replacement bytes but before journal cleanup.
+        try data.write(to: DocumentDataStore.conversationsPath(forKey: key), options: .atomic)
+        AiPersistence.resetMemoryForTests()
+        XCTAssertEqual(AiPersistence.loadConversation(for: document), replacement)
+        XCTAssertFalse(AiPersistence.hasPendingChanges)
+        // A later peer change cannot be mistaken for old history and deleted.
+        let peer = [AiPersistence.makeMessage(role: .assistant, content: "peer latest")]
+        let peerData = try JSONEncoder().encode(peer)
+        try peerData.write(to: DocumentDataStore.conversationsPath(forKey: key), options: .atomic)
+        AiPersistence.resetMemoryForTests()
+        XCTAssertTrue(AiPersistence.loadConversation(for: document).isEmpty)
+        XCTAssertTrue(AiPersistence.hasPendingChanges)
+        let result7 = await AiPersistence.awaitPendingFlush()
+        XCTAssertFalse(result7)
+        XCTAssertEqual(DocumentDataStore.loadConversationsData(forKey: key), peerData)
+        // Restore the exact committed snapshot to resolve the uncertainty.
+        try data.write(to: DocumentDataStore.conversationsPath(forKey: key), options: .atomic)
+        AiPersistence.invalidateCachedConversation(forKey: key)
+        XCTAssertEqual(AiPersistence.loadConversation(for: document), replacement)
+        XCTAssertFalse(AiPersistence.hasPendingChanges)
+        try ConversationOperationJournal.finish(key, id: try XCTUnwrap(ConversationOperationJournal.read(key)).id)
+    }
+
     /// A flush whose disk write fails must NOT mark the conversation clean: the
     /// key stays dirty (data retained in the cache), and a later flush against a
     /// writable location persists it. Regression for "disk-full flush silently
@@ -141,6 +285,7 @@ final class AiConversationStoreTests: XCTestCase {
 
         // The write failed: no file on disk, but the data is NOT lost — the cache
         // still surfaces it (a later flush will retry).
+        XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: key))
         XCTAssertFalse(DocumentDataStore.conversationsExist(forKey: key),
                        "read-only root: nothing should have landed")
         XCTAssertEqual(AiPersistence.loadConversation(for: doc).map(\.content), ["keepme"],
@@ -153,6 +298,7 @@ final class AiConversationStoreTests: XCTestCase {
             for: doc, messages: [AiPersistence.makeMessage(role: .user, content: "keepme")])
         await AiPersistence.awaitPendingFlush()
 
+        XCTAssertFalse(AiPersistence.hasPendingChanges(forKey: key))
         XCTAssertTrue(DocumentDataStore.conversationsExist(forKey: key))
         XCTAssertEqual(try fileMessages(forKey: key).map(\.content), ["keepme"],
                        "retry against a writable root persists the retained data")

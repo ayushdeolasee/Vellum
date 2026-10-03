@@ -151,7 +151,7 @@ struct AiPanel_iOS: View {
                 .accessibilityIdentifier("aiPanel.settings")
                 touchIconButton(
                     system: "trash", label: "Clear AI conversation",
-                    disabled: aiStore.messages.isEmpty, action: clearConversation
+                    disabled: aiStore.messages.isEmpty || aiStore.isClearingConversation, action: clearConversation
                 )
                 .accessibilityIdentifier("aiPanel.clearConversation")
             }
@@ -167,9 +167,10 @@ struct AiPanel_iOS: View {
     /// undo, so gating the clear itself on one would leave the only clear
     /// affordance permanently disabled wherever it is absent.
     private func clearConversation() {
-        guard let transaction = aiStore.clearConversation() else { return }
-        guard let undoManager else { return }
-        registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+        Task { @MainActor in
+            guard let transaction = await aiStore.clearConversation(), let undoManager else { return }
+            registerConversationUndo(transaction, store: aiStore, undoManager: undoManager)
+        }
     }
 
     private var quizMenu: some View {
@@ -196,14 +197,14 @@ struct AiPanel_iOS: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(appStore.document == nil || aiStore.isThinking)
+        .disabled(appStore.document == nil || aiStore.isThinking || aiStore.isClearingConversation)
         .accessibilityLabel("Start a quiz")
         .accessibilityHint("Choose a scope to prepare an editable quiz request")
         .accessibilityIdentifier("aiPanel.quiz")
     }
 
     private func startQuiz(_ scope: AiQuizScope) {
-        guard !aiStore.isThinking else { return }
+        guard !aiStore.isThinking && !aiStore.isClearingConversation else { return }
         let request = AiPrompts.quizRequest(for: scope)
         input += input.isEmpty ? request : "\n\n\(request)"
         composerFocused = true
@@ -273,6 +274,9 @@ struct AiPanel_iOS: View {
                         }
                     }
                     if aiStore.isThinking && aiStore.activity != .streaming { activityPill }
+                    if aiStore.isClearingConversation {
+                        Label("Saving Clear…", systemImage: "clock").font(.caption).foregroundStyle(palette.mutedForeground)
+                    }
                     if let error = aiStore.error { errorBanner(error) }
                     Color.clear.frame(height: 1).id("ai-bottom")
                 }
@@ -962,7 +966,7 @@ struct AiPanel_iOS: View {
     }
 
     private var canSend: Bool {
-        guard !aiStore.isThinking else { return false }
+        guard !aiStore.isThinking && !aiStore.isClearingConversation else { return false }
         return !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !aiStore.composerReferences.isEmpty
     }
@@ -971,7 +975,7 @@ struct AiPanel_iOS: View {
         let submittedInput = input
         let trimmed = submittedInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
-        guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking && !aiStore.isClearingConversation else { return }
         guard aiStore.settings.isConfigured() else {
             aiStore.setErrorState("Set your \(aiStore.keyFieldLabel) and choose a model in AI settings.")
             return

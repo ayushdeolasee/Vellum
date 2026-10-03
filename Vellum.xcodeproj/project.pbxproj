@@ -407,6 +407,7 @@
 		8F955E43E74B0AC6BAF51D78 /* PaneTree_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCA1DA452ABCF8238A0E2461 /* PaneTree_macOS.swift */; };
 		8FDF7BE5B341E8B2431FA444 /* ScratchpadPanel_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B798B2674E640302A02F17C /* ScratchpadPanel_macOS.swift */; };
 		8FE6BB2DF90FA6EAAE020485 /* SyncedContainerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C854CEB16A3B128A02C7499A /* SyncedContainerModels.swift */; };
+		9033E11592AF76E1B9E32114 /* FakeSyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE2FEB56AF83B86BE5EE77D1 /* FakeSyncedContainer.swift */; };
 		9101026F402396303D36C75D /* VellumWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F34132A71B97C3227C29DF1 /* VellumWidgets.swift */; };
 		9180B44C77B01D9BA6CCBF87 /* LibraryFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DF00639EE1AD1ABD46261E7 /* LibraryFileStore.swift */; };
 		91ACF610BE2A44480DD31843 /* PageTextCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F6592FEBC0C0187E0C35A3 /* PageTextCacheTests.swift */; };
@@ -2504,6 +2505,7 @@
 			files = (
 				B3E44891A8E2A43F2685347A /* DocumentAccessBookmarkStoreTests.swift in Sources */,
 				6D471798D0195D7D153CB1A1 /* DocumentActionsTests.swift in Sources */,
+				9033E11592AF76E1B9E32114 /* FakeSyncedContainer.swift in Sources */,
 				A166F385754680A7B2DAC538 /* ReleaseIsolationTests.swift in Sources */,
 				44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */,
 			);

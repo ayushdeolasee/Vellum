@@ -503,6 +503,8 @@ final class AiStore {
     /// text has started arriving.
     private(set) var streamingMessageId: String?
     private(set) var error: String?
+    /// Clear is accepted only once its local operation record has committed.
+    private(set) var isClearingConversation = false
     /// Transient notice the AI panel shows as a floating toast when an
     /// attachment drop/pick is declined (a non-image file, or a folder/
     /// unreadable path). Unlike `error`, this NEVER renders inline in the
@@ -634,6 +636,10 @@ final class AiStore {
 
     @discardableResult
     func addLocalMessage(role: AiRole, content: String, id: String? = nil) -> String {
+        guard !isClearingConversation else {
+            error = "Wait for Clear to finish, then try again."
+            return id ?? UUID().uuidString.lowercased()
+        }
         if activeRequest != nil { cancelActiveRequest() }
         let message = AiPersistence.makeMessage(role: role, content: content, id: id)
         messages.append(message)
@@ -642,6 +648,7 @@ final class AiStore {
     }
 
     func updateLocalMessage(id: String, content: String) {
+        guard !isClearingConversation else { error = "Wait for Clear to finish, then try again."; return }
         if activeRequest != nil { cancelActiveRequest() }
         messages = messages.map { message in
             guard message.id == id else { return message }
@@ -957,7 +964,7 @@ final class AiStore {
         activity = .idle
         streamingMessageId = nil
         composerReferences = []
-        error = nil
+        error = AiPersistence.conversationNotice(for: document)
     }
 
     /// The UI task may restart for our own docId promotion. Its content remains
@@ -1029,51 +1036,99 @@ final class AiStore {
         }
     }
 
-    /// Explicit edits join the captured owner lane after any older request history.
+    /// Explicit edits join the same captured owner lane as canceled request
+    /// history. A queued older save can never overtake the final user mutation.
     private func persistCurrentMutation(_ history: [AiMessage]) {
         guard let app, let document = app.document,
               let binding = app.activeDocumentBinding else { return }
-        let coordinator = app.workspace?.storageCoordinator
-        let limited = AiPersistence.limitedMessages(history)
-        app.enqueueDocumentPersistence(document: document, generation: binding.generation) { owner in
-            await AiPersistence.awaitPendingFlush()
-            AiPersistence.saveConversation(for: owner, messages: limited, coordinator: coordinator)
-            await AiPersistence.awaitPendingFlush()
-        }
+        enqueueMutation(document: document, generation: binding.generation, history: history,
+                        showing: binding)
     }
 
     @discardableResult
-    func clearConversation() -> AiConversationClearTransaction? {
-        guard !messages.isEmpty, let app, let document = app.document,
+    private func enqueueMutation(
+        document: DocumentInfo, generation: UUID, history: [AiMessage],
+        showing binding: DocumentBinding?
+    ) -> Task<Void, Never>? {
+        guard let app else { return nil }
+        let coordinator = app.workspace?.storageCoordinator
+        let limited = AiPersistence.limitedMessages(history)
+        return app.enqueueDocumentPersistence(document: document, generation: generation) { [weak self] owner in
+            _ = await AiPersistence.awaitPendingFlush()
+            let accepted = AiPersistence.saveConversation(for: owner, messages: limited, coordinator: coordinator)
+            let flushed = await AiPersistence.awaitPendingFlush()
+            let saved = accepted && flushed
+            guard let self, let binding, app.activeDocumentBinding == binding,
+                  self.messages == limited else { return }
+            if !saved {
+                self.error = "Conversation changes are still waiting to be saved. Restore storage access and reopen this document to retry."
+            }
+        }
+    }
+
+    /// A durable local intent precedes the blank UI. Removal can remain pending
+    /// without resurrecting old folder or legacy history after process exit.
+    @discardableResult
+    func clearConversation() async -> AiConversationClearTransaction? {
+        guard !isClearingConversation, !messages.isEmpty,
+              let app, let document = app.document,
               let binding = app.activeDocumentBinding else { return nil }
         let transaction = AiConversationClearTransaction(
             document: document, sessionId: binding.tabId, removedMessages: messages,
             bindingGeneration: binding.generation)
         cancelActiveRequest(preservingHistory: false)
-        persistCurrentMutation([])
-        messages = []
-        error = nil
-        return transaction
+        isClearingConversation = true
+        let loadGeneration = contextLoadGeneration
+        let coordinator = app.workspace?.storageCoordinator
+        var accepted = false
+        let task = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { [weak self] owner in
+            accepted = await AiPersistence.acceptClear(for: owner, coordinator: coordinator)
+            guard let self else { return }
+            let showing = self.contextLoadGeneration == loadGeneration
+                && app.activeDocumentBinding == binding
+            self.isClearingConversation = false
+            guard accepted else {
+                if showing {
+                    self.error = "The conversation could not be cleared. Restore storage access and try again; your history remains available."
+                }
+                return
+            }
+            if showing { self.messages = []; self.error = nil }
+            let removed = await AiPersistence.awaitPendingFlush()
+            if !removed, self.contextLoadGeneration == loadGeneration,
+               app.activeDocumentBinding == binding, self.messages.isEmpty {
+                self.error = "Clear is saved on this device. Removing the stored conversation is still pending; restore storage access and reopen this document to retry."
+            }
+        }
+        await task.value
+        return accepted ? transaction : nil
     }
 
-    /// Restore the captured owner's messages after its accepted pending writes.
+    /// Restore the original owner's removed messages, preserving newer work.
+    /// Cancel first, then admit the final mutation after its accumulated history.
     @discardableResult
     func undoClear(_ transaction: AiConversationClearTransaction) -> Bool {
-        guard currentDocument(for: transaction) != nil, let app else { return false }
-        let showing = app.activeDocumentBinding?.tabId == transaction.sessionId
+        guard !isClearingConversation,
+              currentDocument(for: transaction) != nil, let app else { return false }
+        let binding = app.activeDocumentBinding
+        let showing = binding?.tabId == transaction.sessionId
         if showing { cancelActiveRequest() }
         let visible = showing ? messages : nil
         let coordinator = app.workspace?.storageCoordinator
-        app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { owner in
-            await AiPersistence.awaitPendingFlush()
+        _ = app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { [weak self] owner in
+            _ = await AiPersistence.awaitPendingFlush()
             let current: [AiMessage]
             if let visible { current = visible }
             else if let coordinator { current = await AiPersistence.loadConversation(for: owner, coordinator: coordinator) }
             else { current = AiPersistence.loadConversation(for: owner) }
             let ids = Set(current.map(\.id))
             let restored = AiPersistence.limitedMessages(transaction.removedMessages.filter { !ids.contains($0.id) } + current)
-            AiPersistence.saveConversation(for: owner, messages: restored, coordinator: coordinator)
-            await AiPersistence.awaitPendingFlush()
+            let accepted = AiPersistence.saveConversation(for: owner, messages: restored, coordinator: coordinator)
+            let flushed = await AiPersistence.awaitPendingFlush()
+            let saved = accepted && flushed
+            if let self, showing, app.activeDocumentBinding == binding, self.messages == restored, !saved {
+                self.error = "Undo is waiting to be saved. Restore storage access and reopen this document to retry."
+            }
         }
         if showing {
             let ids = Set(messages.map(\.id))
@@ -1083,25 +1138,42 @@ final class AiStore {
         return true
     }
 
+    /// Redo is admitted in order. An empty result gets a fresh durable intent
+    /// before the visible transcript is cleared again.
     @discardableResult
     func redoClear(_ transaction: AiConversationClearTransaction) -> Bool {
-        guard currentDocument(for: transaction) != nil, let app else { return false }
-        let showing = app.activeDocumentBinding?.tabId == transaction.sessionId
+        guard !isClearingConversation,
+              currentDocument(for: transaction) != nil, let app else { return false }
+        let binding = app.activeDocumentBinding
+        let showing = binding?.tabId == transaction.sessionId
         if showing { cancelActiveRequest() }
         let removedIds = Set(transaction.removedMessages.map(\.id))
         let visible = showing ? messages.filter { !removedIds.contains($0.id) } : nil
+        let previousVisible = messages
         let coordinator = app.workspace?.storageCoordinator
-        app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { owner in
-            await AiPersistence.awaitPendingFlush()
+        if showing, visible?.isEmpty == true { isClearingConversation = true }
+        _ = app.enqueueDocumentPersistence(document: transaction.document, generation: transaction.bindingGeneration) { [weak self] owner in
+            _ = await AiPersistence.awaitPendingFlush()
             let remaining: [AiMessage]
             if let visible { remaining = visible }
             else if let coordinator {
                 remaining = await AiPersistence.loadConversation(for: owner, coordinator: coordinator).filter { !removedIds.contains($0.id) }
             } else { remaining = AiPersistence.loadConversation(for: owner).filter { !removedIds.contains($0.id) } }
-            AiPersistence.saveConversation(for: owner, messages: remaining, coordinator: coordinator)
-            await AiPersistence.awaitPendingFlush()
+            let accepted: Bool
+            if remaining.isEmpty { accepted = await AiPersistence.acceptClear(for: owner, coordinator: coordinator) }
+            else { accepted = AiPersistence.saveConversation(for: owner, messages: remaining, coordinator: coordinator) }
+            if showing { self?.isClearingConversation = false }
+            if let self, showing, app.activeDocumentBinding == binding {
+                if accepted, self.messages == previousVisible { self.messages = remaining; self.error = nil }
+                if !accepted { self.error = "Redo could not be saved. Restore storage access and try again." }
+            }
+            let flushed = await AiPersistence.awaitPendingFlush()
+            let saved = accepted && flushed
+            if let self, showing, app.activeDocumentBinding == binding, self.messages == remaining, !saved {
+                self.error = "Redo is waiting to be saved. Restore storage access and reopen this document to retry."
+            }
         }
-        if showing, let visible { messages = visible; error = nil }
+        if showing, let visible, !visible.isEmpty { messages = visible; error = nil }
         return true
     }
 
@@ -1206,7 +1278,7 @@ final class AiStore {
     ) async {
         var context = context
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !Task.isCancelled, !trimmed.isEmpty,
+        guard !isClearingConversation, !Task.isCancelled, !trimmed.isEmpty,
               let app,
               let annotationStore,
               let sessionIdAtStart = app.activeTabId,

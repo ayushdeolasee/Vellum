@@ -499,7 +499,9 @@ enum VellumBundle {
                 throw SessionServiceError.io(
                     "This document's existing AI conversation couldn't be read, so the imported chat was not merged into it. The existing file was left untouched.")
             }
-            local = decoded.messages
+            if try !ConversationOperationJournal.suppressesConversation(key, data: localData) {
+                local = decoded.messages
+            }
         }
         guard !incoming.isEmpty || !local.isEmpty else { return }
 
@@ -530,7 +532,10 @@ enum VellumBundle {
                 throw SessionServiceError.io(
                     "This document's existing AI conversation couldn't be read, so the imported chat was not merged into it. The existing file was left untouched.")
             }
-            local = decoded.messages
+            let suppressed = try await Task.detached {
+                try ConversationOperationJournal.suppressesConversation(key, data: localData)
+            }.value
+            if !suppressed { local = decoded.messages }
         }
         guard !incoming.isEmpty || !local.isEmpty else { return }
 

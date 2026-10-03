@@ -53,6 +53,7 @@ enum AiPersistence {
     }
 
     private struct FlushEntry: Sendable {
+        var id = UUID()
         var key: String
         var messages: [AiMessage]
         var document: DocumentInfo?
@@ -196,6 +197,113 @@ enum AiPersistence {
     /// class-B write remains async and participates in lifecycle draining.
     @MainActor private static var coordinators: [String: StorageCoordinator] = [:]
     @MainActor private static var documents: [String: DocumentInfo] = [:]
+    @MainActor private static var pendingClearKeys: Set<String> = []
+    @MainActor private static var uncertainOperationKeys: Set<String> = []
+    /// Only in-flight snapshots are retargeted; no permanent path alias can
+    /// accidentally adopt a later, unrelated document at the same locator.
+    @MainActor private static var flushOwners: [UUID: String] = [:]
+
+    @MainActor static func conversationNotice(for document: DocumentInfo?) -> String? {
+        guard let document else { return nil }
+        let key = DocumentIdentity.storageKey(for: document)
+        if uncertainOperationKeys.contains(key) {
+            return "A previous conversation change could not be confirmed. The stored bytes were kept and will not be deleted automatically."
+        }
+        if pendingClearKeys.contains(key) {
+            return "Clear is saved on this device. Removing the stored conversation is still pending; restore storage access and reopen this document to retry."
+        }
+        return nil
+    }
+
+    @MainActor static func canClearConversation(for document: DocumentInfo) -> Bool {
+        let key = DocumentIdentity.storageKey(for: document)
+        return !unavailableKeys.contains(key) && !undecodableKeys.contains(key)
+    }
+
+    /// This is the acceptance boundary, after earlier resource writes drain.
+    /// Failure leaves the visible transcript intact. Actual removal stays in
+    /// the established write-behind queue and can honestly remain pending.
+    @MainActor static func acceptClear(
+        for document: DocumentInfo, coordinator: StorageCoordinator?
+    ) async -> Bool {
+        _ = await awaitPendingFlush()
+        guard canClearConversation(for: document) else { return false }
+        let key = DocumentIdentity.storageKey(for: document)
+        if let coordinator {
+            await migrateToCurrentStorageKeyIfNeeded(document: document, key: key, coordinator: coordinator)
+        } else { migrateToCurrentStorageKeyIfNeeded(document: document, key: key) }
+        guard canClearConversation(for: document) else { return false }
+        do {
+            _ = try await Task.detached {
+                try ConversationOperationJournal.beginClear(key, legacyPath: document.pdfPath)
+            }.value
+        } catch { return false }
+        pendingClearKeys.insert(key)
+        removeClearedLegacyEntry(path: document.pdfPath)
+        if let coordinator { coordinators[key] = coordinator }
+        documents[key] = document
+        cache[key] = []
+        dirtyKeys.insert(key)
+        scheduleFlush()
+        return true
+    }
+
+    @MainActor private static func removeClearedLegacyEntry(path: String) {
+        var entries = readConversations()
+        if let index = entries.firstIndex(where: { $0.key == path }) {
+            entries.remove(at: index)
+            writeConversations(entries)
+        }
+    }
+
+    /// Return true when the durable operation still suppresses old history.
+    @MainActor private static func applyClearIntent(
+        _ intent: ConversationOperationJournal.Intent?, data: Data?, key: String
+    ) -> Bool {
+        guard let intent else { return false }
+        removeClearedLegacyEntry(path: intent.legacyPath)
+        if ConversationOperationJournal.replacementCommitted(intent, data: data) {
+            uncertainOperationKeys.remove(key)
+            return false
+        }
+        // A replacement may have committed before journal cleanup failed, and
+        // a peer may have subsequently changed it. Never replay a Clear over
+        // those uncertain bytes merely because their digest differs now.
+        if intent.replacementDigest != nil {
+            uncertainOperationKeys.insert(key)
+            unavailableKeys.insert(key)
+            return true
+        }
+        if intent.deletionCommitted, data != nil {
+            // A peer may reinstall the pre-Clear transcript after deletion.
+            // Only a locally recorded replacement digest can prove new work.
+            // Preserve unknown remote bytes without accepting or deleting them.
+            uncertainOperationKeys.insert(key)
+            unavailableKeys.insert(key)
+            return true
+        }
+        cache[key] = []
+        uncertainOperationKeys.remove(key)
+        unavailableKeys.remove(key)
+        undecodableKeys.remove(key)
+        if intent.deletionCommitted { pendingClearKeys.remove(key) }
+        if !intent.deletionCommitted {
+            pendingClearKeys.insert(key)
+            dirtyKeys.insert(key)
+            scheduleFlush()
+        }
+        return true
+    }
+
+    /// Isolated cold-process regression seam. Call only after all owned tasks
+    /// are joined; the durable journal and transcript are deliberately retained.
+    @MainActor static func resetMemoryForTests() {
+        precondition(pendingFlush == nil)
+        cache.removeAll(); dirtyKeys.removeAll(); flushingKeys.removeAll()
+        documents.removeAll(); coordinators.removeAll(); pendingClearKeys.removeAll()
+        uncertainOperationKeys.removeAll()
+        unavailableKeys.removeAll(); undecodableKeys.removeAll(); flushOwners.removeAll()
+    }
 
     /// Cold-load path for production. Direct test/local callers may continue to
     /// use the synchronous overload below, but a workspace-backed load always
@@ -209,6 +317,9 @@ enum AiPersistence {
         await migrateToCurrentStorageKeyIfNeeded(
             document: document, key: key, coordinator: coordinator)
         if let cached = cache[key], unavailableKeys.contains(key) == false { return cached }
+        let intent: ConversationOperationJournal.Intent?
+        do { intent = try await Task.detached { try ConversationOperationJournal.read(key) }.value }
+        catch { unavailableKeys.insert(key); return [] }
         // Messages composed while the remote file was unavailable stay only in
         // memory. They are merged after an authoritative reload; they must never
         // turn into a blind replacement merely because readiness later flips.
@@ -219,6 +330,8 @@ enum AiPersistence {
             data = try await DocumentDataStore.loadConversationsData(
                 forKey: key, coordinator: coordinator)
         } catch let error as LibraryFileError {
+            if intent?.deletionCommitted == false,
+               applyClearIntent(intent, data: nil, key: key) { return [] }
             // Not downloaded, stale, or unreadable are all non-authoritative
             // empties. Protect the file from the clear-on-empty path and retry
             // on the next cold load instead of caching a phantom blank chat.
@@ -228,9 +341,12 @@ enum AiPersistence {
             }
             return []
         } catch {
+            if intent?.deletionCommitted == false,
+               applyClearIntent(intent, data: nil, key: key) { return [] }
             unavailableKeys.insert(key)
             return []
         }
+        if applyClearIntent(intent, data: data, key: key) { return [] }
 
         guard let data, !data.isEmpty else {
             // Preserve the lazy UserDefaults migration without stepping outside
@@ -291,6 +407,10 @@ enum AiPersistence {
             migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         }
         if let cached = cache[key] { return cached }
+        do {
+            let intent = try ConversationOperationJournal.read(key)
+            if applyClearIntent(intent, data: DocumentDataStore.loadConversationsData(forKey: key), key: key) { return [] }
+        } catch { unavailableKeys.insert(key); return [] }
         // First load this session: fold in any legacy blob entry, then read the
         // folder file (which the migration just wrote, if there was one).
         if !DocumentDataStore.conversationsExist(forKey: key) {
@@ -323,6 +443,7 @@ enum AiPersistence {
         if loaded.isEmpty, DocumentDataStore.conversationsUnavailableEvicted(forKey: key) {
             return []
         }
+        unavailableKeys.remove(key)
         cache[key] = loaded
         return loaded
     }
@@ -340,14 +461,14 @@ enum AiPersistence {
     /// importantly `.notDownloaded`). Empty saves cannot mean delete for them.
     @MainActor private static var unavailableKeys: Set<String> = []
 
+    @discardableResult
     @MainActor static func saveConversation(
         for document: DocumentInfo?,
         messages: [AiMessage],
         coordinator: StorageCoordinator? = nil
-    ) {
-        guard let document, let key = storageKey(for: document) else { return }
+    ) -> Bool {
+        guard let document, let key = storageKey(for: document) else { return false }
         if let coordinator { coordinators[key] = coordinator }
-        documents[key] = document
         if coordinators[key] != nil {
             // The coordinated load/flush paths own the on-disk rekey. A save is
             // synchronous, so it may only move the in-memory write-behind state;
@@ -356,15 +477,16 @@ enum AiPersistence {
         } else {
             migrateToCurrentStorageKeyIfNeeded(document: document, key: key)
         }
+        documents[key] = document
         let limited = limitedMessages(messages)
         if unavailableKeys.contains(key) {
             if limited.isEmpty {
                 NSLog("[Vellum] Skipping empty AI conversation write for \(key): its current iCloud bytes have not been read")
-                return
+                return false
             }
             cache[key] = limited
             NSLog("[Vellum] Holding AI conversation edits for \(key) in memory until the current iCloud conversation can be reloaded and merged")
-            return
+            return false
         }
         // Refuse to let an empty result overwrite a file we simply failed to
         // read (#90). Returning without caching or dirtying leaves the on-disk
@@ -372,9 +494,10 @@ enum AiPersistence {
         if limited.isEmpty,
            undecodableKeys.contains(key) || unavailableKeys.contains(key) {
             NSLog("[Vellum] Skipping empty AI conversation write for \(key): its stored chat could not be decoded, so the file is left on disk")
-            return
+            return false
         }
         undecodableKeys.remove(key)
+        if !limited.isEmpty { pendingClearKeys.remove(key) }
         cache[key] = limited
         // A non-empty conversation is real class-B data; ensure meta.json exists
         // so recents can re-resolve the document by its docId later. The actual
@@ -385,6 +508,7 @@ enum AiPersistence {
         }
         dirtyKeys.insert(key)
         scheduleFlush()
+        return true
     }
 
     @MainActor private static var pendingFlush: Task<Void, Never>?
@@ -403,13 +527,13 @@ enum AiPersistence {
     @MainActor private static var flushingKeys: Set<String> = []
 
     @MainActor static var hasPendingChanges: Bool {
-        pendingFlush != nil || !dirtyKeys.isEmpty || !flushingKeys.isEmpty
+        pendingFlush != nil || !dirtyKeys.isEmpty || !flushingKeys.isEmpty || !uncertainOperationKeys.isEmpty
             || unavailableKeys.contains { cache[$0]?.isEmpty == false }
     }
 
     /// Dirty keys leave the queue while their snapshot writes, not when durable.
     @MainActor static func hasPendingChanges(forKey key: String) -> Bool {
-        dirtyKeys.contains(key) || flushingKeys.contains(key)
+        dirtyKeys.contains(key) || flushingKeys.contains(key) || uncertainOperationKeys.contains(key)
             || (unavailableKeys.contains(key) && cache[key]?.isEmpty == false)
     }
 
@@ -440,10 +564,20 @@ enum AiPersistence {
                         coordinator: coordinators[$0])
                 }
                 flushingKeys = Set(snapshot.map(\.key))
+                for entry in snapshot { flushOwners[entry.id] = entry.key }
                 dirtyKeys.removeAll()
                 var failed: [String] = []
-                for entry in snapshot where await !flushConversation(entry) {
-                    failed.append(entry.key)
+                for entry in snapshot {
+                    let saved = await flushConversation(entry)
+                    let owner = flushOwners.removeValue(forKey: entry.id) ?? entry.key
+                    if !saved { failed.append(owner) }
+                    // An old snapshot can finish after its owner is promoted.
+                    // Re-run the final snapshot at the new key and rekey/remove
+                    // any old bytes before reporting the resource durable.
+                    if owner != entry.key { dirtyKeys.insert(owner) }
+                    if saved, owner == entry.key, entry.messages.isEmpty {
+                        pendingClearKeys.remove(owner)
+                    }
                 }
                 // Re-mark any key whose write failed so its data is retried, never
                 // dropped — a disk-full flush must NOT report success (data loss).
@@ -480,26 +614,28 @@ enum AiPersistence {
     /// so the caller keeps the key dirty for a retry instead of losing the data.
     private static func flushConversation(_ entry: FlushEntry) async -> Bool {
         if let coordinator = entry.coordinator {
+            if let document = entry.document,
+               let docId = document.docId, !docId.isEmpty {
+                let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+                if pathKey != entry.key,
+                   await DocumentDataStore.rekey(from: pathKey, to: entry.key, coordinator: coordinator) == false {
+                    return false
+                }
+            }
             if entry.messages.isEmpty {
-                await DocumentDataStore.removeConversations(
-                    forKey: entry.key, coordinator: coordinator)
+                do {
+                    try await DocumentDataStore.removeConversations(
+                        forKey: entry.key, coordinator: coordinator)
+                } catch { return false }
+                do {
+                    try await Task.detached { try ConversationOperationJournal.completeClear(entry.key) }.value
+                } catch { return false }
                 await DocumentDataStore.pruneEmptyDocumentDir(
                     forKey: entry.key, coordinator: coordinator)
                 return true
             }
             guard let data = try? JSONEncoder().encode(entry.messages) else { return false }
             do {
-                if let document = entry.document,
-                   let docId = document.docId, docId.isEmpty == false
-                {
-                    let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
-                    if pathKey != entry.key,
-                       await DocumentDataStore.rekey(
-                            from: pathKey, to: entry.key, coordinator: coordinator) == false
-                    {
-                        return false
-                    }
-                }
                 if let document = entry.document {
                     try await DocumentDataStore.touch(
                         document: document, force: true, coordinator: coordinator)
@@ -511,8 +647,15 @@ enum AiPersistence {
                 return false
             }
         }
+        if let document = entry.document, document.docId?.isEmpty == false {
+            let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
+            if pathKey != entry.key, !DocumentDataStore.rekey(from: pathKey, to: entry.key) { return false }
+        }
         if entry.messages.isEmpty {
-            DocumentDataStore.removeConversations(forKey: entry.key)
+            do { try DocumentDataStore.removeConversations(forKey: entry.key) }
+            catch { return false }
+            do { try ConversationOperationJournal.completeClear(entry.key) }
+            catch { return false }
             DocumentDataStore.pruneEmptyDocumentDir(forKey: entry.key)
             return true
         }
@@ -623,6 +766,7 @@ enum AiPersistence {
         // exist. The next load re-reads and re-decides.
         undecodableKeys.remove(key)
         unavailableKeys.remove(key)
+        uncertainOperationKeys.remove(key)
     }
 
     /// Keep the main-actor write-behind state aligned with an on-disk rekey.
@@ -637,6 +781,9 @@ enum AiPersistence {
             dirtyKeys.insert(newKey)
         }
         if flushingKeys.contains(oldKey) { flushingKeys.insert(newKey) }
+        for (id, owner) in flushOwners where owner == oldKey { flushOwners[id] = newKey }
+        if pendingClearKeys.remove(oldKey) != nil { pendingClearKeys.insert(newKey) }
+        if uncertainOperationKeys.remove(oldKey) != nil { uncertainOperationKeys.insert(newKey) }
         if let coordinator = coordinators.removeValue(forKey: oldKey) {
             coordinators[newKey] = coordinator
         }
@@ -688,7 +835,9 @@ enum AiPersistence {
         guard let docId = document.docId, !docId.isEmpty else { return }
         let pathKey = DocumentIdentity.sha256Hex(document.pdfPath)
         guard pathKey != key else { return }
+        if let flush = pendingFlush { await flush.value }
         migrateCachedConversation(from: pathKey, to: key)
+        documents[key] = document
         _ = await DocumentDataStore.rekey(
             from: pathKey, to: key, coordinator: coordinator)
     }
@@ -1091,4 +1240,107 @@ extension ISO8601DateFormatter {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+}
+
+/// Device-local metadata for an accepted Clear, not a second transcript store.
+/// All live callers perform these small atomic operations off the main actor.
+/// A replacement digest distinguishes an interrupted cleanup from an old Clear
+/// which must still suppress the previous folder/legacy transcript on restart.
+enum ConversationOperationJournal {
+    struct Intent: Codable, Equatable, Sendable {
+        var id: UUID
+        var legacyPath: String
+        var replacementDigest: String?
+        var deletionCommitted = false
+    }
+
+    private static let lock = NSLock()
+
+    static var directory: URL {
+        if let root = DocumentDataStore.rootDirectoryOverride {
+            return root.deletingLastPathComponent()
+                .appendingPathComponent(root.lastPathComponent + ".conversation-operations", isDirectory: true)
+        }
+        return WebLibrary.storeDir.appendingPathComponent("conversation-operations", isDirectory: true)
+    }
+
+    private static func path(_ key: String) -> URL {
+        directory.appendingPathComponent(DocumentIdentity.sha256Hex(key) + ".json")
+    }
+
+    private static func readUnlocked(_ key: String) throws -> Intent? {
+        do { return try JSONDecoder().decode(Intent.self, from: Data(contentsOf: path(key))) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
+    }
+
+    static func read(_ key: String) throws -> Intent? {
+        try lock.withLock { try readUnlocked(key) }
+    }
+
+    private static func write(_ intent: Intent, key: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try JSONEncoder().encode(intent).write(to: path(key), options: .atomic)
+        guard try readUnlocked(key) == intent else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    static func beginClear(_ key: String, legacyPath: String) throws -> Intent {
+        try lock.withLock {
+            let intent = Intent(id: UUID(), legacyPath: legacyPath)
+            try write(intent, key: key)
+            return intent
+        }
+    }
+
+    /// Leave the clear effective until these exact replacement bytes commit.
+    static func prepareReplacement(_ key: String, data: Data) throws -> UUID? {
+        try lock.withLock {
+            guard var intent = try readUnlocked(key) else { return nil }
+            intent.replacementDigest = DocumentIdentity.byteHash(data)
+            try write(intent, key: key)
+            return intent.id
+        }
+    }
+
+    static func finish(_ key: String, id: UUID) throws {
+        try lock.withLock {
+            guard try readUnlocked(key)?.id == id else { return }
+            do { try FileManager.default.removeItem(at: path(key)) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile { }
+        }
+    }
+
+    static func completeClear(_ key: String) throws {
+        try lock.withLock {
+            guard var intent = try readUnlocked(key) else { return }
+            intent.replacementDigest = nil
+            intent.deletionCommitted = true
+            try write(intent, key: key)
+        }
+    }
+
+    static func suppressesConversation(_ key: String, data: Data) throws -> Bool {
+        guard let intent = try read(key) else { return false }
+        if replacementCommitted(intent, data: data) { return false }
+        if intent.replacementDigest != nil { throw CocoaError(.fileReadUnknown) }
+        if intent.deletionCommitted { throw CocoaError(.fileReadUnknown) }
+        return true
+    }
+
+    static func replacementCommitted(_ intent: Intent, data: Data?) -> Bool {
+        guard let data, let digest = intent.replacementDigest else { return false }
+        return DocumentIdentity.byteHash(data) == digest
+    }
+
+    /// Copy first: if folder migration fails, both identities still suppress
+    /// the old transcript. Remove the source record only after migration commits.
+    static func copyForRekey(from oldKey: String, to newKey: String) throws -> UUID? {
+        try lock.withLock {
+            guard let intent = try readUnlocked(oldKey) else { return nil }
+            if let existing = try readUnlocked(newKey), existing.id != intent.id {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try write(intent, key: newKey)
+            return intent.id
+        }
+    }
 }
