@@ -135,9 +135,11 @@ struct PdfViewerView: View {
         // clears it alongside the local state reset).
         if isActive { aiStore.clearDocumentContext() }
         do {
-            // The persistent text cache is keyed by the current PDF bytes, so
-            // read them even when this tab can reuse an already prepared PDF.
-            let data = try await app.sessions.readPdfBytes(sessionId: tabId)
+            // Search and extraction use the exact display snapshot. An external
+            // replacement must not supply ranges for a retained older PDF.
+            let data: Data
+            if let loaded = runtime.preparedSourceData { data = loaded }
+            else { data = try await app.sessions.readPdfBytes(sessionId: tabId) }
             guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
             let document: PDFDocument
             if let cached = runtime.preparedDocument {
@@ -164,7 +166,7 @@ struct PdfViewerView: View {
                 }
                 // The byte count is what the residency policy costs this tab at
                 // when ranking eviction candidates against its byte budget.
-                runtime.adoptPreparedPdf(parsed, byteCount: data.count)
+                runtime.adoptPreparedPdf(parsed, byteCount: data.count, sourceData: data)
                 document = parsed
             }
             // Restore persisted page text before adopting (PDF only; this view
@@ -278,7 +280,7 @@ struct PdfViewerView: View {
     private func resumeTextExtraction(pageCount: Int) async {
         guard runtime.pageTexts.count < pageCount else { return }
         let generation = runtime.documentGeneration
-        guard let data = try? await app.sessions.readPdfBytes(sessionId: tabId) else { return }
+        guard let data = runtime.preparedSourceData else { return }
         guard !Task.isCancelled, indexingIsActive, app.activeTabId == tabId,
               runtime.documentGeneration == generation else { return }
         controller.startTextExtraction(data: data)

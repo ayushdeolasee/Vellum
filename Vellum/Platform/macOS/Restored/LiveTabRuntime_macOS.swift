@@ -55,6 +55,7 @@ final class LiveTabRuntime {
     /// still leaves the `PDFDocument` alive in the LRU — i.e. the memory the
     /// eviction existed to reclaim would not actually come back.
     @ObservationIgnored private(set) var preparedDocument: PDFDocument?
+    @ObservationIgnored private(set) var preparedSourceData: Data?
 
     /// Size of the PDF bytes `preparedDocument` was parsed from, used to rank
     /// eviction candidates and enforce the byte budget. PDFKit's own footprint
@@ -77,6 +78,7 @@ final class LiveTabRuntime {
     func invalidateLoadedPdf() {
         pdfController.flushAndDropPersister()
         preparedDocument = nil
+        preparedSourceData = nil
         pdfByteCount = 0
         pdfLoadState = .idle
         documentGeneration += 1
@@ -92,20 +94,22 @@ final class LiveTabRuntime {
 
     /// Adopt a freshly parsed display document. `byteCount` is the size of the
     /// PDF data it was parsed from.
-    func adoptPreparedPdf(_ document: PDFDocument, byteCount: Int) {
+    func adoptPreparedPdf(_ document: PDFDocument, byteCount: Int, sourceData: Data? = nil) {
         preparedDocument = document
+        preparedSourceData = sourceData
         pdfByteCount = byteCount
     }
 
     // MARK: - TabResidentResource
 
-    /// Rough resident footprint. A PDF tab is costed at its file size; a web tab
+    /// Rough resident footprint. A PDF tab includes its parse estimate and
+    /// retained source snapshot; a web tab
     /// at a flat, deliberately pessimistic estimate for "a real webpage with its
     /// own web content process attached", because WebKit offers no way to ask
     /// what a given page actually costs. A tab that has never been shown holds
     /// neither and costs nothing.
     var residencyCostBytes: Int {
-        pdfByteCount + webController.residencyCostBytes
+        pdfByteCount + (preparedSourceData?.count ?? 0) + webController.residencyCostBytes
     }
 
     /// Hot ⇄ warm. Warm keeps everything expensive — the parsed `PDFDocument`,
@@ -152,6 +156,7 @@ final class LiveTabRuntime {
         webController = WebViewerController(draftState: webNoteDraftState)
         pdfLoadState = .idle
         preparedDocument = nil
+        preparedSourceData = nil
         pdfByteCount = 0
         isRendered = false
         // `pageTexts` is deliberately kept: it is a few hundred KB of strings at

@@ -85,6 +85,8 @@ final class PdfViewerController: HighlightResizeControlling {
     // index of the one currently focused.
     @ObservationIgnored private var findMatches: [PDFSelection] = []
     @ObservationIgnored private var findIndex = -1
+    @ObservationIgnored private var findTask: Task<Void, Never>?
+    @ObservationIgnored private var findGeneration = UUID()
 
     private var isActiveTab: Bool {
         guard let tabId else { return false }
@@ -127,6 +129,7 @@ final class PdfViewerController: HighlightResizeControlling {
         tabId: String,
         runtime: LiveTabRuntime
     ) {
+        if self.app !== app || self.tabId != tabId { findClear() }
         self.app = app
         self.annotationStore = annotationStore
         self.ai = ai
@@ -135,6 +138,7 @@ final class PdfViewerController: HighlightResizeControlling {
     }
 
     func reset() {
+        findClear()
         // Never silently drop an unflushed persister — flush what it has first
         // (idempotent, a no-op when clean).
         flushAndDropPersister()
@@ -370,16 +374,41 @@ final class PdfViewerController: HighlightResizeControlling {
 
     /// Search the whole document; highlight every match and focus the first.
     func findQuery(_ query: String) {
-        guard let document, let pdfView else { return }
-        let matches = document.findString(query, withOptions: [.caseInsensitive])
-        for match in matches {
-            match.color = NSColor.systemYellow.withAlphaComponent(0.5)
+        findClear()
+        guard !query.isEmpty, let document, let app,
+              let binding = app.activeDocumentBinding, binding.tabId == tabId,
+              let data = runtime?.preparedSourceData else { return }
+        let generation = findGeneration
+        let previous = findTask
+        findTask = Task { [weak self] in
+            await previous?.value
+            do {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(250))
+                let result = await PdfSearch(data: data).matches(query: query)
+                try Task.checkCancellation()
+                guard let self, self.findGeneration == generation,
+                      self.document === document, self.app === app,
+                      app.activeDocumentBinding == binding, let pdfView = self.pdfView else { return }
+                let selections = result.matches.compactMap { match in
+                    guard match.page >= 0, match.page < document.pageCount else { return nil as PDFSelection? }
+                    return document.page(at: match.page)?.selection(for: match.range)
+                }
+                for selection in selections { selection.color = NSColor.systemYellow.withAlphaComponent(0.5) }
+                self.findMatches = selections
+                self.findIndex = selections.isEmpty ? -1 : 0
+                pdfView.highlightedSelections = selections.isEmpty ? nil : selections
+                self.focusCurrentMatch()
+                app.setFindResults(count: selections.count, current: selections.isEmpty ? 0 : 1)
+                if result.truncated { app.error = "Showing the first 1,000 matches. Use a more specific search to see fewer results." }
+            } catch {
+                // Clearing or rebinding cancels this generation; errors must not
+                // publish into a replacement document.
+                guard let self, !Task.isCancelled, self.findGeneration == generation,
+                      self.document === document, app.activeDocumentBinding == binding else { return }
+                app.error = "The document could not be searched. Try opening it again."
+            }
         }
-        findMatches = matches
-        pdfView.highlightedSelections = matches.isEmpty ? nil : matches
-        findIndex = matches.isEmpty ? -1 : 0
-        focusCurrentMatch()
-        app?.setFindResults(count: matches.count, current: matches.isEmpty ? 0 : 1)
     }
 
     /// Move the focused match by `delta`, wrapping at both ends.
@@ -394,7 +423,14 @@ final class PdfViewerController: HighlightResizeControlling {
         app?.setFindResults(count: count, current: findIndex + 1)
     }
 
+    private var isSearchOwner: Bool { app?.activeTabId == tabId && tabId != nil }
+
+    func awaitPendingSearch() async { await findTask?.value }
+
     func findClear() {
+        findTask?.cancel()
+        findGeneration = UUID()
+        if isSearchOwner { app?.setFindResults(count: 0, current: 0) }
         findMatches = []
         findIndex = -1
         pdfView?.highlightedSelections = nil
@@ -790,6 +826,8 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Stop the background walk before flushing so every page produced before
     /// deactivation is included and no writer races the persisted snapshot.
     func pauseTextExtraction() async {
+        findClear()
+        await awaitPendingSearch()
         let task = extractionTask
         let persister = self.persister
         task?.cancel()
@@ -807,6 +845,7 @@ final class PdfViewerController: HighlightResizeControlling {
     /// writes whose controller is already gone (⌘Q right after a tab switch
     /// must not truncate the outgoing document's flush).
     func flushAndDropPersister() {
+        findClear()
         let task = extractionTask
         task?.cancel()
         guard let persister else { return }
@@ -815,53 +854,6 @@ final class PdfViewerController: HighlightResizeControlling {
     }
 
     // MARK: - AI page-text feed (getTextContent pass)
-
-    /// Outcome of one gated page extraction.
-    private enum PageExtractionOutcome {
-        case extracted
-        /// Someone else (the other loop, or the cache restore) already has it.
-        case alreadyCached
-        /// The document or the active tab changed under us, or we were
-        /// cancelled: the caller must stop walking.
-        case stale
-    }
-
-    /// Extract one page's text and publish it to the AI store, the tab runtime
-    /// and the persistent cache.
-    ///
-    /// On-demand reads use the displayed document on the main actor. Both
-    /// this path and the private background copy hold `PageTextExtractionGate`,
-    /// so the background walk, the AI
-    /// context fill and the tool paths can never hand PDFKit two Live Text OCR
-    /// requests at once (see PageTextExtractionGate for why that crashes). The
-    /// cache re-check happens *inside* the gate, so a page that the other loop
-    /// filled while this request sat in the queue is skipped, not re-extracted.
-    private func extractPage(
-        _ pageNumber: Int, from document: PDFDocument, binding: DocumentBinding?,
-        priority: PageTextExtractionGate.Priority
-    ) async -> PageExtractionOutcome {
-        // Starts at `.stale` so a caller cancelled while queued — the gate never
-        // runs the body then — stops walking, same as a document change.
-        var outcome = PageExtractionOutcome.stale
-        _ = await PageTextExtractionGate.shared.extractText(priority: priority) { () -> String? in
-            guard self.document === document, self.app?.activeDocumentBinding == binding,
-                  let ai = self.ai, let page = document.page(at: pageNumber - 1) else { return nil }
-            guard ai.pageTexts[pageNumber] == nil else {
-                outcome = .alreadyCached
-                return nil
-            }
-            let text = page.string ?? ""
-            guard let normalized = ai.setPageText(page: pageNumber, text: text) else {
-                outcome = .alreadyCached
-                return text
-            }
-            self.runtime?.pageTexts[pageNumber] = normalized
-            self.persister?.noteExtracted(page: pageNumber, text: normalized)
-            outcome = .extracted
-            return text
-        }
-        return outcome
-    }
 
     func startTextExtraction(data: Data) {
         let previous = extractionTask
@@ -914,60 +906,26 @@ final class PdfViewerController: HighlightResizeControlling {
         }
     }
 
-    /// On-demand text extraction for the AI request path: fill `pageTexts` for
-    /// the requested 1-indexed pages (or the whole document when `pages` is nil),
-    /// so a search/read never misses a page the background 1→N walk hasn't
-    /// reached yet. Returns how many pages it newly populated (drives the
-    /// `.indexing` indicator).
-    ///
-    /// Pages go one at a time through `PageTextExtractionGate` at `.onDemand`
-    /// priority: it both serializes this pass against the background walk (and
-    /// against a second split pane's walk) and jumps it ahead of that walk's
-    /// queued pages, so an AI turn waits for at most the one page in flight
-    /// rather than for a whole-document crawl. The gate also inserts its idle
-    /// gap after any page that came back without text — the scanned pages that
-    /// reach Live Text — which is what stops `searchDocument`'s whole-document
-    /// pass from firing bursts of recognition requests. Pages with a real text
-    /// layer are not paced at all, so ordinary PDFs index as fast as before.
-    ///
-    /// `AiStore.setPageText`'s dedupe plus the gate's in-lock cache re-check keep
-    /// this idempotent with the walk. A cooperative yield every so often keeps
-    /// the run loop responsive when the gate is uncontended and never suspends.
+    /// Fill missing AI text from the displayed byte snapshot without blocking UI.
     @discardableResult
     func ensureExtracted(pages: Set<Int>?) async -> Int {
-        guard let document, let ai else { return 0 }
-        let pageCount = document.pageCount
-        guard pageCount >= 1 else { return 0 }
-        let targets: [Int]
-        if let pages {
-            targets = pages.filter { $0 >= 1 && $0 <= pageCount }.sorted()
-        } else {
-            targets = Array(1...pageCount)
-        }
+        guard let document, let ai, let app, let binding = app.activeDocumentBinding,
+              binding.tabId == tabId, let data = runtime?.preparedSourceData, document.pageCount > 0 else { return 0 }
+        let targets = pages?.filter { $0 >= 1 && $0 <= document.pageCount }.sorted()
+            ?? Array(1...document.pageCount)
+        let reader = PdfTextReader(data: data)
         var extracted = 0
-        var sinceYield = 0
-        // Same generation guard as the walk: bail if the active tab changes
-        // mid-pass (this handler slot may still be draining for an old tab).
-        // Re-evaluated per iteration inside `extractPage`, since this loop now
-        // suspends on the gate between pages.
-        let binding = app?.activeDocumentBinding
-        for pageNumber in targets where ai.pageTexts[pageNumber] == nil {
-            switch await extractPage(
-                pageNumber, from: document, binding: binding, priority: .onDemand)
-            {
-            case .stale: return extracted
-            case .alreadyCached: continue
-            case .extracted: extracted += 1
-            }
-            sinceYield += 1
-            // PDFKit text extraction on a displayed document intentionally stays
-            // on the main actor (thread-safety), so this yield cadence is the only
-            // responsiveness lever when the gate hands the slot straight back
-            // without suspending (every page of an ordinary text PDF).
-            if sinceYield >= 8 {
-                sinceYield = 0
-                await Task.yield()
-            }
+        for page in targets {
+            guard !Task.isCancelled, self.document === document, self.app === app,
+                  app.activeDocumentBinding == binding, self.ai === ai else { break }
+            guard ai.pageTexts[page] == nil else { continue }
+            let text = await reader.text(pageNumber: page)
+            guard !Task.isCancelled, self.document === document, self.app === app,
+                  app.activeDocumentBinding == binding, self.ai === ai else { break }
+            guard let text, let normalized = ai.setPageText(page: page, text: text) else { continue }
+            runtime?.pageTexts[page] = normalized
+            persister?.noteExtracted(page: page, text: normalized)
+            extracted += 1
         }
         return extracted
     }
@@ -977,84 +935,13 @@ final class PdfViewerController: HighlightResizeControlling {
     /// Whitespace-stripped, lowercased first-match locator returning
     /// line-merged rects at zoom 1 in top-left-origin page points.
     func locateText(pageNumber: Int, query: String) async -> LocatedText? {
-        guard let document, pageNumber >= 1, pageNumber <= document.pageCount,
-              let page = document.page(at: pageNumber - 1) else { return nil }
-        let needle = query
-            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
-            .lowercased()
-        guard !needle.isEmpty else { return nil }
-        // Same Live Text hazard as the extraction loops: on a scanned page this
-        // `page.string` runs OCR, so it takes the gate rather than racing a walk
-        // that is mid-compile (see PageTextExtractionGate).
-        let extractedPage = await PageTextExtractionGate.shared.extractText(priority: .onDemand) {
-            page.string ?? ""
-        }
-        guard let pageString = extractedPage, !pageString.isEmpty else { return nil }
-
-        // Whitespace-free lowercase haystack; every character remembers the
-        // UTF-16 range of the source character that produced it.
-        var haystack: [Character] = []
-        var ownerStarts: [Int] = []
-        var ownerLengths: [Int] = []
-        var utf16Offset = 0
-        for character in pageString {
-            let length = String(character).utf16.count
-            if !character.isWhitespace {
-                for lowered in String(character).lowercased() {
-                    haystack.append(lowered)
-                    ownerStarts.append(utf16Offset)
-                    ownerLengths.append(length)
-                }
-            }
-            utf16Offset += length
-        }
-        let needleChars = Array(needle)
-        guard !needleChars.isEmpty, haystack.count >= needleChars.count else { return nil }
-
-        var matchStart = -1
-        for start in 0...(haystack.count - needleChars.count) {
-            var matches = true
-            for offset in 0..<needleChars.count where haystack[start + offset] != needleChars[offset] {
-                matches = false
-                break
-            }
-            if matches {
-                matchStart = start
-                break
-            }
-        }
-        guard matchStart >= 0 else { return nil }
-        let matchLast = matchStart + needleChars.count - 1
-        let rangeStart = ownerStarts[matchStart]
-        let rangeEnd = ownerStarts[matchLast] + ownerLengths[matchLast]
-        guard rangeEnd > rangeStart,
-              let selection = page.selection(
-                for: NSRange(location: rangeStart, length: rangeEnd - rangeStart))
-        else { return nil }
-
-        var rects: [AnnotationRect] = []
-        for line in selection.selectionsByLine() {
-            guard let linePage = line.pages.first else { continue }
-            let bounds = line.bounds(for: linePage)
-            guard bounds.width > 0, bounds.height > 0 else { continue }
-            rects.append(Self.uiRect(fromPageSpace: bounds, page: linePage))
-        }
-        let merged = Self.mergeLineRects(rects)
-        guard !merged.isEmpty else { return nil }
-
-        let dims = Self.displayDimensions(of: page)
-        let positionData = PositionData(
-            rects: merged,
-            pageWidth: Double(dims.width),
-            pageHeight: Double(dims.height),
-            selectedText: query,
-            startOffset: nil,
-            endOffset: nil,
-            prefix: nil,
-            suffix: nil,
-            viewportOffset: nil
-        )
-        return LocatedText(positionData: positionData, pageNumber: pageNumber)
+        guard let document, let app, let binding = app.activeDocumentBinding,
+              binding.tabId == tabId, let data = runtime?.preparedSourceData,
+              pageNumber >= 1, pageNumber <= document.pageCount else { return nil }
+        let result = await PdfTextReader(data: data).locate(pageNumber: pageNumber, query: query)
+        guard !Task.isCancelled, self.document === document, self.app === app,
+              app.activeDocumentBinding == binding else { return nil }
+        return result
     }
 
     /// Merge rects on the same visual line: |Δy| ≤ 0.6 × min heights.

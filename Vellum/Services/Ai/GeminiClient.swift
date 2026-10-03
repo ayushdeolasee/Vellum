@@ -525,12 +525,12 @@ final class GeminiClient {
     private static let functionDeclarations: [[String: Any]] = [
         [
             "name": "searchDocument",
-            "description": "Search the FULL document text for a query and get back the pages that match, each with surrounding context. Use this to find where something is discussed before reading a page. Default is a case-insensitive literal substring match; set isRegex true to match a regular expression.",
+            "description": "Search the FULL document text for a query and get back the pages that match, each with surrounding context. Use this to find where something is discussed before reading a page. Use a case-insensitive literal substring query (at most 512 characters); regular expressions are not supported. Each page scans up to 100,000 characters.",
             "parameters": [
                 "type": "object",
                 "properties": [
-                    "query": ["type": "string", "description": "Text (or regular expression) to search for across every page."],
-                    "isRegex": ["type": "boolean", "description": "Treat query as a regular expression instead of a literal substring. Optional; defaults to false."],
+                    "query": ["type": "string", "description": "Literal text to search for across every page, at most 512 characters."],
+                    "isRegex": ["type": "boolean", "description": "Leave false. Regular expressions are not supported."],
                 ],
                 "required": ["query"],
             ],

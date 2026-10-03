@@ -6,8 +6,7 @@ struct AiToolArguments: Codable, Sendable {
     var color: String?
     var x: Double?
     var y: Double?
-    /// `searchDocument` only: treat `text` (the query) as a regular expression
-    /// instead of a literal substring.
+    /// Legacy tool argument: true is rejected with guidance to use literal text.
     var isRegex: Bool?
 }
 
@@ -313,26 +312,16 @@ final class AiToolEngine {
     /// Grep the whole document (`pageTexts` is horizontal-whitespace-normalized
     /// with line breaks preserved as single "\n"s).
     /// Ensures every page with a text layer is extracted first, then returns the
-    /// top matches with surrounding context, output-capped and time-guarded
-    /// against a pathological regex.
+    /// top matches with surrounding context, output-capped. Only bounded literal queries are accepted; untrusted
+    /// regular expressions cannot create non-cancellable matching work.
     private func searchDocument(query: String, isRegex: Bool) async throws -> String {
-        // Literal queries get whitespace-collapsed to match `pageTexts` (which is
-        // whitespace-normalized); regex queries are only trimmed so intentional
-        // runs of spaces in the pattern aren't silently rewritten.
-        let trimmed: String
-        if isRegex {
-            trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            trimmed = query
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isRegex else {
+            return "Skipped searchDocument: regular expressions are not supported. Use a literal text query."
         }
+        guard query.utf16.count <= 512 else { return "Skipped searchDocument: use a query of 512 characters or fewer." }
+        let trimmed = query.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "Skipped searchDocument: empty query." }
-        // Validate the regex up front so an invalid pattern fails fast with a
-        // clear message rather than silently falling back to a literal search.
-        if isRegex, (try? NSRegularExpression(pattern: trimmed, options: [.caseInsensitive, .anchorsMatchLines])) == nil {
-            return "Skipped searchDocument: invalid regular expression."
-        }
 
         // A whole-document read: fill any pages the background walk hasn't
         // reached yet before grepping.
@@ -343,43 +332,13 @@ final class AiToolEngine {
         let snapshot = pageTexts
         guard !snapshot.isEmpty else { return "No extractable text in this document yet." }
 
-        // Run the grep off the main actor and race it against a deadline so a
-        // pathological regex can't freeze the UI. `performSearch` checks
-        // `Task.isCancelled` between pages, so the deadline bounds latency to the
-        // timeout plus at most one page's match cost (a single page is capped at
-        // `maxPageScanCharacters`) — it doesn't fully prevent a pathological
-        // pattern from burning that one page.
-        do {
-            let result = try await withThrowingTaskGroup(of: String?.self) { group in
-                group.addTask { Self.performSearch(pages: snapshot, query: trimmed, isRegex: isRegex) }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                    throw SearchTimedOut()
-                }
-                let first = try await group.next()!
-                group.cancelAll()
-                // `performSearch` returns nil when it observed cancellation mid-scan.
-                return first ?? "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
-            }
-            try context.checkCurrent()
-            return result
-        } catch is SearchTimedOut {
-            try context.checkCurrent()
-            return "Skipped searchDocument: the search took too long (possibly a pathological pattern). Try a simpler query."
-        } catch is CancellationError {
-            // The request was aborted (user cancel / tab switch). Don't stringify
-            // this as a tool failure — the whole response is being torn down; the
-            // network layer surfaces the cancellation to the caller.
-            return "Skipped searchDocument: cancelled."
-        } catch {
-            return "searchDocument failed: \(String(describing: error))"
-        }
+        let result = await Self.performSearch(pages: snapshot, query: trimmed)
+        try context.checkCurrent()
+        return result ?? "Skipped searchDocument: cancelled."
     }
 
-    private struct SearchTimedOut: Error {}
-
     /// Max matches surfaced, chars of context on each side of a match, per-page
-    /// scan cap (bounds regex cost), and overall output cap. `nonisolated` so the
+    /// scan cap (bounds literal matching cost), and overall output cap. `nonisolated` so the
     /// off-actor `performSearch`/`snippet` helpers can read them.
     private nonisolated static let maxSearchHits = 8
     private nonisolated static let searchSnippetRadius = 200
@@ -389,27 +348,15 @@ final class AiToolEngine {
     /// Pure, off-actor grep over a page-text snapshot. Returns the first match on
     /// each page (up to `maxSearchHits` pages) with `±radius` chars of context.
     /// Cooperative: checks `Task.isCancelled` between pages and returns nil if the
-    /// deadline fired mid-scan, so the caller can surface the timeout message.
-    private nonisolated static func performSearch(pages: [Int: String], query: String, isRegex: Bool) -> String? {
-        let regex = isRegex ? try? NSRegularExpression(pattern: query, options: [.caseInsensitive, .anchorsMatchLines]) : nil
+    /// request was cancelled, so no worker outlives a cancelled provider turn.
+    private nonisolated static func performSearch(pages: [Int: String], query: String) async -> String? {
         var hits: [String] = []
         for page in pages.keys.sorted() {
             if Task.isCancelled { return nil }
             guard let raw = pages[page], !raw.isEmpty else { continue }
             let text = raw.count > maxPageScanCharacters ? String(raw.prefix(maxPageScanCharacters)) : raw
-            // Literal queries were whitespace-collapsed by the caller, so match
-            // them against a newline-flattened copy; regexes see the real line
-            // structure (anchors and \s-spanning patterns work).
-            let haystack = regex == nil ? text.replacingOccurrences(of: "\n", with: " ") : text
-            let matchRange: Range<String.Index>?
-            if let regex {
-                let ns = haystack as NSString
-                matchRange = regex
-                    .firstMatch(in: haystack, options: [], range: NSRange(location: 0, length: ns.length))
-                    .flatMap { Range($0.range, in: haystack) }
-            } else {
-                matchRange = haystack.range(of: query, options: .caseInsensitive)
-            }
+            let haystack = text.replacingOccurrences(of: "\n", with: " ")
+            let matchRange = haystack.range(of: query, options: .caseInsensitive)
             guard let matchRange else { continue }
             let context = snippet(around: matchRange, in: haystack)
                 .replacingOccurrences(of: "\n", with: " ")
@@ -418,7 +365,7 @@ final class AiToolEngine {
         }
 
         guard !hits.isEmpty else {
-            return "No matches for \"\(query)\" in the document\(isRegex ? " (regex)" : "")."
+            return "No matches for \"\(query)\" in the document (up to 100,000 characters per page)."
         }
         let header = "Found \(hits.count) page\(hits.count == 1 ? "" : "s") with a match"
             + (hits.count >= maxSearchHits ? " (showing first \(maxSearchHits))" : "") + ":"
