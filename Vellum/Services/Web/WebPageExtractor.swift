@@ -742,7 +742,7 @@ enum WebHtml {
 
 // MARK: - vellum-web:// scheme handler (lib.rs handle_vellum_web_request)
 
-private struct WebProxyResponse {
+struct WebProxyResponse: Sendable {
     var status: Int
     var headers: [String: String]
     var body: Data
@@ -759,17 +759,54 @@ private struct WebProxyResponse {
     }
 }
 
+@MainActor
 final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
-    static let scheme = "vellum-web"
+    nonisolated static let scheme = "vellum-web"
     /// Second registered scheme for plain-http targets: the proxy authority
     /// mirrors the real host, so the real scheme has to live in the custom
     /// scheme name itself ("i" = insecure).
-    static let insecureScheme = "vellum-webi"
+    nonisolated static let insecureScheme = "vellum-webi"
     /// Reserved authorities — `.invalid` is an RFC 2606 TLD that can never
     /// resolve, so these cannot collide with a real site's own hosts/paths.
-    static let assetHost = "assets.vellum.invalid"
-    static let snapshotHost = "snapshot.vellum.invalid"
+    nonisolated static let assetHost = "assets.vellum.invalid"
+    nonisolated static let snapshotHost = "snapshot.vellum.invalid"
     private let storage: WebLibraryStorage
+    private struct Owner: Equatable, Sendable {
+        let key: String
+        let token: UUID
+        let origin: String
+        let generation: UUID
+    }
+    private var owner: Owner?
+    private var suspendedOwner: Owner?
+
+    func bind(to pageURL: String?) {
+        guard let pageURL else {
+            suspendedOwner = owner
+            owner = nil
+            cancelRequests()
+            return
+        }
+        let key = WebLibrary.pageKey(pageURL)
+        guard owner?.key != key else { return }
+        cancelRequests()
+        let proxy = Self.proxyUrl(for: pageURL)
+        var origin = URLComponents(url: proxy, resolvingAgainstBaseURL: false)!
+        origin.path = ""
+        origin.query = nil
+        origin.fragment = nil
+        origin.user = nil
+        origin.password = nil
+        let token = suspendedOwner?.key == key ? suspendedOwner!.token : UUID()
+        owner = Owner(key: key, token: token, origin: origin.string!, generation: UUID())
+        suspendedOwner = nil
+    }
+
+    private func cancelRequests() {
+        for task in activeTasks.values { task.cancel() }
+        activeTasks.removeAll()
+    }
+
 
     init(storage: WebLibraryStorage = WebLibraryStorage()) {
         self.storage = storage
@@ -780,7 +817,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
     /// authority/path/query so in-page routers see the address they were
     /// server-rendered for — `window.location.pathname` must match, or SPA
     /// hydration tears the page down (see plans/web-proxy-truthful-urls.html).
-    static func proxyUrl(for target: String) -> URL {
+    nonisolated static func proxyUrl(for target: String) -> URL {
         // `target` is always WebUrl.normalize output; swap the scheme by
         // string surgery so the WHATWG-serialized authority/path/query stay
         // byte-identical (URLComponents reassembly would re-encode).
@@ -804,15 +841,15 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// Reader URL that explicitly requests the offline snapshot for a page
     /// key (navigation-failure fallback).
-    static func snapshotUrl(forKey key: String) -> URL {
-        URL(string: "\(scheme)://\(snapshotHost)/\(key)")!
+    func snapshotUrl(forKey key: String) -> URL {
+        URL(string: "\(Self.scheme)://\(Self.snapshotHost)/\(key)/\(owner?.token.uuidString ?? "unbound")")!
     }
 
     /// Map a proxy URL back to the real page URL (inverse of `proxyUrl`).
     /// Percent-encoding is taken verbatim from the request so the round trip
     /// through WKWebView cannot change page identity. Returns nil for the
     /// reserved authorities and foreign schemes.
-    static func realUrl(from url: URL) -> String? {
+    nonisolated static func realUrl(from url: URL) -> String? {
         let realScheme: String
         switch url.scheme?.lowercased() {
         case scheme: realScheme = "https"
@@ -849,7 +886,9 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
         let request = urlSchemeTask.request
         activeTasks[id] = Task { @MainActor [weak self] in
             guard let self else { return }
+            let capturedOwner = self.owner
             let response = await self.handleRequest(request)
+            guard self.owner == capturedOwner else { return }
             guard !Task.isCancelled, self.activeTasks.removeValue(forKey: id) != nil else { return }
             let url = request.url ?? URL(string: "\(Self.scheme)://\(Self.snapshotHost)/")!
             guard let http = HTTPURLResponse(
@@ -870,20 +909,39 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     // MARK: Routing
 
-    private func handleRequest(_ request: URLRequest) async -> WebProxyResponse {
+    func handleRequest(_ request: URLRequest) async -> WebProxyResponse {
+        guard let capturedOwner = owner else { return .html(403, "<h1>Reader unavailable</h1>") }
+        let response = await handleOwnedRequest(request, owner: capturedOwner)
+        guard owner == capturedOwner, !Task.isCancelled else {
+            return .html(403, "<h1>Reader changed</h1>")
+        }
+        return response
+    }
+
+    private func handleOwnedRequest(_ request: URLRequest, owner: Owner) async -> WebProxyResponse {
         guard let url = request.url, let host = url.host?.lowercased() else {
             return .html(404, "<h1>Invalid request</h1>")
         }
 
         // Reserved authorities first: archive assets and the explicit
         // offline-snapshot fallback.
-        if host == Self.assetHost {
-            return Self.serveArchiveAsset(
-                rest: String(url.path.dropFirst()),
-                requestOrigin: request.value(forHTTPHeaderField: "Origin"))
-        }
-        if host == Self.snapshotHost {
-            return await serveSnapshotFallback(key: String(url.path.dropFirst()))
+        if host == Self.assetHost || host == Self.snapshotHost {
+            let parts = url.path.split(separator: "/", omittingEmptySubsequences: false)
+            let asset = host == Self.assetHost
+            guard parts.count == (asset ? 4 : 3), parts[0].isEmpty,
+                  parts[1] == owner.key, parts[2] == owner.token.uuidString,
+                  request.value(forHTTPHeaderField: "Origin").map({
+                      $0 == owner.origin || $0 == "\(Self.scheme)://\(Self.snapshotHost)"
+                  }) ?? true
+            else { return .html(403, "<h1>Reader resource unavailable</h1>") }
+            if asset {
+                let rest = "\(owner.key)/\(parts[3])"
+                return await Task.detached {
+                    Self.serveArchiveAsset(rest: rest,
+                        requestOrigin: request.value(forHTTPHeaderField: "Origin"))
+                }.value
+            }
+            return await serveSnapshotFallback(key: owner.key)
         }
 
         // Everything else is the page authority: map the truthful proxy URL
@@ -916,9 +974,10 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
         // Sidecar state drives snapshot refresh and the loading policy.
         let key = WebLibrary.pageKey(pageUrl)
+        guard key == owner.key else { return .html(403, "<h1>Reader resource unavailable</h1>") }
         let snapshotFile = WebLibrary.snapshotPath(forKey: key)
         let record = await storage.loadRecord(forKey: key)
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, self.owner == owner else {
             return WebProxyResponse(status: 204, headers: [:], body: Data())
         }
         let recordSaved = record?.saved ?? false
@@ -926,7 +985,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
         // Pinned-snapshot policy (from an imported archive): don't hit the
         // network at all when the installed snapshot is available.
-        if snapshotOnly, let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+        if snapshotOnly, let response = await serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
         }
 
@@ -934,6 +993,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
             switch try await WebFetch.fetchPage(pageUrl) {
             case .html(let html, let finalUrl):
                 try Task.checkCancellation()
+                guard self.owner == owner else { return .html(403, "<h1>Reader changed</h1>") }
                 // Redirects change the page's effective identity: serve under
                 // the final URL so relative subresources resolve correctly and
                 // the app shell can rebind the tab to the canonical address.
@@ -943,15 +1003,17 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
                 // successful visit, under the effective identity.
                 if effectiveUrl == pageUrl {
                     if recordSaved {
-                        WebFetch.writeSnapshotAtomic(path: snapshotFile, html: html)
+                        await Task.detached { WebFetch.writeSnapshotAtomic(path: snapshotFile, html: html) }.value
                     }
                 } else {
                     let effectiveKey = WebLibrary.pageKey(effectiveUrl)
                     let effectiveRecord = await storage.loadRecord(forKey: effectiveKey)
                     try Task.checkCancellation()
+                    guard self.owner == owner else { return .html(403, "<h1>Reader changed</h1>") }
                     if effectiveRecord?.saved == true {
-                        WebFetch.writeSnapshotAtomic(
-                            path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
+                        await Task.detached {
+                            WebFetch.writeSnapshotAtomic(path: WebLibrary.snapshotPath(forKey: effectiveKey), html: html)
+                        }.value
                     }
                 }
 
@@ -965,15 +1027,16 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
             }
         } catch {
             // A stopped navigation must not read or prepare an offline fallback.
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, self.owner == owner else {
                 return WebProxyResponse(status: 204, headers: [:], body: Data())
             }
             // Offline / link-rot fallback: prefer the self-contained
             // .vellumweb snapshot, then the plain saved snapshot.
-            if let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+            if let response = await serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
                 return response
             }
-            if let html = try? String(contentsOf: snapshotFile, encoding: .utf8) {
+            let html = await Task.detached { try? String(contentsOf: snapshotFile, encoding: .utf8) }.value
+            if let html {
                 return .html(200, WebHtml.prepareHtml(html, pageUrl: pageUrl, offline: true))
             }
             return .html(
@@ -986,7 +1049,7 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// `vellum-web://assets.vellum.invalid/<key>/<name>` →
     /// `<appData>/web/archives/<key>/assets/<name>`.
-    private static func serveArchiveAsset(rest: String, requestOrigin: String? = nil) -> WebProxyResponse {
+    nonisolated private static func serveArchiveAsset(rest: String, requestOrigin: String? = nil) -> WebProxyResponse {
         let notFound = WebProxyResponse.html(404, "<h1>Asset not found</h1>")
         guard let slash = rest.firstIndex(of: "/") else { return notFound }
         let key = String(rest[rest.startIndex..<slash])
@@ -1002,22 +1065,14 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
               !name.hasPrefix(".") else {
             return notFound
         }
-        let path = WebLibrary.archiveDir(forKey: key)
-            .appendingPathComponent("assets")
-            .appendingPathComponent(name)
-        guard let bytes = try? Data(contentsOf: path) else { return notFound }
+        guard let path = archiveResource(key: key, relativePath: "assets/\(name)"),
+              let bytes = try? Data(contentsOf: path) else { return notFound }
         var headers = [
             "Content-Type": WebArchive.contentTypeForName(name),
-            "Cache-Control": "public, max-age=604800",
+            "Cache-Control": "no-store",
         ]
-        // Pages and assets live on different origins now; CORS-mode loads
-        // (SVG <use>, crossorigin attrs) need an ACAO header. Never `*` — echo
-        // the requesting origin only when it is one of our own reader origins
-        // (`vellum-web://…`), so a hostile page rendered in the reader can't
-        // read another origin's asset bytes through this handler. Same-origin
-        // loads send no Origin and don't need the header at all.
-        if let origin = requestOrigin,
-           origin.lowercased().hasPrefix("\(scheme)://") {
+        // The owned route already checked this against the exact reader origin.
+        if let origin = requestOrigin {
             headers["Access-Control-Allow-Origin"] = origin
             headers["Vary"] = "Origin"
         }
@@ -1026,28 +1081,48 @@ final class VellumWebSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// Serve the installed self-contained snapshot with asset placeholders
     /// resolved to the reserved asset authority.
-    private static func serveInstalledSnapshot(key: String, pageUrl: String) -> WebProxyResponse? {
-        let snapshot = WebLibrary.archiveDir(forKey: key).appendingPathComponent("snapshot.html")
-        guard let html = try? String(contentsOf: snapshot, encoding: .utf8) else { return nil }
-        let resolved = WebArchive.resolveAssetPlaceholders(
-            html, assetBase: "\(scheme)://\(assetHost)/\(key)")
-        return .html(200, WebHtml.prepareHtml(resolved, pageUrl: pageUrl, offline: true))
+    private func serveInstalledSnapshot(key: String, pageUrl: String) async -> WebProxyResponse? {
+        guard let owner, owner.key == key else { return nil }
+        let response = await Task.detached {
+            guard let snapshot = Self.archiveResource(key: key, relativePath: "snapshot.html"),
+                  let html = try? String(contentsOf: snapshot, encoding: .utf8) else { return nil as WebProxyResponse? }
+            let resolved = WebArchive.resolveAssetPlaceholders(
+                html, assetBase: "\(Self.scheme)://\(Self.assetHost)/\(key)/\(owner.token.uuidString)")
+            return WebProxyResponse.html(200, WebHtml.prepareHtml(resolved, pageUrl: pageUrl, offline: true))
+        }.value
+        return self.owner == owner ? response : nil
+    }
+
+    nonisolated private static func archiveResource(key: String, relativePath: String) -> URL? {
+        let root = WebLibrary.archiveDir(forKey: key).deletingLastPathComponent()
+            .resolvingSymlinksInPath().appendingPathComponent(key, isDirectory: true)
+        let resource = root.appendingPathComponent(relativePath).standardizedFileURL
+        guard resource.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else { return nil }
+        return resource
     }
 
     /// Explicit snapshot request (navigation-failure fallback): installed
     /// archive snapshot first, then the plain saved snapshot, else Vellum's
     /// own error page — the webview must never end up on WebKit's native one.
     private func serveSnapshotFallback(key: String) async -> WebProxyResponse {
+        guard let capturedOwner = owner, capturedOwner.key == key else {
+            return .html(403, "<h1>Reader unavailable</h1>")
+        }
         guard !key.isEmpty, key.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
             return .html(404, "<h1>Snapshot not found</h1>")
         }
         let record = await storage.loadRecord(forKey: key)
+        guard owner == capturedOwner, !Task.isCancelled else {
+            return .html(403, "<h1>Reader changed</h1>")
+        }
         let pageUrl = record?.url ?? ""
-        if let response = Self.serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
+        if let response = await serveInstalledSnapshot(key: key, pageUrl: pageUrl) {
             return response
         }
-        if let html = try? String(
-            contentsOf: WebLibrary.snapshotPath(forKey: key), encoding: .utf8) {
+        let html = await Task.detached {
+            try? String(contentsOf: WebLibrary.snapshotPath(forKey: key), encoding: .utf8)
+        }.value
+        if let html {
             return .html(200, WebHtml.prepareHtml(html, pageUrl: pageUrl, offline: true))
         }
         return .html(404, WebHtml.prepareHtml(

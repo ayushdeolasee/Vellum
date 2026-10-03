@@ -556,6 +556,7 @@ final class WebViewerController_iOS: NSObject {
     @ObservationIgnored private weak var runtime: LiveTabRuntime?
     @ObservationIgnored private var loadedDocumentUrl: String?
     @ObservationIgnored private var attached = false
+    @ObservationIgnored private var mountGeneration = UUID()
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
     @ObservationIgnored private var supportsPositions = false
@@ -589,6 +590,8 @@ final class WebViewerController_iOS: NSObject {
         super.init()
     }
 
+    @ObservationIgnored private lazy var schemeHandler = VellumWebSchemeHandler(storage: storage)
+
     @ObservationIgnored private lazy var _webView: VellumWebView = makeWebView()
     var webView: VellumWebView { _webView }
     /// Whether `_webView` has actually been materialised.
@@ -612,7 +615,6 @@ final class WebViewerController_iOS: NSObject {
 
     private func makeWebView() -> VellumWebView {
         let configuration = WKWebViewConfiguration()
-        let schemeHandler = VellumWebSchemeHandler(storage: storage)
         configuration.setURLSchemeHandler(
             schemeHandler, forURLScheme: VellumWebSchemeHandler.scheme)
         configuration.setURLSchemeHandler(
@@ -708,6 +710,7 @@ final class WebViewerController_iOS: NSObject {
         }
 
         guard document.kind == .web else { return }
+        schemeHandler.bind(to: document.pdfPath)
 
         // Re-evaluation of the SwiftUI body is common during tab-strip edits,
         // and a remount is now routine (a tab dragged between panes, a warm tab
@@ -791,6 +794,8 @@ final class WebViewerController_iOS: NSObject {
     func detach() {
         guard attached else { return }
         attached = false
+        mountGeneration = UUID()
+        schemeHandler.bind(to: nil)
         cancelPendingArchive()
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
@@ -1752,12 +1757,17 @@ final class WebViewerController_iOS: NSObject {
         processReloadedUrl = nil
         closeNotePopovers()
         let outgoing = app.document?.pdfPath
+        let generation = mountGeneration
         Task { [weak self] in
             guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                  let self else { return }
+                  let self, self.attached, self.mountGeneration == generation,
+                  self.mountTabId == tabId, app.activeTabId == tabId,
+                  app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath
+            else { return }
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.loadedDocumentUrl = rebound.pdfPath
+            self.schemeHandler.bind(to: rebound.pdfPath)
             self.initCount = 0
             self.webView.load(
                 URLRequest(url: VellumWebSchemeHandler.proxyUrl(for: rebound.pdfPath)))
@@ -1796,10 +1806,15 @@ final class WebViewerController_iOS: NSObject {
             // belong to the outgoing document.
             cancelPendingArchive()
             closeNotePopovers()
+            let generation = mountGeneration
             Task { [weak self] in
                 guard let rebound = await app.webNavigated(tabId: tabId, url: reportedUrl),
-                      let self else { return }
+                      let self, self.attached, self.mountGeneration == generation,
+                      self.mountTabId == tabId, app.activeTabId == tabId,
+                      app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath
+                else { return }
                 self.loadedDocumentUrl = rebound.pdfPath
+                self.schemeHandler.bind(to: rebound.pdfPath)
                 // Server redirect: the destination's HTML was served under
                 // the pre-redirect request URL, so window.location still
                 // shows the old path and strict client routers would hydrate
@@ -2098,7 +2113,7 @@ extension WebViewerController_iOS: WKNavigationDelegate, WKUIDelegate {
         guard webView.url?.host != VellumWebSchemeHandler.snapshotHost else { return }
         initCount = 0
         webView.load(URLRequest(
-            url: VellumWebSchemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
+            url: schemeHandler.snapshotUrl(forKey: WebLibrary.pageKey(doc.pdfPath))))
     }
 }
 
