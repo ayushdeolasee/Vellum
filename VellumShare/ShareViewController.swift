@@ -47,11 +47,29 @@ final class ShareViewController: UIViewController {
                 reportedHTMLByteCount: input.htmlByteCount,
                 maxHTMLBytes: CaptureDOMPolicy.maximumByteCount,
                 now: .now)
-            try CaptureInboxWriter(layout: layout).write(record)
+            _ = try await Task.detached(priority: .userInitiated) {
+                try CaptureInboxWriter(layout: layout).write(record)
+            }.value
             CaptureWakeup.start(for: input.url)
             extensionContext?.completeRequest(returningItems: [])
         } catch is CancellationError {
             extensionContext?.cancelRequest(withError: CancellationError())
+        } catch let error as CaptureInboxError {
+            // Keep the reason visible until acknowledged. Immediately cancelling
+            // the extension would dismiss the capacity/recovery instructions.
+            statusLabel.text = error.localizedDescription
+            var configuration = UIButton.Configuration.filled()
+            configuration.title = "Done"
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24)
+            let done = UIButton(configuration: configuration, primaryAction: UIAction { [weak self] _ in
+                MainActor.assumeIsolated { self?.extensionContext?.cancelRequest(withError: error) }
+            })
+            done.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(done)
+            NSLayoutConstraint.activate([
+                done.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                done.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 20),
+            ])
         } catch {
             statusLabel.text = "Couldn’t save this page."
             extensionContext?.cancelRequest(withError: error)

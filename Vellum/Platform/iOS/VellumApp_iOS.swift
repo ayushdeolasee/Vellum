@@ -57,7 +57,8 @@ struct VellumApp_iOS: App {
             residency: TabResidencyManager(budget: idiom.residencyBudget),
             layout: idiom.paneLayout,
             storageCoordinator: storageCoordinator,
-            webLibraryStorage: webLibraryStorage)
+            webLibraryStorage: webLibraryStorage,
+            captureIngestion: captureIngestion)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         _inkRegistry = State(initialValue: InkRegistry_iOS())
@@ -75,6 +76,7 @@ struct VellumApp_iOS: App {
             // has started storage. Join the same idempotent lifecycle gate the
             // foreground uses before asking the web-library adapter to write.
             await storageCoordinator.start()
+            await captureIngestion?.resume()
             _ = await captureIngestion?.drain()
         }
 
@@ -240,6 +242,7 @@ struct VellumApp_iOS: App {
                 backgroundFlushController.invalidate()
                 Task { @MainActor in
                     await workspace.foregroundStorageCoordinator()
+                    await captureIngestion?.resume()
                     _ = await captureIngestion?.drain()
                     workspace.integrations.run { await workspace.integrations.foregroundRefresh() }
                 }
@@ -304,6 +307,10 @@ struct VellumApp_iOS: App {
         let task = Task { @MainActor in
             defer { flushController.finish(generation: generation) }
             await workspace.awaitMaintenance()
+            guard flushController.isCurrent(generation), !Task.isCancelled else { return }
+            await DocumentPickerCoordinator_iOS.shared.awaitPendingExportCompletions()
+            guard flushController.isCurrent(generation), !Task.isCancelled else { return }
+            await workspace.captureIngestion?.prepareForBackground()
             await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their position write and session
             // close behind the UI (AppStore.closeTab) and are no longer in

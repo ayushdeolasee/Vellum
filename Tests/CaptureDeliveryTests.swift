@@ -135,6 +135,51 @@ struct CaptureDeliveryTests {
         #expect(await ingestion.drain() == CaptureDrainReport())
         #expect(await ledger.isUnread(forKey: key) == false)
     }
+    @Test("Background cancellation retains intent and foreground retry commits once")
+    func backgroundDrainKeepsPendingUntilForegroundRetry() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-background-recovery")
+        let previousWebRoot = WebLibrary.storeDirOverride
+        WebLibrary.storeDirOverride = layout.container.appendingPathComponent("web")
+        defer {
+            WebLibrary.storeDirOverride = previousWebRoot
+            CaptureFixtures.remove(layout)
+        }
+        let record = CaptureFixtures.record(sourceURL: "https://example.com/\(UUID().uuidString)", outerHTML: nil)
+        let original = try CaptureInboxWriter(layout: layout).write(record)
+        let bytes = try Data(contentsOf: original)
+        let gate = CaptureFetchGate()
+        let ingestion = CaptureIngestion(layout: layout, storage: WebLibraryStorage(),
+            clock: CaptureFixtures.clock, syncEnabled: true,
+            fetch: { url in
+                await gate.pause()
+                try Task.checkCancellation()
+                return CapturePageHTML(html: "<html>recovered</html>", baseURL: url)
+            }, snapshot: { _, html in CapturedSnapshot(html: html, assets: [], skipped: 0) },
+            libraryDidChange: {})
+        let drain = Task { await ingestion.drain() }
+        do { try await gate.waitUntilEntered() }
+        catch { await gate.release(); _ = await drain.value; throw error }
+        let background = Task { await ingestion.prepareForBackground() }
+        do { try await gate.waitUntilCancelled() }
+        catch {
+            await gate.release()
+            _ = await drain.value
+            await background.value
+            throw error
+        }
+        await gate.release()
+        #expect(await drain.value == CaptureDrainReport(retained: 1))
+        await background.value
+        #expect(try Data(contentsOf: original) == bytes)
+        #expect(await ingestion.drain() == CaptureDrainReport(retained: 1))
+        await ingestion.resume()
+        let entry = try #require(try await ingestion.recoveryEntries().first)
+        #expect(try await ingestion.retry(entry) == CaptureDrainReport(ingested: 1))
+        await ingestion.awaitPendingOperations()
+        #expect(try await ingestion.recoveryEntries().isEmpty)
+        #expect(await ingestion.drain() == CaptureDrainReport())
+    }
+
 }
 
 private actor FetchCounter {
@@ -142,5 +187,41 @@ private actor FetchCounter {
 
     func called() {
         count += 1
+    }
+}
+
+private actor CaptureFetchGate {
+    private var entered = false
+    private var cancelled = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func pause() async {
+        entered = true
+        await withTaskCancellationHandler {
+            if !released { await withCheckedContinuation { continuation = $0 } }
+        } onCancel: {
+            Task { await self.markCancelled() }
+        }
+    }
+    private func markCancelled() { cancelled = true }
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !entered {
+            guard ContinuousClock.now < deadline else { throw GateError.didNotEnter }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+    func waitUntilCancelled() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !cancelled {
+            guard ContinuousClock.now < deadline else { throw GateError.didNotCancel }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+    enum GateError: Error { case didNotEnter, didNotCancel }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

@@ -177,27 +177,98 @@ struct CaptureInboxDrainTests {
         #expect(CaptureFixtures.names(in: layout.failed) == [name])
     }
 
-    @Test("A pending record older than the abandon window is quarantined")
-    func abandonedRecordIsQuarantined() async throws {
+    @Test("A valid capture stays available through 31 offline days and ingests once on retry")
+    func oldCaptureRemainsPendingUntilSaved() async throws {
         let layout = CaptureFixtures.scratchLayout("capture-drain")
         defer { CaptureFixtures.remove(layout) }
-        let writer = CaptureInboxWriter(layout: layout)
         let clock = ManualPositionClock(CaptureFixtures.date("2026-08-02T18:00:00.000000+00:00"))
-        let inbox = CaptureInbox(layout: layout, clock: clock, abandonAfter: 30 * 86_400)
-
-        try writer.write(
+        let inbox = CaptureInbox(layout: layout, clock: clock)
+        let url = try CaptureInboxWriter(layout: layout).write(
             CaptureFixtures.record(capturedAt: "2026-08-02T17:00:00.000000+00:00"))
+        clock.advance(by: 31 * 86_400)
+        #expect(await inbox.drain { _, _ in throw IngestFailure() } == CaptureDrainReport(retained: 1))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(CaptureFixtures.names(in: layout.failed).isEmpty)
+        let entry = try #require(try await inbox.recoveryEntries().first)
+        #expect(entry.canRetry)
+        try await inbox.retry(entry)
+        #expect(await inbox.drain { _, key in .ingested(key) } == CaptureDrainReport(ingested: 1))
+        #expect(await inbox.pendingCount() == 0)
+        #expect(await inbox.drain { _, key in .ingested(key) } == CaptureDrainReport())
+    }
 
-        // One day in: still a live capture, and an ingest failure keeps it.
-        clock.advance(by: 86_400)
-        let stillLive = await inbox.drain { _, _ in throw IngestFailure() }
-        #expect(stillLive == CaptureDrainReport(retained: 1))
+    @Test("Valid failed captures can be exported and retried without overwriting a pending copy")
+    func failedCaptureRecoveryPreservesCollidingCopy() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-recovery")
+        defer { CaptureFixtures.remove(layout) }
+        let url = try CaptureInboxWriter(layout: layout).write(CaptureFixtures.record(sourceURL: "https://example.com/new"))
+        let pendingBytes = try Data(contentsOf: url)
+        let legacy = CaptureFixtures.record(capturedAt: "2020-01-01T00:00:00.000000+00:00", sourceURL: "https://example.com/old")
+        let legacyBytes = try CaptureCoding.encode(legacy)
+        let failed = layout.failed.appendingPathComponent(url.lastPathComponent)
+        try legacyBytes.write(to: failed)
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
+        let entry = try #require(try await inbox.recoveryEntries().first { $0.state == .failed })
+        #expect(entry.canRetry)
+        let exported = try await inbox.export(entry)
+        defer { try? FileManager.default.removeItem(at: exported.deletingLastPathComponent()) }
+        #expect(try Data(contentsOf: exported) == legacyBytes)
+        try await inbox.retry(entry)
+        #expect(try Data(contentsOf: url) == pendingBytes)
+        #expect(await inbox.pendingCount() == 2)
+        #expect(CaptureFixtures.names(in: layout.failed).isEmpty)
+        #expect(await inbox.drain { _, key in .ingested(key) } == CaptureDrainReport(ingested: 2))
+    }
 
-        // Thirty days in: it will never succeed, so stop retrying it forever.
-        clock.advance(by: 30 * 86_400)
-        let report = await inbox.drain { _, key in .ingested(key) }
-        #expect(report == CaptureDrainReport(quarantined: 1))
-        #expect(CaptureFixtures.names(in: layout.failed).count == 1)
+    @Test("Quarantine never overwrites an existing recovery file and oversized files stay exportable")
+    func quarantineAndBoundedReadPreserveBytes() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-bounds")
+        defer { CaptureFixtures.remove(layout) }
+        try layout.createDirectories()
+        let name = "large.json"
+        let pending = layout.pending.appendingPathComponent(name)
+        let existing = layout.failed.appendingPathComponent(name)
+        let kept = try CaptureCoding.encode(CaptureFixtures.record())
+        try kept.write(to: existing)
+        #expect(FileManager.default.createFile(atPath: pending.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: pending)
+        try handle.truncate(atOffset: UInt64(CaptureInboxFiles.maximumRecordBytes + 1))
+        try handle.close()
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
+        #expect(await inbox.drain { _, key in .ingested(key) } == CaptureDrainReport(quarantined: 1))
+        #expect(try Data(contentsOf: existing) == kept)
+        let entries = try await inbox.recoveryEntries()
+        #expect(entries.count == 2)
+        let large = try #require(entries.first { !$0.canRetry })
+        let exported = try await inbox.export(large)
+        defer { try? FileManager.default.removeItem(at: exported.deletingLastPathComponent()) }
+        #expect(try CaptureInboxFiles.regularFileSize(exported) == Int64(CaptureInboxFiles.maximumRecordBytes + 1))
+        try await inbox.delete(large)
+        #expect(try Data(contentsOf: existing) == kept)
+    }
+
+    @Test("Deleting a pending capture joins its active ingest before touching its bytes")
+    func deleteJoinsActiveIngest() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-delete")
+        defer { CaptureFixtures.remove(layout) }
+        let url = try CaptureInboxWriter(layout: layout).write(CaptureFixtures.record())
+        let inbox = CaptureInbox(layout: layout, clock: CaptureFixtures.clock)
+        let entry = try #require(try await inbox.recoveryEntries().first)
+        let gate = CaptureRecoveryGate()
+        let drain = Task { await inbox.drain { _, key in await gate.pause(); return .ingested(key) } }
+        do { try await gate.waitUntilEntered() }
+        catch {
+            await gate.release()
+            _ = await drain.value
+            throw error
+        }
+        let deletion = Task { try await inbox.delete(entry) }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        await gate.release()
+        #expect(await drain.value == CaptureDrainReport(ingested: 1))
+        try await deletion.value
+        #expect(await inbox.pendingCount() == 0)
     }
 
     @Test("A URL-only record reaches ingest with no HTML, so the app fetches the page itself")
@@ -310,5 +381,28 @@ private final class Locked<Value>: @unchecked Sendable {
             defer { lock.unlock() }
             stored = newValue
         }
+    }
+}
+
+private actor CaptureRecoveryGate {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func pause() async {
+        entered = true
+        if !released { await withCheckedContinuation { continuation = $0 } }
+    }
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !entered {
+            guard ContinuousClock.now < deadline else { throw GateError.didNotEnter }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+    enum GateError: Error { case didNotEnter }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

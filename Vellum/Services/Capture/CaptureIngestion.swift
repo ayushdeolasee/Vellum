@@ -47,6 +47,8 @@ actor CaptureIngestion {
     private let libraryDidChange: LibraryDidChange
     private var drainTask: Task<CaptureDrainReport, Never>?
     private var drainGeneration = 0
+    private var recoveryTasks: [UUID: Task<Void, Never>] = [:]
+    private var acceptsIngestion = true
 
     init(
         layout: CaptureInboxLayout,
@@ -84,6 +86,7 @@ actor CaptureIngestion {
     @discardableResult
     func drain() async -> CaptureDrainReport {
         guard syncEnabled else { return CaptureDrainReport() }
+        guard acceptsIngestion else { return CaptureDrainReport(retained: await inbox.pendingCount()) }
         if let drainTask {
             return await drainTask.value
         }
@@ -96,7 +99,8 @@ actor CaptureIngestion {
         drainGeneration += 1
         let generation = drainGeneration
         let task = Task {
-            await inbox.drain { record, key in
+            guard !Task.isCancelled else { return CaptureDrainReport(retained: await inbox.pendingCount()) }
+            return await inbox.drain { record, key in
                 try await Self.ingest(
                     record: record, key: key, storage: storage, unreadLedger: unreadLedger,
                     fetch: fetch, snapshot: snapshot)
@@ -113,6 +117,65 @@ actor CaptureIngestion {
         return report
     }
 
+    /// Backgrounding stops new network work but keeps every unsaved intent.
+    /// Foreground/wake triggers join this cancellation before restarting a drain.
+    func prepareForBackground() async {
+        acceptsIngestion = false
+        drainTask?.cancel()
+        await inbox.cancelAndJoinDrain()
+        await awaitPendingOperations()
+    }
+
+    func resume() async {
+        await awaitPendingOperations()
+        acceptsIngestion = true
+    }
+
+    func recoveryEntries() async throws -> [CaptureInbox.RecoveryEntry] {
+        try await inbox.recoveryEntries()
+    }
+
+    func retry(_ entry: CaptureInbox.RecoveryEntry) async throws -> CaptureDrainReport {
+        guard syncEnabled else { throw CaptureInboxError.io("Capture saving is disabled in this session.") }
+        return try await performRecovery { [self] in
+            try await inbox.retry(entry)
+            return await drain()
+        }
+    }
+
+    func delete(_ entry: CaptureInbox.RecoveryEntry) async throws {
+        try await performRecovery { [inbox] in try await inbox.delete(entry) }
+    }
+
+    func export(_ entry: CaptureInbox.RecoveryEntry) async throws -> URL {
+        try await performRecovery { [inbox] in try await inbox.export(entry) }
+    }
+
+    func discardExport(_ url: URL) async throws {
+        try await performRecovery { [inbox] in try await inbox.discardExport(url) }
+    }
+
+    /// A recovery sheet can disappear while its operation runs. The service
+    /// retains every handle so lifecycle code and tests can still join it.
+    private func performRecovery<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let id = UUID()
+        let task = Task { try await operation() }
+        recoveryTasks[id] = Task { _ = try? await task.value }
+        defer { recoveryTasks[id] = nil }
+        return try await task.value
+    }
+
+    func awaitPendingOperations() async {
+        while drainTask != nil || !recoveryTasks.isEmpty {
+            let tasks = Array(recoveryTasks.values)
+            _ = await drainTask?.value
+            for task in tasks { await task.value }
+            await Task.yield()
+        }
+    }
+
     private static func ingest(
         record: CaptureRecord,
         key: DocumentKey,
@@ -121,6 +184,7 @@ actor CaptureIngestion {
         fetch: Fetch,
         snapshot: Snapshot
     ) async throws -> CaptureIngestOutcome {
+        try Task.checkCancellation()
         let normalizedURL = try WebUrl.normalize(record.sourceURL)
 
         if let existing = await storage.loadRecord(forKey: key.hash),
@@ -139,6 +203,7 @@ actor CaptureIngestion {
         let page = try await CapturePageResolver.resolve(
             record: record, normalizedURL: normalizedURL, fetch: fetch)
         let captured = await snapshot(page.baseURL, page.html)
+        try Task.checkCancellation()
         let pagesJSON = try WebArchive.encodePagesJson([])
         let existing = await storage.loadRecord(forKey: key.hash)
         let title = normalizedTitle(record.title) ?? existing?.title

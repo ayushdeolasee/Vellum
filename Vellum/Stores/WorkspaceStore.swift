@@ -176,6 +176,9 @@ final class WorkspaceStore {
 
     /// A dedicated AiStore backing the Settings window's AI tab. Not tied to a
     /// document; only its `settings` are used. Changes broadcast to every pane.
+    /// Same device-local capture owner used by foreground and background drains.
+    let captureIngestion: CaptureIngestion?
+
     let settingsAi: AiStore
 
     #if os(macOS)
@@ -579,8 +582,10 @@ final class WorkspaceStore {
         positions: DocumentPositionService? = nil,
         storageCoordinator: StorageCoordinator = StorageCoordinator(),
         webLibraryStorage: WebLibraryStorage? = nil,
-        documentAccess: DocumentAccessResolver = .live
+        documentAccess: DocumentAccessResolver = .live,
+        captureIngestion: CaptureIngestion? = nil
     ) {
+        self.captureIngestion = captureIngestion
         self.residency = residency
         self.sessions = sessions
         self.integrations = integrations
