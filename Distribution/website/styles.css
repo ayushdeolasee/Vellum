@@ -751,6 +751,97 @@ footer .container {
   }
 }
 
+/* Keep motion brief and finite so the page settles into a quiet reading space. */
+@media (prefers-reduced-motion: no-preference) {
+  .section-intro.motion-arrived > *,
+  .feature-copy.motion-arrived > :not(.feature-list),
+  .feature-copy.motion-arrived .feature-list li {
+    animation: reading-arrival 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .section-intro.motion-arrived h2,
+  .feature-copy.motion-arrived h3 { animation-delay: 80ms; }
+
+  .section-intro.motion-arrived > p:last-child,
+  .feature-copy.motion-arrived > p:not(.feature-label) { animation-delay: 160ms; }
+
+  .feature-copy.motion-arrived .feature-list li:nth-child(1) { animation-delay: 220ms; }
+  .feature-copy.motion-arrived .feature-list li:nth-child(2) { animation-delay: 280ms; }
+  .feature-copy.motion-arrived .feature-list li:nth-child(3) { animation-delay: 340ms; }
+  .feature-copy.motion-arrived .feature-list li:nth-child(4) { animation-delay: 400ms; }
+
+  .feature-story .app-window.motion-arrived {
+    animation: library-arrival 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .hero-copy > * {
+    animation: reading-arrival 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .hero-copy h1 { animation-delay: 70ms; }
+  .hero-copy .tagline { animation-delay: 140ms; }
+  .hero-actions { animation-delay: 210ms; }
+  .reading-formats { animation-delay: 280ms; }
+
+  .hero-window {
+    animation: library-arrival 900ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both;
+  }
+
+  .btn-download svg {
+    transition: transform 220ms ease;
+  }
+
+  .btn-download:is(:hover, :focus-visible) svg {
+    transform: translateY(3px);
+  }
+
+  .btn-download:active {
+    transform: translateY(0) scale(0.98);
+  }
+
+  .signup-dialog[open] {
+    animation: reading-arrival 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .signup-dialog[open]::backdrop {
+    animation: backdrop-arrival 220ms ease-out;
+  }
+
+  .signup-success:not([hidden]) > span {
+    animation: reading-arrival 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes reading-arrival {
+  from {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* Individual translate/scale preserve the screenshot's existing rotation. */
+@keyframes library-arrival {
+  from {
+    opacity: 0;
+    translate: 0 24px;
+    scale: 0.98;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    scale: 1;
+  }
+}
+
+@keyframes backdrop-arrival {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -758,5 +849,9 @@ footer .container {
 
   .btn-download {
     transition: none;
+  }
+
+  .btn-download:hover {
+    transform: none;
   }
 }
