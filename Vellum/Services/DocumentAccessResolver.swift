@@ -86,6 +86,14 @@ struct SystemDocumentAccessAdapter: DocumentAccessAdapter {
 }
 
 struct DocumentAccessResolver: Sendable {
+    // Cancellation must close the session without deleting a copied PDF
+    // after its durable bookmark has already replaced the previous entry.
+    private struct CommittedOpenCancellation: Error {}
+
+    // Destination selection and copy used to be serialized by the main
+    // actor. Keep that atomicity when imports run on background threads.
+    private static let localCopyLock = NSLock()
+
     static let live = DocumentAccessResolver(
         store: .shared,
         adapter: SystemDocumentAccessAdapter())
@@ -140,8 +148,10 @@ struct DocumentAccessResolver: Sendable {
                 sessionId: sessionId,
                 open: open,
                 close: close)
+        } catch is CommittedOpenCancellation {
+            throw CancellationError()
         } catch {
-            removeStagedCopyIfNeeded(local)
+            await removeStagedCopyIfNeeded(local)
             throw error
         }
     }
@@ -150,13 +160,15 @@ struct DocumentAccessResolver: Sendable {
     func restoreSavedPDF(
         _ savedDocument: DocumentInfo,
         sessionId: String,
-        resolveExistingPath: (String) -> String?,
+        resolveExistingPath: @escaping @Sendable (String) -> String?,
         open: (String, String) async throws -> DocumentInfo,
         close: (String) async -> Void = { _ in }
     ) async throws -> DocumentInfo {
         let key = DocumentAccessBookmarkStore.key(for: savedDocument)
 
-        if let entry = store.entry(forKey: key),
+        let entry = try await performFileOperation { store.entry(forKey: key) }
+        try Task.checkCancellation()
+        if let entry,
            let opened = await tryRestoreCandidate(
             bookmarkData: entry.bookmarkData,
             preferredAccesses: [.local, .external],
@@ -169,6 +181,7 @@ struct DocumentAccessResolver: Sendable {
             return opened
         }
 
+        try Task.checkCancellation()
         if let bookmarkData = savedDocument.bookmarkData,
            let opened = await tryRestoreCandidate(
             bookmarkData: bookmarkData,
@@ -182,13 +195,16 @@ struct DocumentAccessResolver: Sendable {
             return opened
         }
 
+        try Task.checkCancellation()
         var paths: [String] = []
-        if let resolvedPath = resolveExistingPath(savedDocument.pdfPath) {
+        if let resolvedPath = try await performFileOperation({ resolveExistingPath(savedDocument.pdfPath) }) {
             paths.append(resolvedPath)
         }
+        try Task.checkCancellation()
         paths.append(savedDocument.pdfPath)
         var tried: Set<String> = []
         for path in paths where tried.insert(path).inserted {
+            try Task.checkCancellation()
             do {
                 let local = try await localReadableURL(for: URL(fileURLWithPath: path))
                 do {
@@ -200,11 +216,14 @@ struct DocumentAccessResolver: Sendable {
                         sessionId: sessionId,
                         open: open,
                         close: close)
+                } catch is CommittedOpenCancellation {
+                    throw CancellationError()
                 } catch {
-                    removeStagedCopyIfNeeded(local)
+                    await removeStagedCopyIfNeeded(local)
                     throw error
                 }
             } catch {
+                try Task.checkCancellation()
                 continue
             }
         }
@@ -287,7 +306,9 @@ struct DocumentAccessResolver: Sendable {
         open: (String, String) async throws -> DocumentInfo,
         close: (String) async -> Void
     ) async -> DocumentInfo? {
-        guard let resolved = resolveBookmark(bookmarkData, preferred: preferredAccesses) else {
+        guard let resolved = try? await performFileOperation({
+            resolveBookmark(bookmarkData, preferred: preferredAccesses)
+        }), !Task.isCancelled else {
             return nil
         }
         do {
@@ -301,8 +322,10 @@ struct DocumentAccessResolver: Sendable {
                     sessionId: sessionId,
                     open: open,
                     close: close)
+            } catch is CommittedOpenCancellation {
+                throw CancellationError()
             } catch {
-                removeStagedCopyIfNeeded(local)
+                await removeStagedCopyIfNeeded(local)
                 throw error
             }
         } catch {
@@ -320,7 +343,8 @@ struct DocumentAccessResolver: Sendable {
         open: (String, String) async throws -> DocumentInfo,
         close: (String) async -> Void
     ) async throws -> DocumentInfo {
-        try validate(url: localURL, expectedDocId: expectedDocId)
+        try await performFileOperation { try validate(url: localURL, expectedDocId: expectedDocId) }
+        try Task.checkCancellation()
         var opened: DocumentInfo
         do {
             opened = try await open(localURL.path, sessionId)
@@ -329,11 +353,23 @@ struct DocumentAccessResolver: Sendable {
             throw DocumentAccessError.unavailable(url.path)
         }
         do {
+            try Task.checkCancellation()
             try validate(opened: opened, expectedDocId: expectedDocId)
             let key = DocumentAccessBookmarkStore.key(for: opened)
-            persistLocalBookmarkBestEffort(for: opened)
-            if let priorKey, priorKey != key {
-                try? store.remove(key: priorKey)
+            let validatedDocument = opened
+            let bookmarkCommitted = try await performFileOperation {
+                let committed = persistLocalBookmarkBestEffort(for: validatedDocument)
+                // Finish the rekey once the new bookmark is committed. A
+                // cancelled open keeps that file but never adopts its session.
+                if !committed { try Task.checkCancellation() }
+                if let priorKey, priorKey != key {
+                    try? store.remove(key: priorKey)
+                }
+                return committed
+            }
+            if Task.isCancelled {
+                if bookmarkCommitted { throw CommittedOpenCancellation() }
+                throw CancellationError()
             }
             opened.bookmarkData = nil
             return opened
@@ -346,36 +382,52 @@ struct DocumentAccessResolver: Sendable {
         }
     }
 
-    private func persistLocalBookmarkBestEffort(for document: DocumentInfo) {
+    private func persistLocalBookmarkBestEffort(for document: DocumentInfo) -> Bool {
         let url = URL(fileURLWithPath: document.pdfPath)
         guard adapter.fileExists(url),
               let bookmarkData = try? adapter.makeBookmark(for: url, access: .local)
-        else { return }
+        else { return false }
+        guard !Task.isCancelled else { return false }
         let key = DocumentAccessBookmarkStore.key(for: document)
-        try? store.upsert(key: key, lastKnownPath: document.pdfPath, bookmarkData: bookmarkData)
+        do {
+            try store.upsert(key: key, lastKnownPath: document.pdfPath, bookmarkData: bookmarkData)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func localReadableURL(
         for url: URL,
         access: DocumentBookmarkAccess = .external
     ) async throws -> (url: URL, staged: Bool) {
-        if isAppOwnedURL(url) {
-            return (url, false)
-        }
-        return try await withSecurityScopeAsyncIfNeeded(to: url, access: access) {
-            guard adapter.fileExists(url) else {
-                throw DocumentAccessError.unavailable(url.path)
+        let local = try await performFileOperation {
+            if isAppOwnedURL(url) {
+                return (url: url, staged: false)
             }
-            let destination = uniqueLocalDestination(for: url.lastPathComponent)
-            do {
-                try FileManager.default.copyItem(at: url, to: destination)
-                return (destination, true)
-            } catch {
-                try? FileManager.default.removeItem(at: destination)
-                throw DocumentAccessError.storeUnavailable(
-                    "Failed to copy PDF into the local library: \(error.localizedDescription)")
+            return try withSecurityScopeIfNeeded(to: url, access: access) {
+                Self.localCopyLock.lock()
+                defer { Self.localCopyLock.unlock() }
+                try Task.checkCancellation()
+                guard adapter.fileExists(url) else {
+                    throw DocumentAccessError.unavailable(url.path)
+                }
+                let destination = uniqueLocalDestination(for: url.lastPathComponent)
+                do {
+                    try FileManager.default.copyItem(at: url, to: destination)
+                    return (url: destination, staged: true)
+                } catch {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw DocumentAccessError.storeUnavailable(
+                        "Failed to copy PDF into the local library: \(error.localizedDescription)")
+                }
             }
         }
+        if Task.isCancelled {
+            await removeStagedCopyIfNeeded(local)
+            try Task.checkCancellation()
+        }
+        return local
     }
 
     private func uniqueLocalDestination(for filename: String) -> URL {
@@ -394,9 +446,29 @@ struct DocumentAccessResolver: Sendable {
         return candidate
     }
 
-    private func removeStagedCopyIfNeeded(_ local: (url: URL, staged: Bool)) {
+    private func removeStagedCopyIfNeeded(_ local: (url: URL, staged: Bool)) async {
         guard local.staged else { return }
-        try? FileManager.default.removeItem(at: local.url)
+        // Cleanup still runs after cancellation and is fully joined before the
+        // failed/cancelled open returns to its caller.
+        await Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: local.url)
+        }.value
+    }
+
+    /// Bookmark APIs can wait on FileProvider XPC even for local URLs. Keep
+    /// all synchronous access work off the main actor and join its lifetime.
+    private func performFileOperation<Value: Sendable>(
+        _ operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            return try operation()
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func removePreviousLibraryCopyIfNeeded(_ path: String, replacingWith url: URL) {
@@ -482,20 +554,6 @@ struct DocumentAccessResolver: Sendable {
             }
         }
         return try operation()
-    }
-
-    private func withSecurityScopeAsyncIfNeeded<R>(
-        to url: URL,
-        access: DocumentBookmarkAccess,
-        _ operation: () async throws -> R
-    ) async rethrows -> R {
-        let started = access == .external ? adapter.startAccessing(url) : false
-        defer {
-            if started {
-                adapter.stopAccessing(url)
-            }
-        }
-        return try await operation()
     }
 }
 
