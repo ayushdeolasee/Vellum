@@ -322,6 +322,17 @@ struct StorageSettingsTab: View {
                     .accessibilityIdentifier("storage.migrationStatus")
             }
 
+            if relocationStatus.needsRecovery,
+               WebStorageMigrator.pendingRelocation?.mode == WebStorageMode.custom.rawValue {
+                Button("Reconnect Previous Folder…") {
+                    Task {
+                        await WebStorageRelocator.reconnectPreviousFolder(
+                            coordinator: workspace.storageCoordinator)
+                    }
+                }
+                .accessibilityIdentifier("storage.reconnectPreviousFolder")
+            }
+
             if storageMode != .local, let path = currentLocationPath {
                 LabeledContent("Folder") {
                     Text(path)
@@ -337,8 +348,12 @@ struct StorageSettingsTab: View {
             }
             if storageMode == .custom {
                 Button("Change Folder…") {
-                    guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                    pendingLocation = PendingLocation(mode: .custom, customPath: path)
+                    Task {
+                        guard let selection = await WebStorageRelocator.pickCustomFolder() else { return }
+                        pendingLocation = PendingLocation(
+                            mode: .custom, customPath: selection.path,
+                            customBookmark: selection.bookmarkData)
+                    }
                 }
                 .accessibilityIdentifier("storage.changeFolder")
             }
@@ -389,8 +404,12 @@ struct StorageSettingsTab: View {
                 guard newMode != storageMode else { return }
                 switch newMode {
                 case .custom:
-                    guard let path = WebStorageRelocator.pickCustomFolder() else { return }
-                    pendingLocation = PendingLocation(mode: .custom, customPath: path)
+                    Task {
+                        guard let selection = await WebStorageRelocator.pickCustomFolder() else { return }
+                        pendingLocation = PendingLocation(
+                            mode: .custom, customPath: selection.path,
+                            customBookmark: selection.bookmarkData)
+                    }
                 case .icloud:
                     guard WebStorageSettings.icloudVellumRoot != nil else { return }
                     pendingLocation = PendingLocation(mode: .icloud, customPath: nil)
@@ -659,6 +678,7 @@ struct StorageSettingsTab: View {
     private struct PendingLocation: Identifiable {
         let mode: WebStorageMode
         let customPath: String?
+        var customBookmark: Data? = nil
         var id: String { "\(mode.rawValue):\(customPath ?? "")" }
         var label: String {
             switch mode {
@@ -673,6 +693,7 @@ struct StorageSettingsTab: View {
         WebStorageRelocator.apply(
             mode: choice.mode,
             customPath: choice.customPath,
+            customBookmark: choice.customBookmark,
             coordinator: workspace.storageCoordinator)
         refreshSettings()
         relocationStatus = WebStorageRelocator.status

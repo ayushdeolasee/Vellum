@@ -94,8 +94,9 @@ enum WebStorageRelocator {
         let source = WebStorageLayout.resolve(mode: previous, storeDir: WebLibrary.storeDir)
         let sourceReachable = previous == .local || WebStorageSettings.root(for: previous) != nil
 
-        WebStorageMigrator.recordPendingRelocation(mode: previous, customPath: previousCustomPath)
-        WebStorageSettings.setMode(mode, customPath: customPath, customBookmark: customBookmark)
+        WebStorageMigrator.beginRelocation(
+            from: previous, previousCustomPath: previousCustomPath,
+            to: mode, customPath: customPath, customBookmark: customBookmark)
         // Capture the destination now, from the mode just set — resolving it
         // inside the task could pick up a newer change's mode.
         let destination = WebLibrary.activeLayout
