@@ -400,6 +400,18 @@ enum AiPersistence {
     /// A key whose write FAILED is re-inserted here so it is retried, never
     /// silently dropped.
     @MainActor private static var dirtyKeys: Set<String> = []
+    @MainActor private static var flushingKeys: Set<String> = []
+
+    @MainActor static var hasPendingChanges: Bool {
+        pendingFlush != nil || !dirtyKeys.isEmpty || !flushingKeys.isEmpty
+            || unavailableKeys.contains { cache[$0]?.isEmpty == false }
+    }
+
+    /// Dirty keys leave the queue while their snapshot writes, not when durable.
+    @MainActor static func hasPendingChanges(forKey key: String) -> Bool {
+        dirtyKeys.contains(key) || flushingKeys.contains(key)
+            || (unavailableKeys.contains(key) && cache[key]?.isEmpty == false)
+    }
 
     /// How many times one flush task re-attempts keys whose write keeps failing
     /// before parking them (still dirty) for a later scheduleFlush / the quit
@@ -427,6 +439,7 @@ enum AiPersistence {
                         key: $0, messages: cache[$0] ?? [], document: documents[$0],
                         coordinator: coordinators[$0])
                 }
+                flushingKeys = Set(snapshot.map(\.key))
                 dirtyKeys.removeAll()
                 var failed: [String] = []
                 for entry in snapshot where await !flushConversation(entry) {
@@ -435,6 +448,7 @@ enum AiPersistence {
                 // Re-mark any key whose write failed so its data is retried, never
                 // dropped — a disk-full flush must NOT report success (data loss).
                 for key in failed { dirtyKeys.insert(key) }
+                flushingKeys.removeAll()
 
                 // Done only when the queue is fully drained AND no save slipped in.
                 if flushRevision == revision, dirtyKeys.isEmpty {
@@ -576,14 +590,15 @@ enum AiPersistence {
     }
 
     /// Await any scheduled write — called from applicationShouldTerminate.
-    @MainActor static func awaitPendingFlush() async {
+    @discardableResult
+    @MainActor static func awaitPendingFlush() async -> Bool {
         while let flush = pendingFlush {
             await flush.value
         }
         // A prior flush may have exhausted its retry budget and parked keys still
         // dirty. Give them ONE more chance at quit; if it still fails the data
         // cannot be written now — log loudly rather than exit silently on loss.
-        guard !dirtyKeys.isEmpty else { return }
+        guard !dirtyKeys.isEmpty else { return !hasPendingChanges }
         scheduleFlush()
         while let flush = pendingFlush {
             await flush.value
@@ -591,6 +606,7 @@ enum AiPersistence {
         if !dirtyKeys.isEmpty {
             NSLog("[Vellum] \(dirtyKeys.count) AI conversation(s) could not be flushed before quit; unsaved changes remain in memory only")
         }
+        return !hasPendingChanges
     }
 
     /// Drop the in-memory conversation for `key` and clear any pending-write
@@ -620,6 +636,7 @@ enum AiPersistence {
         if dirtyKeys.remove(oldKey) != nil {
             dirtyKeys.insert(newKey)
         }
+        if flushingKeys.contains(oldKey) { flushingKeys.insert(newKey) }
         if let coordinator = coordinators.removeValue(forKey: oldKey) {
             coordinators[newKey] = coordinator
         }

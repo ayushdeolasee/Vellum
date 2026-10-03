@@ -26,6 +26,9 @@ struct PaneDocumentState_iOS: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarWillImport)) { note in
                 guard let key = note.userInfo?["key"] as? String else { return }
+                if let document = app.document, DocumentIdentity.storageKey(for: document) == key {
+                    pane.ai.cancelActiveRequest()
+                }
                 pane.scratchpad.prepareForExternalImport(matchingKey: key)
             }
             .onReceive(NotificationCenter.default.publisher(for: .vellumDocumentSidecarImported)) { note in
@@ -62,6 +65,7 @@ struct PaneDocumentState_iOS: ViewModifier {
                 // that was just deleted, which is the exact bug the discard path
                 // exists to prevent.
                 if note.userInfo?["chat"] as? Bool == true {
+                    pane.ai.cancelActiveRequest(preservingHistory: false)
                     // Cache already invalidated by the poster; reload re-reads the now
                     // empty disk without writing.
                     Task {
@@ -78,37 +82,27 @@ struct PaneDocumentState_iOS: ViewModifier {
     // MARK: - Per-pane document lifecycle
 
     private func loadDocumentState() async {
-        // This task can run before the app root's startup task. Wait for the
-        // coordinator here so restored documents never treat that launch race
-        // as an unavailable identity migration.
+        let identity = documentIdentity
+        let document = app.document
+        if pane.ai.consumeOwnPromotionReload() { return }
+        pane.ai.cancelActiveRequest()
         await workspace.startStorageCoordinator()
+        guard !Task.isCancelled, identity == documentIdentity else { return }
         pane.annotations.clearAnnotations()
         pane.ai.clearDocumentContext()
-        await pane.scratchpad.clearDocumentContext().value
-        guard app.document != nil else { return }
-        // Scratchpad is the only panel backed by a cold WebKit editor. Restore
-        // its small sidecar first so opening the tab never waits behind a full
-        // PDF annotation scan or AI conversation materialization.
-        await pane.scratchpad.loadForDocument(app.document).value
-        guard !Task.isCancelled else { return }
+        await pane.scratchpad.loadForDocument(document).value
+        guard !Task.isCancelled, identity == documentIdentity, document != nil else { return }
         await pane.annotations.loadAnnotations()
-        guard !Task.isCancelled else { return }
-        // In iCloud mode the document's notes/conversations may be evicted
-        // placeholders — download them off-main before the sync reads below so
-        // they load real bytes rather than degrading to empty.
-        await pane.ai.loadConversationForDocument(
-            app.document, coordinator: workspace.storageCoordinator)
-        // The incoming tab may already have walked its pages; its runtime is
-        // where that survived the switch (`AiStore` only ever holds the pane's
-        // current document).
-        if let tabId = app.activeTabId,
-           let runtime = workspace.existingLiveTabRuntime(for: tabId) {
+        guard !Task.isCancelled, identity == documentIdentity else { return }
+        await pane.ai.loadConversationForDocument(document, coordinator: workspace.storageCoordinator)
+        guard !Task.isCancelled, identity == documentIdentity else { return }
+        if let tabId = app.activeTabId, let runtime = workspace.existingLiveTabRuntime(for: tabId) {
             pane.ai.restorePageTexts(runtime.pageTexts)
         }
     }
 
     private var documentIdentity: PaneDocumentIdentity_iOS {
-        PaneDocumentIdentity_iOS(tabId: app.activeTabId, path: app.document?.pdfPath)
+        PaneDocumentIdentity_iOS(tabId: app.activeTabId, path: app.document?.pdfPath, generation: app.activeDocumentBinding?.generation)
     }
 }
 

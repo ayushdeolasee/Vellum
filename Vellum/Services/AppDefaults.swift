@@ -35,7 +35,9 @@ enum AppDefaults {
     /// from under this one. The binding follows the task tree, so work the
     /// operation starts with `Task { }` inherits it too.
     static func withDefaults<R>(
-        _ defaults: UserDefaults, operation: () async throws -> R
+        _ defaults: UserDefaults,
+        isolation: isolated (any Actor)? = #isolation,
+        operation: () async throws -> R
     ) async rethrows -> R {
         try await $override.withValue(Box(defaults: defaults), operation: operation)
     }

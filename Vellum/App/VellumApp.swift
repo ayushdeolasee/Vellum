@@ -24,6 +24,7 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             guard !isTerminating else { return .terminateLater }
             isTerminating = true
             workspace.beginTermination()
+            workspace.cancelAIRequests()
             terminationTask = Task { @MainActor in
                 await workspace.awaitMaintenance()
                 // Finish external opens before snapshotting tabs or draining

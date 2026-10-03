@@ -968,7 +968,8 @@ struct AiPanel_iOS: View {
     }
 
     private func submit() {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedInput = input
+        let trimmed = submittedInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
         guard aiStore.settings.isConfigured() else {
@@ -983,49 +984,41 @@ struct AiPanel_iOS: View {
         // With only references attached, send a light default prompt so the
         // request is non-empty and the model knows to act on them.
         let messageText = trimmed.isEmpty ? "Help me with the attached reference." : trimmed
-        input = ""
-        aiStore.clearComposerReferences()
-        // Sending is an explicit "show me what happens next", so it re-arms
-        // follow-the-tail even if the reader had scrolled up to compose.
-        followsTail = true
         // Capture the session and context synchronously, before any await, so a
         // tab switch during image capture can't send to the wrong tab.
-        let sessionId = appStore.activeTabId
         let document = appStore.document
         let currentPage = appStore.currentPage
         let numPages = appStore.numPages
         let visiblePages = appStore.visiblePages
         let annotations = annotationStore.annotations
         let pageText = aiStore.pageTexts[currentPage]
+        guard let binding = appStore.activeDocumentBinding else { return }
+        let extract = aiStore.ensureExtractedHandler
+        let capture = aiStore.capturePageImageHandler
         let task = Task {
-            // Resolve the page's text before the vision-fallback decision. On a
-            // cache miss `pageText` is nil, which would wrongly attach an image
-            // for a page that actually has a text layer (sendMessage extracts it
-            // anyway). Extract first so the decision uses the real text.
-            var resolvedPageText = pageText
-            if resolvedPageText == nil {
-                _ = await aiStore.ensureExtracted(pages: [currentPage])
-                resolvedPageText = aiStore.pageTexts[currentPage]
-            }
-            let image: AiPageImageSnapshot?
-            if AiStore.shouldAutoAttachPageImage(pageText: resolvedPageText) {
-                image = await aiStore.capturePageImageHandler?(currentPage)
-            } else {
-                image = nil
-            }
-            guard !Task.isCancelled, appStore.activeTabId == sessionId else { return }
+            guard !Task.isCancelled, appStore.activeDocumentBinding == binding else { return }
             let context = AiContextSnapshot(
-                title: document?.title,
-                numPages: numPages,
-                currentPage: currentPage,
-                visiblePages: visiblePages,
-                annotations: annotations,
-                currentPageImage: image,
-                references: references
-            )
-            await aiStore.sendMessage(messageText, context: context)
+                title: document?.title, numPages: numPages, currentPage: currentPage,
+                visiblePages: visiblePages, annotations: annotations,
+                currentPageImage: nil, references: references)
+            await aiStore.sendMessage(messageText, context: context, expectedBinding: binding,
+                preparePageImage: {
+                    var resolvedPageText = pageText
+                    if resolvedPageText == nil {
+                        _ = await extract?([currentPage])
+                        guard !Task.isCancelled, appStore.activeDocumentBinding == binding else { return nil }
+                        resolvedPageText = aiStore.pageTexts[currentPage]
+                    }
+                    guard AiStore.shouldAutoAttachPageImage(pageText: resolvedPageText) else { return nil }
+                    return await capture?(currentPage)
+                }, onAccepted: {
+                    if input == submittedInput { input = "" }
+                    for reference in references where aiStore.composerReferences.contains(reference) {
+                        aiStore.removeReference(id: reference.id)
+                    }
+                    followsTail = true
+                })
         }
-        // Hand the task to the store so clearing the conversation can cancel it.
         aiStore.registerSendTask(task)
     }
 

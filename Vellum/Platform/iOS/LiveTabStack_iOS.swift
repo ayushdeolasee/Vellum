@@ -104,5 +104,6 @@ private struct LiveTabHost_iOS: View {
 struct PaneDocumentIdentity_iOS: Hashable {
     var tabId: String?
     var path: String?
+    var generation: UUID? = nil
 }
 #endif

@@ -36,6 +36,8 @@ final class SafeClearTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        await app.awaitPendingTabTeardowns()
+        await AiPersistence.awaitPendingFlush()
         await AiPersistence.awaitPendingFlush()
         // Drain every sweep this test armed before the next one installs its own
         // attachment directory: `collectGarbage` resolves `directory` when it
@@ -97,6 +99,7 @@ final class SafeClearTests: XCTestCase {
         store.addLocalMessage(role: .user, content: "B stays visible", id: "b-message")
         XCTAssertTrue(store.redoClear(transaction))
         XCTAssertEqual(store.messages.map(\.content), ["B stays visible"])
+        await app.awaitPendingTabTeardowns()
         XCTAssertEqual(
             AiPersistence.loadConversation(for: documentA).map(\.content),
             ["new work"])

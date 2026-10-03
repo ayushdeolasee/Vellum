@@ -146,22 +146,32 @@ final class AnnotationStore {
             isPinned: !annotation.pinned))
     }
 
-    /// Capture the tab before scheduling, then join the write on close/quit.
+    /// Capture the original owner before scheduling, then join the existing
+    /// resource lane so navigation, replacement and quit wait for this Save.
     func saveNote(_ input: UpdateAnnotationInput, completion: @escaping @MainActor (Bool) -> Void) {
-        guard let sessionId = app.activeTabId else { completion(false); return }
-        let task = Task { [self] in
-            let saved = await updateAnnotation(input, sessionId: sessionId)
+        guard let document = app.document, let binding = app.activeDocumentBinding else {
+            completion(false)
+            return
+        }
+        let backend = sessions.documentSession(sessionId: binding.tabId)
+        _ = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { [self] _ in
+            let saved = await updateAnnotation(input, binding: binding, backend: backend)
             completion(saved)
         }
-        app.registerDocumentPersistence(task, sessionId: sessionId)
     }
 
     @discardableResult
-    func updateAnnotation(_ input: UpdateAnnotationInput, sessionId origin: String? = nil) async -> Bool {
-        guard let sessionId = origin ?? app.activeTabId else { return false }
+    func updateAnnotation(_ input: UpdateAnnotationInput) async -> Bool {
+        guard let binding = app.activeDocumentBinding else { return false }
+        return await updateAnnotation(input, binding: binding,
+            backend: sessions.documentSession(sessionId: binding.tabId))
+    }
+
+    private func updateAnnotation(
+        _ input: UpdateAnnotationInput, binding: DocumentBinding, backend: (any DocumentSession)?
+    ) async -> Bool {
         let pendingCreate = pendingCreates[input.id]
-        // Optimistic update
-        if app.activeTabId == sessionId {
+        if app.activeDocumentBinding == binding {
             annotations = Annotation.sortedForDisplay(annotations.map { annotation in
                 guard annotation.id == input.id else { return annotation }
                 var next = annotation
@@ -176,17 +186,22 @@ final class AnnotationStore {
         }
         if let pendingCreate, !(await pendingCreate.value) { return false }
         do {
-            let updated = try await sessions.updateAnnotation(sessionId: sessionId, input: input)
+            let updated: Bool
+            if let backend {
+                updated = try await backend.updateAnnotation(input)
+            } else {
+                // Compatibility for services without a concrete backend seam:
+                // never resolve a session after its original binding was reused.
+                guard app.documentBinding(for: binding.tabId) == binding else { return false }
+                updated = try await sessions.updateAnnotation(sessionId: binding.tabId, input: input)
+            }
             if !updated {
                 throw SessionServiceError.invalidDocument("Annotation \(input.id) was not found")
             }
             return true
         } catch {
             NSLog("[annotation-store] Failed to update annotation: \(error)")
-            // Reload on failure to revert optimistic update
-            if app.activeTabId == sessionId {
-                await loadAnnotations()
-            }
+            if app.activeDocumentBinding == binding { await loadAnnotations() }
             return false
         }
     }
@@ -237,6 +252,52 @@ final class AnnotationStore {
 
     func annotationsForPage(_ pageNumber: Int) -> [Annotation] {
         annotations.filter { $0.pageNumber == pageNumber }
+    }
+
+    /// AI owns a concrete backend and a joinable resource write. No session-id
+    /// lookup after suspension can redirect this annotation to a replacement.
+    func createForAI(
+        _ input: CreateAnnotationInput, document: DocumentInfo, binding: DocumentBinding,
+        backend: any DocumentSession, isCurrentRequest: @escaping @MainActor () -> Bool
+    ) async throws -> Annotation {
+        guard isCurrentRequest(), app.activeDocumentBinding == binding else { throw CancellationError() }
+        var input = input
+        let id = input.id ?? UUID().uuidString.lowercased()
+        let now = PdfDates.rfc3339Now()
+        input.id = id
+        input.createdAt = now
+        let optimistic = Annotation(
+            id: id, type: input.type, pageNumber: input.pageNumber,
+            color: input.color ?? resolvedDefaultColor(for: input.type), content: input.content,
+            positionData: input.positionData, createdAt: now, updatedAt: now)
+        annotations.append(optimistic)
+        var outcome: Result<Annotation, Error> = .failure(CancellationError())
+        let write = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { _ in
+            guard isCurrentRequest() else { return }
+            do { outcome = .success(try await backend.createAnnotation(input)) }
+            catch { outcome = .failure(error) }
+        }
+        pendingCreates[id] = Task {
+            await write.value
+            if case .success = outcome { return true }
+            return false
+        }
+        await write.value
+        defer { pendingCreates[id] = nil }
+        // A mutation admitted before cancellation stays durable for A. Reconcile
+        // only that same binding's UI; a successor request may share its document.
+        if app.activeDocumentBinding == binding {
+            switch outcome {
+            case .success(let saved):
+                if let index = annotations.firstIndex(where: { $0.id == id }), annotations[index] == optimistic {
+                    annotations[index] = saved
+                }
+            case .failure:
+                annotations.removeAll { $0.id == id }
+            }
+        }
+        guard isCurrentRequest(), app.activeDocumentBinding == binding else { throw CancellationError() }
+        return try outcome.get()
     }
 
     private func create(_ input: CreateAnnotationInput, label: String) async -> Annotation? {
