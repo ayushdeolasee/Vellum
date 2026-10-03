@@ -425,14 +425,13 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         findMatches = []
         findIndex = -1
         pdfView?.highlightedSelections = nil
-        pdfView?.setCurrentSelection(nil, animate: false)
     }
 
+    /// Navigate to the match without replacing the user's annotation selection.
     private func focusCurrentMatch() {
         guard let pdfView, findMatches.indices.contains(findIndex) else { return }
         let match = findMatches[findIndex]
-        pdfView.setCurrentSelection(match, animate: false)
-        pdfView.scrollSelectionToVisible(nil)
+        pdfView.go(to: match)
     }
 
     // MARK: - Print
