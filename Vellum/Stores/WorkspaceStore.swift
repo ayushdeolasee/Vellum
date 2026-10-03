@@ -308,6 +308,70 @@ final class WorkspaceStore {
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var externalOpenTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
+
+    @ObservationIgnored private var isTerminating = false
+
+    /// Register before any launch suspension so quit/background owns startup too.
+    @discardableResult
+    func startMaintenance(_ operation: @escaping @MainActor () async -> Void) -> Bool {
+        guard !isTerminating, maintenanceTask == nil else { return false }
+        maintenanceTask = Task(priority: .background) { await operation() }
+        return true
+    }
+
+    func startLaunchMaintenance(includeReadLater: Bool) {
+        guard !TestEnvironment.isHostedTestProcess else { return }
+        startMaintenance { [self] in
+            await startStorageCoordinator()
+            await integrations.start()
+            await integrations.prefetchOfflineCopies()
+            await Task.detached(priority: .utility) {
+                WebStorageSettings.resolveICloudRoot()
+            }.value
+            let openDocuments = root.allLeaves().flatMap { $0.app.tabs }.compactMap(\.document)
+            let openKeys = Set(openDocuments.filter { $0.kind == .pdf }.map {
+                DocumentIdentity.storageKey(for: $0)
+            })
+            let openWebUrls = Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
+            await WebStorageRelocator.sweepAtLaunch(coordinator: storageCoordinator)
+            await StorageHousekeeping.runCleanup(
+                openPdfKeys: openKeys, openWebUrls: openWebUrls,
+                openDocumentPaths: Set(openDocuments.map(\.pdfPath)),
+                readLater: includeReadLater ? integrations : nil,
+                webLastOpened: { [positions] in await positions.lastOpenedForWebURL($0) },
+                webStorage: webLibraryStorage)
+        }
+    }
+
+    func beginTermination() { isTerminating = true }
+    func cancelTermination() { isTerminating = false }
+
+    func awaitMaintenance() async {
+        await maintenanceTask?.value
+    }
+
+    /// Current topology plus edit revisions catches late changes even when an
+    /// autosave finishes during another subsystem's quit drain.
+    var scratchpadTerminationSnapshot: [String: Int] {
+        Dictionary(uniqueKeysWithValues: root.allLeaves().map {
+            ($0.id, $0.scratchpad.editRevision)
+        })
+    }
+
+    func scratchpadsAreSafeToTerminate(after snapshot: [String: Int]) -> Bool {
+        scratchpadTerminationSnapshot == snapshot
+            && root.allLeaves().allSatisfy { !$0.scratchpad.hasUncommittedChanges }
+    }
+
+    /// Join pane flushes and the shared lane before deciding whether quit is
+    /// safe. Failed/paused commits leave drafts open and cancel termination.
+    func flushScratchpadsForTermination() async -> Bool {
+        let tasks = root.allLeaves().map { $0.scratchpad.flush() }
+        for task in tasks { await task.value }
+        await ScratchpadPersistence.awaitPendingFlush()
+        return root.allLeaves().allSatisfy { !$0.scratchpad.hasUncommittedChanges }
+    }
 
     // MARK: - Workspace-owned live tab runtimes
     //

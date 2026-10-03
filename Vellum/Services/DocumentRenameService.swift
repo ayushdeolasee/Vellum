@@ -135,6 +135,48 @@ enum DocumentRenameService {
         return wrote
     }
 
+    /// Open-tab persistence distinguishes an absent metadata folder (normal)
+    /// from a write failure. Keep the user's optimistic title open for retry.
+    static func persistOpenDocument(
+        _ target: Target, title: String?, storage: WebLibraryStorage?
+    ) async -> Bool {
+        var succeeded = true
+        if let key = target.storageKey {
+            if let coordinator = storage?.coordinator {
+                let saved = await ScratchpadWriteCoordinator.shared.withExclusiveAccess(forKeys: [key]) {
+                    do {
+                        guard try await DocumentDataStore.loadMeta(forKey: key, coordinator: coordinator) != nil
+                        else { return true }
+                        return await DocumentDataStore.setTitle(forKey: key, title: title, coordinator: coordinator)
+                    } catch { return false }
+                }
+                if !saved { succeeded = false }
+            } else {
+                let saved = await Task.detached(priority: .userInitiated) {
+                    guard DocumentDataStore.loadMeta(forKey: key) != nil else { return true }
+                    return DocumentDataStore.setTitle(forKey: key, title: title)
+                }.value
+                if !saved { succeeded = false }
+            }
+        }
+        if target.kind == .web {
+            do {
+                if let storage { try await storage.setTitle(rawUrl: target.locator, title: title) }
+                else {
+                    try await Task.detached(priority: .userInitiated) {
+                        try WebLibrary.setTitle(rawUrl: target.locator, title: title)
+                    }.value
+                }
+            } catch { succeeded = false }
+        }
+        if let recorded = target.recordedPath {
+            await Task.detached(priority: .userInitiated) {
+                _ = RecentFilesService.updateTitle(path: recorded, title: title)
+            }.value
+        }
+        return succeeded
+    }
+
     /// The normalized title actually stored: trimmed, and nil when blank.
     ///
     /// Blank means "stop overriding", not "the title is the empty string" — an

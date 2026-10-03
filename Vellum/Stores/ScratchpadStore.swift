@@ -142,7 +142,9 @@ final class ScratchpadStore {
     /// not stamp a PDF identity, touch metadata, or rewrite scratchpad.md merely
     /// because the pane switched or the app entered the background.
     private var hasCoordinatedChanges = false
+    var hasUncommittedChanges: Bool { hasCoordinatedChanges }
     private var coordinatedChangeRevision = 0
+    private(set) var editRevision = 0
     /// Last authoritative text loaded/saved for this pane. When a first edit
     /// stamps a PDF and rekey merges a distinct durable-key note, this lets the
     /// edit replace only its old source copy inside that merged result.
@@ -960,6 +962,7 @@ final class ScratchpadStore {
     }
 
     private func markCoordinatedChanged() {
+        editRevision &+= 1
         guard coordinator != nil else { return }
         hasCoordinatedChanges = true
         coordinatedChangeRevision &+= 1
@@ -972,7 +975,10 @@ final class ScratchpadStore {
     }
 
     private func scheduleSave() {
-        guard !isPersistencePaused else { return }
+        guard !isPersistencePaused else {
+            editRevision &+= 1
+            return
+        }
         markCoordinatedChanged()
         debounceTask?.cancel()
         let generation = stateGeneration

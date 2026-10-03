@@ -221,7 +221,17 @@ struct PdfTab: Identifiable, Equatable, Sendable {
     /// The tab's document, or `nil` for a lightweight "start tab" — the
     /// new-tab page offering Recent, Open PDF…, and Open Webpage…. A start tab
     /// is replaced in place the moment a document is opened from it.
-    var document: DocumentInfo?
+    var document: DocumentInfo? {
+        didSet {
+            let oldKey = oldValue.map { DocumentIdentity.storageKey(for: $0) }
+            let newKey = document.map { DocumentIdentity.storageKey(for: $0) }
+            if oldKey != newKey || oldValue?.kind != document?.kind {
+                documentBindingGeneration = UUID()
+            }
+        }
+    }
+    /// Live only: restoration makes a new binding, while a pane move keeps it.
+    var documentBindingGeneration = UUID()
     var currentPage: Int
     var numPages: Int
     var zoom: Double

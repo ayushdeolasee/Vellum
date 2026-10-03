@@ -78,6 +78,8 @@ struct VellumApp_iOS: App {
             _ = await captureIngestion?.drain()
         }
 
+        workspace.startLaunchMaintenance(includeReadLater: true)
+
         // Read-later autopull's background trigger (#157). Registration has to
         // happen before the app finishes launching — BGTaskScheduler treats a
         // late `register` as a programmer error — so it lives here rather than
@@ -271,58 +273,7 @@ struct VellumApp_iOS: App {
     @MainActor
     private func launchMaintenance() async {
         guard !TestEnvironment.isHostedTestProcess else { return }
-        // The root also starts integrations in its own task for fast UI data,
-        // but maintenance must join that same startup before it snapshots the
-        // queue. Otherwise a cold launch can prefetch an empty initial store.
-        await workspace.integrations.start()
-        await workspace.startStorageCoordinator()
-
-        let openDocuments = workspace.root.allLeaves()
-            .flatMap { $0.app.tabs }.compactMap(\.document)
-        // The text cache excludes open documents by STORAGE KEY now (docId when
-        // stamped, else path hash) — the same key their lookup/persister used.
-        let openKeys = Set(
-            openDocuments.filter { $0.kind == .pdf }
-                .map { DocumentIdentity.storageKey(for: $0) })
-        let openWebUrls = Set(openDocuments.filter { $0.kind == .web }.map(\.pdfPath))
-        // Every open document's path, web or PDF: the read-later sweep refuses
-        // to delete an offline copy that is on screen right now.
-        let openPaths = Set(openDocuments.map(\.pdfPath))
-        let integrations = workspace.integrations
-        let positions = workspace.positions
-
-        // Resolve the iCloud ubiquity container off-main FIRST: it can block,
-        // and both the launch sweep (to name the iCloud layout) and the
-        // first-launch sheet (to offer/disable the iCloud option) need it
-        // resolved. Awaited so the sheet below reflects real availability.
-        await Task.detached(priority: .utility) {
-            WebStorageSettings.resolveICloudRoot()
-        }.value
-
-        Task.detached(priority: .background) {
-            // Startup autopull runs before retention. The app's other sync
-            // triggers join the same store-owned prefetch task, and the
-            // prefetcher serializes a sweep that arrives during I/O.
-            await integrations.prefetchOfflineCopies()
-            // Finish any interrupted storage-location move and fold legacy-local
-            // strays into the active layout before the evictors walk the store.
-            // Routed through the relocator so it can't run concurrently with a
-            // location change the user makes in the first-launch sheet below
-            // (single relocation runner — parity plan do-not-reintroduce #9).
-            await WebStorageRelocator.sweepAtLaunch(
-                coordinator: workspace.storageCoordinator)
-            // TTL eviction of derived data, using the user's chosen retention
-            // window (Settings ▸ Storage ▸ Housekeeping; "Never" skips it).
-            // The read-later retention sweep rides the same pass (#157): one
-            // eviction pass at launch, one policy per data class inside it.
-            await StorageHousekeeping.runCleanup(
-                openPdfKeys: openKeys,
-                openWebUrls: openWebUrls,
-                openDocumentPaths: openPaths,
-                readLater: integrations,
-                webLastOpened: { await positions.lastOpenedForWebURL($0) },
-                webStorage: workspace.webLibraryStorage)
-        }
+        await workspace.awaitMaintenance()
 
         showStorageChoice = WebStorageSettings.needsFirstLaunchChoice
         // Only one sheet at a time. On a true first launch the storage choice
@@ -351,6 +302,7 @@ struct VellumApp_iOS: App {
 
         let task = Task { @MainActor in
             defer { flushController.finish(generation: generation) }
+            await workspace.awaitMaintenance()
             await workspace.saveNowAfterPendingPositionRecords()
             // Tabs closed moments ago finish their position write and session
             // close behind the UI (AppStore.closeTab) and are no longer in
