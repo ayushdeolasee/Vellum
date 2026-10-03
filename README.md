@@ -4,8 +4,8 @@ Vellum is a SwiftUI reader for PDFs and web articles. It combines PDFKit reading
 
 ## Targets
 
-- **iPhone and iPad:** this branch generates one universal iOS 26 app plus its Safari share extension.
-- **macOS:** `main` generates the separate macOS app from the shared source tree.
+- **iPhone and iPad:** the universal iOS 26 app includes Safari sharing and widgets.
+- **macOS:** the Developer ID app for macOS 26 uses Sparkle for direct-distribution updates.
 
 The phone layout has a search-first Home, a full-screen reader, a pull-up inspector, and a card switcher for open documents. Continue Reading stores the last position for handoff, and read-later integrations can prefetch offline copies with retention rules.
 
@@ -17,7 +17,7 @@ The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the mac
 
 ## Current limits
 
-- Local and custom-folder storage work in this build. The coordinated iCloud path is implemented, but its entitlement stays intentionally unwired until the production cutover in #149.
+- Local, custom-folder, and coordinated iCloud storage are implemented. `project.yml` wires iCloud entitlements for both main apps and App Groups for the mobile app/extensions. Portal profiles and signed cross-device behavior remain release gates in #149; source wiring alone does not verify them.
 - Scratchpad notes and images use the same coordinated per-document storage as the rest of the reading data. They sync when the iCloud path and entitlement are enabled; local and custom modes keep them private on this device.
 - This repository does not claim an App Store or production iCloud release yet.
 
@@ -40,7 +40,11 @@ xcodebuild -project Vellum.xcodeproj -scheme Vellum \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test
 ```
 
-The same generated `Vellum` scheme and destinations work with Xcode build/test automation. Open `Vellum.xcodeproj` for interactive development. To build macOS, use a `main` worktree and regenerate its platform-specific project there.
+The generated `Vellum` and `Vellum Mac` schemes share this source tree. Use Debug configuration and an isolated derived-data directory per worktree and Mac distribution target. Launch development builds with `--disable-sync` for UI-only work.
+
+## Release artifacts
+
+[Release operations](Distribution/store-operations.html) documents local archive/verification, explicit Mac notarization and Sparkle signing/promotion, and the separate iOS Store validation/upload commands. Each artifact records its commit, explicit version/build, signed bundle identities, entitlements, architectures, privacy manifests, and matching symbols. External commands reuse verified private snapshots. Mac stapling produces a separately pinned final DMG and signed appcast before GitHub promotion; iOS validation/upload retain the unchanged IPA. Signed device acceptance, Mac installation/update proof and iOS App Store metadata remain separate gates.
 
 ## Layout
 

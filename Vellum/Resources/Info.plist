@@ -63,6 +63,25 @@
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<!-- Mac reading supports arbitrary user-selected HTTP pages through URLSession.
+		     Explicit service domains restore normal ATS for authenticated API traffic. -->
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>api.openai.com</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>openrouter.ai</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>opencode.ai</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>generativelanguage.googleapis.com</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>readwise.io</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>api.raindrop.io</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+			<key>vellum.work</key>
+			<dict><key>NSIncludesSubdomains</key><true/></dict>
+		</dict>
 	</dict>
 	<key>CFBundleDocumentTypes</key>
 	<array>

@@ -1,0 +1,29 @@
+name: Release artifact tooling
+on:
+  pull_request:
+    paths:
+      - 'Distribution/store-release.py'
+      - 'Distribution/test_store_release.py'
+      - 'Distribution/release*.sh'
+      - 'Distribution/requirements-release.txt'
+      - '.github/workflows/store-release-tooling.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Distribution/store-release.py'
+      - 'Distribution/test_store_release.py'
+      - 'Distribution/release*.sh'
+      - 'Distribution/requirements-release.txt'
+      - '.github/workflows/store-release-tooling.yml'
+permissions:
+  contents: read
+jobs:
+  artifact-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r Distribution/requirements-release.txt
+      - run: python3 -m unittest discover -s Distribution -p test_store_release.py
