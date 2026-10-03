@@ -657,7 +657,7 @@ struct AiPanel_iOS: View {
         Button(action: action) {
             Image(systemName: system)
                 .font(.system(size: 12))
-                .frame(width: 30, height: 30)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -730,10 +730,10 @@ struct AiPanel_iOS: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 11))
                     .foregroundStyle(palette.mutedForeground)
-                    // Frame + contentShape INSIDE the label so the whole 32pt
+                    // Frame + contentShape INSIDE the label so the whole 44pt
                     // square is tappable, not just the glyph's bounds.
-                    .frame(width: 32, height: 32)
-                    .contentShape(Circle())
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss")
@@ -971,6 +971,10 @@ struct AiPanel_iOS: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = aiStore.composerReferences
         guard (!trimmed.isEmpty || !references.isEmpty), !aiStore.isThinking else { return }
+        guard aiStore.settings.isConfigured() else {
+            aiStore.setErrorState("Set your \(aiStore.keyFieldLabel) and choose a model in AI settings.")
+            return
+        }
         let provider = aiStore.settings.provider
         guard !AiSharingConsent.needsConsent(for: provider) else {
             consentProvider = provider
