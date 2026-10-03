@@ -91,8 +91,6 @@ struct ScratchpadPanel: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!scratchpadStore.isPersistencePaused)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
@@ -180,18 +178,7 @@ struct ScratchpadPanel: View {
     }
 
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            headerRow(actionSpacing: 8)
-            headerRow(actionSpacing: 0)
-        }
-        .foregroundStyle(palette.foreground)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private func headerRow(actionSpacing: CGFloat) -> some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "note.text")
                     .font(.system(size: 15))
@@ -202,40 +189,39 @@ struct ScratchpadPanel: View {
                     .fixedSize()
             }
             .layoutPriority(1)
-            Spacer(minLength: actionSpacing + 4)
-            HStack(spacing: actionSpacing) {
-                if appStore.document != nil {
-                    IconButton(
-                        variant: isCapturingRegion ? .active : .ghost,
-                        size: .md,
-                        help: "Snapshot a region of the page into the note",
-                        action: toggleSnapshotRegion
-                    ) {
-                        Image(systemName: "crop").font(.system(size: 15))
-                    }
-                    .accessibilityIdentifier("scratchpad.snapshotRegion")
-                    .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
-                }
+            Spacer(minLength: 8)
+            if appStore.document != nil {
                 IconButton(
-                    size: .md,
-                    help: "Export scratchpad as Markdown",
-                    disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
-                    action: { showsExportOptions = true }
+                    variant: isCapturingRegion ? .active : .ghost,
+                    help: "Snapshot a region of the page into the note",
+                    action: toggleSnapshotRegion
                 ) {
-                    Image(systemName: "square.and.arrow.up").font(.system(size: 15))
+                    Image(systemName: "crop").font(.system(size: 15))
                 }
-                .accessibilityIdentifier("scratchpad.exportMarkdown")
-                IconButton(
-                    size: .md,
-                    help: "Clear scratchpad note",
-                    disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
-                    action: clear
-                ) {
-                    Image(systemName: "trash").font(.system(size: 15))
-                }
-                .accessibilityIdentifier("scratchpad.clear")
+                .accessibilityIdentifier("scratchpad.snapshotRegion")
+                .accessibilityAddTraits(isCapturingRegion ? .isSelected : [])
             }
+            IconButton(
+                help: "Export scratchpad as Markdown",
+                disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
+                action: { showsExportOptions = true }
+            ) {
+                Image(systemName: "square.and.arrow.up").font(.system(size: 15))
+            }
+            .accessibilityIdentifier("scratchpad.exportMarkdown")
+            IconButton(
+                help: "Clear scratchpad note",
+                disabled: scratchpadStore.text.isEmpty || scratchpadStore.isPersistencePaused,
+                action: clear
+            ) {
+                Image(systemName: "trash").font(.system(size: 15))
+            }
+            .accessibilityIdentifier("scratchpad.clear")
         }
+        .foregroundStyle(palette.foreground)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private func toggleSnapshotRegion() {

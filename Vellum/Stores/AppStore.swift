@@ -233,6 +233,7 @@ final class AppStore {
     var findVisible = false
     private(set) var findQuery = ""
     private(set) var findMatchCount = 0
+    private(set) var findIsSearching = false
     /// 1-based index of the current match; 0 when there are no matches.
     private(set) var findCurrentMatch = 0
 
@@ -1011,6 +1012,7 @@ final class AppStore {
     func hideFind() {
         guard findVisible else { return }
         findVisible = false
+        findIsSearching = false
         updateActiveTab {
             $0.findVisible = false
             $0.findMatchCount = 0
@@ -1027,6 +1029,7 @@ final class AppStore {
         findQuery = query
         updateActiveTab { $0.findQuery = query }
         if query.isEmpty {
+            findIsSearching = false
             findMatchCount = 0
             findCurrentMatch = 0
             findClearHandler?()
@@ -1035,8 +1038,11 @@ final class AppStore {
         findQueryHandler?(query)
     }
 
-    func findNext() { findStepHandler?(1) }
-    func findPrev() { findStepHandler?(-1) }
+    func findNext() { if !findIsSearching { findStepHandler?(1) } }
+    func findPrev() { if !findIsSearching { findStepHandler?(-1) } }
+
+    /// Transient viewer work; never restored from a tab's saved results.
+    func setFindSearching(_ searching: Bool) { findIsSearching = searching }
 
     /// Called by the active viewer with the outcome of a query / step.
     func setFindResults(count: Int, current: Int) {
@@ -1057,6 +1063,7 @@ final class AppStore {
     }
 
     private func resetFindState() {
+        findIsSearching = false
         findVisible = false
         findQuery = ""
         findMatchCount = 0
@@ -1790,6 +1797,7 @@ final class AppStore {
         webVisibleBookmarks = tab.webVisibleBookmarks
         regionCaptureTarget = tab.regionCaptureTarget ?? .ai
         mode = tab.regionCaptureTarget == nil ? tab.mode : .snapshotRegion
+        findIsSearching = false
         findVisible = tab.findVisible
         findQuery = tab.findQuery
         findMatchCount = tab.findMatchCount

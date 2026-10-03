@@ -362,7 +362,7 @@ struct DocumentAccessResolver: Sendable {
                 // Finish the rekey once the new bookmark is committed. A
                 // cancelled open keeps that file but never adopts its session.
                 if !committed { try Task.checkCancellation() }
-                if let priorKey, priorKey != key {
+                if committed, let priorKey, priorKey != key {
                     try? store.remove(key: priorKey)
                 }
                 return committed

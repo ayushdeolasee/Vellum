@@ -1,6 +1,39 @@
 import PDFKit
 
+/// Prepared off-main, then owned exclusively by the native viewer on main.
+/// PDFKit's password UI calls this override. Keep its successful credential only
+/// for this document's lifetime so detached readers can unlock their own copies.
+final class PdfViewerDocument: PDFDocument {
+    private(set) var privateCopyPassword: String?
+
+    override func unlock(withPassword password: String) -> Bool {
+        // PDFKit returns true even for a bogus password once already unlocked.
+        // Such a call must not replace the credential that opened the source.
+        guard isLocked else { return super.unlock(withPassword: password) }
+        let previous = privateCopyPassword
+        // The unlock notification can be posted synchronously inside super.
+        privateCopyPassword = password
+        let unlocked = super.unlock(withPassword: password)
+        if !unlocked { privateCopyPassword = previous }
+        return unlocked
+    }
+}
+
 enum PdfViewerPreparation {
+    enum PrivateDocumentError: Error { case unavailable, locked }
+
+    /// Only call off-main. Never copy or serialize the document attached to a
+    /// PDFView; construct an independent reader from its retained source bytes.
+    static func privateDocument(data: Data, password: String?) throws -> PDFDocument {
+        guard let document = PDFDocument(data: data) else { throw PrivateDocumentError.unavailable }
+        if document.isLocked {
+            guard let password, document.unlock(withPassword: password) else {
+                throw PrivateDocumentError.locked
+            }
+        }
+        return document
+    }
+
     /// Use only on a freshly parsed, unmodified document before attaching a view.
     /// Inspect raw annotation entries first so plain pages stay lazy in PDFKit.
     /// The raw document does not reflect later in-memory annotation edits.

@@ -16,15 +16,17 @@ actor PdfSearch {
 
     static let maximumMatches = 1_000
     private let data: Data
+    private let password: String?
     private var document: PDFDocument?
 
-    init(data: Data) {
+    init(data: Data, password: String? = nil) {
         self.data = data
+        self.password = password
     }
 
-    func matches(query: String) async -> Result {
-        guard !query.isEmpty, !Task.isCancelled,
-              let document = PDFDocument(data: data) else { return Result() }
+    func matches(query: String) async throws -> Result {
+        guard !query.isEmpty, !Task.isCancelled else { return Result() }
+        let document = try PdfViewerPreparation.privateDocument(data: data, password: password)
         self.document = document
         defer { self.document = nil }
         var matches: [Match] = []
@@ -61,13 +63,20 @@ actor PdfSearch {
 /// on this actor; the viewer receives only text or Sendable coordinates.
 actor PdfTextReader {
     private let data: Data
+    private let password: String?
     private var document: PDFDocument?
 
-    init(data: Data) { self.data = data }
+    init(data: Data, password: String? = nil) {
+        self.data = data
+        self.password = password
+    }
 
     func text(pageNumber: Int) async -> String? {
         guard !Task.isCancelled else { return nil }
-        if document == nil { document = PDFDocument(data: data) }
+        if document == nil {
+            document = try? PdfViewerPreparation.privateDocument(data: data, password: password)
+        }
+        guard document != nil else { return nil }
         return await PageTextExtractionGate.shared.extractText(priority: .onDemand, offMain: {
             await self.extract(pageNumber: pageNumber)
         })

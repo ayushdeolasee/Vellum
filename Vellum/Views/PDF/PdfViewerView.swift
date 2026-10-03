@@ -62,6 +62,20 @@ struct PdfViewerView: View {
                     await activate()
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .PDFDocumentDidUnlock)
+                .receive(on: RunLoop.main)) { notification in
+                guard let document = notification.object as? PDFDocument,
+                      document === runtime.preparedDocument, isActive,
+                      app.activeTabId == tabId else { return }
+                if app.error == "Unlock this PDF before searching." { app.error = nil }
+                app.setNumPages(document.pageCount)
+                if indexingIsActive, let data = runtime.preparedSourceData {
+                    controller.startTextExtraction(data: data)
+                }
+                if app.findVisible, !app.findQuery.isEmpty {
+                    controller.findQuery(app.findQuery)
+                }
+            }
             // Activity changes pause indexing without cancelling an in-flight
             // document load. A load finishing later reads the current state.
             .task(id: shouldIndex) {
@@ -155,7 +169,7 @@ struct PdfViewerView: View {
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
-                    guard let document = PDFDocument(data: data) else { return PreparedPdf(document: nil) }
+                    guard let document = PdfViewerDocument(data: data) else { return PreparedPdf(document: nil) }
                     PdfViewerPreparation.stripAnnotations(from: document)
                     return PreparedPdf(document: document)
                 }.value
@@ -179,7 +193,8 @@ struct PdfViewerView: View {
             let storageKey = DocumentIdentity.storageKey(for: documentInfo)
             let cached: [Int: String]?
             let path = documentInfo.pdfPath
-            if !path.isEmpty {
+            // Decrypted text stays in memory, like the unlock credential.
+            if !document.isEncrypted, !path.isEmpty {
                 cached = await PageTextCache.shared.lookup(
                     key: storageKey, path: path, data: data, title: documentInfo.title)
             } else {
@@ -202,7 +217,7 @@ struct PdfViewerView: View {
                 runtime: runtime
             )
             if isActive { app.setNumPages(document.pageCount) }
-            if document.pageCount >= 1 {
+            if !document.isEncrypted, document.pageCount >= 1 {
                 controller.installPersister(PageTextPersister(
                     key: storageKey,
                     path: path,
