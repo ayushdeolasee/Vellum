@@ -17,6 +17,14 @@
       "database_id": "5980fbd7-e937-4d33-af8c-de0cc2932e7d"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "ANALYTICS_RATE_LIMITER",
+      "namespace_id": "308",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
+  "triggers": { "crons": ["17 3 * * *"] },
   "routes": [
     {
       "pattern": "vellum.work",

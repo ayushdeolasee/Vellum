@@ -2,10 +2,24 @@ const JSON_HEADERS = {
   "Cache-Control": "no-store",
   "Content-Type": "application/json; charset=utf-8",
 };
+const ANALYTICS_DAILY_LIMIT = 5000;
+const ANALYTICS_RATE_KEY = "public-analytics";
 const MAC_DOWNLOAD_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg";
 const MAC_APPCAST_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/appcast.xml";
 
 export default {
+  async scheduled(_controller, env) {
+    const results = await env.DB.batch([
+      env.DB.prepare("DELETE FROM analytics_events WHERE created_at < datetime('now', '-3 months')"),
+      env.DB.prepare("DELETE FROM testflight_signups WHERE created_at < datetime('now', '-12 months')"),
+      env.DB.prepare("DELETE FROM analytics_daily_budget WHERE day < date('now', '-3 months')"),
+    ]);
+    // Only aggregate counts: no names, email addresses, IPs, or request bodies.
+    console.log("Retention completed", {
+      analyticsDeleted: results[0].meta.changes,
+      signupsDeleted: results[1].meta.changes,
+    });
+  },
   async fetch(request, env, context) {
     const url = new URL(request.url);
 
@@ -58,6 +72,13 @@ export default {
       return exportSignups(request, env);
     }
 
+    if (url.pathname === "/api/analytics-health") {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405, { Allow: "GET" });
+      }
+      return analyticsHealth(request, env);
+    }
+
     if (url.pathname.startsWith("/api/")) {
       return json({ error: "Not found." }, 404);
     }
@@ -71,19 +92,10 @@ async function createAnalyticsEvent(request, env) {
     return json({ error: "Content type must be application/json." }, 415);
   }
 
-  const contentLength = Number(request.headers.get("Content-Length") || 0);
-  if (contentLength > 1024) {
-    return json({ error: "That event is too large." }, 413);
-  }
-
-  let body;
-  try {
-    const rawBody = await request.text();
-    if (rawBody.length > 1024) {
-      return json({ error: "That event is too large." }, 413);
-    }
-    body = JSON.parse(rawBody);
-  } catch {
+  const parsed = await readJSON(request, 1024, "Invalid event.");
+  if (parsed.response) return parsed.response;
+  const body = parsed.body;
+  if (!isObject(body) || Object.keys(body).some((key) => !["event", "version", "build"].includes(key))) {
     return json({ error: "Invalid event." }, 400);
   }
 
@@ -94,7 +106,9 @@ async function createAnalyticsEvent(request, env) {
   }
 
   try {
-    await writeEvent(env, "first_launch", "mac_app", version, build);
+    if (!(await writeEvent(env, "first_launch", "mac_app", version, build))) {
+      return json({ error: "Analytics budget reached." }, 429, { "Retry-After": "60" });
+    }
     return new Response(null, {
       status: 204,
       headers: { "Cache-Control": "no-store" },
@@ -110,19 +124,10 @@ async function createSignup(request, env) {
     return json({ error: "This form must be submitted from vellum.work." }, 403);
   }
 
-  const contentLength = Number(request.headers.get("Content-Length") || 0);
-  if (contentLength > 4096) {
-    return json({ error: "That submission is too large." }, 413);
-  }
-
-  let body;
-  try {
-    const rawBody = await request.text();
-    if (rawBody.length > 4096) {
-      return json({ error: "That submission is too large." }, 413);
-    }
-    body = JSON.parse(rawBody);
-  } catch {
+  const parsed = await readJSON(request, 4096, "Enter your name and email, then try again.");
+  if (parsed.response) return parsed.response;
+  const body = parsed.body;
+  if (!isObject(body)) {
     return json({ error: "Enter your name and email, then try again." }, 400);
   }
 
@@ -192,10 +197,7 @@ async function verifyTurnstile(token, request, env) {
 }
 
 async function exportSignups(request, env) {
-  const authorization = request.headers.get("Authorization") || "";
-  const expected = env.EXPORT_TOKEN ? `Bearer ${env.EXPORT_TOKEN}` : "";
-
-  if (!expected || !(await secureEqual(authorization, expected))) {
+  if (!(await authorizedExport(request, env))) {
     return json({ error: "Not found." }, 404);
   }
 
@@ -236,7 +238,7 @@ function normalizeName(value) {
 function normalizeEmail(value) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return null;
+  if (normalized.length > 254 || /[\u0000-\u001f\u007f-\u009f]/.test(normalized) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return null;
   return normalized;
 }
 
@@ -251,24 +253,95 @@ function normalizeReleaseValue(value) {
 }
 
 function recordEvent(context, env, event, source, version = "", build = "") {
-  context.waitUntil(writeEvent(env, event, source, version, build).catch(() => {}));
+  context.waitUntil(writeEvent(env, event, source, version, build).catch(() => {
+    console.error("Unable to record aggregate analytics event");
+  }));
 }
 
 async function writeEvent(env, event, source, version = "", build = "") {
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO analytics_events (event, source, version, build)
-       VALUES (?, ?, ?, ?)`,
-    ).bind(event, source, version, build),
-    env.DB.prepare(
-      `DELETE FROM analytics_events
-       WHERE created_at < datetime('now', '-3 months')`,
-    ),
-  ]);
+  // One shared key avoids introducing an IP, installation, or user identifier.
+  // Cloudflare's binding is approximate and per location, not a global quota.
+  const { success } = await env.ANALYTICS_RATE_LIMITER.limit({ key: ANALYTICS_RATE_KEY });
+  if (!success) return false;
+  // The keyed check reads at most one daily counter. Migration 0004's trigger
+  // increments it in this same SQLite statement transaction, so concurrent
+  // events cannot race the cap and failed inserts do not consume quota.
+  const result = await env.DB.prepare(
+    `INSERT INTO analytics_events (event, source, version, build, created_at)
+     SELECT ?, ?, ?, ?, datetime('now')
+     WHERE COALESCE((SELECT event_count FROM analytics_daily_budget
+                     WHERE day = date('now')), 0) < ?`,
+  ).bind(event, source, version, build, ANALYTICS_DAILY_LIMIT).run();
+  return result.meta.changes > 0;
+}
+
+async function analyticsHealth(request, env) {
+  if (!(await authorizedExport(request, env))) return json({ error: "Not found." }, 404);
+  try {
+    const counts = await env.DB.prepare(
+      `SELECT
+       (SELECT COUNT(*) FROM analytics_events WHERE created_at >= date('now') AND created_at < date('now', '+1 day')) AS analyticsToday,
+       (SELECT event_count FROM analytics_daily_budget WHERE day = date('now')) AS analyticsBudgetToday,
+       (SELECT COUNT(*) FROM analytics_events WHERE created_at < datetime('now', '-3 months')) AS analyticsOverdue,
+       (SELECT COUNT(*) FROM testflight_signups WHERE created_at < datetime('now', '-12 months')) AS signupsOverdue`,
+    ).first();
+    return json({ ...counts, analyticsDailyLimit: ANALYTICS_DAILY_LIMIT }, 200);
+  } catch {
+    return json({ error: "Health reporting is temporarily unavailable." }, 503);
+  }
+}
+
+async function authorizedExport(request, env) {
+  const expected = env.EXPORT_TOKEN ? `Bearer ${env.EXPORT_TOKEN}` : "";
+  return !!expected && secureEqual(request.headers.get("Authorization") || "", expected);
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readJSON(request, byteLimit, invalidMessage) {
+  if (Number(request.headers.get("Content-Length") || 0) > byteLimit) {
+    return { response: json({ error: "That payload is too large." }, 413) };
+  }
+  const reader = request.body?.getReader();
+  if (!reader) return { response: json({ error: invalidMessage }, 400) };
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > byteLimit) {
+        await reader.cancel();
+        return { response: json({ error: "That payload is too large." }, 413) };
+      }
+      chunks.push(value);
+    }
+    const data = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { body: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data)) };
+  } catch {
+    return { response: json({ error: invalidMessage }, 400) };
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function csvField(value) {
-  return `"${String(value).replaceAll('"', '""')}"`;
+  let text = String(value);
+  // Inspect past whitespace/controls before deciding whether a spreadsheet
+  // could interpret the cell as a formula. Preserve ordinary Unicode/CSV data.
+  const leadingValue = text.replace(/^[\s\u0000-\u001f\u007f-\u009f]+/u, "");
+  if (/^[=+@-]/.test(leadingValue) || /^[\t\r\n]/.test(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replaceAll('"', '""')}"`;
 }
 
 async function secureEqual(left, right) {
