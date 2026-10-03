@@ -146,34 +146,63 @@ final class AnnotationStore {
             isPinned: !annotation.pinned))
     }
 
-    func updateAnnotation(_ input: UpdateAnnotationInput) async {
-        guard let sessionId = app.activeTabId else { return }
+    /// Capture the original owner before scheduling, then join the existing
+    /// resource lane so navigation, replacement and quit wait for this Save.
+    func saveNote(_ input: UpdateAnnotationInput, completion: @escaping @MainActor (Bool) -> Void) {
+        guard let document = app.document, let binding = app.activeDocumentBinding else {
+            completion(false)
+            return
+        }
+        let backend = sessions.documentSession(sessionId: binding.tabId)
+        _ = app.enqueueDocumentPersistence(document: document, generation: binding.generation) { [self] _ in
+            let saved = await updateAnnotation(input, binding: binding, backend: backend)
+            completion(saved)
+        }
+    }
+
+    @discardableResult
+    func updateAnnotation(_ input: UpdateAnnotationInput) async -> Bool {
+        guard let binding = app.activeDocumentBinding else { return false }
+        return await updateAnnotation(input, binding: binding,
+            backend: sessions.documentSession(sessionId: binding.tabId))
+    }
+
+    private func updateAnnotation(
+        _ input: UpdateAnnotationInput, binding: DocumentBinding, backend: (any DocumentSession)?
+    ) async -> Bool {
         let pendingCreate = pendingCreates[input.id]
-        // Optimistic update
-        annotations = Annotation.sortedForDisplay(annotations.map { annotation in
-            guard annotation.id == input.id else { return annotation }
-            var next = annotation
-            if let color = input.color { next.color = color }
-            if let content = input.content { next.content = content }
-            if let positionData = input.positionData { next.positionData = positionData }
-            if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
-            if let isPinned = input.isPinned { next.isPinned = isPinned }
-            next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
-            return next
-        })
-        if let pendingCreate, !(await pendingCreate.value) { return }
-        guard app.activeTabId == sessionId else { return }
+        if app.activeDocumentBinding == binding {
+            annotations = Annotation.sortedForDisplay(annotations.map { annotation in
+                guard annotation.id == input.id else { return annotation }
+                var next = annotation
+                if let color = input.color { next.color = color }
+                if let content = input.content { next.content = content }
+                if let positionData = input.positionData { next.positionData = positionData }
+                if let pageNumber = input.pageNumber { next.pageNumber = pageNumber }
+                if let isPinned = input.isPinned { next.isPinned = isPinned }
+                next.updatedAt = ISO8601DateFormatter.recentTimestamp.string(from: Date())
+                return next
+            })
+        }
+        if let pendingCreate, !(await pendingCreate.value) { return false }
         do {
-            let updated = try await sessions.updateAnnotation(sessionId: sessionId, input: input)
+            let updated: Bool
+            if let backend {
+                updated = try await backend.updateAnnotation(input)
+            } else {
+                // Compatibility for services without a concrete backend seam:
+                // never resolve a session after its original binding was reused.
+                guard app.documentBinding(for: binding.tabId) == binding else { return false }
+                updated = try await sessions.updateAnnotation(sessionId: binding.tabId, input: input)
+            }
             if !updated {
                 throw SessionServiceError.invalidDocument("Annotation \(input.id) was not found")
             }
+            return true
         } catch {
             NSLog("[annotation-store] Failed to update annotation: \(error)")
-            // Reload on failure to revert optimistic update
-            if app.activeTabId == sessionId {
-                await loadAnnotations()
-            }
+            if app.activeDocumentBinding == binding { await loadAnnotations() }
+            return false
         }
     }
 
