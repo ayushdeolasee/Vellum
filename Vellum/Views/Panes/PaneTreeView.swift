@@ -81,7 +81,9 @@ private struct SplitContainer: View {
                 let translation = direction == .horizontal ? value.translation.width : value.translation.height
                 let deltaPct = Double(translation / available) * sum
                 let pairSum = baseline[index] + baseline[index + 1]
-                let minPct = Double(minPane / available) * sum
+                // Window resizing and nested splits can leave less than two
+                // minimum panes in this pair. Keep the drag bounds feasible.
+                let minPct = min(Double(minPane / available) * sum, pairSum / 2)
                 var first = baseline[index] + deltaPct
                 var second = baseline[index + 1] - deltaPct
                 if first < minPct { first = minPct; second = pairSum - minPct }

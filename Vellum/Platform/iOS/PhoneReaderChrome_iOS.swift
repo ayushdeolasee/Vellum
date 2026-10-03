@@ -290,6 +290,7 @@ struct PhoneReaderBottomBar: View {
     @State private var showPageJump = false
     @State private var showSettings = false
     @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var showExportBundle = false
     /// The same object the iPad toolbar holds — see `DocumentExportActions_iOS`
     /// for why the offline-copy toggle and the two exports are shared rather
@@ -325,7 +326,13 @@ struct PhoneReaderBottomBar: View {
             Text("Enter a page number (1–\(app.numPages)).")
         }
         .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
-        .sheet(isPresented: $showHelp) { HelpCenterView_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(title: app.document?.title, isWeb: isWeb) { includeConversations in
                 exportActions.startBundleExport(

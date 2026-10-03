@@ -85,8 +85,15 @@ struct PdfOverlayStack: View {
 
             if let selection = controller.selection,
                let position = controller.selectionPopoverPosition {
-                AnchoredAbove(point: position) {
-                    SelectionPopover(selection: selection) {
+                let viewport = controller.pdfView?.bounds.size ?? .zero
+                AnchoredPopover(
+                    x: position.x, y: position.y + 10,
+                    placement: .above, containerSize: viewport
+                ) {
+                    SelectionPopover(
+                        selection: selection,
+                        availableWidth: max(0, viewport.width - 16)
+                    ) {
                         controller.clearSelection()
                     }
                 }
