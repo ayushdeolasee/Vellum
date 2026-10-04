@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 /// long-lived document session opens. `.vellum` bundles are containers to
 /// unpack, so they are staged into tmp/ instead.
 enum DocumentImport {
+    private static let importLock = NSLock()
+
     static var libraryDirectory: URL {
         // Keep the document-container fixture distinct from app-support sidecars
         // (`documents`), including on case-insensitive simulator host volumes.
@@ -56,6 +58,10 @@ enum DocumentImport {
     /// Keep copy failures alongside successful paths so system opens can report
     /// a partial import without discarding the documents that did copy.
     static func importPickedResult(_ urls: [URL]) -> (paths: [String], errors: [String]) {
+        // Keep filename selection and copying together across concurrent opens.
+        importLock.lock()
+        defer { importLock.unlock() }
+
         var paths: [String] = []
         var errors: [String] = []
         for url in urls {
@@ -72,9 +78,6 @@ enum DocumentImport {
                 ? stagingDestination(for: url.lastPathComponent)
                 : uniqueDestination(for: url.lastPathComponent)
             do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
                 try FileManager.default.copyItem(at: url, to: dest)
                 paths.append(dest.path)
             } catch {
