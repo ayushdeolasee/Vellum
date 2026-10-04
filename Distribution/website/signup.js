@@ -60,8 +60,12 @@ form.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   submitButton.textContent = "Joining…";
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
   try {
     const response = await fetch("/api/testflight-signups", {
+      signal: controller.signal,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -85,9 +89,12 @@ form.addEventListener("submit", async (event) => {
       : "You're on the list.";
     successMessage.querySelector("button").focus();
   } catch (error) {
-    status.textContent = error.message;
+    status.textContent = controller.signal.aborted
+      ? "The signup request took too long. Please try again."
+      : error.message;
     if (window.turnstile && turnstileWidgetId !== null) window.turnstile.reset(turnstileWidgetId);
   } finally {
+    clearTimeout(timeout);
     submitButton.disabled = false;
     submitButton.textContent = "Join TestFlight";
   }
