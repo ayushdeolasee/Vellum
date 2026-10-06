@@ -59,17 +59,7 @@ struct ScratchpadPanel: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!scratchpadStore.isPersistencePaused)
-            .background(
-                palette.surfaceMuted,
-                in: RoundedRectangle(cornerRadius: Radius.md)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.md)
-                    .strokeBorder(palette.borderStrong)
-                    .allowsHitTesting(false)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .background(palette.surfaceMuted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The drop outline and the whole-area drag destination live on the sidebar
