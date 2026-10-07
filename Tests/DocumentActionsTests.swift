@@ -907,10 +907,13 @@ final class DocumentActionsTests: XCTestCase {
             let fixture = try await aiFixture { _, event in
                 state.calls += 1
                 if state.calls == 1 {
+                    throw AiClientError.message("Incorrect API key provided: fixture-key")
+                }
+                if state.calls == 2 {
                     event(.textDelta("partial failure"))
                     throw AiClientError.message("fixture failure")
                 }
-                if state.calls == 2 { return AiProviderResult(reply: "retry answer", actionResults: []) }
+                if state.calls == 3 { return AiProviderResult(reply: "retry answer", actionResults: []) }
                 event(.textDelta("discarded partial"))
                 await pending.pause()
                 event(.textDelta("late cleared text"))
@@ -922,12 +925,24 @@ final class DocumentActionsTests: XCTestCase {
             XCTAssertTrue(fixture.ai.messages.isEmpty)
             XCTAssertFalse(fixture.ai.isThinking)
             AiSharingConsent.grant(for: .gemini)
+            await fixture.ai.sendMessage("invalid key", context: fixture.context)
+            XCTAssertEqual(fixture.ai.messages.map(\.role), [.user])
+            XCTAssertEqual(fixture.ai.error, "Incorrect API key provided: fixture-key")
+            XCTAssertFalse(fixture.ai.isThinking)
+            XCTAssertNil(fixture.ai.streamingMessageId)
+            await fixture.app.awaitPendingTabTeardowns()
+            await AiPersistence.awaitPendingFlush()
+            XCTAssertEqual(AiPersistence.loadConversation(for: fixture.a.info), fixture.ai.messages)
             await fixture.ai.sendMessage("failure", context: fixture.context)
-            XCTAssertTrue(fixture.ai.messages.last?.content.contains("partial failure") == true)
+            XCTAssertEqual(fixture.ai.messages.last?.content, "partial failure")
             XCTAssertEqual(fixture.ai.error, "fixture failure")
             XCTAssertFalse(fixture.ai.isThinking)
+            await fixture.app.awaitPendingTabTeardowns()
+            await AiPersistence.awaitPendingFlush()
+            XCTAssertEqual(AiPersistence.loadConversation(for: fixture.a.info), fixture.ai.messages)
             await fixture.ai.sendMessage("retry", context: fixture.context)
             XCTAssertEqual(fixture.ai.messages.last?.content, "retry answer")
+            XCTAssertNil(fixture.ai.error)
             await fixture.app.awaitPendingTabTeardowns()
             let clearable = Task { await fixture.ai.sendMessage("clear me", context: fixture.context) }
             lifecycleTasks.append(clearable)
