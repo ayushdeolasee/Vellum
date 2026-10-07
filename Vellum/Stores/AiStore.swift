@@ -1453,10 +1453,11 @@ final class AiStore {
             if error is CancellationError { return }
             let detail = error.localizedDescription
             let streamed = request.streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let content = streamed.isEmpty ? "I couldn't complete that request: \(detail)"
-                : streamed + "\n\n_(interrupted: \(detail))_"
-            let failed = AiPersistence.limitedMessages(messagesWithUser + [
-                AiPersistence.makeMessage(role: .assistant, content: content, id: request.assistantId)])
+            // Errors belong in the banner, not in the conversation or future prompts.
+            // Keep any reply text received before the stream was interrupted.
+            let partialReply = streamed.isEmpty ? [] : [
+                AiPersistence.makeMessage(role: .assistant, content: streamed, id: request.assistantId)]
+            let failed = AiPersistence.limitedMessages(messagesWithUser + partialReply)
             persist(failed, for: request)
             messages = failed
             activeRequest = nil
