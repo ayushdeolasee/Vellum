@@ -144,7 +144,15 @@ struct ContentView: View {
         }
 
         if modifiers == .command && key == "l" {
-            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+            let browserVisible = app.document != nil && workspace.sidebarOpen && workspace.sidebarTab == .browser
+            NotificationCenter.default.post(
+                name: browserVisible ? .vellumFocusBrowserAddress : .vellumAddWebpage,
+                object: nil)
+            return true
+        }
+        if modifiers == .command && key == "r",
+           app.document != nil && workspace.sidebarOpen && workspace.sidebarTab == .browser {
+            NotificationCenter.default.post(name: .vellumReloadBrowser, object: nil)
             return true
         }
         if modifiers == .command && key == "o" {
@@ -466,7 +474,9 @@ struct SidebarPanelStack: View {
                 panel(.annotations) { AnnotationSidebar() }
                 panel(.ai) { AiPanel() }
                 panel(.scratchpad) { ScratchpadPanel() }
-                panel(.browser) { SidebarBrowserView() }
+                panel(.browser) {
+                    SidebarBrowserView(isActive: workspace.sidebarOpen && workspace.sidebarTab == .browser)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
