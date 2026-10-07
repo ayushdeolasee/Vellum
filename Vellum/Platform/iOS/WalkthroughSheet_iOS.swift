@@ -54,7 +54,7 @@ struct WalkthroughSheet_iOS: View {
     /// Minimum chrome heights. Both regions may grow when Dynamic Type or a
     /// narrow phone makes their content reflow.
     static let minimumTitleBarHeight: CGFloat = 52
-    static let minimumFooterHeight: CGFloat = 60
+    static let minimumFooterHeight: CGFloat = 52
     static let controlSide: CGFloat = 44
     /// Height of each of the two rules between the chrome and the page.
     ///
@@ -80,6 +80,7 @@ struct WalkthroughSheet_iOS: View {
         }
         .frame(maxWidth: Self.sheetWidth)
         .frame(maxHeight: Self.maxSheetHeight)
+        .presentationSizing(.form.fitted(horizontal: false, vertical: true))
         // No explicit background: take the system sheet material, like
         // StorageLocationChoiceSheet does. Painting palette.surface here made
         // this the only sheet in the app opting out of it, and in light mode it
@@ -237,6 +238,8 @@ struct WalkthroughSheet_iOS: View {
     }
 
     private var footer: some View {
+        // The header already shows the step count; keep navigation in one row
+        // unless accessibility text needs the stacked fallback.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 if !isLast {
@@ -245,27 +248,25 @@ struct WalkthroughSheet_iOS: View {
 
                 Spacer(minLength: 12)
 
-                pageIndicator
-
-                Spacer(minLength: 12)
-
                 backButton
                 nextButton
             }
 
             VStack(spacing: 4) {
-                pageIndicator
-                HStack(spacing: 12) {
-                    if !isLast {
+                if !isLast {
+                    HStack {
                         skipButton
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 12)
+                }
+                HStack(spacing: 12) {
+                    Spacer(minLength: 0)
                     backButton
                     nextButton
                 }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .frame(minHeight: Self.minimumFooterHeight)
         .fixedSize(horizontal: false, vertical: true)
@@ -302,34 +303,6 @@ struct WalkthroughSheet_iOS: View {
         // walkthrough is reachable from a keyboard.
         .keyboardShortcut(.defaultAction)
         .accessibilityIdentifier("walkthrough.next")
-    }
-
-    /// Dots double as direct navigation — someone reopening this from the Help
-    /// menu usually wants one specific page, not five presses of Next.
-    private var pageIndicator: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(pages.enumerated()), id: \.element.id) { offset, item in
-                let isCurrent = offset == index
-                Button { go(to: offset) } label: {
-                    Capsule()
-                        // Inactive dots are palette.borderStrong, not
-                        // `.quaternary`. SwiftUI's quaternary fill resolves
-                        // from the color scheme, not from our palette, and on
-                        // the light parchment chrome it came out so faint the
-                        // dots were invisible. borderStrong is defined for both
-                        // schemes (#d6cdbb / #45413a), so it reads in each.
-                        .fill(isCurrent ? palette.primary : palette.borderStrong)
-                        .frame(width: isCurrent ? 18 : 6, height: 6)
-                        .frame(width: Self.controlSide, height: Self.controlSide)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(item.title)
-                .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
-                .accessibilityIdentifier("walkthrough.dot.\(item.id)")
-            }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: index)
     }
 
     // MARK: - Navigation
