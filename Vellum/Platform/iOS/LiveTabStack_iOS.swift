@@ -44,6 +44,8 @@ private struct LiveTabHost_iOS: View {
     let runtime: LiveTabRuntime
 
     @Environment(WorkspaceStore.self) private var workspace
+    @State private var restoreAttempt = 0
+    @State private var restoreFailed = false
 
     /// The active tab always renders, whatever the policy currently thinks —
     /// `body` runs before the `.task` below has had a chance to promote it, and
@@ -59,8 +61,13 @@ private struct LiveTabHost_iOS: View {
             if runtime.isEvicted, document != nil {
                 if isActive {
                     VStack(spacing: 8) {
-                        ProgressView()
-                        Text("Restoring tab…").foregroundStyle(.secondary)
+                        if restoreFailed {
+                            Text("Your annotations could not be saved.").foregroundStyle(.secondary)
+                            Button("Retry") { restoreAttempt += 1 }
+                        } else {
+                            ProgressView()
+                            Text("Restoring tab…").foregroundStyle(.secondary)
+                        }
                     }
                 } else {
                     Color.clear
@@ -94,8 +101,12 @@ private struct LiveTabHost_iOS: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: isActive) {
+        .task(id: [isActive ? 1 : 0, restoreAttempt]) {
             guard isActive else { return }
+            restoreFailed = false
+            let saved = await runtime.awaitReleasedInk()
+            guard !Task.isCancelled, isActive else { return }
+            guard saved else { restoreFailed = true; return }
             workspace.activateLiveTabRuntime(runtime)
         }
     }
