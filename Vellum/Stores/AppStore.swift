@@ -1613,6 +1613,9 @@ final class AppStore {
         }
         let document = DocumentInfo(kind: imported.manifest.kind == "web" ? .web : .pdf,
             pdfPath: destination.path, title: imported.manifest.title, pageCount: nil, lastPage: nil, docId: key)
+        guard await teardowns.awaitPersistence(for: document) else {
+            throw SessionServiceError.io("Your ink could not be saved. Retry the import after saving your annotations.")
+        }
         let coordinator = workspace?.storageCoordinator
         var outcome: Result<(path: String, failedAttachments: [String]), Error> = .failure(
             SessionServiceError.io("The imported document was not installed"))

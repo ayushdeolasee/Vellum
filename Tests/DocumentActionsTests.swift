@@ -1244,8 +1244,23 @@ final class DocumentActionsTests: XCTestCase {
             let parked = await AiPersistence.awaitPendingFlush()
             XCTAssertFalse(parked)
             XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: key))
-            let app = AppStore(sessions: DocumentSessionManager())
+            let registry = TabTeardownRegistry()
+            let inkOutcome = LifecycleRenameOutcome()
+            registry.registerReleaseFlush(document: document) { inkOutcome.succeeds }
+            let app = AppStore(sessions: DocumentSessionManager(), teardowns: registry)
             apps.append(app)
+            do {
+                _ = try await app.importVellumBundle(imported, to: destination) { _ in
+                    XCTFail("failed ink must be refused before payload replacement")
+                    return .keepLocal
+                }
+                XCTFail("expected failed ink import refusal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Your ink could not be saved")) }
+            XCTAssertEqual(try Data(contentsOf: destination), originalBytes)
+            XCTAssertFalse(registry.isEmpty)
+            inkOutcome.succeeds = true
+            let inkSaved = await registry.awaitAll()
+            XCTAssertTrue(inkSaved)
             do {
                 _ = try await app.importVellumBundle(imported, to: destination) { _ in
                     XCTFail("parked writes must be refused before payload replacement or prompting")
