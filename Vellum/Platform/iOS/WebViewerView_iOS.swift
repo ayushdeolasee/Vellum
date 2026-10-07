@@ -1641,7 +1641,8 @@ final class WebViewerController_iOS: NSObject {
     /// `rect` is `(rect + offset) / s`. Rendering that region and stretching
     /// it back over the whole snapshot aligns the ink pixel-for-pixel.
     private func compositeInk(over image: UIImage, snapshotRect rect: CGRect) -> UIImage {
-        guard let drawing = ink?.overlay?.canvas.drawing, !drawing.strokes.isEmpty else {
+        guard let ink, ink.canDisplayInk,
+              let drawing = ink.overlay?.canvas.drawing, !drawing.strokes.isEmpty else {
             return image
         }
         let scroll = webView.scrollView

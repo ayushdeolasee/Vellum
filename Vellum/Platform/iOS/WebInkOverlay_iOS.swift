@@ -100,6 +100,11 @@ final class WebInkOverlay_iOS: UIView, PKCanvasViewDelegate, UIPencilInteraction
         webObservations.append(scroll.observe(\.zoomScale, options: [.new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.webZoomScaleChanged() }
         })
+        // SPA/history URL changes can precede the init bridge message. Hide
+        // retained outgoing ink as soon as WebKit reports the new page.
+        webObservations.append(webView.observe(\.url, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.refreshPolicy() }
+        })
         observeCanvasOffset()
 
         webContentSizeChanged()
@@ -430,7 +435,8 @@ final class WebInkOverlay_iOS: UIView, PKCanvasViewDelegate, UIPencilInteraction
     /// intercepts all touches — links, text selection, and note interactions
     /// are inert; inactive, every touch passes through to the page.
     func refreshPolicy() {
-        let active = (ink?.isActive ?? false) && ink?.toolState.tool != .textHighlight
+        isHidden = ink?.canDisplayInk == false
+        let active = !isHidden && (ink?.isActive ?? false) && ink?.toolState.tool != .textHighlight
         isUserInteractionEnabled = active
         #if targetEnvironment(simulator)
         canvas.drawingPolicy = .anyInput // no Pencil in the Simulator

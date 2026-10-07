@@ -840,21 +840,32 @@ final class WebInkPersistenceTests: XCTestCase {
             kind: .web, pdfPath: "https://example.com/b", title: nil, pageCount: nil, lastPage: nil)
         controller.isActive = true
         XCTAssertTrue(controller.isActive)
+        XCTAssertFalse(overlay.isHidden)
         controller.documentWillNavigate(to: blockedDocument.pdfPath)
         controller.anchorsShifted()
         controller.isActive = true
         XCTAssertFalse(controller.isActive, "outgoing ink must freeze before the session's first await")
-        var releaseSucceeds = false
-        registry.registerReleaseFlush(document: blockedDocument) { releaseSucceeds }
+        XCTAssertTrue(overlay.isHidden)
+        XCTAssertFalse(controller.canDisplayInk, "outgoing ink must also be excluded from snapshots")
+        let release = ControlledInkPersister()
+        release.flushSucceeds = false
+        registry.registerReleaseFlush(document: blockedDocument) {
+            await release.flushPendingInkAndWait()
+        }
         let blocked = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
         await blocked.value
         XCTAssertTrue(controller.documentLoadFailed)
+        XCTAssertTrue(overlay.isHidden, "failed admission must preserve but hide the outgoing drawing")
         XCTAssertFalse(controller.isDocumentLoading)
         XCTAssertTrue(controller.persistence === loaders[2])
         XCTAssertEqual(overlay.canvas.drawing.bounds.minY, secondARecord.mergedDrawing().bounds.minY, accuracy: 0.01)
         XCTAssertNil(loaders[3].seededBaseline, "a failed release barrier must not seed an empty replacement")
 
-        releaseSucceeds = true
+        controller.documentOpened(url: "https://example.com/a")
+        XCTAssertFalse(overlay.isHidden, "returning to A must reveal its retained drawing")
+        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, secondARecord.mergedDrawing().bounds.minY, accuracy: 0.01)
+
+        release.flushSucceeds = true
         let retry = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
         loaders[4].resolveLoad(with: nil)
         await retry.value
@@ -863,6 +874,8 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertTrue(overlay.canvas.drawing.strokes.isEmpty)
         controller.isActive = true
         XCTAssertTrue(controller.isActive, "the matching DOM and loaded ink can resume after successful admission")
+        XCTAssertFalse(overlay.isHidden)
+        XCTAssertTrue(controller.canDisplayInk)
         let releasesDrained = await registry.awaitAll()
         XCTAssertTrue(releasesDrained)
     }
@@ -946,6 +959,7 @@ private final class CapturingInkPersister: WebInkPersisting {
 /// equivalent.
 @MainActor
 private final class ControlledInkPersister: WebInkPersisting {
+    var flushSucceeds = true
     private var loadContinuation: CheckedContinuation<WebInkRecord?, Never>?
     private var resolvedLoad: WebInkRecord??
     private(set) var seededBaseline: WebInkRecord?
@@ -976,7 +990,7 @@ private final class ControlledInkPersister: WebInkPersisting {
         anchorFor: (CGRect) -> WebInkRecord.Anchor?
     ) {}
 
-    func flushPendingInkAndWait() async -> Bool { true }
+    func flushPendingInkAndWait() async -> Bool { flushSucceeds }
 }
 
 /// Deterministic suspension point for the edit-during-flush regression. The

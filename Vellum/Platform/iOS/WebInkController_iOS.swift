@@ -286,15 +286,19 @@ final class WebInkController_iOS: InkPaletteHost {
         reanchorTask?.cancel()
         reanchorTask = nil
         if loadedUrl != url { isActive = false }
+        overlay?.refreshPolicy()
     }
 
-    private var canResolveAnchors: Bool {
-        guard let loadedUrl, liveDocumentUrl == loadedUrl,
+    /// The retained drawing may be shown or composited only over its own DOM.
+    var canDisplayInk: Bool {
+        guard liveDocumentUrl == loadedUrl,
               !isDocumentLoading, !documentLoadFailed else { return false }
         // SPA history can change WebKit's URL before its init bridge message.
         // Check the actual page as well as the announced navigation target.
         return webController?.liveDocumentUrlForInk.map { $0 == loadedUrl } ?? true
     }
+
+    private var canResolveAnchors: Bool { loadedUrl != nil && canDisplayInk }
 
     /// The web document reported in (`handleInit` bumped `initCount`): bind the
     /// persister for its URL and seed the canvas with any stored ink. Ignores
@@ -317,6 +321,7 @@ final class WebInkController_iOS: InkPaletteHost {
             isDocumentLoading = false
             documentLoadFailed = false
             anchorsShifted()
+            overlay?.refreshPolicy()
             return nil
         }
         openGeneration &+= 1
@@ -325,6 +330,7 @@ final class WebInkController_iOS: InkPaletteHost {
         isDocumentLoading = true
         documentLoadFailed = false
         isActive = false
+        overlay?.refreshPolicy()
         if let previous = persistence {
             let flush = WebInkFlushEntry(previous)
             supersededFlushes.append(flush)
@@ -347,6 +353,7 @@ final class WebInkController_iOS: InkPaletteHost {
                     self.openingUrl = nil
                     self.isDocumentLoading = false
                     if !self.documentLoadFailed { self.anchorsShifted() }
+                    self.overlay?.refreshPolicy()
                 }
             }
             guard await registry?.awaitReleaseFlushes(
