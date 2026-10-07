@@ -1621,15 +1621,28 @@ final class WebViewerController_iOS: NSObject {
     }
 
     private func snapshot(rect: CGRect) async -> AiPageImageSnapshot? {
-        guard rect.width >= 4, rect.height >= 4 else { return nil }
+        guard rect.width >= 4, rect.height >= 4, attached, initCount > 0,
+              let app, let tabId = mountTabId, app.activeTabId == tabId,
+              let binding = app.documentBinding(for: tabId),
+              let documentUrl = loadedDocumentUrl, app.document?.pdfPath == documentUrl,
+              pendingNavUrl == nil,
+              liveDocumentUrlForInk.map({ $0 == documentUrl }) ?? true else { return nil }
+        let generation = mountGeneration
+        let liveUrl = liveDocumentUrlForInk
+        let page = max(1, app.currentPage)
         let config = WKSnapshotConfiguration()
         config.rect = rect
-        guard let image = try? await webView.takeSnapshot(configuration: config) else { return nil }
+        guard let image = try? await webView.takeSnapshot(configuration: config),
+              attached, self.app === app, mountGeneration == generation,
+              mountTabId == tabId, app.activeTabId == tabId,
+              app.isCurrentDocumentBinding(binding), loadedDocumentUrl == documentUrl,
+              app.document?.pdfPath == documentUrl, pendingNavUrl == nil,
+              liveDocumentUrlForInk == liveUrl else { return nil }
         // Composite Apple Pencil ink over the page bytes so the model sees what
         // the user sees (WEB-INK-PLAN Phase 4). Stamp the page that was actually
         // on screen when the bytes were taken, never the one a caller asked for.
         let composited = compositeInk(over: image, snapshotRect: rect)
-        return aiSnapshot(from: composited, page: max(1, app?.currentPage ?? 1))
+        return aiSnapshot(from: composited, page: page)
     }
 
     /// Paint the live ink drawing over a web-view snapshot. `rect` is the
