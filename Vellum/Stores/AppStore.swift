@@ -99,12 +99,31 @@ final class TabTeardownRegistry {
         }.compactMap(\.generation))
     }
 
-    func awaitPersistence(for document: DocumentInfo) async {
+    @discardableResult
+    func awaitPersistence(for document: DocumentInfo) async -> Bool {
         for task in persistenceTasks(for: document) { await task.value }
+        let key = DocumentPositionService.key(for: document)
+        return await awaitReleaseFlushes {
+            $0.documentPath == document.pdfPath || (key != nil && $0.documentKey == key)
+        }
     }
 
-    /// True when no teardown or document persistence is pending.
-    var isEmpty: Bool { entries.isEmpty }
+    /// Captured document authority for ink writes that outlive their runtime.
+    /// Reopen/import barriers must join these before reading the same resource.
+    private struct ReleaseFlush {
+        let documentPath: String?
+        let documentKey: DocumentKey?
+        let operation: @MainActor () async -> Bool
+        var task: Task<Bool, Never>?
+    }
+
+    /// A failed release flush stays here with no active task. The next
+    /// background/termination barrier starts one new attempt; one invocation of
+    /// `awaitAll` never retries the same failed operation in a tight loop.
+    @ObservationIgnored private var releaseFlushes: [UUID: ReleaseFlush] = [:]
+
+    /// True when no teardown is pending.
+    var isEmpty: Bool { entries.isEmpty && releaseFlushes.isEmpty }
 
     func register(tabId: String, document: DocumentInfo, generation: UUID? = nil, task: Task<Void, Never>) {
         entries[tabId] = Entry(
@@ -122,14 +141,98 @@ final class TabTeardownRegistry {
     /// Capture existing work before admitting another registered resource task.
     func pendingTasksSnapshot() -> [Task<Void, Never>] { entries.values.map(\.task) }
 
-    /// Await every pending teardown. The scene-background flush drains this so
+    /// Start and retain a runtime-release flush until it finishes. The
+    /// workspace background barrier drains this same registry, including a
+    /// release registered by a close teardown while `awaitAll()` is suspended.
+    @discardableResult
+    func registerReleaseFlush(
+        document: DocumentInfo? = nil,
+        _ operation: @escaping @MainActor () async -> Bool
+    ) -> UUID {
+        let id = UUID()
+        releaseFlushes[id] = ReleaseFlush(
+            documentPath: document?.pdfPath,
+            documentKey: document.flatMap(DocumentPositionService.key(for:)),
+            operation: operation, task: nil)
+        _ = startReleaseFlush(id: id)
+        return id
+    }
+
+    func awaitReleaseFlush(id: UUID) async -> Bool {
+        guard let task = startReleaseFlush(id: id) else { return true }
+        return await task.value
+    }
+
+    func awaitReleaseFlushes(forDocumentKey key: DocumentKey) async -> Bool {
+        await awaitReleaseFlushes { $0.documentKey == key }
+    }
+
+    private func awaitReleaseFlushes(
+        matching matches: (ReleaseFlush) -> Bool
+    ) async -> Bool {
+        var attempted = Set<UUID>()
+        while true {
+            let ids = releaseFlushes.filter { matches($0.value) && !attempted.contains($0.key) }.map(\.key)
+            guard !ids.isEmpty else { return !releaseFlushes.values.contains(where: matches) }
+            for id in ids {
+                attempted.insert(id)
+                _ = await awaitReleaseFlush(id: id)
+            }
+        }
+    }
+
+    /// Await every pending teardown and attempt each retained release flush at
+    /// most once. The scene-background flush drains this so
     /// suspending right after closing a tab still persists its reading
     /// position — including a tab whose close collapsed its pane. (macOS drains
     /// the same registry from `applicationShouldTerminate`; iOS has no quit, so
     /// `flushOnBackground` is the equivalent last chance.)
-    func awaitAll() async {
-        while !entries.isEmpty {
-            for entry in Array(entries.values) { await entry.task.value }
+    @discardableResult
+    func awaitAll() async -> Bool {
+        // Drain, don't take a single snapshot: a close teardown can evict its
+        // runtime near the end and register an ink release flush while we are
+        // awaiting that close task.
+        var attemptedReleaseFlushes = Set<UUID>()
+        while true {
+            let teardownTasks = entries.values.map(\.task)
+            let releaseIds = releaseFlushes.keys.filter {
+                attemptedReleaseFlushes.contains($0) == false
+            }
+            guard teardownTasks.isEmpty == false || releaseIds.isEmpty == false else {
+                return releaseFlushes.isEmpty
+            }
+
+            for task in teardownTasks { await task.value }
+            for id in releaseIds {
+                attemptedReleaseFlushes.insert(id)
+                if let task = startReleaseFlush(id: id) {
+                    _ = await task.value
+                }
+            }
+        }
+    }
+
+    private func startReleaseFlush(id: UUID) -> Task<Bool, Never>? {
+        guard var entry = releaseFlushes[id] else { return nil }
+        if let task = entry.task { return task }
+        let operation = entry.operation
+        let task = Task { @MainActor in
+            let succeeded = await operation()
+            finishReleaseFlush(id: id, succeeded: succeeded)
+            return succeeded
+        }
+        entry.task = task
+        releaseFlushes[id] = entry
+        return task
+    }
+
+    private func finishReleaseFlush(id: UUID, succeeded: Bool) {
+        guard var entry = releaseFlushes[id] else { return }
+        if succeeded {
+            releaseFlushes[id] = nil
+        } else {
+            entry.task = nil
+            releaseFlushes[id] = entry
         }
     }
 
@@ -137,8 +240,8 @@ final class TabTeardownRegistry {
     /// path that opens or writes a document file calls this first. The wait is
     /// bounded by the teardown itself and only bites when the same file is
     /// reused immediately; every other open stays instant.
-    func awaitTeardowns(ofDocumentAt path: String) async {
-        guard !entries.isEmpty else { return }
+    @discardableResult
+    func awaitTeardowns(ofDocumentAt path: String) async -> Bool {
         // Teardowns record canonical paths, so resolve the incoming path the
         // same way for the comparison. realpath(2) is a blocking syscall —
         // PR #113 exists to keep those off the main actor — so it runs
@@ -151,20 +254,18 @@ final class TabTeardownRegistry {
         // Snapshot before awaiting: finished teardowns remove themselves from
         // the dictionary, and new ones can register across suspension points.
         let pending = entries.values.filter { $0.documentPath == canonical }
-        for entry in pending {
-            await entry.task.value
-        }
+        for entry in pending { await entry.task.value }
+        return await awaitReleaseFlushes { $0.documentPath == canonical }
     }
 
     /// Await a teardown by stable document key, used by direct web opens where
     /// there is no filesystem path to compare. This keeps a close's final
     /// key-level lifecycle event from landing after a fresh open of the same URL.
-    func awaitTeardowns(forDocumentKey key: DocumentKey) async {
-        guard !entries.isEmpty else { return }
+    @discardableResult
+    func awaitTeardowns(forDocumentKey key: DocumentKey) async -> Bool {
         let pending = entries.values.filter { $0.documentKey == key }
-        for entry in pending {
-            await entry.task.value
-        }
+        for entry in pending { await entry.task.value }
+        return await awaitReleaseFlushes(forDocumentKey: key)
     }
 }
 
@@ -401,7 +502,9 @@ final class AppStore {
         }
         do {
             if let outgoing = tab.document {
-                await teardowns.awaitPersistence(for: outgoing)
+                guard await teardowns.awaitPersistence(for: outgoing) else {
+                    throw SessionServiceError.io("Your ink could not be saved. Try opening the page again.")
+                }
                 guard isCurrentNavigation() else { return nil }
                 await workspace?.positions.recordMoved(
                     document: outgoing,
@@ -411,7 +514,7 @@ final class AppStore {
                     await workspace?.positions.recordClosed(document: outgoing)
                 }
             }
-            await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
+            try await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
             guard isCurrentNavigation() else { return nil }
             let doc = try await sessions.openWebDocument(url: url, sessionId: tabId)
             guard isCurrentNavigation() else { return nil }
@@ -633,16 +736,20 @@ final class AppStore {
     /// Await any pending teardown that still holds the file at `path` — in ANY
     /// pane, not just this one. See `TabTeardownRegistry` for why the registry
     /// is workspace-owned.
-    private func awaitTeardowns(ofDocumentAt path: String) async {
+    private func awaitTeardowns(ofDocumentAt path: String) async throws {
         await workspace?.awaitMaintenance()
         await workspace?.awaitConflictRecovery()
-        await teardowns.awaitTeardowns(ofDocumentAt: path)
+        guard await teardowns.awaitTeardowns(ofDocumentAt: path) else {
+            throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+        }
     }
 
-    private func awaitTeardowns(forDocumentKey key: DocumentKey) async {
+    private func awaitTeardowns(forDocumentKey key: DocumentKey) async throws {
         await workspace?.awaitMaintenance()
         await workspace?.awaitConflictRecovery()
-        await teardowns.awaitTeardowns(forDocumentKey: key)
+        guard await teardowns.awaitTeardowns(forDocumentKey: key) else {
+            throw SessionServiceError.io("Your ink could not be saved. Try opening the page again.")
+        }
     }
 
     func closeFile() async {
@@ -742,7 +849,7 @@ final class AppStore {
         do {
             // Web only, per the guard above.
             if let key = DocumentPositionService.key(for: sourceDocument) {
-                await awaitTeardowns(forDocumentKey: key)
+                try await awaitTeardowns(forDocumentKey: key)
             }
             var opened = try await sessions.openWebDocument(
                 url: sourceDocument.pdfPath, sessionId: sessionId)
@@ -876,7 +983,9 @@ final class AppStore {
             guard let savedDocument = descriptor.document else { continue }
             let sessionId = UUID().uuidString.lowercased()
             do {
-                await teardowns.awaitPersistence(for: savedDocument)
+                guard await teardowns.awaitPersistence(for: savedDocument) else {
+                    throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+                }
                 var opened: DocumentInfo
                 if savedDocument.kind == .web {
                     if savedDocument.pdfPath.lowercased().hasSuffix(".vellumweb") {
@@ -897,7 +1006,10 @@ final class AppStore {
                         try? await sessions.closeFile(sessionId: sessionId)
                     }
                 }
-                await teardowns.awaitPersistence(for: opened)
+                guard await teardowns.awaitPersistence(for: opened) else {
+                    try? await sessions.closeFile(sessionId: sessionId)
+                    throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+                }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
                 opened.title = savedDocument.title ?? opened.title
@@ -1249,7 +1361,7 @@ final class AppStore {
     }
 
     private func openOneUrl(_ url: String, saveToLibrary: Bool = false) async throws {
-        await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
+        try await awaitTeardowns(forDocumentKey: DocumentPositionService.webKey(for: url))
         let sessionId = UUID().uuidString.lowercased()
         let doc = try await sessions.openWebDocument(url: url, sessionId: sessionId)
         if saveToLibrary {
@@ -1260,7 +1372,7 @@ final class AppStore {
                 throw error
             }
         }
-        await adoptOpenedDocument(doc, sessionId: sessionId)
+        try await adoptOpenedDocument(doc, sessionId: sessionId)
     }
 
     private func routeStorageRecoveryIfNeeded(_ error: Error) {
@@ -1280,9 +1392,9 @@ final class AppStore {
         // teardowns on that path would guard a file no session ever held.
         if isArchive {
             let key = try await webDocumentKey(inArchiveAt: path)
-            await awaitTeardowns(forDocumentKey: key)
+            try await awaitTeardowns(forDocumentKey: key)
         } else {
-            await awaitTeardowns(ofDocumentAt: path)
+            try await awaitTeardowns(ofDocumentAt: path)
         }
         let sessionId = UUID().uuidString.lowercased()
         // .vellumweb archives import as web documents; everything else is a PDF.
@@ -1299,7 +1411,7 @@ final class AppStore {
                 try? await sessions.closeFile(sessionId: sessionId)
             }
         }
-        await adoptOpenedDocument(doc, sessionId: sessionId)
+        try await adoptOpenedDocument(doc, sessionId: sessionId)
         if isArchive {
             // The import may have merged annotations into a tab that is already
             // open and active, in which case no document change fires — nudge
@@ -1501,6 +1613,12 @@ final class AppStore {
         }
         let document = DocumentInfo(kind: imported.manifest.kind == "web" ? .web : .pdf,
             pdfPath: destination.path, title: imported.manifest.title, pageCount: nil, lastPage: nil, docId: key)
+        guard await teardowns.awaitPersistence(for: document) else {
+            throw SessionServiceError.io("Your ink could not be saved. Retry the import after saving your annotations.")
+        }
+        guard !importOwnerApps.contains(where: { $0.pendingDocumentAdmissions > $0.pendingBundleImports }) else {
+            throw SessionServiceError.io("Wait for documents to finish opening, then retry the import. The existing document has been kept.")
+        }
         let coordinator = workspace?.storageCoordinator
         var outcome: Result<(path: String, failedAttachments: [String]), Error> = .failure(
             SessionServiceError.io("The imported document was not installed"))
@@ -1710,11 +1828,14 @@ final class AppStore {
     }
     #endif
 
-    private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+    private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async throws {
         // Parsing a second PDF path can reveal the same stable owner only
         // after opening its backend. Do not expose that session to UI/AI until
         // a registered import of its sidecar has finished.
-        await teardowns.awaitPersistence(for: doc)
+        guard await teardowns.awaitPersistence(for: doc) else {
+            try? await sessions.closeFile(sessionId: sessionId)
+            throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+        }
         var doc = doc
         if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
             doc.title = failure.title
@@ -1910,9 +2031,26 @@ final class AppStore {
                     await positions?.recordClosed(document: durableDocument)
                 }
                 await positions?.flush()
+                #if os(iOS)
+                await runtime?.flushPendingAnnotationWrites()
+                #endif
                 await runtime?.flushPdfText()
+                #if os(iOS)
+                if let runtime {
+                    runtime.boundDocument = durableDocument
+                    workspace?.removeLiveTabRuntime(for: tabId)
+                    teardowns.registerReleaseFlush(document: durableDocument) {
+                        guard await runtime.awaitReleasedInk() else { return false }
+                        try? await sessions.closeFile(sessionId: tabId)
+                        return true
+                    }
+                } else {
+                    try? await sessions.closeFile(sessionId: tabId)
+                }
+                #else
                 try? await sessions.closeFile(sessionId: tabId)
                 workspace?.removeLiveTabRuntime(for: tabId)
+                #endif
                 teardowns.finish(tabId: tabId)
             })
     }
