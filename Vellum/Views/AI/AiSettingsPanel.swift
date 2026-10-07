@@ -266,7 +266,7 @@ struct AiProviderOption: Identifiable {
         .init(provider: .openrouter, label: "OpenRouter"),
         .init(provider: .opencode, label: "OpenCode Zen"),
         .init(provider: .opencodeGo, label: "OpenCode Go"),
-    ]
+    ].filter { $0.provider.isAvailableOnCurrentPlatform }
 }
 
 // MARK: - Shared AI settings plumbing

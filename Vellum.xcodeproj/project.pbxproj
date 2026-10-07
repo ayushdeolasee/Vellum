@@ -266,6 +266,7 @@
 		54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8F4E0214AE68A33C5052709 /* Untitled.icon */; };
 		54E5D11BCC123B35C6A0F216 /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */; };
 		560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */; };
+		56358042DA296C0E87BEF513 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */; };
 		56633B0C1607E321CF459371 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		567BCA05CE20FB2955BDC3A2 /* PdfSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C888E571A951AE6BCD089B3D /* PdfSearch.swift */; };
 		5686B893C18C8E336D6AE3DC /* ReadLaterHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5656DC56874E29C2DCD69B4 /* ReadLaterHTTPClient.swift */; };
@@ -859,6 +860,7 @@
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
 		4B707464546ECFFA1A49EBDE /* purify.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = purify.min.js; sourceTree = "<group>"; };
 		4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabStack_iOS.swift; sourceTree = "<group>"; };
+		4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsentTests.swift; sourceTree = "<group>"; };
 		4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiFileAttachment.swift; sourceTree = "<group>"; };
 		4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumExternalWebLink.swift; sourceTree = "<group>"; };
@@ -1339,6 +1341,7 @@
 		2E469D3994BEFA6B674BA578 /* VellumShare */ = {
 			isa = PBXGroup;
 			children = (
+				4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */,
 				E46879D3BEAFC2CEAC37BA95 /* ShareViewController.swift */,
 				107A9FB8BC038245B98313FB /* VellumCapture.js */,
 			);
@@ -2166,6 +2169,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				56358042DA296C0E87BEF513 /* PrivacyInfo.xcprivacy in Resources */,
 				874BF346A6F89EA1049BC11B /* VellumCapture.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

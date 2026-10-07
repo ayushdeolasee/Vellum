@@ -1,7 +1,7 @@
 import Foundation
 
 enum VellumPrivacyPolicy {
-    static let url = URL(string: "https://ayushdeolasee.github.io/Vellum/privacy.html")!
+    static let url = URL(string: "https://vellum.work/privacy.html")!
 }
 
 /// Permission to send document content to an AI provider.
