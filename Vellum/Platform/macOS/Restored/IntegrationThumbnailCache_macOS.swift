@@ -10,16 +10,20 @@ actor IntegrationThumbnailCache {
     private let fileManager: FileManager
     private let maximumBytes: Int
     private let maximumPixelCount: Int
+    private let decodedImages = NSCache<NSURL, CGImage>()
 
     init(root: URL = WebLibrary.appDataDir.appendingPathComponent("integrations", isDirectory: true).appendingPathComponent("thumbnails", isDirectory: true), session: URLSession = .shared, fileManager: FileManager = .default, maximumBytes: Int = 8 * 1024 * 1024, maximumPixelCount: Int = 40_000_000) {
         self.root = root; self.downloader = IntegrationDownloadClient(session: session); self.fileManager = fileManager; self.maximumBytes = maximumBytes; self.maximumPixelCount = maximumPixelCount
+        decodedImages.countLimit = 256
+        decodedImages.totalCostLimit = 16 * 1024 * 1024
     }
 
     func imageURL(for candidate: URL?) async -> URL? {
+        guard !Task.isCancelled else { return nil }
         guard let source = candidate.flatMap(ReadLaterItem.validHTTPURL) else { return nil }
         let destination = root.appendingPathComponent(Self.key(source) + ".image")
         if validImage(at: destination) { return destination }
-        let staging = root.appendingPathComponent(Self.key(source) + ".partial")
+        let staging = root.appendingPathComponent(Self.key(source) + "." + UUID().uuidString + ".partial")
         do {
             try Task.checkCancellation()
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -44,9 +48,16 @@ actor IntegrationThumbnailCache {
     /// sit in memory to fill a 34pt well.
     ///
     /// `sending` because `NSImage` isn't Sendable — this instance is created
-    /// here, never stored, and never touched again once handed back.
+    /// here, never stored, and never touched again once handed back. Only the
+    /// immutable CGImage is cached, so revisiting a row skips disk and decoding.
     func image(for candidate: URL?) async -> sending NSImage? {
+        guard !Task.isCancelled,
+              let candidate = candidate.flatMap(ReadLaterItem.validHTTPURL) else { return nil }
+        if let cached = decodedImages.object(forKey: candidate as NSURL) {
+            return NSImage(cgImage: cached, size: NSSize(width: cached.width, height: cached.height))
+        }
         guard let url = await imageURL(for: candidate) else { return nil }
+        guard !Task.isCancelled else { return nil }
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let options: [CFString: Any] = [
@@ -56,6 +67,7 @@ actor IntegrationThumbnailCache {
             kCGImageSourceThumbnailMaxPixelSize: Self.maximumThumbnailPixelSize,
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        decodedImages.setObject(cgImage, forKey: candidate as NSURL, cost: cgImage.bytesPerRow * cgImage.height)
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
@@ -63,6 +75,7 @@ actor IntegrationThumbnailCache {
     private static let maximumThumbnailPixelSize = 256
 
     func removeUnreferenced(keeping urls: Set<URL>) {
+        decodedImages.removeAllObjects()
         let keys = Set(urls.map(Self.key))
         guard let contents = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
         for file in contents where !keys.contains(file.deletingPathExtension().lastPathComponent) { try? fileManager.removeItem(at: file) }

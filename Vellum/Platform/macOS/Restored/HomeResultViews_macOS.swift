@@ -64,14 +64,15 @@ struct HomeResultRow: View {
     let removals: [(removal: HomeSearchRemoval, action: () -> Void)]
 
     @Environment(\.palette) private var palette
-    @Environment(IntegrationsStore.self) private var integrations
     @State private var hovering = false
-    @State private var thumbnail: NSImage?
 
     var body: some View {
         Button(action: open) {
             HStack(spacing: 12) {
-                icon
+                HomeResultIcon(
+                    thumbnailURL: item.thumbnailURL,
+                    systemImage: item.systemImage,
+                    isMissing: item.badges.contains(.missing))
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -117,9 +118,6 @@ struct HomeResultRow: View {
         .accessibilityIdentifier("welcome.result")
         .accessibilityLabel(item.title)
         .accessibilityValue(item.subtitle)
-        .task(id: item.thumbnailURL) {
-            thumbnail = await integrations.thumbnailImage(for: item.thumbnailURL)
-        }
         .contextMenu {
             Button("Open") { open() }
             if let rename {
@@ -136,17 +134,28 @@ struct HomeResultRow: View {
             }
         }
     }
+}
 
-    private var icon: some View {
+/// Thumbnail completion updates only the icon, rather than rebuilding the row
+/// and its context menu while the library is scrolling.
+private struct HomeResultIcon: View {
+    let thumbnailURL: URL?
+    let systemImage: String
+    let isMissing: Bool
+    @Environment(IntegrationsStore.self) private var integrations
+    @Environment(\.palette) private var palette
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
         Group {
             if let thumbnail {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: item.systemImage)
+                Image(systemName: systemImage)
                     .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(item.badges.contains(.missing)
+                    .foregroundStyle(isMissing
                         ? AnyShapeStyle(palette.destructive) : AnyShapeStyle(.secondary))
             }
         }
@@ -155,6 +164,14 @@ struct HomeResultRow: View {
             .clipShape(RoundedRectangle(cornerRadius: Radius.md))
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.md).strokeBorder(.separator)
+            }
+            .task(id: thumbnailURL) {
+                guard !Task.isCancelled else { return }
+                if thumbnail != nil { thumbnail = nil }
+                guard let url = thumbnailURL else { return }
+                let image = await integrations.thumbnailImage(for: url)
+                guard !Task.isCancelled else { return }
+                thumbnail = image
             }
     }
 }
