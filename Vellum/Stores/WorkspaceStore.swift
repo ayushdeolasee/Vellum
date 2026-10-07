@@ -683,12 +683,18 @@ final class WorkspaceStore {
             await previous?.value
             await restoreFromDisk()
             #if os(iOS)
-            let paths = await Task.detached(priority: .userInitiated) {
-                DocumentImport.importPicked(incoming)
+            let imported = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPickedResult(incoming)
             }.value
-            guard !paths.isEmpty else { return }
             let app = focusedPane.app
-            await app.openFiles(paths: paths)
+            guard !imported.paths.isEmpty else {
+                app.error = imported.errors.joined(separator: "\n")
+                return
+            }
+            await app.openFiles(paths: imported.paths)
+            if !imported.errors.isEmpty {
+                app.error = (imported.errors + [app.error].compactMap { $0 }).joined(separator: "\n")
+            }
             if app.error == nil {
                 NotificationCenter.default.post(
                     name: .vellumSystemRouteDidOpenDocument, object: nil)
