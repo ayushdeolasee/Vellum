@@ -502,7 +502,9 @@ final class AppStore {
         }
         do {
             if let outgoing = tab.document {
-                await teardowns.awaitPersistence(for: outgoing)
+                guard await teardowns.awaitPersistence(for: outgoing) else {
+                    throw SessionServiceError.io("Your ink could not be saved. Try opening the page again.")
+                }
                 guard isCurrentNavigation() else { return nil }
                 await workspace?.positions.recordMoved(
                     document: outgoing,
@@ -1004,7 +1006,10 @@ final class AppStore {
                         try? await sessions.closeFile(sessionId: sessionId)
                     }
                 }
-                await teardowns.awaitPersistence(for: opened)
+                guard await teardowns.awaitPersistence(for: opened) else {
+                    try? await sessions.closeFile(sessionId: sessionId)
+                    throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+                }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
                 opened.title = savedDocument.title ?? opened.title
@@ -1367,7 +1372,7 @@ final class AppStore {
                 throw error
             }
         }
-        await adoptOpenedDocument(doc, sessionId: sessionId)
+        try await adoptOpenedDocument(doc, sessionId: sessionId)
     }
 
     private func routeStorageRecoveryIfNeeded(_ error: Error) {
@@ -1406,7 +1411,7 @@ final class AppStore {
                 try? await sessions.closeFile(sessionId: sessionId)
             }
         }
-        await adoptOpenedDocument(doc, sessionId: sessionId)
+        try await adoptOpenedDocument(doc, sessionId: sessionId)
         if isArchive {
             // The import may have merged annotations into a tab that is already
             // open and active, in which case no document change fires — nudge
@@ -1817,11 +1822,14 @@ final class AppStore {
     }
     #endif
 
-    private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async {
+    private func adoptOpenedDocument(_ doc: DocumentInfo, sessionId: String) async throws {
         // Parsing a second PDF path can reveal the same stable owner only
         // after opening its backend. Do not expose that session to UI/AI until
         // a registered import of its sidecar has finished.
-        await teardowns.awaitPersistence(for: doc)
+        guard await teardowns.awaitPersistence(for: doc) else {
+            try? await sessions.closeFile(sessionId: sessionId)
+            throw SessionServiceError.io("Your ink could not be saved. Try opening the document again.")
+        }
         var doc = doc
         if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
             doc.title = failure.title
