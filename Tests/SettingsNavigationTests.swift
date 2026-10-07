@@ -21,6 +21,15 @@ final class SettingsNavigationTests: XCTestCase {
     }
 
     #if os(iOS)
+    func testGeminiCannotCreateAConnectionRequestOnIOS() {
+        var settings = AiSettings()
+        settings.provider = .gemini
+        settings.apiKey = "test-key-never-sent"
+        XCTAssertNil(AiConnectionValidator.request(settings: settings))
+        XCTAssertFalse(AiProviderOption.all.contains { $0.provider == .gemini })
+        XCTAssertEqual(AiSettings().provider, .openai)
+    }
+
     func testPhoneSettingsRoutesStorageAndIntegrationsThroughActionableMoreRows() {
         XCTAssertEqual(SettingsPhoneTab(section: .storage), .more)
         XCTAssertEqual(SettingsPhoneTab(section: .integrations), .more)

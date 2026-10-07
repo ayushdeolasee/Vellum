@@ -465,6 +465,36 @@ struct KeychainStoreTests {
 
     // MARK: - Startup
 
+    @MainActor
+    @Test("Loading an unavailable provider keeps its saved key and model")
+    func unavailableProviderPreservesCredentials() {
+        let fake = FakeKeychain()
+        fake.seedVault(["com.vellum.ai/gemini": "retained-key"])
+        let previous = AppDefaults.current.object(forKey: AiPersistence.settingsKey)
+        defer {
+            if let previous {
+                AppDefaults.current.set(previous, forKey: AiPersistence.settingsKey)
+            } else {
+                AppDefaults.current.removeObject(forKey: AiPersistence.settingsKey)
+            }
+        }
+        AppDefaults.current.set(
+            #"{"provider":"gemini","model":"saved-model"}"#,
+            forKey: AiPersistence.settingsKey)
+        KeychainStore.withBackend(fake.backend) {
+            let settings = AiPersistence.loadSettings()
+            #if os(iOS)
+            #expect(settings.provider == .openai)
+            #else
+            #expect(settings.provider == .gemini)
+            #endif
+            #expect(settings.model == "saved-model")
+            #expect(settings.apiKey == "retained-key")
+            #expect(fake.writeCount == 0)
+            #expect(fake.deleteCount == 0)
+        }
+    }
+
     /// The first read of a launch is the expensive one (full item read, legacy
     /// enumeration, possibly a commit and a password prompt) and it is
     /// reachable synchronously from `@MainActor` callers. `prewarm` moves it

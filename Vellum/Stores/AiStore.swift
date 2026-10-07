@@ -18,6 +18,24 @@ enum AiProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     /// OpenCode Go gateway (low-cost open coding models); its own `sk-…` key,
     /// separate from Zen. See `OpenCodeClient.Gateway`.
     case opencodeGo
+
+    /// Direct Gemini API terms exclude clients likely to be accessed by minors.
+    /// The iPhone/iPad release includes teen readers.
+    var isAvailableOnCurrentPlatform: Bool {
+        #if os(iOS)
+        self != .gemini
+        #else
+        true
+        #endif
+    }
+
+    static var defaultProvider: AiProvider {
+        #if os(iOS)
+        .openai
+        #else
+        .gemini
+        #endif
+    }
 }
 
 /// User-selected reasoning/thinking effort, applied to whichever provider is
@@ -365,7 +383,7 @@ extension AiPageImageSnapshot: Equatable {
 }
 
 struct AiSettings: Codable, Equatable, Sendable {
-    var provider: AiProvider = .gemini
+    var provider: AiProvider = .defaultProvider
     var model: String = "gemini-3.1-flash-lite-preview"
     var apiKey: String = ""
     var openaiModel: String = "gpt-5.5"
@@ -1286,6 +1304,10 @@ final class AiStore {
         if let expectedBinding, app.activeDocumentBinding != expectedBinding { return }
 
         let settingsAtStart = settings
+        guard settingsAtStart.provider.isAvailableOnCurrentPlatform else {
+            error = "This AI provider is unavailable on iPhone and iPad. Choose another provider in AI settings."
+            return
+        }
         if settingsAtStart.provider == .openai,
            settingsAtStart.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             error = "Set your OpenAI API key in AI settings."

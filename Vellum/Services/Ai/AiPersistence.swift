@@ -103,14 +103,14 @@ enum AiPersistence {
         var needsRewrite = false
         if let storedProvider = value["provider"] as? String {
             if let provider = AiProvider(rawValue: storedProvider) {
-                settings.provider = provider
+                settings.provider = provider.isAvailableOnCurrentPlatform ? provider : .defaultProvider
             } else if storedProvider == "chatgpt" {
                 // ChatGPT OAuth was removed. Keep existing OpenAI users on the
                 // supported OpenAI path instead of silently switching to Gemini.
                 settings.provider = .openai
                 needsRewrite = true
             } else {
-                settings.provider = .gemini
+                settings.provider = .defaultProvider
                 needsRewrite = true
             }
         }

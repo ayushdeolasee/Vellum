@@ -269,6 +269,7 @@
 		54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8F4E0214AE68A33C5052709 /* Untitled.icon */; };
 		54E5D11BCC123B35C6A0F216 /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */; };
 		560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */; };
+		56358042DA296C0E87BEF513 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */; };
 		56633B0C1607E321CF459371 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		567BCA05CE20FB2955BDC3A2 /* PdfSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C888E571A951AE6BCD089B3D /* PdfSearch.swift */; };
 		5686B893C18C8E336D6AE3DC /* ReadLaterHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5656DC56874E29C2DCD69B4 /* ReadLaterHTTPClient.swift */; };
@@ -431,6 +432,7 @@
 		926BE9588C48C0C01E842863 /* PositionStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A6B518A77046E6A387B624F /* PositionStorage.swift */; };
 		92BE924D5B657D8E2BF0435B /* VellumWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B90FF0B5EC9E9949FF46B5C9 /* VellumWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		941B8E8B32DFC4D83B1D9D06 /* PdfKitZoomModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39FB41AFFBD563DF4888B0E8 /* PdfKitZoomModeTests.swift */; };
+		9460D0C13DF5B8DC9C9888EC /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8B3B94D3F8792FA31A15DADE /* ThirdPartyNotices.txt */; };
 		95249DDDD54E760538EFADF7 /* FloatingNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74FDD14A78FAD10D8DD319BD /* FloatingNotice.swift */; };
 		95B63EA56475D03DDAD9FDD6 /* SyncedContainerRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 541F3C060A41BF612E4E4904 /* SyncedContainerRoutingTests.swift */; };
 		95FC64725D07DAC4E9B2AB5F /* HighlightSwatchButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A23802792908CA275A878C /* HighlightSwatchButton.swift */; };
@@ -676,6 +678,7 @@
 		EE2D037D27BEAD6BB6E60708 /* SelectionPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0B4D5702156DFEC64496C9 /* SelectionPopover.swift */; };
 		EEA1B5FE51DACF90285EB843 /* tool-mode-native.md in Resources */ = {isa = PBXBuildFile; fileRef = 88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */; };
 		EF583EB7847DC1A21A9ED17D /* AiImageAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AA8777A0129DDD533B0801E /* AiImageAttachment.swift */; };
+		EF6486790DEDD90953706EE7 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8B3B94D3F8792FA31A15DADE /* ThirdPartyNotices.txt */; };
 		EF7A65F99A00454F851FA17C /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
 		EFC3AA79C9FED94D8AE14A38 /* RetentionEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B778A6D627FC3EA9CC5E9CF5 /* RetentionEngineTests.swift */; };
 		EFE0DDF9E4259CF082901002 /* AttachmentDrop_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4FB44C08D0803E940B36BA5 /* AttachmentDrop_macOS.swift */; };
@@ -874,6 +877,7 @@
 		4B19F1048CA6DE0E71C521DB /* VellumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumApp.swift; sourceTree = "<group>"; };
 		4B707464546ECFFA1A49EBDE /* purify.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = purify.min.js; sourceTree = "<group>"; };
 		4C212B65E107AC74791D3BD0 /* LiveTabStack_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabStack_iOS.swift; sourceTree = "<group>"; };
+		4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		4D0168CFAE8A9A08A7ADAB02 /* AiSharingConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSharingConsentTests.swift; sourceTree = "<group>"; };
 		4D76BD9134C505A0D1E0DFEE /* AiFileAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiFileAttachment.swift; sourceTree = "<group>"; };
 		4D8D9A5B0DCD8407B5043AE6 /* VellumExternalWebLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumExternalWebLink.swift; sourceTree = "<group>"; };
@@ -989,6 +993,7 @@
 		8A774391C8C286453B790F75 /* MarkdownMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMessage.swift; sourceTree = "<group>"; };
 		8AE579DDEEDCD328B5704AF0 /* RecentDocumentsWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentDocumentsWidget.swift; sourceTree = "<group>"; };
 		8B1C1908D5C4C66BDFFB61EC /* PdfInk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfInk.swift; sourceTree = "<group>"; };
+		8B3B94D3F8792FA31A15DADE /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
 		8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageIsolationTrait.swift; sourceTree = "<group>"; };
 		8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTabRuntime.swift; sourceTree = "<group>"; };
 		8C33B518BE736FCF7077F63A /* PdfDocIdRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfDocIdRegistry.swift; sourceTree = "<group>"; };
@@ -1363,6 +1368,7 @@
 		2E469D3994BEFA6B674BA578 /* VellumShare */ = {
 			isa = PBXGroup;
 			children = (
+				4C24B2B5776ED2EF0EB87592 /* PrivacyInfo.xcprivacy */,
 				E46879D3BEAFC2CEAC37BA95 /* ShareViewController.swift */,
 				107A9FB8BC038245B98313FB /* VellumCapture.js */,
 			);
@@ -1886,6 +1892,7 @@
 				460DC0522689EC17EC0D233B /* Info.plist */,
 				E3E5D7D6B867201216086389 /* katex */,
 				6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */,
+				8B3B94D3F8792FA31A15DADE /* ThirdPartyNotices.txt */,
 				6C7E25AE58824F0184077A94 /* katex */,
 				BAC8D36F38C39A4C2108F1D5 /* macOS */,
 				FD5DFABA6075759A0AE45882 /* prompts */,
@@ -2183,6 +2190,7 @@
 				EA8A7AFB3A02F3AD545262CB /* AppIcon.icns in Resources */,
 				1F27BEF7A0CFEDADB3836503 /* Assets.xcassets in Resources */,
 				42BD28D226EFA7D32EF3E989 /* PrivacyInfo.xcprivacy in Resources */,
+				EF6486790DEDD90953706EE7 /* ThirdPartyNotices.txt in Resources */,
 				54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */,
 				91F222D3BA33FB57079495ED /* katex in Resources */,
 				D77E5170582527BDF9282B70 /* tool-descriptions.md in Resources */,
@@ -2195,6 +2203,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				56358042DA296C0E87BEF513 /* PrivacyInfo.xcprivacy in Resources */,
 				874BF346A6F89EA1049BC11B /* VellumCapture.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2227,6 +2236,7 @@
 				8DDAA460F63C14A45102A938 /* KaTeX_Size4-Regular.woff2 in Resources */,
 				A68E149E31D65B448C98440D /* KaTeX_Typewriter-Regular.woff2 in Resources */,
 				71F26A8EA9097BAAD50824CB /* PrivacyInfo.xcprivacy in Resources */,
+				9460D0C13DF5B8DC9C9888EC /* ThirdPartyNotices.txt in Resources */,
 				3EA8E32DDDFE39367F6812C8 /* Untitled.icon in Resources */,
 				5415BA8B747B6A442ED2FDE6 /* auto-render.min.js in Resources */,
 				0EB130C7FC1B6257A9BFFB1B /* editor.bundle.js in Resources */,
