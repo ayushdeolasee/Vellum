@@ -297,6 +297,9 @@ private struct WindowChrome: View {
             // drags (issue #101). `SidebarPanelStack` now owns the switcher and
             // documents why it lives inside the inspector at all.
             sidebar
+                // Put the switcher in the otherwise empty titlebar area instead
+                // of reserving a second header row below the window toolbar.
+                .ignoresSafeArea(.container, edges: .top)
                 // The inspector must own SOME toolbar content: while its
                 // toolbar section is empty, macOS 26 draws no tracking
                 // separator and the window's trailing items (bookmark, note,
