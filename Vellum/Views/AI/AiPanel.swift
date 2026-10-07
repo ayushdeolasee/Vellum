@@ -30,7 +30,6 @@ struct AiPanel: View {
     @State private var input = ""
     @State private var promptFocusRequest: String?
     @State private var settingsOpen = false
-    @State private var modelSelectorOpen = false
     /// True while an attachable drag hovers the panel (drives the dashed outline).
     @State private var dropTargeted = false
     @State private var imagePickerOpen = false
@@ -745,29 +744,10 @@ struct AiPanel: View {
             )
             HStack(spacing: 4) {
                 attachMenu
-                Button { modelSelectorOpen.toggle() } label: {
-                    HStack(spacing: 4) {
-                        Text(aiStore.activeModelName)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.mutedForeground)
-                    .padding(.horizontal, 6)
-                    .frame(height: 32)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Choose AI provider and model")
-                .accessibilityLabel("AI model: \(aiStore.activeModelName)")
-                .accessibilityIdentifier("aiPanel.model")
-                .accessibilityAddTraits(modelSelectorOpen ? .isSelected : [])
-                .popover(isPresented: $modelSelectorOpen, arrowEdge: .bottom) {
-                    AiSettingsPanel()
-                        .frame(width: 300)
-                }
+                AiModelSelectorField()
+                    .help("Choose AI model")
+                    .accessibilityLabel("AI model: \(aiStore.activeModelName)")
+                    .accessibilityIdentifier("aiPanel.model")
                 Spacer(minLength: 0)
                 Button(action: submit) {
                     Image(systemName: "arrow.up")
