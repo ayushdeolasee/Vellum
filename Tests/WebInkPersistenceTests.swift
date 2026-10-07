@@ -427,13 +427,24 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(imported.assets.count, WebArchive.maxAssets)
         XCTAssertEqual(imported.inkRecord, record)
 
+        for version in 1...WebInkRecord.currentVersion {
+            var legacy = record
+            legacy.version = version
+            XCTAssertEqual(try legacy.validatedMergedDrawing().strokes.count, 1)
+            legacy.clusters = []
+            XCTAssertTrue(try legacy.validatedMergedDrawing().strokes.isEmpty)
+        }
+
         var corrupt = record
         corrupt.clusters[0].drawing = Data("damaged PencilKit bytes".utf8)
+        var emptyCluster = record
+        emptyCluster.clusters[0].drawing = PKDrawing().dataRepresentation()
         var unsupported = record
         unsupported.version = WebInkRecord.currentVersion + 1
         let cases: [(String, Data?)] = [
             ("missing", nil), ("malformed JSON", Data("{".utf8)),
             ("corrupt drawing", try WebLibrary.jsonEncoderPretty.encode(corrupt)),
+            ("empty cluster", try WebLibrary.jsonEncoderPretty.encode(emptyCluster)),
             ("unsupported version", try WebLibrary.jsonEncoderPretty.encode(unsupported)),
         ]
         for (name, bytes) in cases {

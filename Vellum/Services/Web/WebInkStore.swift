@@ -241,6 +241,13 @@ extension WebInkRecord {
                 throw SessionServiceError.invalidDocument(
                     "This page's ink data is damaged and could not be read")
             }
+            // PencilKit can silently decode malformed bytes as an empty
+            // drawing. Every stored cluster must contain strokes; a cleared
+            // document is represented by an empty clusters array instead.
+            guard !drawing.strokes.isEmpty else {
+                throw SessionServiceError.invalidDocument(
+                    "This page's ink data is damaged and could not be read")
+            }
             out = out.appending(drawing.transformed(
                 using: CGAffineTransform(translationX: cluster.bounds.x, y: cluster.bounds.y)))
         }
