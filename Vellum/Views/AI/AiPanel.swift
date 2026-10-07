@@ -745,6 +745,7 @@ struct AiPanel: View {
             HStack(spacing: 4) {
                 attachMenu
                 AiModelSelectorField()
+                    .controlSize(.small)
                     .help("Choose AI model")
                     .accessibilityLabel("AI model: \(aiStore.activeModelName)")
                     .accessibilityIdentifier("aiPanel.model")
