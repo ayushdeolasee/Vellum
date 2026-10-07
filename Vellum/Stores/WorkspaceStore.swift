@@ -520,7 +520,7 @@ final class WorkspaceStore {
     /// and no WKWebView, so it must not count against a ceiling or start a
     /// sweeper.
     func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
-        liveTabRuntimes[tabId] ?? {
+        let runtime = liveTabRuntimes[tabId] ?? {
             #if os(iOS)
             let created = LiveTabRuntime(
                 tabId: tabId, teardownRegistry: tabTeardowns, webLibraryStorage: webLibraryStorage)
@@ -530,6 +530,12 @@ final class WorkspaceStore {
             liveTabRuntimes[tabId] = created
             return created
         }()
+        #if os(iOS)
+        if let document = root.allLeaves().compactMap({ $0.app.tab(id: tabId)?.document }).first {
+            runtime.boundDocument = document
+        }
+        #endif
+        return runtime
     }
 
     /// The tab is being shown: undo any previous eviction and hand the runtime

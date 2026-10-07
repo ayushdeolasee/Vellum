@@ -292,6 +292,7 @@ struct WebViewerView_iOS: View {
     private func attach() {
         ink.app = app
         ink.webController = controller
+        ink.teardownRegistry = runtime.teardownRegistry
         controller.ink = ink
         controller.inkAnchorsShifted = { [weak ink] in ink?.anchorsShifted() }
         controller.attach(
@@ -534,8 +535,8 @@ private struct WebViewRepresentable_iOS: UIViewRepresentable {
                 point.x -= translation.x
                 point.y -= translation.y
                 phase = "begin"
-                controller.clearSelection()
                 controller.closeNotePopovers()
+                controller.clearSelection()
             case .changed: phase = "move"
             case .ended: phase = "end"
             case .cancelled, .failed: phase = "cancel"

@@ -108,13 +108,17 @@ final class WebInkController_iOS: InkPaletteHost {
         didSet {
             guard oldValue != isActive else { return }
             if isActive {
+                guard !isDocumentLoading, !documentLoadFailed else {
+                    isActive = false
+                    return
+                }
                 // Ink mode is modal (decision 10): entering it dismisses the
                 // selection/note popovers — they anchor to page rects the
                 // canvas is about to sit over — and auto-collapses the
                 // inspector sidebar for a full-width palette, exactly like the
                 // PDF controller (same user preference).
-                webController?.clearSelection()
                 webController?.closeNotePopovers()
+                webController?.clearSelection()
                 if InkController_iOS.autoHideSidebarWhileInking {
                     sidebarWasOpen = app?.workspace?.sidebarOpen ?? false
                     app?.workspace?.sidebarOpen = false
@@ -138,6 +142,7 @@ final class WebInkController_iOS: InkPaletteHost {
     @ObservationIgnored weak var app: AppStore?
     /// The mounted web viewer — ink activation dismisses its popovers.
     @ObservationIgnored weak var webController: WebViewerController_iOS?
+    @ObservationIgnored weak var teardownRegistry: TabTeardownRegistry?
     /// Durable-write seam for the current document (swapped by
     /// `documentOpened`; a test can inject a capture double).
     @ObservationIgnored var persistence: (any WebInkPersisting)?
@@ -150,6 +155,9 @@ final class WebInkController_iOS: InkPaletteHost {
     /// once-per-document guard for `documentOpened` (init re-reports on
     /// hydration and soft navigation).
     @ObservationIgnored private var loadedUrl: String?
+    @ObservationIgnored private var openingUrl: String?
+    private(set) var isDocumentLoading = false
+    private(set) var documentLoadFailed = false
     /// A sidecar that finished loading before SwiftUI mounted this tab's
     /// PencilKit overlay. Kept until `attachOverlay` can seed the canvas.
     @ObservationIgnored private var pendingLoadedRecord: WebInkRecord?
@@ -249,6 +257,9 @@ final class WebInkController_iOS: InkPaletteHost {
         isActive = false
         flushPendingInk()
         loadedUrl = nil
+        openingUrl = nil
+        isDocumentLoading = false
+        documentLoadFailed = false
         pendingLoadedRecord = nil
         openGeneration &+= 1
         resetAnchorState()
@@ -268,30 +279,65 @@ final class WebInkController_iOS: InkPaletteHost {
     func documentOpened(url: String?) -> Task<Void, Never>? {
         guard let rawURL = url, !rawURL.isEmpty else { return nil }
         let url = (try? WebUrl.normalize(rawURL)) ?? rawURL
-        guard url != loadedUrl else { return nil }
+        guard url != openingUrl else { return nil }
+        if url == loadedUrl {
+            // Returning to the still-retained document supersedes an incoming
+            // load that has not passed its release barrier yet.
+            if openingUrl != nil {
+                openGeneration &+= 1
+                openingUrl = nil
+            }
+            isDocumentLoading = false
+            documentLoadFailed = false
+            return nil
+        }
         openGeneration &+= 1
         let generation = openGeneration
-        pendingLoadedRecord = nil
+        openingUrl = url
+        isDocumentLoading = true
+        documentLoadFailed = false
+        isActive = false
         if let previous = persistence {
             let flush = WebInkFlushEntry(previous)
             supersededFlushes.append(flush)
-            flush.start()
+            if let teardownRegistry, let loadedUrl {
+                let document = DocumentInfo(
+                    kind: .web, pdfPath: loadedUrl, title: nil, pageCount: nil, lastPage: nil)
+                teardownRegistry.registerReleaseFlush(document: document) {
+                    await flush.joinOrRetry()
+                }
+            } else {
+                flush.start()
+            }
         }
-        if loadedUrl != nil {
-            // In-tab navigation reuses the mounted overlay: the outgoing
-            // page's strokes must not bleed onto (or get saved under) the
-            // incoming document.
-            overlay?.setDrawing(PKDrawing())
-            drawingVersion &+= 1
-        }
-        loadedUrl = url
-        resetAnchorState()
         let persister = persistenceFactory(url)
-        persistence = persister
+        let registry = teardownRegistry
         return Task { [weak self] in
+            guard let self, self.openGeneration == generation else { return }
+            defer {
+                if self.openGeneration == generation {
+                    self.openingUrl = nil
+                    self.isDocumentLoading = false
+                }
+            }
+            guard await registry?.awaitReleaseFlushes(
+                forDocumentKey: DocumentPositionService.webKey(for: url)) != false else {
+                if self.openGeneration == generation { self.documentLoadFailed = true }
+                return
+            }
+            guard self.openGeneration == generation else { return }
+            // Bind only after the same document's outgoing writes are durable.
+            // A failed barrier leaves the prior canvas and persister recoverable.
+            if self.loadedUrl != nil {
+                self.overlay?.setDrawing(PKDrawing())
+                self.drawingVersion &+= 1
+            }
+            self.pendingLoadedRecord = nil
+            self.loadedUrl = url
+            self.resetAnchorState()
+            self.persistence = persister
             guard let record = await persister.loadRecord() else { return }
-            guard let self,
-                  self.openGeneration == generation,
+            guard self.openGeneration == generation,
                   self.loadedUrl == url,
                   self.persistence === persister else { return }
             persister.seedBaseline(record)
@@ -835,10 +881,14 @@ final class WebInkPersister: WebInkPersisting {
     /// Retains the active immediate flush so a scene-background callback can
     /// join the exact task an ink-mode-off flush already started.
     private var flushTask: Task<Bool, Never>?
-    /// This runtime's last loaded or successfully written full snapshot. The
+    /// This runtime's last loaded or successfully written canvas snapshot. The
     /// shared path-locked writer applies only baseline → pending changes to the
     /// latest file, which is what makes same-URL runtimes deletion-safe.
     private var baseline: WebInkRecord?
+    /// Initial-load content explicitly observed by the canvas, retained until
+    /// a successful write has included it in the observed-remove delta.
+    private var seededObservation: WebInkRecord?
+    private var seedGeneration = 0
     /// First-stroke promotion (decision 7) is part of the durability barrier.
     /// A failed attempt leaves `needsPromotion` set so the next edit, export,
     /// or background flush retries instead of permanently latching success.
@@ -863,10 +913,11 @@ final class WebInkPersister: WebInkPersisting {
     }
 
     func seedBaseline(_ record: WebInkRecord) {
-        // A user can draw before the async initial load finishes. If that edit
-        // already wrote, its newer baseline must not be replaced by the stale
-        // load result; the controller will re-report the merged canvas.
-        if baseline == nil { baseline = record }
+        // The canvas observes this load even if a local write already landed
+        // or is suspended. A Clear before the merged canvas writes must still
+        // be able to remove this newly observed content.
+        seededObservation = record
+        seedGeneration &+= 1
     }
 
     func drawingChanged(
@@ -973,14 +1024,21 @@ final class WebInkPersister: WebInkPersisting {
     /// remains in `pending`, so a later foreground edit, explicit export, or
     /// background flush retries it instead of silently declaring it durable.
     private func write(_ record: WebInkRecord, generation gen: Int) async -> Bool {
-        let replacing = baseline
+        var replacing = baseline
+        if let seededObservation {
+            WebArchive.mergeInk(&replacing, incoming: seededObservation)
+        }
+        let observedSeedGeneration = seedGeneration
         do {
-            let committed = try await writer(record, replacing)
-            // The coordinated writer may preserve strokes from another runtime
-            // or from a load that completed before this write. That exact
-            // committed snapshot, not the incoming canvas, is the causal base
-            // for the next observed-remove delta.
-            baseline = committed
+            _ = try await writer(record, replacing)
+            // The shared file may also contain another runtime's strokes.
+            // Only this canvas's snapshot was observed locally: adopting the
+            // merged file would treat those unseen strokes as erased on the
+            // next edit, because they are absent from this canvas.
+            baseline = record
+            // A seed delivered during this write was not part of its delta.
+            // Preserve it for the next write, including a newer pending Clear.
+            if seedGeneration == observedSeedGeneration { seededObservation = nil }
         } catch {
             // A newer edit may have replaced `record` while the I/O actor was
             // suspended. Never overwrite that newest pending snapshot while
@@ -990,9 +1048,9 @@ final class WebInkPersister: WebInkPersisting {
             return false
         }
 
-        // Even when a newer edit arrived during the write, this snapshot is now
-        // part of the shared file and is the correct causal base for the next
-        // delta. Only clear pending when it is still this generation.
+        // Even when a newer edit arrived during the write, this successfully
+        // written canvas is the observed base for its next delta. Only clear
+        // pending when it is still this generation.
         if generation == gen { pending = nil }
         return true
     }

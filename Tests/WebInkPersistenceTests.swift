@@ -672,11 +672,37 @@ final class WebInkPersistenceTests: XCTestCase {
             "the new concurrent stroke survives, but stale pre-clear strokes stay deleted")
     }
 
-    /// Simulate an initial load whose snapshot is delivered after an early
-    /// stroke has already written. The early write coordinates with the loaded
-    /// file and must adopt that committed A+B record as its baseline; seeding
-    /// the older A snapshot afterwards cannot make the controller's merged A+B
-    /// report append A a second time.
+    /// Repeated local edits, undo, and clear may remove only strokes this
+    /// runtime observed; a merged disk write does not put foreign ink on its
+    /// canvas or make that foreign ink eligible for local deletion.
+    func testRepeatedLocalEditsPreserveUnobservedForeignInk() async throws {
+        let url = "https://example.com/repeated-local-edits"
+        let key = WebLibrary.pageKey(url)
+        let first = WebInkPersister(url: url)
+        let second = WebInkPersister(url: url)
+        let foreign = sampleDrawing()
+        let local = sampleDrawing(offsetX: 500, offsetY: 1_200)
+        let added = local.appending(sampleDrawing(offsetX: 750, offsetY: 2_000))
+
+        first.drawingChanged(foreign, layout: layout)
+        let firstSucceeded = await first.flushPendingInkAndWait()
+        XCTAssertTrue(firstSucceeded)
+        for (drawing, count) in [(local, 2), (added, 3), (local, 2), (PKDrawing(), 1)] {
+            second.drawingChanged(drawing, layout: layout)
+            let succeeded = await second.flushPendingInkAndWait()
+            XCTAssertTrue(succeeded)
+            let stored = try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).mergedDrawing()
+            XCTAssertEqual(stored.strokes.count, count)
+            XCTAssertEqual(stored.bounds.minX, foreign.bounds.minX, accuracy: 0.01)
+        }
+        first.drawingChanged(PKDrawing(), layout: layout)
+        let cleared = await first.flushPendingInkAndWait()
+        XCTAssertTrue(cleared)
+        XCTAssertTrue(try XCTUnwrap(WebInkStore.loadRecord(forKey: key)).mergedDrawing().strokes.isEmpty)
+    }
+
+    /// An initial load delivered after an early write must merge into the
+    /// canvas without duplicating the stroke already present in shared storage.
     func testLateInitialLoadAfterEarlyWriteDoesNotDuplicateStoredInk() async throws {
         let url = "https://example.com/late-load-early-write"
         let existingDrawing = sampleDrawing(offsetX: 100, offsetY: 200)
@@ -703,6 +729,41 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertEqual(
             stored.mergedDrawing().strokes.count, 2,
             "the loaded stroke and the early stroke must each appear once")
+
+        let afterWrite = WebInkPersister(url: url)
+        afterWrite.drawingChanged(earlyStroke, layout: layout)
+        let beforeSeedSucceeded = await afterWrite.flushPendingInkAndWait()
+        XCTAssertTrue(beforeSeedSucceeded)
+        afterWrite.seedBaseline(stored)
+        afterWrite.drawingChanged(PKDrawing(), layout: layout)
+        let afterSeedCleared = await afterWrite.flushPendingInkAndWait()
+        XCTAssertTrue(afterSeedCleared)
+        XCTAssertTrue(
+            try XCTUnwrap(WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
+                .mergedDrawing().strokes.isEmpty,
+            "Clear must remove a late load even before its merged canvas writes")
+        try WebInkStore.saveRecord(stored, forKey: WebLibrary.pageKey(url))
+
+        // Seed during the first suspended write, then Clear before it lands.
+        // That write must preserve the seed as locally observed content.
+        let pause = PausingInkWriter()
+        let io = WebInkIO(url: url)
+        let duringWrite = WebInkPersister(url: url, writer: { record, baseline in
+            _ = await pause.write(record)
+            return try await io.write(record, replacing: baseline)
+        })
+        duringWrite.drawingChanged(sampleDrawing(offsetX: 850, offsetY: 2_600), layout: layout)
+        let flush = Task { await duringWrite.flushPendingInkAndWait() }
+        await pause.waitUntilFirstWriteStarts()
+        duringWrite.seedBaseline(stored)
+        duringWrite.drawingChanged(PKDrawing(), layout: layout)
+        await pause.resumeFirstWrite()
+        let clearSucceeded = await flush.value
+        XCTAssertTrue(clearSucceeded)
+        XCTAssertTrue(
+            try XCTUnwrap(WebInkStore.loadRecord(forKey: WebLibrary.pageKey(url)))
+                .mergedDrawing().strokes.isEmpty,
+            "Clear must remove ink observed by a load during the initial write")
     }
 
     /// A restored tab can report its document before SwiftUI mounts the
@@ -772,6 +833,30 @@ final class WebInkPersistenceTests: XCTestCase {
 
         loaders[1].resolveLoad(with: nil)
         await bTask.value
+
+        let registry = TabTeardownRegistry()
+        controller.teardownRegistry = registry
+        let blockedDocument = DocumentInfo(
+            kind: .web, pdfPath: "https://example.com/b", title: nil, pageCount: nil, lastPage: nil)
+        var releaseSucceeds = false
+        registry.registerReleaseFlush(document: blockedDocument) { releaseSucceeds }
+        let blocked = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
+        await blocked.value
+        XCTAssertTrue(controller.documentLoadFailed)
+        XCTAssertFalse(controller.isDocumentLoading)
+        XCTAssertTrue(controller.persistence === loaders[2])
+        XCTAssertEqual(overlay.canvas.drawing.bounds.minY, secondARecord.mergedDrawing().bounds.minY, accuracy: 0.01)
+        XCTAssertNil(loaders[3].seededBaseline, "a failed release barrier must not seed an empty replacement")
+
+        releaseSucceeds = true
+        let retry = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
+        loaders[4].resolveLoad(with: nil)
+        await retry.value
+        XCTAssertFalse(controller.documentLoadFailed)
+        XCTAssertTrue(controller.persistence === loaders[4])
+        XCTAssertTrue(overlay.canvas.drawing.strokes.isEmpty)
+        let releasesDrained = await registry.awaitAll()
+        XCTAssertTrue(releasesDrained)
     }
 
     // MARK: - Phase 5 memory-audit stress coverage

@@ -245,6 +245,7 @@ final class InkController_iOS: InkPaletteHost {
     /// the app, so a stroke made immediately before pressing Home cannot vanish.
     /// Returns false when retries leave dirty pages; callers must retain the
     /// controller rather than discard the remaining drawings.
+    @discardableResult
     func flushPendingInkAndWait() async -> Bool {
         // A stroke can arrive while an earlier flush is suspended in PDFKit, so
         // join/drain repeatedly. Bounded, not `while`: a drain that fails puts

@@ -28,6 +28,8 @@ final class LiveTabRuntime {
     }
 
     let tabId: String
+    @ObservationIgnored var boundDocument: DocumentInfo?
+    @ObservationIgnored private var releaseFlushID: UUID?
     /// Workspace-owned barrier for flushes that outlive eviction/close. Tests
     /// that construct a standalone runtime may omit it.
     @ObservationIgnored let teardownRegistry: TabTeardownRegistry
@@ -200,7 +202,7 @@ final class LiveTabRuntime {
         let pendingInk = ink
         let pendingWebInk = webInk
         pendingWebInk.detachOverlay()
-        teardownRegistry.registerReleaseFlush {
+        releaseFlushID = teardownRegistry.registerReleaseFlush(document: boundDocument) {
             let pdfInkSucceeded = await pendingInk.flushPendingInkAndWait()
             let webInkSucceeded = await pendingWebInk.flushPendingInkAndReportSuccess()
             withExtendedLifetime(pendingInk) {}
@@ -226,6 +228,14 @@ final class LiveTabRuntime {
         // most, it is what lets the AI context stay truthful while an evicted
         // viewer restores, and it saves the restore a full extraction walk.
         isEvicted = true
+    }
+
+    /// Join the displaced controllers before a cold reload or backend close.
+    func awaitReleasedInk() async -> Bool {
+        guard let id = releaseFlushID else { return true }
+        let saved = await teardownRegistry.awaitReleaseFlush(id: id)
+        if saved, releaseFlushID == id { releaseFlushID = nil }
+        return saved
     }
 
     func reactivate() {

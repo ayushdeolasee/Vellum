@@ -314,6 +314,31 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(registry.isEmpty)
     }
 
+    func testReopenBarrierJoinsMatchingReleasedInk() async throws {
+        let gate = LifecycleGate()
+        lifecycleGates.append(gate)
+        let registry = TabTeardownRegistry()
+        let document = testDocument("Released")
+        let key = try XCTUnwrap(DocumentPositionService.key(for: document))
+        registry.registerReleaseFlush(document: document) {
+            await gate.pause()
+            return true
+        }
+        try await gate.waitUntilPaused()
+        var drained = false
+        let drain = Task {
+            let saved = await registry.awaitTeardowns(forDocumentKey: key)
+            XCTAssertTrue(saved)
+            drained = true
+        }
+        lifecycleTasks.append(drain)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(drained)
+        gate.release()
+        await drain.value
+        XCTAssertTrue(registry.isEmpty)
+    }
+
     func testFailedReleaseFlushRemainsJoinableForNextBarrier() async {
         let registry = TabTeardownRegistry()
         var canSave = false
