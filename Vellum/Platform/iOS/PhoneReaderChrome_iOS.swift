@@ -333,6 +333,11 @@ struct PhoneReaderBottomBar: View {
         }) {
             HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
         }
+        .alert("Export Failed", isPresented: $exportActions.showExportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(exportActions.exportErrorMessage)
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(title: app.document?.title, isWeb: isWeb) { includeConversations in
                 exportActions.startBundleExport(

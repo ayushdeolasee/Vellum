@@ -14,6 +14,7 @@ struct SelectionPopover: View {
     var availableWidth: CGFloat? = nil
     let onClose: () -> Void
 
+    @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
@@ -209,10 +210,12 @@ struct SelectionPopover: View {
             content: nil,
             positionData: selection.positionData
         )
+        guard let sessionId = app.activeTabId,
+              let queued = annotationStore.enqueueHighlight(input, sessionId: sessionId) else { return }
+        #if os(iOS)
+        app.workspace?.existingLiveTabRuntime(for: sessionId)?.trackAnnotationWrite(queued.persistence)
+        #endif
         onClose()
-        Task {
-            await annotationStore.addHighlight(input)
-        }
     }
 
     private func handleAddNote() {

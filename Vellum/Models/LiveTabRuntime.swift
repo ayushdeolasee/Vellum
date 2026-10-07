@@ -28,6 +28,9 @@ final class LiveTabRuntime {
     }
 
     let tabId: String
+    /// Workspace-owned barrier for flushes that outlive eviction/close. Tests
+    /// that construct a standalone runtime may omit it.
+    @ObservationIgnored let teardownRegistry: TabTeardownRegistry
 
     /// The tab's PDF controller. It lives here rather than in the viewer's
     /// `@State` so the controller — and the `PDFView` it retains — outlives any
@@ -41,6 +44,11 @@ final class LiveTabRuntime {
     var webController: WebViewerController_iOS
     private let webLibraryStorage: WebLibraryStorage
     @ObservationIgnored private let webNoteDraftState: WebNoteDraftState
+
+    /// Apple Pencil ink for the retained webpage. It must share the tab's
+    /// lifetime with `webController`: a warm remount reparents both the
+    /// WKWebView and its overlay without reloading the sidecar.
+    var webInk = WebInkController_iOS()
 
     /// The pane used to own one `InkController_iOS` (registered in
     /// `InkRegistry_iOS` by pane id). That was correct while exactly one tab per
@@ -92,6 +100,10 @@ final class LiveTabRuntime {
     /// for ranking.
     @ObservationIgnored private var pdfByteCount = 0
 
+    /// Annotation writes launched by this tab. Closing the tab drains these
+    /// before its backend session is closed.
+    @ObservationIgnored private var pendingAnnotationWrites: [Task<Bool, Never>] = []
+
     /// Bumped when the tab keeps its identity while the file underneath it
     /// changes — PDF Save As retargets a *live* tab to a new location instead of
     /// closing and reopening it. The mounted viewer keys its load task on this,
@@ -116,9 +128,11 @@ final class LiveTabRuntime {
 
     init(
         tabId: String,
+        teardownRegistry: TabTeardownRegistry? = nil,
         webLibraryStorage: WebLibraryStorage = WebLibraryStorage()
     ) {
         self.tabId = tabId
+        self.teardownRegistry = teardownRegistry ?? TabTeardownRegistry()
         self.webLibraryStorage = webLibraryStorage
         let drafts = WebNoteDraftState()
         self.webNoteDraftState = drafts
@@ -184,9 +198,14 @@ final class LiveTabRuntime {
         // here). Hold the controller alive until its flush lands, the same way
         // the web side holds itself open for a pending auto-archive.
         let pendingInk = ink
-        Task { @MainActor in
-            await pendingInk.flushPendingInkAndWait()
+        let pendingWebInk = webInk
+        pendingWebInk.detachOverlay()
+        teardownRegistry.registerReleaseFlush {
+            let pdfInkSucceeded = await pendingInk.flushPendingInkAndWait()
+            let webInkSucceeded = await pendingWebInk.flushPendingInkAndReportSuccess()
             withExtendedLifetime(pendingInk) {}
+            withExtendedLifetime(pendingWebInk) {}
+            return pdfInkSucceeded && webInkSucceeded
         }
         pdfController.flushAndDropPersister()
         pdfController.reset()
@@ -197,6 +216,7 @@ final class LiveTabRuntime {
         pdfController = PdfViewerControlleriOS()
         webController = WebViewerController_iOS(storage: webLibraryStorage, draftState: webNoteDraftState)
         ink = InkController_iOS()
+        webInk = WebInkController_iOS()
         pdfLoadState = .idle
         preparedDocument = nil
         preparedSourceData = nil
@@ -214,9 +234,24 @@ final class LiveTabRuntime {
         isEvicted = false
     }
 
-    /// iPad's PDF controller has no `pauseTextExtraction`; `flushPersister()` is
-    /// the equivalent drain of the page-text cache it owns.
+    func trackAnnotationWrite(_ task: Task<Bool, Never>) {
+        pendingAnnotationWrites.append(task)
+    }
+
+    func flushPendingAnnotationWrites() async {
+        while !pendingAnnotationWrites.isEmpty {
+            let writes = pendingAnnotationWrites
+            pendingAnnotationWrites.removeAll()
+            for write in writes {
+                _ = await write.value
+            }
+        }
+    }
+
+    /// Drain user annotations before the page-text cache so backgrounding does
+    /// not suspend a highlight write that has already appeared on screen.
     func flushPdfText() async {
+        await flushPendingAnnotationWrites()
         await pdfController.flushPersister()
     }
 }
