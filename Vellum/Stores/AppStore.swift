@@ -1616,6 +1616,9 @@ final class AppStore {
         guard await teardowns.awaitPersistence(for: document) else {
             throw SessionServiceError.io("Your ink could not be saved. Retry the import after saving your annotations.")
         }
+        guard !importOwnerApps.contains(where: { $0.pendingDocumentAdmissions > $0.pendingBundleImports }) else {
+            throw SessionServiceError.io("Wait for documents to finish opening, then retry the import. The existing document has been kept.")
+        }
         let coordinator = workspace?.storageCoordinator
         var outcome: Result<(path: String, failedAttachments: [String]), Error> = .failure(
             SessionServiceError.io("The imported document was not installed"))

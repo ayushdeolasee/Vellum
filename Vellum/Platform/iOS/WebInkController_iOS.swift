@@ -108,7 +108,9 @@ final class WebInkController_iOS: InkPaletteHost {
         didSet {
             guard oldValue != isActive else { return }
             if isActive {
-                guard !isDocumentLoading, !documentLoadFailed else {
+                guard !isDocumentLoading, !documentLoadFailed,
+                      liveDocumentUrl == loadedUrl,
+                      loadedUrl == nil || canResolveAnchors else {
                     isActive = false
                     return
                 }
@@ -155,6 +157,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// once-per-document guard for `documentOpened` (init re-reports on
     /// hydration and soft navigation).
     @ObservationIgnored private var loadedUrl: String?
+    @ObservationIgnored private var liveDocumentUrl: String?
     @ObservationIgnored private var openingUrl: String?
     private(set) var isDocumentLoading = false
     private(set) var documentLoadFailed = false
@@ -257,6 +260,7 @@ final class WebInkController_iOS: InkPaletteHost {
         isActive = false
         flushPendingInk()
         loadedUrl = nil
+        liveDocumentUrl = nil
         openingUrl = nil
         isDocumentLoading = false
         documentLoadFailed = false
@@ -270,6 +274,28 @@ final class WebInkController_iOS: InkPaletteHost {
 
     // MARK: - Document lifecycle (load + persistence binding)
 
+    /// Freeze anchor work before session rebinding or a new DOM can suspend in
+    /// a release barrier. Keep outgoing anchors for recovery, but invalidate
+    /// every request measured against the outgoing page.
+    func documentWillNavigate(to rawURL: String) {
+        let url = (try? WebUrl.normalize(rawURL)) ?? rawURL
+        guard liveDocumentUrl != url else { return }
+        liveDocumentUrl = url
+        anchorLayoutGeneration &+= 1
+        anchorRequestsInFlight = []
+        reanchorTask?.cancel()
+        reanchorTask = nil
+        if loadedUrl != url { isActive = false }
+    }
+
+    private var canResolveAnchors: Bool {
+        guard let loadedUrl, liveDocumentUrl == loadedUrl,
+              !isDocumentLoading, !documentLoadFailed else { return false }
+        // SPA history can change WebKit's URL before its init bridge message.
+        // Check the actual page as well as the announced navigation target.
+        return webController?.liveDocumentUrlForInk.map { $0 == loadedUrl } ?? true
+    }
+
     /// The web document reported in (`handleInit` bumped `initCount`): bind the
     /// persister for its URL and seed the canvas with any stored ink. Ignores
     /// repeat inits for the same document (hydration re-extraction); an in-tab
@@ -279,6 +305,7 @@ final class WebInkController_iOS: InkPaletteHost {
     func documentOpened(url: String?) -> Task<Void, Never>? {
         guard let rawURL = url, !rawURL.isEmpty else { return nil }
         let url = (try? WebUrl.normalize(rawURL)) ?? rawURL
+        documentWillNavigate(to: url)
         guard url != openingUrl else { return nil }
         if url == loadedUrl {
             // Returning to the still-retained document supersedes an incoming
@@ -289,6 +316,7 @@ final class WebInkController_iOS: InkPaletteHost {
             }
             isDocumentLoading = false
             documentLoadFailed = false
+            anchorsShifted()
             return nil
         }
         openGeneration &+= 1
@@ -318,6 +346,7 @@ final class WebInkController_iOS: InkPaletteHost {
                 if self.openGeneration == generation {
                     self.openingUrl = nil
                     self.isDocumentLoading = false
+                    if !self.documentLoadFailed { self.anchorsShifted() }
                 }
             }
             guard await registry?.awaitReleaseFlushes(
@@ -466,7 +495,8 @@ final class WebInkController_iOS: InkPaletteHost {
     /// record is re-reported so the pending write picks the anchors up —
     /// the 700 ms debounce coalesces this with the stroke that caused it.
     private func captureMissingAnchors(for normalized: PKDrawing) {
-        guard let webController, let url = loadedUrl else { return }
+        guard canResolveAnchors, let webController, let url = loadedUrl else { return }
+        let documentGeneration = openGeneration
         let drawingGeneration = drawingVersion
         let layoutGeneration = anchorLayoutGeneration
         let missing = WebInkClustering.clusters(of: normalized).map(\.bounds).filter { bounds in
@@ -509,6 +539,8 @@ final class WebInkController_iOS: InkPaletteHost {
             // because it becomes durable and moves the stroke toward the wrong
             // text on every later toolbar zoom.
             guard !Task.isCancelled,
+                  self.canResolveAnchors,
+                  self.openGeneration == documentGeneration,
                   self.loadedUrl == url,
                   self.drawingVersion == drawingGeneration,
                   self.anchorLayoutGeneration == layoutGeneration else { return }
@@ -539,6 +571,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// re-anchor pass now and re-check as layout settles, the same 400 ms /
     /// 1200 ms cadence the scroll-restore settle machinery uses.
     func anchorsShifted() {
+        guard canResolveAnchors else { return }
         anchorLayoutGeneration &+= 1
         reanchorTask?.cancel()
         reanchorTask = Task { [weak self] in
@@ -559,7 +592,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// request without waiting for another user edit.
     private func reanchorAndCapturePass() async {
         await reanchorPass()
-        guard !Task.isCancelled,
+        guard !Task.isCancelled, canResolveAnchors,
               let overlay,
               !overlay.isToolInUse else { return }
         let drawing = overlay.canvas.drawing
@@ -572,7 +605,7 @@ final class WebInkController_iOS: InkPaletteHost {
     /// Skipped mid-stroke and aborted when the drawing or zoom changed while
     /// the resolve round trip was in flight.
     private func reanchorPass() async {
-        guard let overlay, let webController, loadedUrl != nil else { return }
+        guard canResolveAnchors, let overlay, let webController, loadedUrl != nil else { return }
         guard !overlay.isToolInUse, !anchorCache.isEmpty else { return }
         let live = overlay.canvas.drawing
         guard !live.strokes.isEmpty else { return }
@@ -594,12 +627,14 @@ final class WebInkController_iOS: InkPaletteHost {
 
         let versionBefore = drawingVersion
         let layoutBefore = anchorLayoutGeneration
+        let documentBefore = openGeneration
         let resolved = await webController.resolveInkAnchors(queries)
         // `anchorsShifted` cancels an older settle task whenever another zoom
         // step or layout signal supersedes it. The JS continuation itself is
         // not cancellation-aware, so explicitly reject its now-stale result
         // before it can translate strokes using an intermediate zoom layout.
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, canResolveAnchors,
+              openGeneration == documentBefore else { return }
         // Same identity check the capture path makes. Cancellation alone would
         // cover today's shift signals (all of them cancel the settle task), but
         // it silently depends on every future one remembering to; the

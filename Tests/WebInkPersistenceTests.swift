@@ -838,6 +838,12 @@ final class WebInkPersistenceTests: XCTestCase {
         controller.teardownRegistry = registry
         let blockedDocument = DocumentInfo(
             kind: .web, pdfPath: "https://example.com/b", title: nil, pageCount: nil, lastPage: nil)
+        controller.isActive = true
+        XCTAssertTrue(controller.isActive)
+        controller.documentWillNavigate(to: blockedDocument.pdfPath)
+        controller.anchorsShifted()
+        controller.isActive = true
+        XCTAssertFalse(controller.isActive, "outgoing ink must freeze before the session's first await")
         var releaseSucceeds = false
         registry.registerReleaseFlush(document: blockedDocument) { releaseSucceeds }
         let blocked = try XCTUnwrap(controller.documentOpened(url: blockedDocument.pdfPath))
@@ -855,6 +861,8 @@ final class WebInkPersistenceTests: XCTestCase {
         XCTAssertFalse(controller.documentLoadFailed)
         XCTAssertTrue(controller.persistence === loaders[4])
         XCTAssertTrue(overlay.canvas.drawing.strokes.isEmpty)
+        controller.isActive = true
+        XCTAssertTrue(controller.isActive, "the matching DOM and loaded ink can resume after successful admission")
         let releasesDrained = await registry.awaitAll()
         XCTAssertTrue(releasesDrained)
     }

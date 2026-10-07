@@ -709,6 +709,14 @@ final class WebViewerController_iOS: NSObject {
     /// Side-effect-free "does a web view exist yet?", for `RetainedViewOwner`.
     var hasWebView: Bool { didCreateWebView }
 
+    /// Current page identity for ink guards, without materializing a web view.
+    var liveDocumentUrlForInk: String? {
+        guard didCreateWebView,
+              let pageUrl = webView.url,
+              let realUrl = VellumWebSchemeHandler.realUrl(from: pageUrl) else { return nil }
+        return (try? WebUrl.normalize(realUrl)) ?? realUrl
+    }
+
     /// Isolated content world for the bridge: the content script and the
     /// "vellum" message handler live here, out of reach of page scripts (a
     /// hostile page could otherwise post open-youtube/navigate messages or
@@ -769,6 +777,7 @@ final class WebViewerController_iOS: NSObject {
         // The page text this tab already extracted lives on its runtime;
         // `AiStore` holds only whichever document the pane last showed.
         aiStore.restorePageTexts(runtime.pageTexts)
+        if document.kind == .web { ink?.documentWillNavigate(to: document.pdfPath) }
         applyZoom(app.zoom)
 
         // Global hooks used by the toolbar, sidebar, and AI tool execution
@@ -2023,6 +2032,7 @@ final class WebViewerController_iOS: NSObject {
     /// hatch for router-driven top-level loads, and window.open routing.
     func navigateTo(_ url: String) {
         guard let app, let tabId = app.activeTabId else { return }
+        ink?.documentWillNavigate(to: url)
         if app.activeTabId == tabId { app.aiStore?.cancelActiveRequest() }
         // A pending auto-archive for the outgoing page must not fire against
         // the rebound session.
@@ -2037,11 +2047,23 @@ final class WebViewerController_iOS: NSObject {
         let outgoing = app.document?.pdfPath
         let generation = mountGeneration
         Task { [weak self] in
-            guard let rebound = await app.webNavigated(tabId: tabId, url: url),
-                  let self, self.attached, self.mountGeneration == generation,
-                  self.mountTabId == tabId, app.activeTabId == tabId,
-                  app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath
-            else { return }
+            let rebound = await app.webNavigated(tabId: tabId, url: url)
+            guard let self, self.attached, self.mountGeneration == generation,
+                  self.mountTabId == tabId, app.activeTabId == tabId else { return }
+            guard let rebound else {
+                // This native navigation has not loaded a replacement DOM.
+                // A rejected admission can safely resume the retained page;
+                // the handleInit path intentionally keeps an already-new DOM
+                // frozen instead.
+                if let outgoing,
+                   self.liveDocumentUrlForInk == outgoing
+                    || (self.webView.url?.host == VellumWebSchemeHandler.snapshotHost
+                        && self.loadedDocumentUrl == outgoing) {
+                    self.ink?.documentOpened(url: outgoing)
+                }
+                return
+            }
+            guard app.tabs.first(where: { $0.id == tabId })?.document?.pdfPath == rebound.pdfPath else { return }
             self.pendingNavUrl = rebound.pdfPath
             self.outgoingNavUrl = outgoing
             self.loadedDocumentUrl = rebound.pdfPath
@@ -2054,11 +2076,6 @@ final class WebViewerController_iOS: NSObject {
 
     private func handleInit(_ data: [String: Any], app: AppStore) {
         guard let tabId = app.activeTabId, let currentDoc = app.document else { return }
-
-        // viewScale is per-page-load state in WebKit (MobileSafari re-applies
-        // it on every navigation commit) — re-assert so a follow link or
-        // reload keeps the reader's zoom.
-        applyZoom(app.zoom)
 
         let reportedUrl = data["url"] as? String
 
@@ -2074,13 +2091,18 @@ final class WebViewerController_iOS: NSObject {
             outgoingNavUrl = nil
         }
 
+        let reportedNormalized = reportedUrl.map { (try? WebUrl.normalize($0)) ?? $0 }
+        if let reportedNormalized { ink?.documentWillNavigate(to: reportedNormalized) }
+        // Freeze outgoing ink before applying a new DOM's layout or awaiting
+        // the session rebind, so layout callbacks cannot move outgoing strokes.
+        applyZoom(app.zoom)
+
         isOffline = data["offline"] as? Bool ?? false
         supportsPositions = data["positionAnchors"] as? Bool ?? false
 
         // Compare normalized identities: the content script's history shim
         // reports un-normalized URLs after soft navigations (tracking params
         // and all), and a raw != comparison would rebind forever.
-        let reportedNormalized = reportedUrl.map { (try? WebUrl.normalize($0)) ?? $0 }
         if let reportedUrl, let reportedNormalized, reportedNormalized != currentDoc.pdfPath {
             // The page navigated (back/forward, a server redirect changed the
             // effective URL, or an SPA soft-navigated): rebind the session,
@@ -2304,6 +2326,9 @@ extension WebViewerController_iOS: WKNavigationDelegate, WKUIDelegate {
             // schemes — those loads must always proceed (memory invariant).
             if scheme == VellumWebSchemeHandler.scheme
                 || scheme == VellumWebSchemeHandler.insecureScheme {
+                if isMainFrame, let realUrl = VellumWebSchemeHandler.realUrl(from: url) {
+                    ink?.documentWillNavigate(to: realUrl)
+                }
                 return .allow
             }
             guard isMainFrame else { return .allow }
