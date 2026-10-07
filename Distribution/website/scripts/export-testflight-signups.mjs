@@ -6,12 +6,28 @@ const token = execFileSync(
   { encoding: "utf8" },
 ).trim();
 
-const response = await fetch("https://vellum.work/api/testflight-signups.csv", {
-  headers: { Authorization: `Bearer ${token}` },
-});
+const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 30_000);
+let csv;
 
-if (!response.ok) {
-  throw new Error(`TestFlight export failed with HTTP ${response.status}.`);
+try {
+  const response = await fetch("https://vellum.work/api/testflight-signups.csv", {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: controller.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`TestFlight export failed with HTTP ${response.status}.`);
+  }
+
+  csv = await response.text();
+} catch (error) {
+  if (controller.signal.aborted) {
+    throw new Error("TestFlight export timed out after 30 seconds.");
+  }
+  throw error;
+} finally {
+  clearTimeout(timeout);
 }
 
-process.stdout.write(await response.text());
+process.stdout.write(csv);

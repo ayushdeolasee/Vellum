@@ -50,7 +50,14 @@ enum DocumentImport {
     /// container to unpack, not a document to keep open). Name collisions get a
     /// numeric suffix so two different source files never clobber each other.
     static func importPicked(_ urls: [URL]) -> [String] {
+        importPickedResult(urls).paths
+    }
+
+    /// Keep copy failures alongside successful paths so system opens can report
+    /// a partial import without discarding the documents that did copy.
+    static func importPickedResult(_ urls: [URL]) -> (paths: [String], errors: [String]) {
         var paths: [String] = []
+        var errors: [String] = []
         for url in urls {
             if isLocalLibraryURL(url), !isBundle(url) {
                 paths.append(url.path)
@@ -72,9 +79,10 @@ enum DocumentImport {
                 paths.append(dest.path)
             } catch {
                 NSLog("[document-import] Failed to import \(url.lastPathComponent): \(error)")
+                errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
-        return paths
+        return (paths, errors)
     }
 
     private static func isBundle(_ url: URL) -> Bool {

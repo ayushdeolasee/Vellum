@@ -5,8 +5,9 @@ import SwiftUI
 /// width, undo, clear, and Done. Sits at the bottom so it never covers the top
 /// of the page being annotated.
 struct InkToolPalette_iOS: View {
-    @Bindable var ink: InkController_iOS
-    var onDone: () -> Void
+    var host: any InkPaletteHost
+    private var state: InkToolState { host.toolState }
+    var onDone: () -> Void = {}
 
     @Environment(\.palette) private var palette
 
@@ -16,33 +17,43 @@ struct InkToolPalette_iOS: View {
     @State private var showCompactPopover = false
 
     private var colors: [Color] {
-        ink.tool == .highlighter ? InkPalette.highlighterColors : InkPalette.penColors
+        switch state.tool {
+        case .highlighter, .textHighlight: InkPalette.highlighterColors
+        case .pen, .eraser: InkPalette.penColors
+        }
     }
 
     var body: some View {
-        // The full row outgrows the PDF column when the sidebar is open, so a
-        // compact variant (single cycling width dot) takes over instead of
-        // letting the capsule clip at the edges.
-        ViewThatFits(in: .horizontal) {
-            paletteRow(compact: false)
-            paletteRow(compact: true)
+        if state.tool == .textHighlight {
+            colorRow(compact: false)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .glassEffect(.regular, in: .capsule)
+            .accessibilityHint("Drag the Apple Pencil across text to highlight it in the selected color.")
+        } else {
+            ViewThatFits(in: .horizontal) {
+                paletteRow(compact: false)
+                paletteRow(compact: true)
+            }
         }
     }
 
     private func paletteRow(compact: Bool) -> some View {
         HStack(spacing: compact ? 6 : 10) {
             toolGroup
-            divider
-            if ink.tool != .eraser {
-                colorRow(compact: compact)
+            if state.tool != .eraser {
                 divider
+                colorRow(compact: compact)
             }
-            if compact {
-                widthCycleButton
-            } else {
-                widthRow
+            if state.tool != .textHighlight {
+                divider
+                if compact {
+                    widthCycleButton
+                } else {
+                    widthRow
+                }
             }
-            if ink.tool == .eraser {
+            if state.tool == .eraser {
                 divider
                 eraserModeRow(compact: compact)
             }
@@ -61,11 +72,11 @@ struct InkToolPalette_iOS: View {
     /// slot.
     private var widthCycleButton: some View {
         Button {
-            ink.cycleWidthSlot()
+            state.cycleWidthSlot()
         } label: {
             Circle()
                 .fill(palette.foreground)
-                .frame(width: dotSize(ink.activeWidth), height: dotSize(ink.activeWidth))
+                .frame(width: dotSize(state.activeWidth), height: dotSize(state.activeWidth))
                 .frame(width: 34, height: 34)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -76,22 +87,22 @@ struct InkToolPalette_iOS: View {
             showCompactPopover = true
         }
         .popover(isPresented: $showCompactPopover) {
-            sizePopover(slot: ink.activeSlot)
+            sizePopover(slot: state.activeSlot)
         }
     }
 
     private var toolGroup: some View {
         HStack(spacing: 0) {
             toolButton(.pen, system: "pencil.tip", label: "Pen")
-            toolButton(.highlighter, system: "highlighter", label: "Highlighter")
+            toolButton(.highlighter, system: "highlighter", label: "Freehand highlighter")
             toolButton(.eraser, system: "eraser", label: "Eraser")
         }
     }
 
     private func toolButton(_ tool: InkTool, system: String, label: String) -> some View {
-        let selected = ink.tool == tool
+        let selected = state.tool == tool
         return Button {
-            ink.tool = tool
+            state.tool = tool
         } label: {
             Image(systemName: system)
                 .font(.system(size: 18, weight: .medium))
@@ -108,19 +119,16 @@ struct InkToolPalette_iOS: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// Preset swatches plus the custom color well. When the palette is compact
-    /// (e.g. the Annotations sidebar is open and the PDF column is narrow) only
-    /// the first few presets are shown so the row still fits — the color well
-    /// still reaches every color, and no preset is fully lost since the full row
-    /// takes over as soon as there's width for it.
+    /// Preset swatches plus the custom color well. Full rows show every preset;
+    /// compact freehand rows show three because their color well reaches more.
     private func colorRow(compact: Bool) -> some View {
         let shown = compact ? Array(colors.prefix(3)) : colors
         return HStack(spacing: 0) {
             ForEach(shown, id: \.self) { color in
-                let selected = colorsEqual(ink.activeColor, color)
+                let selected = colorsEqual(state.activeColor, color)
                 Button {
-                    ink.activeColor = color
-                    ink.bumpTool()
+                    state.activeColor = color
+                    state.bumpTool()
                 } label: {
                     Circle()
                         .fill(color)
@@ -135,25 +143,24 @@ struct InkToolPalette_iOS: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text("Ink color"))
+                .accessibilityLabel(Text(accessibilityLabel(for: color)))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
-            customColorPicker
+            if state.tool != .textHighlight {
+                customColorPicker
+            }
         }
     }
 
-    /// Full-spectrum color well: opens the system color picker so the user can
-    /// pick any custom ink color (spectrum, sliders, hex, eyedropper) beyond the
-    /// presets. Highlighter allows opacity; pen stays fully opaque.
     private var customColorPicker: some View {
-        let isCustom = !colors.contains { colorsEqual(ink.activeColor, $0) }
+        let isCustom = !colors.contains { colorsEqual(state.activeColor, $0) }
         return ColorPicker(
             "Custom ink color",
             selection: Binding(
-                get: { ink.activeColor },
-                set: { ink.activeColor = $0; ink.bumpTool() }
+                get: { state.activeColor },
+                set: { state.activeColor = $0; state.bumpTool() }
             ),
-            supportsOpacity: ink.tool == .highlighter
+            supportsOpacity: state.tool == .highlighter
         )
         .labelsHidden()
         .frame(width: 44, height: 44)
@@ -173,13 +180,13 @@ struct InkToolPalette_iOS: View {
     /// selected dot opens a popover to customize its size.
     private var widthRow: some View {
         HStack(spacing: 0) {
-            ForEach(Array(ink.activeWidths.enumerated()), id: \.offset) { index, w in
-                let selected = index == ink.activeSlot
+            ForEach(Array(state.activeWidths.enumerated()), id: \.offset) { index, w in
+                let selected = index == state.activeSlot
                 Button {
                     if selected {
                         openSlot = index
                     } else {
-                        ink.selectWidthSlot(index)
+                        state.selectWidthSlot(index)
                     }
                 } label: {
                     Circle()
@@ -213,13 +220,13 @@ struct InkToolPalette_iOS: View {
             Text("\(toolLabel) size")
                 .font(.system(size: 14, weight: .semibold))
             Circle()
-                .fill(ink.tool == .eraser ? AnyShapeStyle(.secondary) : AnyShapeStyle(ink.activeColor))
+                .fill(state.tool == .eraser ? AnyShapeStyle(.secondary) : AnyShapeStyle(state.activeColor))
                 .frame(width: previewSize(forSlot: slot), height: previewSize(forSlot: slot))
                 .frame(width: 60, height: 60)
             Slider(
                 value: Binding(
                     get: { widthValue(forSlot: slot) },
-                    set: { ink.setWidth($0, forSlot: slot) }
+                    set: { state.setWidth($0, forSlot: slot) }
                 ),
                 in: range
             )
@@ -234,25 +241,27 @@ struct InkToolPalette_iOS: View {
     }
 
     private func widthValue(forSlot slot: Int) -> CGFloat {
-        ink.activeWidths.indices.contains(slot) ? ink.activeWidths[slot] : ink.activeWidth
+        state.activeWidths.indices.contains(slot) ? state.activeWidths[slot] : state.activeWidth
     }
 
     private func previewSize(forSlot slot: Int) -> CGFloat {
-        min(48, max(3, widthValue(forSlot: slot) * (ink.tool == .highlighter ? 1.0 : 2.2)))
+        min(48, max(3, widthValue(forSlot: slot) * (state.tool == .highlighter ? 1.0 : 2.2)))
     }
 
     private var widthRange: ClosedRange<Double> {
-        switch ink.tool {
+        switch state.tool {
         case .pen: 1...14
         case .highlighter: 6...40
+        case .textHighlight: 1...1
         case .eraser: 6...60
         }
     }
 
     private var toolLabel: String {
-        switch ink.tool {
+        switch state.tool {
         case .pen: "Pen"
         case .highlighter: "Highlighter"
+        case .textHighlight: "Text highlight"
         case .eraser: "Eraser"
         }
     }
@@ -267,10 +276,10 @@ struct InkToolPalette_iOS: View {
     }
 
     private func eraserModeButton(_ mode: EraserMode, system: String, label: String, size: CGFloat) -> some View {
-        let selected = ink.eraserMode == mode
+        let selected = state.eraserMode == mode
         return Button {
-            ink.eraserMode = mode
-            ink.bumpTool()
+            state.eraserMode = mode
+            state.bumpTool()
         } label: {
             Image(systemName: system)
                 .font(.system(size: 16, weight: .medium))
@@ -289,11 +298,13 @@ struct InkToolPalette_iOS: View {
 
     private var actionRow: some View {
         HStack(spacing: 0) {
-            fingerToggle
-            paletteButton("arrow.uturn.backward", label: "Undo", enabled: ink.canUndo) { ink.undo() }
-            paletteButton("arrow.uturn.forward", label: "Redo", enabled: ink.canRedo) { ink.redo() }
-            paletteButton("trash", label: "Clear page", enabled: true) { ink.clearCurrentPage() }
-            Button(action: onDone) {
+            if state.tool != .textHighlight {
+                fingerToggle
+                paletteButton("arrow.uturn.backward", label: "Undo", enabled: host.canUndo) { host.undo() }
+                paletteButton("arrow.uturn.forward", label: "Redo", enabled: host.canRedo) { host.redo() }
+                paletteButton("trash", label: "Clear page", enabled: true) { host.clearCurrentPage() }
+            }
+            Button { host.done(); onDone() } label: {
                 Text("Done")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(palette.primaryForeground)
@@ -311,9 +322,9 @@ struct InkToolPalette_iOS: View {
     /// Allow drawing with a finger (Pencil-only is the default so a finger
     /// keeps scrolling/zooming the document under the ink layer).
     private var fingerToggle: some View {
-        let on = ink.allowFingerDrawing
+        let on = state.allowFingerDrawing
         return Button {
-            ink.allowFingerDrawing.toggle()
+            state.allowFingerDrawing.toggle()
         } label: {
             Image(systemName: "hand.draw")
                 .font(.system(size: 16, weight: .medium))
@@ -349,12 +360,23 @@ struct InkToolPalette_iOS: View {
     }
 
     private func dotSize(_ w: CGFloat) -> CGFloat {
-        let scale: CGFloat = ink.tool == .highlighter ? 0.5 : (ink.tool == .eraser ? 0.5 : 1.6)
+        let scale: CGFloat = state.tool == .pen ? 1.6 : 0.5
         return min(24, max(6, w * scale))
     }
 
     private func colorsEqual(_ a: Color, _ b: Color) -> Bool {
         UIColor(a).cgColor == UIColor(b).cgColor
+    }
+
+    private func accessibilityLabel(for color: Color) -> String {
+        if state.tool == .highlighter || state.tool == .textHighlight,
+           let index = InkPalette.highlighterColors.firstIndex(where: {
+               colorsEqual($0, color)
+           })
+        {
+            return "\(HIGHLIGHT_COLORS[index].name) highlight color"
+        }
+        return "Ink color"
     }
 }
 #endif

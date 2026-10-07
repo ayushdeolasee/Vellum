@@ -64,6 +64,9 @@ struct VellumCommands: Commands {
     private var isWeb: Bool { appStore?.document?.kind == .web }
     private var isPdf: Bool { hasDocument && !isWeb }
     private var findVisible: Bool { appStore?.findVisible ?? false }
+    private var browserVisible: Bool {
+        hasDocument && workspace?.sidebarOpen == true && workspace?.sidebarTab == .browser
+    }
 
     var body: some Commands {
         // MARK: App-wide
@@ -83,8 +86,10 @@ struct VellumCommands: Commands {
                 .keyboardShortcut("o", modifiers: .command)
                 .disabled(!hasFocus)
 
-            Button("Add Webpage…") {
-                NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+            Button(browserVisible ? "Focus Browser Address" : "Add Webpage…") {
+                NotificationCenter.default.post(
+                    name: browserVisible ? .vellumFocusBrowserAddress : .vellumAddWebpage,
+                    object: nil)
             }
             .keyboardShortcut("l", modifiers: .command)
             .disabled(!hasFocus)
@@ -132,6 +137,13 @@ struct VellumCommands: Commands {
 
         // MARK: View (zoom + inspector live alongside the built-in sidebar group)
         CommandGroup(after: .sidebar) {
+            if browserVisible {
+                Button("Reload Browser") {
+                    NotificationCenter.default.post(name: .vellumReloadBrowser, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                Divider()
+            }
             Button("Zoom In") { appStore?.zoomIn() }
                 .keyboardShortcut("+", modifiers: .command)
                 .disabled(!hasDocument)

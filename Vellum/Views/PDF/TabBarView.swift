@@ -18,34 +18,31 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            GeometryReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    // Semantic fills, not glass: the tab strip is chrome, so the
-                    // active tab uses the shared SelectionStyle surface rather than
-                    // stacking its own glass pane on the `.bar` material.
-                    HStack(spacing: 4) {
-                        ForEach(appStore.tabs) { tab in
-                            TabItem(
-                                tab: tab,
-                                paneId: paneId,
-                                isActive: tab.id == appStore.activeTabId,
-                                onActivate: { appStore.activateTab(tab.id) },
-                                onClose: { Task { await appStore.closeTab(tab.id) } },
-                                onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
-                                onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
-                                onDuplicate: { Task { await appStore.duplicateTab(tab.id) } },
-                                onMoveToNewPane: {
-                                    workspace.splitWithTab(
-                                        tabId: tab.id, from: paneId, target: paneId,
-                                        direction: .horizontal, before: false)
-                                },
-                                onRename: tab.document == nil ? nil : { renamingTab = tab }
-                            )
-                            .frame(width: tabWidth(for: proxy.size.width))
-                        }
+            ScrollView(.horizontal, showsIndicators: false) {
+                // Semantic fills, not glass: the tab strip is chrome, so the
+                // active tab uses the shared SelectionStyle surface rather than
+                // stacking its own glass pane on the `.bar` material.
+                HStack(spacing: 6) {
+                    ForEach(appStore.tabs) { tab in
+                        TabItem(
+                            tab: tab,
+                            paneId: paneId,
+                            isActive: tab.id == appStore.activeTabId,
+                            onActivate: { appStore.activateTab(tab.id) },
+                            onClose: { Task { await appStore.closeTab(tab.id) } },
+                            onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
+                            onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
+                            onDuplicate: { Task { await appStore.duplicateTab(tab.id) } },
+                            onMoveToNewPane: {
+                                workspace.splitWithTab(
+                                    tabId: tab.id, from: paneId, target: paneId,
+                                    direction: .horizontal, before: false)
+                            },
+                            onRename: tab.document == nil ? nil : { renamingTab = tab }
+                        )
                     }
-                    .padding(.vertical, 5)
                 }
+                .padding(.vertical, 5)
             }
             .frame(maxWidth: .infinity)
 
@@ -139,13 +136,6 @@ struct TabBarView: View {
         Binding(get: { joinTargeted && workspace.draggingTab != nil }, set: { joinTargeted = $0 })
     }
 
-    private func tabWidth(for stripWidth: CGFloat) -> CGFloat {
-        let count = max(appStore.tabs.count, 1)
-        let spacing = CGFloat(count - 1) * 4
-        let distributedWidth = (stripWidth - spacing) / CGFloat(count)
-        return min(max(distributedWidth, 128), 360)
-    }
-
     private func openPdf() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -198,16 +188,18 @@ private struct TabItem: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 6) {
             Button(action: onActivate) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: iconName)
-                        .font(.system(size: 13))
-                        .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        .font(.system(size: 12))
+                        .foregroundStyle(isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
                     Text(label)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: 160)
                     if hasPendingAction {
                         Circle()
                             .fill(.orange)
@@ -215,8 +207,8 @@ private struct TabItem: View {
                             .accessibilityHidden(true)
                     }
                 }
-                .padding(.leading, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.leading, 12)
+                .frame(height: 28)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -226,7 +218,7 @@ private struct TabItem: View {
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12))
+                    .font(.system(size: 10, weight: .bold))
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
                     .opacity(hovering || isActive ? 1 : 0)
@@ -238,13 +230,11 @@ private struct TabItem: View {
             .accessibilityLabel("Close \(label)")
             .accessibilityIdentifier("tabBar.close.\(tab.id)")
         }
-        .font(.system(size: 12))
-        .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-        .frame(minWidth: 128, maxWidth: .infinity, minHeight: 28, maxHeight: 28)
+        .frame(height: 28)
         .selectionSurface(
             selected: isActive,
             hovering: hovering,
-            in: RoundedRectangle(cornerRadius: Radius.md),
+            in: Capsule(),
             palette: palette)
         .onHover { hovering = $0 }
         .help(tab.document?.pdfPath ?? "New Tab")

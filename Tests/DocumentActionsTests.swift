@@ -314,6 +314,50 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(registry.isEmpty)
     }
 
+    func testReopenBarrierJoinsMatchingReleasedInk() async throws {
+        let gate = LifecycleGate()
+        lifecycleGates.append(gate)
+        let registry = TabTeardownRegistry()
+        let document = testDocument("Released")
+        let key = try XCTUnwrap(DocumentPositionService.key(for: document))
+        registry.registerReleaseFlush(document: document) {
+            await gate.pause()
+            return true
+        }
+        try await gate.waitUntilPaused()
+        var drained = false
+        let drain = Task {
+            let saved = await registry.awaitTeardowns(forDocumentKey: key)
+            XCTAssertTrue(saved)
+            drained = true
+        }
+        lifecycleTasks.append(drain)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(drained)
+        gate.release()
+        await drain.value
+        XCTAssertTrue(registry.isEmpty)
+    }
+
+    func testFailedReleaseFlushRemainsJoinableForNextBarrier() async {
+        let registry = TabTeardownRegistry()
+        let outcome = LifecycleRenameOutcome()
+        var attempts = 0
+        registry.registerReleaseFlush {
+            attempts += 1
+            return outcome.succeeds
+        }
+        let failed = await registry.awaitAll()
+        XCTAssertFalse(failed)
+        XCTAssertFalse(registry.isEmpty)
+        XCTAssertEqual(attempts, 1, "A barrier must not spin on a failed write")
+        outcome.succeeds = true
+        let saved = await registry.awaitAll()
+        XCTAssertTrue(saved)
+        XCTAssertTrue(registry.isEmpty)
+        XCTAssertEqual(attempts, 2)
+    }
+
     func testFailedRenameStaysAssociatedWithItsDocumentAndCanRetry() async throws {
         let registry = TabTeardownRegistry()
         let outcome = LifecycleRenameOutcome()
@@ -1200,8 +1244,23 @@ final class DocumentActionsTests: XCTestCase {
             let parked = await AiPersistence.awaitPendingFlush()
             XCTAssertFalse(parked)
             XCTAssertTrue(AiPersistence.hasPendingChanges(forKey: key))
-            let app = AppStore(sessions: DocumentSessionManager())
+            let registry = TabTeardownRegistry()
+            let inkOutcome = LifecycleRenameOutcome()
+            registry.registerReleaseFlush(document: document) { inkOutcome.succeeds }
+            let app = AppStore(sessions: DocumentSessionManager(), teardowns: registry)
             apps.append(app)
+            do {
+                _ = try await app.importVellumBundle(imported, to: destination) { _ in
+                    XCTFail("failed ink must be refused before payload replacement")
+                    return .keepLocal
+                }
+                XCTFail("expected failed ink import refusal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Your ink could not be saved")) }
+            XCTAssertEqual(try Data(contentsOf: destination), originalBytes)
+            XCTAssertFalse(registry.isEmpty)
+            inkOutcome.succeeds = true
+            let inkSaved = await registry.awaitAll()
+            XCTAssertTrue(inkSaved)
             do {
                 _ = try await app.importVellumBundle(imported, to: destination) { _ in
                     XCTFail("parked writes must be refused before payload replacement or prompting")

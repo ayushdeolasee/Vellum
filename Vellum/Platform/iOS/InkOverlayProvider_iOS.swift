@@ -314,7 +314,9 @@ final class InkOverlayProvider_iOS: NSObject, @preconcurrency PDFPageOverlayView
     }
 
     private func applyPolicy(to canvas: PKCanvasView) {
-        let active = ink?.isActive ?? false
+        // Text highlight mode belongs to the PDFView gesture below the canvas.
+        // Keep the canvas visible but non-interactive so Pencil drags reach it.
+        let active = (ink?.isActive ?? false) && ink?.tool != .textHighlight
         // Inactive canvases still render their strokes but pass all touches to
         // PDFView (so finger pan/zoom and text selection keep working).
         canvas.isUserInteractionEnabled = active

@@ -30,7 +30,7 @@ enum InspectorLayout {
     /// Inset applied to the switcher inside the inspector column.
     static let switcherHorizontalPadding: CGFloat = 12
     #if os(macOS)
-    static let switcherVerticalPadding: CGFloat = 12
+    static let switcherVerticalPadding: CGFloat = 6
     static let segmentSpacing: CGFloat = 4
     static let trackPadding: CGFloat = 4
     #else
@@ -178,6 +178,7 @@ struct InspectorTabSwitcher: View {
                 #if os(macOS)
                 ViewThatFits(in: .horizontal) {
                     segmentedControl(showTitles: true)
+                    segmentedControl(showTitles: true, showIcons: false)
                     segmentedControl(showTitles: false)
                 }
                 #else
@@ -193,16 +194,11 @@ struct InspectorTabSwitcher: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func segmentedControl(showTitles: Bool) -> some View {
+    private func segmentedControl(showTitles: Bool, showIcons: Bool = true) -> some View {
         HStack(spacing: InspectorLayout.segmentSpacing) {
             ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
-                #if os(macOS)
-                if showTitles && tab != WorkspaceStore.SidebarTab.allCases.first {
-                    Spacer(minLength: 0)
-                }
-                #endif
                 Button {
                     selection = tab
                 } label: {
@@ -210,14 +206,16 @@ struct InspectorTabSwitcher: View {
                         if showTitles {
                             #if os(macOS)
                             HStack(spacing: 6) {
-                                Image(systemName: tab.systemImage)
-                                    .frame(width: 14)
+                                if showIcons {
+                                    Image(systemName: tab.systemImage)
+                                        .frame(width: 14)
+                                }
                                 Text(tab.title)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.85)
                             }
                             .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 4)
+                            .padding(.horizontal, 10)
                             #else
                             Label(tab.title, systemImage: tab.systemImage)
                                 .labelStyle(.titleAndIcon)
@@ -238,7 +236,7 @@ struct InspectorTabSwitcher: View {
                     // two platforms structurally identical is what stops the
                     // next port from re-introducing #112.
                     #if os(macOS)
-                    .frame(maxWidth: showTitles ? nil : .infinity, maxHeight: .infinity)
+                    .frame(minWidth: showTitles ? 52 : 0, maxWidth: .infinity, maxHeight: .infinity)
                     #else
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     #endif

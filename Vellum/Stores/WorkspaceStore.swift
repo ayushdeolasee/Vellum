@@ -520,12 +520,22 @@ final class WorkspaceStore {
     /// and no WKWebView, so it must not count against a ceiling or start a
     /// sweeper.
     func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
-        liveTabRuntimes[tabId] ?? {
+        let runtime = liveTabRuntimes[tabId] ?? {
+            #if os(iOS)
             let created = LiveTabRuntime(
-                tabId: tabId, webLibraryStorage: webLibraryStorage)
+                tabId: tabId, teardownRegistry: tabTeardowns, webLibraryStorage: webLibraryStorage)
+            #else
+            let created = LiveTabRuntime(tabId: tabId, webLibraryStorage: webLibraryStorage)
+            #endif
             liveTabRuntimes[tabId] = created
             return created
         }()
+        #if os(iOS)
+        if let document = root.allLeaves().compactMap({ $0.app.tab(id: tabId)?.document }).first {
+            runtime.boundDocument = document
+        }
+        #endif
+        return runtime
     }
 
     /// The tab is being shown: undo any previous eviction and hand the runtime
@@ -552,6 +562,25 @@ final class WorkspaceStore {
             await runtime.flushPdfText()
         }
     }
+
+    #if os(iOS)
+    /// Drain debounced Pencil edits for every open tab, including background
+    /// PDF and webpage tabs that are not represented by the focused-pane
+    /// inspector registry.
+    @discardableResult
+    func flushLiveInk() async -> Bool {
+        // Snapshot before the first suspension: a tab can close while a disk
+        // flush is awaited, which mutates `liveTabRuntimes`.
+        var inkSucceeded = true
+        for runtime in Array(liveTabRuntimes.values) {
+            let pdfInkSucceeded = await runtime.ink.flushPendingInkAndWait()
+            let webInkSucceeded = await runtime.webInk.flushPendingInkAndReportSuccess()
+            inkSucceeded = pdfInkSucceeded && webInkSucceeded && inkSucceeded
+        }
+        return inkSucceeded
+    }
+
+    #endif
 
     /// Report a pane's current tab to the residency policy, which pins it. Keyed
     /// on the pane's `AppStore` identity so a split window pins one tab *per
@@ -654,12 +683,18 @@ final class WorkspaceStore {
             await previous?.value
             await restoreFromDisk()
             #if os(iOS)
-            let paths = await Task.detached(priority: .userInitiated) {
-                DocumentImport.importPicked(incoming)
+            let imported = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPickedResult(incoming)
             }.value
-            guard !paths.isEmpty else { return }
             let app = focusedPane.app
-            await app.openFiles(paths: paths)
+            guard !imported.paths.isEmpty else {
+                app.error = imported.errors.joined(separator: "\n")
+                return
+            }
+            await app.openFiles(paths: imported.paths)
+            if !imported.errors.isEmpty {
+                app.error = (imported.errors + [app.error].compactMap { $0 }).joined(separator: "\n")
+            }
             if app.error == nil {
                 NotificationCenter.default.post(
                     name: .vellumSystemRouteDidOpenDocument, object: nil)
