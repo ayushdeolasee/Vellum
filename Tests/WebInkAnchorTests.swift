@@ -278,12 +278,12 @@ final class WebInkAnchorScriptTests: XCTestCase {
         webView.loadHTMLString(html, baseURL: URL(string: "https://fixture.test/article"))
     }
 
-    /// Document-space (CSS px) top-left of an element.
-    private func docPoint(of elementId: String) async throws -> CGPoint {
+    /// Document-space (CSS px) top-left or bottom-left of an element.
+    private func docPoint(of elementId: String, atBottom: Bool = false) async throws -> CGPoint {
         let js = """
         (function () {
           var r = document.getElementById('\(elementId)').getBoundingClientRect();
-          return { x: r.left + window.scrollX, y: r.top + window.scrollY };
+          return { x: r.left + window.scrollX, y: r.\(atBottom ? "bottom" : "top") + window.scrollY };
         })()
         """
         // Parse to a Sendable value inside the completion — the raw `Any`
@@ -455,9 +455,12 @@ final class WebInkAnchorScriptTests: XCTestCase {
         // the very top of the paragraph's box), 4 px thick — where a real
         // Pencil underline of the heading lands.
         let head = try await docPoint(of: "head")
+        let headBottom = try await docPoint(of: "head", atBottom: true)
         let follow = try await docPoint(of: "follow")
+        // Phone WebKit can autosize text beyond the nominal 16px/1.25 font.
+        // Assert adjacency from real boxes instead of assuming a 20px line.
         XCTAssertEqual(
-            follow.y, head.y + 20, accuracy: 8,
+            follow.y, headBottom.y, accuracy: 0.5,
             "fixture: the two line boxes must be adjacent")
         try postCommand("anchor-at-point", [
             "requestId": "cap3",
