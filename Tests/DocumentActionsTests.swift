@@ -341,17 +341,17 @@ final class DocumentActionsTests: XCTestCase {
 
     func testFailedReleaseFlushRemainsJoinableForNextBarrier() async {
         let registry = TabTeardownRegistry()
-        var canSave = false
+        let outcome = LifecycleRenameOutcome()
         var attempts = 0
         registry.registerReleaseFlush {
             attempts += 1
-            return canSave
+            return outcome.succeeds
         }
         let failed = await registry.awaitAll()
         XCTAssertFalse(failed)
         XCTAssertFalse(registry.isEmpty)
         XCTAssertEqual(attempts, 1, "A barrier must not spin on a failed write")
-        canSave = true
+        outcome.succeeds = true
         let saved = await registry.awaitAll()
         XCTAssertTrue(saved)
         XCTAssertTrue(registry.isEmpty)
