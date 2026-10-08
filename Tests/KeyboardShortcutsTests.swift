@@ -61,6 +61,7 @@ final class KeyboardShortcutsTests: XCTestCase {
             (.showSidebarTab(.ai), "Show AI", .character("2"), [.command, .option], .view),
             (.showSidebarTab(.scratchpad), "Show Scratchpad", .character("3"),
              [.command, .option], .view),
+            (.showSidebarTab(.browser), "Show Browser", .character("4"), [.command, .option], .view),
             // Navigate
             (.previousPage, "Previous Page", .upArrow, .command, .navigate),
             (.nextPage, "Next Page", .downArrow, .command, .navigate),
@@ -68,6 +69,7 @@ final class KeyboardShortcutsTests: XCTestCase {
             (.lastPage, "Last Page", .downArrow, [.command, .option], .navigate),
             (.webBack, "Back", .character("["), .command, .navigate),
             (.webForward, "Forward", .character("]"), .command, .navigate),
+            (.reloadBrowser, "Reload Companion Browser", .character("r"), .command, .navigate),
             (.previousTab, "Show Previous Tab", .character("["), [.command, .shift], .navigate),
             (.nextTab, "Show Next Tab", .character("]"), [.command, .shift], .navigate),
         ]
@@ -286,7 +288,7 @@ final class KeyboardShortcutsTests: XCTestCase {
             .find, .findNext, .findPrevious, .dismiss,
             .zoomIn, .zoomOut, .actualSize,
             .previousPage, .nextPage, .firstPage, .lastPage,
-            .webBack, .webForward, .previousTab, .nextTab,
+            .webBack, .webForward, .previousTab, .nextTab, .addWebpage,
         ]
         XCTAssertEqual(
             Set(VellumShortcutCatalog.documentSurfaceShortcuts.map(\.action)), expectedActions)

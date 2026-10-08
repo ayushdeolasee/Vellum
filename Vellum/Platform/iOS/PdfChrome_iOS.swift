@@ -1108,6 +1108,22 @@ struct SidebarContent_iOS: View {
                             hasShownAi = true
                         }
                 }
+                if workspace.companionBrowser.webView != nil {
+                    panel(.browser) {
+                        CompanionBrowserPanel_iOS(
+                            controller: workspace.companionBrowser,
+                            isActive: workspace.inspectorPresented && workspace.sidebarTab == .browser)
+                    }
+                } else if workspace.sidebarTab == .browser {
+                    ProgressView("Preparing Browser…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.browser.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .browser else { return }
+                            workspace.companionBrowser.prepare()
+                        }
+                }
                 if hasShownScratchpad {
                     panel(.scratchpad) { ScratchpadPanel() }
                 } else if workspace.sidebarTab == .scratchpad {
@@ -1124,6 +1140,7 @@ struct SidebarContent_iOS: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(palette.surface)
+        .background(CompanionInspectorHost_iOS(controller: workspace.companionBrowser))
     }
 
     /// Selects immediately. A first-time AI/Scratchpad destination initially
