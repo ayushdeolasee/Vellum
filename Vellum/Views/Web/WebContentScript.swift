@@ -2409,6 +2409,10 @@ enum WebContentScript {
       }
 
       case "scroll-to-position": {
+        // Only the Mac saved-ink navigator supplies these fields. Validate
+        // page ownership so a queued outgoing-page jump cannot move a new page.
+        var isInkJump = typeof d.inkY === "number" && isFinite(d.inkY);
+        if (isInkJump && d.inkUrl !== PAGE_URL) break;
         var posPayload = {
           start: typeof d.start === "number" ? d.start : null,
           end: typeof d.end === "number" ? d.end : null,
@@ -2419,7 +2423,16 @@ enum WebContentScript {
         var anchorOffset = typeof d.offset === "number" ? d.offset : 16;
 
         var desiredTop = function () {
+          if (isInkJump && d.inkUrl !== PAGE_URL) return null;
           var resolved = resolveHighlight(posPayload);
+          if (isInkJump) {
+            var inkTop = d.inkY;
+            var inkRect = resolved ? docRectOfRaw(resolved.start) : null;
+            if (inkRect && typeof d.inkAnchorY === "number" && isFinite(d.inkAnchorY)) {
+              inkTop += inkRect.y - d.inkAnchorY;
+            }
+            return Math.max(0, inkTop - anchorOffset);
+          }
           var range = resolved ? rangeFromRaw(resolved.start, resolved.end) : null;
           if (!range) return null;
           return Math.max(0, range.getBoundingClientRect().top + window.scrollY - anchorOffset);

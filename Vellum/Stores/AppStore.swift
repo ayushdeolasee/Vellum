@@ -359,6 +359,10 @@ final class AppStore {
     /// Registered by the web viewer: scroll to a text-anchored web position;
     /// returns whether the anchor was found (window.__scrollToWebPosition).
     var scrollToWebPositionHandler: ((PositionData, Int) -> Bool)?
+    #if os(macOS)
+    /// Read-only jump to a saved web ink cluster, including unanchored ink.
+    var scrollToWebInkHandler: ((WebInkRecord.Cluster) -> Bool)?
+    #endif
     /// Registered by the active viewer to run a find query — highlights every
     /// match and moves to the first, reporting counts back via `setFindResults`.
     var findQueryHandler: ((String) -> Void)?
