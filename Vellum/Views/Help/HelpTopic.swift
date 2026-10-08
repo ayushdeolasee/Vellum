@@ -77,7 +77,7 @@ struct HelpTopic: Identifiable, Sendable, Equatable {
             id: "phone-reader",
             title: "Use the iPhone reader",
             symbol: "iphone",
-            summary: "Scroll toward later content to hide both reader bars. Swipe your finger downward deliberately to reveal them, even at the top of a document. Page taps leave the bars unchanged. The bottom bar holds page navigation, bookmarks, notes, the inspector, tabs, and More actions.",
+            summary: "Tap the page to hide or show both reader bars. You can also scroll toward later content to hide them, or swipe your finger downward deliberately to reveal them, even at the top of a document. The bottom bar holds page navigation, bookmarks, notes, the inspector, tabs, and More actions.",
             shortcut: nil,
             keywords: ["phone", "chrome", "page", "toolbar", "controls", "jump"]),
         HelpTopic(

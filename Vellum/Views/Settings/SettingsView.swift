@@ -299,7 +299,7 @@ private struct ReadingSettingsTab: View {
                 } header: {
                     Text("Reader")
                 } footer: {
-                    Text("Keeps the iPhone reader’s top and bottom bars visible while you scroll. Assistive navigation also enables this behavior automatically.")
+                    Text("Keeps the iPhone reader’s top and bottom bars visible while you tap or scroll. Assistive navigation also enables this behavior automatically.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
