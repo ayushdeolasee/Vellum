@@ -649,6 +649,23 @@ struct TabStrip_iOS: View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    if appStore.tabs.isEmpty {
+                        HStack(spacing: 6) {
+                            if workspace.focusedPaneId == paneId {
+                                Circle().fill(palette.primary).frame(width: 6, height: 6)
+                                    .accessibilityHidden(true)
+                            }
+                            Text("Library").font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                        .selectionSurface(
+                            selected: true, accented: workspace.focusedPaneId == paneId,
+                            in: Capsule(), palette: palette)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Library")
+                        .accessibilityValue(workspace.focusedPaneId == paneId ? "Focused pane" : "")
+                    }
                     ForEach(appStore.tabs) { tab in
                         TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
                     }
@@ -761,14 +778,28 @@ private struct TabChip_iOS: View {
 
     private var isLastTab: Bool { appStore.tabs.last?.id == tab.id }
 
+    private var isPaneFocused: Bool {
+        !workspace.isSplit || workspace.focusedPaneId == paneId
+    }
+
+    private var showsPaneFocus: Bool { workspace.isSplit && isPaneFocused && isActive }
+
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: { appStore.activateTab(tab.id) }) {
+            Button(action: { workspace.activateWorkspaceTab(paneId: paneId, tabId: tab.id) }) {
                 HStack(spacing: 6) {
-                    Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
-                        .font(.system(size: 12))
-                        .foregroundStyle(
-                            isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                    Group {
+                        if showsPaneFocus {
+                            Circle().fill(palette.primary).frame(width: 6, height: 6)
+                        } else {
+                            Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
+                                .font(.system(size: 12))
+                                .foregroundStyle(isActive && isPaneFocused
+                                    ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .frame(width: 12, height: 12)
+                    .accessibilityHidden(true)
                     Text(title)
                         .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                         .lineLimit(1)
@@ -789,7 +820,8 @@ private struct TabChip_iOS: View {
             // Concatenated, not replaced: the selected state is what VoiceOver
             // uses to tell the current tab from the rest.
             .accessibilityValue(
-                [isActive ? "Selected" : "", hasPendingAction ? "Action pending" : ""]
+                [isActive ? "Selected" : "", showsPaneFocus ? "Focused pane" : "",
+                 hasPendingAction ? "Action pending" : ""]
                     .filter { !$0.isEmpty }
                     .joined(separator: ", "))
 
@@ -809,7 +841,7 @@ private struct TabChip_iOS: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(height: 44)
-        .selectionSurface(selected: isActive, in: Capsule(), palette: palette)
+        .selectionSurface(selected: isActive, accented: isPaneFocused, in: Capsule(), palette: palette)
         // Long-press lifts the chip into a drag; dropping on another pane's
         // strip joins that group, dropping on a pane edge splits it.
         .onDrag {
