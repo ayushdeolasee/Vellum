@@ -52,6 +52,8 @@ struct ArchiveManifest: Codable, Sendable {
     var url: String
     var canonicalUrl: String
     var title: String?
+    /// Nil identifies older archives whose existing names are preserved conservatively.
+    var titleIsUserDefined: Bool?
     var capturedAt: String
     var generator: String
     /// "live-first" (default) or "snapshot-only".
@@ -68,6 +70,7 @@ struct ArchiveManifest: Codable, Sendable {
         case url
         case canonicalUrl = "canonical_url"
         case title
+        case titleIsUserDefined = "title_is_user_defined"
         case capturedAt = "captured_at"
         case generator
         case loadingPolicy = "loading_policy"
@@ -80,6 +83,7 @@ struct ArchiveManifest: Codable, Sendable {
 
     init(
         format: String, version: Int, url: String, canonicalUrl: String, title: String?,
+        titleIsUserDefined: Bool? = nil,
         capturedAt: String, generator: String, loadingPolicy: String, pageCount: Int?,
         lastPage: Int?, hashes: ManifestHashes, assets: [ManifestAsset], assetsSkipped: Int
     ) {
@@ -88,6 +92,7 @@ struct ArchiveManifest: Codable, Sendable {
         self.url = url
         self.canonicalUrl = canonicalUrl
         self.title = title
+        self.titleIsUserDefined = titleIsUserDefined
         self.capturedAt = capturedAt
         self.generator = generator
         self.loadingPolicy = loadingPolicy
@@ -105,6 +110,7 @@ struct ArchiveManifest: Codable, Sendable {
         url = try container.decode(String.self, forKey: .url)
         canonicalUrl = try container.decode(String.self, forKey: .canonicalUrl)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
         capturedAt = try container.decode(String.self, forKey: .capturedAt)
         generator = try container.decode(String.self, forKey: .generator)
         loadingPolicy = try container.decode(String.self, forKey: .loadingPolicy)
@@ -381,6 +387,7 @@ enum WebArchive {
     static func buildManifest(
         url: String,
         title: String?,
+        titleIsUserDefined: Bool? = false,
         pageCount: Int?,
         lastPage: Int?,
         loadingPolicy: String,
@@ -397,6 +404,7 @@ enum WebArchive {
             url: url,
             canonicalUrl: url,
             title: title,
+            titleIsUserDefined: titleIsUserDefined,
             capturedAt: WebLibrary.rfc3339Now(),
             generator: "Vellum \(version)",
             loadingPolicy: loadingPolicy,

@@ -93,6 +93,8 @@ final class WebSessionBackend {
                 // Merge archive metadata without clobbering local reading state.
                 if record.title == nil {
                     record.title = imported.manifest.title
+                    record.titleIsUserDefined = record.title != nil
+                        && (imported.manifest.titleIsUserDefined ?? true)
                 }
                 if record.pageCount == nil {
                     record.pageCount = imported.manifest.pageCount
@@ -329,6 +331,7 @@ final class WebDocumentSession: DocumentSession {
         let manifest = WebArchive.buildManifest(
             url: url,
             title: record?.title,
+            titleIsUserDefined: record?.titleIsUserDefined ?? false,
             pageCount: pageCount,
             lastPage: record?.lastPage,
             loadingPolicy: "live-first",
