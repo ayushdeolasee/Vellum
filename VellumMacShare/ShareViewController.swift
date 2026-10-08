@@ -139,11 +139,19 @@ final class ShareViewController: NSViewController {
                 guard let item = try? await provider.loadItem(forTypeIdentifier: type) else { continue }
                 let candidate: URL?
                 if type == UTType.propertyList.identifier {
-                    let dictionary = item as? [String: Any]
+                    let dictionary: [String: Any]?
+                    if let data = item as? Data {
+                        dictionary = (try? PropertyListSerialization.propertyList(
+                            from: data, options: [], format: nil)) as? [String: Any]
+                    } else {
+                        dictionary = item as? [String: Any]
+                    }
                     let results = dictionary?[NSExtensionJavaScriptPreprocessingResultsKey] as? [String: Any]
                     candidate = (results?["url"] as? String).flatMap(URL.init(string:))
                 } else if let url = item as? URL {
                     candidate = url
+                } else if let data = item as? Data {
+                    candidate = String(data: data, encoding: .utf8).flatMap(URL.init(string:))
                 } else {
                     candidate = (item as? String).flatMap(URL.init(string:))
                 }
