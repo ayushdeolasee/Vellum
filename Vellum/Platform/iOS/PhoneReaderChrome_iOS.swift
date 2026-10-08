@@ -284,6 +284,7 @@ struct PhoneReaderBottomBar: View {
     @Environment(AnnotationStore.self) private var annotations
     @Environment(AiStore.self) private var ai
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
 
     @State private var pageFieldText = ""
@@ -491,6 +492,13 @@ struct PhoneReaderBottomBar: View {
                 // Identical identifier to the iPad's, so shared automation
                 // matches on both shells.
                 .accessibilityIdentifier("toolbar.exportWithNotes")
+            }
+
+            // Match the iPad reader's provider action for the active article
+            // or downloaded PDF; the shared menu owns destination eligibility.
+            if let path = app.document?.pdfPath,
+               let item = integrations.readLaterItem(forOpenDocumentPath: path) {
+                MoveToCollectionMenu(item: item, integrations: integrations)
             }
 
             Divider()
