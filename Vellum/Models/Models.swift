@@ -147,6 +147,9 @@ struct DocumentInfo: Codable, Equatable, Sendable {
     /// before this field existed (and web docs, which never carry one) decodes
     /// cleanly; readers must fall back to `pdfPath` when nil.
     var bookmarkData: Data? = nil
+    /// Web titles chosen by the user take precedence over later DOM titles.
+    /// Carried with the document when its tab moves between panes.
+    var titleIsUserDefined: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case kind
@@ -156,6 +159,7 @@ struct DocumentInfo: Codable, Equatable, Sendable {
         case lastPage = "last_page"
         case docId = "doc_id"
         case bookmarkData = "bookmark_data"
+        case titleIsUserDefined = "title_is_user_defined"
     }
 }
 

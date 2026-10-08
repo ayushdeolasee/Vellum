@@ -36,6 +36,7 @@ final class DocumentActionsTests: XCTestCase {
     private var scratchpads: [ScratchpadStore] = []
     private var aiStores: [AiStore] = []
     private var previousDocumentRoot: URL?
+    private var previousWebRoot: URL?
 
     override func setUp() async throws {
         tempDirectory = FileManager.default.temporaryDirectory
@@ -44,6 +45,7 @@ final class DocumentActionsTests: XCTestCase {
             at: tempDirectory, withIntermediateDirectories: true)
         PdfDocIdRegistry.reset()
         previousDocumentRoot = DocumentDataStore.rootDirectoryOverride
+        previousWebRoot = WebLibrary.storeDirOverride
     }
 
     override func tearDown() async throws {
@@ -76,6 +78,7 @@ final class DocumentActionsTests: XCTestCase {
         aiStores = []
         workspaces = []
         DocumentDataStore.rootDirectoryOverride = previousDocumentRoot
+        WebLibrary.storeDirOverride = previousWebRoot
         PdfDocIdRegistry.reset()
         if let tempDirectory {
             try? FileManager.default.removeItem(at: tempDirectory)
@@ -280,6 +283,64 @@ final class DocumentActionsTests: XCTestCase {
         returned.document = original
         app.attachTab(returned)
         XCTAssertFalse(app.isCurrentDocumentBinding(binding), "A→B→A never revives old authority")
+    }
+
+    func testWebRenameSurvivesInitialDOMTitleMigrationAndReopenUntilCleared() async throws {
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("documents")
+        WebLibrary.storeDirOverride = tempDirectory.appendingPathComponent("web")
+        let storage = WebLibraryStorage()
+        let manager = DocumentSessionManager(webBackend: WebSessionBackend(storage: storage))
+        let registry = TabTeardownRegistry()
+        let gate = LifecycleGate()
+        lifecycleGates.append(gate)
+        let app = AppStore(sessions: manager, teardowns: registry, renamePersistence: { target, title in
+            await gate.pause()
+            return await DocumentRenameService.persistOpenDocument(target, title: title, storage: storage)
+        })
+        let migrated = AppStore(sessions: manager, teardowns: registry)
+        apps.append(contentsOf: [app, migrated])
+        let url = "https://example.com/initial-title"
+        await app.openUrl(url)
+        let tabId = try XCTUnwrap(app.activeTabId)
+        let rename = Task { await app.renameDocument(tabId: tabId, title: "My title") }
+        lifecycleTasks.append(rename)
+        try await gate.waitUntilPaused()
+
+        // The first extraction can arrive before the rename reaches disk.
+        app.updateDocumentTitle(tabId: tabId, title: "First DOM title")
+        XCTAssertEqual(app.document?.title, "My title")
+        migrated.attachTab(try XCTUnwrap(app.detachTab(tabId)))
+        migrated.updateDocumentTitle(tabId: tabId, title: "DOM title after pane move")
+        XCTAssertEqual(migrated.document?.title, "My title")
+        gate.release()
+        await rename.value
+
+        // Even a metadata producer outside AppStore must respect ownership.
+        try await manager.setDocumentMetadata(sessionId: tabId, key: "title", value: "Late DOM title")
+        let key = WebLibrary.pageKey(url)
+        let named = await storage.loadRecord(forKey: key)
+        XCTAssertEqual(named?.title, "My title")
+        XCTAssertEqual(named?.titleIsUserDefined, true)
+        let accepted = try await storage.setTitle(rawUrl: url, title: "Ignored DOM title", isUserDefined: false)
+        XCTAssertFalse(accepted)
+        await migrated.closeTab(tabId)
+        await migrated.awaitPendingTabTeardowns()
+        await migrated.openUrl(url)
+        let reopenedId = try XCTUnwrap(migrated.activeTabId)
+        migrated.updateDocumentTitle(tabId: reopenedId, title: "DOM title after reopen")
+        XCTAssertEqual(migrated.document?.title, "My title")
+
+        await migrated.renameDocument(tabId: reopenedId, title: "  ")
+        migrated.updateDocumentTitle(tabId: reopenedId, title: "Automatic again")
+        await migrated.awaitPendingTabTeardowns()
+        XCTAssertEqual(migrated.document?.title, "Automatic again")
+        let automatic = await storage.loadRecord(forKey: key)
+        XCTAssertEqual(automatic?.title, "Automatic again")
+        XCTAssertEqual(automatic?.titleIsUserDefined, false)
+
+        let legacy = try JSONDecoder().decode(WebPageRecord.self,
+            from: Data(#"{"url":"https://example.com/legacy","title":"Existing custom name"}"#.utf8))
+        XCTAssertTrue(legacy.titleIsUserDefined, "legacy custom names remain protected")
     }
 
     func testQueuedRenamesRemainJoinableAfterPaneClosure() async throws {

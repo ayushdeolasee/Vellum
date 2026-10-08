@@ -1752,10 +1752,6 @@ final class WebViewerController: NSObject {
 
         if let title = data["title"] as? String, !title.isEmpty {
             app.updateDocumentTitle(tabId: tabId, title: title)
-            Task {
-                try? await app.sessions.setDocumentMetadata(
-                    sessionId: tabId, key: "title", value: title)
-            }
         }
 
         // Default behaviour: archive every opened page as a .vellumweb in the
