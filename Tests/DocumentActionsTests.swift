@@ -343,6 +343,49 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertTrue(legacy.titleIsUserDefined, "legacy custom names remain protected")
     }
 
+    func testWebArchiveTitleOwnershipSurvivesImportIntoFreshStore() async throws {
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("documents")
+        let html = "<html><body>Archived page</body></html>"
+        let pages = try WebArchive.encodePagesJson([WebPageText(number: 1, text: "Archived page")])
+        let cases: [(name: String, title: String?, ownership: Bool?, isProtected: Bool)] = [
+            ("manual", "My name", true, true),
+            ("automatic", "Old DOM title", false, false),
+            ("cleared", nil, false, false),
+            ("legacy", "Existing name", nil, true),
+        ]
+        for fixture in cases {
+            let url = "https://example.com/archive-\(fixture.name)"
+            let manifest = WebArchive.buildManifest(
+                url: url, title: fixture.title, titleIsUserDefined: fixture.ownership,
+                pageCount: 1, lastPage: nil, loadingPolicy: "live-first",
+                snapshotHtml: html, pagesJson: pages, assets: [], assetsSkipped: 0)
+            let archive = tempDirectory.appendingPathComponent("\(fixture.name).vellumweb")
+            try WebArchive.writeArchive(to: archive, manifest: manifest, snapshotHtml: html,
+                                       assets: [], pagesJson: pages, annotations: [])
+            // Import into a store with no local record to supply title ownership.
+            WebLibrary.storeDirOverride = tempDirectory.appendingPathComponent("import-\(fixture.name)")
+            let storage = WebLibraryStorage()
+            let manager = DocumentSessionManager(webBackend: WebSessionBackend(storage: storage))
+            let app = AppStore(sessions: manager)
+            apps.append(app)
+            await app.openFile(path: archive.path)
+            let tabId = try XCTUnwrap(app.activeTabId)
+            XCTAssertEqual(app.document?.title, fixture.title)
+            XCTAssertEqual(app.document?.titleIsUserDefined, fixture.isProtected)
+            app.updateDocumentTitle(tabId: tabId, title: "New DOM title")
+            await app.awaitPendingTabTeardowns()
+            // Direct metadata producers must agree with the DOM callback.
+            try await manager.setDocumentMetadata(sessionId: tabId, key: "title", value: "New DOM title")
+            let expected = fixture.isProtected ? fixture.title : "New DOM title"
+            XCTAssertEqual(app.document?.title, expected)
+            let imported = await storage.loadRecord(forKey: WebLibrary.pageKey(url))
+            XCTAssertEqual(imported?.title, expected)
+            XCTAssertEqual(imported?.titleIsUserDefined, fixture.isProtected)
+            await app.closeTab(tabId)
+            await app.awaitPendingTabTeardowns()
+        }
+    }
+
     func testQueuedRenamesRemainJoinableAfterPaneClosure() async throws {
         let gate = LifecycleGate()
         lifecycleGates.append(gate)
@@ -438,6 +481,49 @@ final class DocumentActionsTests: XCTestCase {
         XCTAssertNil(registry.failedRenames[key])
         XCTAssertEqual(app.document, replacement)
         XCTAssertEqual(app.tabs.first(where: { $0.id == "retry" })?.document?.title, "Requested title")
+
+        DocumentDataStore.rootDirectoryOverride = tempDirectory.appendingPathComponent("documents")
+        WebLibrary.storeDirOverride = tempDirectory.appendingPathComponent("web-retry")
+        let storage = WebLibraryStorage()
+        let web = AppStore(
+            sessions: DocumentSessionManager(webBackend: WebSessionBackend(storage: storage)),
+            teardowns: registry, renamePersistence: { target, title in
+                guard outcome.succeeds else { return false }
+                return await DocumentRenameService.persistOpenDocument(target, title: title, storage: storage)
+            })
+        apps.append(web)
+        let url = "https://example.com/retry-title"
+        await web.openUrl(url)
+        var webTabId = try XCTUnwrap(web.activeTabId)
+        web.updateDocumentTitle(tabId: webTabId, title: "Initial DOM title")
+        await web.awaitPendingTabTeardowns()
+        outcome.succeeds = false
+        await web.renameDocument(tabId: webTabId, title: "Retry this name")
+        await web.closeTab(webTabId)
+        await web.awaitPendingTabTeardowns()
+        await web.openUrl(url)
+        webTabId = try XCTUnwrap(web.activeTabId)
+        web.updateDocumentTitle(tabId: webTabId, title: "DOM after failed rename")
+        XCTAssertEqual(web.document?.title, "Retry this name")
+        XCTAssertEqual(web.document?.titleIsUserDefined, true)
+
+        outcome.succeeds = true
+        await web.renameDocument(tabId: webTabId, title: "Retry this name")
+        let webKey = WebLibrary.pageKey(url)
+        XCTAssertNil(registry.failedRenames[webKey])
+        outcome.succeeds = false
+        await web.renameDocument(tabId: webTabId, title: " ")
+        await web.closeTab(webTabId)
+        await web.awaitPendingTabTeardowns()
+        await web.openUrl(url)
+        webTabId = try XCTUnwrap(web.activeTabId)
+        XCTAssertNil(web.document?.title)
+        XCTAssertEqual(web.document?.titleIsUserDefined, false)
+        web.updateDocumentTitle(tabId: webTabId, title: "DOM after failed clear")
+        XCTAssertEqual(web.document?.title, "DOM after failed clear")
+        outcome.succeeds = true
+        await web.renameDocument(tabId: webTabId, title: " ")
+        XCTAssertNil(registry.failedRenames[webKey])
     }
 
     func testQuitDrainWaitsForScratchpadCommitAndReopensLatestNoteAndAttachment() async throws {

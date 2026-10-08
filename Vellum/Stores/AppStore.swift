@@ -1858,6 +1858,7 @@ final class AppStore {
         var doc = doc
         if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
             doc.title = failure.title
+            if doc.kind == .web { doc.titleIsUserDefined = failure.title != nil }
             error = failure.message
         }
         // This is intentionally device-local. Opening a captured page must not
