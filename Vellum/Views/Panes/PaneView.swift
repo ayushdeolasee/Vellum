@@ -20,7 +20,7 @@ struct PaneView: View {
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
-                if !app.tabs.isEmpty {
+                if !app.tabs.isEmpty || workspace.isSplit {
                     TabBarView(paneId: pane.id)
                 }
                 content
@@ -41,17 +41,6 @@ struct PaneView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
-            .overlay(alignment: .topLeading) {
-                // Focus ring only when the window is actually split — a lone pane
-                // never needs the "which pane is active" affordance.
-                if workspace.isSplit {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(
-                            isFocused ? palette.primary.opacity(0.55) : Color.clear,
-                            lineWidth: 2)
-                        .allowsHitTesting(false)
-                }
-            }
             // Transparent drop catcher. A web pane hosts a WKWebView, which
             // registers its own dragged types and would otherwise swallow a tab
             // drop before this pane's DropDelegate sees it (a PDFView doesn't,
