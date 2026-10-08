@@ -883,6 +883,16 @@ final class AppStore {
         }
     }
 
+    /// Reorder within this pane without activating, detaching or rebuilding a tab.
+    /// Resolve the index at invocation so a stale card action cannot move another tab.
+    func moveTab(_ tabId: String, by offset: Int) {
+        guard offset == -1 || offset == 1,
+              let index = tabs.firstIndex(where: { $0.id == tabId }),
+              tabs.indices.contains(index + offset) else { return }
+        tabs.swapAt(index, index + offset)
+        workspace?.scheduleSave()
+    }
+
     func activateTab(_ tabId: String) {
         guard activeTabId != tabId, let tab = tabs.first(where: { $0.id == tabId }) else { return }
         if let current = tabs.first(where: { $0.id == activeTabId }), current.document != nil {

@@ -122,7 +122,9 @@ struct PhoneTabSwitcher_iOS: View {
                             thumbnailRevision: thumbnailRevision(for: card),
                             loadThumbnail: { await thumbnail(for: card) },
                             open: { open(card) },
-                            close: { close(card) })
+                            close: { close(card) },
+                            moveEarlier: canMove(card, by: -1) ? { app.moveTab(card.id, by: -1) } : nil,
+                            moveLater: canMove(card, by: 1) ? { app.moveTab(card.id, by: 1) } : nil)
                             .contextMenu { tabActions(for: card) }
 
                         tabActionsMenu(for: card)
@@ -178,6 +180,11 @@ struct PhoneTabSwitcher_iOS: View {
         shell.showReader()
     }
 
+    private func canMove(_ card: PhoneTabCard, by offset: Int) -> Bool {
+        guard let index = app.tabs.firstIndex(where: { $0.id == card.id }) else { return false }
+        return app.tabs.indices.contains(index + offset)
+    }
+
     /// Closing is the async half: `AppStore.closeTab` removes the tab from the
     /// list immediately and finishes the backend teardown afterwards, so the
     /// card disappears on the tap. `didCloseTab()` is what routes Home when the
@@ -216,7 +223,14 @@ struct PhoneTabSwitcher_iOS: View {
             }
 
             Divider()
+            if canMove(card, by: -1) {
+                Button("Move Earlier", systemImage: "arrow.up") { app.moveTab(card.id, by: -1) }
+            }
+            if canMove(card, by: 1) {
+                Button("Move Later", systemImage: "arrow.down") { app.moveTab(card.id, by: 1) }
+            }
 
+            Divider()
             Button("Close Tab", systemImage: "xmark", role: .destructive) { close(card) }
             Button("Close Others", systemImage: "xmark.square") {
                 Task {
@@ -457,6 +471,8 @@ struct PhoneTabCardView: View {
     let loadThumbnail: () async -> UIImage?
     let open: () -> Void
     let close: () -> Void
+    var moveEarlier: (() -> Void)? = nil
+    var moveLater: (() -> Void)? = nil
 
     @State private var thumbnail: UIImage?
 
@@ -500,6 +516,7 @@ struct PhoneTabCardView: View {
                  showsReloadNote ? "Reloads on open" : ""]
                     .filter { !$0.isEmpty }
                     .joined(separator: ", "))
+            .accessibilityActions { orderingActions }
 
             // A sibling, not a Button overlay. SwiftUI folds controls inside a
             // Button's overlay into the parent's accessibility element even
@@ -511,6 +528,16 @@ struct PhoneTabCardView: View {
             let loaded = await loadThumbnail()
             guard !Task.isCancelled else { return }
             thumbnail = loaded
+        }
+    }
+
+    @ViewBuilder
+    private var orderingActions: some View {
+        if let moveEarlier {
+            Button("Move Earlier", systemImage: "arrow.up", action: moveEarlier)
+        }
+        if let moveLater {
+            Button("Move Later", systemImage: "arrow.down", action: moveLater)
         }
     }
 
