@@ -179,7 +179,7 @@ struct PdfViewerView_iOS: View {
                     }
                     let handwritingPages = PdfViewerPreparation.stripAnnotations(
                         from: document,
-                        preserving: { $0.type == PDFAnnotationSubtype.ink.rawValue },
+                        preserving: { $0.type == "Ink" },
                         isHandwriting: PdfInk.isVellumInk)
                     return PreparedPdf(
                         document: document,

@@ -174,7 +174,7 @@ struct PdfViewerView: View {
                     // ink, including handwriting saved by Vellum on iPad.
                     PdfViewerPreparation.stripAnnotations(
                         from: document,
-                        preserving: { $0.type == PDFAnnotationSubtype.ink.rawValue })
+                        preserving: { $0.type == "Ink" })
                     return PreparedPdf(document: document)
                 }.value
                 guard !Task.isCancelled, app.containsTab(id: tabId) else { return }
