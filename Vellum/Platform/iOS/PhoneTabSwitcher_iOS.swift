@@ -80,6 +80,14 @@ struct PhoneTabSwitcher_iOS: View {
     /// presents it. Same discipline as `PhoneInspectorSheet_iOS`.
     let themeStore: ThemeStore
 
+    @State private var renamingTab: RenameTarget?
+
+    private struct RenameTarget: Identifiable {
+        let tab: PdfTab
+        let binding: DocumentBinding
+        var id: String { tab.id }
+    }
+
     private var palette: ThemePalette { themeStore.palette }
 
     /// Rebuilt on every body pass, which is what keeps titles and page numbers
@@ -107,13 +115,18 @@ struct PhoneTabSwitcher_iOS: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
                 ForEach(cards) { card in
-                    PhoneTabCardView(
-                        card: card,
-                        palette: palette,
-                        thumbnailRevision: thumbnailRevision(for: card),
-                        loadThumbnail: { await thumbnail(for: card) },
-                        open: { open(card) },
-                        close: { close(card) })
+                    ZStack(alignment: .topLeading) {
+                        PhoneTabCardView(
+                            card: card,
+                            palette: palette,
+                            thumbnailRevision: thumbnailRevision(for: card),
+                            loadThumbnail: { await thumbnail(for: card) },
+                            open: { open(card) },
+                            close: { close(card) })
+                            .contextMenu { tabActions(for: card) }
+
+                        tabActionsMenu(for: card)
+                    }
                 }
             }
             .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
@@ -131,6 +144,18 @@ struct PhoneTabSwitcher_iOS: View {
         .preferredColorScheme(themeStore.colorScheme)
         .tint(palette.primary)
         .accessibilityIdentifier("phone.tabs")
+        .sheet(item: $renamingTab) { target in
+            RenameDocumentSheet_iOS(
+                currentTitle: target.tab.document?.title ?? "",
+                fallbackName: TabPresentation.fallbackName(for: target.tab),
+                commit: { newTitle in
+                    Task {
+                        guard app.isCurrentDocumentBinding(target.binding) else { return }
+                        await app.renameDocument(tabId: target.id, title: newTitle)
+                    }
+                })
+                .interactiveDismissDisabled()
+        }
     }
 
     /// Two page-like cards at normal sizes; one readable card when accessibility
@@ -163,6 +188,75 @@ struct PhoneTabSwitcher_iOS: View {
             await app.closeTab(card.id)
             shell.didCloseTab()
         }
+    }
+
+    /// The grid follows `app.tabs` order, so "to right" means every later
+    /// card in reading order, including cards on subsequent rows.
+    @ViewBuilder
+    private func tabActions(for card: PhoneTabCard) -> some View {
+        if let tab = app.tabs.first(where: { $0.id == card.id }) {
+            if tab.document != nil {
+                Button("Rename…", systemImage: "pencil") {
+                    guard let binding = app.documentBinding(for: tab.id) else { return }
+                    renamingTab = RenameTarget(tab: tab, binding: binding)
+                }
+            }
+            Button("Duplicate", systemImage: "plus.square.on.square") {
+                Task { await app.duplicateTab(tab.id) }
+            }
+            .disabled(tab.document?.kind == .pdf)
+
+            if tab.document?.kind == .web {
+                Button("Copy Link", systemImage: "link") {
+                    // Read the current tab rather than a URL captured when the menu opened.
+                    guard let document = app.tabs.first(where: { $0.id == tab.id })?.document,
+                          document.kind == .web else { return }
+                    UIPasteboard.general.string = document.pdfPath
+                }
+            }
+
+            Divider()
+
+            Button("Close Tab", systemImage: "xmark", role: .destructive) { close(card) }
+            Button("Close Others", systemImage: "xmark.square") {
+                Task {
+                    await app.closeOtherTabs(keeping: tab.id)
+                    shell.didCloseTab()
+                }
+            }
+            .disabled(app.tabs.count < 2)
+            Button("Close Tabs to Right", systemImage: "arrow.right.to.line") {
+                Task {
+                    await app.closeTabsToRight(of: tab.id)
+                    shell.didCloseTab()
+                }
+            }
+            .disabled(app.tabs.last?.id == tab.id)
+        }
+    }
+
+    /// A sibling of the card's open button keeps the menu separately reachable
+    /// by VoiceOver, just like the existing close control on the opposite edge.
+    private func tabActionsMenu(for card: PhoneTabCard) -> some View {
+        Menu { tabActions(for: card) } label: {
+            ZStack {
+                Circle()
+                    .fill(palette.surface)
+                    .overlay { Circle().strokeBorder(palette.border, lineWidth: 1) }
+                    .frame(
+                        width: PhoneTabSwitcherLayout.closeDisc,
+                        height: PhoneTabSwitcherLayout.closeDisc)
+                Image(systemName: "ellipsis")
+                    .font(.caption.bold())
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .frame(
+                width: PhoneChromeLayout.buttonSide, height: PhoneChromeLayout.buttonSide)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Actions for \(card.title)\(card.duplicateLabel.map { ", " + $0 } ?? "")")
+        .accessibilityIdentifier("phone.tabs.actions")
     }
 
     // MARK: - Chrome
