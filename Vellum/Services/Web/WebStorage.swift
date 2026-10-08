@@ -1215,6 +1215,7 @@ enum WebStorageMigrator {
             }
 
             let bytes: Data
+            var recoveredArchive: ImportedArchive?
             let legacyPath = "Web Pages/\(sourceName)"
             let sourceFingerprint: String
             do {
@@ -1242,10 +1243,11 @@ enum WebStorageMigrator {
                     // metadata or removing its only copy. Recovery mappings
                     // stay in memory; failed files are validated again on retry.
                     let imported = try WebArchive.readArchive(data: sourceData)
-                    try await recoverMissingArchiveRecords(
-                        imported, key: key, source: source,
-                        sourceStore: sourceRecordStore, destination: destination,
-                        store: destinationRecordStore)
+                    guard WebLibrary.pageKey(try WebUrl.normalize(imported.manifest.url)) == key else {
+                        clean = false
+                        continue
+                    }
+                    recoveredArchive = imported
                 }
             } catch {
                 clean = false
@@ -1259,14 +1261,21 @@ enum WebStorageMigrator {
                 } else {
                     let recordURL = destination.recordsDir.appendingPathComponent("\(key).json")
                     do {
-                        guard let data = try await destinationRecordStore.read(recordURL),
-                              let record = try? JSONDecoder().decode(WebPageRecord.self, from: data)
-                        else {
+                        let title: String?
+                        let url: String
+                        if let data = try await destinationRecordStore.read(recordURL) {
+                            let record = try JSONDecoder().decode(WebPageRecord.self, from: data)
+                            title = record.title
+                            url = record.url
+                        } else if let imported = recoveredArchive {
+                            title = imported.manifest.title
+                            url = imported.manifest.url
+                        } else {
                             clean = false
                             continue
                         }
                         let base = WebArchiveIndex.sanitizedBaseName(
-                            title: record.title, url: record.url)
+                            title: title, url: url)
                         var candidate = "\(base).vellumweb"
                         var counter = 2
                         while occupied.contains(candidate) {
@@ -1308,6 +1317,14 @@ enum WebStorageMigrator {
                         readiness: .current,
                         byteSize: Int64(bytes.count),
                         contentModifiedAt: sourceEntry.contentModifiedAt)
+                }
+                // A rejected destination conflict must not publish metadata
+                // from this capture beside a different snapshot.
+                if let imported = recoveredArchive {
+                    try await recoverMissingArchiveRecords(
+                        imported, key: key, source: source,
+                        sourceStore: sourceRecordStore, destination: destination,
+                        store: destinationRecordStore)
                 }
                 if !preserveSource {
                     try await sourceStore.remove(sourceEntry.url)

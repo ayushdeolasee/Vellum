@@ -122,7 +122,20 @@ struct StorageMigrationRecoveryTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let direct = DirectLibraryFileStore()
         let sourceURL = source.archivesDir.appendingPathComponent("Unindexed.vellumweb")
-        let bytes = kind == "corrupt" ? Data("invalid archive".utf8) : try archive().0
+        var bytes = try archive().0
+        if kind == "corrupt" {
+            // Keep a readable manifest but violate the snapshot hash. Merely
+            // parsing the manifest must never authorize destructive recovery.
+            let zip = try MiniZip(data: bytes, maxBytes: WebArchive.maxArchiveBytes,
+                                  maxEntries: WebArchive.maxEntries,
+                                  maxUncompressedBytes: WebArchive.maxTotalUncompressedBytes)
+            bytes = try MiniZip.write(entries: zip.entryNames.map {
+                MiniZip.Entry(name: $0,
+                              data: $0 == "snapshot/index.html" ? Data("corrupt snapshot".utf8)
+                                : try zip.readCapped($0, cap: WebArchive.maxTotalUncompressedBytes),
+                              stored: false)
+            })
+        }
         let fileURL = kind == "evicted" ? WebICloud.placeholderURL(for: sourceURL) : sourceURL
         try await direct.replace(fileURL, with: bytes)
         if kind == "duplicate" {
@@ -156,6 +169,8 @@ struct StorageMigrationRecoveryTests {
             destinationStore: CoordinatedLibraryFileStore(container: container))))
         #expect(try await direct.read(sourceURL) == bytes)
         #expect(container.peek(destinationURL) == existing)
+        #expect(container.peek(destination.recordsDir.appendingPathComponent("\(key).json")) == nil)
+        #expect(container.peek(destination.recordsDir.appendingPathComponent("\(key).ink.json")) == nil)
     }
 
     @Test("Failed recovery writes leave the source intact and the next attempt succeeds")
