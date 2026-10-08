@@ -97,10 +97,15 @@ final class WorkspaceStore {
     var sidebarTab: SidebarTab = .annotations
     enum SidebarTab: Sendable, CaseIterable, Hashable {
         case annotations, ai, scratchpad
-        #if os(macOS)
         case browser
-        #endif
     }
+
+    #if os(iOS)
+    /// A window-owned companion session: never a document or library entry.
+    /// The WebView is created only when Browser is first revealed; its history
+    /// survives inspector dismissal, phone sheet dismissal and pane changes.
+    @ObservationIgnored let companionBrowser = CompanionBrowserController_iOS()
+    #endif
 
     // MARK: Inspector column width
 
