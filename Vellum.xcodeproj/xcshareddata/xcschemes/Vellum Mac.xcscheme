@@ -29,6 +29,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "F57521B3D2FD598CC03D1745"
+               BuildableName = "VellumMacShare.appex"
+               BlueprintName = "VellumMacShare"
+               ReferencedContainer = "container:Vellum.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "51B6918A47669C318959750C"
                BuildableName = "VellumMacWidgets.appex"
                BlueprintName = "VellumMacWidgets"

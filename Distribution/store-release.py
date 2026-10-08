@@ -24,6 +24,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 BUNDLE = "com.ayushdeolasee.vellum"
+MAC_SHARE = BUNDLE + ".mac-share"
 CLOUD = "iCloud.com.ayushdeolasee.vellum"
 GROUP = "group.com.ayushdeolasee.vellum"
 TEAM = "9DCG97VASG"
@@ -140,12 +141,12 @@ def inspect_bundle(app, platform, version, build, exported):
     contents = app / "Contents" if platform == "macos" else app
     info = plistlib.loads((contents / "Info.plist").read_bytes())
     identifier = info["CFBundleIdentifier"]
-    require(identifier in {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets"},
+    require(identifier in {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets", MAC_SHARE},
             f"Unexpected bundle: {identifier}")
     require(info.get("CFBundleShortVersionString") == version
             and info.get("CFBundleVersion") == build, f"Version/build mismatch: {identifier}")
     direct = platform == "macos"
-    if direct:
+    if direct and identifier == BUNDLE:
         require(info.get("SUFeedURL") == FEED, "Unexpected Sparkle feed URL")
         require(len(base64.b64decode(info.get("SUPublicEDKey", ""), validate=True)) == 32,
                 "Missing or invalid Sparkle EdDSA public key")
@@ -153,16 +154,28 @@ def inspect_bundle(app, platform, version, build, exported):
                 "Sparkle framework missing from direct Mac app")
     else:
         require(not any(key.startswith("SU") for key in info), f"Updater metadata in {identifier}")
-        require(not any("sparkle" in p.name.lower() for p in app.rglob("*")), "Sparkle in Store app")
+        require(not any("sparkle" in p.name.lower() for p in app.rglob("*")), "Sparkle in Store app/extension")
     # Xcode export re-signs Sparkle helpers; intermediate archive helpers can
     # retain upstream signatures/debug entitlements. Gate all nested code after export.
     authorities = inspect_signature(app, direct=direct, exported=exported, runtime=direct,
                                     deep=not direct or exported)
     entitlements = plistlib.loads(run("codesign", "-d", "--entitlements", ":-", app))
-    require(entitlements.get("com.apple.developer.team-identifier") == TEAM, "Wrong signed team")
+    mac_share = direct and identifier == MAC_SHARE
+    # Capability-free Developer ID extensions can omit provisioning identity
+    # entitlements. inspect_signature still requires the exact signed team.
+    require(entitlements.get("com.apple.developer.team-identifier", TEAM if mac_share else None)
+            == TEAM, "Wrong signed team")
     app_identity = entitlements.get("application-identifier",
                                     entitlements.get("com.apple.application-identifier"))
-    require(app_identity == f"{TEAM}.{identifier}", f"Wrong signed identity: {identifier}")
+    require(app_identity == f"{TEAM}.{identifier}" or (mac_share and app_identity is None),
+            f"Wrong signed identity: {identifier}")
+    if mac_share:
+        require(entitlements.get("com.apple.security.app-sandbox") is True,
+                "Mac Share extension must be sandboxed")
+        require(not any(key.startswith("com.apple.developer.")
+                        and key != "com.apple.developer.team-identifier" for key in entitlements)
+                and not entitlements.get("com.apple.security.application-groups"),
+                "Mac Share URL adapter must not acquire provisioned capabilities")
     if exported:
         require(not entitlements.get("get-task-allow", False)
                 and not entitlements.get("com.apple.security.get-task-allow", False),
@@ -186,29 +199,34 @@ def inspect_bundle(app, platform, version, build, exported):
     require(set(architectures) == ({"arm64", "x86_64"} if platform == "macos" else {"arm64"}),
             f"Unexpected architectures: {architectures}")
     profile_path = contents / ("embedded.provisionprofile" if platform == "macos" else "embedded.mobileprovision")
-    profile = plistlib.loads(run("security", "cms", "-D", "-i", profile_path))
-    require(TEAM in profile.get("TeamIdentifier", []), "Profile belongs to a different team")
-    expiry = profile.get("ExpirationDate")
-    require(expiry is not None and expiry > dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
-            "Provisioning profile expired")
-    allowed = profile.get("Entitlements", {})
-    require(allowed.get("application-identifier", allowed.get("com.apple.application-identifier"))
-            == f"{TEAM}.{identifier}", "Profile does not authorize exact bundle identity")
-    for key in ("com.apple.developer.icloud-container-identifiers",
-                "com.apple.developer.ubiquity-container-identifiers",
-                "com.apple.developer.icloud-services", "com.apple.security.application-groups"):
-        require(all(value in allowed.get(key, []) for value in entitlements.get(key, [])),
-                f"Profile does not authorize {key}")
-    if direct:
-        require(profile.get("Platform") == ["OSX"], "Developer ID profile is not for macOS")
-        require(profile.get("ProvisionsAllDevices") is True and not profile.get("ProvisionedDevices"),
-                "Direct Mac app lacks a Developer ID provisioning profile")
-        require(not allowed.get("get-task-allow", False)
-                and not allowed.get("com.apple.security.get-task-allow", False),
-                "Developer ID profile permits debugging")
-    elif exported:
-        require(not profile.get("ProvisionedDevices") and not profile.get("ProvisionsAllDevices"),
-                "Export uses a development, ad hoc, or enterprise profile")
+    profile = {}
+    expiry = None
+    # Only the sandbox-only Mac URL adapter can be signed without a profile.
+    # The app's iCloud and every mobile extension keep their existing gates.
+    if not mac_share or profile_path.exists():
+        profile = plistlib.loads(run("security", "cms", "-D", "-i", profile_path))
+        require(TEAM in profile.get("TeamIdentifier", []), "Profile belongs to a different team")
+        expiry = profile.get("ExpirationDate")
+        require(expiry is not None and expiry > dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+                "Provisioning profile expired")
+        allowed = profile.get("Entitlements", {})
+        require(allowed.get("application-identifier", allowed.get("com.apple.application-identifier"))
+                == f"{TEAM}.{identifier}", "Profile does not authorize exact bundle identity")
+        for key in ("com.apple.developer.icloud-container-identifiers",
+                    "com.apple.developer.ubiquity-container-identifiers",
+                    "com.apple.developer.icloud-services", "com.apple.security.application-groups"):
+            require(all(value in allowed.get(key, []) for value in entitlements.get(key, [])),
+                    f"Profile does not authorize {key}")
+        if direct:
+            require(profile.get("Platform") == ["OSX"], "Developer ID profile is not for macOS")
+            require(profile.get("ProvisionsAllDevices") is True and not profile.get("ProvisionedDevices"),
+                    "Direct Mac app lacks a Developer ID provisioning profile")
+            require(not allowed.get("get-task-allow", False)
+                    and not allowed.get("com.apple.security.get-task-allow", False),
+                    "Developer ID profile permits debugging")
+        elif exported:
+            require(not profile.get("ProvisionedDevices") and not profile.get("ProvisionsAllDevices"),
+                    "Export uses a development, ad hoc, or enterprise profile")
     manifests = []
     for path in contents.rglob("PrivacyInfo.xcprivacy"):
         plistlib.loads(path.read_bytes())
@@ -219,11 +237,11 @@ def inspect_bundle(app, platform, version, build, exported):
     return {"bundle": identifier, "version": version, "build": build, "executable_uuids": uuids,
             "architectures": architectures, "signing_team": TEAM,
             "signing_authorities": authorities, "entitlements": entitlements,
-            "profile_uuid": profile.get("UUID"), "profile_expires": expiry.isoformat(),
+            "profile_uuid": profile.get("UUID"), "profile_expires": expiry.isoformat() if expiry else None,
             "privacy_manifests": manifests,
             **({"feed_url": info["SUFeedURL"], "public_ed_key": info["SUPublicEDKey"],
                 "minimum_system_version": info.get("LSMinimumSystemVersion"),
-                "nested_code": inspect_nested_code(app) if exported else []} if direct else {})}
+                "nested_code": inspect_nested_code(app) if exported else []} if direct and identifier == BUNDLE else {})}
 
 
 def executable_uuids(path):
@@ -243,7 +261,7 @@ def inspect_apps(root, platform, version, build, exported):
     require(len(apps) == 1, f"Expected one app under {root}, found {len(apps)}")
     bundles = [apps[0]] + list(apps[0].rglob("*.appex"))
     records = [inspect_bundle(p, platform, version, build, exported) for p in bundles]
-    expected = {BUNDLE} if platform == "macos" else {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets"}
+    expected = {BUNDLE, MAC_SHARE} if platform == "macos" else {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets"}
     require({r["bundle"] for r in records} == expected and len(records) == len(expected),
             "Missing or duplicate app/extension")
     return records
