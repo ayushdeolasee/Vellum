@@ -718,7 +718,16 @@ final class ScratchpadImportTests: XCTestCase {
         let editor = ScratchpadWritingTextView()
         editor.store = store
         editor.delegate = editor
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        window.rootViewController = UIViewController()
+        editor.frame = window.bounds
+        window.rootViewController?.view.addSubview(editor)
+        window.makeKeyAndVisible()
+        defer { editor.hideTools(); window.isHidden = true }
         editor.apply(mode: .text, fontSize: 16, palette: .light)
+        XCTAssertNotNil(editor.textLayoutManager)
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
         editor.apply(mode: .ink, fontSize: 16, palette: .light)
         var ink: ScratchpadDrawingAttachment?
@@ -726,15 +735,39 @@ final class ScratchpadImportTests: XCTestCase {
             ink = value as? ScratchpadDrawingAttachment ?? ink
         }
         let attachment = try XCTUnwrap(ink)
-        XCTAssertTrue(attachment.usesTextAttachmentView)
+        if let manager = editor.textLayoutManager, let range = manager.textContentManager?.documentRange {
+            manager.ensureLayout(for: range)
+        }
+        window.layoutIfNeeded()
+        editor.layoutIfNeeded()
+        await Task.yield()
+        let canvas = try XCTUnwrap(attachment.canvas)
+        XCTAssertGreaterThan(canvas.bounds.width, 0)
+        XCTAssertGreaterThanOrEqual(canvas.bounds.height, 240)
         let drawing = PKDrawing(strokes: [PKStroke(
             ink: PKInk(.pen, color: .black),
             path: PKStrokePath(controlPoints: [
                 PKStrokePoint(location: CGPoint(x: 20, y: 30), timeOffset: 0, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2),
                 PKStrokePoint(location: CGPoint(x: 180, y: 420), timeOffset: 1, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
             ], creationDate: Date()))])
-        attachment.drawing = drawing
-        editor.persist(attachment)
+        let originalHeight = canvas.bounds.height
+        canvas.drawing = drawing
+        editor.canvasViewDrawingDidChange(canvas)
+        editor.layoutIfNeeded()
+        XCTAssertGreaterThan(canvas.bounds.height, originalHeight)
+        let canvasFrame = canvas.frame
+        editor.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
+        editor.layoutIfNeeded()
+        XCTAssertEqual(canvas.frame, canvasFrame, "Scrolling must keep ink anchored to its text attachment")
+        // A caret at the region's trailing edge should reopen its existing
+        // canvas rather than inserting another handwriting block.
+        editor.apply(mode: .text, fontSize: 16, palette: .light)
+        editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length + 1, length: 0)
+        editor.apply(mode: .ink, fontSize: 16, palette: .light)
+        let precedingNewline = NSRange(location: ("Before 📝" as NSString).length, length: 1)
+        editor.textStorage.deleteCharacters(in: precedingNewline)
+        editor.textViewDidChange(editor)
+        XCTAssertEqual(ScratchpadWritingReference.references(in: store.text).count, 1)
         let note = store.text
         XCTAssertTrue(note.hasPrefix("Before 📝\n![Handwriting]"))
         XCTAssertTrue(note.hasSuffix("\nAfter"))

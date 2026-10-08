@@ -101,9 +101,8 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
 }
 
 /// UITextView supplies UIKit's text input, selection and Scribble integration.
-/// Inline view attachments reserve real layout space, so typing cannot overlap ink.
-final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPasteDelegate {
-    private let nativeContentStorage: NSTextContentStorage
+/// Inline attachments reserve real layout space, so typing cannot overlap ink.
+final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPasteDelegate, PKCanvasViewDelegate {
     weak var store: ScratchpadStore?
     private(set) var editorContext = ""
     private var appliedText = ""
@@ -118,19 +117,75 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private let nativeUndoManager = UndoManager()
     override var undoManager: UndoManager? { nativeUndoManager }
     private let placeholderLabel = UILabel()
+    private var placingCanvases = false
     var isInking: Bool { mode == .ink && store?.editorAcceptsChanges == true }
 
     init(frame: CGRect = .zero) {
-        let storage = NSTextContentStorage()
-        let manager = NSTextLayoutManager()
-        storage.addTextLayoutManager(manager)
-        let container = NSTextContainer(size: .zero)
-        manager.textContainer = container
-        nativeContentStorage = storage
-        super.init(frame: frame, textContainer: container)
+        // A nil container lets UITextView install its own TextKit 2 layout manager.
+        super.init(frame: frame, textContainer: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("Scratchpad editor is constructed programmatically") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !placingCanvases else { return }
+        placingCanvases = true
+        defer { placingCanvases = false }
+        let attachments = drawingAttachments
+        for canvas in subviews.compactMap({ $0 as? ScratchpadInlineCanvas }) {
+            if !attachments.contains(where: { $0 === canvas.attachment }) {
+                if activeCanvas === canvas { hideTools(); activeCanvas = nil }
+                canvas.removeFromSuperview()
+            }
+        }
+        textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: textStorage.length)) { value, range, _ in
+            guard let attachment = value as? ScratchpadDrawingAttachment,
+                  let start = position(from: beginningOfDocument, offset: range.location),
+                  let end = position(from: start, offset: range.length),
+                  let textRange = textRange(from: start, to: end) else { return }
+            let rect = firstRect(for: textRange)
+            guard !rect.isNull, rect.width > 0, rect.height > 0 else { return }
+            let canvas: ScratchpadInlineCanvas
+            if let existing = attachment.canvas as? ScratchpadInlineCanvas {
+                canvas = existing
+            } else {
+                canvas = ScratchpadInlineCanvas()
+                canvas.attachment = attachment
+                canvas.backgroundColor = .secondarySystemBackground
+                canvas.layer.cornerRadius = 8
+                canvas.drawingPolicy = .pencilOnly
+                canvas.isScrollEnabled = false
+                canvas.drawing = attachment.drawing
+                canvas.tool = PKInkingTool(.pen, color: .label, width: 2)
+                canvas.delegate = self
+                canvas.accessibilityLabel = "Handwriting region. Use Ink mode to draw; type above or below."
+                canvas.accessibilityIdentifier = "scratchpad.drawingRegion"
+                canvas.onReady = { [weak self, weak attachment, weak canvas] in
+                    guard let attachment, attachment.wantsTools, let canvas else { return }
+                    attachment.wantsTools = false
+                    self?.showTools(for: canvas)
+                }
+                attachment.canvas = canvas
+                canvas.frame = rect
+                addSubview(canvas)
+            }
+            canvas.frame = rect
+            canvas.isUserInteractionEnabled = isInking
+        }
+    }
+
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        showTools(for: canvasView)
+    }
+
+    func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        guard let attachment = (canvasView as? ScratchpadInlineCanvas)?.attachment,
+              store?.editorAcceptsChanges == true, canvasView.drawing != attachment.drawing else { return }
+        attachment.drawing = canvasView.drawing
+        invalidateDrawingLayout()
+        persist(attachment)
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -181,10 +236,18 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             attachment.canvas?.isUserInteractionEnabled = nextMode == .ink && store?.editorAcceptsChanges == true
         }
         if nextMode == .ink, previousMode != .ink, !changedContext {
-            let cursor = min(selectedRange.location, max(0, textStorage.length - 1))
-            let existing = textStorage.length > 0 ? textStorage.attribute(.attachment, at: cursor, effectiveRange: nil) as? ScratchpadDrawingAttachment : nil
-            if let canvas = existing?.canvas {
-                showTools(for: canvas)
+            let cursor = min(selectedRange.location, textStorage.length)
+            let existing = [cursor, cursor - 1].lazy.compactMap { position -> ScratchpadDrawingAttachment? in
+                guard position >= 0, position < self.textStorage.length else { return nil }
+                return self.textStorage.attribute(.attachment, at: position, effectiveRange: nil) as? ScratchpadDrawingAttachment
+            }.first
+            if let existing {
+                if let canvas = existing.canvas {
+                    showTools(for: canvas)
+                } else {
+                    existing.wantsTools = true
+                    setNeedsLayout()
+                }
             } else {
                 insertDrawing()
             }
@@ -216,7 +279,6 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
                let bytes = store.attachmentResolver.attachment(for: drawingID)?.data,
                let drawing = try? PKDrawing(data: bytes) {
                 let ink = ScratchpadDrawingAttachment(reference: reference, drawing: drawing)
-                ink.owner = self
                 attachment = ink
             } else if reference.drawingID == nil,
                       let bytes = store.attachmentResolver.attachment(for: reference.imageID)?.data,
@@ -277,11 +339,17 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private func publishText() {
         placeholderLabel.isHidden = textStorage.length > 0
         var markdown = ""
+        var followsAttachment = false
         textStorage.enumerateAttributes(in: NSRange(location: 0, length: textStorage.length)) { attributes, range, _ in
             if let attachment = attributes[.attachment] as? ScratchpadMarkdownAttachment {
+                if !markdown.isEmpty, !markdown.hasSuffix("\n") { markdown += "\n" }
                 markdown += attachment.reference.markdown
+                followsAttachment = true
             } else {
-                markdown += (textStorage.string as NSString).substring(with: range)
+                let text = (textStorage.string as NSString).substring(with: range)
+                if followsAttachment, !text.hasPrefix("\n") { markdown += "\n" }
+                markdown += text
+                followsAttachment = false
             }
         }
         guard store?.acceptEditorChange(markdown, context: editorContext) == true else { return }
@@ -297,7 +365,6 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             markdown: "", imageID: UUID().uuidString.lowercased(), drawingID: UUID().uuidString.lowercased())
         let attachment = ScratchpadDrawingAttachment(reference: reference, drawing: PKDrawing())
         attachment.reference.markdown = ScratchpadWritingReference.drawingMarkdown(imageID: reference.imageID, drawingID: reference.drawingID!)
-        attachment.owner = self
         attachment.wantsTools = true
         let insertion = NSMutableAttributedString(string: position > 0 && (textStorage.string as NSString).substring(with: NSRange(location: position - 1, length: 1)) != "\n" ? "\n" : "")
         insertion.append(NSAttributedString(attachment: attachment))
@@ -339,7 +406,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     func showTools(for canvas: PKCanvasView) {
-        guard store?.editorAcceptsChanges == true else { return }
+        guard isInking else { return }
         if let previous = activeCanvas, previous !== canvas {
             toolPicker.setVisible(false, forFirstResponder: previous)
             toolPicker.removeObserver(previous)
@@ -353,6 +420,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
 
     func hideTools() {
         guard let canvas = activeCanvas else { return }
+        activeCanvas = nil
         toolPicker.setVisible(false, forFirstResponder: canvas)
         toolPicker.removeObserver(canvas)
         canvas.resignFirstResponder()
@@ -378,12 +446,8 @@ class ScratchpadMarkdownAttachment: NSTextAttachment {
 }
 
 final class ScratchpadDrawingAttachment: ScratchpadMarkdownAttachment {
-    static let drawingFileType = "com.ayushdeolasee.vellum.scratchpad-drawing"
-    private static let registerProvider: Void = NSTextAttachment.registerViewProviderClass(
-        ScratchpadDrawingViewProvider.self, forFileType: drawingFileType)
     static let drawingWidth: CGFloat = 600
     var drawing: PKDrawing
-    weak var owner: ScratchpadWritingTextView?
     weak var canvas: PKCanvasView?
     var wantsTools = false
     var drawingHeight: CGFloat {
@@ -392,82 +456,29 @@ final class ScratchpadDrawingAttachment: ScratchpadMarkdownAttachment {
     }
 
     init(reference: ScratchpadWritingReference, drawing: PKDrawing) {
-        _ = Self.registerProvider
         self.drawing = drawing
         super.init(reference: reference)
-        fileType = Self.drawingFileType
-        allowsTextAttachmentView = true
+        allowsTextAttachmentView = false
     }
 
     required init?(coder: NSCoder) { fatalError("Scratchpad drawings are restored from attachments") }
+
+    override func image(for imageBounds: CGRect, attributes: [NSAttributedString.Key: Any],
+                        location: any NSTextLocation, textContainer: NSTextContainer?) -> UIImage? {
+        // The canvas supplies the drawing. Suppress UIKit's generic file icon
+        // for a custom attachment type with no image contents.
+        nil
+    }
 
     override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,
                                    textContainer: NSTextContainer?, proposedLineFragment: CGRect, position: CGPoint) -> CGRect {
         let width = max(100, proposedLineFragment.width)
         return CGRect(x: 0, y: 0, width: width, height: max(240, drawingHeight * width / Self.drawingWidth))
     }
-
-    override func viewProvider(for parentView: UIView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
-        ScratchpadDrawingViewProvider(textAttachment: self, parentView: parentView,
-                                      textLayoutManager: textContainer?.textLayoutManager, location: location)
-    }
-}
-
-/// UIKit invokes attachment-view creation on the UI thread, although this
-/// Objective-C override has no actor annotation. Only that callback crosses
-/// into the main actor; the provider is never sent to drawing worker tasks.
-final class ScratchpadDrawingViewProvider: NSTextAttachmentViewProvider, PKCanvasViewDelegate {
-    override func loadView() {
-        nonisolated(unsafe) let provider = self
-        MainActor.assumeIsolated { provider.makeCanvas() }
-    }
-
-    @MainActor
-    private func makeCanvas() {
-        guard let attachment = textAttachment as? ScratchpadDrawingAttachment else { return }
-        let canvas = ScratchpadInlineCanvas()
-        canvas.onReady = { [weak attachment, weak canvas] in
-            guard let attachment, attachment.wantsTools, let canvas else { return }
-            attachment.wantsTools = false
-            attachment.owner?.showTools(for: canvas)
-        }
-        canvas.backgroundColor = .secondarySystemBackground
-        canvas.layer.cornerRadius = 8
-        canvas.isOpaque = false
-        canvas.drawingPolicy = .pencilOnly
-        canvas.isScrollEnabled = false
-        canvas.drawing = attachment.drawing
-        canvas.tool = PKInkingTool(.pen, color: .label, width: 2)
-        canvas.delegate = self
-        canvas.accessibilityLabel = "Handwriting region. Use Ink mode to draw; type above or below."
-        canvas.accessibilityIdentifier = "scratchpad.drawingRegion"
-        canvas.isUserInteractionEnabled = attachment.owner?.isInking == true
-        attachment.canvas = canvas
-        view = canvas
-    }
-
-    override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,
-                                   textContainer: NSTextContainer?, proposedLineFragment: CGRect, position: CGPoint) -> CGRect {
-        guard let attachment = textAttachment as? ScratchpadDrawingAttachment else { return .zero }
-        return attachment.attachmentBounds(for: attributes, location: location, textContainer: textContainer,
-                                           proposedLineFragment: proposedLineFragment, position: position)
-    }
-
-    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
-        (textAttachment as? ScratchpadDrawingAttachment)?.owner?.showTools(for: canvasView)
-    }
-
-    func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-        guard let attachment = textAttachment as? ScratchpadDrawingAttachment,
-              attachment.owner?.store?.editorAcceptsChanges == true,
-              canvasView.drawing != attachment.drawing else { return }
-        attachment.drawing = canvasView.drawing
-        attachment.owner?.invalidateDrawingLayout()
-        attachment.owner?.persist(attachment)
-    }
 }
 
 private final class ScratchpadInlineCanvas: PKCanvasView {
+    weak var attachment: ScratchpadDrawingAttachment?
     var onReady: (() -> Void)?
 
     override func didMoveToWindow() {
