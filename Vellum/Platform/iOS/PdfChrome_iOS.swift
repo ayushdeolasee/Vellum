@@ -343,6 +343,11 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(appStore.document == nil || appStore.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             // Offered for BOTH PDF and web documents. Shorter title than the
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
             // compact iPad menu — but the accessibility identifier is identical
