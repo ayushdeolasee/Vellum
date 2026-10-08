@@ -103,6 +103,9 @@ targets:
       base:
         CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
         ENABLE_APP_SANDBOX: "NO"
+      configs:
+        Debug:
+          REGISTER_APP_GROUPS: "YES"
   VellumMacShare:
     type: app-extension
     platform: macOS
@@ -335,3 +338,4 @@ targets:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev.widgets
           APP_DISPLAY_NAME: Vellum Widgets Dev
+          REGISTER_APP_GROUPS: "YES"
