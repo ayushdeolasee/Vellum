@@ -379,6 +379,8 @@ class ScratchpadMarkdownAttachment: NSTextAttachment {
 
 final class ScratchpadDrawingAttachment: ScratchpadMarkdownAttachment {
     static let drawingFileType = "com.ayushdeolasee.vellum.scratchpad-drawing"
+    private static let registerProvider: Void = NSTextAttachment.registerViewProviderClass(
+        ScratchpadDrawingViewProvider.self, forFileType: drawingFileType)
     static let drawingWidth: CGFloat = 600
     var drawing: PKDrawing
     weak var owner: ScratchpadWritingTextView?
@@ -390,6 +392,7 @@ final class ScratchpadDrawingAttachment: ScratchpadMarkdownAttachment {
     }
 
     init(reference: ScratchpadWritingReference, drawing: PKDrawing) {
+        _ = Self.registerProvider
         self.drawing = drawing
         super.init(reference: reference)
         fileType = Self.drawingFileType
@@ -441,7 +444,6 @@ final class ScratchpadDrawingViewProvider: NSTextAttachmentViewProvider, PKCanva
         canvas.isUserInteractionEnabled = attachment.owner?.isInking == true
         attachment.canvas = canvas
         view = canvas
-        tracksTextAttachmentViewBounds = true
     }
 
     override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,

@@ -726,6 +726,7 @@ final class ScratchpadImportTests: XCTestCase {
             ink = value as? ScratchpadDrawingAttachment ?? ink
         }
         let attachment = try XCTUnwrap(ink)
+        XCTAssertTrue(attachment.usesTextAttachmentView)
         let drawing = PKDrawing(strokes: [PKStroke(
             ink: PKInk(.pen, color: .black),
             path: PKStrokePath(controlPoints: [
