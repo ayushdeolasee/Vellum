@@ -808,7 +808,7 @@ struct AiPanel_iOS: View {
                 .onSubmit(submit)
                 .focused($composerFocused)
                 .padding(.horizontal, 4)
-                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                 .accessibilityIdentifier("aiPanel.composer")
                 // A native text input can consume the UIKit drop before the
                 // panel-level destination sees it. Register the same handler
