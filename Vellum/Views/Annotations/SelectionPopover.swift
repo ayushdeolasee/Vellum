@@ -12,6 +12,9 @@ import AppKit
 struct SelectionPopover: View {
     let selection: PdfTextSelection
     var availableWidth: CGFloat? = nil
+    #if os(iOS)
+    let onDictionaryLookup: (String) -> Void
+    #endif
     let onClose: () -> Void
 
     @Environment(AppStore.self) private var app
@@ -151,10 +154,13 @@ struct SelectionPopover: View {
         .accessibilityLabel("Add note")
         .accessibilityIdentifier("selectionPopover.addNote")
 
-        #if os(macOS)
         Button {
+            #if os(iOS)
+            onDictionaryLookup(selection.text)
+            #else
             DictionaryLookup.show(selection.text)
             onClose()
+            #endif
         } label: {
             Image(systemName: "book.closed")
                 .font(.system(size: 12))
@@ -162,14 +168,18 @@ struct SelectionPopover: View {
                 .foregroundStyle(dictionaryButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 .background(dictionaryButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
                 .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { dictionaryButtonHovering = $0 }
         .help("Look Up in Dictionary")
         .accessibilityLabel("Look Up in Dictionary")
         .accessibilityIdentifier("selectionPopover.dictionaryLookup")
-        #endif
 
         Button(action: handleAskAi) {
             Image(systemName: "sparkles")
