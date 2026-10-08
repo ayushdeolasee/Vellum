@@ -652,6 +652,9 @@ final class WebViewerController_iOS: NSObject {
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
     @ObservationIgnored private var supportsPositions = false
+    /// Exact content-script PAGE_URL; normalized storage identities cannot be
+    /// used for the script's queued ink-jump ownership check.
+    @ObservationIgnored private var inkNavigationPageURL: String?
     // Auto-archive bookkeeping: the URL already archived this mount, and a
     // debounce task so the fullest text extraction wins.
     @ObservationIgnored private var archivedUrl: String?
@@ -956,6 +959,7 @@ final class WebViewerController_iOS: NSObject {
         archivedUrl = nil
         pendingNavUrl = nil
         outgoingNavUrl = nil
+        inkNavigationPageURL = nil
         restoredUrl = nil
         redirectReloadedUrl = nil
         processReloadedUrl = nil
@@ -1713,6 +1717,21 @@ final class WebViewerController_iOS: NSObject {
         )
     }
 
+    /// Reuse the shared ink-position fallback for clusters without text anchors.
+    func scrollToWebInk(docY: CGFloat, documentUrl: String) -> Bool {
+        guard docY.isFinite, attached, pendingNavUrl == nil, outgoingNavUrl == nil,
+              ink?.canDisplayInk == true,
+              let app, let tabId = mountTabId, app.activeTabId == tabId,
+              loadedDocumentUrl == documentUrl, app.document?.pdfPath == documentUrl,
+              initCount > 0, let pageURL = inkNavigationPageURL,
+              (try? WebUrl.normalize(pageURL)) == documentUrl else { return false }
+        post("scroll-to-position", [
+            "inkUrl": pageURL,
+            "inkY": Double(docY),
+        ])
+        return true
+    }
+
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {
         guard supportsPositions else { return false }
         post("scroll-to-position", [
@@ -2160,6 +2179,7 @@ final class WebViewerController_iOS: NSObject {
         }
 
         initCount += 1
+        inkNavigationPageURL = reportedUrl ?? currentDoc.pdfPath
 
         // Re-assert the view scale for the fresh document (MobileSafari does
         // the same on every navigation commit), so a tab restored or rebound

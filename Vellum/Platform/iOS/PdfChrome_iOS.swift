@@ -1199,7 +1199,7 @@ private struct WebInkPagesSection_iOS: View {
                     .padding(.horizontal, 4)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(jumps) { jump in
+                        ForEach(Array(jumps.enumerated()), id: \.element.id) { index, jump in
                             Button {
                                 ink.scrollTo(jump)
                             } label: {
@@ -1207,7 +1207,7 @@ private struct WebInkPagesSection_iOS: View {
                                     Image(systemName: "pencil.and.scribble")
                                         .font(.system(size: 11))
                                         .foregroundStyle(palette.primary)
-                                    Text("p. \(jump.page)")
+                                    Text(jump.page.map { "p. \($0)" } ?? "Location \(index + 1)")
                                         .font(.system(size: 13, weight: .medium))
                                         .monospacedDigit()
                                         .foregroundStyle(palette.foreground)
@@ -1219,7 +1219,9 @@ private struct WebInkPagesSection_iOS: View {
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Handwriting on page \(jump.page). Tap to jump.")
+                            .accessibilityLabel(jump.page.map {
+                                "Handwriting on page \($0). Tap to jump."
+                            } ?? "Handwriting location \(index + 1). Tap to jump.")
                         }
                     }
                     .padding(.horizontal, 4)
