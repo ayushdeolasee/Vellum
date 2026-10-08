@@ -86,6 +86,7 @@
 		14A2C54C29AD1CD63DD1977D /* StorageLocationCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72276AEF5468523548FD8BB7 /* StorageLocationCopy.swift */; };
 		158F9D13B73118720C92C88E /* ReadLaterHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5656DC56874E29C2DCD69B4 /* ReadLaterHTTPClient.swift */; };
 		15B509D29926E16D34EC944A /* VellumWidgetSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */; };
+		161302FB7D23BEF6B21051A5 /* ScratchpadWritingEditor_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05FE3A6F9EA54872DDDC7B46 /* ScratchpadWritingEditor_iOS.swift */; };
 		161CBBC41417C78ECF54C79F /* CapturedUnreadLedgerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1C66603161A0100A404C97 /* CapturedUnreadLedgerTests.swift */; };
 		179624D568F6AF9C1077ECD1 /* LiveTabRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAD71FD3B80CB7EBBFC444F /* LiveTabRuntime.swift */; };
 		17A54FCBDEBE8222691AC2DE /* AiSharingConsentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533005EB4BF21944F7E3A6A6 /* AiSharingConsentSheet.swift */; };
@@ -623,6 +624,7 @@
 		DA77C00DE433BEE5E1C543DF /* IntegrationsCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7E6DE397D8BB5337E35455 /* IntegrationsCache.swift */; };
 		DAFE09C667F2451E05248B6B /* KaTeX_Math-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = B313F26C338D071377D89FE9 /* KaTeX_Math-BoldItalic.woff2 */; };
 		DB49B34BAD564527EF5585A2 /* WebViewerTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C4546D0D679437B876586A /* WebViewerTypes.swift */; };
+		DBD24A29D2F8E8D1E8841BDA /* ScratchpadWritingEditor_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05FE3A6F9EA54872DDDC7B46 /* ScratchpadWritingEditor_iOS.swift */; };
 		DC190B489E12CE0D1218C949 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 0F9E9D97558DCF004997C26D /* SwiftMath */; };
 		DC1C5A05CD05F5849C9F1093 /* IntegrationsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C8DEB50E950BCD7AEA5AB0D /* IntegrationsStore.swift */; };
 		DC431CCC65122069C2E5FAE8 /* ReadLaterOfflineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A6CA191D6D119D7F50EEAF4 /* ReadLaterOfflineStore.swift */; };
@@ -777,6 +779,7 @@
 		03D33C5F37CE04627454515D /* RelocationCoordinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelocationCoordinationTests.swift; sourceTree = "<group>"; };
 		03E209F0AEC418389859234E /* WebPageExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebPageExtractor.swift; sourceTree = "<group>"; };
 		042460BE8BC7FA9B270712D2 /* ReadwiseClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadwiseClient.swift; sourceTree = "<group>"; };
+		05FE3A6F9EA54872DDDC7B46 /* ScratchpadWritingEditor_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadWritingEditor_iOS.swift; sourceTree = "<group>"; };
 		0727CBE4A1E17381964FFF5C /* DocumentPositionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPositionService.swift; sourceTree = "<group>"; };
 		074934F5FBB9734F187AA743 /* PositionClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionClock.swift; sourceTree = "<group>"; };
 		08111ACF12BEE6ACC52F1835 /* SelectableMessageText_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMessageText_macOS.swift; sourceTree = "<group>"; };
@@ -1276,6 +1279,7 @@
 				DA126C184AC445339DBCB04F /* RootShell_iOS.swift */,
 				6040B8B4AEED7AF52B89AE11 /* ScratchOutInk_iOS.swift */,
 				C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */,
+				05FE3A6F9EA54872DDDC7B46 /* ScratchpadWritingEditor_iOS.swift */,
 				195C9706E9FFE2D7F2E21A1C /* SettingsSheet_iOS.swift */,
 				420CF19D0A7F06E577681F53 /* SheetPresence_iOS.swift */,
 				746237EA42F01B2A8B1AF425 /* ShellIdiom_iOS.swift */,
@@ -2458,6 +2462,7 @@
 				8FDF7BE5B341E8B2431FA444 /* ScratchpadPanel_macOS.swift in Sources */,
 				2688D255C06F387795FB1299 /* ScratchpadPersistence.swift in Sources */,
 				24B2706F288C3DDF1941F200 /* ScratchpadStore.swift in Sources */,
+				DBD24A29D2F8E8D1E8841BDA /* ScratchpadWritingEditor_iOS.swift in Sources */,
 				E78BFF377446A5AD393C5D35 /* SecurityScopedBookmark.swift in Sources */,
 				A774E02B238CB7E82E41F62C /* SelectableMessageText.swift in Sources */,
 				07CF97A8901BE87EFE940DC0 /* SelectableMessageText_macOS.swift in Sources */,
@@ -2756,6 +2761,7 @@
 				C9641FD63815356AC3CDC4C2 /* ScratchpadPanel_macOS.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,
 				74FEEDFFEA81B37C496C03F7 /* ScratchpadStore.swift in Sources */,
+				161302FB7D23BEF6B21051A5 /* ScratchpadWritingEditor_iOS.swift in Sources */,
 				29757DBD2CB38B5DF2FA8DE3 /* SecurityScopedBookmark.swift in Sources */,
 				9E702B90F8729B9145F7D31B /* SelectableMessageText.swift in Sources */,
 				8216BBFF8A13CCD56689933B /* SelectableMessageText_macOS.swift in Sources */,

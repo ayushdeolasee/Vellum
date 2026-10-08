@@ -1,5 +1,6 @@
 import UIKit
 import XCTest
+import PencilKit
 @testable import Vellum
 
 // Coverage for the scratchpad image-import feature: the disk attachment store
@@ -699,6 +700,103 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertEqual(container.peek(documentURL(
             root: root, key: firstKey, name: "scratchpad.md")),
             Data("pending first edit".utf8))
+    }
+
+    func testNativeDrawingSurvivesImmediateDocumentSwitchAndClearUndo() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-drawing-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let first = DocumentInfo(kind: .pdf, pdfPath: "/tmp/drawing.pdf", docId: UUID().uuidString.lowercased())
+        let second = DocumentInfo(kind: .pdf, pdfPath: "/tmp/other.pdf", docId: UUID().uuidString.lowercased())
+        let app = appShowing(first, tabID: "drawing-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        defer { store.insertMarkdownHandler = nil }
+        await store.loadForDocument(first).value
+        store.text = "Before 📝\nAfter"
+        let editor = ScratchpadWritingTextView()
+        editor.store = store
+        editor.delegate = editor
+        editor.apply(mode: .text, fontSize: 16, palette: .light)
+        editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
+        editor.apply(mode: .ink, fontSize: 16, palette: .light)
+        var ink: ScratchpadDrawingAttachment?
+        editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
+            ink = value as? ScratchpadDrawingAttachment ?? ink
+        }
+        let attachment = try XCTUnwrap(ink)
+        let drawing = PKDrawing(strokes: [PKStroke(
+            ink: PKInk(.pen, color: .black),
+            path: PKStrokePath(controlPoints: [
+                PKStrokePoint(location: CGPoint(x: 20, y: 30), timeOffset: 0, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2),
+                PKStrokePoint(location: CGPoint(x: 180, y: 420), timeOffset: 1, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+            ], creationDate: Date()))])
+        attachment.drawing = drawing
+        editor.persist(attachment)
+        let note = store.text
+        XCTAssertTrue(note.hasPrefix("Before 📝\n![Handwriting]"))
+        XCTAssertTrue(note.hasSuffix("\nAfter"))
+        XCTAssertGreaterThan(attachment.drawingHeight, 420)
+        app.attachTab(PdfTab(id: "other-tab", document: second, currentPage: 1, numPages: 1,
+                             zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        await store.loadForDocument(second).value
+        XCTAssertTrue(store.text.isEmpty)
+        let key = DocumentIdentity.storageKey(for: first)
+        let drawingID = try XCTUnwrap(attachment.reference.drawingID)
+        let bytes = try XCTUnwrap(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")))
+        XCTAssertEqual(try PKDrawing(data: bytes).strokes.count, 1)
+        XCTAssertNotNil(container.peek(documentURL(root: root, key: key, name: "attachments/\(attachment.reference.imageID).png")))
+        app.attachTab(PdfTab(id: "drawing-tab", document: first, currentPage: 1, numPages: 1,
+                             zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        await store.loadForDocument(first).value
+        XCTAssertEqual(store.text, note)
+        let clear = try XCTUnwrap(store.clearText())
+        await store.flush().value
+        XCTAssertNotNil(store.undoClear(clear))
+        await store.flush().value
+        XCTAssertEqual(store.text, note)
+        XCTAssertEqual(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")), bytes)
+        editor.hideTools()
+    }
+
+    func testDrawingReferenceParserPreservesFencedExamplesAndUnicodeRanges() throws {
+        let preview = UUID().uuidString.lowercased()
+        let ink = UUID().uuidString.lowercased()
+        let reference = ScratchpadWritingReference.drawingMarkdown(imageID: preview, drawingID: ink)
+        let note = "📝 Notes\n\n```markdown\n\(reference)\n```\n\n\(reference)\n\nAfter"
+        let parsed = ScratchpadWritingReference.references(in: note)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed.first?.drawingID, ink)
+        XCTAssertEqual((note as NSString).substring(with: try XCTUnwrap(parsed.first?.range)), reference)
+        XCTAssertEqual(ScratchpadAttachmentStore.referencedIds(in: reference), [preview, ink])
+        let relative = ScratchpadPersistence.schemeToRelative(note) { $0 == ink ? "drawing" : "png" }
+        XCTAssertEqual(ScratchpadPersistence.relativeToScheme(relative), note)
+    }
+
+    func testPendingDrawingUpdateCannotResurrectExternallyDeletedNote() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-drawing-delete-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let document = DocumentInfo(kind: .pdf, pdfPath: "/tmp/drawing-delete.pdf", docId: UUID().uuidString.lowercased())
+        let app = appShowing(document, tabID: "drawing-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        await store.loadForDocument(document).value
+        let id = UUID().uuidString.lowercased()
+        store.text = "<!-- vellum-drawing: vellum-scratchpad://\(id) -->"
+        store.queueAttachmentUpdate(id: id, context: store.editorContext) {
+            [.init(id: id, name: "\(id).drawing", data: Data([1, 2, 3]))]
+        }
+        let key = DocumentIdentity.storageKey(for: document)
+        let token = try XCTUnwrap(store.prepareForExternalDelete(matchingKey: key))
+        await store.awaitAttachmentUpdates()
+        await store.finishExternalDelete(token, succeeded: true)
+        await store.flush().value
+        XCTAssertTrue(store.text.isEmpty)
+        XCTAssertTrue(store.attachmentResolver.snapshot().isEmpty)
+        XCTAssertNil(container.peek(documentURL(root: root, key: key, name: "scratchpad.md")))
     }
 
     // MARK: - Helpers

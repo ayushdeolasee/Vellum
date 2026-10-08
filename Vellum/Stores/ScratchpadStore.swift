@@ -137,6 +137,12 @@ final class ScratchpadStore {
     /// `persistedBaseline`, text, or attachments, so one pane cannot conflict
     /// with its own in-flight save.
     private var flushTail: Task<Void, Never>?
+    /// Drawing serialization/preview work belongs to the same document as the
+    /// stroke that started it. Flush, clear and document teardown join this tail.
+    private var attachmentUpdateTail: Task<Void, Never>?
+    private var pendingAttachmentUpdates: [String: @Sendable () -> [ScratchpadStagedAttachment]] = [:]
+    private var failedAttachmentUpdates: Set<String> = []
+    private(set) var attachmentRevision = 0
     private var stateGeneration = 0
     private(set) var documentLoadGeneration = 0
     private var externalDeleteToken: ScratchpadExternalDeleteToken?
@@ -248,6 +254,8 @@ final class ScratchpadStore {
         document: DocumentInfo?, sessionId: String?, loadGeneration: Int
     ) async {
         guard let coordinator else { return }
+        await awaitAttachmentUpdates()
+        guard loadGeneration == documentLoadGeneration else { return }
         stateGeneration &+= 1
         let generation = stateGeneration
         isPersistencePaused = true
@@ -374,6 +382,50 @@ final class ScratchpadStore {
     /// missed a page or was too small — so a failed crop isn't silent.
     func warnRegionCaptureFailed() {
         showWarning("Couldn't capture that region. Drag a larger rectangle over the page.")
+    }
+
+    /// Stage native drawing bytes and previews off the main actor before the
+    /// existing save lane publishes their Markdown references.
+    func queueAttachmentUpdate(
+        id: String,
+        context: String,
+        operation: @escaping @Sendable () -> [ScratchpadStagedAttachment]
+    ) {
+        guard coordinator != nil, context == editorContext, editorAcceptsChanges else { return }
+        let generation = stateGeneration
+        pendingAttachmentUpdates[id] = operation
+        scheduleSave()
+        guard attachmentUpdateTail == nil else { return }
+        attachmentUpdateTail = Task { [weak self] in
+            guard let self else { return }
+            defer { self.attachmentUpdateTail = nil }
+            while let (id, operation) = self.pendingAttachmentUpdates.first {
+                self.pendingAttachmentUpdates.removeValue(forKey: id)
+                let attachments = await Task.detached(priority: .userInitiated, operation: operation).value
+                guard generation == self.stateGeneration, !self.isPersistencePaused else {
+                    self.pendingAttachmentUpdates.removeAll()
+                    return
+                }
+                // A newer stroke replaces work queued for the same region.
+                guard self.pendingAttachmentUpdates[id] == nil else { continue }
+                guard !attachments.isEmpty else {
+                    self.failedAttachmentUpdates.insert(id)
+                    self.showWarning("Couldn't prepare this drawing for saving. Your strokes remain open; try editing the region again.")
+                    continue
+                }
+                self.failedAttachmentUpdates.remove(id)
+                let referenced = ScratchpadAttachmentStore.referencedIds(in: self.text)
+                for attachment in attachments where referenced.contains(attachment.id) {
+                    self.attachmentResolver.upsert(attachment)
+                    self.dirtyAttachmentNames.insert(attachment.name)
+                }
+                self.attachmentRevision &+= 1
+            }
+        }
+    }
+
+    func awaitAttachmentUpdates() async {
+        await attachmentUpdateTail?.value
     }
 
     /// Display `message` in the panel banner for a few seconds; re-showing
@@ -765,6 +817,7 @@ final class ScratchpadStore {
         let task = Task { [weak self] in
             await previous?.value
             guard let self else { return }
+            await self.awaitAttachmentUpdates()
             await self.flushCoordinated()
         }
         flushTail = task
@@ -835,6 +888,10 @@ final class ScratchpadStore {
             }
         }
 
+        await awaitAttachmentUpdates()
+        guard generation == stateGeneration, currentSessionId == sessionId,
+              currentKey == key, !isPersistencePaused,
+              failedAttachmentUpdates.isDisjoint(with: ScratchpadAttachmentStore.referencedIds(in: text)) else { return }
         let attachments = attachmentResolver.snapshot()
         let dirty = dirtyAttachmentNames
         let expectedBaseline = persistedBaseline
@@ -982,6 +1039,7 @@ final class ScratchpadStore {
 
     private func clearCoordinatedChanges() {
         hasCoordinatedChanges = false
+        failedAttachmentUpdates.removeAll()
         dirtyAttachmentNames.removeAll()
         pendingMarkdownInsertions.removeAll()
     }
