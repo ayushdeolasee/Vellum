@@ -360,7 +360,7 @@ final class DocumentActionsTests: XCTestCase {
                 pageCount: 1, lastPage: nil, loadingPolicy: "live-first",
                 snapshotHtml: html, pagesJson: pages, assets: [], assetsSkipped: 0)
             let archive = tempDirectory.appendingPathComponent("\(fixture.name).vellumweb")
-            try WebArchive.writeArchive(to: archive, manifest: manifest, snapshotHtml: html,
+            _ = try WebArchive.writeArchive(to: archive, manifest: manifest, snapshotHtml: html,
                                        assets: [], pagesJson: pages, annotations: [])
             // Import into a store with no local record to supply title ownership.
             WebLibrary.storeDirOverride = tempDirectory.appendingPathComponent("import-\(fixture.name)")
