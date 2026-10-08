@@ -483,6 +483,11 @@ struct PhoneReaderBottomBar: View {
                 } label: { Label("Export a Copy…", systemImage: "square.and.arrow.up") }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(app.document == nil || app.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             if app.document != nil {
                 Button { showExportBundle = true } label: {
                     Label("Export with Notes…", systemImage: "arrow.up.doc")
