@@ -23,12 +23,29 @@ struct TabBarView: View {
                 // active tab uses the shared SelectionStyle surface rather than
                 // stacking its own glass pane on the `.bar` material.
                 HStack(spacing: 6) {
+                    if appStore.tabs.isEmpty {
+                        HStack(spacing: 6) {
+                            if workspace.focusedPaneId == paneId {
+                                Circle().fill(palette.primary).frame(width: 6, height: 6)
+                                    .accessibilityHidden(true)
+                            }
+                            Text("Library").font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .selectionSurface(
+                            selected: true, accented: workspace.focusedPaneId == paneId,
+                            in: Capsule(), palette: palette)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Library")
+                        .accessibilityValue(workspace.focusedPaneId == paneId ? "Focused pane" : "")
+                    }
                     ForEach(appStore.tabs) { tab in
                         TabItem(
                             tab: tab,
                             paneId: paneId,
                             isActive: tab.id == appStore.activeTabId,
-                            onActivate: { appStore.activateTab(tab.id) },
+                            onActivate: { workspace.activateWorkspaceTab(paneId: paneId, tabId: tab.id) },
                             onClose: { Task { await appStore.closeTab(tab.id) } },
                             onCloseOthers: { Task { await appStore.closeOtherTabs(keeping: tab.id) } },
                             onCloseRight: { Task { await appStore.closeTabsToRight(of: tab.id) } },
@@ -187,13 +204,28 @@ private struct TabItem: View {
         TabPresentation.title(for: tab)
     }
 
+    private var isPaneFocused: Bool {
+        !workspace.isSplit || workspace.focusedPaneId == paneId
+    }
+
+    private var showsPaneFocus: Bool { workspace.isSplit && isPaneFocused && isActive }
+
     var body: some View {
         HStack(spacing: 6) {
             Button(action: onActivate) {
                 HStack(spacing: 6) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 12))
-                        .foregroundStyle(isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                    Group {
+                        if showsPaneFocus {
+                            Circle().fill(palette.primary).frame(width: 6, height: 6)
+                        } else {
+                            Image(systemName: iconName)
+                                .font(.system(size: 12))
+                                .foregroundStyle(isActive && isPaneFocused
+                                    ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .frame(width: 12, height: 12)
+                    .accessibilityHidden(true)
                     Text(label)
                         .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                         .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
@@ -213,6 +245,7 @@ private struct TabItem: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(label)
+            .accessibilityValue(showsPaneFocus ? "Focused pane" : "")
             .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
             .accessibilityIdentifier("tabBar.tab.\(tab.id)")
 
@@ -234,6 +267,7 @@ private struct TabItem: View {
         .selectionSurface(
             selected: isActive,
             hovering: hovering,
+            accented: isPaneFocused,
             in: Capsule(),
             palette: palette)
         .onHover { hovering = $0 }
