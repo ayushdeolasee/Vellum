@@ -37,7 +37,7 @@ enum AppDefaults {
     static func withDefaults<R>(
         _ defaults: UserDefaults,
         isolation: isolated (any Actor)? = #isolation,
-        operation: () async throws -> R
+        operation: nonisolated(nonsending) () async throws -> R
     ) async rethrows -> R {
         try await $override.withValue(Box(defaults: defaults), operation: operation)
     }
