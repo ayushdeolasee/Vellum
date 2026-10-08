@@ -726,10 +726,10 @@ final class ScratchpadImportTests: XCTestCase {
         window.rootViewController?.view.addSubview(editor)
         window.makeKeyAndVisible()
         defer { editor.hideTools(); window.isHidden = true }
-        editor.apply(mode: .text, fontSize: 16, palette: .light)
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         XCTAssertNotNil(editor.textLayoutManager)
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
-        editor.apply(mode: .ink, fontSize: 16, palette: .light)
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
         var ink: ScratchpadDrawingAttachment?
         editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
             ink = value as? ScratchpadDrawingAttachment ?? ink
@@ -744,26 +744,29 @@ final class ScratchpadImportTests: XCTestCase {
         let canvas = try XCTUnwrap(attachment.canvas)
         XCTAssertGreaterThan(canvas.bounds.width, 0)
         XCTAssertGreaterThanOrEqual(canvas.bounds.height, 240)
+        let initialHeight = canvas.bounds.height
+        editor.extendDrawing(canvas, at: CGPoint(x: 40, y: initialHeight - 10))
+        editor.layoutIfNeeded()
+        XCTAssertGreaterThan(canvas.bounds.height, initialHeight, "Make room before an in-progress stroke reaches the edge")
         let drawing = PKDrawing(strokes: [PKStroke(
             ink: PKInk(.pen, color: .black),
             path: PKStrokePath(controlPoints: [
                 PKStrokePoint(location: CGPoint(x: 20, y: 30), timeOffset: 0, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2),
                 PKStrokePoint(location: CGPoint(x: 180, y: 420), timeOffset: 1, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
             ], creationDate: Date()))])
-        let originalHeight = canvas.bounds.height
         canvas.drawing = drawing
         editor.canvasViewDrawingDidChange(canvas)
         editor.layoutIfNeeded()
-        XCTAssertGreaterThan(canvas.bounds.height, originalHeight)
+        XCTAssertGreaterThan(canvas.bounds.height, initialHeight)
         let canvasFrame = canvas.frame
         editor.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
         editor.layoutIfNeeded()
         XCTAssertEqual(canvas.frame, canvasFrame, "Scrolling must keep ink anchored to its text attachment")
         // A caret at the region's trailing edge should reopen its existing
         // canvas rather than inserting another handwriting block.
-        editor.apply(mode: .text, fontSize: 16, palette: .light)
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length + 1, length: 0)
-        editor.apply(mode: .ink, fontSize: 16, palette: .light)
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
         let precedingNewline = NSRange(location: ("Before 📝" as NSString).length, length: 1)
         editor.textStorage.deleteCharacters(in: precedingNewline)
         editor.textViewDidChange(editor)
@@ -785,7 +788,7 @@ final class ScratchpadImportTests: XCTestCase {
                              zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
         await store.loadForDocument(first).value
         XCTAssertEqual(store.text, note)
-        editor.apply(mode: .text, fontSize: 16, palette: .light)
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         let clear = try XCTUnwrap(store.clearText())
         editor.undoManager?.registerUndo(withTarget: store) { target in
             _ = target.undoClear(clear)
@@ -798,6 +801,31 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertEqual(store.text, note)
         XCTAssertEqual(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")), bytes)
         editor.hideTools()
+        // The same native input retains Markdown source while rendering math
+        // and formatting; the selected paragraph reveals source for editing.
+        editor.resignFirstResponder()
+        editor.selectedRange = NSRange(location: 0, length: 0)
+        let markdown = "# Topic 📝\n\n**Bold** and *italic*.\n\n$x^2$\n\n`$literal$`"
+        store.text = markdown
+        editor.applyContent()
+        XCTAssertEqual(ScratchpadMarkdownStyler.source(in: editor.textStorage), markdown)
+        let mathRange = (markdown as NSString).range(of: "$x^2$")
+        let math = try XCTUnwrap(editor.textStorage.attribute(.attachment, at: mathRange.location, effectiveRange: nil) as? NSTextAttachment)
+        editor.layoutIfNeeded()
+        let mathStart = try XCTUnwrap(editor.position(from: editor.beginningOfDocument, offset: mathRange.location))
+        let mathEnd = try XCTUnwrap(editor.position(from: mathStart, offset: 1))
+        let mathTextRange = try XCTUnwrap(editor.textRange(from: mathStart, to: mathEnd))
+        XCTAssertEqual(editor.firstRect(for: mathTextRange).width, math.bounds.width, accuracy: 0.5)
+        XCTAssertNil(editor.textStorage.attribute(.attachment, at: (markdown as NSString).range(of: "$literal$").location, effectiveRange: nil))
+        editor.textViewDidChange(editor)
+        XCTAssertEqual(store.text, markdown)
+        editor.selectedRange = NSRange(location: mathRange.location + 2, length: 0)
+        editor.becomeFirstResponder()
+        editor.textViewDidChangeSelection(editor)
+        XCTAssertNil(editor.textStorage.attribute(.attachment, at: mathRange.location, effectiveRange: nil))
+        XCTAssertEqual(editor.textStorage.string, markdown)
+        editor.resignFirstResponder()
+        await store.flush().value
     }
 
     func testDrawingReferenceParserPreservesFencedExamplesAndUnicodeRanges() throws {

@@ -125,6 +125,7 @@
 		203A3B5B5C90072CBE4085CB /* SyncedContainerReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 855C0D42BC41F2C175BA8F81 /* SyncedContainerReadinessTests.swift */; };
 		2081C256CB4F77AC06206604 /* DocumentAccessResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0318D83DDF4368982EF97CD /* DocumentAccessResolver.swift */; };
 		21C5244660D9DDC7CF6BA218 /* AiTranscriptFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 372DC33960E8DFA9E3444D41 /* AiTranscriptFollowTests.swift */; };
+		21F27DC2CC8F713F429C2E04 /* ScratchpadMarkdownStyler_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516180EA7CB6A65FE5DF234B /* ScratchpadMarkdownStyler_iOS.swift */; };
 		22AF5CEF40F9C905992B2D35 /* ShortcutRouter_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCD3CD51FA59977E52683DB3 /* ShortcutRouter_iOS.swift */; };
 		2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54417DBF142FD33E6B2F6672 /* SettingsView.swift */; };
 		249CCA82E8B519D78426C055 /* PageTextCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5513F929B10D107AED515D1E /* PageTextCache.swift */; };
@@ -213,6 +214,7 @@
 		4254F0BE577C113D920024C9 /* DocumentAccessBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FACFDED0229C75659621FEE /* DocumentAccessBookmarkStore.swift */; };
 		42BD28D226EFA7D32EF3E989 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6A1C7C070C3B74DDAD119B9D /* PrivacyInfo.xcprivacy */; };
 		43C780BABA587B2775DFC01E /* StorageInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F3FC8BBC540C8F18FE3B31 /* StorageInventory.swift */; };
+		4490E12B60BFEB870801E2E3 /* ScratchpadMarkdownStyler_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516180EA7CB6A65FE5DF234B /* ScratchpadMarkdownStyler_iOS.swift */; };
 		44D261051D7E8718BB8843F9 /* StorageIsolationTrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B59386B6B73BC39CE837196 /* StorageIsolationTrait.swift */; };
 		4554D74619804C88BA0BFADD /* GeminiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C96AA3D078A0E0EE50B92 /* GeminiClient.swift */; };
 		45629F4BBD2AE0E0C9CAF397 /* AiSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4DE459571959DABFA99D4BB /* AiSettingsPanel.swift */; };
@@ -889,6 +891,7 @@
 		504DC8725E6198531EC21429 /* PageTextPersister.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageTextPersister.swift; sourceTree = "<group>"; };
 		511B978E41D84CD3B0C24FCB /* KaTeX_Size3-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size3-Regular.woff2"; sourceTree = "<group>"; };
 		513C2EB6348307883B650814 /* PdfViewerPreparation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerPreparation.swift; sourceTree = "<group>"; };
+		516180EA7CB6A65FE5DF234B /* ScratchpadMarkdownStyler_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchpadMarkdownStyler_iOS.swift; sourceTree = "<group>"; };
 		52144079480A9AD498001EC2 /* IntegrationPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationPreferences.swift; sourceTree = "<group>"; };
 		524641B76B46DE4D791F4E6A /* PaneTreeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTreeTests.swift; sourceTree = "<group>"; };
 		529B3D1901669D3F00BBCF74 /* KaTeX_Script-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Script-Regular.woff2"; sourceTree = "<group>"; };
@@ -1278,6 +1281,7 @@
 				2740411A060E87E62C9BEDB5 /* RenameDocumentSheet_iOS.swift */,
 				DA126C184AC445339DBCB04F /* RootShell_iOS.swift */,
 				6040B8B4AEED7AF52B89AE11 /* ScratchOutInk_iOS.swift */,
+				516180EA7CB6A65FE5DF234B /* ScratchpadMarkdownStyler_iOS.swift */,
 				C25E50ECC9D39C4AF827C18D /* ScratchpadPanel_iOS.swift */,
 				05FE3A6F9EA54872DDDC7B46 /* ScratchpadWritingEditor_iOS.swift */,
 				195C9706E9FFE2D7F2E21A1C /* SettingsSheet_iOS.swift */,
@@ -2458,6 +2462,7 @@
 				0140E7EB39BCE9CA91C1D1B4 /* ScratchOutRecognizer.swift in Sources */,
 				E2B8207D7A7660B264FEC83E /* ScratchpadDrop_macOS.swift in Sources */,
 				E481A5799E9ACBC37BDCAF1E /* ScratchpadMarkdownExporter.swift in Sources */,
+				4490E12B60BFEB870801E2E3 /* ScratchpadMarkdownStyler_iOS.swift in Sources */,
 				6DA01497B4E058B2932E4826 /* ScratchpadPanel_iOS.swift in Sources */,
 				8FDF7BE5B341E8B2431FA444 /* ScratchpadPanel_macOS.swift in Sources */,
 				2688D255C06F387795FB1299 /* ScratchpadPersistence.swift in Sources */,
@@ -2757,6 +2762,7 @@
 				13BB407EB986D9510A89DBB9 /* ScratchOutRecognizer.swift in Sources */,
 				D60910465B35CE134EBAF4A5 /* ScratchpadDrop_macOS.swift in Sources */,
 				C8231E85A8CE98CFF5596DF5 /* ScratchpadMarkdownExporter.swift in Sources */,
+				21F27DC2CC8F713F429C2E04 /* ScratchpadMarkdownStyler_iOS.swift in Sources */,
 				C4FA78D55C7E718218C43A3B /* ScratchpadPanel_iOS.swift in Sources */,
 				C9641FD63815356AC3CDC4C2 /* ScratchpadPanel_macOS.swift in Sources */,
 				AF8BDBA91282CA03F019C0F5 /* ScratchpadPersistence.swift in Sources */,

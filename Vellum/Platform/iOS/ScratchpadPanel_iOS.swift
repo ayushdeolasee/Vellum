@@ -69,7 +69,7 @@ struct ScratchpadPanel: View {
 
     @State private var showsExportOptions = false
     @State private var exportFeedback: ExportFeedback?
-    @State private var writingMode: ScratchpadWritingMode = .text
+    @State private var pencilEnabled = false
 
     /// True only while a capture *this* panel armed is in flight — the AI panel
     /// arms the same `.snapshotRegion` mode, and its crop must not light up the
@@ -84,9 +84,9 @@ struct ScratchpadPanel: View {
         @Bindable var store = scratchpadStore
         return VStack(spacing: 0) {
             header
-            if UIDevice.current.userInterfaceIdiom == .pad, writingMode != .markdown {
+            if UIDevice.current.userInterfaceIdiom == .pad {
                 ScratchpadWritingEditor(store: scratchpadStore,
-                                        mode: writingMode,
+                                        pencilEnabled: $pencilEnabled,
                                         attachmentRevision: scratchpadStore.attachmentRevision,
                                         fontSize: workspace.sidebarFontSize,
                                         palette: palette)
@@ -125,7 +125,7 @@ struct ScratchpadPanel: View {
         .animation(.easeInOut(duration: 0.2), value: scratchpadStore.dropWarning)
         .animation(.easeInOut(duration: 0.2), value: exportFeedback)
         .onChange(of: scratchpadStore.editorContext) { _, _ in
-            if writingMode == .ink { writingMode = .text }
+            pencilEnabled = false
         }
         // Accept any drag so a non-image drop reaches `handleDrop` and can be
         // explained, rather than silently rejected. (The WebView covers the
@@ -191,22 +191,8 @@ struct ScratchpadPanel: View {
     }
 
     private var header: some View {
-        VStack(spacing: 0) {
-            headerActions
-            if UIDevice.current.userInterfaceIdiom == .pad {
-                Picker("Scratchpad input", selection: $writingMode) {
-                    Label("Text", systemImage: "character.cursor.ibeam").tag(ScratchpadWritingMode.text)
-                    Label("Ink", systemImage: "pencil.tip").tag(ScratchpadWritingMode.ink)
-                    Text("Markdown").tag(ScratchpadWritingMode.markdown)
-                }
-                .pickerStyle(.segmented)
-                .disabled(!scratchpadStore.editorAcceptsChanges)
-                .accessibilityIdentifier("scratchpad.inputMode")
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-            }
-        }
-        .overlay(alignment: .bottom) { Divider() }
+        headerActions
+            .overlay(alignment: .bottom) { Divider() }
     }
 
     private var headerActions: some View {
@@ -222,6 +208,18 @@ struct ScratchpadPanel: View {
             }
             .layoutPriority(1)
             Spacer(minLength: 8)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                IconButton(
+                    variant: pencilEnabled ? .active : .ghost,
+                    help: pencilEnabled ? "Finish handwriting" : "Write with Apple Pencil",
+                    disabled: !scratchpadStore.editorAcceptsChanges,
+                    action: { pencilEnabled.toggle() }
+                ) {
+                    Image(systemName: "pencil.tip").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.pencil")
+                .accessibilityAddTraits(pencilEnabled ? .isSelected : [])
+            }
             if appStore.document != nil {
                 IconButton(
                     variant: isCapturingRegion ? .active : .ghost,
