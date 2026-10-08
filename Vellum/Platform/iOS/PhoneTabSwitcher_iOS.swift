@@ -63,6 +63,8 @@ enum PhoneTabSwitcherLayout {
 /// language.
 struct PhoneTabSwitcher_iOS: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     /// The shell, for the three transitions this screen can cause: open a tab,
     /// go Home, dismiss. It owns `switcherPresented`, so the screen never
@@ -80,6 +82,14 @@ struct PhoneTabSwitcher_iOS: View {
     /// presents it. Same discipline as `PhoneInspectorSheet_iOS`.
     let themeStore: ThemeStore
 
+    @State private var renamingTab: RenameTarget?
+
+    private struct RenameTarget: Identifiable {
+        let tab: PdfTab
+        let binding: DocumentBinding
+        var id: String { tab.id }
+    }
+
     private var palette: ThemePalette { themeStore.palette }
 
     /// Rebuilt on every body pass, which is what keeps titles and page numbers
@@ -88,6 +98,23 @@ struct PhoneTabSwitcher_iOS: View {
     private var cards: [PhoneTabCard] {
         PhoneTabCardBuilder.cards(
             tabs: app.tabs, activeTabId: app.activeTabId, isResident: isResident)
+    }
+
+    private var searchNeedle: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Search stored metadata only. Build cards before filtering so duplicate
+    /// labels keep their full-list ordinals and each card keeps its tab identity.
+    private var filteredCards: [PhoneTabCard] {
+        let allCards = cards
+        let needle = searchNeedle
+        guard !needle.isEmpty else { return allCards }
+        let matchingIds = Set(app.tabs.filter { tab in
+            PhoneTabCardBuilder.title(for: tab).localizedStandardContains(needle)
+                || (tab.document?.pdfPath.localizedStandardContains(needle) ?? false)
+        }.map(\.id))
+        return allCards.filter { matchingIds.contains($0.id) }
     }
 
     /// Is this tab still backed by live native state?
@@ -104,33 +131,59 @@ struct PhoneTabSwitcher_iOS: View {
     }
 
     var body: some View {
+        let visibleCards = filteredCards
         ScrollView {
-            LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
-                ForEach(cards) { card in
-                    PhoneTabCardView(
-                        card: card,
-                        palette: palette,
-                        thumbnailRevision: thumbnailRevision(for: card),
-                        loadThumbnail: { await thumbnail(for: card) },
-                        open: { open(card) },
-                        close: { close(card) })
+            if visibleCards.isEmpty {
+                emptyState
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+            } else {
+                LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
+                    ForEach(visibleCards) { card in
+                        ZStack(alignment: .topLeading) {
+                            PhoneTabCardView(
+                                card: card,
+                                palette: palette,
+                                thumbnailRevision: thumbnailRevision(for: card),
+                                loadThumbnail: { await thumbnail(for: card) },
+                                open: { open(card) },
+                                close: { close(card) },
+                                moveEarlier: canMove(card, by: -1) ? { app.moveTab(card.id, by: -1) } : nil,
+                                moveLater: canMove(card, by: 1) ? { app.moveTab(card.id, by: 1) } : nil)
+                                .contextMenu { tabActions(for: card) }
+                            tabActionsMenu(for: card)
+                        }
+                    }
                 }
+                .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
+                .padding(.top, PhoneTabSwitcherLayout.gutter)
+                .padding(.bottom, PhoneTabSwitcherLayout.rowGap)
             }
-            .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
-            .padding(.top, PhoneTabSwitcherLayout.gutter)
-            .padding(.bottom, PhoneTabSwitcherLayout.rowGap)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .overlay { if cards.isEmpty { emptyState } }
+        .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well.ignoresSafeArea())
         // The controls are an inset rather than an overlay so the last row of
         // cards can be scrolled clear of them.
+        .safeAreaInset(edge: .top, spacing: 0) { searchField }
         .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
         .environment(\.palette, palette)
         .preferredColorScheme(themeStore.colorScheme)
         .tint(palette.primary)
         .accessibilityIdentifier("phone.tabs")
+        .sheet(item: $renamingTab) { target in
+            RenameDocumentSheet_iOS(
+                currentTitle: target.tab.document?.title ?? "",
+                fallbackName: TabPresentation.fallbackName(for: target.tab),
+                commit: { newTitle in
+                    Task {
+                        guard app.isCurrentDocumentBinding(target.binding) else { return }
+                        await app.renameDocument(tabId: target.id, title: newTitle)
+                    }
+                })
+                .interactiveDismissDisabled()
+        }
     }
 
     /// Two page-like cards at normal sizes; one readable card when accessibility
@@ -153,6 +206,11 @@ struct PhoneTabSwitcher_iOS: View {
         shell.showReader()
     }
 
+    private func canMove(_ card: PhoneTabCard, by offset: Int) -> Bool {
+        guard let index = app.tabs.firstIndex(where: { $0.id == card.id }) else { return false }
+        return app.tabs.indices.contains(index + offset)
+    }
+
     /// Closing is the async half: `AppStore.closeTab` removes the tab from the
     /// list immediately and finishes the backend teardown afterwards, so the
     /// card disappears on the tap. `didCloseTab()` is what routes Home when the
@@ -165,7 +223,118 @@ struct PhoneTabSwitcher_iOS: View {
         }
     }
 
+    /// The grid follows `app.tabs` order, so "to right" means every later
+    /// card in reading order, including cards on subsequent rows.
+    @ViewBuilder
+    private func tabActions(for card: PhoneTabCard) -> some View {
+        if let tab = app.tabs.first(where: { $0.id == card.id }) {
+            if tab.document != nil {
+                Button("Rename…", systemImage: "pencil") {
+                    guard let binding = app.documentBinding(for: tab.id) else { return }
+                    renamingTab = RenameTarget(tab: tab, binding: binding)
+                }
+            }
+            Button("Duplicate", systemImage: "plus.square.on.square") {
+                Task { await app.duplicateTab(tab.id) }
+            }
+            .disabled(tab.document?.kind == .pdf)
+
+            if tab.document?.kind == .web {
+                Button("Copy Link", systemImage: "link") {
+                    // Read the current tab rather than a URL captured when the menu opened.
+                    guard let document = app.tabs.first(where: { $0.id == tab.id })?.document,
+                          document.kind == .web else { return }
+                    UIPasteboard.general.string = document.pdfPath
+                }
+            }
+
+            Divider()
+            if canMove(card, by: -1) {
+                Button("Move Earlier", systemImage: "arrow.up") { app.moveTab(card.id, by: -1) }
+            }
+            if canMove(card, by: 1) {
+                Button("Move Later", systemImage: "arrow.down") { app.moveTab(card.id, by: 1) }
+            }
+
+            Divider()
+            Button("Close Tab", systemImage: "xmark", role: .destructive) { close(card) }
+            Button("Close Others", systemImage: "xmark.square") {
+                Task {
+                    await app.closeOtherTabs(keeping: tab.id)
+                    shell.didCloseTab()
+                }
+            }
+            .disabled(app.tabs.count < 2)
+            Button("Close Tabs to Right", systemImage: "arrow.right.to.line") {
+                Task {
+                    await app.closeTabsToRight(of: tab.id)
+                    shell.didCloseTab()
+                }
+            }
+            .disabled(app.tabs.last?.id == tab.id)
+        }
+    }
+
+    /// A sibling of the card's open button keeps the menu separately reachable
+    /// by VoiceOver, just like the existing close control on the opposite edge.
+    private func tabActionsMenu(for card: PhoneTabCard) -> some View {
+        Menu { tabActions(for: card) } label: {
+            ZStack {
+                Circle()
+                    .fill(palette.surface)
+                    .overlay { Circle().strokeBorder(palette.border, lineWidth: 1) }
+                    .frame(
+                        width: PhoneTabSwitcherLayout.closeDisc,
+                        height: PhoneTabSwitcherLayout.closeDisc)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .frame(
+                width: PhoneChromeLayout.buttonSide, height: PhoneChromeLayout.buttonSide)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Actions for \(card.title)\(card.duplicateLabel.map { ", " + $0 } ?? "")")
+        .accessibilityIdentifier("phone.tabs.actions")
+    }
+
     // MARK: - Chrome
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .foregroundStyle(palette.foreground)
+                .frame(minHeight: PhoneChromeLayout.buttonSide)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
+                .accessibilityLabel("Search tabs")
+                .accessibilityIdentifier("phone.tabs.search")
+
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.body)
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(
+                            minWidth: PhoneChromeLayout.buttonSide,
+                            minHeight: PhoneChromeLayout.buttonSide)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear tab search")
+                .accessibilityIdentifier("phone.tabs.search.clear")
+            }
+        }
+        .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
+        .padding(.vertical, 8)
+        .background(palette.well)
+    }
 
     /// Count on the leading edge, with a separate glass button for each action.
     private var bottomBar: some View {
@@ -342,12 +511,18 @@ struct PhoneTabSwitcher_iOS: View {
             .uiImage
     }
 
-    /// Only reachable for a beat: `didCloseTab()` routes Home the moment the
-    /// last tab goes. It exists so that beat is not a blank screen.
+    /// A search miss stays scrollable at large text sizes. The unfiltered
+    /// empty state also covers the beat before the last closed tab routes Home.
+    @ViewBuilder
     private var emptyState: some View {
-        Text("No open documents")
-            .font(.body)
-            .foregroundStyle(palette.mutedForeground)
+        if !searchNeedle.isEmpty {
+            ContentUnavailableView.search(text: searchNeedle)
+                .accessibilityIdentifier("phone.tabs.search.empty")
+        } else {
+            Text("No open documents")
+                .font(.body)
+                .foregroundStyle(palette.mutedForeground)
+        }
     }
 }
 
@@ -363,6 +538,8 @@ struct PhoneTabCardView: View {
     let loadThumbnail: () async -> UIImage?
     let open: () -> Void
     let close: () -> Void
+    var moveEarlier: (() -> Void)? = nil
+    var moveLater: (() -> Void)? = nil
 
     @State private var thumbnail: UIImage?
 
@@ -406,6 +583,7 @@ struct PhoneTabCardView: View {
                  showsReloadNote ? "Reloads on open" : ""]
                     .filter { !$0.isEmpty }
                     .joined(separator: ", "))
+            .accessibilityActions { orderingActions }
 
             // A sibling, not a Button overlay. SwiftUI folds controls inside a
             // Button's overlay into the parent's accessibility element even
@@ -417,6 +595,16 @@ struct PhoneTabCardView: View {
             let loaded = await loadThumbnail()
             guard !Task.isCancelled else { return }
             thumbnail = loaded
+        }
+    }
+
+    @ViewBuilder
+    private var orderingActions: some View {
+        if let moveEarlier {
+            Button("Move Earlier", systemImage: "arrow.up", action: moveEarlier)
+        }
+        if let moveLater {
+            Button("Move Later", systemImage: "arrow.down", action: moveLater)
         }
     }
 
@@ -541,7 +729,7 @@ struct PhoneTabCardView: View {
                         width: PhoneTabSwitcherLayout.closeDisc,
                         height: PhoneTabSwitcherLayout.closeDisc)
                 Image(systemName: "xmark")
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(palette.mutedForeground)
             }
             .frame(

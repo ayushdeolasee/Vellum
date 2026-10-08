@@ -12,6 +12,7 @@ import Foundation
 struct WebPageRecord: Codable, Equatable, Sendable {
     var url: String
     var title: String?
+    var titleIsUserDefined: Bool
     var pageCount: Int?
     var lastPage: Int?
     var saved: Bool
@@ -25,6 +26,7 @@ struct WebPageRecord: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case url
         case title
+        case titleIsUserDefined = "title_is_user_defined"
         case pageCount = "page_count"
         case lastPage = "last_page"
         case saved
@@ -37,6 +39,7 @@ struct WebPageRecord: Codable, Equatable, Sendable {
     init(url: String) {
         self.url = url
         title = nil
+        titleIsUserDefined = false
         pageCount = nil
         lastPage = nil
         saved = false
@@ -50,6 +53,10 @@ struct WebPageRecord: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         url = try container.decode(String.self, forKey: .url)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        // Older records stored manual and automatic titles in the same field.
+        // Preserve an existing name until the user explicitly clears it.
+        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
+            ?? (title != nil)
         pageCount = try container.decodeIfPresent(Int.self, forKey: .pageCount)
         lastPage = try container.decodeIfPresent(Int.self, forKey: .lastPage)
         saved = try container.decodeIfPresent(Bool.self, forKey: .saved) ?? false
@@ -503,6 +510,7 @@ enum WebLibrary {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         try withRecord(url: url, recordPath: recordPath(forKey: key)) { record in
             record.title = trimmed.isEmpty ? nil : trimmed
+            record.titleIsUserDefined = !trimmed.isEmpty
         }
     }
 

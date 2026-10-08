@@ -37,9 +37,12 @@ enum PdfViewerPreparation {
     /// Use only on a freshly parsed, unmodified document before attaching a view.
     /// Inspect raw annotation entries first so plain pages stay lazy in PDFKit.
     /// The raw document does not reflect later in-memory annotation edits.
+    /// Preservation and the 1-based handwriting summary are independent: native
+    /// ink may remain read-only without being owned by an editable ink overlay.
     @discardableResult
     static func stripAnnotations(
         from document: PDFDocument,
+        preserving shouldPreserve: (PDFAnnotation) -> Bool,
         isHandwriting: (PDFAnnotation) -> Bool = { _ in false }
     ) -> [Int] {
         let raw = document.documentRef
@@ -58,7 +61,7 @@ enum PdfViewerPreparation {
             if annotations.contains(where: isHandwriting) {
                 handwritingPages.append(index + 1)
             }
-            for annotation in annotations {
+            for annotation in annotations where !shouldPreserve(annotation) {
                 page.removeAnnotation(annotation)
             }
         }

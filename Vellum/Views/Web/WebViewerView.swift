@@ -378,6 +378,7 @@ final class WebViewerController: NSObject {
     // loaded yet. A counter (not a boolean) so highlight application re-fires
     // after in-tab navigation replaces the document.
     private(set) var initCount = 0
+    @ObservationIgnored private var inkNavigationPageURL: String?
     private(set) var isOffline = false
     private(set) var selection: WebSelection?
     private(set) var popoverPosition: CGPoint?
@@ -453,6 +454,8 @@ final class WebViewerController: NSObject {
     @ObservationIgnored private var pendingLocates: [String: (LocatedText?) -> Void] = [:]
     @ObservationIgnored private var pendingCaptures: [String: (CapturedWebPosition?) -> Void] = [:]
     @ObservationIgnored private var eventMonitor: Any?
+    @ObservationIgnored private var savedInkTask: Task<Void, Never>?
+    @ObservationIgnored private var savedInkGeneration = UUID()
 
     @ObservationIgnored private lazy var schemeHandler = VellumWebSchemeHandler()
 
@@ -579,6 +582,9 @@ final class WebViewerController: NSObject {
         app.scrollToWebPositionHandler = { [weak self] positionData, page in
             self?.scrollToWebPosition(positionData, page: page) ?? false
         }
+        app.scrollToWebInkHandler = { [weak self] cluster in
+            self?.scrollToSavedInk(cluster) ?? false
+        }
         annotationStore.captureWebPositionHandler = { [weak self] in
             await self?.captureWebPosition()
         }
@@ -648,6 +654,7 @@ final class WebViewerController: NSObject {
         guard attached else { return }
         attached = false
         mountGeneration = UUID()
+        cancelSavedInkLoad()
         schemeHandler.bind(to: nil)
         for resolve in pendingLocates.values { resolve(nil) }
         pendingLocates.removeAll()
@@ -659,6 +666,7 @@ final class WebViewerController: NSObject {
         if let app, app.activeTabId == mountTabId || app.document == nil {
             app.scrollToPageHandler = nil
             app.scrollToWebPositionHandler = nil
+            app.scrollToWebInkHandler = nil
             annotationStore?.captureWebPositionHandler = nil
             aiStore?.locateWebTextHandler = nil
             aiStore?.capturePageImageHandler = nil
@@ -691,6 +699,43 @@ final class WebViewerController: NSObject {
         webView.evaluateJavaScript(
             "window.__vellumCmd && window.__vellumCmd(\(json));",
             in: nil, in: Self.bridgeWorld)
+    }
+
+    private func cancelSavedInkLoad() {
+        savedInkGeneration = UUID()
+        savedInkTask?.cancel()
+        savedInkTask = nil
+    }
+
+    /// A fresh init also covers offline loads, restored tabs and hydration.
+    /// The page checks its own URL before accepting an asynchronous raster.
+    private func loadSavedInk(pageURL: String) {
+        cancelSavedInkLoad()
+        guard let document = mountDocument, document.kind == .web else { return }
+        let url = document.pdfPath
+        let docId = document.docId
+        let tabId = mountTabId
+        let mount = mountGeneration
+        let generation = savedInkGeneration
+        savedInkTask = Task { [weak self] in
+            let worker = Task.detached(priority: .utility) {
+                WebSavedInkRenderer.load(url: url, pageURL: pageURL)
+            }
+            let payload = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self, self.attached,
+                  self.mountGeneration == mount, self.savedInkGeneration == generation,
+                  self.mountTabId == tabId, self.mountDocument?.pdfPath == url,
+                  self.mountDocument?.docId == docId else { return }
+            self.savedInkTask = nil
+            guard let payload else { return }
+            self.webView.evaluateJavaScript(
+                "window.__vellumCmd && window.__vellumCmd({vellumCmd:'set-saved-ink', payload:\(payload)});",
+                in: nil, in: Self.bridgeWorld)
+        }
     }
 
     func applyZoom(_ zoom: Double) {
@@ -1214,6 +1259,37 @@ final class WebViewerController: NSObject {
         )
     }
 
+    /// Reuse the position-scroll command with the saved CSS bounds as a
+    /// fallback. The DOM computes the same anchor translation as the saved-ink
+    /// renderer, without changing the sidecar or recapturing anchors.
+    private func scrollToSavedInk(_ cluster: WebInkRecord.Cluster) -> Bool {
+        guard attached, pendingNavUrl == nil, outgoingNavUrl == nil,
+              let app, let tabId = mountTabId, let document = mountDocument,
+              app.activeTabId == tabId, app.document?.pdfPath == document.pdfPath,
+              initCount > 0, let pageURL = inkNavigationPageURL,
+              (try? WebUrl.normalize(pageURL)) == document.pdfPath else { return false }
+        let bounds = cluster.bounds
+        guard bounds.x.isFinite, bounds.y.isFinite,
+              bounds.w.isFinite, bounds.h.isFinite,
+              bounds.w > 0, bounds.h > 0 else { return false }
+        var anchor = cluster.anchor
+        if let saved = anchor,
+           saved.startOffset < 0 || saved.startOffset == Int.max || !saved.rect.y.isFinite {
+            anchor = nil
+        }
+        post("scroll-to-position", [
+            "start": orNull(anchor?.startOffset),
+            "end": orNull(anchor.map { $0.endOffset ?? ($0.startOffset + 1) }),
+            "text": orNull(anchor?.text),
+            "prefix": orNull(anchor?.prefix),
+            "suffix": orNull(anchor?.suffix),
+            "inkUrl": pageURL,
+            "inkY": bounds.y,
+            "inkAnchorY": orNull(anchor?.rect.y),
+        ])
+        return true
+    }
+
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {
         guard supportsPositions else { return false }
         post("scroll-to-position", [
@@ -1558,6 +1634,7 @@ final class WebViewerController: NSObject {
         // A pending auto-archive for the outgoing page must not fire
         // against the rebound session.
         cancelPendingArchive()
+        cancelSavedInkLoad()
         // Reset the one-shot redirect/crash reload guards for this fresh
         // navigation: they only need to prevent a reload *loop* within a single
         // navigation attempt. Left uncleared, revisiting a URL that was
@@ -1616,6 +1693,7 @@ final class WebViewerController: NSObject {
             // after the App-level document reset. Any open note popovers
             // belong to the outgoing document.
             cancelPendingArchive()
+            cancelSavedInkLoad()
             closeNotePopovers()
             let generation = mountGeneration
             Task { [weak self] in
@@ -1651,7 +1729,9 @@ final class WebViewerController: NSObject {
             return
         }
 
+        inkNavigationPageURL = reportedUrl ?? currentDoc.pdfPath
         initCount += 1
+        loadSavedInk(pageURL: reportedUrl ?? currentDoc.pdfPath)
 
         if let pageCount = intValue(data["pageCount"]), pageCount > 0 {
             app.setNumPages(pageCount)
@@ -1672,10 +1752,6 @@ final class WebViewerController: NSObject {
 
         if let title = data["title"] as? String, !title.isEmpty {
             app.updateDocumentTitle(tabId: tabId, title: title)
-            Task {
-                try? await app.sessions.setDocumentMetadata(
-                    sessionId: tabId, key: "title", value: title)
-            }
         }
 
         // Default behaviour: archive every opened page as a .vellumweb in the

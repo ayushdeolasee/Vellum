@@ -55,6 +55,44 @@ enum VellumShortcutRouter {
         // Vellum Walkthrough always enabled) must bypass this gate. The iPad
         // catalog has no such entry today; if packet 3 adds one, hoist it above
         // this check.
+        // The phone inspector is itself a sheet. Only companion/panel commands
+        // may pass its modal gate, and only when our own inspector hosts the
+        // top controller. Settings, pickers and page dialogs still block them.
+        let presented = SheetPresence_iOS.topPresented
+        let inspectorAccessible = workspace.inspectorPresented &&
+            (presented.map { workspace.companionBrowser.isInspectorHosted(in: $0) } ?? true)
+        if inspectorAccessible {
+            if case .toggleInspector = action {
+                workspace.setInspectorPresented(false)
+                return
+            }
+            if case .showSidebarTab(let tab) = action {
+                workspace.revealSidebarTab(tab)
+                return
+            }
+            if workspace.sidebarTab == .browser {
+                switch action {
+                case .addWebpage:
+                    workspace.companionBrowser.requestAddressFocus()
+                    return
+                case .webBack:
+                    workspace.companionBrowser.goBack()
+                    return
+                case .webForward:
+                    workspace.companionBrowser.goForward()
+                    return
+                case .reloadBrowser:
+                    workspace.companionBrowser.reload()
+                    return
+                case .dismiss:
+                    if workspace.companionBrowser.isLoading {
+                        workspace.companionBrowser.stop()
+                        return
+                    }
+                default: break
+                }
+            }
+        }
         if SheetPresence_iOS.isPresenting {
             if case .dismiss = action { SheetPresence_iOS.topPresented?.dismiss(animated: true) }
             return
@@ -96,6 +134,10 @@ enum VellumShortcutRouter {
             // which owns the presentation state; panes and `Commands` structs
             // cannot drive it directly, so both go through this notification.
             NotificationCenter.default.post(name: .vellumOpenFile, object: nil)
+
+        case .reloadBrowser:
+            // Companion commands have no reader-document fallback.
+            return
 
         case .addWebpage:
             NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)

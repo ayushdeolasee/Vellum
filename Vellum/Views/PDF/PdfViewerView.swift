@@ -4,8 +4,8 @@ import SwiftUI
 
 // SwiftUI shell of the PDF viewer — port of src/components/pdf/PdfViewer.tsx.
 // Loads the document as DATA via readPdfBytes (mutations rewrite the file on
-// disk; the in-view document is the in-memory copy and annotations render only
-// from store overlays), hosts PdfKitView plus the overlay stack, and registers
+// disk; the in-view document retains native ink while highlights and notes
+// render from store overlays), hosts PdfKitView plus the overlay stack, and registers
 // the zoom/scroll/locator/snapshot handlers on the stores.
 
 /// Carries a prepared (parsed + stripped) PDFDocument out of a detached task.
@@ -164,13 +164,17 @@ struct PdfViewerView: View {
                 // residency policy has already reclaimed.
                 document = cached
             } else {
-                // Parse the PDF and strip its embedded annotations OFF the main
+                // Parse the PDF and strip non-ink annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
                     guard let document = PdfViewerDocument(data: data) else { return PreparedPdf(document: nil) }
-                    PdfViewerPreparation.stripAnnotations(from: document)
+                    // macOS has no PencilKit overlay; PDFKit renders all native
+                    // ink, including handwriting saved by Vellum on iPad.
+                    PdfViewerPreparation.stripAnnotations(
+                        from: document,
+                        preserving: { $0.type == "Ink" })
                     return PreparedPdf(document: document)
                 }.value
                 guard !Task.isCancelled, app.containsTab(id: tabId) else { return }

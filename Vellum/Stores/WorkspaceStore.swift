@@ -97,10 +97,15 @@ final class WorkspaceStore {
     var sidebarTab: SidebarTab = .annotations
     enum SidebarTab: Sendable, CaseIterable, Hashable {
         case annotations, ai, scratchpad
-        #if os(macOS)
         case browser
-        #endif
     }
+
+    #if os(iOS)
+    /// A window-owned companion session: never a document or library entry.
+    /// The WebView is created only when Browser is first revealed; its history
+    /// survives inspector dismissal, phone sheet dismissal and pane changes.
+    @ObservationIgnored let companionBrowser = CompanionBrowserController_iOS()
+    #endif
 
     // MARK: Inspector column width
 
@@ -673,7 +678,10 @@ final class WorkspaceStore {
     /// copy provider URLs off-main before releasing their security-scoped access.
     func openExternalURLs(_ urls: [URL]) {
         #if os(macOS)
-        let incoming = urls.filter { $0.isFileURL || VellumExternalWebLink.parse($0) != nil }
+        let incoming = urls.filter {
+            $0.isFileURL || VellumExternalWebLink.parse($0) != nil
+                || VellumExternalWebLink.parseSavedURL($0) != nil
+        }
         #else
         let incoming = urls.filter(\.isFileURL)
         #endif
@@ -709,6 +717,25 @@ final class WorkspaceStore {
             #endif
         }
     }
+
+    #if os(macOS)
+    /// App Intents and widgets enter the same joinable queue as Finder opens.
+    /// Register synchronously, before any scene presentation or suspension, so
+    /// quitting immediately after invoking a Shortcut still drains its open.
+    @discardableResult
+    func openSystemRoute(_ route: VellumSystemRoute) -> Bool {
+        guard !isTerminating, VellumSystemRoute.isValidItemID(route.itemID) else { return false }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await awaitMaintenance()
+            await restoreFromDisk()
+            guard !Task.isCancelled else { return }
+            _ = await VellumSystemRouteOpener.open(route, workspace: self)
+        }
+        return true
+    }
+    #endif
 
     func awaitPendingExternalOpens() async {
         await externalOpenTask?.value

@@ -14,6 +14,9 @@ struct AnnotationSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            #if os(macOS)
+            MacHandwritingNavigator()
+            #endif
             if annotationStore.annotations.isEmpty {
                 emptyState
                 Spacer(minLength: 0)

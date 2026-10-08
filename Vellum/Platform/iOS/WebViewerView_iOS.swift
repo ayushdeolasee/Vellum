@@ -41,6 +41,7 @@ struct WebViewerView_iOS: View {
     /// have already paid. `controller.isAttached` covers the case where the
     /// `@State` itself did not survive the remount.
     @State private var hasActivated = false
+    @State private var dictionarySelection: DictionarySelection_iOS?
 
     private var controller: WebViewerController_iOS { runtime.webController }
     /// Web ink has the same per-tab lifetime as the retained WKWebView.
@@ -99,6 +100,16 @@ struct WebViewerView_iOS: View {
                                 onHighlight: { color in controller.addHighlight(color: color) },
                                 onNote: { content in controller.addSelectionNote(content: content) },
                                 onBeginNote: { controller.beginSelectionNote() },
+                                onDictionaryLookup: {
+                                    guard isActive,
+                                          controller.documentDraftScope == draftScope,
+                                          controller.selectionIdentity == passage,
+                                          let selection = controller.selection ?? controller.selectionNoteDraft,
+                                          let lookup = DictionarySelection_iOS(selection.text) else { return }
+                                    // Keep the anchor and draft when UIKit takes focus.
+                                    if controller.selectionNoteDraft == nil { controller.beginSelectionNote() }
+                                    dictionarySelection = lookup
+                                },
                                 onAskAi: { controller.askAiAboutSelection() },
                                 onClose: { controller.clearSelection() }
                             )
@@ -202,6 +213,9 @@ struct WebViewerView_iOS: View {
             }
             .background(palette.well)
             .clipped()
+            .sheet(item: $dictionarySelection) { selection in
+                DictionarySheet_iOS(term: selection.term)
+            }
             .onAppear {
                 guard isActive else { return }
                 hasActivated = true
@@ -210,6 +224,7 @@ struct WebViewerView_iOS: View {
             // In-tab link navigation rebinds the tab to a new URL; `attach`
             // early-returns when neither the tab nor the URL actually moved.
             .onChange(of: documentIdentity) {
+                dictionarySelection = nil
                 guard isActive else { return }
                 attach()
             }
@@ -266,6 +281,7 @@ struct WebViewerView_iOS: View {
             }
             .onChange(of: isActive) { _, active in
                 guard active else {
+                    dictionarySelection = nil
                     controller.deactivate()
                     return
                 }
@@ -385,6 +401,13 @@ final class VellumWebView: WKWebView, VellumShortcutResponder {
 
     @objc private func vellumPerformShortcut(_ sender: UIKeyCommand) {
         vellumPerform(sender)
+    }
+
+    override func buildMenu(with builder: UIMenuBuilder) {
+        super.buildMenu(with: builder)
+        // Dictionary is exposed by the custom selection popover.
+        builder.remove(menu: .lookup)
+        builder.remove(menu: .learn)
     }
 }
 
@@ -652,6 +675,9 @@ final class WebViewerController_iOS: NSObject {
     // Whether the injected content script supports point anchors (declared in
     // its init handshake).
     @ObservationIgnored private var supportsPositions = false
+    /// Exact content-script PAGE_URL; normalized storage identities cannot be
+    /// used for the script's queued ink-jump ownership check.
+    @ObservationIgnored private var inkNavigationPageURL: String?
     // Auto-archive bookkeeping: the URL already archived this mount, and a
     // debounce task so the fullest text extraction wins.
     @ObservationIgnored private var archivedUrl: String?
@@ -956,6 +982,7 @@ final class WebViewerController_iOS: NSObject {
         archivedUrl = nil
         pendingNavUrl = nil
         outgoingNavUrl = nil
+        inkNavigationPageURL = nil
         restoredUrl = nil
         redirectReloadedUrl = nil
         processReloadedUrl = nil
@@ -1713,6 +1740,21 @@ final class WebViewerController_iOS: NSObject {
         )
     }
 
+    /// Reuse the shared ink-position fallback for clusters without text anchors.
+    func scrollToWebInk(docY: CGFloat, documentUrl: String) -> Bool {
+        guard docY.isFinite, attached, pendingNavUrl == nil, outgoingNavUrl == nil,
+              ink?.canDisplayInk == true,
+              let app, let tabId = mountTabId, app.activeTabId == tabId,
+              loadedDocumentUrl == documentUrl, app.document?.pdfPath == documentUrl,
+              initCount > 0, let pageURL = inkNavigationPageURL,
+              (try? WebUrl.normalize(pageURL)) == documentUrl else { return false }
+        post("scroll-to-position", [
+            "inkUrl": pageURL,
+            "inkY": Double(docY),
+        ])
+        return true
+    }
+
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {
         guard supportsPositions else { return false }
         post("scroll-to-position", [
@@ -2160,6 +2202,7 @@ final class WebViewerController_iOS: NSObject {
         }
 
         initCount += 1
+        inkNavigationPageURL = reportedUrl ?? currentDoc.pdfPath
 
         // Re-assert the view scale for the fresh document (MobileSafari does
         // the same on every navigation commit), so a tab restored or rebound
@@ -2185,10 +2228,6 @@ final class WebViewerController_iOS: NSObject {
 
         if let title = data["title"] as? String, !title.isEmpty {
             app.updateDocumentTitle(tabId: tabId, title: title)
-            Task {
-                try? await app.sessions.setDocumentMetadata(
-                    sessionId: tabId, key: "title", value: title)
-            }
         }
 
         // Default behaviour: archive every opened page as a .vellumweb in the

@@ -80,9 +80,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "Annotations"
         case .ai: "AI"
         case .scratchpad: "Scratchpad"
-        #if os(macOS)
         case .browser: "Browser"
-        #endif
         }
     }
 
@@ -91,9 +89,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "highlighter"
         case .ai: "sparkles"
         case .scratchpad: "note.text"
-        #if os(macOS)
         case .browser: "globe"
-        #endif
         }
     }
 
@@ -109,9 +105,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "annotations"
         case .ai: "ai"
         case .scratchpad: "scratchpad"
-        #if os(macOS)
         case .browser: "browser"
-        #endif
         }
     }
 
@@ -128,9 +122,7 @@ extension WorkspaceStore.SidebarTab: Identifiable {
         case .annotations: "1"
         case .ai: "2"
         case .scratchpad: "3"
-        #if os(macOS)
         case .browser: "4"
-        #endif
         }
     }
 
@@ -182,10 +174,26 @@ struct InspectorTabSwitcher: View {
                     segmentedControl(showTitles: false)
                 }
                 #else
-                segmentedControl(showTitles: true)
+                if dynamicTypeSize.isAccessibilitySize {
+                    compactMenu
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        segmentedControl(showTitles: true)
+                        segmentedControl(showTitles: true, showIcons: false)
+                        segmentedControl(showTitles: false)
+                    }
+                }
                 #endif
             case .icons:
+                #if os(iOS)
+                if proxy.size.width < CGFloat(WorkspaceStore.SidebarTab.allCases.count) * 44 + InspectorLayout.trackPadding * 2 {
+                    compactMenu
+                } else {
+                    segmentedControl(showTitles: false)
+                }
+                #else
                 segmentedControl(showTitles: false)
+                #endif
             case .menu:
                 compactMenu
             }
@@ -217,10 +225,11 @@ struct InspectorTabSwitcher: View {
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 10)
                             #else
-                            Label(tab.title, systemImage: tab.systemImage)
-                                .labelStyle(.titleAndIcon)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
+                            HStack(spacing: 6) {
+                                if showIcons { Image(systemName: tab.systemImage) }
+                                Text(tab.title).lineLimit(1)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
                             #endif
                         } else {
                             Label(tab.title, systemImage: tab.systemImage)
@@ -268,7 +277,12 @@ struct InspectorTabSwitcher: View {
         #if os(macOS)
         .frame(maxWidth: .infinity)
         #endif
+        #if os(macOS)
         .padding(InspectorLayout.trackPadding)
+        #else
+        // Keep the entire 44-point height inside each button's label.
+        .padding(.horizontal, InspectorLayout.trackPadding)
+        #endif
         // The recessed track behind the thumb, from the palette for the same
         // reason: `muted` is defined for both schemes and stays visible against
         // parchment, where a scheme-derived quaternary wash does not.

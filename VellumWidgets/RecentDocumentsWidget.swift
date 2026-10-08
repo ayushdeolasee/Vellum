@@ -13,14 +13,11 @@ struct RecentDocumentsWidget: Widget {
                 emptyMessage: "Open something in Vellum",
                 items: entry.snapshot.recentDocuments)
             .containerBackground(for: .widget) {
-                Color(.systemBackground)
+                VellumWidgetShelfView.backgroundColor
             }
         }
         .configurationDisplayName("Recent Documents")
         .description("Continue with documents you recently opened in Vellum.")
-        .supportedFamilies([
-            .systemSmall, .systemMedium, .systemLarge,
-            .accessoryInline, .accessoryCircular, .accessoryRectangular,
-        ])
+        .supportedFamilies(VellumWidgetShelfView.supportedFamilies)
     }
 }

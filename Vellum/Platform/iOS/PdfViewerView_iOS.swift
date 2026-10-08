@@ -4,7 +4,7 @@ import SwiftUI
 
 // SwiftUI shell of the iPad PDF viewer. Loads the document as DATA via
 // readPdfBytes (mutations rewrite the file on disk; the in-view document is the
-// in-memory copy and annotations render only from store overlays), hosts
+// in-memory copy retains native ink; highlights and notes use store overlays), hosts
 // PdfKitView_iOS plus the touch overlay stack, and registers the zoom/scroll/
 // locator/snapshot handlers on the stores — the same contract as the macOS
 // PdfViewerView.
@@ -58,11 +58,21 @@ struct PdfViewerView_iOS: View {
     /// view has no live registration (see `deactivate`'s ownership guard).
     @State private var handlersTabId: String?
     @State private var indexingIsActive = false
+    @State private var dictionarySelection: DictionarySelection_iOS?
 
     private var shouldIndex: Bool { isActive && scenePhase == .active }
 
     var body: some View {
         content()
+            .sheet(item: $dictionarySelection) { selection in
+                DictionarySheet_iOS(term: selection.term)
+            }
+            .onChange(of: isActive) { _, active in
+                if !active { dictionarySelection = nil }
+            }
+            .onChange(of: runtime.documentGeneration) {
+                dictionarySelection = nil
+            }
             // First activation prepares the document. Subsequent activations
             // reuse the same PDFView/controller and only reclaim the shared
             // command handlers, preserving native scroll, selection and find
@@ -115,7 +125,10 @@ struct PdfViewerView_iOS: View {
                     PdfKitView_iOS(
                         controller: controller, document: document, ink: ink, isActive: isActive)
                         .frame(width: geo.size.width, height: geo.size.height)
-                    PdfOverlayStack_iOS(controller: controller)
+                    PdfOverlayStack_iOS(controller: controller, onDictionaryLookup: { text in
+                        guard isActive else { return }
+                        dictionarySelection = DictionarySelection_iOS(text)
+                    })
                 }
                 .overlay(alignment: .bottom) {
                     if ink.isActive {
@@ -166,21 +179,21 @@ struct PdfViewerView_iOS: View {
                 // residency policy has already reclaimed.
                 document = cached
             } else {
-                // Parse the PDF and strip its embedded annotations OFF the main
+                // Parse the PDF and strip non-ink annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
-                // KEEP Vellum ink annotations, exactly like `adopt`'s
-                // `stripEmbeddedAnnotations`: Pencil ink renders natively via
-                // PDFKit and is the seed source for the overlay canvases, so a
-                // blanket strip here erased persisted ink on cold reopen (ink
-                // drawn last session vanished on relaunch / fresh-from-Recents).
+                // Keep all native ink. The overlay seeds and removes only
+                // Vellum-managed ink; third-party ink stays visible in PDFKit
+                // without becoming editable PencilKit strokes or summary pages.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
                     guard let document = PdfViewerDocument(data: data) else {
                         return PreparedPdf(document: nil, handwritingPages: [])
                     }
                     let handwritingPages = PdfViewerPreparation.stripAnnotations(
-                        from: document, isHandwriting: PdfInk.isVellumInk)
+                        from: document,
+                        preserving: { $0.type == "Ink" },
+                        isHandwriting: PdfInk.isVellumInk)
                     return PreparedPdf(
                         document: document,
                         handwritingPages: handwritingPages)
@@ -356,6 +369,7 @@ struct PdfViewerView_iOS: View {
 /// coordinates, recomputed on every controller.geometryVersion bump.
 struct PdfOverlayStack_iOS: View {
     let controller: PdfViewerControlleriOS
+    let onDictionaryLookup: (String) -> Void
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -420,7 +434,7 @@ struct PdfOverlayStack_iOS: View {
             if let selection = controller.selection,
                let position = controller.selectionPopoverPosition {
                 AnchoredAbove(point: position, containerWidth: viewportWidth) {
-                    SelectionPopover(selection: selection) {
+                    SelectionPopover(selection: selection, onDictionaryLookup: onDictionaryLookup) {
                         controller.clearSelection()
                     }
                 }

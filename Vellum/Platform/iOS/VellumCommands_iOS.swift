@@ -75,6 +75,9 @@ struct VellumCommands_iOS: Commands {
             Divider()
 
             item(.toggleInspector)
+            ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
+                item(.showSidebarTab(tab))
+            }
 
             // Pane management, and only where there is a second pane to manage
             // (#153 D4). On a `.singlePane` workspace these four are omitted
@@ -105,6 +108,7 @@ struct VellumCommands_iOS: Commands {
             // Web in-page history.
             item(.webBack)
             item(.webForward)
+            item(.reloadBrowser)
 
             Divider()
 

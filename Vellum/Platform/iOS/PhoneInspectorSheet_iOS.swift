@@ -108,6 +108,14 @@ struct PhoneInspectorSheet_iOS: View {
             // not, say, on a keyboard-height notification) means the sheet grows
             // in the same transaction the keyboard is requested rather than
             // after it, so there is one animation instead of two.
+            .onChange(of: workspace.companionBrowser.addressFocusRequest) { _, request in
+                guard request != nil else { return }
+                withAnimation(.snappy) { detent = .large }
+            }
+            .onChange(of: workspace.companionBrowser.addressIsEditing) { _, editing in
+                guard editing else { return }
+                withAnimation(.snappy) { detent = .large }
+            }
             .onChange(of: pane.ai.composerFocusRequest) { _, request in
                 guard request != nil else { return }
                 withAnimation(.snappy) { detent = .large }

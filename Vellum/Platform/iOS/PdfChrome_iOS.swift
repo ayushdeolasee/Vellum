@@ -23,6 +23,9 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
+    @State private var showSettings = false
+    @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -221,6 +224,14 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text(exportActions.exportErrorMessage)
         }
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -280,6 +291,18 @@ struct PdfToolbar_iOS: View {
 
     private var moreMenu: some View {
         Menu {
+            // Keep app-wide destinations first, even when compact panes move
+            // the annotation and zoom controls into this menu.
+            Button {
+                workspace.settingsSection = .general
+                showSettings = true
+            } label: { Label("Settings…", systemImage: "gearshape") }
+            .accessibilityIdentifier("toolbar.settings")
+            Button { showHelp = true } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .accessibilityIdentifier("toolbar.help")
+            Divider()
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -343,6 +366,11 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(appStore.document == nil || appStore.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             // Offered for BOTH PDF and web documents. Shorter title than the
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
             // compact iPad menu — but the accessibility identifier is identical
@@ -403,6 +431,8 @@ struct PdfToolbar_iOS: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .accessibilityIdentifier("toolbar.more")
+        .accessibilityHint("Settings, Help, and document actions")
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
@@ -1110,6 +1140,22 @@ struct SidebarContent_iOS: View {
                             hasShownAi = true
                         }
                 }
+                if workspace.companionBrowser.webView != nil {
+                    panel(.browser) {
+                        CompanionBrowserPanel_iOS(
+                            controller: workspace.companionBrowser,
+                            isActive: workspace.inspectorPresented && workspace.sidebarTab == .browser)
+                    }
+                } else if workspace.sidebarTab == .browser {
+                    ProgressView("Preparing Browser…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.browser.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .browser else { return }
+                            workspace.companionBrowser.prepare()
+                        }
+                }
                 if hasShownScratchpad {
                     panel(.scratchpad) { ScratchpadPanel() }
                 } else if workspace.sidebarTab == .scratchpad {
@@ -1126,6 +1172,7 @@ struct SidebarContent_iOS: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(palette.surface)
+        .background(CompanionInspectorHost_iOS(controller: workspace.companionBrowser))
     }
 
     /// Selects immediately. A first-time AI/Scratchpad destination initially
@@ -1231,7 +1278,7 @@ private struct WebInkPagesSection_iOS: View {
                     .padding(.horizontal, 4)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(jumps) { jump in
+                        ForEach(Array(jumps.enumerated()), id: \.element.id) { index, jump in
                             Button {
                                 ink.scrollTo(jump)
                             } label: {
@@ -1239,7 +1286,7 @@ private struct WebInkPagesSection_iOS: View {
                                     Image(systemName: "pencil.and.scribble")
                                         .font(.system(size: 11))
                                         .foregroundStyle(palette.primary)
-                                    Text("p. \(jump.page)")
+                                    Text(jump.page.map { "p. \($0)" } ?? "Location \(index + 1)")
                                         .font(.system(size: 13, weight: .medium))
                                         .monospacedDigit()
                                         .foregroundStyle(palette.foreground)
@@ -1251,7 +1298,9 @@ private struct WebInkPagesSection_iOS: View {
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Handwriting on page \(jump.page). Tap to jump.")
+                            .accessibilityLabel(jump.page.map {
+                                "Handwriting on page \($0). Tap to jump."
+                            } ?? "Handwriting location \(index + 1). Tap to jump.")
                         }
                     }
                     .padding(.horizontal, 4)

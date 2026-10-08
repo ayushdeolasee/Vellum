@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import AppIntents
 
 struct VellumDocumentEntity: AppEntity, Hashable {
@@ -26,7 +26,9 @@ struct VellumDocumentQuery: EntityQuery {
     func entities(for identifiers: [VellumDocumentEntity.ID]) async throws
         -> [VellumDocumentEntity]
     {
-        guard let snapshot = VellumWidgetSnapshotStore.resolve()?.load() else { return [] }
+        guard let snapshot = await Task.detached(priority: .userInitiated, operation: {
+            VellumWidgetSnapshotStore.resolve()?.load()
+        }).value else { return [] }
         let requested = Set(identifiers)
         return snapshot.allItems.lazy
             .filter { requested.contains($0.id) }
@@ -34,7 +36,9 @@ struct VellumDocumentQuery: EntityQuery {
     }
 
     func suggestedEntities() async throws -> [VellumDocumentEntity] {
-        guard let snapshot = VellumWidgetSnapshotStore.resolve()?.load() else { return [] }
+        guard let snapshot = await Task.detached(priority: .userInitiated, operation: {
+            VellumWidgetSnapshotStore.resolve()?.load()
+        }).value else { return [] }
         return snapshot.allItems.map(VellumDocumentEntity.init)
     }
 }
@@ -43,7 +47,11 @@ struct ContinueInVellumIntent: AppIntent {
     static let title: LocalizedStringResource = "Continue Reading in Vellum"
     static let description = IntentDescription(
         "Open a recent document or read-later item in Vellum.")
+    #if os(macOS)
+    static let supportedModes: IntentModes = .foreground
+    #else
     static let openAppWhenRun = true
+    #endif
 
     @Parameter(title: "Document")
     var document: VellumDocumentEntity
@@ -56,13 +64,22 @@ struct ContinueInVellumIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let route = VellumSystemRoute(shelf: document.shelf, itemID: document.id)
-        guard let snapshot = VellumWidgetSnapshotStore.resolve()?.load(),
+        guard let snapshot = await Task.detached(priority: .userInitiated, operation: {
+            VellumWidgetSnapshotStore.resolve()?.load()
+        }).value,
               snapshot.item(for: route) != nil
         else {
             return .result(dialog: "That document is no longer in your Vellum shortcuts.")
         }
 
+        try Task.checkCancellation()
+        #if os(macOS)
+        guard await VellumSystemRouteHandoff.shared.submit(route) else {
+            return .result(dialog: "Vellum is closing. Try again when it has finished.")
+        }
+        #else
         await VellumSystemRouteHandoff.shared.submit(route)
+        #endif
         return .result(dialog: "Opening \(document.title) in Vellum.")
     }
 }

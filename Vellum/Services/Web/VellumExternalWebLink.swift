@@ -4,21 +4,30 @@ import Foundation
 enum VellumExternalWebLink {
     static var scheme: String { RuntimeProfile.current.urlScheme }
     static let host = "open-url"
+    static let saveHost = "save-url"
 
-    static func url(for webpage: URL) -> URL? {
+    static func url(for webpage: URL, saveToLibrary: Bool = false) -> URL? {
         guard isSupported(webpage) else { return nil }
 
         var components = URLComponents()
         components.scheme = scheme
-        components.host = host
+        components.host = saveToLibrary ? saveHost : host
         components.queryItems = [URLQueryItem(name: "url", value: webpage.absoluteString)]
         return components.url
     }
 
     static func parse(_ url: URL) -> URL? {
+        parse(url, expectedHost: host)
+    }
+
+    static func parseSavedURL(_ url: URL) -> URL? {
+        parse(url, expectedHost: saveHost)
+    }
+
+    private static func parse(_ url: URL, expectedHost: String) -> URL? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == scheme,
-              components.host?.lowercased() == host,
+              components.host?.lowercased() == expectedHost,
               components.user == nil,
               components.password == nil,
               components.port == nil,

@@ -359,6 +359,10 @@ final class AppStore {
     /// Registered by the web viewer: scroll to a text-anchored web position;
     /// returns whether the anchor was found (window.__scrollToWebPosition).
     var scrollToWebPositionHandler: ((PositionData, Int) -> Bool)?
+    #if os(macOS)
+    /// Read-only jump to a saved web ink cluster, including unanchored ink.
+    var scrollToWebInkHandler: ((WebInkRecord.Cluster) -> Bool)?
+    #endif
     /// Registered by the active viewer to run a find query — highlights every
     /// match and moves to the first, reporting counts back via `setFindResults`.
     var findQueryHandler: ((String) -> Void)?
@@ -465,7 +469,13 @@ final class AppStore {
         error = nil
         var errors: [String] = []
         for url in urls {
-            if let webpage = VellumExternalWebLink.parse(url) {
+            if let webpage = VellumExternalWebLink.parseSavedURL(url) {
+                do {
+                    try await openOneUrl(webpage.absoluteString, saveToLibrary: true)
+                } catch {
+                    errors.append("\(webpage.absoluteString): \(error.localizedDescription)")
+                }
+            } else if let webpage = VellumExternalWebLink.parse(url) {
                 do {
                     try await openOneUrl(webpage.absoluteString)
                 } catch {
@@ -547,22 +557,30 @@ final class AppStore {
         }
     }
 
-    /// Update a tab's document title (reported by the webpage content script).
+    /// Accept a DOM title only while the webpage has no user-chosen name.
     func updateDocumentTitle(tabId: String, title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard let tab = tabs.first(where: { $0.id == tabId }),
               var doc = tab.document,
+              doc.kind == .web,
+              doc.titleIsUserDefined != true,
               doc.title != trimmed else { return }
         doc.title = trimmed
+        doc.titleIsUserDefined = false
         updateTab(tabId) { $0.document = doc }
         if activeTabId == tabId {
             document = doc
         }
         let positions = workspace?.positions
+        let storage = workspace?.webLibraryStorage ?? WebLibraryStorage()
         let registry = teardowns
         guard let generation = documentBinding(for: tabId)?.generation else { return }
         _ = registry.enqueuePersistence(document: doc, generation: generation) {
+            // Capture the URL rather than looking up a session after suspension:
+            // a navigation can reuse that session id for a different document.
+            guard (try? await storage.setTitle(
+                rawUrl: doc.pdfPath, title: trimmed, isUserDefined: false)) == true else { return }
             await positions?.recordTitle(
                 document: registry.durableDocument(for: doc, generation: generation), title: trimmed)
         }
@@ -607,8 +625,8 @@ final class AppStore {
     /// Rename the open document from the tab bar.
     ///
     /// Distinct from `updateDocumentTitle` above, which exists for the webpage
-    /// content script reporting the DOM `<title>` and is deliberately
-    /// in-memory-only and non-empty-only: a page reporting its own title should
+    /// content script reporting the DOM `<title>` and is non-empty-only:
+    /// a page reporting its own title should
     /// not permanently overwrite a name the user chose, and a page reporting an
     /// empty one should be ignored. A user rename is the opposite on both
     /// counts — it must persist, and clearing it must be allowed to mean
@@ -630,8 +648,14 @@ final class AppStore {
 
         // Apply only the requested field before storage can suspend. Completion
         // never restores a captured DocumentInfo over a newly bound document.
-        updateTab(tabId) { $0.document?.title = normalized }
-        if activeTabId == tabId { document?.title = normalized }
+        updateTab(tabId) {
+            $0.document?.title = normalized
+            if original.kind == .web { $0.document?.titleIsUserDefined = normalized != nil }
+        }
+        if activeTabId == tabId {
+            document?.title = normalized
+            if original.kind == .web { document?.titleIsUserDefined = normalized != nil }
+        }
         let storage = workspace?.webLibraryStorage
         let positions = workspace?.positions
         let persist = renamePersistence
@@ -855,7 +879,10 @@ final class AppStore {
                 url: sourceDocument.pdfPath, sessionId: sessionId)
             // Keep the title currently visible in the source tab. Web titles in
             // particular may have been learned after the initial open.
-            opened.title = sourceDocument.title ?? opened.title
+            if opened.titleIsUserDefined != true {
+                opened.title = sourceDocument.title ?? opened.title
+                opened.titleIsUserDefined = sourceDocument.titleIsUserDefined ?? opened.titleIsUserDefined
+            }
             // Opening suspends this main-actor method. If the user closed the
             // source tab while its duplicate was loading, do not resurrect it
             // as an unexpected new tab; release the just-opened session.
@@ -881,6 +908,16 @@ final class AppStore {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Reorder within this pane without activating, detaching or rebuilding a tab.
+    /// Resolve the index at invocation so a stale card action cannot move another tab.
+    func moveTab(_ tabId: String, by offset: Int) {
+        guard offset == -1 || offset == 1,
+              let index = tabs.firstIndex(where: { $0.id == tabId }),
+              tabs.indices.contains(index + offset) else { return }
+        tabs.swapAt(index, index + offset)
+        workspace?.scheduleSave()
     }
 
     func activateTab(_ tabId: String) {
@@ -1012,7 +1049,9 @@ final class AppStore {
                 }
                 // Preserve a title learned by the prior web session until the
                 // re-opened page reports a newer document title.
-                opened.title = savedDocument.title ?? opened.title
+                if opened.titleIsUserDefined != true {
+                    opened.title = savedDocument.title ?? opened.title
+                }
                 RecentFilesService.record(opened)
                 let resume = await workspace?.positions.resumePosition(for: opened)
                 let page = resume?.page ?? descriptor.currentPage
@@ -1839,6 +1878,7 @@ final class AppStore {
         var doc = doc
         if let failure = teardowns.failedRenames[DocumentIdentity.storageKey(for: doc)] {
             doc.title = failure.title
+            if doc.kind == .web { doc.titleIsUserDefined = failure.title != nil }
             error = failure.message
         }
         // This is intentionally device-local. Opening a captured page must not

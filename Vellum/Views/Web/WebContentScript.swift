@@ -105,6 +105,7 @@ enum WebContentScript {
     var real = currentRealUrl();
     if (real === PAGE_URL) return;
     PAGE_URL = real;
+    setSavedInk(null);
     // Soft navigation: re-extract and re-init (debounced — the router is
     // still swapping DOM in) so the shell rebinds to the new address.
     if (urlReinitTimer) clearTimeout(urlReinitTimer);
@@ -861,7 +862,78 @@ enum WebContentScript {
   // re-render). The app answers with a batched resolve-anchors pass; posting
   // is cheap and the app no-ops when the document has no ink.
   function reportInkShift() {
+    renderSavedInk();
     post("ink-anchors-shifted");
+  }
+
+  // Mac's read-only raster clusters use the SAME stored quote anchors as
+  // iPad. Keep original bounds/anchor rects immutable: every reflow translates
+  // from that baseline, so repeated resize/zoom never accumulates drift.
+  var savedInk = null;
+  var savedInkRoot = null;
+  var savedInkImages = [];
+
+  function setSavedInk(payload) {
+    if (payload && payload.url !== PAGE_URL) return;
+    savedInk = payload;
+    savedInkImages = [];
+    if (savedInkRoot) {
+      while (savedInkRoot.firstChild) savedInkRoot.removeChild(savedInkRoot.firstChild);
+    }
+    renderSavedInk();
+  }
+
+  function renderSavedInk() {
+    if (!savedInk || savedInk.url !== PAGE_URL || !savedInk.clusters.length) return;
+    if (!savedInkRoot || !savedInkRoot.isConnected) {
+      savedInkRoot = document.createElement("div");
+      savedInkRoot.id = "__vellum-saved-ink";
+      savedInkRoot.setAttribute("aria-hidden", "true");
+      savedInkRoot.style.cssText =
+        "position:absolute!important;left:0!important;top:0!important;" +
+        "width:0!important;height:0!important;overflow:visible!important;" +
+        "pointer-events:none!important;z-index:2147483645!important;";
+      (document.documentElement || document.body).appendChild(savedInkRoot);
+    }
+    for (var i = 0; i < savedInk.clusters.length; i++) {
+      var cluster = savedInk.clusters[i];
+      var bounds = cluster.bounds;
+      var x = bounds.x;
+      var y = bounds.y;
+      var anchor = cluster.anchor;
+      if (anchor) {
+        var resolved = resolveHighlight({
+          start: anchor.start_offset,
+          end: typeof anchor.end_offset === "number"
+            ? anchor.end_offset : anchor.start_offset + 1,
+          text: anchor.text || "",
+          prefix: anchor.prefix || null,
+          suffix: anchor.suffix || null,
+        });
+        var rect = resolved ? docRectOfRaw(resolved.start) : null;
+        if (rect) {
+          x += rect.x - anchor.rect.x;
+          y += rect.y - anchor.rect.y;
+        }
+      }
+      var image = savedInkImages[i];
+      if (!image) {
+        image = document.createElement("img");
+        image.alt = "";
+        image.draggable = false;
+        image.src = cluster.image;
+        image.style.cssText =
+          "position:absolute!important;display:block!important;" +
+          "max-width:none!important;max-height:none!important;" +
+          "margin:0!important;padding:0!important;border:0!important;" +
+          "pointer-events:none!important;user-select:none!important;" +
+          "width:" + bounds.w + "px!important;height:" + bounds.h + "px!important;";
+        savedInkImages[i] = image;
+      }
+      image.style.setProperty("left", x + "px", "important");
+      image.style.setProperty("top", y + "px", "important");
+      if (image.parentNode !== savedInkRoot) savedInkRoot.appendChild(image);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -2262,6 +2334,10 @@ enum WebContentScript {
         break;
       }
 
+      case "set-saved-ink":
+        setSavedInk(d.payload || null);
+        break;
+
       case "anchor-at-point": {
         // Batch: one text anchor (raw offset + quote context + current
         // document rect) per ink-cluster band, in zoom-1 CSS-px document
@@ -2333,6 +2409,10 @@ enum WebContentScript {
       }
 
       case "scroll-to-position": {
+        // Only the Mac saved-ink navigator supplies these fields. Validate
+        // page ownership so a queued outgoing-page jump cannot move a new page.
+        var isInkJump = typeof d.inkY === "number" && isFinite(d.inkY);
+        if (isInkJump && d.inkUrl !== PAGE_URL) break;
         var posPayload = {
           start: typeof d.start === "number" ? d.start : null,
           end: typeof d.end === "number" ? d.end : null,
@@ -2343,7 +2423,16 @@ enum WebContentScript {
         var anchorOffset = typeof d.offset === "number" ? d.offset : 16;
 
         var desiredTop = function () {
+          if (isInkJump && d.inkUrl !== PAGE_URL) return null;
           var resolved = resolveHighlight(posPayload);
+          if (isInkJump) {
+            var inkTop = d.inkY;
+            var inkRect = resolved ? docRectOfRaw(resolved.start) : null;
+            if (inkRect && typeof d.inkAnchorY === "number" && isFinite(d.inkAnchorY)) {
+              inkTop += inkRect.y - d.inkAnchorY;
+            }
+            return Math.max(0, inkTop - anchorOffset);
+          }
           var range = resolved ? rangeFromRaw(resolved.start, resolved.end) : null;
           if (!range) return null;
           return Math.max(0, range.getBoundingClientRect().top + window.scrollY - anchorOffset);
@@ -2448,6 +2537,7 @@ enum WebContentScript {
       sendInit();
     }
     renderHighlights();
+    renderSavedInk();
   }
 
   var started = false;
@@ -2549,7 +2639,8 @@ enum WebContentScript {
       // mutations must not trigger a re-extract that rebuilds the handles
       // mid-drag.
       function isOwnResizeChrome(n) {
-        return !!n && (n.id === "__vellum-resize-shield" || n.id === "__vellum-resize-lock");
+        return !!n && (n.id === "__vellum-resize-shield" || n.id === "__vellum-resize-lock"
+          || n.id === "__vellum-saved-ink");
       }
       function onlyOwnChrome(list) {
         if (!list || list.length === 0) return false;
@@ -2562,6 +2653,9 @@ enum WebContentScript {
         for (var i = 0; i < records.length; i++) {
           var target = records[i].target;
           if (overlayRoot && (target === overlayRoot || overlayRoot.contains(target))) {
+            continue;
+          }
+          if (savedInkRoot && (target === savedInkRoot || savedInkRoot.contains(target))) {
             continue;
           }
           if (findRoot && (target === findRoot || findRoot.contains(target))) {
