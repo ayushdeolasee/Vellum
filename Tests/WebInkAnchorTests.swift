@@ -235,6 +235,10 @@ final class WebInkAnchorScriptTests: XCTestCase {
         received = []
     }
 
+    // Simulator WebKit process startup can exceed 15 seconds on CI. Allow
+    // longer only for initialization; subsequent bridge messages stay bounded.
+    private static let initializationTimeout: TimeInterval = 60
+
     private func waitFor(_ type: String, timeout: TimeInterval = 15) async throws -> [String: Any] {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -303,7 +307,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
 
     func testPencilSelectionUsesWholeWordsInBothDirections() async throws {
         loadFixture()
-        _ = try await waitFor("init")
+        _ = try await waitFor("init", timeout: Self.initializationTimeout)
         for reverse in [false, true] {
             received.removeAll { $0["type"] as? String == "selection" }
             runJS("""
@@ -338,7 +342,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
     /// the anchor to a rect displaced by exactly the inserted height.
     func testAnchorRoundTripSurvivesLayoutShift() async throws {
         loadFixture()
-        _ = try await waitFor("init")
+        _ = try await waitFor("init", timeout: Self.initializationTimeout)
 
         // Capture: anchor at paragraph 2's top edge (in the viewport, so the
         // caret hit-test path runs).
@@ -404,7 +408,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
     /// off-screen).
     func testAnchorAtOffViewportPointResolvesByDocumentY() async throws {
         loadFixture()
-        _ = try await waitFor("init")
+        _ = try await waitFor("init", timeout: Self.initializationTimeout)
 
         // Grow the page so p8 is well below the 1000 px viewport.
         runJS("""
@@ -449,7 +453,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
         line boxes touch.</p>
         </body></html>
         """, baseURL: URL(string: "https://fixture.test/heading"))
-        _ = try await waitFor("init")
+        _ = try await waitFor("init", timeout: Self.initializationTimeout)
 
         // Underline band: starts 1 px below the heading's line box (i.e. at
         // the very top of the paragraph's box), 4 px thick — where a real
@@ -499,7 +503,7 @@ final class WebInkAnchorScriptTests: XCTestCase {
         <div id="target">Technical</div>
         </body></html>
         """, baseURL: URL(string: "https://fixture.test/boundary"))
-        _ = try await waitFor("init")
+        _ = try await waitFor("init", timeout: Self.initializationTimeout)
 
         let previous = try await docPoint(of: "previous")
         let target = try await docPoint(of: "target")
