@@ -191,9 +191,12 @@ def inspect_bundle(app, platform, version, build, exported):
             require(environment in (None, "Production"), "Export selects a development iCloud environment")
             # CloudDocuments-only profiles can omit the CloudKit environment key.
             # Record the actual entitlement; device/container access is a separate gate.
-    if platform == "ios":
+    if platform == "ios" or (direct and identifier in {BUNDLE, BUNDLE + ".widgets"}):
         require(entitlements.get("com.apple.security.application-groups") == [GROUP],
                 f"Wrong App Group: {identifier}")
+    if direct and identifier == BUNDLE + ".widgets":
+        require(entitlements.get("com.apple.security.app-sandbox") is True,
+                "Mac widget extension must be sandboxed")
     executable = contents / ("MacOS" if platform == "macos" else "") / info["CFBundleExecutable"]
     architectures = run("lipo", "-archs", executable).decode().split()
     require(set(architectures) == ({"arm64", "x86_64"} if platform == "macos" else {"arm64"}),
@@ -261,7 +264,7 @@ def inspect_apps(root, platform, version, build, exported):
     require(len(apps) == 1, f"Expected one app under {root}, found {len(apps)}")
     bundles = [apps[0]] + list(apps[0].rglob("*.appex"))
     records = [inspect_bundle(p, platform, version, build, exported) for p in bundles]
-    expected = {BUNDLE, MAC_SHARE} if platform == "macos" else {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets"}
+    expected = {BUNDLE, MAC_SHARE, BUNDLE + ".widgets"} if platform == "macos" else {BUNDLE, BUNDLE + ".share", BUNDLE + ".widgets"}
     require({r["bundle"] for r in records} == expected and len(records) == len(expected),
             "Missing or duplicate app/extension")
     return records
@@ -304,7 +307,8 @@ def archive(args):
         options["signingStyle"] = "manual"
         options["signingCertificate"] = args.signing_identity
         require(archive_records[0].get("profile_uuid"), "Archive has no provisioning profile UUID")
-        options["provisioningProfiles"] = {BUNDLE: archive_records[0]["profile_uuid"]}
+        options["provisioningProfiles"] = {record["bundle"]: record["profile_uuid"]
+                                           for record in archive_records if record.get("profile_uuid")}
         options.pop("uploadSymbols")  # Symbols are preserved locally for direct distribution.
     options_path = output / "ExportOptions.plist"
     options_path.write_bytes(plistlib.dumps(options))
