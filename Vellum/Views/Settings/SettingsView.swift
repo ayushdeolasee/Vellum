@@ -20,6 +20,7 @@ struct SettingsView: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.dismiss) private var dismiss
     #endif
 
     var body: some View {
@@ -112,14 +113,14 @@ struct SettingsView: View {
                 // In a collapsed split view, Done must also be available on
                 // the section list after navigating back from a detail.
                 if horizontalSizeClass == .compact {
-                    SettingsDoneToolbar()
+                    SettingsDoneToolbar { dismiss() }
                 }
             }
         } detail: {
             padSectionContent
                 .navigationTitle(workspace.settingsSection.settingsTitle)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { SettingsDoneToolbar() }
+                .toolbar { SettingsDoneToolbar { dismiss() } }
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: workspace.settingsSection) { _, _ in

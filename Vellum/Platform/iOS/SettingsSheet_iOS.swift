@@ -47,7 +47,7 @@ struct SettingsSheet_iOS: View {
 
 /// Both columns of iPad Settings dismiss the same enclosing sheet.
 struct SettingsDoneToolbar: ToolbarContent {
-    @Environment(\.dismiss) private var dismiss
+    let dismiss: () -> Void
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .confirmationAction) {
