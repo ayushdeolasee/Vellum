@@ -23,6 +23,9 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
+    @State private var showSettings = false
+    @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -221,6 +224,14 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text(exportActions.exportErrorMessage)
         }
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -280,6 +291,18 @@ struct PdfToolbar_iOS: View {
 
     private var moreMenu: some View {
         Menu {
+            // Keep app-wide destinations first, even when compact panes move
+            // the annotation and zoom controls into this menu.
+            Button {
+                workspace.settingsSection = .general
+                showSettings = true
+            } label: { Label("Settings…", systemImage: "gearshape") }
+            .accessibilityIdentifier("toolbar.settings")
+            Button { showHelp = true } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .accessibilityIdentifier("toolbar.help")
+            Divider()
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -408,6 +431,8 @@ struct PdfToolbar_iOS: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .accessibilityIdentifier("toolbar.more")
+        .accessibilityHint("Settings, Help, and document actions")
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
