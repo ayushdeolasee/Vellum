@@ -76,7 +76,7 @@ enum WebStorageRelocator {
             } else {
                 status = Status(
                     needsRecovery: true,
-                    message: "The previous location is still unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
+                    message: WebStorageMigrator.incompleteRelocationMessage
                 )
             }
             NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
@@ -160,6 +160,45 @@ enum WebStorageRelocator {
                 if generation == relocationGeneration {
                     WebStorageMigrator.clearPendingRelocation()
                     status = Status(message: "Storage move complete.")
+                    NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+                }
+            }
+        }
+    }
+
+    /// Renew access to the stranded source without replacing the selected
+    /// destination or its bookmark. Picker cancellation leaves the move alone.
+    static func reconnectPreviousFolder(coordinator: StorageCoordinator) {
+        guard let marker = WebStorageMigrator.pendingMarker else { return }
+        DocumentPickerCoordinator_iOS.shared.presentFolderPicker { url in
+            let generation = relocationGeneration
+            enqueue {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                guard WebStorageMigrator.pendingMarker == marker else { return }
+                guard let bookmark = SecurityScopedBookmark.make(for: url),
+                      WebStorageMigrator.reconnectPendingCustomSource(
+                        path: url.path, bookmark: bookmark, expectedMarker: marker) else {
+                    await MainActor.run {
+                        guard generation == relocationGeneration else { return }
+                        status = Status(
+                            needsRecovery: true,
+                            message: "Choose the original source folder to resume this move. The destination has not changed.")
+                        NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+                    }
+                    return
+                }
+                await MainActor.run {
+                    guard generation == relocationGeneration else { return }
+                    status = Status(isInProgress: true, message: "Resuming an interrupted storage move…")
+                    NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
+                }
+                await WebStorageMigrator.sweepAtLaunch(coordinator: coordinator)
+                await MainActor.run {
+                    guard generation == relocationGeneration else { return }
+                    status = WebStorageMigrator.pendingMarker == nil
+                        ? Status(message: "Interrupted storage move recovered successfully.")
+                        : Status(needsRecovery: true, message: WebStorageMigrator.incompleteRelocationMessage)
                     NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
                 }
             }

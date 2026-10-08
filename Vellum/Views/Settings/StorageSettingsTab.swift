@@ -434,6 +434,15 @@ struct StorageSettingsTab: View {
                     .accessibilityIdentifier("storage.migrationStatus")
             }
 
+            if relocationStatus.needsRecovery,
+               WebStorageMigrator.pendingRelocation?.mode == WebStorageMode.custom.rawValue {
+                Button("Reconnect Previous Folder…") {
+                    WebStorageRelocator.reconnectPreviousFolder(
+                        coordinator: workspace.storageCoordinator)
+                }
+                .accessibilityIdentifier("storage.reconnectPreviousFolder")
+            }
+
             // No "Show in Finder" counterpart on iPadOS — the folder row is the
             // whole affordance.
             if storageMode != .local, let path = currentLocationPath {

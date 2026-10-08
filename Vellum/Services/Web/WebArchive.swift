@@ -553,6 +553,12 @@ enum WebArchive {
         return try readManifest(from: zip)
     }
 
+    static func readManifest(data: Data) throws -> ArchiveManifest {
+        try readManifest(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
     private static func readManifest(from zip: MiniZip) throws -> ArchiveManifest {
         let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
         let manifest: ArchiveManifest
@@ -574,8 +580,18 @@ enum WebArchive {
     }
 
     static func readArchive(at path: URL) throws -> ImportedArchive {
-        let zip = try openArchive(at: path)
+        try readArchive(from: openArchive(at: path))
+    }
 
+    /// Decode bytes obtained through coordinated storage with the same limits
+    /// and integrity checks as a file import.
+    static func readArchive(data: Data) throws -> ImportedArchive {
+        try readArchive(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
+    private static func readArchive(from zip: MiniZip) throws -> ImportedArchive {
         let manifest = try readManifest(from: zip)
 
         let snapshotBytes = try zip.readCapped(
@@ -980,6 +996,15 @@ struct MiniZip {
             bytes.append(chunk)
         }
         data = bytes
+        (entries, orderedNames) = try Self.parseCentralDirectory(
+            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
+    }
+
+    init(data: Data, maxBytes: Int, maxEntries: Int, maxUncompressedBytes: Int) throws {
+        guard data.count <= maxBytes else {
+            throw Self.invalid("archive exceeds its size limit")
+        }
+        self.data = data
         (entries, orderedNames) = try Self.parseCentralDirectory(
             data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
     }

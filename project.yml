@@ -145,6 +145,7 @@ targets:
       - path: Tests/DocumentAccessBookmarkStoreTests.swift
       - path: Tests/ReleaseIsolationTests.swift
       - path: Tests/AiPromptContextTests.swift
+      - path: Tests/StorageMigrationRecoveryTests.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
       - path: Tests/TestSupport/FakeSyncedContainer.swift
     dependencies:
