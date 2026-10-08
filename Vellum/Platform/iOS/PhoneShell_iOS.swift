@@ -305,6 +305,11 @@ private struct PhoneShellRoot_iOS: View {
                     onAddWebpage: { addWebpagePresented = true })
             }
         }
+        .overlay(alignment: .bottom) {
+            if pane.app.mode != .snapshotRegion {
+                readLaterNotice
+            }
+        }
         // The route's own handle, so a UI test can assert "the reader is on
         // screen" without depending on which chrome happens to be visible —
         // `phone.reader.title` and friends are absent in immersive mode, which
@@ -331,6 +336,36 @@ private struct PhoneShellRoot_iOS: View {
         .sheet(isPresented: inspectorPresented) {
             PhoneInspectorSheet_iOS(
                 shell: shell, workspace: workspace, pane: pane, themeStore: themeStore)
+        }
+    }
+
+    /// Provider moves can fail while the reader stays open. Keep their result
+    /// above the bottom controls, including when the reader chrome is hidden.
+    @ViewBuilder
+    private var readLaterNotice: some View {
+        let app = pane.app
+        let integrations = workspace.integrations
+        if let path = app.document?.pdfPath,
+           let item = integrations.readLaterItem(forOpenDocumentPath: path),
+           let notice = integrations.notice(forItem: item.id) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice",
+                actionTitle: integrations.previousRevisionURL(for: item.id) == nil ? nil : "Open Previous",
+                action: {
+                    guard let url = integrations.takePreviousRevision(for: item.id) else { return }
+                    Task { await app.openFile(path: url.path) }
+                }
+            ) {
+                if notice.isMove {
+                    integrations.dismissMoveNotice(item.id)
+                } else {
+                    integrations.dismissDownloadNotice(item.id)
+                }
+            }
+            .padding(.horizontal, PhoneChromeLayout.edgeInset)
+            .padding(.bottom, PhoneChromeLayout.barHeight + PhoneChromeLayout.edgeInset)
         }
     }
 
