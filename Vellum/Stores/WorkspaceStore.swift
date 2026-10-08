@@ -715,6 +715,25 @@ final class WorkspaceStore {
         }
     }
 
+    #if os(macOS)
+    /// App Intents and widgets enter the same joinable queue as Finder opens.
+    /// Register synchronously, before any scene presentation or suspension, so
+    /// quitting immediately after invoking a Shortcut still drains its open.
+    @discardableResult
+    func openSystemRoute(_ route: VellumSystemRoute) -> Bool {
+        guard !isTerminating, VellumSystemRoute.isValidItemID(route.itemID) else { return false }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await awaitMaintenance()
+            await restoreFromDisk()
+            guard !Task.isCancelled else { return }
+            _ = await VellumSystemRouteOpener.open(route, workspace: self)
+        }
+        return true
+    }
+    #endif
+
     func awaitPendingExternalOpens() async {
         await externalOpenTask?.value
     }

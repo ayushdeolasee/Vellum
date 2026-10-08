@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import AppIntents
 import SwiftUI
 
 /// Persists reading positions before quit — the Tauri app wrote last_page on
@@ -78,6 +79,8 @@ struct VellumApp: App {
     @NSApplicationDelegateAdaptor(VellumAppDelegate.self) private var appDelegate
     @State private var themeStore: ThemeStore
     @State private var workspace: WorkspaceStore
+    @State private var systemRouteHandoff = VellumSystemRouteHandoff.shared
+    @Environment(\.openWindow) private var openWindow
     @State private var showStorageChoice = false
     @State private var showWalkthrough = false
     @State private var didOpenUITestDocument = false
@@ -106,6 +109,8 @@ struct VellumApp: App {
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
         VellumAppDelegate.workspace = workspace
+        VellumSystemRouteHandoff.shared.attach(to: workspace)
+        VellumAppShortcuts.updateAppShortcutParameters()
         workspace.startLaunchMaintenance(includeReadLater: false)
     }
 
@@ -165,6 +170,13 @@ struct VellumApp: App {
                 .preferredColorScheme(themeStore.colorScheme)
                 .background(themeStore.palette.background)
                 .tint(themeStore.palette.primary)
+        }
+        // Observe at scene scope so a Shortcut can reopen the main window
+        // even when only Settings/Help remains (or every window is closed).
+        .onChange(of: systemRouteHandoff.pendingRequest, initial: true) { _, request in
+            guard let request, systemRouteHandoff.consume(request.id) != nil else { return }
+            openWindow(id: "main")
+            NSApplication.shared.activate()
         }
         .defaultSize(width: 1280, height: 800)
         .windowResizability(.contentMinSize)
