@@ -168,7 +168,8 @@ final class WebDocumentSession: DocumentSession {
             title: record.title,
             pageCount: record.pageCount,
             lastPage: record.lastPage,
-            docId: key)
+            docId: key,
+            titleIsUserDefined: record.titleIsUserDefined)
         io = WebDocumentIO(url: url, key: key, storage: storage)
     }
 
@@ -493,7 +494,7 @@ actor WebDocumentIO {
             switch key {
             case "title":
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
+                if !trimmed.isEmpty, !record.titleIsUserDefined {
                     record.title = trimmed
                 }
             case "page_count":
