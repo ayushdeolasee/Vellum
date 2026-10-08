@@ -63,6 +63,8 @@ enum PhoneTabSwitcherLayout {
 /// language.
 struct PhoneTabSwitcher_iOS: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     /// The shell, for the three transitions this screen can cause: open a tab,
     /// go Home, dismiss. It owns `switcherPresented`, so the screen never
@@ -90,6 +92,23 @@ struct PhoneTabSwitcher_iOS: View {
             tabs: app.tabs, activeTabId: app.activeTabId, isResident: isResident)
     }
 
+    private var searchNeedle: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Search stored metadata only. Build cards before filtering so duplicate
+    /// labels keep their full-list ordinals and each card keeps its tab identity.
+    private var filteredCards: [PhoneTabCard] {
+        let allCards = cards
+        let needle = searchNeedle
+        guard !needle.isEmpty else { return allCards }
+        let matchingIds = Set(app.tabs.filter { tab in
+            PhoneTabCardBuilder.title(for: tab).localizedStandardContains(needle)
+                || (tab.document?.pdfPath.localizedStandardContains(needle) ?? false)
+        }.map(\.id))
+        return allCards.filter { matchingIds.contains($0.id) }
+    }
+
     /// Is this tab still backed by live native state?
     ///
     /// Both halves are pure reads. `existingLiveTabRuntime` never creates —
@@ -104,28 +123,36 @@ struct PhoneTabSwitcher_iOS: View {
     }
 
     var body: some View {
+        let visibleCards = filteredCards
         ScrollView {
-            LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
-                ForEach(cards) { card in
-                    PhoneTabCardView(
-                        card: card,
-                        palette: palette,
-                        thumbnailRevision: thumbnailRevision(for: card),
-                        loadThumbnail: { await thumbnail(for: card) },
-                        open: { open(card) },
-                        close: { close(card) })
+            if visibleCards.isEmpty {
+                emptyState
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+            } else {
+                LazyVGrid(columns: columns, spacing: PhoneTabSwitcherLayout.rowGap) {
+                    ForEach(visibleCards) { card in
+                        PhoneTabCardView(
+                            card: card,
+                            palette: palette,
+                            thumbnailRevision: thumbnailRevision(for: card),
+                            loadThumbnail: { await thumbnail(for: card) },
+                            open: { open(card) },
+                            close: { close(card) })
+                    }
                 }
+                .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
+                .padding(.top, PhoneTabSwitcherLayout.gutter)
+                .padding(.bottom, PhoneTabSwitcherLayout.rowGap)
             }
-            .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
-            .padding(.top, PhoneTabSwitcherLayout.gutter)
-            .padding(.bottom, PhoneTabSwitcherLayout.rowGap)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .overlay { if cards.isEmpty { emptyState } }
+        .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well.ignoresSafeArea())
         // The controls are an inset rather than an overlay so the last row of
         // cards can be scrolled clear of them.
+        .safeAreaInset(edge: .top, spacing: 0) { searchField }
         .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
         .environment(\.palette, palette)
         .preferredColorScheme(themeStore.colorScheme)
@@ -166,6 +193,41 @@ struct PhoneTabSwitcher_iOS: View {
     }
 
     // MARK: - Chrome
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .foregroundStyle(palette.foreground)
+                .frame(minHeight: PhoneChromeLayout.buttonSide)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
+                .accessibilityLabel("Search tabs")
+                .accessibilityIdentifier("phone.tabs.search")
+
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.body)
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(
+                            minWidth: PhoneChromeLayout.buttonSide,
+                            minHeight: PhoneChromeLayout.buttonSide)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear tab search")
+                .accessibilityIdentifier("phone.tabs.search.clear")
+            }
+        }
+        .padding(.horizontal, PhoneTabSwitcherLayout.gutter)
+        .padding(.vertical, 8)
+        .background(palette.well)
+    }
 
     /// Count on the leading edge, with a separate glass button for each action.
     private var bottomBar: some View {
@@ -342,12 +404,18 @@ struct PhoneTabSwitcher_iOS: View {
             .uiImage
     }
 
-    /// Only reachable for a beat: `didCloseTab()` routes Home the moment the
-    /// last tab goes. It exists so that beat is not a blank screen.
+    /// A search miss stays scrollable at large text sizes. The unfiltered
+    /// empty state also covers the beat before the last closed tab routes Home.
+    @ViewBuilder
     private var emptyState: some View {
-        Text("No open documents")
-            .font(.body)
-            .foregroundStyle(palette.mutedForeground)
+        if !searchNeedle.isEmpty {
+            ContentUnavailableView.search(text: searchNeedle)
+                .accessibilityIdentifier("phone.tabs.search.empty")
+        } else {
+            Text("No open documents")
+                .font(.body)
+                .foregroundStyle(palette.mutedForeground)
+        }
     }
 }
 
