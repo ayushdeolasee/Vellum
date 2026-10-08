@@ -70,7 +70,7 @@ enum WebStorageRelocator {
             } else {
                 status = Status(
                     needsRecovery: true,
-                    message: "The previous location is still unavailable. Your data remains safe; reconnect it and relaunch Vellum to resume."
+                    message: WebStorageMigrator.incompleteRelocationMessage
                 )
             }
             NotificationCenter.default.post(name: .vellumStorageRelocationChanged, object: nil)
