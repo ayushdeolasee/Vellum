@@ -17,21 +17,29 @@ struct SettingsView: View {
     @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
     @State private var phoneTab: SettingsPhoneTab = .general
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     #endif
 
     var body: some View {
         #if os(iOS)
-        phoneSettings
-        .onAppear {
-            phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
-        }
-        .onChange(of: workspace.settingsSection) { _, section in
-            phoneTab = SettingsPhoneTab(section: section)
-        }
-        .onChange(of: phoneTab) { _, tab in
-            if let section = tab.settingsSection {
-                workspace.settingsSection = section
+        Group {
+            if ShellIdiom_iOS.current == .pad {
+                padSettings
+            } else {
+                phoneSettings
+                .onAppear {
+                    phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
+                }
+                .onChange(of: workspace.settingsSection) { _, section in
+                    phoneTab = SettingsPhoneTab(section: section)
+                }
+                .onChange(of: phoneTab) { _, tab in
+                    if let section = tab.settingsSection {
+                        workspace.settingsSection = section
+                    }
+                }
             }
         }
         .accessibilityIdentifier("settings.content")
@@ -69,6 +77,68 @@ struct SettingsView: View {
     }
 
     #if os(iOS)
+    private static let padSections: [WorkspaceStore.SettingsSection] = [
+        .general, .reading, .annotations, .ai, .storage, .integrations
+    ]
+
+    private var padSelection: Binding<WorkspaceStore.SettingsSection?> {
+        Binding(
+            get: { workspace.settingsSection },
+            set: { section in
+                if let section {
+                    workspace.settingsSection = section
+                    preferredCompactColumn = .detail
+                }
+            })
+    }
+
+    private var padSettings: some View {
+        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+            List(selection: padSelection) {
+                ForEach(Self.padSections, id: \.self) { section in
+                    NavigationLink(value: section) {
+                        Label(section.settingsTitle, systemImage: section.settingsSymbol)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("settings.sidebar.\(section.settingsTitle.lowercased())")
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
+            .toolbar {
+                // In a collapsed split view, Done must also be available on
+                // the section list after navigating back from a detail.
+                if horizontalSizeClass == .compact {
+                    SettingsDoneToolbar()
+                }
+            }
+        } detail: {
+            padSectionContent
+                .navigationTitle(workspace.settingsSection.settingsTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { SettingsDoneToolbar() }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: workspace.settingsSection) { _, _ in
+            preferredCompactColumn = .detail
+        }
+    }
+
+    @ViewBuilder
+    private var padSectionContent: some View {
+        switch workspace.settingsSection {
+        case .general: GeneralSettingsTab()
+        case .reading: ReadingSettingsTab()
+        case .annotations: AnnotationsSettingsTab()
+        case .ai: AiSettingsTab()
+        case .storage: StorageSettingsTab()
+        case .integrations: IntegrationsSettingsTab()
+        }
+    }
+
     @ViewBuilder
     private var phoneSettings: some View {
         if dynamicTypeSize.isAccessibilitySize {
@@ -140,6 +210,30 @@ struct SettingsView: View {
 }
 
 #if os(iOS)
+private extension WorkspaceStore.SettingsSection {
+    var settingsTitle: String {
+        switch self {
+        case .general: "General"
+        case .reading: "Reading"
+        case .annotations: "Annotations"
+        case .ai: "AI"
+        case .storage: "Storage"
+        case .integrations: "Integrations"
+        }
+    }
+
+    var settingsSymbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .reading: "text.book.closed"
+        case .annotations: "highlighter"
+        case .ai: "sparkles"
+        case .storage: "internaldrive"
+        case .integrations: "link"
+        }
+    }
+}
+
 enum SettingsPhoneTab: Hashable, CaseIterable {
     case general
     case reading

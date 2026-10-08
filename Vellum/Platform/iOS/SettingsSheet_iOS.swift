@@ -22,6 +22,15 @@ struct SettingsSheet_iOS: View {
     @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
+        if ShellIdiom_iOS.current == .pad {
+            settingsContent
+                .presentationSizing(.page)
+        } else {
+            settingsContent
+        }
+    }
+
+    private var settingsContent: some View {
         SettingsView()
             .environment(workspace)
             // Settings ▸ Integrations and both of its sheets read the store via
@@ -33,6 +42,18 @@ struct SettingsSheet_iOS: View {
             .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .presentationDetents([.large])
+    }
+}
+
+/// Both columns of iPad Settings dismiss the same enclosing sheet.
+struct SettingsDoneToolbar: ToolbarContent {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done") { dismiss() }
+                .accessibilityIdentifier("settings.done")
+        }
     }
 }
 
