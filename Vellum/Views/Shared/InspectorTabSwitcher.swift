@@ -149,7 +149,6 @@ struct InspectorTabSwitcher: View {
     /// because `.onHover` fires for a trackpad or Magic Mouse pointer — it is a
     /// real iPad affordance, not dead macOS code.
     @State private var hovering: WorkspaceStore.SidebarTab?
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @ViewBuilder
     var body: some View {
