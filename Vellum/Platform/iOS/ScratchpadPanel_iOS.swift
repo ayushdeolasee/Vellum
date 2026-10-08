@@ -69,6 +69,7 @@ struct ScratchpadPanel: View {
 
     @State private var showsExportOptions = false
     @State private var exportFeedback: ExportFeedback?
+    @State private var pencilEnabled = false
 
     /// True only while a capture *this* panel armed is in flight — the AI panel
     /// arms the same `.snapshotRegion` mode, and its crop must not light up the
@@ -83,14 +84,23 @@ struct ScratchpadPanel: View {
         @Bindable var store = scratchpadStore
         return VStack(spacing: 0) {
             header
-            ScratchpadLiveEditor(
-                text: $store.text,
-                store: scratchpadStore,
-                fontSize: workspace.sidebarFontSize,
-                palette: palette
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(!scratchpadStore.isPersistencePaused)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                ScratchpadWritingEditor(store: scratchpadStore,
+                                        pencilEnabled: $pencilEnabled,
+                                        attachmentRevision: scratchpadStore.attachmentRevision,
+                                        fontSize: workspace.sidebarFontSize,
+                                        palette: palette)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScratchpadLiveEditor(
+                    text: $store.text,
+                    store: scratchpadStore,
+                    fontSize: workspace.sidebarFontSize,
+                    palette: palette
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(!scratchpadStore.isPersistencePaused)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
@@ -114,6 +124,9 @@ struct ScratchpadPanel: View {
         }
         .animation(.easeInOut(duration: 0.2), value: scratchpadStore.dropWarning)
         .animation(.easeInOut(duration: 0.2), value: exportFeedback)
+        .onChange(of: scratchpadStore.editorContext) { _, _ in
+            pencilEnabled = false
+        }
         // Accept any drag so a non-image drop reaches `handleDrop` and can be
         // explained, rather than silently rejected. (The WebView covers the
         // editor body; this catches drops on the header/margins.)
@@ -178,6 +191,11 @@ struct ScratchpadPanel: View {
     }
 
     private var header: some View {
+        headerActions
+            .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var headerActions: some View {
         HStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "note.text")
@@ -190,6 +208,18 @@ struct ScratchpadPanel: View {
             }
             .layoutPriority(1)
             Spacer(minLength: 8)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                IconButton(
+                    variant: pencilEnabled ? .active : .ghost,
+                    help: pencilEnabled ? "Finish handwriting" : "Write with Apple Pencil",
+                    disabled: !scratchpadStore.editorAcceptsChanges,
+                    action: { pencilEnabled.toggle() }
+                ) {
+                    Image(systemName: "pencil.tip").font(.system(size: 15))
+                }
+                .accessibilityIdentifier("scratchpad.pencil")
+                .accessibilityAddTraits(pencilEnabled ? .isSelected : [])
+            }
             if appStore.document != nil {
                 IconButton(
                     variant: isCapturingRegion ? .active : .ghost,
@@ -221,7 +251,6 @@ struct ScratchpadPanel: View {
         .foregroundStyle(palette.foreground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     private func toggleSnapshotRegion() {
@@ -237,9 +266,15 @@ struct ScratchpadPanel: View {
     /// undo, so gating the clear itself on one would leave the only clear
     /// affordance permanently disabled wherever it is absent.
     private func clear() {
-        guard let transaction = scratchpadStore.clearText() else { return }
-        guard let undoManager else { return }
-        registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
+        let context = scratchpadStore.editorContext
+        Task {
+            await scratchpadStore.awaitAttachmentUpdates()
+            guard context == scratchpadStore.editorContext,
+                  scratchpadStore.editorAcceptsChanges,
+                  let transaction = scratchpadStore.clearText() else { return }
+            guard let manager = scratchpadStore.editorUndoManager ?? undoManager else { return }
+            registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: manager)
+        }
     }
 
     private var documentTitle: String {
@@ -257,6 +292,10 @@ struct ScratchpadPanel: View {
 
     @MainActor
     private func exportMarkdown(options: ScratchpadMarkdownExportOptions) async {
+        let context = scratchpadStore.editorContext
+        await scratchpadStore.awaitAttachmentUpdates()
+        guard context == scratchpadStore.editorContext,
+              scratchpadStore.editorAcceptsChanges else { return }
         // iOS has no save panel: stage the export into a private temp dir, then
         // hand the finished file (and its assets folder, if any) to the Files
         // export picker, which copies it wherever the user chooses.

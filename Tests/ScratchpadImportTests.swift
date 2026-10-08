@@ -1,5 +1,6 @@
 import UIKit
 import XCTest
+import PencilKit
 @testable import Vellum
 
 // Coverage for the scratchpad image-import feature: the disk attachment store
@@ -699,6 +700,171 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertEqual(container.peek(documentURL(
             root: root, key: firstKey, name: "scratchpad.md")),
             Data("pending first edit".utf8))
+    }
+
+    func testNativeDrawingSurvivesImmediateDocumentSwitchAndClearUndo() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-drawing-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let first = DocumentInfo(kind: .pdf, pdfPath: "/tmp/drawing.pdf", docId: UUID().uuidString.lowercased())
+        let second = DocumentInfo(kind: .pdf, pdfPath: "/tmp/other.pdf", docId: UUID().uuidString.lowercased())
+        let app = appShowing(first, tabID: "drawing-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        defer { store.insertMarkdownHandler = nil }
+        await store.loadForDocument(first).value
+        store.text = "Before 📝\nAfter"
+        let editor = ScratchpadWritingTextView()
+        editor.store = store
+        editor.delegate = editor
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        window.rootViewController = UIViewController()
+        editor.frame = window.bounds
+        window.rootViewController?.view.addSubview(editor)
+        window.makeKeyAndVisible()
+        defer { editor.hideTools(); window.isHidden = true }
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        XCTAssertNotNil(editor.textLayoutManager)
+        editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        var ink: ScratchpadDrawingAttachment?
+        editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
+            ink = value as? ScratchpadDrawingAttachment ?? ink
+        }
+        let attachment = try XCTUnwrap(ink)
+        if let manager = editor.textLayoutManager, let range = manager.textContentManager?.documentRange {
+            manager.ensureLayout(for: range)
+        }
+        window.layoutIfNeeded()
+        editor.layoutIfNeeded()
+        await Task.yield()
+        let canvas = try XCTUnwrap(attachment.canvas)
+        XCTAssertGreaterThan(canvas.bounds.width, 0)
+        XCTAssertGreaterThanOrEqual(canvas.bounds.height, 240)
+        let initialHeight = canvas.bounds.height
+        editor.extendDrawing(canvas, at: CGPoint(x: 40, y: initialHeight - 10))
+        editor.layoutIfNeeded()
+        XCTAssertGreaterThan(canvas.bounds.height, initialHeight, "Make room before an in-progress stroke reaches the edge")
+        let drawing = PKDrawing(strokes: [PKStroke(
+            ink: PKInk(.pen, color: .black),
+            path: PKStrokePath(controlPoints: [
+                PKStrokePoint(location: CGPoint(x: 20, y: 30), timeOffset: 0, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2),
+                PKStrokePoint(location: CGPoint(x: 180, y: 420), timeOffset: 1, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+            ], creationDate: Date()))])
+        canvas.drawing = drawing
+        editor.canvasViewDrawingDidChange(canvas)
+        editor.layoutIfNeeded()
+        XCTAssertGreaterThan(canvas.bounds.height, initialHeight)
+        let canvasFrame = canvas.frame
+        editor.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
+        editor.layoutIfNeeded()
+        XCTAssertEqual(canvas.frame, canvasFrame, "Scrolling must keep ink anchored to its text attachment")
+        // A caret at the region's trailing edge should reopen its existing
+        // canvas rather than inserting another handwriting block.
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length + 1, length: 0)
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        let precedingNewline = NSRange(location: ("Before 📝" as NSString).length, length: 1)
+        editor.textStorage.deleteCharacters(in: precedingNewline)
+        editor.textViewDidChange(editor)
+        XCTAssertEqual(ScratchpadWritingReference.references(in: store.text).count, 1)
+        let note = store.text
+        XCTAssertTrue(note.hasPrefix("Before 📝\n![Handwriting]"))
+        XCTAssertTrue(note.hasSuffix("\nAfter"))
+        XCTAssertGreaterThan(attachment.drawingHeight, 420)
+        app.attachTab(PdfTab(id: "other-tab", document: second, currentPage: 1, numPages: 1,
+                             zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        await store.loadForDocument(second).value
+        XCTAssertTrue(store.text.isEmpty)
+        let key = DocumentIdentity.storageKey(for: first)
+        let drawingID = try XCTUnwrap(attachment.reference.drawingID)
+        let bytes = try XCTUnwrap(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")))
+        XCTAssertEqual(try PKDrawing(data: bytes).strokes.count, 1)
+        XCTAssertNotNil(container.peek(documentURL(root: root, key: key, name: "attachments/\(attachment.reference.imageID).png")))
+        app.attachTab(PdfTab(id: "drawing-tab", document: first, currentPage: 1, numPages: 1,
+                             zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
+        await store.loadForDocument(first).value
+        XCTAssertEqual(store.text, note)
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        let clear = try XCTUnwrap(store.clearText())
+        editor.undoManager?.registerUndo(withTarget: store) { target in
+            _ = target.undoClear(clear)
+        }
+        editor.applyContent()
+        XCTAssertTrue(editor.undoManager?.canUndo == true)
+        await store.flush().value
+        editor.undoManager?.undo()
+        await store.flush().value
+        XCTAssertEqual(store.text, note)
+        XCTAssertEqual(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")), bytes)
+        editor.hideTools()
+        // The same native input retains Markdown source while rendering math
+        // and formatting; the selected paragraph reveals source for editing.
+        editor.resignFirstResponder()
+        editor.selectedRange = NSRange(location: 0, length: 0)
+        let markdown = "# Topic 📝\n\n**Bold** and *italic*.\n\n$x^2$\n\n`$literal$`"
+        store.text = markdown
+        editor.applyContent()
+        XCTAssertEqual(ScratchpadMarkdownStyler.source(in: editor.textStorage), markdown)
+        let mathRange = (markdown as NSString).range(of: "$x^2$")
+        let math = try XCTUnwrap(editor.textStorage.attribute(.attachment, at: mathRange.location, effectiveRange: nil) as? NSTextAttachment)
+        editor.layoutIfNeeded()
+        let mathStart = try XCTUnwrap(editor.position(from: editor.beginningOfDocument, offset: mathRange.location))
+        let mathEnd = try XCTUnwrap(editor.position(from: mathStart, offset: 1))
+        let mathTextRange = try XCTUnwrap(editor.textRange(from: mathStart, to: mathEnd))
+        XCTAssertEqual(editor.firstRect(for: mathTextRange).width, math.bounds.width, accuracy: 0.5)
+        XCTAssertNil(editor.textStorage.attribute(.attachment, at: (markdown as NSString).range(of: "$literal$").location, effectiveRange: nil))
+        editor.textViewDidChange(editor)
+        XCTAssertEqual(store.text, markdown)
+        editor.selectedRange = NSRange(location: mathRange.location + 2, length: 0)
+        editor.becomeFirstResponder()
+        editor.textViewDidChangeSelection(editor)
+        XCTAssertNil(editor.textStorage.attribute(.attachment, at: mathRange.location, effectiveRange: nil))
+        XCTAssertEqual(editor.textStorage.string, markdown)
+        editor.resignFirstResponder()
+        await store.flush().value
+    }
+
+    func testDrawingReferenceParserPreservesFencedExamplesAndUnicodeRanges() throws {
+        let preview = UUID().uuidString.lowercased()
+        let ink = UUID().uuidString.lowercased()
+        let reference = ScratchpadWritingReference.drawingMarkdown(imageID: preview, drawingID: ink)
+        let note = "📝 Notes\n\n```markdown\n\(reference)\n```\n\n\(reference)\n\nAfter"
+        let parsed = ScratchpadWritingReference.references(in: note)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed.first?.drawingID, ink)
+        XCTAssertEqual((note as NSString).substring(with: try XCTUnwrap(parsed.first?.range)), reference)
+        XCTAssertEqual(ScratchpadAttachmentStore.referencedIds(in: reference), [preview, ink])
+        let relative = ScratchpadPersistence.schemeToRelative(note) { $0 == ink ? "drawing" : "png" }
+        XCTAssertEqual(ScratchpadPersistence.relativeToScheme(relative), note)
+    }
+
+    func testPendingDrawingUpdateCannotResurrectExternallyDeletedNote() async throws {
+        let root = URL(fileURLWithPath: "/scratchpad-drawing-delete-\(UUID().uuidString)/Vellum")
+        let container = FakeSyncedContainer()
+        let coordinator = makeCoordinator(container: container, cloudRoot: root)
+        await coordinator.start()
+        let document = DocumentInfo(kind: .pdf, pdfPath: "/tmp/drawing-delete.pdf", docId: UUID().uuidString.lowercased())
+        let app = appShowing(document, tabID: "drawing-tab")
+        let store = ScratchpadStore(coordinator: coordinator)
+        store.app = app
+        await store.loadForDocument(document).value
+        let id = UUID().uuidString.lowercased()
+        store.text = "<!-- vellum-drawing: vellum-scratchpad://\(id) -->"
+        store.queueAttachmentUpdate(id: id, context: store.editorContext) {
+            [.init(id: id, name: "\(id).drawing", data: Data([1, 2, 3]))]
+        }
+        let key = DocumentIdentity.storageKey(for: document)
+        let token = try XCTUnwrap(store.prepareForExternalDelete(matchingKey: key))
+        await store.awaitAttachmentUpdates()
+        await store.finishExternalDelete(token, succeeded: true)
+        await store.flush().value
+        XCTAssertTrue(store.text.isEmpty)
+        XCTAssertTrue(store.attachmentResolver.snapshot().isEmpty)
+        XCTAssertNil(container.peek(documentURL(root: root, key: key, name: "scratchpad.md")))
     }
 
     // MARK: - Helpers
