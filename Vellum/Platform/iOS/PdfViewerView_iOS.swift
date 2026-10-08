@@ -4,7 +4,7 @@ import SwiftUI
 
 // SwiftUI shell of the iPad PDF viewer. Loads the document as DATA via
 // readPdfBytes (mutations rewrite the file on disk; the in-view document is the
-// in-memory copy and annotations render only from store overlays), hosts
+// in-memory copy retains native ink; highlights and notes use store overlays), hosts
 // PdfKitView_iOS plus the touch overlay stack, and registers the zoom/scroll/
 // locator/snapshot handlers on the stores — the same contract as the macOS
 // PdfViewerView.
@@ -179,21 +179,21 @@ struct PdfViewerView_iOS: View {
                 // residency policy has already reclaimed.
                 document = cached
             } else {
-                // Parse the PDF and strip its embedded annotations OFF the main
+                // Parse the PDF and strip non-ink annotations OFF the main
                 // thread — both are heavy CGPDF work that would otherwise freeze
                 // the UI (beachball) on every tab switch for a large document.
                 // The document isn't attached to any view yet, so this is safe.
-                // KEEP Vellum ink annotations, exactly like `adopt`'s
-                // `stripEmbeddedAnnotations`: Pencil ink renders natively via
-                // PDFKit and is the seed source for the overlay canvases, so a
-                // blanket strip here erased persisted ink on cold reopen (ink
-                // drawn last session vanished on relaunch / fresh-from-Recents).
+                // Keep all native ink. The overlay seeds and removes only
+                // Vellum-managed ink; third-party ink stays visible in PDFKit
+                // without becoming editable PencilKit strokes or summary pages.
                 let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPdf in
                     guard let document = PdfViewerDocument(data: data) else {
                         return PreparedPdf(document: nil, handwritingPages: [])
                     }
                     let handwritingPages = PdfViewerPreparation.stripAnnotations(
-                        from: document, isHandwriting: PdfInk.isVellumInk)
+                        from: document,
+                        preserving: { $0.type == PDFAnnotationSubtype.ink.rawValue },
+                        isHandwriting: PdfInk.isVellumInk)
                     return PreparedPdf(
                         document: document,
                         handwritingPages: handwritingPages)
