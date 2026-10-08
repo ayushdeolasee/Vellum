@@ -189,7 +189,7 @@ private struct ChromeFixture {
         shell.didOpenDocument()
     }
 
-    /// The bars read four stores and the palette out of the environment; a
+    /// The bars read their stores and the palette out of the environment; a
     /// missing one is a crash at hosting time, not a compile error, so they are
     /// injected in one place.
     func host(_ view: some View) -> some View {
@@ -200,6 +200,7 @@ private struct ChromeFixture {
             .environment(pane.ai)
             .environment(pane.scratchpad)
             .environment(workspace)
+            .environment(workspace.integrations)
             .environment(\.palette, .light)
             .tint(ThemePalette.light.primary)
     }
