@@ -378,6 +378,7 @@ final class WebViewerController: NSObject {
     // loaded yet. A counter (not a boolean) so highlight application re-fires
     // after in-tab navigation replaces the document.
     private(set) var initCount = 0
+    @ObservationIgnored private var inkNavigationPageURL: String?
     private(set) var isOffline = false
     private(set) var selection: WebSelection?
     private(set) var popoverPosition: CGPoint?
@@ -579,6 +580,9 @@ final class WebViewerController: NSObject {
         app.scrollToWebPositionHandler = { [weak self] positionData, page in
             self?.scrollToWebPosition(positionData, page: page) ?? false
         }
+        app.scrollToWebInkHandler = { [weak self] cluster in
+            self?.scrollToSavedInk(cluster) ?? false
+        }
         annotationStore.captureWebPositionHandler = { [weak self] in
             await self?.captureWebPosition()
         }
@@ -659,6 +663,7 @@ final class WebViewerController: NSObject {
         if let app, app.activeTabId == mountTabId || app.document == nil {
             app.scrollToPageHandler = nil
             app.scrollToWebPositionHandler = nil
+            app.scrollToWebInkHandler = nil
             annotationStore?.captureWebPositionHandler = nil
             aiStore?.locateWebTextHandler = nil
             aiStore?.capturePageImageHandler = nil
@@ -1214,6 +1219,37 @@ final class WebViewerController: NSObject {
         )
     }
 
+    /// Reuse the position-scroll command with the saved CSS bounds as a
+    /// fallback. The DOM computes the same anchor translation as the saved-ink
+    /// renderer, without changing the sidecar or recapturing anchors.
+    private func scrollToSavedInk(_ cluster: WebInkRecord.Cluster) -> Bool {
+        guard attached, pendingNavUrl == nil, outgoingNavUrl == nil,
+              let app, let tabId = mountTabId, let document = mountDocument,
+              app.activeTabId == tabId, app.document?.pdfPath == document.pdfPath,
+              initCount > 0, let pageURL = inkNavigationPageURL,
+              (try? WebUrl.normalize(pageURL)) == document.pdfPath else { return false }
+        let bounds = cluster.bounds
+        guard bounds.x.isFinite, bounds.y.isFinite,
+              bounds.w.isFinite, bounds.h.isFinite,
+              bounds.w > 0, bounds.h > 0 else { return false }
+        var anchor = cluster.anchor
+        if let saved = anchor,
+           saved.startOffset < 0 || saved.startOffset == Int.max || !saved.rect.y.isFinite {
+            anchor = nil
+        }
+        post("scroll-to-position", [
+            "start": orNull(anchor?.startOffset),
+            "end": orNull(anchor.map { $0.endOffset ?? ($0.startOffset + 1) }),
+            "text": orNull(anchor?.text),
+            "prefix": orNull(anchor?.prefix),
+            "suffix": orNull(anchor?.suffix),
+            "inkUrl": pageURL,
+            "inkY": bounds.y,
+            "inkAnchorY": orNull(anchor?.rect.y),
+        ])
+        return true
+    }
+
     func scrollToWebPosition(_ positionData: PositionData, page: Int?) -> Bool {
         guard supportsPositions else { return false }
         post("scroll-to-position", [
@@ -1651,6 +1687,7 @@ final class WebViewerController: NSObject {
             return
         }
 
+        inkNavigationPageURL = reportedUrl ?? currentDoc.pdfPath
         initCount += 1
 
         if let pageCount = intValue(data["pageCount"]), pageCount > 0 {
