@@ -287,7 +287,7 @@ struct PhoneTabSwitcher_iOS: View {
                         width: PhoneTabSwitcherLayout.closeDisc,
                         height: PhoneTabSwitcherLayout.closeDisc)
                 Image(systemName: "ellipsis")
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(palette.mutedForeground)
             }
             .frame(
@@ -729,7 +729,7 @@ struct PhoneTabCardView: View {
                         width: PhoneTabSwitcherLayout.closeDisc,
                         height: PhoneTabSwitcherLayout.closeDisc)
                 Image(systemName: "xmark")
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(palette.mutedForeground)
             }
             .frame(
