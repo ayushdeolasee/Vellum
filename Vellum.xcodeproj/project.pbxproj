@@ -268,6 +268,7 @@
 		549253C72A5076AA9220739B /* editor.html in Resources */ = {isa = PBXBuildFile; fileRef = C024B0FD91AE2990C4277000 /* editor.html */; };
 		54D0FE0ACE733ECF4641355E /* Untitled.icon in Resources */ = {isa = PBXBuildFile; fileRef = C8F4E0214AE68A33C5052709 /* Untitled.icon */; };
 		54E5D11BCC123B35C6A0F216 /* ConflictResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4BBA63468922913E6AF8B3 /* ConflictResolver.swift */; };
+		55A00817F6DEB420E0DE03D8 /* VellumSystemRouteHandoff_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A828B1C8CACA74E220F06201 /* VellumSystemRouteHandoff_macOS.swift */; };
 		560428C36887F29F8157E511 /* PhoneInspectorSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F58A6FB28B05EA4AC592E9 /* PhoneInspectorSheet_iOS.swift */; };
 		56633B0C1607E321CF459371 /* WebLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA75D024B6F4DEC807ABD97 /* WebLibrary.swift */; };
 		567BCA05CE20FB2955BDC3A2 /* PdfSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C888E571A951AE6BCD089B3D /* PdfSearch.swift */; };
@@ -399,6 +400,7 @@
 		89E3026802FF4B000AE55B5A /* CaptureTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9936C8BC806FD5ACB4862377 /* CaptureTestSupport.swift */; };
 		89E85E626317F749622CBB90 /* PositionClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 074934F5FBB9734F187AA743 /* PositionClock.swift */; };
 		89E877066CAE853FF369D5F7 /* HomeSearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56E0D2A9B180E6017E9C6CA6 /* HomeSearchEngine.swift */; };
+		89FB2C0E0C7E0F3A28AA313C /* VellumSystemRouteHandoff_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A828B1C8CACA74E220F06201 /* VellumSystemRouteHandoff_macOS.swift */; };
 		8A80F2F5C8064538553715F9 /* DocumentAccessResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0318D83DDF4368982EF97CD /* DocumentAccessResolver.swift */; };
 		8A9EF1A7DD66BBD15B7CBD59 /* PhoneLaunchState_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBEC22121640E7169439E3B3 /* PhoneLaunchState_iOS.swift */; };
 		8ACD7ECB9ED695A408AFA39B /* WalkthroughSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19503ACED68A5C202EBE2E4 /* WalkthroughSheet_iOS.swift */; };
@@ -1032,6 +1034,7 @@
 		A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetSnapshotStore.swift; sourceTree = "<group>"; };
 		A7508380103E3495A82E0771 /* KaTeX_Caligraphic-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Regular.woff2"; sourceTree = "<group>"; };
 		A7A88AE6F1B577A687BEFD98 /* PdfViewerView_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfViewerView_iOS.swift; sourceTree = "<group>"; };
+		A828B1C8CACA74E220F06201 /* VellumSystemRouteHandoff_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumSystemRouteHandoff_macOS.swift; sourceTree = "<group>"; };
 		A983BCE1C6F0EFD91050061B /* PdfRegionRenderer_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfRegionRenderer_iOS.swift; sourceTree = "<group>"; };
 		A9C121F8857A7DE7430ABF90 /* ZoomHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomHandlerTests.swift; sourceTree = "<group>"; };
 		AAD3BBED12CD46602B3CC142 /* ScratchOutRecognizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchOutRecognizerTests.swift; sourceTree = "<group>"; };
@@ -1921,6 +1924,7 @@
 		EFA2309BBE859F2CE164A0F4 /* macOS */ = {
 			isa = PBXGroup;
 			children = (
+				A828B1C8CACA74E220F06201 /* VellumSystemRouteHandoff_macOS.swift */,
 				A994F934135EB59054C70046 /* Restored */,
 			);
 			path = macOS;
@@ -2507,6 +2511,7 @@
 				2E571A6857F9CA8EA709937C /* VellumDeepLink.swift in Sources */,
 				714FF02C027A95D988A9173F /* VellumExternalWebLink.swift in Sources */,
 				48D38F1483C7C41B79688BF7 /* VellumSystemRouteHandoff.swift in Sources */,
+				55A00817F6DEB420E0DE03D8 /* VellumSystemRouteHandoff_macOS.swift in Sources */,
 				4768DF117C803C2D9618FC47 /* VellumWidgetSnapshot.swift in Sources */,
 				00E0D4A949B6BD7C88E476F1 /* VellumWidgetSnapshotPublisher.swift in Sources */,
 				15B509D29926E16D34EC944A /* VellumWidgetSnapshotStore.swift in Sources */,
@@ -2805,6 +2810,7 @@
 				997ACFC8C0058D47E95426CD /* VellumDeepLink.swift in Sources */,
 				2670577A5E7C804FA8FA5FD8 /* VellumExternalWebLink.swift in Sources */,
 				8BD696DBDAF7BEF928677D04 /* VellumSystemRouteHandoff.swift in Sources */,
+				89FB2C0E0C7E0F3A28AA313C /* VellumSystemRouteHandoff_macOS.swift in Sources */,
 				1F8C484D6058F812E5B684CB /* VellumWidgetSnapshot.swift in Sources */,
 				AD29368E59AA24AB83822878 /* VellumWidgetSnapshotPublisher.swift in Sources */,
 				13589ED137C354784B9A3C7B /* VellumWidgetSnapshotStore.swift in Sources */,
