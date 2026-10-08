@@ -206,11 +206,14 @@ actor CaptureIngestion {
         try Task.checkCancellation()
         let pagesJSON = try WebArchive.encodePagesJson([])
         let existing = await storage.loadRecord(forKey: key.hash)
-        let title = normalizedTitle(record.title) ?? existing?.title
+        let titleIsUserDefined = existing?.titleIsUserDefined == true
+        let title = titleIsUserDefined
+            ? existing?.title : normalizedTitle(record.title) ?? existing?.title
         let annotations = existing?.annotations ?? []
         let manifest = WebArchive.buildManifest(
             url: normalizedURL,
             title: title,
+            titleIsUserDefined: titleIsUserDefined,
             pageCount: existing?.pageCount,
             lastPage: existing?.lastPage,
             loadingPolicy: "live-first",
@@ -235,7 +238,10 @@ actor CaptureIngestion {
             pagesJson: pagesJSON,
             annotations: annotations)
         try await storage.mutateRecord(url: normalizedURL, key: key.hash) { pageRecord in
-            pageRecord.title = title
+            // A user can rename while the archive write is suspended.
+            if !pageRecord.titleIsUserDefined {
+                pageRecord.title = normalizedTitle(record.title) ?? pageRecord.title
+            }
             pageRecord.saved = true
             pageRecord.savedAt = pageRecord.savedAt ?? record.capturedAt
         }
