@@ -1,37 +1,10 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
-/// The phone's inspector: the iPad's inspector column, presented as a detented
-/// sheet over the reader (#153 P6).
-///
-/// The content is `SidebarContent_iOS` **unchanged** — the same switcher, the
-/// same three panels, the same lazy AI/scratchpad latches. That is the whole
-/// design: the phone has no second copy of the annotation list or the AI panel
-/// to keep in step, and every existing reveal path (`AiStore`'s "quote in AI",
-/// `AppStore`'s note flow, ⌥⌘1/2/3, the ink reveal) already writes the
-/// window-global `sidebarTab`/`sidebarOpen` this sheet is bound to (D2), so
-/// they light it up here with no new plumbing.
-///
-/// ## Why every dependency is passed in and re-injected
-///
-/// A `.sheet` is a separate presentation host. Content presented from one only
-/// reliably sees environment written *above* the presentation modifier, and
-/// `@Environment(SomeStore.self)` for a store that did not make it across is a
-/// `fatalError`, not a `nil` — the crash `ContentView_iOS:57-63` documents from
-/// main PR #116. `SettingsSheet_iOS:35-39` is the precedent this follows: name
-/// every store the subtree reads and inject it explicitly at the sheet's root.
-///
-/// This goes one step further than `SettingsSheet_iOS` and takes them as `let`
-/// parameters rather than reading them from `@Environment` here, so the sheet's
-/// own root performs no environment lookup at all and the modifier that
-/// presents it is free to sit anywhere in the shell.
-///
-/// The list is not decoration; it is exactly what the subtree reads:
-/// `WorkspaceStore` (the switcher's selection, and `AnnotationSidebar`),
-/// `AppStore`/`AnnotationStore`/`AiStore`/`ScratchpadStore` (the pane triple
-/// plus its app), `OpenRouterCatalog` (the AI panel's model picker), and the
-/// palette/scheme/tint trio that every
-/// other presentation in this app re-states.
+/// The shared inspector panels, docked to the phone reader's bottom and side
+/// edges. Only the grabber resizes the panel, leaving each panel's scrolling
+/// and the reader above a half-height inspector independent.
 struct PhoneInspectorSheet_iOS: View {
     /// The shell, for the one piece of state the sheet's *content* needs that
     /// the environment does not carry: which tab's ink the Handwriting section
@@ -57,7 +30,7 @@ struct PhoneInspectorSheet_iOS: View {
 
     /// Which detent the sheet is sitting at.
     ///
-    /// A `selection:` binding exists for exactly one reason: the AI composer
+    /// The expansion state exists for the AI composer
     /// gaining focus while the sheet is at `.medium`. The keyboard then covers
     /// most of a half-height sheet and the transcript the user is typing about
     /// disappears behind it. Promoting to `.large` on that event keeps the
@@ -68,8 +41,94 @@ struct PhoneInspectorSheet_iOS: View {
     /// `.medium` again (the half-height sheet is the one that leaves the
     /// document readable underneath it).
     @State private var detent: PresentationDetent = .medium
+    @State private var presenceID = UUID()
+    @GestureState private var dragTranslation: CGFloat = 0
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
+        GeometryReader { geometry in
+            let expanded = detent != Self.interactiveDetent || verticalSizeClass == .compact
+            let restingHeight = expanded
+                ? geometry.size.height
+                : (geometry.size.height + geometry.safeAreaInsets.bottom) / 2
+            let height = min(geometry.size.height, max(120, restingHeight - dragTranslation))
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(spacing: 0) {
+                    grabber(expanded: expanded)
+                    panels
+                }
+                .frame(height: height)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
+                .background {
+                    UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24)
+                        .fill(themeStore.palette.surface)
+                        .ignoresSafeArea(.container, edges: .bottom)
+                }
+                .accessibilityIdentifier("phone.inspector.sheet")
+                .accessibilityAddTraits(expanded ? .isModal : [])
+                .accessibilityAction(.escape) { shell.setInspectorPresented(false) }
+            }
+            .animation(.snappy, value: detent)
+        }
+        .preferredColorScheme(themeStore.colorScheme)
+        .tint(themeStore.palette.primary)
+        .onAppear { SheetPresence_iOS.registerInspector(shell, id: presenceID) }
+        .onDisappear { SheetPresence_iOS.unregisterInspector(id: presenceID) }
+        .onChange(of: pane.ai.composerFocusRequest) { _, request in
+            guard request != nil else { return }
+            detent = .large
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            detent = .large
+        }
+    }
+
+    private func grabber(expanded: Bool) -> some View {
+        Button {
+            if expanded { collapse() }
+            else { detent = .large }
+        } label: {
+            Capsule()
+                .fill(themeStore.palette.mutedForeground.opacity(0.5))
+                .frame(width: 56, height: 4)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sheet Grabber")
+        .accessibilityValue(expanded ? "Expanded" : "Half screen")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: detent = .large
+            case .decrement:
+                if expanded { collapse() }
+                else { shell.setInspectorPresented(false) }
+            @unknown default: break
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 10)
+                .updating($dragTranslation) { value, translation, _ in
+                    translation = value.translation.height
+                }
+                .onEnded { value in
+                    let distance = value.predictedEndTranslation.height
+                    if distance < -60 {
+                        detent = .large
+                    } else if distance > 60 {
+                        if expanded { collapse() }
+                        else { shell.setInspectorPresented(false) }
+                    }
+                })
+    }
+
+    private func collapse() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        detent = .medium
+    }
+
+    private var panels: some View {
         SidebarContent_iOS(
             ink: ink,
             presentation: .phoneSheet,
@@ -82,36 +141,6 @@ struct PhoneInspectorSheet_iOS: View {
             .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .environment(\.palette, themeStore.palette)
-            .preferredColorScheme(themeStore.colorScheme)
-            .tint(themeStore.palette.primary)
-            .accessibilityIdentifier("phone.inspector.sheet")
-            .presentationDetents(Self.detents, selection: $detent)
-            // The half-height sheet must not lock the document out. Reading is
-            // the point of the screen underneath, and an annotation list you
-            // cannot scroll the page beside is a modal dialog wearing a sheet's
-            // clothes. `upThrough: .medium` keeps the reader live at half
-            // height and hands interaction back to the sheet at `.large`,
-            // where the document is not visible anyway.
-            .presentationBackgroundInteraction(.enabled(upThrough: Self.interactiveDetent))
-            // With the background interactive there is no dimmed backdrop to
-            // tap away, so the grabber is the only visible affordance saying
-            // "this drags and dismisses".
-            .presentationDragIndicator(.visible)
-            // Every panel in here scrolls (annotation rows, the AI transcript,
-            // the scratchpad editor). Without this the first drag inside them
-            // resizes the sheet instead of scrolling the content.
-            .presentationContentInteraction(.scrolls)
-            // `AiStore.composerFocusRequest` is the app-wide "the user is about
-            // to type into the AI composer" signal — `AiPanel_iOS` already
-            // observes the same token to take focus, and `AiStore.addReference`
-            // raises it for every "Add to AI Chat" action. Promoting here (and
-            // not, say, on a keyboard-height notification) means the sheet grows
-            // in the same transaction the keyboard is requested rather than
-            // after it, so there is one animation instead of two.
-            .onChange(of: pane.ai.composerFocusRequest) { _, request in
-                guard request != nil else { return }
-                withAnimation(.snappy) { detent = .large }
-            }
     }
 
     /// The ink controller the Handwriting section reads, taken straight from the
@@ -135,8 +164,7 @@ struct PhoneInspectorSheet_iOS: View {
     /// leaving the page it annotates on screen.
     static let detents: Set<PresentationDetent> = [.medium, .large]
 
-    /// The tallest detent at which the document underneath stays interactive.
-    /// Named so the modifier above and any test agree on one value.
+    /// The half-height state leaves the reader above the panel interactive.
     static let interactiveDetent: PresentationDetent = .medium
 
     /// The width `InspectorTabSwitcher` is actually handed when this sheet is up

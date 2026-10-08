@@ -1055,9 +1055,8 @@ struct SidebarContent_iOS: View {
                     set: { selectTab($0) }),
                 usesTextOnlySegments: presentation == .phoneSheet)
             .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-            // The native grabber overlays the sheet content. Give it its own
-            // space before the selector rather than using the column's inset.
-            .padding(.top, presentation == .phoneSheet ? 28 : InspectorLayout.switcherVerticalPadding)
+            // The phone's grabber has its own row above this selector.
+            .padding(.top, presentation == .phoneSheet ? 8 : InspectorLayout.switcherVerticalPadding)
             .padding(.bottom, presentation == .phoneSheet ? 12 : InspectorLayout.switcherVerticalPadding)
             if presentation == .column {
                 Divider()

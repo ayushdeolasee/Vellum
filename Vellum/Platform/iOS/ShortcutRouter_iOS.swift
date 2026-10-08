@@ -56,7 +56,7 @@ enum VellumShortcutRouter {
         // catalog has no such entry today; if packet 3 adds one, hoist it above
         // this check.
         if SheetPresence_iOS.isPresenting {
-            if case .dismiss = action { SheetPresence_iOS.topPresented?.dismiss(animated: true) }
+            if case .dismiss = action { SheetPresence_iOS.dismissTopPresentation() }
             return
         }
 
