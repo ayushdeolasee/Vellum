@@ -83,6 +83,7 @@
 		14218CF999DD463A3DA6A52F /* WalkthroughSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A0F0FCE599D735A694D605 /* WalkthroughSettings.swift */; };
 		143FFEB4FBB9A94F4F582E96 /* AiToolSourceRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9308A43A15E8D1EAAEC887 /* AiToolSourceRow.swift */; };
 		1441F0EC929D01FEAA36FB8F /* FindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7870954383EAE833F32ABF /* FindBar.swift */; };
+		14790040283BAA89272E8BA0 /* WebSavedInk_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89390C6180631D30C45C05BD /* WebSavedInk_macOS.swift */; };
 		14A2C54C29AD1CD63DD1977D /* StorageLocationCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72276AEF5468523548FD8BB7 /* StorageLocationCopy.swift */; };
 		158F9D13B73118720C92C88E /* ReadLaterHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5656DC56874E29C2DCD69B4 /* ReadLaterHTTPClient.swift */; };
 		15B509D29926E16D34EC944A /* VellumWidgetSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */; };
@@ -498,6 +499,7 @@
 		AAB142DDABAD085F9C70C6BE /* WelcomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E282C555B1B420914134C74 /* WelcomeScreen.swift */; };
 		AAC2C2D0A33EBFAE7A7E46BF /* ShellIdiom_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 746237EA42F01B2A8B1AF425 /* ShellIdiom_iOS.swift */; };
 		AB1179F93AF0A40BED22CA57 /* OpenRouterCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0C63462421A1E994C543BB /* OpenRouterCatalog.swift */; };
+		AB58775718A05ACCE6418B8B /* WebSavedInk_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89390C6180631D30C45C05BD /* WebSavedInk_macOS.swift */; };
 		AB9A39277DECF67164B86B08 /* tool-mode-native.md in Resources */ = {isa = PBXBuildFile; fileRef = 88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */; };
 		ACD33980FFF1DBC8693B6C80 /* SettingsSheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 195C9706E9FFE2D7F2E21A1C /* SettingsSheet_iOS.swift */; };
 		ACD85838F860C270E27BE7FC /* StorageManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B76DBD84FB379B34AC58BCE /* StorageManagementTests.swift */; };
@@ -990,6 +992,7 @@
 		887BAD6DD07D5B3101E1873B /* InkPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkPersistenceTests.swift; sourceTree = "<group>"; };
 		88825E2B57F4AFE2A2D1DE36 /* tool-mode-native.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "tool-mode-native.md"; sourceTree = "<group>"; };
 		8909CC21C72AF947D20B4B6C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		89390C6180631D30C45C05BD /* WebSavedInk_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSavedInk_macOS.swift; sourceTree = "<group>"; };
 		89E21441131E7C57CE324E83 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		8A1EE0A9A387B6A049E8BC72 /* StorageSettingsTab_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageSettingsTab_macOS.swift; sourceTree = "<group>"; };
 		8A774391C8C286453B790F75 /* MarkdownMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMessage.swift; sourceTree = "<group>"; };
@@ -1848,6 +1851,7 @@
 			children = (
 				C1F083E5C02A66A025F06638 /* WebContentScript.swift */,
 				ACABB2AAB4911563C0148AD6 /* WebNotePopovers.swift */,
+				89390C6180631D30C45C05BD /* WebSavedInk_macOS.swift */,
 				65C4546D0D679437B876586A /* WebViewerTypes.swift */,
 				4FAA454DB63CD5DAEB44B17B /* WebViewerView.swift */,
 			);
@@ -2534,6 +2538,7 @@
 				E8BE955C1234CB34BF93E26B /* WebLibraryStorage.swift in Sources */,
 				E91A001F3D0E96EB0714A9F2 /* WebNotePopovers.swift in Sources */,
 				5863B1EFB0D85D3AFACE6D45 /* WebPageExtractor.swift in Sources */,
+				14790040283BAA89272E8BA0 /* WebSavedInk_macOS.swift in Sources */,
 				2B6F1F97DC07E76C973FB12E /* WebSessionBackend.swift in Sources */,
 				D66FD0D4E76A55B56E153FDB /* WebStorage.swift in Sources */,
 				00C3A2F1439D922ED3A3D77B /* WebViewerTypes.swift in Sources */,
@@ -2834,6 +2839,7 @@
 				0CADFFE3672888C188F1ADFF /* WebLibraryStorage.swift in Sources */,
 				5AA233123955997046F4F9EB /* WebNotePopovers.swift in Sources */,
 				75B9FA69511BBE233AAB665A /* WebPageExtractor.swift in Sources */,
+				AB58775718A05ACCE6418B8B /* WebSavedInk_macOS.swift in Sources */,
 				25F3CB0EC3551FC76CD5AFAC /* WebSessionBackend.swift in Sources */,
 				B370CC64C56C8E29DC8A4C42 /* WebStorage.swift in Sources */,
 				DB49B34BAD564527EF5585A2 /* WebViewerTypes.swift in Sources */,
