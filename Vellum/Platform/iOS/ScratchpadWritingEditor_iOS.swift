@@ -74,7 +74,7 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
         view.accessibilityIdentifier = "scratchpad.nativeText"
         view.accessibilityLabel = "Scratchpad text. Write with Apple Pencil to convert handwriting to text."
         view.delegate = view
-        view.textPasteDelegate = view
+        view.pasteDelegate = view
         store.editorUndoManager = view.undoManager
         store.insertMarkdownHandler = { [weak view, weak store] markdown in
             guard let view, let store, view.editorContext == store.editorContext,
@@ -96,7 +96,7 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
         view.store?.insertMarkdownHandler = nil
         view.store?.editorUndoManager = nil
         view.delegate = nil
-        view.textPasteDelegate = nil
+        view.pasteDelegate = nil
     }
 }
 
