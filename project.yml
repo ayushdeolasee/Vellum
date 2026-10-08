@@ -51,6 +51,7 @@ schemes:
     build:
       targets:
         VellumMac: all
+        VellumMacShare: all
     run:
       config: Debug
     test:
@@ -93,10 +94,42 @@ targets:
     templates: [MacApp]
     dependencies:
       - package: Sparkle
+      - target: VellumMacShare
+        embed: true
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: Vellum/Vellum-macOS.entitlements
         ENABLE_APP_SANDBOX: "NO"
+  VellumMacShare:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: VellumMacShare
+        excludes:
+          - Info.plist
+          - VellumMacShare.entitlements
+      # URL-only adapter: the app owns saving, WebKit and offline snapshots.
+      - path: Vellum/Services/Web/VellumExternalWebLink.swift
+      - path: Vellum/App/RuntimeProfile.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.mac-share
+        PRODUCT_NAME: VellumMacShare
+        APP_DISPLAY_NAME: Save to Vellum
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "4"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: VellumMacShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: VellumMacShare/VellumMacShare.entitlements
+        ENABLE_APP_SANDBOX: "YES"
+        ENABLE_HARDENED_RUNTIME: "YES"
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.ayushdeolasee.vellum.dev.mac-share
+          APP_DISPLAY_NAME: Save to Vellum Dev
   VellumMacTests:
     type: bundle.unit-test
     platform: macOS

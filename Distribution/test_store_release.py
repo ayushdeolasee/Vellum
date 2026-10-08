@@ -298,10 +298,13 @@ class DirectReleaseTests(unittest.TestCase):
     def test_outer_app_selection_preserves_sparkle_updater(self):
         app = self.directory / "Payload/Vellum.app"
         (app / "Contents/Frameworks/Sparkle.framework/Updater.app").mkdir(parents=True)
-        with patch.object(release, "inspect_bundle", return_value={"bundle": release.BUNDLE}) as inspect:
+        extension = app / "Contents/PlugIns/VellumMacShare.appex"
+        extension.mkdir(parents=True)
+        with patch.object(release, "inspect_bundle", side_effect=[
+                {"bundle": release.BUNDLE}, {"bundle": release.MAC_SHARE}]) as inspect:
             release.inspect_apps(self.directory / "Payload", "macos", "0.1.2", "5", True)
-            self.assertEqual(inspect.call_args.args[0], app)
-            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual([call.args[0] for call in inspect.call_args_list], [app, extension])
+            self.assertEqual(inspect.call_count, 2)
         (self.directory / "Payload/Other.app").mkdir()
         with self.assertRaises(ValueError):
             release.inspect_apps(self.directory / "Payload", "macos", "0.1.2", "5", True)

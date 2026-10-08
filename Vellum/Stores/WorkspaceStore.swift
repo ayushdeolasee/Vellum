@@ -673,7 +673,10 @@ final class WorkspaceStore {
     /// copy provider URLs off-main before releasing their security-scoped access.
     func openExternalURLs(_ urls: [URL]) {
         #if os(macOS)
-        let incoming = urls.filter { $0.isFileURL || VellumExternalWebLink.parse($0) != nil }
+        let incoming = urls.filter {
+            $0.isFileURL || VellumExternalWebLink.parse($0) != nil
+                || VellumExternalWebLink.parseSavedURL($0) != nil
+        }
         #else
         let incoming = urls.filter(\.isFileURL)
         #endif

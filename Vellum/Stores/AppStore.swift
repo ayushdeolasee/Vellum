@@ -465,7 +465,13 @@ final class AppStore {
         error = nil
         var errors: [String] = []
         for url in urls {
-            if let webpage = VellumExternalWebLink.parse(url) {
+            if let webpage = VellumExternalWebLink.parseSavedURL(url) {
+                do {
+                    try await openOneUrl(webpage.absoluteString, saveToLibrary: true)
+                } catch {
+                    errors.append("\(webpage.absoluteString): \(error.localizedDescription)")
+                }
+            } else if let webpage = VellumExternalWebLink.parse(url) {
                 do {
                     try await openOneUrl(webpage.absoluteString)
                 } catch {
