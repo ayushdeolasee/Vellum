@@ -7,15 +7,23 @@ import SwiftUI
 /// tab close/switch only; a native app must also survive ⌘Q with open tabs.
 final class VellumAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var workspace: WorkspaceStore?
+    @MainActor static weak var widgetSnapshots: VellumMacWidgetSnapshotController?
     @MainActor private var isTerminating = false
     @MainActor private var terminationTask: Task<Void, Never>?
 
-    /// Finder document opens and browser-extension webpage routes both arrive
-    /// here. Each target uses the same opener as the equivalent in-app action.
+    /// Finder opens, browser-extension routes and widget links arrive here.
+    /// Opaque widget routes join the same handoff as Mac Shortcuts.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
             guard !isTerminating, let workspace = Self.workspace else { return }
-            workspace.openExternalURLs(urls)
+            let externalURLs = urls.filter { url in
+                guard let route = VellumDeepLink.parse(url) else { return true }
+                // Shared with Mac Shortcuts (#374). Its queue owns restoration,
+                // window focus, opaque resolution and the quit barrier.
+                VellumSystemRouteHandoff.shared.submit(route)
+                return false
+            }
+            workspace.openExternalURLs(externalURLs)
         }
     }
 
@@ -25,6 +33,7 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
             guard !isTerminating else { return .terminateLater }
             isTerminating = true
             workspace.beginTermination()
+            Self.widgetSnapshots?.beginTermination()
             workspace.cancelAIRequests()
             terminationTask = Task { @MainActor in
                 await workspace.awaitMaintenance()
@@ -35,6 +44,7 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                     workspace.focusedPane.app.error = "Quit canceled because a Scratchpad edit could not be saved. Your draft remains open; restore storage access and try again."
                     isTerminating = false
                     workspace.cancelTermination()
+                    Self.widgetSnapshots?.cancelTermination(workspace: workspace)
                     terminationTask = nil
                     sender.reply(toApplicationShouldTerminate: false)
                     return
@@ -57,12 +67,14 @@ final class VellumAppDelegate: NSObject, NSApplicationDelegate {
                 let chatSaved = await AiPersistence.awaitPendingFlush()
                 // Same for the read-later stores' background work (see above).
                 await workspace.integrations.awaitQuiescence()
+                await Self.widgetSnapshots?.flushForTermination(workspace: workspace)
                 guard chatSaved, !AiPersistence.hasPendingChanges,
                       workspace.tabTeardowns.isEmpty,
                       workspace.scratchpadsAreSafeToTerminate(after: scratchpadSnapshot) else {
                     workspace.focusedPane.app.error = "Quit canceled because document changes are still waiting to be saved. Your drafts remain open; restore storage access and try Quit again."
                     isTerminating = false
                     workspace.cancelTermination()
+                    Self.widgetSnapshots?.cancelTermination(workspace: workspace)
                     terminationTask = nil
                     sender.reply(toApplicationShouldTerminate: false)
                     return
@@ -81,6 +93,8 @@ struct VellumApp: App {
     @State private var workspace: WorkspaceStore
     @State private var systemRouteHandoff = VellumSystemRouteHandoff.shared
     @Environment(\.openWindow) private var openWindow
+    @State private var widgetSnapshots: VellumMacWidgetSnapshotController
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showStorageChoice = false
     @State private var showWalkthrough = false
     @State private var didOpenUITestDocument = false
@@ -108,6 +122,9 @@ struct VellumApp: App {
             webLibraryStorage: webLibraryStorage)
         _themeStore = State(initialValue: theme)
         _workspace = State(initialValue: workspace)
+        let widgetSnapshots = VellumMacWidgetSnapshotController()
+        _widgetSnapshots = State(initialValue: widgetSnapshots)
+        VellumAppDelegate.widgetSnapshots = widgetSnapshots
         VellumAppDelegate.workspace = workspace
         VellumSystemRouteHandoff.shared.attach(to: workspace)
         VellumAppShortcuts.updateAppShortcutParameters()
@@ -120,6 +137,18 @@ struct VellumApp: App {
         Window(RuntimeProfile.current.isDevelopment ? "Vellum Dev" : "Vellum", id: "main") {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
+                .onChange(of: workspace.integrations.searchRevision, initial: true) { _, _ in
+                    widgetSnapshots.requestPublish(workspace: workspace)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .vellumRecentDocumentsChanged)
+                    .receive(on: RunLoop.main)) { _ in
+                    widgetSnapshots.requestPublish(workspace: workspace)
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        widgetSnapshots.requestPublish(workspace: workspace)
+                    }
+                }
                 .task(priority: .utility) {
                     await AnonymousAnalytics.shared.reportFirstLaunchIfNeeded()
                 }
