@@ -2,6 +2,7 @@
 import SwiftUI
 import UIKit
 import PencilKit
+import UniformTypeIdentifiers
 
 enum ScratchpadWritingMode: Hashable {
     case text, ink, markdown
@@ -73,6 +74,8 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
         view.accessibilityIdentifier = "scratchpad.nativeText"
         view.accessibilityLabel = "Scratchpad text. Write with Apple Pencil to convert handwriting to text."
         view.delegate = view
+        view.textPasteDelegate = view
+        store.editorUndoManager = view.undoManager
         store.insertMarkdownHandler = { [weak view, weak store] markdown in
             guard let view, let store, view.editorContext == store.editorContext,
                   store.editorAcceptsChanges else { return }
@@ -91,13 +94,15 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
     static func dismantleUIView(_ view: ScratchpadWritingTextView, coordinator: ()) {
         view.hideTools()
         view.store?.insertMarkdownHandler = nil
+        view.store?.editorUndoManager = nil
         view.delegate = nil
+        view.textPasteDelegate = nil
     }
 }
 
 /// UITextView supplies UIKit's text input, selection and Scribble integration.
 /// Inline view attachments reserve real layout space, so typing cannot overlap ink.
-final class ScratchpadWritingTextView: UITextView, UITextViewDelegate {
+final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPasteDelegate {
     private let nativeContentStorage: NSTextContentStorage
     weak var store: ScratchpadStore?
     private(set) var editorContext = ""
@@ -192,7 +197,11 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate {
         guard editorContext != store.editorContext || appliedText != store.text
                 || (unresolvedReferences && appliedAttachmentRevision != store.attachmentRevision) else { return }
         let contextChanged = editorContext != store.editorContext
-        nativeUndoManager.removeAllActions()
+        if contextChanged {
+            nativeUndoManager.removeAllActions()
+        } else {
+            nativeUndoManager.removeAllActions(withTarget: self)
+        }
         editorContext = store.editorContext
         appliedText = store.text
         appliedAttachmentRevision = store.attachmentRevision
@@ -243,6 +252,26 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         guard !restoring else { return }
         publishText()
+    }
+
+    func textPasteConfigurationSupporting(_ supporting: any UITextPasteConfigurationSupporting,
+                                          transform item: any UITextPasteItem) {
+        guard item.itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
+            item.setDefaultResult()
+            return
+        }
+        // Route image paste/drop through the same attachment store as snapshots,
+        // rather than persisting a UIKit-only rich-text attachment character.
+        item.setNoResult()
+        let context = editorContext
+        loadScratchpadCapture(from: item.itemProvider) { [weak self] capture in
+            DispatchQueue.main.async {
+                guard let self, let store = self.store, self.editorContext == context,
+                      store.editorContext == context, store.editorAcceptsChanges else { return }
+                guard let capture else { store.warnUnsupportedDrop(); return }
+                store.addImage(capture, label: "Image")
+            }
+        }
     }
 
     private func publishText() {
@@ -428,7 +457,8 @@ final class ScratchpadDrawingViewProvider: NSTextAttachmentViewProvider, PKCanva
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard let attachment = textAttachment as? ScratchpadDrawingAttachment,
-              attachment.owner?.store?.editorAcceptsChanges == true else { return }
+              attachment.owner?.store?.editorAcceptsChanges == true,
+              canvasView.drawing != attachment.drawing else { return }
         attachment.drawing = canvasView.drawing
         attachment.owner?.invalidateDrawingLayout()
         attachment.owner?.persist(attachment)

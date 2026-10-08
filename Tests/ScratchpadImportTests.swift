@@ -751,9 +751,15 @@ final class ScratchpadImportTests: XCTestCase {
                              zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
         await store.loadForDocument(first).value
         XCTAssertEqual(store.text, note)
+        editor.apply(mode: .text, fontSize: 16, palette: .light)
         let clear = try XCTUnwrap(store.clearText())
+        editor.undoManager?.registerUndo(withTarget: store) { target in
+            _ = target.undoClear(clear)
+        }
+        editor.applyContent()
+        XCTAssertTrue(editor.undoManager?.canUndo == true)
         await store.flush().value
-        XCTAssertNotNil(store.undoClear(clear))
+        editor.undoManager?.undo()
         await store.flush().value
         XCTAssertEqual(store.text, note)
         XCTAssertEqual(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")), bytes)

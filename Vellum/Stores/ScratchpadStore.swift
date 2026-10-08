@@ -99,6 +99,7 @@ final class ScratchpadStore {
     /// The resulting doc change flows back through the normal `change` message,
     /// so `text` and persistence update themselves — no manual mutation here.
     @ObservationIgnored var insertMarkdownHandler: ((String) -> Void)?
+    @ObservationIgnored weak var editorUndoManager: UndoManager?
 
     /// Transient message the panel shows when the user drops something that
     /// isn't a usable image. Set by `warnUnsupportedDrop`, auto-cleared after a

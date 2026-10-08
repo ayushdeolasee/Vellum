@@ -274,8 +274,8 @@ struct ScratchpadPanel: View {
             guard context == scratchpadStore.editorContext,
                   scratchpadStore.editorAcceptsChanges,
                   let transaction = scratchpadStore.clearText() else { return }
-            guard let undoManager else { return }
-            registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: undoManager)
+            guard let manager = scratchpadStore.editorUndoManager ?? undoManager else { return }
+            registerScratchpadUndo(transaction, store: scratchpadStore, undoManager: manager)
         }
     }
 
