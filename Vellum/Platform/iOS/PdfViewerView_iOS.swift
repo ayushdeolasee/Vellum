@@ -58,11 +58,21 @@ struct PdfViewerView_iOS: View {
     /// view has no live registration (see `deactivate`'s ownership guard).
     @State private var handlersTabId: String?
     @State private var indexingIsActive = false
+    @State private var dictionarySelection: DictionarySelection_iOS?
 
     private var shouldIndex: Bool { isActive && scenePhase == .active }
 
     var body: some View {
         content()
+            .sheet(item: $dictionarySelection) { selection in
+                DictionarySheet_iOS(term: selection.term)
+            }
+            .onChange(of: isActive) { _, active in
+                if !active { dictionarySelection = nil }
+            }
+            .onChange(of: runtime.documentGeneration) {
+                dictionarySelection = nil
+            }
             // First activation prepares the document. Subsequent activations
             // reuse the same PDFView/controller and only reclaim the shared
             // command handlers, preserving native scroll, selection and find
@@ -115,7 +125,10 @@ struct PdfViewerView_iOS: View {
                     PdfKitView_iOS(
                         controller: controller, document: document, ink: ink, isActive: isActive)
                         .frame(width: geo.size.width, height: geo.size.height)
-                    PdfOverlayStack_iOS(controller: controller)
+                    PdfOverlayStack_iOS(controller: controller, onDictionaryLookup: { text in
+                        guard isActive else { return }
+                        dictionarySelection = DictionarySelection_iOS(text)
+                    })
                 }
                 .overlay(alignment: .bottom) {
                     if ink.isActive {
@@ -356,6 +369,7 @@ struct PdfViewerView_iOS: View {
 /// coordinates, recomputed on every controller.geometryVersion bump.
 struct PdfOverlayStack_iOS: View {
     let controller: PdfViewerControlleriOS
+    let onDictionaryLookup: (String) -> Void
 
     @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
@@ -420,7 +434,7 @@ struct PdfOverlayStack_iOS: View {
             if let selection = controller.selection,
                let position = controller.selectionPopoverPosition {
                 AnchoredAbove(point: position, containerWidth: viewportWidth) {
-                    SelectionPopover(selection: selection) {
+                    SelectionPopover(selection: selection, onDictionaryLookup: onDictionaryLookup) {
                         controller.clearSelection()
                     }
                 }

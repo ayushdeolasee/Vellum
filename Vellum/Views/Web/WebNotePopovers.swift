@@ -479,9 +479,7 @@ struct WebSelectionPopover: View {
     /// Fired as the note field opens, so the controller can pin the selection
     /// before the field steals first responder from the web view.
     var onBeginNote: () -> Void
-    #if os(macOS)
     var onDictionaryLookup: () -> Void
-    #endif
     var onAskAi: () -> Void
     var onClose: () -> Void
 
@@ -591,13 +589,13 @@ struct WebSelectionPopover: View {
             if showNoteInput { onBeginNote() }
         }
         .accessibilityIdentifier("webSelectionPopover.addNote")
-        #if os(macOS)
         DictionaryLookupButton {
             onDictionaryLookup()
+            #if os(macOS)
             onClose()
+            #endif
         }
         .accessibilityIdentifier("webSelectionPopover.dictionaryLookup")
-        #endif
         AskAiButton {
             onAskAi()
             onClose()
@@ -616,7 +614,6 @@ struct WebSelectionPopover: View {
     }
 }
 
-#if os(macOS)
 private struct DictionaryLookupButton: View {
     let action: () -> Void
 
@@ -631,7 +628,12 @@ private struct DictionaryLookupButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? palette.accent : .clear)
                 .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -639,7 +641,6 @@ private struct DictionaryLookupButton: View {
         .accessibilityLabel("Look Up in Dictionary")
     }
 }
-#endif
 
 private struct SwatchButton: View {
     let color: HighlightColor

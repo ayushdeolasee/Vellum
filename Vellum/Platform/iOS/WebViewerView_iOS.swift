@@ -41,6 +41,7 @@ struct WebViewerView_iOS: View {
     /// have already paid. `controller.isAttached` covers the case where the
     /// `@State` itself did not survive the remount.
     @State private var hasActivated = false
+    @State private var dictionarySelection: DictionarySelection_iOS?
 
     private var controller: WebViewerController_iOS { runtime.webController }
     /// Web ink has the same per-tab lifetime as the retained WKWebView.
@@ -99,6 +100,16 @@ struct WebViewerView_iOS: View {
                                 onHighlight: { color in controller.addHighlight(color: color) },
                                 onNote: { content in controller.addSelectionNote(content: content) },
                                 onBeginNote: { controller.beginSelectionNote() },
+                                onDictionaryLookup: {
+                                    guard isActive,
+                                          controller.documentDraftScope == draftScope,
+                                          controller.selectionIdentity == passage,
+                                          let selection = controller.selection ?? controller.selectionNoteDraft,
+                                          let lookup = DictionarySelection_iOS(selection.text) else { return }
+                                    // Keep the anchor and draft when UIKit takes focus.
+                                    if controller.selectionNoteDraft == nil { controller.beginSelectionNote() }
+                                    dictionarySelection = lookup
+                                },
                                 onAskAi: { controller.askAiAboutSelection() },
                                 onClose: { controller.clearSelection() }
                             )
@@ -202,6 +213,9 @@ struct WebViewerView_iOS: View {
             }
             .background(palette.well)
             .clipped()
+            .sheet(item: $dictionarySelection) { selection in
+                DictionarySheet_iOS(term: selection.term)
+            }
             .onAppear {
                 guard isActive else { return }
                 hasActivated = true
@@ -210,6 +224,7 @@ struct WebViewerView_iOS: View {
             // In-tab link navigation rebinds the tab to a new URL; `attach`
             // early-returns when neither the tab nor the URL actually moved.
             .onChange(of: documentIdentity) {
+                dictionarySelection = nil
                 guard isActive else { return }
                 attach()
             }
@@ -266,6 +281,7 @@ struct WebViewerView_iOS: View {
             }
             .onChange(of: isActive) { _, active in
                 guard active else {
+                    dictionarySelection = nil
                     controller.deactivate()
                     return
                 }
@@ -385,6 +401,13 @@ final class VellumWebView: WKWebView, VellumShortcutResponder {
 
     @objc private func vellumPerformShortcut(_ sender: UIKeyCommand) {
         vellumPerform(sender)
+    }
+
+    override func buildMenu(with builder: UIMenuBuilder) {
+        super.buildMenu(with: builder)
+        // Dictionary is exposed by the custom selection popover.
+        builder.remove(menu: .lookup)
+        builder.remove(menu: .learn)
     }
 }
 
