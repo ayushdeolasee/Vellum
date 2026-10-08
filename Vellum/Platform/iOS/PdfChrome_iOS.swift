@@ -1052,10 +1052,16 @@ struct SidebarContent_iOS: View {
             InspectorTabSwitcher(
                 selection: Binding(
                     get: { workspace.sidebarTab },
-                    set: { selectTab($0) }))
+                    set: { selectTab($0) }),
+                usesTextOnlySegments: presentation == .phoneSheet)
             .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-            .padding(.vertical, InspectorLayout.switcherVerticalPadding)
-            Divider()
+            // The native grabber overlays the sheet content. Give it its own
+            // space before the selector rather than using the column's inset.
+            .padding(.top, presentation == .phoneSheet ? 28 : InspectorLayout.switcherVerticalPadding)
+            .padding(.bottom, presentation == .phoneSheet ? 12 : InspectorLayout.switcherVerticalPadding)
+            if presentation == .column {
+                Divider()
+            }
             // Once revealed, a panel stays mounted; only visibility toggles as
             // the tab changes. Keeping them alive (rather than switching, which
             // destroys the inactive ones) preserves each panel's transient view
