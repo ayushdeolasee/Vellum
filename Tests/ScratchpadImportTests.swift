@@ -735,6 +735,7 @@ final class ScratchpadImportTests: XCTestCase {
             ink = value as? ScratchpadDrawingAttachment ?? ink
         }
         let attachment = try XCTUnwrap(ink)
+        XCTAssertTrue(store.text.hasPrefix("Before 📝\nAfter\n![Handwriting]"), "Pencil must append after all text, regardless of the caret")
         if let manager = editor.textLayoutManager, let range = manager.textContentManager?.documentRange {
             manager.ensureLayout(for: range)
         }
@@ -753,39 +754,109 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertGreaterThan(canvas.bounds.width, 0)
         XCTAssertGreaterThanOrEqual(canvas.bounds.height, 240)
         let initialHeight = canvas.bounds.height
+        let initialFrame = canvas.frame
+        let initialBounds = canvas.bounds
+        let initialZoom = canvas.zoomScale
+        let initialOffset = editor.contentOffset
+        editor.canvasViewDidBeginUsingTool(canvas)
+        XCTAssertFalse(editor.panGestureRecognizer.isEnabled, "Palm/finger movement must not move the note under an active stroke")
         editor.extendDrawing(canvas, at: CGPoint(x: 40, y: initialHeight - 10))
         editor.layoutIfNeeded()
-        XCTAssertGreaterThan(canvas.bounds.height, initialHeight, "Make room before an in-progress stroke reaches the edge")
+        XCTAssertEqual(canvas.frame, initialFrame, "Growth must wait until the Pencil lifts")
+        let strokePoints = [CGPoint(x: 20, y: 320), CGPoint(x: 20, y: 380),
+                            CGPoint(x: 20, y: 355), CGPoint(x: 32, y: 348),
+                            CGPoint(x: 44, y: 355), CGPoint(x: 44, y: 390),
+                            CGPoint(x: 60, y: 390), CGPoint(x: 75, y: 365),
+                            CGPoint(x: 95, y: 375), CGPoint(x: 75, y: 390),
+                            CGPoint(x: 110, y: 400), CGPoint(x: 130, y: 420)]
         let drawing = PKDrawing(strokes: [PKStroke(
             ink: PKInk(.pen, color: .black),
-            path: PKStrokePath(controlPoints: [
-                PKStrokePoint(location: CGPoint(x: 20, y: 30), timeOffset: 0, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2),
-                PKStrokePoint(location: CGPoint(x: 180, y: 420), timeOffset: 1, size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
-            ], creationDate: Date()))])
+            path: PKStrokePath(controlPoints: strokePoints.enumerated().map { index, point in
+                PKStrokePoint(location: point, timeOffset: Double(index) / 10,
+                              size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+            }, creationDate: Date()))])
         canvas.drawing = drawing
         editor.canvasViewDrawingDidChange(canvas)
+        editor.apply(pencilEnabled: true, fontSize: 18, palette: .dark)
         editor.layoutIfNeeded()
+        XCTAssertEqual(canvas.frame, initialFrame)
+        XCTAssertEqual(canvas.bounds, initialBounds)
+        XCTAssertEqual(canvas.zoomScale, initialZoom)
+        XCTAssertEqual(editor.contentOffset, initialOffset)
+        XCTAssertTrue(canvas.isFirstResponder)
+        XCTAssertEqual(canvas.drawing, drawing, "Live updates must preserve stroke coordinates")
+        editor.canvasViewDidEndUsingTool(canvas)
+        editor.layoutIfNeeded()
+        XCTAssertTrue(editor.panGestureRecognizer.isEnabled)
         XCTAssertGreaterThan(canvas.bounds.height, initialHeight)
+        XCTAssertEqual(editor.contentOffset, initialOffset, "Finishing a stroke must not jump the note")
+        // An insertion callback may update content without a SwiftUI appearance update.
+        editor.canvasViewDidBeginUsingTool(canvas)
+        let frameBeforeContentUpdate = canvas.frame
+        store.text += "\n \t"
+        editor.applyContent()
+        editor.layoutIfNeeded()
+        XCTAssertFalse(editor.textStorage.string.hasSuffix("\n \t"), "Content changes must wait until the Pencil lifts")
+        XCTAssertEqual(canvas.frame, frameBeforeContentUpdate)
+        editor.canvasViewDidEndUsingTool(canvas)
+        editor.layoutIfNeeded()
+        XCTAssertTrue(editor.textStorage.string.hasSuffix("\n \t"), "Deferred content must appear without another SwiftUI update")
+        XCTAssertTrue(attachment.canvas === canvas)
+        XCTAssertTrue(editor.textStorage.attribute(.attachment, at: ("Before 📝\nAfter\n" as NSString).length, effectiveRange: nil) as? ScratchpadDrawingAttachment === attachment)
+        XCTAssertEqual(canvas.drawing, drawing, "Replaying content must retain live ink while its persistence is queued")
         let canvasFrame = canvas.frame
         editor.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
         editor.layoutIfNeeded()
         XCTAssertEqual(canvas.frame, canvasFrame, "Scrolling must keep ink anchored to its text attachment")
-        // A caret at the region's trailing edge should reopen its existing
-        // canvas rather than inserting another handwriting block.
+        // Even a caret at the beginning must reopen the trailing region.
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         XCTAssertTrue(editor.isEditable)
         XCTAssertTrue(editor.isSelectable)
         XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
-        editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length + 1, length: 0)
+        editor.selectedRange = NSRange(location: 0, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
-        let precedingNewline = NSRange(location: ("Before 📝" as NSString).length, length: 1)
+        let precedingNewline = NSRange(location: ("Before 📝\nAfter" as NSString).length, length: 1)
         editor.textStorage.deleteCharacters(in: precedingNewline)
         editor.textViewDidChange(editor)
         XCTAssertEqual(ScratchpadWritingReference.references(in: store.text).count, 1)
-        let note = store.text
-        XCTAssertTrue(note.hasPrefix("Before 📝\n![Handwriting]"))
-        XCTAssertTrue(note.hasSuffix("\nAfter"))
+        XCTAssertTrue(store.text.hasPrefix("Before 📝\nAfter\n![Handwriting]"))
         XCTAssertGreaterThan(attachment.drawingHeight, 420)
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        await store.flush().value
+        let originalReference = try XCTUnwrap(ScratchpadWritingReference.references(in: store.text).first)
+        store.text += "\nTail text 📝"
+        editor.applyContent()
+        var originalRange = NSRange(location: 0, length: 0)
+        editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, range, _ in
+            if (value as? ScratchpadDrawingAttachment)?.reference.drawingID == originalReference.drawingID { originalRange = range }
+        }
+        XCTAssertEqual(originalRange.length, 1, "The original drawing must remain in the note")
+        editor.selectedRange = NSRange(location: NSMaxRange(originalRange), length: 0)
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        let references = ScratchpadWritingReference.references(in: store.text)
+        XCTAssertEqual(references.count, 2, "Text after older ink requires a new trailing region")
+        XCTAssertEqual(references.first?.drawingID, originalReference.drawingID)
+        XCTAssertTrue(store.text.contains("Tail text 📝\n![Handwriting]"))
+        editor.layoutIfNeeded()
+        var trailingInk: ScratchpadDrawingAttachment?
+        editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
+            if let ink = value as? ScratchpadDrawingAttachment { trailingInk = ink }
+        }
+        let trailingCanvas = try XCTUnwrap(trailingInk?.canvas)
+        editor.canvasViewDidBeginUsingTool(trailingCanvas)
+        XCTAssertFalse(editor.panGestureRecognizer.isEnabled)
+        trailingCanvas.drawing = drawing
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        XCTAssertTrue(editor.panGestureRecognizer.isEnabled, "Finishing mid-stroke must release the parent pan lock")
+        XCTAssertFalse(trailingCanvas.isFirstResponder)
+        XCTAssertFalse(trailingCanvas.drawingGestureRecognizer.isEnabled, "An interrupted Pencil gesture must stop before layout resumes")
+        XCTAssertNil(trailingInk?.strokeHeight)
+        XCTAssertEqual(trailingInk?.drawing, drawing, "Finishing must capture the latest samples before cancelling")
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        XCTAssertTrue(trailingCanvas.isFirstResponder, "An interrupted trailing region must reopen normally")
+        XCTAssertTrue(trailingCanvas.drawingGestureRecognizer.isEnabled)
+        XCTAssertEqual(ScratchpadWritingReference.references(in: store.text).count, 2)
+        let note = store.text
         app.attachTab(PdfTab(id: "other-tab", document: second, currentPage: 1, numPages: 1,
                              zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
         await store.loadForDocument(second).value
@@ -793,7 +864,9 @@ final class ScratchpadImportTests: XCTestCase {
         let key = DocumentIdentity.storageKey(for: first)
         let drawingID = try XCTUnwrap(attachment.reference.drawingID)
         let bytes = try XCTUnwrap(container.peek(documentURL(root: root, key: key, name: "attachments/\(drawingID).drawing")))
-        XCTAssertEqual(try PKDrawing(data: bytes).strokes.count, 1)
+        let savedDrawing = try PKDrawing(data: bytes)
+        XCTAssertEqual(savedDrawing.strokes.count, 1)
+        XCTAssertEqual(savedDrawing.strokes.first?.path.map(\.location), strokePoints, "Curved stroke samples must survive growth and a document switch unchanged")
         XCTAssertNotNil(container.peek(documentURL(root: root, key: key, name: "attachments/\(attachment.reference.imageID).png")))
         app.attachTab(PdfTab(id: "drawing-tab", document: first, currentPage: 1, numPages: 1,
                              zoom: 1, visiblePages: [1], webVisibleRange: nil, webVisibleBookmarks: [], mode: .view))
