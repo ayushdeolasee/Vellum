@@ -71,7 +71,6 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
         view.accessibilityLabel = "Scratchpad text. Write with Apple Pencil to convert handwriting to text."
         view.delegate = view
         view.pasteDelegate = view
-        view.onBeginTyping = { pencilEnabled = false }
         store.editorUndoManager = view.undoManager
         store.insertMarkdownHandler = { [weak view, weak store] markdown in
             guard let view, let store, view.editorContext == store.editorContext,
@@ -99,12 +98,11 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
 
 /// UITextView supplies UIKit's text input, selection and Scribble integration.
 /// Inline attachments reserve real layout space, so typing cannot overlap ink.
-final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPasteDelegate, PKCanvasViewDelegate {
+final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPasteDelegate, PKCanvasViewDelegate, UIScribbleInteractionDelegate {
     weak var store: ScratchpadStore?
     private(set) var editorContext = ""
     private var appliedText = ""
     private var pencilEnabled = false
-    var onBeginTyping: (() -> Void)?
     private let toolPicker = PKToolPicker()
     private weak var activeCanvas: PKCanvasView?
     private var foreground = UIColor.label
@@ -118,10 +116,12 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private var placingCanvases = false
     private let markdownStyler = ScratchpadMarkdownStyler()
     var isInking: Bool { pencilEnabled && store?.editorAcceptsChanges == true }
+    override var canBecomeFirstResponder: Bool { !isInking && super.canBecomeFirstResponder }
 
     init(frame: CGRect = .zero) {
         // A nil container lets UITextView install its own TextKit 2 layout manager.
         super.init(frame: frame, textContainer: nil)
+        addInteraction(UIScribbleInteraction(delegate: self))
     }
 
     required init?(coder: NSCoder) { fatalError("Scratchpad editor is constructed programmatically") }
@@ -259,8 +259,10 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         applyContent()
         let previouslyEnabled = pencilEnabled
         pencilEnabled = nextEnabled
-        isEditable = store?.editorAcceptsChanges == true
-        isSelectable = store?.editorAcceptsChanges == true
+        // Scribble must not claim Pencil strokes while the user has chosen ink.
+        // Return to text input only when the Pencil button is turned off.
+        isEditable = store?.editorAcceptsChanges == true && !nextEnabled
+        isSelectable = isEditable
         for attachment in drawingAttachments {
             attachment.canvas?.isUserInteractionEnabled = nextEnabled && store?.editorAcceptsChanges == true
         }
@@ -355,9 +357,11 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {
-        hideTools()
-        onBeginTyping?()
         refreshMarkdown()
+    }
+
+    func scribbleInteraction(_ interaction: UIScribbleInteraction, shouldBeginAt location: CGPoint) -> Bool {
+        !isInking && store?.editorAcceptsChanges == true
     }
 
     func textViewDidEndEditing(_ textView: UITextView) { refreshMarkdown() }

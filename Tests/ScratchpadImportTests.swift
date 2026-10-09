@@ -742,6 +742,14 @@ final class ScratchpadImportTests: XCTestCase {
         editor.layoutIfNeeded()
         await Task.yield()
         let canvas = try XCTUnwrap(attachment.canvas)
+        let scribble = try XCTUnwrap(editor.interactions.compactMap { $0 as? UIScribbleInteraction }.first)
+        XCTAssertFalse(editor.isEditable)
+        XCTAssertFalse(editor.isSelectable)
+        XCTAssertFalse(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
+        XCTAssertFalse(editor.becomeFirstResponder(), "Text focus must not steal an active Pencil canvas")
+        editor.textViewDidBeginEditing(editor)
+        XCTAssertTrue(editor.isInking, "A text focus callback must not turn off the user's ink choice")
+        XCTAssertTrue(canvas.isFirstResponder)
         XCTAssertGreaterThan(canvas.bounds.width, 0)
         XCTAssertGreaterThanOrEqual(canvas.bounds.height, 240)
         let initialHeight = canvas.bounds.height
@@ -765,6 +773,9 @@ final class ScratchpadImportTests: XCTestCase {
         // A caret at the region's trailing edge should reopen its existing
         // canvas rather than inserting another handwriting block.
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        XCTAssertTrue(editor.isEditable)
+        XCTAssertTrue(editor.isSelectable)
+        XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length + 1, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
         let precedingNewline = NSRange(location: ("Before 📝" as NSString).length, length: 1)
