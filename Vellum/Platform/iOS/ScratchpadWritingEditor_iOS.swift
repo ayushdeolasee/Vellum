@@ -88,7 +88,7 @@ struct ScratchpadWritingEditor: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: ScratchpadWritingTextView, coordinator: ()) {
-        view.hideTools()
+        view.hideTools(restoringPanning: true)
         view.store?.insertMarkdownHandler = nil
         view.store?.editorUndoManager = nil
         view.delegate = nil
@@ -107,6 +107,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private weak var activeCanvas: PKCanvasView?
     private weak var drawingCanvas: ScratchpadInlineCanvas?
     private var panningBeforeStroke: Bool?
+    private var panSettingsBeforeInk: (touchTypes: [NSNumber], minimumTouches: Int)?
     private var interruptingStroke = false
     private var pendingAppearance: (fontSize: Double, palette: ThemePalette)?
     private var contentUpdatePending = false
@@ -179,6 +180,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             // A TextKit/SwiftUI layout pass can happen while a stroke is active.
             if !canvas.isUsingTool, canvas.frame != rect { canvas.frame = rect }
             canvas.isUserInteractionEnabled = isInking
+            canvas.accessibilityHint = isInking ? "Scroll the note with two fingers between Pencil strokes." : nil
         }
     }
 
@@ -218,6 +220,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         }
         canvas.isUsingTool = true
         drawingCanvas = canvas
+        stopScrollMotion()
         panningBeforeStroke = panGestureRecognizer.isEnabled
         panGestureRecognizer.isEnabled = false
     }
@@ -332,6 +335,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         applyContent()
         let previouslyEnabled = pencilEnabled
         pencilEnabled = nextEnabled
+        configurePanningForInk(nextEnabled)
         // Scribble must not claim Pencil strokes while the user has chosen ink.
         // Return to text input only when the Pencil button is turned off.
         isEditable = store?.editorAcceptsChanges == true && !nextEnabled
@@ -570,6 +574,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
 
     func showTools(for canvas: PKCanvasView) {
         guard isInking, drawingCanvas == nil, activeCanvas !== canvas else { return }
+        configurePanningForInk(true)
         if let previous = activeCanvas, previous !== canvas {
             toolPicker.setVisible(false, forFirstResponder: previous)
             toolPicker.removeObserver(previous)
@@ -587,7 +592,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         canvas.becomeFirstResponder()
     }
 
-    func hideTools() {
+    func hideTools(restoringPanning: Bool = false) {
         guard !interruptingStroke else { return }
         interruptingStroke = true
         defer { interruptingStroke = false }
@@ -606,6 +611,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         }
         if let panningBeforeStroke { panGestureRecognizer.isEnabled = panningBeforeStroke }
         panningBeforeStroke = nil
+        if restoringPanning { configurePanningForInk(false) }
         guard let canvas = activeCanvas else { return }
         activeCanvas = nil
         // Keep the cancelled recognizer disabled until explicit ink activation.
@@ -614,6 +620,31 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         toolPicker.setVisible(false, forFirstResponder: canvas)
         toolPicker.removeObserver(canvas)
         canvas.resignFirstResponder()
+    }
+
+    private func configurePanningForInk(_ enabled: Bool) {
+        if enabled {
+            guard panSettingsBeforeInk == nil else { return }
+            panSettingsBeforeInk = (panGestureRecognizer.allowedTouchTypes,
+                                    panGestureRecognizer.minimumNumberOfTouches)
+            stopScrollMotion()
+            // Restrict the parent before PencilKit starts a stroke. Pencil and
+            // incidental single-finger/palm contact must not scroll the note.
+            panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            panGestureRecognizer.minimumNumberOfTouches = 2
+            accessibilityHint = "Scroll the note with two fingers between Pencil strokes."
+        } else if let settings = panSettingsBeforeInk {
+            panGestureRecognizer.allowedTouchTypes = settings.touchTypes
+            panGestureRecognizer.minimumNumberOfTouches = settings.minimumTouches
+            panSettingsBeforeInk = nil
+            accessibilityHint = nil
+        }
+    }
+
+    private func stopScrollMotion() {
+        // Stop existing deceleration/scroll animations at their current position
+        // without changing scrolling, safe-area insets, or the visible offset.
+        setContentOffset(contentOffset, animated: false)
     }
 }
 

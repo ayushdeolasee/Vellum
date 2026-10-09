@@ -728,8 +728,12 @@ final class ScratchpadImportTests: XCTestCase {
         defer { editor.hideTools(); window.isHidden = true }
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         XCTAssertNotNil(editor.textLayoutManager)
+        let normalPanTouchTypes = editor.panGestureRecognizer.allowedTouchTypes
+        let normalPanMinimumTouches = editor.panGestureRecognizer.minimumNumberOfTouches
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)], "Pencil input must never start the note's scroll gesture")
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "A resting hand must not drag the note between letters")
         var ink: ScratchpadDrawingAttachment?
         editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
             ink = value as? ScratchpadDrawingAttachment ?? ink
@@ -757,6 +761,7 @@ final class ScratchpadImportTests: XCTestCase {
         let initialFrame = canvas.frame
         let initialBounds = canvas.bounds
         let initialZoom = canvas.zoomScale
+        let initialCanvasOffset = canvas.contentOffset
         let initialOffset = editor.contentOffset
         editor.canvasViewDidBeginUsingTool(canvas)
         XCTAssertFalse(editor.panGestureRecognizer.isEnabled, "Palm/finger movement must not move the note under an active stroke")
@@ -788,7 +793,9 @@ final class ScratchpadImportTests: XCTestCase {
         editor.canvasViewDidEndUsingTool(canvas)
         editor.layoutIfNeeded()
         XCTAssertTrue(editor.panGestureRecognizer.isEnabled)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "Two-finger scrolling must remain in effect between strokes")
         XCTAssertGreaterThan(canvas.bounds.height, initialHeight)
+        XCTAssertEqual(canvas.contentOffset, initialCanvasOffset, "Growing the region must not move the drawing inside its canvas")
         XCTAssertEqual(editor.contentOffset, initialOffset, "Finishing a stroke must not jump the note")
         // An insertion callback may update content without a SwiftUI appearance update.
         editor.canvasViewDidBeginUsingTool(canvas)
@@ -804,6 +811,7 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertTrue(attachment.canvas === canvas)
         XCTAssertTrue(editor.textStorage.attribute(.attachment, at: ("Before 📝\nAfter\n" as NSString).length, effectiveRange: nil) as? ScratchpadDrawingAttachment === attachment)
         XCTAssertEqual(canvas.drawing, drawing, "Replaying content must retain live ink while its persistence is queued")
+        XCTAssertEqual(canvas.contentOffset, initialCanvasOffset)
         let canvasFrame = canvas.frame
         editor.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
         editor.layoutIfNeeded()
@@ -812,9 +820,12 @@ final class ScratchpadImportTests: XCTestCase {
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         XCTAssertTrue(editor.isEditable)
         XCTAssertTrue(editor.isSelectable)
+        XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, normalPanTouchTypes)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, normalPanMinimumTouches)
         XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
         editor.selectedRange = NSRange(location: 0, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2)
         let precedingNewline = NSRange(location: ("Before 📝\nAfter" as NSString).length, length: 1)
         editor.textStorage.deleteCharacters(in: precedingNewline)
         editor.textViewDidChange(editor)
@@ -909,6 +920,19 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertNil(editor.textStorage.attribute(.attachment, at: mathRange.location, effectiveRange: nil))
         XCTAssertEqual(editor.textStorage.string, markdown)
         editor.resignFirstResponder()
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        editor.layoutIfNeeded()
+        await Task.yield()
+        XCTAssertTrue(editor.subviews.contains { ($0 as? PKCanvasView)?.isFirstResponder == true })
+        store.text = markdown
+        editor.applyContent()
+        editor.layoutIfNeeded()
+        XCTAssertTrue(editor.isInking)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "Removing the active drawing must not restore accidental one-finger panning")
+        XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)])
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, normalPanMinimumTouches)
+        XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, normalPanTouchTypes)
         await store.flush().value
     }
 
