@@ -127,8 +127,17 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     override var canBecomeFirstResponder: Bool { !isInking && super.canBecomeFirstResponder }
 
     init(frame: CGRect = .zero) {
-        // A nil container lets UITextView install its own TextKit 2 layout manager.
-        super.init(frame: frame, textContainer: nil)
+        // Contiguous layout keeps text below tall drawings at a known position
+        // rather than estimating the height of content outside the viewport.
+        let storage = NSTextStorage()
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: frame.width, height: .greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.heightTracksTextView = false
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        super.init(frame: frame, textContainer: container)
+        manager.allowsNonContiguousLayout = false
         addInteraction(UIScribbleInteraction(delegate: self))
     }
 
@@ -658,9 +667,8 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     private func invalidateDrawingLayoutImmediately() {
-        if let manager = textLayoutManager, let range = manager.textContentManager?.documentRange {
-            manager.invalidateLayout(for: range)
-        }
+        layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage.length),
+                                       actualCharacterRange: nil)
         setNeedsLayout()
     }
 
@@ -681,12 +689,10 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             guard editorContext == context, canvas.superview === self,
                   drawingAttachments.contains(where: { $0 === attachment }) else { return }
             // Coalesce growth, late Pencil updates, and deferred editor changes.
-            // TextKit may otherwise follow the trailing caret or adjust estimated
-            // fragment positions while laying out the larger attachment.
+            // TextKit may otherwise follow the trailing caret while laying out
+            // the larger attachment.
             invalidateDrawingLayoutImmediately()
-            if let manager = textLayoutManager, let range = manager.textContentManager?.documentRange {
-                manager.ensureLayout(for: range)
-            }
+            layoutManager.ensureLayout(for: textContainer)
             // A corrective offset schedules another scroll-view layout. Settle
             // at most twice rather than leaving an asynchronous scroll correction.
             for _ in 0..<2 {
@@ -786,8 +792,8 @@ class ScratchpadMarkdownAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { fatalError("Scratchpad attachments are restored from Markdown") }
 
-    override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,
-                                   textContainer: NSTextContainer?, proposedLineFragment: CGRect, position: CGPoint) -> CGRect {
+    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment: CGRect,
+                                   glyphPosition position: CGPoint, characterIndex: Int) -> CGRect {
         guard let image else { return bounds }
         let width = max(100, proposedLineFragment.width)
         return CGRect(x: 0, y: 0, width: width, height: width * image.size.height / max(1, image.size.width))
@@ -814,15 +820,14 @@ final class ScratchpadDrawingAttachment: ScratchpadMarkdownAttachment {
 
     required init?(coder: NSCoder) { fatalError("Scratchpad drawings are restored from attachments") }
 
-    override func image(for imageBounds: CGRect, attributes: [NSAttributedString.Key: Any],
-                        location: any NSTextLocation, textContainer: NSTextContainer?) -> UIImage? {
+    override func image(forBounds imageBounds: CGRect, textContainer: NSTextContainer?, characterIndex: Int) -> UIImage? {
         // The canvas supplies the drawing. Suppress UIKit's generic file icon
         // for a custom attachment type with no image contents.
         nil
     }
 
-    override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,
-                                   textContainer: NSTextContainer?, proposedLineFragment: CGRect, position: CGPoint) -> CGRect {
+    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment: CGRect,
+                                   glyphPosition position: CGPoint, characterIndex: Int) -> CGRect {
         let width = max(100, proposedLineFragment.width)
         let height = strokeHeight ?? max(drawingHeight, expandedHeight ?? 0)
         return CGRect(x: 0, y: 0, width: width, height: max(44, height * width / Self.drawingWidth))

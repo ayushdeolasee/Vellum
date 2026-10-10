@@ -720,14 +720,13 @@ final class ScratchpadImportTests: XCTestCase {
         editor.delegate = editor
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         window.rootViewController = UIViewController()
         editor.frame = window.bounds
         window.rootViewController?.view.addSubview(editor)
         window.makeKeyAndVisible()
         defer { editor.hideTools(); window.isHidden = true }
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
-        XCTAssertNotNil(editor.textLayoutManager)
         let normalPanTouchTypes = editor.panGestureRecognizer.allowedTouchTypes
         let normalPanMinimumTouches = editor.panGestureRecognizer.minimumNumberOfTouches
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
@@ -740,9 +739,7 @@ final class ScratchpadImportTests: XCTestCase {
         }
         let attachment = try XCTUnwrap(ink)
         XCTAssertTrue(store.text.hasPrefix("Before 📝\nAfter\n![Handwriting]"), "Pencil must append after all text, regardless of the caret")
-        if let manager = editor.textLayoutManager, let range = manager.textContentManager?.documentRange {
-            manager.ensureLayout(for: range)
-        }
+        editor.layoutManager.ensureLayout(for: editor.textContainer)
         window.layoutIfNeeded()
         editor.layoutIfNeeded()
         await Task.yield()
@@ -983,13 +980,19 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertEqual(growingCanvas.bounds.height, typingHeight, "Returning to typing must not collapse the drawing region")
         XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, typingOrigin.y, accuracy: 0.5, "Returning to typing must keep the visible ink position")
         // Typing below tall ink must stay visible in a compact editor viewport.
-        store.text = try XCTUnwrap(growingInk).reference.markdown + "\n"
+        growingCanvas.drawing = drawing.transformed(using: CGAffineTransform(translationX: 0, y: 6000))
+        editor.canvasViewDrawingDidChange(growingCanvas)
+        let precedingText = (1...40).map { "## Section \($0)\nA paragraph with **bold** and *italic* text.\n" }.joined(separator: "\n")
+        store.text = precedingText + "\n" + (try XCTUnwrap(growingInk).reference.markdown) + "\n"
         editor.applyContent()
         editor.frame.size = CGSize(width: 320, height: 300)
         editor.layoutIfNeeded()
+        XCTAssertGreaterThan(growingCanvas.bounds.height, editor.bounds.height * 8, "Ink must span many keyboard-sized viewports")
         editor.selectedRange = NSRange(location: editor.textStorage.length, length: 0)
         XCTAssertTrue(editor.becomeFirstResponder())
-        editor.scrollRangeToVisible(editor.selectedRange)
+        editor.layoutManager.ensureLayout(for: editor.textContainer)
+        let initialTailPosition = try XCTUnwrap(editor.selectedTextRange?.end)
+        editor.scrollRectToVisible(editor.caretRect(for: initialTailPosition), animated: false)
         try await Task.sleep(for: .milliseconds(150))
         editor.layoutIfNeeded()
         let tailPosition = try XCTUnwrap(editor.selectedTextRange?.end)
@@ -1004,6 +1007,15 @@ final class ScratchpadImportTests: XCTestCase {
             XCTAssertEqual(editor.selectedRange.location, editor.textStorage.length)
             XCTAssertEqual(editor.convert(editor.caretRect(for: position), to: window).minY, tailOrigin.minY,
                            accuracy: 1, "Each key must keep the typing line below tall ink in place")
+        }
+        for character in " and this sentence wraps across the narrow note pane\nNext typed line" {
+            editor.insertText(String(character))
+            editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+            editor.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            let position = try XCTUnwrap(editor.selectedTextRange?.end)
+            XCTAssertEqual(editor.selectedRange.location, editor.textStorage.length)
+            XCTAssertTrue(editor.bounds.contains(editor.caretRect(for: position)), "Wrapping and newlines below ink must keep the caret visible")
         }
         editor.resignFirstResponder()
         await store.flush().value
