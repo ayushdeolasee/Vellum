@@ -982,6 +982,30 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
         XCTAssertEqual(growingCanvas.bounds.height, typingHeight, "Returning to typing must not collapse the drawing region")
         XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, typingOrigin.y, accuracy: 0.5, "Returning to typing must keep the visible ink position")
+        // Typing below tall ink must stay visible in a compact editor viewport.
+        store.text = try XCTUnwrap(growingInk).reference.markdown + "\n"
+        editor.applyContent()
+        editor.frame.size = CGSize(width: 320, height: 300)
+        editor.layoutIfNeeded()
+        editor.selectedRange = NSRange(location: editor.textStorage.length, length: 0)
+        XCTAssertTrue(editor.becomeFirstResponder())
+        editor.scrollRangeToVisible(editor.selectedRange)
+        try await Task.sleep(for: .milliseconds(150))
+        editor.layoutIfNeeded()
+        let tailPosition = try XCTUnwrap(editor.selectedTextRange?.end)
+        let tailOrigin = editor.convert(editor.caretRect(for: tailPosition), to: window)
+        XCTAssertTrue(editor.convert(editor.bounds, to: window).intersects(tailOrigin))
+        for character in "Hi hi hello h" {
+            editor.insertText(String(character))
+            editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+            editor.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            let position = try XCTUnwrap(editor.selectedTextRange?.end)
+            XCTAssertEqual(editor.selectedRange.location, editor.textStorage.length)
+            XCTAssertEqual(editor.convert(editor.caretRect(for: position), to: window).minY, tailOrigin.minY,
+                           accuracy: 1, "Each key must keep the typing line below tall ink in place")
+        }
+        editor.resignFirstResponder()
         await store.flush().value
     }
 

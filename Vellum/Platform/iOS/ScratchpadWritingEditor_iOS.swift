@@ -424,9 +424,9 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             hideTools()
             // Retain the mounted writing region so returning to text does not
             // shrink the note and move the visible content.
-            invalidateDrawingLayout()
+            if previouslyEnabled { invalidateDrawingLayout() }
         }
-        refreshMarkdown()
+        if styleChanged || previouslyEnabled != nextEnabled { refreshMarkdown() }
 
     }
 
