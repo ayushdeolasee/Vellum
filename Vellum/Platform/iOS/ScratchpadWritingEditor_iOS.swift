@@ -111,6 +111,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private var interruptingStroke = false
     private var pendingAppearance: (fontSize: Double, palette: ThemePalette)?
     private var contentUpdatePending = false
+    private var preservingInkLayout = false
     private var foreground = UIColor.label
     private var textFont = UIFont.systemFont(ofSize: 16)
     private var restoring = false
@@ -180,7 +181,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             // A TextKit/SwiftUI layout pass can happen while a stroke is active.
             if !canvas.isUsingTool, canvas.frame != rect { canvas.frame = rect }
             canvas.isUserInteractionEnabled = isInking
-            canvas.accessibilityHint = isInking ? "Scroll the note with two fingers between Pencil strokes." : nil
+            canvas.accessibilityHint = isInking ? "Scroll the note with a finger between Pencil strokes." : nil
         }
     }
 
@@ -228,29 +229,31 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         guard !interruptingStroke, let canvas = canvasView as? ScratchpadInlineCanvas,
               canvas.isUsingTool else { return }
-        canvas.isUsingTool = false
-        canvas.attachment?.strokeHeight = nil
-        if drawingCanvas === canvas {
-            drawingCanvas = nil
-            if let panningBeforeStroke { panGestureRecognizer.isEnabled = panningBeforeStroke }
-            panningBeforeStroke = nil
+        preserveInkAnchor(for: canvas) {
+            canvas.isUsingTool = false
+            canvas.attachment?.strokeHeight = nil
+            if self.drawingCanvas === canvas {
+                self.drawingCanvas = nil
+                if let panningBeforeStroke = self.panningBeforeStroke {
+                    self.panGestureRecognizer.isEnabled = panningBeforeStroke
+                }
+                self.panningBeforeStroke = nil
+            }
+            if let height = canvas.pendingHeight, let attachment = canvas.attachment {
+                attachment.expandedHeight = max(attachment.expandedHeight ?? 0, height)
+                canvas.pendingHeight = nil
+            }
+            self.canvasViewDrawingDidChange(canvas)
+            if let attachment = canvas.attachment, let expanded = attachment.expandedHeight {
+                attachment.expandedHeight = max(expanded, attachment.drawingHeight + 480)
+            }
+            self.showTools(for: canvas)
+            if let appearance = self.pendingAppearance {
+                self.pendingAppearance = nil
+                self.apply(pencilEnabled: self.pencilEnabled, fontSize: appearance.fontSize, palette: appearance.palette)
+            }
+            if self.contentUpdatePending { self.applyContent() }
         }
-        if let height = canvas.pendingHeight, let attachment = canvas.attachment {
-            attachment.expandedHeight = max(attachment.expandedHeight ?? 0, height)
-            canvas.pendingHeight = nil
-            invalidateDrawingLayout()
-        }
-        canvasViewDrawingDidChange(canvas)
-        if let attachment = canvas.attachment, let expanded = attachment.expandedHeight {
-            attachment.expandedHeight = max(expanded, attachment.drawingHeight + 480)
-        }
-        invalidateDrawingLayout()
-        showTools(for: canvas)
-        if let appearance = pendingAppearance {
-            pendingAppearance = nil
-            apply(pencilEnabled: pencilEnabled, fontSize: appearance.fontSize, palette: appearance.palette)
-        }
-        if contentUpdatePending { applyContent() }
     }
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
@@ -259,14 +262,21 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
               drawingAttachments.contains(where: { $0 === attachment }),
               editorContext == store?.editorContext, store?.editorAcceptsChanges == true,
               canvasView.drawing != attachment.drawing else { return }
-        attachment.drawing = canvasView.drawing
-        if !canvas.isUsingTool {
-            if let expanded = attachment.expandedHeight {
-                attachment.expandedHeight = max(expanded, attachment.drawingHeight + 480)
+        let update = {
+            attachment.drawing = canvasView.drawing
+            if !canvas.isUsingTool {
+                if let expanded = attachment.expandedHeight {
+                    attachment.expandedHeight = max(expanded, attachment.drawingHeight + 480)
+                }
+                self.invalidateDrawingLayout()
             }
-            invalidateDrawingLayout()
+            self.persist(attachment)
         }
-        persist(attachment)
+        if canvas.isUsingTool {
+            update()
+        } else {
+            preserveInkAnchor(for: canvas, changes: update)
+        }
     }
 
     override func didMoveToWindow() {
@@ -566,10 +576,52 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     func invalidateDrawingLayout() {
+        guard !preservingInkLayout else { return }
+        invalidateDrawingLayoutImmediately()
+    }
+
+    private func invalidateDrawingLayoutImmediately() {
         if let manager = textLayoutManager, let range = manager.textContentManager?.documentRange {
             manager.invalidateLayout(for: range)
         }
         setNeedsLayout()
+    }
+
+    private func preserveInkAnchor(for canvas: ScratchpadInlineCanvas, changes: () -> Void) {
+        guard !preservingInkLayout, let attachment = canvas.attachment,
+              canvas.superview === self,
+              drawingAttachments.contains(where: { $0 === attachment }) else {
+            changes()
+            return
+        }
+        let context = editorContext
+        let origin = canvas.convert(CGPoint.zero, to: self)
+        let visibleOrigin = CGPoint(x: origin.x - contentOffset.x, y: origin.y - contentOffset.y)
+        preservingInkLayout = true
+        defer { preservingInkLayout = false }
+        UIView.performWithoutAnimation {
+            changes()
+            guard editorContext == context, canvas.superview === self,
+                  drawingAttachments.contains(where: { $0 === attachment }) else { return }
+            // Coalesce growth, late Pencil updates, and deferred editor changes.
+            // TextKit may otherwise follow the trailing caret or adjust estimated
+            // fragment positions while laying out the larger attachment.
+            invalidateDrawingLayoutImmediately()
+            if let manager = textLayoutManager, let range = manager.textContentManager?.documentRange {
+                manager.ensureLayout(for: range)
+            }
+            // A corrective offset schedules another scroll-view layout. Settle
+            // at most twice rather than leaving an asynchronous scroll correction.
+            for _ in 0..<2 {
+                layoutIfNeeded()
+                canvas.layoutIfNeeded()
+                let currentOrigin = canvas.convert(CGPoint.zero, to: self)
+                let offset = CGPoint(x: currentOrigin.x - visibleOrigin.x,
+                                     y: currentOrigin.y - visibleOrigin.y)
+                if contentOffset == offset { break }
+                setContentOffset(offset, animated: false)
+            }
+        }
     }
 
     func showTools(for canvas: PKCanvasView) {
@@ -628,11 +680,10 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
             panSettingsBeforeInk = (panGestureRecognizer.allowedTouchTypes,
                                     panGestureRecognizer.minimumNumberOfTouches)
             stopScrollMotion()
-            // Restrict the parent before PencilKit starts a stroke. Pencil and
-            // incidental single-finger/palm contact must not scroll the note.
+            // Fingers keep native scrolling; Pencil input belongs to the canvas.
             panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-            panGestureRecognizer.minimumNumberOfTouches = 2
-            accessibilityHint = "Scroll the note with two fingers between Pencil strokes."
+            panGestureRecognizer.minimumNumberOfTouches = 1
+            accessibilityHint = "Scroll the note with a finger between Pencil strokes."
         } else if let settings = panSettingsBeforeInk {
             panGestureRecognizer.allowedTouchTypes = settings.touchTypes
             panGestureRecognizer.minimumNumberOfTouches = settings.minimumTouches
@@ -707,6 +758,22 @@ private final class ScratchpadInlineCanvas: PKCanvasView {
     var isUsingTool = false
     var pendingHeight: CGFloat?
     private var configuredBoundsSize: CGSize?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let touches = event?.allTouches, !touches.isEmpty,
+           !touches.contains(where: { touch in
+               guard touch.type == .pencil else { return false }
+               switch touch.phase {
+               case .began, .moved, .stationary: return true
+               default: return false
+               }
+           }) {
+            // Let the text view receive direct finger scrolling, including when
+            // a Pencil is hovering nearby. Only contact belongs to PencilKit.
+            return nil
+        }
+        return super.hitTest(point, with: event)
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()

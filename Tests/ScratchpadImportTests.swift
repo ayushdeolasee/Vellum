@@ -733,7 +733,7 @@ final class ScratchpadImportTests: XCTestCase {
         editor.selectedRange = NSRange(location: ("Before 📝\n" as NSString).length, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
         XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)], "Pencil input must never start the note's scroll gesture")
-        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "A resting hand must not drag the note between letters")
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 1, "Finger scrolling must remain available in Pencil mode")
         var ink: ScratchpadDrawingAttachment?
         editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
             ink = value as? ScratchpadDrawingAttachment ?? ink
@@ -763,6 +763,7 @@ final class ScratchpadImportTests: XCTestCase {
         let initialZoom = canvas.zoomScale
         let initialCanvasOffset = canvas.contentOffset
         let initialOffset = editor.contentOffset
+        let initialVisibleOrigin = canvas.convert(CGPoint.zero, to: window)
         editor.canvasViewDidBeginUsingTool(canvas)
         XCTAssertFalse(editor.panGestureRecognizer.isEnabled, "Palm/finger movement must not move the note under an active stroke")
         editor.extendDrawing(canvas, at: CGPoint(x: 40, y: initialHeight - 10))
@@ -793,10 +794,10 @@ final class ScratchpadImportTests: XCTestCase {
         editor.canvasViewDidEndUsingTool(canvas)
         editor.layoutIfNeeded()
         XCTAssertTrue(editor.panGestureRecognizer.isEnabled)
-        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "Two-finger scrolling must remain in effect between strokes")
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 1, "Finger scrolling must return after Pencil lift")
         XCTAssertGreaterThan(canvas.bounds.height, initialHeight)
         XCTAssertEqual(canvas.contentOffset, initialCanvasOffset, "Growing the region must not move the drawing inside its canvas")
-        XCTAssertEqual(editor.contentOffset, initialOffset, "Finishing a stroke must not jump the note")
+        XCTAssertEqual(canvas.convert(CGPoint.zero, to: window).y, initialVisibleOrigin.y, accuracy: 0.5, "Finishing a stroke must preserve the visible ink position, including deferred font changes")
         // An insertion callback may update content without a SwiftUI appearance update.
         editor.canvasViewDidBeginUsingTool(canvas)
         let frameBeforeContentUpdate = canvas.frame
@@ -825,7 +826,7 @@ final class ScratchpadImportTests: XCTestCase {
         XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
         editor.selectedRange = NSRange(location: 0, length: 0)
         editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
-        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2)
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 1)
         let precedingNewline = NSRange(location: ("Before 📝\nAfter" as NSString).length, length: 1)
         editor.textStorage.deleteCharacters(in: precedingNewline)
         editor.textViewDidChange(editor)
@@ -928,11 +929,47 @@ final class ScratchpadImportTests: XCTestCase {
         editor.applyContent()
         editor.layoutIfNeeded()
         XCTAssertTrue(editor.isInking)
-        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 2, "Removing the active drawing must not restore accidental one-finger panning")
+        XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, 1)
         XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)])
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         XCTAssertEqual(editor.panGestureRecognizer.minimumNumberOfTouches, normalPanMinimumTouches)
         XCTAssertEqual(editor.panGestureRecognizer.allowedTouchTypes, normalPanTouchTypes)
+        // A long note exposes TextKit viewport changes that short notes miss.
+        store.text = (1...80).map { "Line \($0): Keep the ink anchored." }.joined(separator: "\n")
+        editor.applyContent()
+        editor.apply(pencilEnabled: true, fontSize: 16, palette: .light)
+        editor.layoutIfNeeded()
+        await Task.yield()
+        var growingInk: ScratchpadDrawingAttachment?
+        editor.textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: editor.textStorage.length)) { value, _, _ in
+            if let ink = value as? ScratchpadDrawingAttachment { growingInk = ink }
+        }
+        let growingCanvas = try XCTUnwrap(growingInk?.canvas)
+        editor.setContentOffset(CGPoint(x: 0, y: max(0, growingCanvas.frame.minY - editor.bounds.height + 120)), animated: false)
+        editor.layoutIfNeeded()
+        let visibleOrigin = growingCanvas.convert(CGPoint.zero, to: window)
+        let growthHeight = growingCanvas.bounds.height
+        XCTAssertGreaterThan(editor.contentOffset.y, 0, "This regression must exercise a scrolled note")
+        let growthZoom = growingCanvas.zoomScale
+        let growthOffset = growingCanvas.contentOffset
+        editor.canvasViewDidBeginUsingTool(growingCanvas)
+        editor.extendDrawing(growingCanvas, at: CGPoint(x: 40, y: growingCanvas.bounds.height - 10))
+        growingCanvas.drawing = drawing
+        editor.canvasViewDrawingDidChange(growingCanvas)
+        editor.canvasViewDidEndUsingTool(growingCanvas)
+        window.layoutIfNeeded()
+        editor.layoutIfNeeded()
+        await Task.yield()
+        XCTAssertGreaterThan(growingCanvas.bounds.height, growthHeight)
+        XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, visibleOrigin.y, accuracy: 0.5, "Pencil lift must preserve the visible ink position in a scrolled long note")
+        XCTAssertEqual(growingCanvas.zoomScale, growthZoom)
+        XCTAssertEqual(growingCanvas.contentOffset, growthOffset)
+        growingCanvas.drawing = drawing.transformed(using: CGAffineTransform(translationX: 0, y: 800))
+        editor.canvasViewDrawingDidChange(growingCanvas)
+        editor.layoutIfNeeded()
+        await Task.yield()
+        XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, visibleOrigin.y, accuracy: 0.5, "Late Pencil samples must not shift the note after lift")
+        editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
         await store.flush().value
     }
 
