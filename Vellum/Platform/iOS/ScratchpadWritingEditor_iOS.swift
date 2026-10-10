@@ -111,6 +111,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     private var interruptingStroke = false
     private var pendingAppearance: (fontSize: Double, palette: ThemePalette)?
     private var contentUpdatePending = false
+    private var pendingFocusSelection: NSRange?
     private var preservingInkLayout = false
     private var foreground = UIColor.label
     private var textFont = UIFont.systemFont(ofSize: 16)
@@ -132,6 +133,36 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     required init?(coder: NSCoder) { fatalError("Scratchpad editor is constructed programmatically") }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let touches = event?.allTouches ?? []
+        if isFirstResponder, event?.type == .touches,
+           touches.isEmpty || touches.contains(where: { $0.phase == .began }) {
+            pendingFocusSelection = nil
+        }
+        if isUserInteractionEnabled, isEditable, !isInking, !isFirstResponder,
+           !restoring, bounds.contains(point), event?.type == .touches,
+           (touches.isEmpty || touches.contains(where: { $0.type == .direct && $0.phase == .began })),
+           !touches.contains(where: { touch in
+               guard touch.type == .pencil else { return false }
+               switch touch.phase {
+               case .began, .moved, .stationary: return true
+               default: return false
+               }
+           }),
+           let position = closestPosition(to: point),
+           caretRect(for: position).intersects(bounds),
+           let range = textRange(from: position, to: position) {
+            // UIKit can hit-test a touch event before allTouches is populated.
+            // Prime the visible insertion point before UIKit focuses its text
+            // input child, rather than letting focus restore the end-of-note caret.
+            pendingFocusSelection = NSRange(location: offset(from: beginningOfDocument, to: position), length: 0)
+            restoring = true
+            selectedTextRange = range
+            restoring = false
+        }
+        return super.hitTest(point, with: event)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -317,6 +348,21 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
     }
 
     func apply(pencilEnabled nextEnabled: Bool, fontSize: Double, palette: ThemePalette) {
+        if pencilEnabled != nextEnabled || editorContext != store?.editorContext {
+            pendingFocusSelection = nil
+        }
+        if pencilEnabled, !nextEnabled, !preservingInkLayout,
+           editorContext == store?.editorContext,
+           let canvas = activeCanvas as? ScratchpadInlineCanvas,
+           canvas.superview === self, let attachment = canvas.attachment,
+           drawingAttachments.contains(where: { $0 === attachment }) {
+            // Enabling text input can follow the trailing caret even when the
+            // writing region keeps its height. Anchor the entire transition.
+            preserveInkAnchor(for: canvas) {
+                self.apply(pencilEnabled: nextEnabled, fontSize: fontSize, palette: palette)
+            }
+            return
+        }
         // Updates from SwiftUI can arrive between any two Pencil samples.
         // Mode/document changes cancel active input before changing its geometry;
         // cosmetic updates wait for a natural Pencil lift.
@@ -344,15 +390,24 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         if changedContext { hideTools(); undoManager?.removeAllActions() }
         applyContent()
         let previouslyEnabled = pencilEnabled
+        if previouslyEnabled, !nextEnabled { hideTools() }
+        for attachment in drawingAttachments {
+            attachment.canvas?.isUserInteractionEnabled = nextEnabled && store?.editorAcceptsChanges == true
+        }
+        if previouslyEnabled, !nextEnabled {
+            // Release Pencil focus while text is still read-only, then discard
+            // the synthetic caret below the ink. The next tap chooses where to
+            // type instead of UIKit scrolling to that old offscreen selection.
+            restoring = true
+            selectedTextRange = nil
+            restoring = false
+        }
         pencilEnabled = nextEnabled
         configurePanningForInk(nextEnabled)
         // Scribble must not claim Pencil strokes while the user has chosen ink.
         // Return to text input only when the Pencil button is turned off.
         isEditable = store?.editorAcceptsChanges == true && !nextEnabled
         isSelectable = isEditable
-        for attachment in drawingAttachments {
-            attachment.canvas?.isUserInteractionEnabled = nextEnabled && store?.editorAcceptsChanges == true
-        }
         if nextEnabled, !previouslyEnabled, !changedContext {
             if let existing = trailingDrawing {
                 if let canvas = existing.canvas {
@@ -367,7 +422,8 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         }
         if !nextEnabled {
             hideTools()
-            for attachment in drawingAttachments { attachment.expandedHeight = nil }
+            // Retain the mounted writing region so returning to text does not
+            // shrink the note and move the visible content.
             invalidateDrawingLayout()
         }
         refreshMarkdown()
@@ -386,6 +442,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         contentUpdatePending = false
         guard editorContext != store.editorContext || appliedText != store.text
                 || (unresolvedReferences && appliedAttachmentRevision != store.attachmentRevision) else { return }
+        pendingFocusSelection = nil
         let contextChanged = editorContext != store.editorContext
         // Attachment writes run asynchronously. A same-document text insertion
         // must retain the mounted drawing instead of reading older resolver bytes.
@@ -459,6 +516,7 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
 
     func textViewDidChange(_ textView: UITextView) {
         guard !restoring else { return }
+        pendingFocusSelection = nil
         publishText()
         refreshMarkdown()
     }
@@ -467,14 +525,33 @@ final class ScratchpadWritingTextView: UITextView, UITextViewDelegate, UITextPas
         refreshMarkdown()
     }
 
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        pendingFocusSelection = nil
+        return true
+    }
+
     func scribbleInteraction(_ interaction: UIScribbleInteraction, shouldBeginAt location: CGPoint) -> Bool {
         !isInking && store?.editorAcceptsChanges == true
     }
 
-    func textViewDidEndEditing(_ textView: UITextView) { refreshMarkdown() }
+    func textViewDidEndEditing(_ textView: UITextView) {
+        pendingFocusSelection = nil
+        refreshMarkdown()
+    }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
         guard !restoring else { return }
+        if isFirstResponder, let pending = pendingFocusSelection {
+            pendingFocusSelection = nil
+            // UIKit can replace the primed tap position with the trailing caret
+            // after focus. Correct only that first collapsed end-of-note selection.
+            if selectedRange.length == 0, selectedRange.location == textStorage.length,
+               pending.location < textStorage.length {
+                restoring = true
+                selectedRange = pending
+                restoring = false
+            }
+        }
         refreshMarkdown()
     }
 

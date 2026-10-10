@@ -969,7 +969,19 @@ final class ScratchpadImportTests: XCTestCase {
         editor.layoutIfNeeded()
         await Task.yield()
         XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, visibleOrigin.y, accuracy: 0.5, "Late Pencil samples must not shift the note after lift")
+        // Keep the ink origin visible while the trailing typing caret is offscreen.
+        editor.setContentOffset(CGPoint(x: 0, y: max(0, growingCanvas.frame.minY - 320)), animated: false)
+        editor.layoutIfNeeded()
+        let typingOrigin = growingCanvas.convert(CGPoint.zero, to: window)
+        let typingHeight = growingCanvas.bounds.height
         editor.apply(pencilEnabled: false, fontSize: 16, palette: .light)
+        window.layoutIfNeeded()
+        editor.layoutIfNeeded()
+        await Task.yield()
+        XCTAssertTrue(editor.isEditable)
+        XCTAssertTrue(editor.scribbleInteraction(scribble, shouldBeginAt: .zero))
+        XCTAssertEqual(growingCanvas.bounds.height, typingHeight, "Returning to typing must not collapse the drawing region")
+        XCTAssertEqual(growingCanvas.convert(CGPoint.zero, to: window).y, typingOrigin.y, accuracy: 0.5, "Returning to typing must keep the visible ink position")
         await store.flush().value
     }
 
