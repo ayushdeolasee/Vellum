@@ -348,7 +348,7 @@ struct WelcomeLibrary_iOS: View {
                 .foregroundStyle(palette.mutedForeground)
 
             TextField("Search your library — or paste a link", text: $store.query)
-                .homeDrop()
+                .homeTextDrop()
                 .textFieldStyle(.plain)
                 .font(dynamicTypeSize.isAccessibilitySize ? .body : .system(size: 15))
                 .foregroundStyle(palette.foreground)

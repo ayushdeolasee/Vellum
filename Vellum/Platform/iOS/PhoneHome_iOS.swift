@@ -308,7 +308,7 @@ struct PhoneHome_iOS: View {
                 .accessibilityHidden(true)
 
             TextField("Search your library — or paste a link", text: $store.query)
-                .homeDrop(onOpened: onDocumentOpened)
+                .homeTextDrop(onOpened: onDocumentOpened)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .foregroundStyle(palette.foreground)

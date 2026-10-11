@@ -413,6 +413,7 @@
 		874BF346A6F89EA1049BC11B /* VellumCapture.js in Resources */ = {isa = PBXBuildFile; fileRef = 107A9FB8BC038245B98313FB /* VellumCapture.js */; };
 		8764597B314403A32A9BE51B /* AnonymousAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A3B9CDA7225BB84B99C6E8 /* AnonymousAnalytics.swift */; };
 		8771306209EF5B28E7D20AD1 /* PdfAnnotationCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 195A20D8270BAD8604C2E641 /* PdfAnnotationCodec.swift */; };
+		87E8F3F5FAE2045887F67254 /* HomeTextDropHandler_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3728E6C51765342ED302C4B /* HomeTextDropHandler_iOS.swift */; };
 		88200E668064242DF5AD488F /* PositionMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF2CB6E68C17483659E62D /* PositionMerge.swift */; };
 		8834CABCD03939FDB6FCE3D5 /* VellumShareURL.js in Resources */ = {isa = PBXBuildFile; fileRef = 7F04565BA80DACE0B9820F9C /* VellumShareURL.js */; };
 		885FAED38662F5C2F8E3A75F /* tool-mode-system.md in Resources */ = {isa = PBXBuildFile; fileRef = 8DEAE7F1D56A4A84D94F3F79 /* tool-mode-system.md */; };
@@ -539,6 +540,7 @@
 		B182304308E617431DAAC4EC /* FakeSyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE2FEB56AF83B86BE5EE77D1 /* FakeSyncedContainer.swift */; };
 		B1E6D2F538B510CB464EA40D /* KaTeX_Size1-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3180FE94F812DBF0B9C91ED5 /* KaTeX_Size1-Regular.woff2 */; };
 		B1EA8A76FD9FE32930829528 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7280818785023514C87C04C9 /* SessionService.swift */; };
+		B21CF2225D26FBD94534B392 /* HomeTextDropHandler_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3728E6C51765342ED302C4B /* HomeTextDropHandler_iOS.swift */; };
 		B21F8CA3F2E2DA85531167DE /* AiToolSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3D09C89D224F5C322CE8BB /* AiToolSummaryView.swift */; };
 		B2D1BA290BFA82E3F231FFCB /* HomeDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 561F3C626CFABE5272246F4A /* HomeDropTests.swift */; };
 		B308C89B1D5065203951DFE7 /* CaptureInboxLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 727E2F4BE67C51B47AAFB570 /* CaptureInboxLayout.swift */; };
@@ -1101,6 +1103,7 @@
 		A17D3131ADA1819B327BDBB6 /* AiUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiUsage.swift; sourceTree = "<group>"; };
 		A25BB389D4703EF8A8B6FFCE /* PositionSidecarIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionSidecarIsolationTests.swift; sourceTree = "<group>"; };
 		A35446F16BAA2884CAF8327A /* DisconnectServiceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisconnectServiceSheet.swift; sourceTree = "<group>"; };
+		A3728E6C51765342ED302C4B /* HomeTextDropHandler_iOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTextDropHandler_iOS.swift; sourceTree = "<group>"; };
 		A41D70800A252ABA20FFCD9D /* ExternalLibraryList_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalLibraryList_macOS.swift; sourceTree = "<group>"; };
 		A5003641A54B311693588C6C /* PdfPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PdfPersistenceTests.swift; sourceTree = "<group>"; };
 		A63B27999946C80990252F63 /* VellumWidgetSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetSnapshotStore.swift; sourceTree = "<group>"; };
@@ -1339,6 +1342,7 @@
 				D186BECB3C6E665BE2FDAD0C /* HomeLibraryActions_iOS.swift */,
 				6D281471A76A306A77CBC080 /* HomeNotifications_iOS.swift */,
 				64F834FB8760337F67C69FCE /* HomeResultViews_iOS.swift */,
+				A3728E6C51765342ED302C4B /* HomeTextDropHandler_iOS.swift */,
 				96A7991568F0B38518672931 /* InkController_iOS.swift */,
 				438D3DD29145D25F74DF89C8 /* InkOverlayProvider_iOS.swift */,
 				7D0AB7EE7306E1C02A815F35 /* InkToolPalette_iOS.swift */,
@@ -2523,6 +2527,7 @@
 				543A546AEA7147273DC792AF /* HomeSearchProvider.swift in Sources */,
 				1C3EB3556F9B859C436AA764 /* HomeSearchRanker.swift in Sources */,
 				30697DAAD7C5C3F695319D1C /* HomeSearchStore.swift in Sources */,
+				87E8F3F5FAE2045887F67254 /* HomeTextDropHandler_iOS.swift in Sources */,
 				78521DCFB889C40A803CBA6B /* ICloudSyncedContainer.swift in Sources */,
 				D17C6AC2C5B08EE027B5A40D /* InkController_iOS.swift in Sources */,
 				7581355DB4A97D92CC0A9A4F /* InkOverlayProvider_iOS.swift in Sources */,
@@ -2848,6 +2853,7 @@
 				00A783FA4BE88DCD7E1C5065 /* HomeSearchProvider.swift in Sources */,
 				1B5C72C374CA117AE2A542A3 /* HomeSearchRanker.swift in Sources */,
 				C0467FFEFEFFFC2D272897A1 /* HomeSearchStore.swift in Sources */,
+				B21CF2225D26FBD94534B392 /* HomeTextDropHandler_iOS.swift in Sources */,
 				49FC3F07C7B64C4215666B5A /* ICloudSyncedContainer.swift in Sources */,
 				2D9B44E54F3EF77786B0CCBC /* InkController_iOS.swift in Sources */,
 				3E706409E2D0039C0100A7B6 /* InkOverlayProvider_iOS.swift in Sources */,
