@@ -120,6 +120,7 @@ struct PhoneHome_iOS: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
+        .homeDrop(onOpened: onDocumentOpened)
         .task { await reloadLibrary() }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .vellumSyncedLibraryChanged) {
@@ -307,6 +308,7 @@ struct PhoneHome_iOS: View {
                 .accessibilityHidden(true)
 
             TextField("Search your library — or paste a link", text: $store.query)
+                .homeDrop(onOpened: onDocumentOpened)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .foregroundStyle(palette.foreground)

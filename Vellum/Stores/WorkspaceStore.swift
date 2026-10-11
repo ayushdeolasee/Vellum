@@ -737,6 +737,64 @@ final class WorkspaceStore {
     }
     #endif
 
+    /// Capture the Home pane before provider loading suspends. Queue alongside
+    /// system opens so quit/background drains also join dropped imports.
+    func openHomeDrop(
+        _ providers: [NSItemProvider], in app: AppStore, onOpened: @escaping () -> Void
+    ) {
+        guard !isTerminating else { return }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await restoreFromDisk()
+            let delivery = await HomeDrop.load(providers)
+            guard root.allLeaves().contains(where: { $0.app === app }) else {
+                await Task.detached(priority: .utility) {
+                    for url in delivery.copiedPDFs {
+                        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                    }
+                }.value
+                return
+            }
+            if let pane = root.allLeaves().first(where: { $0.app === app }) { focus(pane.id) }
+            var errors = delivery.errors
+            var openedPDFs: Set<URL> = []
+            var successfulOpens = 0
+            for url in delivery.urls {
+                guard root.allLeaves().contains(where: { $0.app === app }) else { break }
+                if url.isFileURL {
+                    #if os(iOS)
+                    let imported = await Task.detached(priority: .userInitiated) {
+                        DocumentImport.importPickedResult([url])
+                    }.value
+                    errors.append(contentsOf: imported.errors)
+                    guard !imported.paths.isEmpty,
+                          root.allLeaves().contains(where: { $0.app === app }) else { continue }
+                    await app.openFiles(paths: imported.paths)
+                    #else
+                    await app.openFiles(paths: [url.path])
+                    #endif
+                } else {
+                    await app.openUrl(url.absoluteString)
+                }
+                if let error = app.error {
+                    errors.append(error)
+                } else {
+                    successfulOpens += 1
+                    if url.isFileURL { openedPDFs.insert(url) }
+                }
+            }
+            app.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+            // Only failed opens can discard provider copies. A successfully
+            // opened tab may already have moved to another pane or been closed.
+            let unused = delivery.copiedPDFs.filter { !openedPDFs.contains($0) }
+            await Task.detached(priority: .utility) {
+                for url in unused { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            }.value
+            if successfulOpens > 0, app.document != nil { onOpened() }
+        }
+    }
+
     func awaitPendingExternalOpens() async {
         await externalOpenTask?.value
     }

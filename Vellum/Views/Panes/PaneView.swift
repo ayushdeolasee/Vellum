@@ -251,7 +251,7 @@ private struct LiveTabHost: View {
                 // claim has to be gated on being the selected tab as well as
                 // being in the focused pane — one claimant per window, exactly as
                 // the two-pane case already required.
-                WelcomeScreen(isPaneFocused: isPaneFocused && isActive)
+                WelcomeScreen(isPaneFocused: isPaneFocused && isActive, acceptsDrops: isActive)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
