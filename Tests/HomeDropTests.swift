@@ -1,11 +1,40 @@
 import Foundation
 import Testing
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 @testable import Vellum
 
 @Suite("Home PDF and link drops", .serialized)
 @MainActor
 struct HomeDropTests {
+    #if os(macOS)
+    @Test("Native Mac pasteboard files and messages forward through a click-through destination")
+    func nativePasteboard() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let file = NSPasteboardItem()
+        let message = NSPasteboardItem()
+        let url = NSPasteboardItem()
+        let pdf = URL(fileURLWithPath: "/tmp/dragged paper.pdf")
+        file.setString(pdf.absoluteString, forType: .fileURL)
+        message.setString("Read https://example.com/message. Enjoy!", forType: .string)
+        url.setString("https://example.com/article", forType: .URL)
+        url.setString("Title without a link", forType: .string)
+        #expect(pasteboard.writeObjects([file, message, url]))
+        let providers = HomeDropView.providers(from: pasteboard)
+        pasteboard.clearContents()
+        let delivery = await HomeDrop.load(providers)
+        #expect(delivery.urls.map(\.absoluteString) == [
+            pdf.absoluteString, "https://example.com/message", "https://example.com/article"
+        ])
+        #expect(delivery.errors.isEmpty)
+        let view = HomeDropView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        #expect(view.hitTest(NSPoint(x: 200, y: 150)) == nil)
+    }
+    #endif
+
     @Test("Messages open the first web link, skipping email and unsupported schemes")
     func messageLink() {
         #expect(HomeDrop.link(in: "Email reader@example.com; read https://example.com/article?x=1#part, then https://example.org.")?.absoluteString == "https://example.com/article?x=1#part")

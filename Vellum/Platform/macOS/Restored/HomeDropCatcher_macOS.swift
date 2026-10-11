@@ -45,7 +45,11 @@ final class HomeDropView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onTargeted(false)
-        let providers = (sender.draggingPasteboard.pasteboardItems ?? []).map { item in
+        return onDrop(Self.providers(from: sender.draggingPasteboard))
+    }
+
+    static func providers(from pasteboard: NSPasteboard) -> [NSItemProvider] {
+        (pasteboard.pasteboardItems ?? []).map { item in
             let provider = NSItemProvider()
             for type in Self.types where item.types.contains(type) {
                 guard let data = item.data(forType: type) else { continue }
@@ -57,7 +61,6 @@ final class HomeDropView: NSView {
             }
             return provider
         }
-        return onDrop(providers)
     }
 }
 #endif

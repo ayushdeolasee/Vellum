@@ -49,14 +49,18 @@ struct PaneView: View {
             // web content, and gating hit testing on an in-flight drag keeps
             // normal web interaction untouched the rest of the time.
             .overlay {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .allowsHitTesting(workspace.draggingTab != nil)
-                    .onDrop(
-                        of: [.vellumTab],
-                        delegate: PaneDropDelegate(
-                            paneId: pane.id, size: geo.size, workspace: workspace,
-                            activeZone: $activeZone))
+                // SwiftUI registers catch-all dragged types even when hit
+                // testing is disabled. Withdraw the tab destination entirely
+                // between tab drags so Home's PDF/link destination can win.
+                if workspace.draggingTab != nil {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onDrop(
+                            of: [.vellumTab],
+                            delegate: PaneDropDelegate(
+                                paneId: pane.id, size: geo.size, workspace: workspace,
+                                activeZone: $activeZone))
+                }
             }
             // Only show the drop preview while a tab is actually being dragged;
             // `draggingTab` clears reliably on mouse-up, so no highlight lingers
