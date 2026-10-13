@@ -351,6 +351,12 @@ class DirectReleaseTests(unittest.TestCase):
              patch.object(release, "inspect_nested_code", return_value=[]), \
              patch.object(release, "executable_uuids", return_value=[("FIXTURE", "arm64")]):
             release.inspect_bundle(app, "macos", "0.1.2", "5", True)
+            profile["Entitlements"] = {**entitlements, "com.apple.developer.icloud-services": "*"}
+            release.inspect_bundle(app, "macos", "0.1.2", "5", True)
+            profile["Entitlements"] = {**entitlements, "com.apple.developer.icloud-services": ["CloudKit"]}
+            with self.assertRaisesRegex(ValueError, "authorize com.apple.developer.icloud-services"):
+                release.inspect_bundle(app, "macos", "0.1.2", "5", True)
+            profile["Entitlements"] = entitlements
             profile["ProvisionsAllDevices"] = False
             with self.assertRaisesRegex(ValueError, "Developer ID provisioning"):
                 release.inspect_bundle(app, "macos", "0.1.2", "5", True)

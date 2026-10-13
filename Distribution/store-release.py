@@ -218,7 +218,11 @@ def inspect_bundle(app, platform, version, build, exported):
         for key in ("com.apple.developer.icloud-container-identifiers",
                     "com.apple.developer.ubiquity-container-identifiers",
                     "com.apple.developer.icloud-services", "com.apple.security.application-groups"):
-            require(all(value in allowed.get(key, []) for value in entitlements.get(key, [])),
+            # Apple development profiles can authorize all iCloud services with
+            # a scalar wildcard, while the app still signs only CloudDocuments.
+            authorized = allowed.get(key, [])
+            require(authorized == "*" or (isinstance(authorized, list)
+                    and all(value in authorized for value in entitlements.get(key, []))),
                     f"Profile does not authorize {key}")
         if direct:
             require(profile.get("Platform") == ["OSX"], "Developer ID profile is not for macOS")
