@@ -130,6 +130,7 @@
 		22AF5CEF40F9C905992B2D35 /* ShortcutRouter_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCD3CD51FA59977E52683DB3 /* ShortcutRouter_iOS.swift */; };
 		2439956FEFA7E14A045B9289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54417DBF142FD33E6B2F6672 /* SettingsView.swift */; };
 		249CCA82E8B519D78426C055 /* PageTextCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5513F929B10D107AED515D1E /* PageTextCache.swift */; };
+		24A1504C7768A8154F2EDCB4 /* BrowserPreferences_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE10D34772769B6156538A57 /* BrowserPreferences_macOS.swift */; };
 		24B2706F288C3DDF1941F200 /* ScratchpadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A35D0EA31DC7A28CB8FA8A /* ScratchpadStore.swift */; };
 		252A859CBF3B6F40740EC8BB /* DocumentDataStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CE9BA76EA961FB5939EDCE /* DocumentDataStoreTests.swift */; };
 		25CB4101A0C312376C855317 /* SyncedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AE428525E41E75F87CAE44F /* SyncedContainer.swift */; };
@@ -511,6 +512,7 @@
 		A839E098CFCBE5AD28FECCA9 /* PhoneShell_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF446DDE548F281A1103777 /* PhoneShell_iOS.swift */; };
 		A84C2B18F7A53ECE5F96F618 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD27558DB4D8DB212826B68 /* PaneView.swift */; };
 		A8F90F19745170170BF9B13A /* VellumCommands_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = D960E9942F1D1D97F6629BA7 /* VellumCommands_iOS.swift */; };
+		A93D83FC1F001C63903B0FD7 /* BrowserPreferences_macOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE10D34772769B6156538A57 /* BrowserPreferences_macOS.swift */; };
 		A99BCC8FD87700AB08B1C6AC /* CaptureRecoverySheet_iOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78ABD962869166C5242446E /* CaptureRecoverySheet_iOS.swift */; };
 		AA5DCBC0B5F97BC2DEF95C39 /* PositionCoalescingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B668A374C9761E4C84D702 /* PositionCoalescingTests.swift */; };
 		AA66D58816F45E06D45E790E /* VellumExternalWebLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26AEE820D7F76A6A92314015 /* VellumExternalWebLinkTests.swift */; };
@@ -1266,6 +1268,7 @@
 		FD1CAC0FB4ABEA7872C85B14 /* VellumSystemRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumSystemRouteTests.swift; sourceTree = "<group>"; };
 		FDA6A9EA970C674402388693 /* RevealableSecureField_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealableSecureField_macOS.swift; sourceTree = "<group>"; };
 		FDD76CE53AEBEE2230DCEE5B /* MacHandwritingNavigator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacHandwritingNavigator.swift; sourceTree = "<group>"; };
+		FE10D34772769B6156538A57 /* BrowserPreferences_macOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserPreferences_macOS.swift; sourceTree = "<group>"; };
 		FE3740EBDBD76FAFDA06C42F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF653B1B8741B61DBE9B55EE /* WebStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebStorage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -1784,6 +1787,7 @@
 			isa = PBXGroup;
 			children = (
 				E4FB44C08D0803E940B36BA5 /* AttachmentDrop_macOS.swift */,
+				FE10D34772769B6156538A57 /* BrowserPreferences_macOS.swift */,
 				9C57DD593B76E763D126038D /* ComposerReferences_macOS.swift */,
 				6C1DAAEBD7AD58F5AE7FA6C1 /* ConnectServiceSheet_macOS.swift */,
 				E443303683795D2337EBA88F /* DisconnectServiceSheet_macOS.swift */,
@@ -2453,6 +2457,7 @@
 				FBBE27A980D304C976EE251D /* AppStore.swift in Sources */,
 				28088DB05B5E458B9511B85F /* AttachmentDrop.swift in Sources */,
 				EFE0DDF9E4259CF082901002 /* AttachmentDrop_macOS.swift in Sources */,
+				A93D83FC1F001C63903B0FD7 /* BrowserPreferences_macOS.swift in Sources */,
 				74A0561174C6F3E8EF99AEB5 /* BundleImportPrompts_iOS.swift in Sources */,
 				41CEEC8866499486278F4221 /* CaptureAppDelegate.swift in Sources */,
 				D917D5A53CE58F7D38FB0BB5 /* CaptureBackgroundSession.swift in Sources */,
@@ -2775,6 +2780,7 @@
 				F5DFB55D5AEB2B65E76E5613 /* AppStore.swift in Sources */,
 				B861F8FD72248FD16E1562D4 /* AttachmentDrop.swift in Sources */,
 				89C9462D70ACBC36FEADAC88 /* AttachmentDrop_macOS.swift in Sources */,
+				24A1504C7768A8154F2EDCB4 /* BrowserPreferences_macOS.swift in Sources */,
 				01B8CF6F2E2B4CF0D3A33B51 /* BundleImportPrompts_iOS.swift in Sources */,
 				0F7057983C78815EF2BCF1BE /* CaptureAppDelegate.swift in Sources */,
 				F99239B9C21BA6FE876AD605 /* CaptureBackgroundSession.swift in Sources */,

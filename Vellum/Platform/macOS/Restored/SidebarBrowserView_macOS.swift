@@ -80,6 +80,13 @@ struct SidebarBrowserView: View {
             guard isActive else { return }
             controller.reload()
         }
+        .onReceive(NotificationCenter.default.publisher(for: BrowserWebsiteData.didClear)) { _ in
+            // Discard live pages too, so an already-loaded page cannot keep an
+            // in-memory login token after the user clears website data.
+            controller = SidebarBrowserController()
+            controller.setActive(isActive)
+            address = ""
+        }
     }
 
     private var controls: some View {
@@ -199,9 +206,7 @@ private final class SidebarBrowserController: NSObject {
 
     override init() {
         let configuration = WKWebViewConfiguration()
-        if UITestLaunchConfiguration.isEnabled {
-            configuration.websiteDataStore = .nonPersistent()
-        }
+        configuration.websiteDataStore = BrowserWebsiteData.store
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         configure(webView)
@@ -326,9 +331,7 @@ private final class SidebarBrowserController: NSObject {
             return components.url
         }
 
-        var components = URLComponents(string: "https://duckduckgo.com/")
-        components?.queryItems = [URLQueryItem(name: "q", value: value)]
-        return components?.url
+        return BrowserSearchEngine.current.searchURL(for: value)
     }
 }
 

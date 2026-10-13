@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import WebKit
+#endif
 
 #if os(iOS)
 let settingsBottomNavigationClearance: CGFloat = 96
@@ -288,6 +291,12 @@ enum SettingsPhoneTab: Hashable, CaseIterable {
 
 private struct GeneralSettingsTab: View {
     @Environment(ThemeStore.self) private var themeStore
+    #if os(macOS)
+    @AppStorage(BrowserSearchEngine.defaultsKey, store: AppDefaults.current)
+    private var searchEngine = BrowserSearchEngine.duckDuckGo.rawValue
+    @State private var confirmClearWebsiteData = false
+    @State private var isClearingWebsiteData = false
+    #endif
 
     var body: some View {
         Form {
@@ -305,6 +314,32 @@ private struct GeneralSettingsTab: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            #if os(macOS)
+            Section {
+                Picker("Search engine", selection: $searchEngine) {
+                    ForEach(BrowserSearchEngine.allCases, id: \.rawValue) { engine in
+                        Text(engine.label).tag(engine.rawValue)
+                    }
+                }
+                .accessibilityIdentifier("settings.browser.searchEngine")
+                Button(isClearingWebsiteData ? "Clearing Website Data…" : "Clear Website Data…") {
+                    confirmClearWebsiteData = true
+                }
+                .disabled(isClearingWebsiteData)
+                .accessibilityIdentifier("settings.browser.clearData")
+                .confirmationDialog("Clear browser website data?", isPresented: $confirmClearWebsiteData) {
+                    Button("Clear Website Data", role: .destructive) { clearWebsiteData() }
+                } message: {
+                    Text("This signs you out of websites in Vellum and clears their cookies and stored data. Saved articles and annotations are kept.")
+                }
+            } header: {
+                Text("Browser")
+            } footer: {
+                Text("The sidebar browser keeps cookies and website sign-ins across pages and app launches, until you sign out or the website’s session expires.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
         }
         .formStyle(.grouped)
         #if os(iOS)
@@ -333,6 +368,20 @@ private struct GeneralSettingsTab: View {
             set: { themeStore.setTheme($0) }
         )
     }
+
+    #if os(macOS)
+    private func clearWebsiteData() {
+        isClearingWebsiteData = true
+        BrowserWebsiteData.store.removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast
+        ) {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: BrowserWebsiteData.didClear, object: nil)
+                isClearingWebsiteData = false
+            }
+        }
+    }
+    #endif
 }
 
 // MARK: - Reading
