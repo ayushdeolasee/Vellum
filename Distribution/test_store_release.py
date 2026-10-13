@@ -259,7 +259,9 @@ class DirectReleaseTests(unittest.TestCase):
         args = argparse.Namespace(directory=directory, platform="macos", version="0.1.2", build="5",
                                   signing_identity="Developer ID Application: Fixture")
         uuids = [("FIXTURE", "arm64"), ("OTHER-FIXTURE", "x86_64")]
-        records = [{"bundle": release.BUNDLE, "executable_uuids": uuids, "profile_uuid": self.submission_id}]
+        records = [{"bundle": release.BUNDLE, "executable_uuids": uuids, "profile_uuid": self.submission_id},
+                   {"bundle": release.BUNDLE + ".widgets", "executable_uuids": uuids, "profile_uuid": "WIDGET-PROFILE"},
+                   {"bundle": release.MAC_SHARE, "executable_uuids": uuids, "profile_uuid": None}]
         commands = []
         def tool(*command, log=None):
             commands.append(command)
@@ -287,7 +289,8 @@ class DirectReleaseTests(unittest.TestCase):
         options = plistlib.loads((directory / "ExportOptions.plist").read_bytes())
         self.assertEqual(options["method"], "developer-id")
         self.assertEqual(options["signingStyle"], "manual")
-        self.assertEqual(options["provisioningProfiles"], {release.BUNDLE: self.submission_id})
+        self.assertEqual(options["provisioningProfiles"], {release.BUNDLE: self.submission_id,
+                                                          release.BUNDLE + ".widgets": "WIDGET-PROFILE"})
         self.assertEqual(options["signingCertificate"], args.signing_identity)
         archive_command = next(c for c in commands if c[:2] == ("xcodebuild", "archive"))
         self.assertIn("Vellum Mac", archive_command)
@@ -298,10 +301,16 @@ class DirectReleaseTests(unittest.TestCase):
     def test_outer_app_selection_preserves_sparkle_updater(self):
         app = self.directory / "Payload/Vellum.app"
         (app / "Contents/Frameworks/Sparkle.framework/Updater.app").mkdir(parents=True)
-        with patch.object(release, "inspect_bundle", return_value={"bundle": release.BUNDLE}) as inspect:
+        extension = app / "Contents/PlugIns/VellumMacShare.appex"
+        extension.mkdir(parents=True)
+        widget = app / "Contents/PlugIns/VellumMacWidgets.appex"
+        widget.mkdir()
+        with patch.object(release, "inspect_bundle", side_effect=lambda path, *args:
+                {"bundle": release.BUNDLE if path == app else release.MAC_SHARE if path == extension
+                 else release.BUNDLE + ".widgets"}) as inspect:
             release.inspect_apps(self.directory / "Payload", "macos", "0.1.2", "5", True)
-            self.assertEqual(inspect.call_args.args[0], app)
-            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual({call.args[0] for call in inspect.call_args_list}, {app, extension, widget})
+            self.assertEqual(inspect.call_count, 3)
         (self.directory / "Payload/Other.app").mkdir()
         with self.assertRaises(ValueError):
             release.inspect_apps(self.directory / "Payload", "macos", "0.1.2", "5", True)
@@ -327,7 +336,8 @@ class DirectReleaseTests(unittest.TestCase):
             "com.apple.application-identifier": release.TEAM + "." + release.BUNDLE,
             "com.apple.developer.icloud-container-identifiers": [release.CLOUD],
             "com.apple.developer.ubiquity-container-identifiers": [release.CLOUD],
-            "com.apple.developer.icloud-services": ["CloudDocuments"]}
+            "com.apple.developer.icloud-services": ["CloudDocuments"],
+            "com.apple.security.application-groups": [release.GROUP]}
         profile = {"TeamIdentifier": [release.TEAM], "Platform": ["OSX"], "ProvisionsAllDevices": True,
             "ExpirationDate": dt.datetime.now() + dt.timedelta(days=10), "Entitlements": entitlements}
         def inspect_tool(*command):

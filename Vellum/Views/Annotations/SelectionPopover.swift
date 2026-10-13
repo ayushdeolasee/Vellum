@@ -12,8 +12,12 @@ import AppKit
 struct SelectionPopover: View {
     let selection: PdfTextSelection
     var availableWidth: CGFloat? = nil
+    #if os(iOS)
+    let onDictionaryLookup: (String) -> Void
+    #endif
     let onClose: () -> Void
 
+    @Environment(AppStore.self) private var app
     @Environment(AnnotationStore.self) private var annotationStore
     @Environment(AiStore.self) private var aiStore
     @Environment(\.palette) private var palette
@@ -150,10 +154,13 @@ struct SelectionPopover: View {
         .accessibilityLabel("Add note")
         .accessibilityIdentifier("selectionPopover.addNote")
 
-        #if os(macOS)
         Button {
+            #if os(iOS)
+            onDictionaryLookup(selection.text)
+            #else
             DictionaryLookup.show(selection.text)
             onClose()
+            #endif
         } label: {
             Image(systemName: "book.closed")
                 .font(.system(size: 12))
@@ -161,14 +168,18 @@ struct SelectionPopover: View {
                 .foregroundStyle(dictionaryButtonHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 .background(dictionaryButtonHovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
                 .clipShape(Circle())
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                #else
                 .contentShape(Circle())
+                #endif
         }
         .buttonStyle(.plain)
         .onHover { dictionaryButtonHovering = $0 }
         .help("Look Up in Dictionary")
         .accessibilityLabel("Look Up in Dictionary")
         .accessibilityIdentifier("selectionPopover.dictionaryLookup")
-        #endif
 
         Button(action: handleAskAi) {
             Image(systemName: "sparkles")
@@ -209,10 +220,12 @@ struct SelectionPopover: View {
             content: nil,
             positionData: selection.positionData
         )
+        guard let sessionId = app.activeTabId,
+              let queued = annotationStore.enqueueHighlight(input, sessionId: sessionId) else { return }
+        #if os(iOS)
+        app.workspace?.existingLiveTabRuntime(for: sessionId)?.trackAnnotationWrite(queued.persistence)
+        #endif
         onClose()
-        Task {
-            await annotationStore.addHighlight(input)
-        }
     }
 
     private func handleAddNote() {

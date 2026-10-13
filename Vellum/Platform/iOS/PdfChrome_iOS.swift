@@ -10,7 +10,9 @@ import UniformTypeIdentifiers
 // MARK: - Toolbar
 
 struct PdfToolbar_iOS: View {
-    var ink: InkController_iOS
+    /// The focused document's ink controller (PDF or web) — the toolbar only
+    /// needs the shared palette-host surface to drive the ink toggle.
+    var ink: any InkPaletteHost
 
     @Environment(AppStore.self) private var appStore
     @Environment(AnnotationStore.self) private var annotationStore
@@ -21,6 +23,9 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
+    @State private var showSettings = false
+    @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -31,13 +36,14 @@ struct PdfToolbar_iOS: View {
     @State private var exportActions = DocumentExportActions_iOS()
     @State private var showExportBundle = false
 
+
     private var isWeb: Bool { appStore.document?.kind == .web }
     // The pods have fixed 44pt targets, so when the sidebar squeezes the row
     // the lowest-value pods yield instead of clipping at the edges: the zoom
     // pod first (pinch still works for PDFs and web pages; More keeps the
     // commands), then the page-step chevrons (the page field still jumps
     // anywhere).
-    private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 740 }
+    private var showZoomPod: Bool { toolbarWidth == 0 || toolbarWidth >= 800 }
     // DELIBERATE DIVERGENCE FROM macOS (#115 review, #129 packet 7 §2.10 G5).
     // The Mac toolbar splits `[< >]` and `[1 / N]` into two separate glass
     // capsules. The iPad keeps them in ONE pod, `[< 1/N >]`, for two reasons:
@@ -53,12 +59,12 @@ struct PdfToolbar_iOS: View {
     //
     // When the chevrons drop out below 590pt the pod degrades to `[1/N]`, which
     // is still the same one semantic cluster — "page navigation".
-    private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 590 }
+    private var showPageChevrons: Bool { toolbarWidth == 0 || toolbarWidth >= 650 }
     // Narrowest tier: when a split pane is squeezed by the open inspector, fold
     // the find/note/ink/bookmark pod into the More menu so the trailing
     // sidebar-toggle + More pod always fits inside the pane instead of being
     // pushed under (and clipped by) the sidebar where it can't be tapped.
-    private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 500 }
+    private var showActionsPod: Bool { toolbarWidth == 0 || toolbarWidth >= 550 }
     private var isBookmarked: Bool {
         findCurrentBookmark(
             annotations: annotationStore.annotations,
@@ -165,14 +171,17 @@ struct PdfToolbar_iOS: View {
                         ink.isActive = false
                         appStore.setMode(appStore.mode == .note ? .view : .note)
                     }
-                    if !isWeb {
-                        GlassToolButton(
-                            system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
-                            active: ink.isActive
-                        ) {
-                            if !ink.isActive { appStore.setMode(.view) }
-                            ink.isActive.toggle()
-                        }
+                    GlassToolButton(
+                        system: "pencil.tip.crop.circle", label: "Apple Pencil ink",
+                        active: ink.isActive && ink.toolState.tool != .textHighlight
+                    ) {
+                        togglePencilTool(.pen)
+                    }
+                    GlassToolButton(
+                        system: "character.cursor.ibeam", label: "Highlight text with Apple Pencil",
+                        active: ink.isActive && ink.toolState.tool == .textHighlight
+                    ) {
+                        togglePencilTool(.textHighlight)
                     }
                     GlassToolButton(
                         system: isBookmarked ? "bookmark.fill" : "bookmark",
@@ -209,6 +218,19 @@ struct PdfToolbar_iOS: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Enter a page number (1–\(appStore.numPages)).")
+        }
+        .alert("Export Failed", isPresented: $exportActions.showExportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(exportActions.exportErrorMessage)
+        }
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
         }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
@@ -255,8 +277,32 @@ struct PdfToolbar_iOS: View {
         .accessibilityLabel("Page \(appStore.currentPage) of \(appStore.numPages). Tap to jump.")
     }
 
+    private func togglePencilTool(_ tool: InkTool) {
+        let wasSelected = ink.isActive && (tool == .textHighlight
+            ? ink.toolState.tool == .textHighlight : ink.toolState.tool != .textHighlight)
+        appStore.setMode(.view)
+        if wasSelected {
+            ink.isActive = false
+        } else {
+            ink.toolState.tool = tool
+            ink.isActive = true
+        }
+    }
+
     private var moreMenu: some View {
         Menu {
+            // Keep app-wide destinations first, even when compact panes move
+            // the annotation and zoom controls into this menu.
+            Button {
+                workspace.settingsSection = .general
+                showSettings = true
+            } label: { Label("Settings…", systemImage: "gearshape") }
+            .accessibilityIdentifier("toolbar.settings")
+            Button { showHelp = true } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .accessibilityIdentifier("toolbar.help")
+            Divider()
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -271,15 +317,21 @@ struct PdfToolbar_iOS: View {
                         appStore.mode == .note ? "Exit Sticky Note Tool" : "Sticky Note",
                         systemImage: "note.text")
                 }
-                if !isWeb {
-                    Button {
-                        if !ink.isActive { appStore.setMode(.view) }
-                        ink.isActive.toggle()
-                    } label: {
-                        Label(
-                            ink.isActive ? "Exit Apple Pencil Ink" : "Apple Pencil Ink",
-                            systemImage: "pencil.tip.crop.circle")
-                    }
+                Button {
+                    togglePencilTool(.pen)
+                } label: {
+                    Label(
+                        ink.isActive && ink.toolState.tool != .textHighlight
+                            ? "Exit Apple Pencil Ink" : "Apple Pencil Ink",
+                        systemImage: "pencil.tip.crop.circle")
+                }
+                Button {
+                    togglePencilTool(.textHighlight)
+                } label: {
+                    Label(
+                        ink.isActive && ink.toolState.tool == .textHighlight
+                            ? "Exit Apple Pencil Text Highlighting" : "Highlight Text with Apple Pencil",
+                        systemImage: "character.cursor.ibeam")
                 }
                 Button {
                     Task { await annotationStore.toggleBookmark() }
@@ -314,6 +366,11 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(appStore.document == nil || appStore.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             // Offered for BOTH PDF and web documents. Shorter title than the
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
             // compact iPad menu — but the accessibility identifier is identical
@@ -374,6 +431,8 @@ struct PdfToolbar_iOS: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .accessibilityIdentifier("toolbar.more")
+        .accessibilityHint("Settings, Help, and document actions")
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
@@ -394,6 +453,7 @@ struct PdfToolbar_iOS: View {
         }
         pageFieldText = String(appStore.currentPage)
     }
+
 }
 
 /// The `.vellum` export options. macOS puts this one checkbox in the save
@@ -589,6 +649,23 @@ struct TabStrip_iOS: View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    if appStore.tabs.isEmpty {
+                        HStack(spacing: 6) {
+                            if workspace.focusedPaneId == paneId {
+                                Circle().fill(palette.primary).frame(width: 6, height: 6)
+                                    .accessibilityHidden(true)
+                            }
+                            Text("Library").font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                        .selectionSurface(
+                            selected: true, accented: workspace.focusedPaneId == paneId,
+                            in: Capsule(), palette: palette)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Library")
+                        .accessibilityValue(workspace.focusedPaneId == paneId ? "Focused pane" : "")
+                    }
                     ForEach(appStore.tabs) { tab in
                         TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
                     }
@@ -701,14 +778,28 @@ private struct TabChip_iOS: View {
 
     private var isLastTab: Bool { appStore.tabs.last?.id == tab.id }
 
+    private var isPaneFocused: Bool {
+        !workspace.isSplit || workspace.focusedPaneId == paneId
+    }
+
+    private var showsPaneFocus: Bool { workspace.isSplit && isPaneFocused && isActive }
+
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: { appStore.activateTab(tab.id) }) {
+            Button(action: { workspace.activateWorkspaceTab(paneId: paneId, tabId: tab.id) }) {
                 HStack(spacing: 6) {
-                    Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
-                        .font(.system(size: 12))
-                        .foregroundStyle(
-                            isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                    Group {
+                        if showsPaneFocus {
+                            Circle().fill(palette.primary).frame(width: 6, height: 6)
+                        } else {
+                            Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
+                                .font(.system(size: 12))
+                                .foregroundStyle(isActive && isPaneFocused
+                                    ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .frame(width: 12, height: 12)
+                    .accessibilityHidden(true)
                     Text(title)
                         .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                         .lineLimit(1)
@@ -729,7 +820,8 @@ private struct TabChip_iOS: View {
             // Concatenated, not replaced: the selected state is what VoiceOver
             // uses to tell the current tab from the rest.
             .accessibilityValue(
-                [isActive ? "Selected" : "", hasPendingAction ? "Action pending" : ""]
+                [isActive ? "Selected" : "", showsPaneFocus ? "Focused pane" : "",
+                 hasPendingAction ? "Action pending" : ""]
                     .filter { !$0.isEmpty }
                     .joined(separator: ", "))
 
@@ -749,7 +841,7 @@ private struct TabChip_iOS: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(height: 44)
-        .selectionSurface(selected: isActive, in: Capsule(), palette: palette)
+        .selectionSurface(selected: isActive, accented: isPaneFocused, in: Capsule(), palette: palette)
         // Long-press lifts the chip into a drag; dropping on another pane's
         // strip joins that group, dropping on a pane edge splits it.
         .onDrag {
@@ -951,7 +1043,7 @@ struct SidebarContent_iOS: View {
     /// The focused pane's ink controller, from the registry — nil only in the
     /// instant before that pane has appeared, so the Handwriting section just
     /// skips rendering rather than holding a stale controller.
-    var ink: InkController_iOS?
+    var ink: (any InkPaletteHost)?
     var presentation: Presentation = .column
     var onTabSelected: ((WorkspaceStore.SidebarTab) -> Void)? = nil
 
@@ -985,15 +1077,20 @@ struct SidebarContent_iOS: View {
     @State private var hasShownScratchpad = false
 
     var body: some View {
-        let handwritingPages = ink?.handwritingPages ?? []
+        let handwritingPages = (ink as? InkController_iOS)?.handwritingPages ?? []
         VStack(spacing: 0) {
             InspectorTabSwitcher(
                 selection: Binding(
                     get: { workspace.sidebarTab },
-                    set: { selectTab($0) }))
+                    set: { selectTab($0) }),
+                usesTextOnlySegments: presentation == .phoneSheet)
             .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-            .padding(.vertical, InspectorLayout.switcherVerticalPadding)
-            Divider()
+            // The phone's grabber has its own row above this selector.
+            .padding(.top, presentation == .phoneSheet ? 8 : InspectorLayout.switcherVerticalPadding)
+            .padding(.bottom, presentation == .phoneSheet ? 12 : InspectorLayout.switcherVerticalPadding)
+            if presentation == .column {
+                Divider()
+            }
             // Once revealed, a panel stays mounted; only visibility toggles as
             // the tab changes. Keeping them alive (rather than switching, which
             // destroys the inactive ones) preserves each panel's transient view
@@ -1011,7 +1108,8 @@ struct SidebarContent_iOS: View {
                 panel(.annotations) {
                     if presentation == .phoneSheet,
                        annotations.annotations.isEmpty,
-                       handwritingPages.isEmpty {
+                       handwritingPages.isEmpty,
+                       (ink as? WebInkController_iOS)?.inkJumps.isEmpty != false {
                         ContentUnavailableView {
                             Label("No annotations yet", systemImage: "highlighter")
                         } description: {
@@ -1028,6 +1126,9 @@ struct SidebarContent_iOS: View {
                     } else {
                         VStack(spacing: 0) {
                             InkPagesSection_iOS(pages: handwritingPages)
+                            if let webInk = ink as? WebInkController_iOS {
+                                WebInkPagesSection_iOS(ink: webInk)
+                            }
                             AnnotationSidebar()
                         }
                     }
@@ -1042,6 +1143,22 @@ struct SidebarContent_iOS: View {
                             await Task.yield()
                             guard !Task.isCancelled, workspace.sidebarTab == .ai else { return }
                             hasShownAi = true
+                        }
+                }
+                if workspace.companionBrowser.webView != nil {
+                    panel(.browser) {
+                        CompanionBrowserPanel_iOS(
+                            controller: workspace.companionBrowser,
+                            isActive: workspace.inspectorPresented && workspace.sidebarTab == .browser)
+                    }
+                } else if workspace.sidebarTab == .browser {
+                    ProgressView("Preparing Browser…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.browser.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .browser else { return }
+                            workspace.companionBrowser.prepare()
                         }
                 }
                 if hasShownScratchpad {
@@ -1060,6 +1177,7 @@ struct SidebarContent_iOS: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(palette.surface)
+        .background(CompanionInspectorHost_iOS(controller: workspace.companionBrowser))
     }
 
     /// Selects immediately. A first-time AI/Scratchpad destination initially
@@ -1131,6 +1249,63 @@ private struct InkPagesSection_iOS: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Handwriting on page \(page). Tap to jump.")
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+            .overlay(alignment: .bottom) { Divider() }
+        }
+    }
+}
+
+/// Handwritten-ink summary for a web document's annotations sidebar: one
+/// jump-to row per inked cluster, mapped to a virtual page via its anchor's
+/// `start_offset`. Web ink lives in the `<key>.ink.json` sidecar (not the
+/// shared Annotation model), so this reads straight from the web ink
+/// controller. Mirrors `InkPagesSection_iOS`, but a web document is one
+/// continuous scroll — clusters, not fixed pages, are the natural unit.
+private struct WebInkPagesSection_iOS: View {
+    var ink: WebInkController_iOS
+
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        let jumps = ink.inkJumps
+        if !jumps.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Handwriting")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(palette.mutedForeground)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 4)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(jumps.enumerated()), id: \.element.id) { index, jump in
+                            Button {
+                                ink.scrollTo(jump)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "pencil.and.scribble")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(palette.primary)
+                                    Text(jump.page.map { "p. \($0)" } ?? "Location \(index + 1)")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .monospacedDigit()
+                                        .foregroundStyle(palette.foreground)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 34)
+                                .background(palette.muted, in: Capsule())
+                                .overlay(Capsule().strokeBorder(palette.border))
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(jump.page.map {
+                                "Handwriting on page \($0). Tap to jump."
+                            } ?? "Handwriting location \(index + 1). Tap to jump.")
                         }
                     }
                     .padding(.horizontal, 4)

@@ -93,6 +93,8 @@ final class WebSessionBackend {
                 // Merge archive metadata without clobbering local reading state.
                 if record.title == nil {
                     record.title = imported.manifest.title
+                    record.titleIsUserDefined = record.title != nil
+                        && (imported.manifest.titleIsUserDefined ?? true)
                 }
                 if record.pageCount == nil {
                     record.pageCount = imported.manifest.pageCount
@@ -109,6 +111,14 @@ final class WebSessionBackend {
                 }
                 WebArchive.mergeAnnotations(&record.annotations, incoming: imported.annotations)
                 return record
+            }
+
+            // Ink has its own sidecar. Its I/O actor performs the complete
+            // additive read/merge/write under the same per-path lock used by
+            // live snapshots, so an open runtime cannot write between the
+            // import's read and save.
+            if let importedInk = imported.inkRecord {
+                try await WebInkIO(url: normalized).mergeImported(importedInk)
             }
             // Carry `normalized` back out: the caller needs it for the session's
             // document identity, and recomputing it on the main actor would undo
@@ -160,7 +170,8 @@ final class WebDocumentSession: DocumentSession {
             title: record.title,
             pageCount: record.pageCount,
             lastPage: record.lastPage,
-            docId: key)
+            docId: key,
+            titleIsUserDefined: record.titleIsUserDefined)
         io = WebDocumentIO(url: url, key: key, storage: storage)
     }
 
@@ -320,6 +331,7 @@ final class WebDocumentSession: DocumentSession {
         let manifest = WebArchive.buildManifest(
             url: url,
             title: record?.title,
+            titleIsUserDefined: record?.titleIsUserDefined ?? false,
             pageCount: pageCount,
             lastPage: record?.lastPage,
             loadingPolicy: "live-first",
@@ -344,6 +356,12 @@ final class WebDocumentSession: DocumentSession {
         let assetCount = captured.assets.count
         let assetsSkipped = captured.skipped
         let snapshot = captured
+        let inkKey = localKey
+        let inkJson = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
+            guard let record = try WebInkStore.loadRecordForExport(forKey: inkKey),
+                  !record.clusters.isEmpty else { return nil }
+            return try WebLibrary.jsonEncoderPretty.encode(record)
+        }.value
         let written: (path: String, bytes: Int)
         switch destination {
         case .external(let dest):
@@ -354,7 +372,7 @@ final class WebDocumentSession: DocumentSession {
                     snapshotHtml: snapshot.html,
                     assets: snapshot.assets,
                     pagesJson: pagesJson,
-                    annotations: annotations)
+                    annotations: annotations, inkJson: inkJson)
             }.value
             written = (dest.path, bytes)
         case .managed:
@@ -364,7 +382,7 @@ final class WebDocumentSession: DocumentSession {
                 snapshotHtml: snapshot.html,
                 assets: snapshot.assets,
                 pagesJson: pagesJson,
-                annotations: annotations)
+                annotations: annotations, inkJson: inkJson)
         }
 
         return VellumwebExportSummary(
@@ -479,7 +497,7 @@ actor WebDocumentIO {
             switch key {
             case "title":
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
+                if !trimmed.isEmpty, !record.titleIsUserDefined {
                     record.title = trimmed
                 }
             case "page_count":

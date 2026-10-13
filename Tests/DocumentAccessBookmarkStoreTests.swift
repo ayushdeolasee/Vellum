@@ -243,7 +243,7 @@ struct DocumentAccessBookmarkStoreTests {
                 resolveExistingPath: { _ in nil }
             ) { path, _ in
                 openedPaths.append(path)
-                if path.contains("bad") {
+                if URL(fileURLWithPath: path).lastPathComponent == "bad.pdf" {
                     throw TestOpenError.failed
                 }
                 return DocumentInfo(kind: .pdf, pdfPath: path, title: nil,

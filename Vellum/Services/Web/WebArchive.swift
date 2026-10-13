@@ -15,11 +15,18 @@ struct ManifestHashes: Codable, Sendable {
     var pageText: String
     /// "sha256:<hex>" of annotations.json bytes (verified on import when present).
     var annotations: String?
+    /// "sha256:<hex>" of ink.json bytes (Apple Pencil web ink; verified on
+    /// import when present). Optional and additive: an archive written by a
+    /// build without web ink omits it, and a reader that predates web ink
+    /// decodes the manifest ignoring this unknown key — so the format version
+    /// stays 1 (no hard-fail path was triggered).
+    var ink: String?
 
     enum CodingKeys: String, CodingKey {
         case snapshotHtml = "snapshot_html"
         case pageText = "page_text"
         case annotations
+        case ink
     }
 }
 
@@ -45,6 +52,8 @@ struct ArchiveManifest: Codable, Sendable {
     var url: String
     var canonicalUrl: String
     var title: String?
+    /// Nil identifies older archives whose existing names are preserved conservatively.
+    var titleIsUserDefined: Bool?
     var capturedAt: String
     var generator: String
     /// "live-first" (default) or "snapshot-only".
@@ -61,6 +70,7 @@ struct ArchiveManifest: Codable, Sendable {
         case url
         case canonicalUrl = "canonical_url"
         case title
+        case titleIsUserDefined = "title_is_user_defined"
         case capturedAt = "captured_at"
         case generator
         case loadingPolicy = "loading_policy"
@@ -73,6 +83,7 @@ struct ArchiveManifest: Codable, Sendable {
 
     init(
         format: String, version: Int, url: String, canonicalUrl: String, title: String?,
+        titleIsUserDefined: Bool? = nil,
         capturedAt: String, generator: String, loadingPolicy: String, pageCount: Int?,
         lastPage: Int?, hashes: ManifestHashes, assets: [ManifestAsset], assetsSkipped: Int
     ) {
@@ -81,6 +92,7 @@ struct ArchiveManifest: Codable, Sendable {
         self.url = url
         self.canonicalUrl = canonicalUrl
         self.title = title
+        self.titleIsUserDefined = titleIsUserDefined
         self.capturedAt = capturedAt
         self.generator = generator
         self.loadingPolicy = loadingPolicy
@@ -98,6 +110,7 @@ struct ArchiveManifest: Codable, Sendable {
         url = try container.decode(String.self, forKey: .url)
         canonicalUrl = try container.decode(String.self, forKey: .canonicalUrl)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
         capturedAt = try container.decode(String.self, forKey: .capturedAt)
         generator = try container.decode(String.self, forKey: .generator)
         loadingPolicy = try container.decode(String.self, forKey: .loadingPolicy)
@@ -127,6 +140,9 @@ struct ImportedArchive: Sendable {
     var snapshotHtml: String
     var assets: [(String, Data)]
     var annotations: [Annotation]
+    /// Apple Pencil web ink, if the archive carried an `ink.json` entry. nil
+    /// for archives written before web ink or with no ink on the page.
+    var inkRecord: WebInkRecord?
 }
 
 /// One page of text inside `text/pages.json` (`{"number":1,"text":"…"}`).
@@ -144,13 +160,14 @@ enum WebArchive {
     static let maxTotalAssetBytes = 64 * 1024 * 1024
     static let maxManifestBytes = 4 * 1024 * 1024
     static let maxAnnotationsBytes = 32 * 1024 * 1024
+    static let maxInkBytes = 32 * 1024 * 1024
 
     // Existing payload budgets, including worst-case JSON escaping of extracted
     // page text (six bytes per source byte), plus ZIP/compression overhead.
-    static let maxTotalUncompressedBytes = maxManifestBytes + maxAnnotationsBytes
+    static let maxTotalUncompressedBytes = maxManifestBytes + maxAnnotationsBytes + maxInkBytes
         + 7 * WebFetch.maxResponseBytes + maxTotalAssetBytes
     static let maxArchiveBytes = maxTotalUncompressedBytes + 8 * 1024 * 1024
-    static let maxEntries = maxAssets + 4
+    static let maxEntries = maxAssets + 5
 
     private static func openArchive(at path: URL) throws -> MiniZip {
         try MiniZip(contentsOf: path, maxBytes: maxArchiveBytes,
@@ -370,6 +387,7 @@ enum WebArchive {
     static func buildManifest(
         url: String,
         title: String?,
+        titleIsUserDefined: Bool? = false,
         pageCount: Int?,
         lastPage: Int?,
         loadingPolicy: String,
@@ -386,6 +404,7 @@ enum WebArchive {
             url: url,
             canonicalUrl: url,
             title: title,
+            titleIsUserDefined: titleIsUserDefined,
             capturedAt: WebLibrary.rfc3339Now(),
             generator: "Vellum \(version)",
             loadingPolicy: loadingPolicy,
@@ -394,7 +413,8 @@ enum WebArchive {
             hashes: ManifestHashes(
                 snapshotHtml: sha256Hex(Data(snapshotHtml.utf8)),
                 pageText: sha256Hex(pagesJson),
-                annotations: nil // filled in by writeArchive
+                annotations: nil, // filled in by writeArchive
+                ink: nil // filled in by writeArchive when the page carries ink
             ),
             assets: assets.map { asset in
                 ManifestAsset(
@@ -427,14 +447,15 @@ enum WebArchive {
         snapshotHtml: String,
         assets: [CapturedAsset],
         pagesJson: Data,
-        annotations: [Annotation]
+        annotations: [Annotation],
+        inkJson: Data? = nil
     ) throws -> Int {
         let zipData = try encodeArchive(
             manifest: manifest,
             snapshotHtml: snapshotHtml,
             assets: assets,
             pagesJson: pagesJson,
-            annotations: annotations)
+            annotations: annotations, inkJson: inkJson)
         try writeArchiveBytes(zipData, to: dest)
         return zipData.count
     }
@@ -444,7 +465,8 @@ enum WebArchive {
         snapshotHtml: String,
         assets: [CapturedAsset],
         pagesJson: Data,
-        annotations: [Annotation]
+        annotations: [Annotation],
+        inkJson: Data? = nil
     ) throws -> Data {
         let annotationsJson: Data
         do {
@@ -455,6 +477,7 @@ enum WebArchive {
         }
         var manifest = manifest
         manifest.hashes.annotations = sha256Hex(annotationsJson)
+        manifest.hashes.ink = inkJson.map(sha256Hex)
         let manifestJson: Data
         do {
             manifestJson = try WebLibrary.jsonEncoderPretty.encode(manifest)
@@ -474,6 +497,9 @@ enum WebArchive {
         }
         entries.append(MiniZip.Entry(name: "text/pages.json", data: pagesJson, stored: false))
         entries.append(MiniZip.Entry(name: "annotations.json", data: annotationsJson, stored: false))
+        if let inkJson {
+            entries.append(MiniZip.Entry(name: "ink.json", data: inkJson, stored: false))
+        }
 
         let zipData: Data
         do {
@@ -527,6 +553,12 @@ enum WebArchive {
         return try readManifest(from: zip)
     }
 
+    static func readManifest(data: Data) throws -> ArchiveManifest {
+        try readManifest(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
     private static func readManifest(from zip: MiniZip) throws -> ArchiveManifest {
         let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
         let manifest: ArchiveManifest
@@ -548,8 +580,18 @@ enum WebArchive {
     }
 
     static func readArchive(at path: URL) throws -> ImportedArchive {
-        let zip = try openArchive(at: path)
+        try readArchive(from: openArchive(at: path))
+    }
 
+    /// Decode bytes obtained through coordinated storage with the same limits
+    /// and integrity checks as a file import.
+    static func readArchive(data: Data) throws -> ImportedArchive {
+        try readArchive(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
+    private static func readArchive(from zip: MiniZip) throws -> ImportedArchive {
         let manifest = try readManifest(from: zip)
 
         let snapshotBytes = try zip.readCapped(
@@ -572,6 +614,26 @@ enum WebArchive {
             if let expected = manifest.hashes.annotations, sha256Hex(buf) != expected {
                 throw SessionServiceError.invalidDocument(
                     "Archive annotations failed their integrity check (corrupted file?)")
+            }
+        }
+
+        var inkRecord: WebInkRecord?
+        if manifest.hashes.ink != nil && !zip.contains("ink.json") {
+            throw SessionServiceError.invalidDocument("Archive is missing its ink data")
+        }
+        if zip.contains("ink.json") {
+            let buf = try zip.readCapped("ink.json", cap: maxInkBytes)
+            if let expected = manifest.hashes.ink, sha256Hex(buf) != expected {
+                throw SessionServiceError.invalidDocument(
+                    "Archive ink failed its integrity check (corrupted file?)")
+            }
+            do {
+                let decoded = try JSONDecoder().decode(WebInkRecord.self, from: buf)
+                _ = try decoded.validatedMergedDrawing()
+                inkRecord = decoded
+            } catch {
+                throw SessionServiceError.invalidDocument(
+                    "Archive ink data could not be read: \(error.localizedDescription)")
             }
         }
 
@@ -604,7 +666,8 @@ enum WebArchive {
             manifest: manifest,
             snapshotHtml: snapshotHtml,
             assets: assets,
-            annotations: annotations)
+            annotations: annotations,
+            inkRecord: inkRecord)
     }
 
     // MARK: - Local self-contained snapshot dir (archives/<key>/)
@@ -728,6 +791,56 @@ enum WebArchive {
                 changed += 1
             }
         }
+        return changed
+    }
+
+    /// Merge an imported ink record into the sidecar's ink record. Clusters
+    /// merge by id (mirroring `mergeAnnotations`): an incoming cluster whose id
+    /// is new is appended; a same-id collision is replaced only when the
+    /// incoming record is newer by `updated_at`. Ink has no per-cluster
+    /// timestamp, so the record-level `updated_at` is the tiebreaker, and when
+    /// the incoming record wins it also carries in the newer layout fingerprint
+    /// and `updated_at`. Returns how many clusters were added or replaced.
+    @discardableResult
+    static func mergeInk(_ existing: inout WebInkRecord?, incoming: WebInkRecord) -> Int {
+        guard var current = existing else {
+            existing = incoming
+            return incoming.clusters.count
+        }
+        // Real records merge by stable Pencil stroke identity. Keep the legacy
+        // cluster-id path below as a compatibility fallback for malformed or
+        // synthetic records whose drawing payloads cannot be decoded.
+        if let before = try? current.validatedMergedDrawing().strokes.count,
+           let merged = try? WebInkStore.additivelyMerged(current: current, incoming: incoming),
+           let after = try? merged.validatedMergedDrawing().strokes.count {
+            existing = merged
+            return max(0, after - before)
+        }
+        let incomingNewer = newerThan(incoming.updatedAt, current.updatedAt)
+        var changed = 0
+        for cluster in incoming.clusters {
+            if let index = current.clusters.firstIndex(where: { $0.id == cluster.id }) {
+                if incomingNewer {
+                    current.clusters[index] = cluster
+                    changed += 1
+                }
+            } else {
+                current.clusters.append(cluster)
+                changed += 1
+            }
+        }
+        if incomingNewer {
+            current.updatedAt = incoming.updatedAt
+            current.layout = incoming.layout
+        }
+        if changed > 0 {
+            // `version` describes the capture/clustering guarantees of every
+            // cluster in the record. If a merge mixes in legacy clusters, keep
+            // the lowest version so the next load recaptures all anchors before
+            // snapshotting a fully-current record.
+            current.version = min(current.version, incoming.version)
+        }
+        existing = current
         return changed
     }
 
@@ -883,6 +996,15 @@ struct MiniZip {
             bytes.append(chunk)
         }
         data = bytes
+        (entries, orderedNames) = try Self.parseCentralDirectory(
+            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
+    }
+
+    init(data: Data, maxBytes: Int, maxEntries: Int, maxUncompressedBytes: Int) throws {
+        guard data.count <= maxBytes else {
+            throw Self.invalid("archive exceeds its size limit")
+        }
+        self.data = data
         (entries, orderedNames) = try Self.parseCentralDirectory(
             data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
     }

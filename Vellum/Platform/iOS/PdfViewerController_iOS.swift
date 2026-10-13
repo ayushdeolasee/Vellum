@@ -97,6 +97,9 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     @ObservationIgnored private var findIndex = -1
     @ObservationIgnored private var findTask: Task<Void, Never>?
     @ObservationIgnored private var findGeneration = UUID()
+    @ObservationIgnored private var pencilTextHighlightPage: PDFPage?
+    @ObservationIgnored private var pencilTextHighlightStartRange: NSRange?
+    @ObservationIgnored private var isPencilTextHighlighting = false
 
     var isNoteMode: Bool { app?.mode == .note }
 
@@ -105,6 +108,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
     var blocksAutomaticChromeChanges: Bool {
         guard let app, let tabId, app.activeTabId == tabId else { return true }
         return selection != nil || contextMenu != nil || highlightResize != nil
+            || isPencilTextHighlighting
     }
 
     // MARK: - Lifecycle
@@ -141,7 +145,10 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         tabId: String,
         runtime: LiveTabRuntime
     ) {
-        if self.app !== app || self.tabId != tabId { findClear() }
+        if self.app !== app || self.tabId != tabId {
+            findClear()
+            cancelPencilTextHighlight()
+        }
         self.app = app
         self.annotationStore = annotationStore
         self.ai = ai
@@ -163,6 +170,7 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
         didInitialScroll = false
         findMatches = []
         findIndex = -1
+        cancelPencilTextHighlight()
         tabId = nil
         runtime = nil
     }
@@ -541,57 +549,149 @@ final class PdfViewerControlleriOS: HighlightResizeControlling {
 
     /// Called when the native selection changes (.PDFViewSelectionChanged).
     func selectionChanged() {
-        guard let pdfView, let doc = pdfView.document else { return }
-        guard let currentSelection = pdfView.currentSelection,
-              let text = currentSelection.string?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
+        // The Pencil text-highlighter owns this temporary PDFKit selection. It
+        // saves immediately on lift, so the normal selection popover stays out
+        // of the way while the Pencil is moving.
+        guard !isPencilTextHighlighting else { return }
+        guard let currentSelection = pdfView?.currentSelection,
+              let captured = captureTextSelection(currentSelection) else {
             if selection != nil { clearSelection() }
             return
         }
-        // Anchor page: the first page the selection touches.
-        guard let page = currentSelection.pages.first else { return }
-        let pageNumber = doc.index(for: page) + 1
-        guard let pageFrame = pageViewFrame(pageNumber: pageNumber) else { return }
-        let zoom = max(pdfView.scaleFactor, 0.0001)
-
-        var rects: [AnnotationRect] = []
-        var lastLineRect: CGRect?
-        for line in currentSelection.selectionsByLine() {
-            guard let linePage = line.pages.first else { continue }
-            let viewRect = pdfView.convert(line.bounds(for: linePage), from: linePage)
-            rects.append(AnnotationRect(
-                x: Double((viewRect.minX - pageFrame.minX) / zoom),
-                y: Double((viewRect.minY - pageFrame.minY) / zoom),
-                width: Double(viewRect.width / zoom),
-                height: Double(viewRect.height / zoom)
-            ))
-            lastLineRect = viewRect
-        }
-        guard !rects.isEmpty, let lastRect = lastLineRect else { return }
-
-        let positionData = PositionData(
-            rects: rects,
-            pageWidth: Double(pageFrame.width / zoom),
-            pageHeight: Double(pageFrame.height / zoom),
-            selectedText: text,
-            startOffset: nil, endOffset: nil, prefix: nil, suffix: nil,
-            viewportOffset: nil
-        )
-        selection = PdfTextSelection(text: text, positionData: positionData, pageNumber: pageNumber)
-        // Anchor the popover above the FIRST line so it doesn't cover the
-        // selection handles a touch user is dragging at the bottom.
-        let firstRect = rects.first.map {
-            CGRect(x: pageFrame.minX + $0.x * zoom, y: pageFrame.minY + $0.y * zoom,
-                   width: $0.width * zoom, height: $0.height * zoom)
-        } ?? lastRect
-        selectionPopoverPosition = CGPoint(x: firstRect.midX, y: firstRect.minY - 10)
+        selection = captured.selection
+        selectionPopoverPosition = captured.popoverPosition
     }
 
     func clearSelection() {
         selection = nil
         selectionPopoverPosition = nil
         pdfView?.setCurrentSelection(nil, animate: false)
+    }
+
+    // MARK: - Apple Pencil text highlighting
+
+    /// Reject Pencil drags that begin away from selectable text. PDFKit's word
+    /// lookup snaps to the nearest word, so reuse the bounded empty-area check.
+    func canBeginPencilTextHighlight(atTopLeft point: CGPoint) -> Bool {
+        guard let pdfView, pdfView.page(for: point, nearest: false) != nil else { return false }
+        return !isEmptyPageArea(atTopLeft: point)
+    }
+
+    func beginPencilTextHighlight(atTopLeft point: CGPoint) -> Bool {
+        guard let pdfView,
+              let page = pdfView.page(for: point, nearest: false),
+              canBeginPencilTextHighlight(atTopLeft: point) else { return false }
+
+        let pagePoint = pdfView.convert(point, to: page)
+        guard let word = page.selectionForWord(at: pagePoint),
+              word.numberOfTextRanges(on: page) > 0 else { return false }
+        let startRange = word.range(at: 0, on: page)
+        guard startRange.location != NSNotFound, startRange.length > 0 else { return false }
+        isPencilTextHighlighting = true
+        pencilTextHighlightPage = page
+        pencilTextHighlightStartRange = startRange
+        selection = nil
+        selectionPopoverPosition = nil
+        contextMenu = nil
+        annotationStore?.selectAnnotation(nil)
+        pdfView.setCurrentSelection(nil, animate: false)
+        return true
+    }
+
+    func updatePencilTextHighlight(atTopLeft point: CGPoint) {
+        guard isPencilTextHighlighting,
+              let pdfView,
+              let page = pencilTextHighlightPage,
+              let start = pencilTextHighlightStartRange else { return }
+
+        let bounds = page.bounds(for: pdfView.displayBox)
+        let current = pdfView.convert(point, to: page)
+        let clamped = CGPoint(
+            x: min(max(current.x, bounds.minX), bounds.maxX),
+            y: min(max(current.y, bounds.minY), bounds.maxY))
+        guard let word = page.selectionForWord(at: clamped),
+              word.numberOfTextRanges(on: page) > 0 else { return }
+        let end = word.range(at: 0, on: page)
+        guard end.location != NSNotFound, end.length > 0 else { return }
+        let lowerBound = min(start.location, end.location)
+        let upperBound = max(NSMaxRange(start), NSMaxRange(end))
+        guard upperBound > lowerBound,
+              let currentSelection = page.selection(
+                  for: NSRange(location: lowerBound, length: upperBound - lowerBound)),
+              currentSelection.string?.isEmpty == false else { return }
+        pdfView.setCurrentSelection(currentSelection, animate: false)
+    }
+
+    func finishPencilTextHighlight() {
+        guard isPencilTextHighlighting,
+              let currentSelection = pdfView?.currentSelection,
+              let captured = captureTextSelection(currentSelection),
+              app?.activeTabId == tabId else {
+            cancelPencilTextHighlight()
+            return
+        }
+        defer { cancelPencilTextHighlight() }
+        guard let runtime, let tabId, let annotationStore else { return }
+        let input = CreateAnnotationInput(
+            type: .highlight,
+            pageNumber: captured.selection.pageNumber,
+            color: runtime.ink.textHighlightColorHex,
+            content: nil,
+            positionData: captured.selection.positionData)
+        if let queued = annotationStore.enqueueHighlight(input, sessionId: tabId) {
+            runtime.trackAnnotationWrite(queued.persistence)
+        }
+    }
+
+    func cancelPencilTextHighlight() {
+        // Clear while the suppression flag is still set so the corresponding
+        // PDFView notification cannot briefly show the selection popover.
+        pdfView?.setCurrentSelection(nil, animate: false)
+        pencilTextHighlightPage = nil
+        pencilTextHighlightStartRange = nil
+        isPencilTextHighlighting = false
+    }
+
+    private func captureTextSelection(
+        _ currentSelection: PDFSelection
+    ) -> (selection: PdfTextSelection, popoverPosition: CGPoint)? {
+        guard let pdfView,
+              let doc = pdfView.document,
+              let text = currentSelection.string?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty,
+              let page = currentSelection.pages.first else { return nil }
+        let pageNumber = doc.index(for: page) + 1
+        guard let pageFrame = pageViewFrame(pageNumber: pageNumber) else { return nil }
+        let zoom = max(pdfView.scaleFactor, 0.0001)
+
+        let rects = currentSelection.selectionsByLine().compactMap { line -> AnnotationRect? in
+            guard let linePage = line.pages.first else { return nil }
+            let viewRect = pdfView.convert(line.bounds(for: linePage), from: linePage)
+            return AnnotationRect(
+                x: Double((viewRect.minX - pageFrame.minX) / zoom),
+                y: Double((viewRect.minY - pageFrame.minY) / zoom),
+                width: Double(viewRect.width / zoom),
+                height: Double(viewRect.height / zoom))
+        }
+        guard let firstRect = rects.first else { return nil }
+        let captured = PdfTextSelection(
+            text: text,
+            positionData: PositionData(
+                rects: rects,
+                pageWidth: Double(pageFrame.width / zoom),
+                pageHeight: Double(pageFrame.height / zoom),
+                selectedText: text,
+                startOffset: nil,
+                endOffset: nil,
+                prefix: nil,
+                suffix: nil,
+                viewportOffset: nil),
+            pageNumber: pageNumber)
+        let popoverPosition = CGPoint(
+            x: pageFrame.minX + (firstRect.x + firstRect.width / 2) * zoom,
+            y: pageFrame.minY + firstRect.y * zoom - 10)
+        return (captured, popoverPosition)
     }
 
     // MARK: - Highlight edge resize

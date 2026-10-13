@@ -4,6 +4,7 @@ const JSON_HEADERS = {
 };
 const ANALYTICS_DAILY_LIMIT = 5000;
 const ANALYTICS_RATE_KEY = "public-analytics";
+const TURNSTILE_TIMEOUT_MS = 10000;
 const MAC_DOWNLOAD_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/Vellum.dmg";
 const MAC_APPCAST_URL = "https://github.com/ayushdeolasee/Vellum/releases/latest/download/appcast.xml";
 
@@ -148,6 +149,9 @@ async function createSignup(request, env) {
   }
 
   const turnstile = await verifyTurnstile(turnstileToken, request, env);
+  if (turnstile.unavailable) {
+    return json({ error: "The security check is temporarily unavailable. Try again in a moment." }, 503);
+  }
   if (!turnstile.success) {
     return json({ error: "Complete the security check and try again." }, 400);
   }
@@ -168,9 +172,8 @@ async function createSignup(request, env) {
 }
 
 async function verifyTurnstile(token, request, env) {
-  if (!token || !env.TURNSTILE_SECRET_KEY) {
-    return { success: false };
-  }
+  if (!token) return { success: false };
+  if (!env.TURNSTILE_SECRET_KEY) return { success: false, unavailable: true };
 
   const payload = new FormData();
   payload.append("secret", env.TURNSTILE_SECRET_KEY);
@@ -181,18 +184,27 @@ async function verifyTurnstile(token, request, env) {
     payload.append("remoteip", remoteAddress);
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TURNSTILE_TIMEOUT_MS);
   try {
     const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
       method: "POST",
       body: payload,
+      signal: controller.signal,
     });
+    if (!response.ok) return { success: false, unavailable: true };
     const result = await response.json();
+    if (result["error-codes"]?.includes("internal-error")) {
+      return { success: false, unavailable: true };
+    }
     const validHostname = !result.hostname || result.hostname === "vellum.work" || result.hostname === "localhost";
     return {
       success: result.success === true && result.action === "testflight-signup" && validHostname,
     };
   } catch {
-    return { success: false };
+    return { success: false, unavailable: true };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -29,6 +29,7 @@ struct WelcomeScreen: View {
     /// Whether the pane hosting this screen is the focused one. A split window
     /// can show two welcome screens; only the focused one may grab the keyboard.
     var isPaneFocused = true
+    var acceptsDrops = true
 
     @Environment(AppStore.self) private var appStore
     @Environment(WorkspaceStore.self) private var workspace
@@ -120,6 +121,7 @@ struct WelcomeScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.well)
+        .homeDrop(enabled: acceptsDrops)
         .task { await store.load() }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .vellumSyncedLibraryChanged) {

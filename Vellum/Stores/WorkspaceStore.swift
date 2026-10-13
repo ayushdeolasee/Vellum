@@ -97,10 +97,15 @@ final class WorkspaceStore {
     var sidebarTab: SidebarTab = .annotations
     enum SidebarTab: Sendable, CaseIterable, Hashable {
         case annotations, ai, scratchpad
-        #if os(macOS)
         case browser
-        #endif
     }
+
+    #if os(iOS)
+    /// A window-owned companion session: never a document or library entry.
+    /// The WebView is created only when Browser is first revealed; its history
+    /// survives inspector dismissal, phone sheet dismissal and pane changes.
+    @ObservationIgnored let companionBrowser = CompanionBrowserController_iOS()
+    #endif
 
     // MARK: Inspector column width
 
@@ -520,12 +525,22 @@ final class WorkspaceStore {
     /// and no WKWebView, so it must not count against a ceiling or start a
     /// sweeper.
     func liveTabRuntime(for tabId: String) -> LiveTabRuntime {
-        liveTabRuntimes[tabId] ?? {
+        let runtime = liveTabRuntimes[tabId] ?? {
+            #if os(iOS)
             let created = LiveTabRuntime(
-                tabId: tabId, webLibraryStorage: webLibraryStorage)
+                tabId: tabId, teardownRegistry: tabTeardowns, webLibraryStorage: webLibraryStorage)
+            #else
+            let created = LiveTabRuntime(tabId: tabId, webLibraryStorage: webLibraryStorage)
+            #endif
             liveTabRuntimes[tabId] = created
             return created
         }()
+        #if os(iOS)
+        if let document = root.allLeaves().compactMap({ $0.app.tab(id: tabId)?.document }).first {
+            runtime.boundDocument = document
+        }
+        #endif
+        return runtime
     }
 
     /// The tab is being shown: undo any previous eviction and hand the runtime
@@ -552,6 +567,25 @@ final class WorkspaceStore {
             await runtime.flushPdfText()
         }
     }
+
+    #if os(iOS)
+    /// Drain debounced Pencil edits for every open tab, including background
+    /// PDF and webpage tabs that are not represented by the focused-pane
+    /// inspector registry.
+    @discardableResult
+    func flushLiveInk() async -> Bool {
+        // Snapshot before the first suspension: a tab can close while a disk
+        // flush is awaited, which mutates `liveTabRuntimes`.
+        var inkSucceeded = true
+        for runtime in Array(liveTabRuntimes.values) {
+            let pdfInkSucceeded = await runtime.ink.flushPendingInkAndWait()
+            let webInkSucceeded = await runtime.webInk.flushPendingInkAndReportSuccess()
+            inkSucceeded = pdfInkSucceeded && webInkSucceeded && inkSucceeded
+        }
+        return inkSucceeded
+    }
+
+    #endif
 
     /// Report a pane's current tab to the residency policy, which pins it. Keyed
     /// on the pane's `AppStore` identity so a split window pins one tab *per
@@ -644,7 +678,10 @@ final class WorkspaceStore {
     /// copy provider URLs off-main before releasing their security-scoped access.
     func openExternalURLs(_ urls: [URL]) {
         #if os(macOS)
-        let incoming = urls.filter { $0.isFileURL || VellumExternalWebLink.parse($0) != nil }
+        let incoming = urls.filter {
+            $0.isFileURL || VellumExternalWebLink.parse($0) != nil
+                || VellumExternalWebLink.parseSavedURL($0) != nil
+        }
         #else
         let incoming = urls.filter(\.isFileURL)
         #endif
@@ -654,12 +691,18 @@ final class WorkspaceStore {
             await previous?.value
             await restoreFromDisk()
             #if os(iOS)
-            let paths = await Task.detached(priority: .userInitiated) {
-                DocumentImport.importPicked(incoming)
+            let imported = await Task.detached(priority: .userInitiated) {
+                DocumentImport.importPickedResult(incoming)
             }.value
-            guard !paths.isEmpty else { return }
             let app = focusedPane.app
-            await app.openFiles(paths: paths)
+            guard !imported.paths.isEmpty else {
+                app.error = imported.errors.joined(separator: "\n")
+                return
+            }
+            await app.openFiles(paths: imported.paths)
+            if !imported.errors.isEmpty {
+                app.error = (imported.errors + [app.error].compactMap { $0 }).joined(separator: "\n")
+            }
             if app.error == nil {
                 NotificationCenter.default.post(
                     name: .vellumSystemRouteDidOpenDocument, object: nil)
@@ -672,6 +715,83 @@ final class WorkspaceStore {
                 await app.openFiles(paths: incoming.map(\.path))
             }
             #endif
+        }
+    }
+
+    #if os(macOS)
+    /// App Intents and widgets enter the same joinable queue as Finder opens.
+    /// Register synchronously, before any scene presentation or suspension, so
+    /// quitting immediately after invoking a Shortcut still drains its open.
+    @discardableResult
+    func openSystemRoute(_ route: VellumSystemRoute) -> Bool {
+        guard !isTerminating, VellumSystemRoute.isValidItemID(route.itemID) else { return false }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await awaitMaintenance()
+            await restoreFromDisk()
+            guard !Task.isCancelled else { return }
+            _ = await VellumSystemRouteOpener.open(route, workspace: self)
+        }
+        return true
+    }
+    #endif
+
+    /// Capture the Home pane before provider loading suspends. Queue alongside
+    /// system opens so quit/background drains also join dropped imports.
+    func openHomeDrop(
+        _ providers: [NSItemProvider], in app: AppStore, onOpened: @escaping () -> Void
+    ) {
+        guard !isTerminating else { return }
+        let previous = externalOpenTask
+        externalOpenTask = Task { @MainActor in
+            await previous?.value
+            await restoreFromDisk()
+            let delivery = await HomeDrop.load(providers)
+            guard root.allLeaves().contains(where: { $0.app === app }) else {
+                await Task.detached(priority: .utility) {
+                    for url in delivery.copiedPDFs {
+                        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                    }
+                }.value
+                return
+            }
+            if let pane = root.allLeaves().first(where: { $0.app === app }) { focus(pane.id) }
+            var errors = delivery.errors
+            var openedPDFs: Set<URL> = []
+            var successfulOpens = 0
+            for url in delivery.urls {
+                guard root.allLeaves().contains(where: { $0.app === app }) else { break }
+                if url.isFileURL {
+                    #if os(iOS)
+                    let imported = await Task.detached(priority: .userInitiated) {
+                        DocumentImport.importPickedResult([url])
+                    }.value
+                    errors.append(contentsOf: imported.errors)
+                    guard !imported.paths.isEmpty,
+                          root.allLeaves().contains(where: { $0.app === app }) else { continue }
+                    await app.openFiles(paths: imported.paths)
+                    #else
+                    await app.openFiles(paths: [url.path])
+                    #endif
+                } else {
+                    await app.openUrl(url.absoluteString)
+                }
+                if let error = app.error {
+                    errors.append(error)
+                } else {
+                    successfulOpens += 1
+                    if url.isFileURL { openedPDFs.insert(url) }
+                }
+            }
+            app.error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+            // Only failed opens can discard provider copies. A successfully
+            // opened tab may already have moved to another pane or been closed.
+            let unused = delivery.copiedPDFs.filter { !openedPDFs.contains($0) }
+            await Task.detached(priority: .utility) {
+                for url in unused { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            }.value
+            if successfulOpens > 0, app.document != nil { onOpened() }
         }
     }
 

@@ -2,7 +2,7 @@
 import UIKit
 
 /// Whether the app is currently showing a modal on top of the document UI —
-/// asked of UIKit, not inferred from SwiftUI's presentation flags.
+/// asked of UIKit for system sheets, plus the mounted phone inspector.
 ///
 /// The macOS twin of this file (`App/SheetPresenceMonitor.swift`) is
 /// deliberately NOT ported — it gates `.focusedSceneValue` so a disabled menu
@@ -21,9 +21,31 @@ import UIKit
 /// modal that is not there.
 @MainActor
 enum SheetPresence_iOS {
+    private static weak var inspector: PhoneShellStore?
+    private static var inspectorID: UUID?
+
+    static func registerInspector(_ shell: PhoneShellStore, id: UUID) {
+        inspector = shell
+        inspectorID = id
+    }
+
+    static func unregisterInspector(id: UUID) {
+        guard inspectorID == id else { return }
+        inspector = nil
+        inspectorID = nil
+    }
+
+    static func dismissTopPresentation() {
+        if let topPresented {
+            topPresented.dismiss(animated: true)
+        } else {
+            inspector?.setInspectorPresented(false)
+        }
+    }
+
     /// True while any view controller is presented modally over the app's
     /// foreground-active scene.
-    static var isPresenting: Bool { topPresented != nil }
+    static var isPresenting: Bool { topPresented != nil || inspector?.inspectorPresented == true }
 
     /// The frontmost presented controller, or nil. Also the dismissal target
     /// for Escape — see `VellumShortcutRouter`'s gate.

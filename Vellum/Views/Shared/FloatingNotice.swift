@@ -28,7 +28,11 @@ struct FloatingNotice: View {
                 // hit region stays the bare glyph (root CLAUDE.md hit-target rule).
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
+                        #if os(iOS)
+                        .frame(width: 44, height: 44)
+                        #else
                         .frame(width: 22, height: 22)
+                        #endif
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

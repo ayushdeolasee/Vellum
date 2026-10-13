@@ -81,11 +81,10 @@ enum SyncedContainerAccessor {
     static func guarded<T>(
         _ url: URL,
         isolation: isolated (any Actor)? = #isolation,
-        _ body: () async throws -> T
+        _ body: nonisolated(nonsending) () async throws -> T
     ) async throws -> T {
         guard !isInside else { throw SyncedContainerError.nestedCoordination(url) }
-        return try await $isInside.withValue(
-            true, operation: { try await body() }, isolation: isolation)
+        return try await $isInside.withValue(true, operation: body)
     }
 }
 

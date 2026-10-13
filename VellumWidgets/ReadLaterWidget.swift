@@ -13,14 +13,11 @@ struct ReadLaterWidget: Widget {
                 emptyMessage: "Your queue is clear",
                 items: entry.snapshot.readLaterItems)
             .containerBackground(for: .widget) {
-                Color(.systemBackground)
+                VellumWidgetShelfView.backgroundColor
             }
         }
         .configurationDisplayName("Read Later")
         .description("Open the newest items from your read-later queue.")
-        .supportedFamilies([
-            .systemSmall, .systemMedium, .systemLarge,
-            .accessoryInline, .accessoryCircular, .accessoryRectangular,
-        ])
+        .supportedFamilies(VellumWidgetShelfView.supportedFamilies)
     }
 }

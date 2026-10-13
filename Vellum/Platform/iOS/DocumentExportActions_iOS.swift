@@ -49,6 +49,8 @@ struct DocumentKey_iOS: Hashable {
 @MainActor
 @Observable
 final class DocumentExportActions_iOS {
+    var showExportError = false
+    var exportErrorMessage = ""
     /// Whether the active web document is kept for offline use. Meaningless for
     /// PDF tabs, and reset by `loadSavedState` whenever the document changes.
     private(set) var pageSaved = false
@@ -122,7 +124,8 @@ final class DocumentExportActions_iOS {
     func exportVellumweb(app: AppStore, ai: AiStore) {
         guard !exporting,
               let sessionId = app.activeTabId,
-              app.document?.kind == .web else { return }
+              app.document?.kind == .web,
+              let binding = app.documentBinding(for: sessionId) else { return }
 
         let slug = slugifiedTitle(app: app)
         let pages = pageTexts(ai)
@@ -132,8 +135,16 @@ final class DocumentExportActions_iOS {
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(slug).vellumweb")
             try? FileManager.default.removeItem(at: tmp)
-            guard (try? await app.sessions.exportVellumweb(
-                sessionId: sessionId, destPath: tmp.path, pages: pages)) != nil else { return }
+            do {
+                try await flushWebInkForExport(app: app, sessionId: sessionId)
+                try requireCurrentExport(binding, app: app)
+                _ = try await app.sessions.exportVellumweb(
+                    sessionId: sessionId, destPath: tmp.path, pages: pages)
+            } catch {
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
+                return
+            }
             DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
         }
     }
@@ -145,22 +156,44 @@ final class DocumentExportActions_iOS {
     func startBundleExport(app: AppStore, ai: AiStore, includeConversations: Bool) {
         guard !exportingBundle,
               let sessionId = app.activeTabId,
-              let document = app.document else { return }
+              let document = app.document,
+              let binding = app.documentBinding(for: sessionId) else { return }
+        let slug = slugifiedTitle(app: app)
         let pages = pageTexts(ai)
         exportingBundle = true
         Task {
             defer { exportingBundle = false }
             let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(slugifiedTitle(app: app)).vellum")
+                .appendingPathComponent("\(slug).vellum")
             try? FileManager.default.removeItem(at: tmp)
             do {
                 try await buildBundle(
-                    app: app, sessionId: sessionId, document: document, destination: tmp,
+                    app: app, binding: binding, sessionId: sessionId, document: document, destination: tmp,
                     includeConversations: includeConversations, pages: pages)
-            } catch { return }
+            } catch {
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
+                return
+            }
             // Not deleted afterwards: the picker copies asynchronously. Same as
             // exportVellumweb; tmp/ is reclaimed by the system.
             DocumentPickerCoordinator_iOS.shared.presentExport(urls: [tmp])
+        }
+    }
+
+    /// A tab switch is harmless; rebinding that same tab cancels its export.
+    private func requireCurrentExport(_ binding: DocumentBinding, app: AppStore) throws {
+        guard app.documentBinding(for: binding.tabId)?.generation == binding.generation else {
+            throw SessionServiceError.io("The document changed while preparing the export. Try again.")
+        }
+    }
+
+    private func flushWebInkForExport(app: AppStore, sessionId: String) async throws {
+        guard let workspace = app.workspace,
+              await workspace.tabTeardowns.awaitAll(),
+              let runtime = workspace.existingLiveTabRuntime(for: sessionId),
+              await runtime.webInk.flushPendingInkAndReportSuccess() else {
+            throw SessionServiceError.io("Your ink could not be saved. Try the export again.")
         }
     }
 
@@ -169,12 +202,17 @@ final class DocumentExportActions_iOS {
     /// pulled from DocumentDataStore by storage key.
     private func buildBundle(
         app: AppStore,
+        binding: DocumentBinding,
         sessionId: String,
         document: DocumentInfo,
         destination: URL,
         includeConversations: Bool,
         pages: [WebPageText]
     ) async throws {
+        if document.kind == .web {
+            try await flushWebInkForExport(app: app, sessionId: sessionId)
+        }
+        try requireCurrentExport(binding, app: app)
         // The sidecar currently lives under this session's storage key — resolve
         // it BEFORE the stamp changes DocumentInfo.docId.
         let pullKey = DocumentIdentity.storageKey(for: document)
@@ -182,7 +220,9 @@ final class DocumentExportActions_iOS {
         // for an unwritable one; URL hash for web).
         let durableId = (try? await app.sessions.ensureDocumentId(sessionId: sessionId))
             ?? pullKey
+        try requireCurrentExport(binding, app: app)
         await app.syncDocumentId(sessionId: sessionId)
+        try requireCurrentExport(binding, app: app)
 
         let documentData: Data
         let documentFile: String
@@ -192,12 +232,16 @@ final class DocumentExportActions_iOS {
                 .appendingPathComponent("\(UUID().uuidString.lowercased()).vellumweb")
             _ = try await app.sessions.exportVellumweb(
                 sessionId: sessionId, destPath: tmp.path, pages: pages)
-            documentData = try Data(contentsOf: tmp)
+            try requireCurrentExport(binding, app: app)
+            documentData = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: tmp)
+            }.value
             try? FileManager.default.removeItem(at: tmp)
             documentFile = "\(slugifiedTitle(app: app)).vellumweb"
         } else {
             // Read AFTER the stamp so the exported PDF carries /VellumDocId.
             documentData = try await app.sessions.readPdfBytes(sessionId: sessionId)
+            try requireCurrentExport(binding, app: app)
             let name = (document.pdfPath as NSString).lastPathComponent
             documentFile = VellumBundle.safeName(name) ?? "document.pdf"
         }

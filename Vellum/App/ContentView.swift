@@ -144,7 +144,15 @@ struct ContentView: View {
         }
 
         if modifiers == .command && key == "l" {
-            NotificationCenter.default.post(name: .vellumAddWebpage, object: nil)
+            let browserVisible = app.document != nil && workspace.sidebarOpen && workspace.sidebarTab == .browser
+            NotificationCenter.default.post(
+                name: browserVisible ? .vellumFocusBrowserAddress : .vellumAddWebpage,
+                object: nil)
+            return true
+        }
+        if modifiers == .command && key == "r",
+           app.document != nil && workspace.sidebarOpen && workspace.sidebarTab == .browser {
+            NotificationCenter.default.post(name: .vellumReloadBrowser, object: nil)
             return true
         }
         if modifiers == .command && key == "o" {
@@ -297,6 +305,9 @@ private struct WindowChrome: View {
             // drags (issue #101). `SidebarPanelStack` now owns the switcher and
             // documents why it lives inside the inspector at all.
             sidebar
+                // Put the switcher in the otherwise empty titlebar area instead
+                // of reserving a second header row below the window toolbar.
+                .ignoresSafeArea(.container, edges: .top)
                 // The inspector must own SOME toolbar content: while its
                 // toolbar section is empty, macOS 26 draws no tracking
                 // separator and the window's trailing items (bookmark, note,
@@ -466,7 +477,9 @@ struct SidebarPanelStack: View {
                 panel(.annotations) { AnnotationSidebar() }
                 panel(.ai) { AiPanel() }
                 panel(.scratchpad) { ScratchpadPanel() }
-                panel(.browser) { SidebarBrowserView() }
+                panel(.browser) {
+                    SidebarBrowserView(isActive: workspace.sidebarOpen && workspace.sidebarTab == .browser)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()

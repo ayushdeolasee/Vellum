@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 /// long-lived document session opens. `.vellum` bundles are containers to
 /// unpack, so they are staged into tmp/ instead.
 enum DocumentImport {
+    private static let importLock = NSLock()
+
     static var libraryDirectory: URL {
         // Keep the document-container fixture distinct from app-support sidecars
         // (`documents`), including on case-insensitive simulator host volumes.
@@ -50,7 +52,18 @@ enum DocumentImport {
     /// container to unpack, not a document to keep open). Name collisions get a
     /// numeric suffix so two different source files never clobber each other.
     static func importPicked(_ urls: [URL]) -> [String] {
+        importPickedResult(urls).paths
+    }
+
+    /// Keep copy failures alongside successful paths so system opens can report
+    /// a partial import without discarding the documents that did copy.
+    static func importPickedResult(_ urls: [URL]) -> (paths: [String], errors: [String]) {
+        // Keep filename selection and copying together across concurrent opens.
+        importLock.lock()
+        defer { importLock.unlock() }
+
         var paths: [String] = []
+        var errors: [String] = []
         for url in urls {
             if isLocalLibraryURL(url), !isBundle(url) {
                 paths.append(url.path)
@@ -65,16 +78,14 @@ enum DocumentImport {
                 ? stagingDestination(for: url.lastPathComponent)
                 : uniqueDestination(for: url.lastPathComponent)
             do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
                 try FileManager.default.copyItem(at: url, to: dest)
                 paths.append(dest.path)
             } catch {
                 NSLog("[document-import] Failed to import \(url.lastPathComponent): \(error)")
+                errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
-        return paths
+        return (paths, errors)
     }
 
     private static func isBundle(_ url: URL) -> Bool {

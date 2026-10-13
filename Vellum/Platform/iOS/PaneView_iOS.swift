@@ -9,16 +9,15 @@ import UIKit
 // the focused pane, the iPad toolbar is in-content, so each pane carries its
 // own and only the inspector sidebar retargets on focus change.
 
-/// Window-level lookup of each pane's ink controller. The controller is owned
-/// by the pane (its viewer wires `pdfController` into it), but the shared
-/// inspector sidebar needs the *focused* pane's controller for the Handwriting
-/// section, so panes register here keyed by pane id.
+/// Window-level lookup of each pane's active PDF-or-web ink controller. The
+/// controllers are owned by their tabs' runtimes; the shared inspector only
+/// needs the focused pane's current palette/sidebar target.
 @MainActor
 @Observable
 final class InkRegistry_iOS {
-    private(set) var controllers: [String: InkController_iOS] = [:]
+    private(set) var controllers: [String: any InkPaletteHost] = [:]
 
-    func register(_ controller: InkController_iOS, for paneId: String) {
+    func register(_ controller: any InkPaletteHost, for paneId: String) {
         controllers[paneId] = controller
     }
 
@@ -39,19 +38,23 @@ struct PaneView_iOS: View {
     private var app: AppStore { pane.app }
     private var isFocused: Bool { workspace.focusedPaneId == pane.id }
 
-    /// The ACTIVE tab's ink controller. Ink is per-DOCUMENT state and lives on
-    /// the tab's `LiveTabRuntime` (see `LiveTabRuntime.ink`), because several
-    /// tabs' `PDFView`s are mounted at once now and each installs its
-    /// `ink.inkProvider` as `pageOverlayViewProvider` — one pane-owned
-    /// controller would hand tab B's page-3 canvas to tab A's page 3.
-    private var activeInk: InkController_iOS? {
-        app.activeTabId.map { workspace.liveTabRuntime(for: $0).ink }
+    /// The ACTIVE tab's document-specific palette host. Both PDF and webpage
+    /// ink live on `LiveTabRuntime`, never on this disposable pane view.
+    private var activeInkHost: (any InkPaletteHost)? {
+        guard let tabId = app.activeTabId, let document = app.document else { return nil }
+        let runtime = workspace.liveTabRuntime(for: tabId)
+        return document.kind == .web ? runtime.webInk : runtime.ink
+    }
+
+    private var activePdfInk: InkController_iOS? {
+        guard app.document?.kind == .pdf, let tabId = app.activeTabId else { return nil }
+        return workspace.liveTabRuntime(for: tabId).ink
     }
 
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
-                if !app.tabs.isEmpty {
+                if !app.tabs.isEmpty || workspace.isSplit {
                     TabStrip_iOS(paneId: pane.id, onNewTab: { app.newStartTab() })
                 }
                 content
@@ -60,17 +63,6 @@ struct PaneView_iOS: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
-            .overlay(alignment: .topLeading) {
-                // Focus ring only when the window is actually split — a lone
-                // pane never needs the "which pane is active" affordance.
-                if workspace.isSplit {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(
-                            isFocused ? palette.primary.opacity(0.55) : Color.clear,
-                            lineWidth: 2)
-                        .allowsHitTesting(false)
-                }
-            }
             // Transparent drop catcher floated above the content so a hosted
             // WKWebView (which registers its own dragged types) can't swallow a
             // tab drop first. Hit testing is gated on an in-flight drag so
@@ -105,15 +97,14 @@ struct PaneView_iOS: View {
         // its Handwriting section. It now holds the ACTIVE TAB's controller and
         // re-registers whenever the pane changes tabs; the controllers
         // themselves are owned by the runtimes.
-        .onChange(of: app.activeTabId, initial: true) { _, _ in
-            if let activeInk { inkRegistry.register(activeInk, for: pane.id) }
+        .onChange(of: DocumentKey_iOS(app), initial: true) { _, _ in
+            if let activeInkHost {
+                inkRegistry.register(activeInkHost, for: pane.id)
+            } else {
+                inkRegistry.remove(pane.id)
+            }
         }
         .onDisappear {
-            // Flush BEFORE deregistering. The scene-background flush drains the
-            // registry, so a controller with debounced ink that has already been
-            // removed would never be reached — closing a split pane moments
-            // before pressing Home would drop the last strokes.
-            activeInk?.flushPendingInk()
             inkRegistry.remove(pane.id)
         }
         #if DEBUG
@@ -155,7 +146,7 @@ struct PaneView_iOS: View {
             // The chrome stays OUTSIDE the per-tab ZStack: the tab strip,
             // toolbar and find bar are pane-scoped and read the pane's active
             // projection. Only the viewer is multiplexed.
-            reader(ink: activeInk ?? InkController_iOS())
+            reader(ink: activeInkHost ?? InkController_iOS())
         }
     }
 
@@ -164,7 +155,7 @@ struct PaneView_iOS: View {
     /// site is unreachable (this branch requires `app.document != nil`, which
     /// requires an active tab) and exists only to keep that fact local.
     @ViewBuilder
-    private func reader(ink: InkController_iOS) -> some View {
+    private func reader(ink: any InkPaletteHost) -> some View {
             VStack(spacing: 0) {
                 PdfToolbar_iOS(ink: ink)
 
@@ -224,12 +215,12 @@ struct PaneView_iOS: View {
         // Wait for the viewer's load() to adopt the document (it resets
         // ink.isActive = false when it finishes, so a fixed delay races a slow
         // cold launch), then activate past that reset.
-        for _ in 0..<40 where activeInk?.pdfController?.document == nil {
+        for _ in 0..<40 where activePdfInk?.pdfController?.document == nil {
             try? await Task.sleep(for: .milliseconds(250))
         }
         try? await Task.sleep(for: .milliseconds(500))
         guard !Task.isCancelled else { return }
-        activeInk?.isActive = true
+        activePdfInk?.isActive = true
     }
     #endif
 }

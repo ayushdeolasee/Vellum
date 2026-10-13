@@ -20,7 +20,7 @@ struct PaneView: View {
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
-                if !app.tabs.isEmpty {
+                if !app.tabs.isEmpty || workspace.isSplit {
                     TabBarView(paneId: pane.id)
                 }
                 content
@@ -41,17 +41,6 @@ struct PaneView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
-            .overlay(alignment: .topLeading) {
-                // Focus ring only when the window is actually split — a lone pane
-                // never needs the "which pane is active" affordance.
-                if workspace.isSplit {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(
-                            isFocused ? palette.primary.opacity(0.55) : Color.clear,
-                            lineWidth: 2)
-                        .allowsHitTesting(false)
-                }
-            }
             // Transparent drop catcher. A web pane hosts a WKWebView, which
             // registers its own dragged types and would otherwise swallow a tab
             // drop before this pane's DropDelegate sees it (a PDFView doesn't,
@@ -60,14 +49,18 @@ struct PaneView: View {
             // web content, and gating hit testing on an in-flight drag keeps
             // normal web interaction untouched the rest of the time.
             .overlay {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .allowsHitTesting(workspace.draggingTab != nil)
-                    .onDrop(
-                        of: [.vellumTab],
-                        delegate: PaneDropDelegate(
-                            paneId: pane.id, size: geo.size, workspace: workspace,
-                            activeZone: $activeZone))
+                // SwiftUI registers catch-all dragged types even when hit
+                // testing is disabled. Withdraw the tab destination entirely
+                // between tab drags so Home's PDF/link destination can win.
+                if workspace.draggingTab != nil {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onDrop(
+                            of: [.vellumTab],
+                            delegate: PaneDropDelegate(
+                                paneId: pane.id, size: geo.size, workspace: workspace,
+                                activeZone: $activeZone))
+                }
             }
             // Only show the drop preview while a tab is actually being dragged;
             // `draggingTab` clears reliably on mouse-up, so no highlight lingers
@@ -262,7 +255,7 @@ private struct LiveTabHost: View {
                 // claim has to be gated on being the selected tab as well as
                 // being in the focused pane — one claimant per window, exactly as
                 // the two-pane case already required.
-                WelcomeScreen(isPaneFocused: isPaneFocused && isActive)
+                WelcomeScreen(isPaneFocused: isPaneFocused && isActive, acceptsDrops: isActive)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

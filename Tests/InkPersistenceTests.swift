@@ -443,11 +443,13 @@ final class InkPersistenceTests: XCTestCase {
         // Make the write fail the way an iCloud eviction would: the path is
         // suddenly unreadable. The strokes must survive in memory.
         try FileManager.default.removeItem(at: url)
-        await controller.flushPendingInkAndWait()
+        let failedFlushSucceeded = await controller.flushPendingInkAndWait()
+        XCTAssertFalse(failedFlushSucceeded)
 
         // Restore the file; the retained batch must now reach disk.
         try writeBlankDocument(pageCount: 1, to: url)
-        await controller.flushPendingInkAndWait()
+        let retrySucceeded = await controller.flushPendingInkAndWait()
+        XCTAssertTrue(retrySucceeded)
 
         let reloaded = try XCTUnwrap(PDFDocument(url: url))
         XCTAssertTrue(
