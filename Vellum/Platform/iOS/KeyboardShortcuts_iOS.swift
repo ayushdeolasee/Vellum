@@ -121,6 +121,7 @@ enum VellumShortcutAction: Hashable, Sendable {
     case newTab
     case openFile
     case addWebpage
+    case reloadBrowser
     case closeTab
     case printDocument
     case save
@@ -167,6 +168,7 @@ enum VellumShortcutAction: Hashable, Sendable {
         case .newTab: "newTab"
         case .openFile: "openFile"
         case .addWebpage: "addWebpage"
+        case .reloadBrowser: "reloadBrowser"
         case .closeTab: "closeTab"
         case .printDocument: "printDocument"
         case .save: "save"
@@ -352,7 +354,7 @@ enum VellumShortcutCatalog {
         // import/export group (and any key equivalent it carried) outright, so
         // there is exactly one owner of the chord.
         VellumShortcut(.openFile, "Open…", VellumKeyCombo("o"), menu: .file),
-        VellumShortcut(.addWebpage, "Add Webpage…", VellumKeyCombo("l"), menu: .file),
+        VellumShortcut(.addWebpage, "Add Webpage…", VellumKeyCombo("l"), menu: .file, installOnDocumentSurface: true),
         VellumShortcut(.closeTab, "Close Tab", VellumKeyCombo("w"), menu: .file),
         VellumShortcut(.printDocument, "Print…", VellumKeyCombo("p"), menu: .file),
         VellumShortcut(.save, "Save", VellumKeyCombo("s"), menu: .file),
@@ -450,6 +452,7 @@ enum VellumShortcutCatalog {
         VellumShortcut(
             .webForward, "Forward", VellumKeyCombo("]"), menu: .navigate,
             installOnDocumentSurface: true),
+        VellumShortcut(.reloadBrowser, "Reload Companion Browser", VellumKeyCombo("r"), menu: .navigate),
         VellumShortcut(
             .previousTab, "Show Previous Tab", VellumKeyCombo("[", [.command, .shift]),
             menu: .navigate, installOnDocumentSurface: true),

@@ -170,6 +170,7 @@ enum RecentFilesService {
         guard let data = try? JSONEncoder().encode(documents),
               let raw = String(data: data, encoding: .utf8) else { return }
         defaults.set(raw, forKey: storageKey)
+        NotificationCenter.default.post(name: .vellumRecentDocumentsChanged, object: nil)
     }
 
     /// Skips malformed entries instead of failing the whole list, mirroring the
@@ -191,4 +192,8 @@ extension ISO8601DateFormatter {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+}
+
+extension Notification.Name {
+    static let vellumRecentDocumentsChanged = Notification.Name("vellum.recent-documents-changed")
 }

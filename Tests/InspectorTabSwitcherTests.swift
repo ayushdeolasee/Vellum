@@ -67,7 +67,7 @@ final class InspectorTabSwitcherTests: XCTestCase {
     func testAccessibilityIdentifiersMatchTheAutomationConvention() {
         XCTAssertEqual(
             WorkspaceStore.SidebarTab.allCases.map(\.accessibilityIdentifier),
-            ["sidebarTab.annotations", "sidebarTab.ai", "sidebarTab.scratchpad"])
+            ["sidebarTab.annotations", "sidebarTab.ai", "sidebarTab.scratchpad", "sidebarTab.browser"])
         for tab in WorkspaceStore.SidebarTab.allCases {
             XCTAssertEqual(
                 tab.accessibilityIdentifier,
@@ -113,10 +113,10 @@ final class InspectorTabSwitcherTests: XCTestCase {
     func testEveryPresentationRetainsAllDestinations() {
         XCTAssertEqual(
             WorkspaceStore.SidebarTab.allCases,
-            [.annotations, .ai, .scratchpad])
+            [.annotations, .ai, .scratchpad, .browser])
         XCTAssertEqual(
             WorkspaceStore.SidebarTab.allCases.map(\.title),
-            ["Annotations", "AI", "Scratchpad"])
+            ["Annotations", "AI", "Scratchpad", "Browser"])
         XCTAssertEqual(
             Set(WorkspaceStore.SidebarTab.allCases.map(\.systemImage)).count,
             WorkspaceStore.SidebarTab.allCases.count)
@@ -128,7 +128,7 @@ final class InspectorTabSwitcherTests: XCTestCase {
     func testPanelShortcutDigitsFollowTheSwitcherOrder() {
         XCTAssertEqual(
             WorkspaceStore.SidebarTab.allCases.map(\.shortcutDigit),
-            ["1", "2", "3"])
+            ["1", "2", "3", "4"])
         XCTAssertEqual(WorkspaceStore.SidebarTab.annotations.shortcutDigit, "1")
         XCTAssertEqual(WorkspaceStore.SidebarTab.ai.shortcutDigit, "2")
         XCTAssertEqual(WorkspaceStore.SidebarTab.scratchpad.shortcutDigit, "3")

@@ -75,6 +75,14 @@ struct PhoneInspectorSheet_iOS: View {
         .tint(themeStore.palette.primary)
         .onAppear { SheetPresence_iOS.registerInspector(shell, id: presenceID) }
         .onDisappear { SheetPresence_iOS.unregisterInspector(id: presenceID) }
+        .onChange(of: workspace.companionBrowser.addressFocusRequest) { _, request in
+            guard request != nil else { return }
+            detent = .large
+        }
+        .onChange(of: workspace.companionBrowser.addressIsEditing) { _, editing in
+            guard editing else { return }
+            detent = .large
+        }
         .onChange(of: pane.ai.composerFocusRequest) { _, request in
             guard request != nil else { return }
             detent = .large
@@ -141,6 +149,7 @@ struct PhoneInspectorSheet_iOS: View {
             .environment(workspace.openAIModelCatalog)
             .environment(workspace.openRouterCatalog)
             .environment(\.palette, themeStore.palette)
+
     }
 
     /// The ink controller the Handwriting section reads, taken straight from the

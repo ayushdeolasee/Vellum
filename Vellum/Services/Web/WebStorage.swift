@@ -529,6 +529,7 @@ enum WebICloud {
 /// to re-run at any time.
 enum WebStorageMigrator {
     private static let pendingLock = NSRecursiveLock()
+    static let incompleteRelocationMessage = "The storage move is incomplete. Some files remain in the previous location. Check that both locations are available and cloud files have downloaded; Vellum will retry at next launch."
 
     struct PendingRelocation: Codable {
         let mode: String
@@ -886,11 +887,20 @@ enum WebStorageMigrator {
     ) async -> Bool {
         guard source != destination else { return true }
 
-        // Preserve the mature byte-for-byte local/custom implementation when
-        // neither side needs coordination.
-        if !sourceStore.isCoordinated, !destinationStore.isCoordinated {
+        // A pretty source needs index recovery even for custom→local moves.
+        // Keep the legacy direct path for hashed local sources.
+        if !source.pretty, !sourceStore.isCoordinated, !destinationStore.isCoordinated {
             return relocateDirect(from: source, to: destination)
         }
+
+        // A custom folder can itself be in iCloud Drive. Include its evicted
+        // placeholders rather than mistaking them for files already moved.
+        let sourceArchiveStore: any LibraryFileStore = source.pretty && !sourceStore.isCoordinated
+            ? DirectLibraryFileStore(allowedRoot: source.archivesDir.deletingLastPathComponent())
+            : sourceStore
+        let destinationArchiveStore: any LibraryFileStore = destination.pretty && !destinationStore.isCoordinated
+            ? DirectLibraryFileStore(allowedRoot: destination.archivesDir.deletingLastPathComponent())
+            : destinationStore
 
         let legacyImports: LegacyImportReceipts?
         if preserveSource {
@@ -916,8 +926,10 @@ enum WebStorageMigrator {
         clean = await relocateArchives(
             from: source,
             to: destination,
-            sourceStore: sourceStore,
-            destinationStore: destinationStore,
+            sourceStore: sourceArchiveStore,
+            sourceRecordStore: sourceStore,
+            destinationStore: destinationArchiveStore,
+            destinationRecordStore: destinationStore,
             preserveSource: preserveSource,
             legacyImports: legacyImports) && clean
         clean = await relocateTree(
@@ -1112,7 +1124,9 @@ enum WebStorageMigrator {
         from source: WebStorageLayout,
         to destination: WebStorageLayout,
         sourceStore: any LibraryFileStore,
+        sourceRecordStore: any LibraryFileStore,
         destinationStore: any LibraryFileStore,
+        destinationRecordStore: any LibraryFileStore,
         preserveSource: Bool,
         legacyImports: LegacyImportReceipts?
     ) async -> Bool {
@@ -1143,26 +1157,47 @@ enum WebStorageMigrator {
         var sourceIndexChanged = false
         var clean = true
 
+        var archiveNames = sourceIndex.entries
+        var recoveredKeys: Set<String> = []
         if source.pretty {
             let indexedNames = Set(sourceIndex.entries.values)
-            if sourceArchives.contains(where: { !indexedNames.contains($0.name) }) {
-                // A pretty archive without an index key cannot safely be
-                // renamed to the hashed local form. Leave it at the source and
-                // keep recovery pending rather than silently orphaning it.
-                clean = false
+            var candidates: [String: [String]] = [:]
+            for entry in sourceArchives where !indexedNames.contains(entry.name) {
+                do {
+                    guard entry.readiness.isReady,
+                          let bytes = try await sourceStore.read(entry.url) else {
+                        clean = false
+                        continue
+                    }
+                    let manifest = try WebArchive.readManifest(data: bytes)
+                    let normalized = try WebUrl.normalize(manifest.url)
+                    candidates[WebLibrary.pageKey(normalized), default: []].append(entry.name)
+                } catch {
+                    clean = false
+                }
+            }
+            for (key, names) in candidates {
+                // Multiple captures of the same page must not be silently
+                // collapsed, including a capture already named by the index.
+                guard names.count == 1, archiveNames[key] == nil else {
+                    clean = false
+                    continue
+                }
+                archiveNames[key] = names[0]
+                recoveredKeys.insert(key)
             }
         }
 
         let keys: [String]
         if source.pretty {
-            keys = sourceIndex.entries.keys.sorted()
+            keys = archiveNames.keys.sorted()
         } else {
             keys = sourceArchives.map { String($0.name.dropLast(".vellumweb".count)) }.sorted()
         }
 
         for key in keys {
             let sourceName = source.pretty
-                ? sourceIndex.entries[key]
+                ? archiveNames[key]
                 : "\(key).vellumweb"
             guard let sourceName, let sourceEntry = sourceByName[sourceName] else {
                 // An index entry left behind by an already-completed copy is
@@ -1180,6 +1215,7 @@ enum WebStorageMigrator {
             }
 
             let bytes: Data
+            var recoveredArchive: ImportedArchive?
             let legacyPath = "Web Pages/\(sourceName)"
             let sourceFingerprint: String
             do {
@@ -1202,6 +1238,17 @@ enum WebStorageMigrator {
                         continue
                     }
                 }
+                if recoveredKeys.contains(key) {
+                    // Validate the complete archive before synthesizing any
+                    // metadata or removing its only copy. Recovery mappings
+                    // stay in memory; failed files are validated again on retry.
+                    let imported = try WebArchive.readArchive(data: sourceData)
+                    guard WebLibrary.pageKey(try WebUrl.normalize(imported.manifest.url)) == key else {
+                        clean = false
+                        continue
+                    }
+                    recoveredArchive = imported
+                }
             } catch {
                 clean = false
                 continue
@@ -1214,14 +1261,21 @@ enum WebStorageMigrator {
                 } else {
                     let recordURL = destination.recordsDir.appendingPathComponent("\(key).json")
                     do {
-                        guard let data = try await destinationStore.read(recordURL),
-                              let record = try? JSONDecoder().decode(WebPageRecord.self, from: data)
-                        else {
+                        let title: String?
+                        let url: String
+                        if let data = try await destinationRecordStore.read(recordURL) {
+                            let record = try JSONDecoder().decode(WebPageRecord.self, from: data)
+                            title = record.title
+                            url = record.url
+                        } else if let imported = recoveredArchive {
+                            title = imported.manifest.title
+                            url = imported.manifest.url
+                        } else {
                             clean = false
                             continue
                         }
                         let base = WebArchiveIndex.sanitizedBaseName(
-                            title: record.title, url: record.url)
+                            title: title, url: url)
                         var candidate = "\(base).vellumweb"
                         var counter = 2
                         while occupied.contains(candidate) {
@@ -1264,6 +1318,14 @@ enum WebStorageMigrator {
                         byteSize: Int64(bytes.count),
                         contentModifiedAt: sourceEntry.contentModifiedAt)
                 }
+                // A rejected destination conflict must not publish metadata
+                // from this capture beside a different snapshot.
+                if let imported = recoveredArchive {
+                    try await recoverMissingArchiveRecords(
+                        imported, key: key, source: source,
+                        sourceStore: sourceRecordStore, destination: destination,
+                        store: destinationRecordStore)
+                }
                 if !preserveSource {
                     try await sourceStore.remove(sourceEntry.url)
                     if source.pretty, sourceIndex.entries.removeValue(forKey: key) != nil {
@@ -1285,6 +1347,68 @@ enum WebStorageMigrator {
             }
         }
         return clean
+    }
+
+    /// Existing sidecars are authoritative (including deleted annotations and
+    /// unsaved pages). Rebuild only missing ones, using the archive import
+    /// metadata, so the recovered page is discoverable without reviving edits.
+    private static func recoverMissingArchiveRecords(
+        _ imported: ImportedArchive,
+        key: String,
+        source: WebStorageLayout,
+        sourceStore: any LibraryFileStore,
+        destination: WebStorageLayout,
+        store: any LibraryFileStore
+    ) async throws {
+        let normalized = try WebUrl.normalize(imported.manifest.url)
+        guard WebLibrary.pageKey(normalized) == key else {
+            throw LibraryFileError.io("The archive changed while recovering its index.")
+        }
+        let recordURL = destination.recordsDir.appendingPathComponent("\(key).json")
+        if let data = try await store.read(recordURL) {
+            let record = try JSONDecoder().decode(WebPageRecord.self, from: data)
+            guard try WebUrl.normalize(record.url) == normalized else {
+                throw LibraryFileError.io("The archive conflicts with an existing page record.")
+            }
+        } else {
+            let sourceURL = source.recordsDir.appendingPathComponent("\(key).json")
+            if let data = try await sourceStore.read(sourceURL) {
+                let record = try JSONDecoder().decode(WebPageRecord.self, from: data)
+                guard try WebUrl.normalize(record.url) == normalized else {
+                    throw LibraryFileError.io("The archive conflicts with its source page record.")
+                }
+                try await store.replace(recordURL, with: data)
+            } else {
+                var record = WebPageRecord(url: normalized)
+                record.title = imported.manifest.title
+                record.titleIsUserDefined = record.title != nil
+                    && (imported.manifest.titleIsUserDefined ?? true)
+                record.pageCount = imported.manifest.pageCount
+                record.lastPage = imported.manifest.lastPage
+                record.loadingPolicy = imported.manifest.loadingPolicy
+                record.saved = true
+                record.savedAt = imported.manifest.capturedAt
+                record.annotations = imported.annotations
+                try await store.replace(recordURL, with: WebLibrary.jsonEncoderPretty.encode(record))
+            }
+        }
+        if var ink = imported.inkRecord {
+            let inkURL = destination.recordsDir.appendingPathComponent("\(key).ink.json")
+            if let data = try await store.read(inkURL) {
+                let current = try JSONDecoder().decode(WebInkRecord.self, from: data)
+                _ = try current.validatedMergedDrawing()
+            } else {
+                let sourceURL = source.recordsDir.appendingPathComponent("\(key).ink.json")
+                if let data = try await sourceStore.read(sourceURL) {
+                    let current = try JSONDecoder().decode(WebInkRecord.self, from: data)
+                    _ = try current.validatedMergedDrawing()
+                    try await store.replace(inkURL, with: data)
+                } else {
+                    ink.url = normalized
+                    try await store.replace(inkURL, with: WebLibrary.jsonEncoderPretty.encode(ink))
+                }
+            }
+        }
     }
 
     private static func loadIndex(
