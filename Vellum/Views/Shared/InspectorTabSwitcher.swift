@@ -141,6 +141,9 @@ extension WorkspaceStore.SidebarTab: Identifiable {
 /// control here guarantees that all destinations remain reachable.
 struct InspectorTabSwitcher: View {
     @Binding var selection: WorkspaceStore.SidebarTab
+    /// Phone sheets reserve more space around each title instead of fitting
+    /// an icon and a title into every segment.
+    var usesTextOnlySegments = false
 
     @Environment(\.palette) private var palette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -153,7 +156,7 @@ struct InspectorTabSwitcher: View {
     @ViewBuilder
     var body: some View {
 #if os(iOS)
-        if dynamicTypeSize.isAccessibilitySize {
+        if dynamicTypeSize.isAccessibilitySize || (usesTextOnlySegments && dynamicTypeSize >= .xxLarge) {
             compactMenu
         } else {
             sizedSwitcher
@@ -174,8 +177,11 @@ struct InspectorTabSwitcher: View {
                     segmentedControl(showTitles: false)
                 }
                 #else
-                if dynamicTypeSize.isAccessibilitySize {
-                    compactMenu
+                if usesTextOnlySegments {
+                    ViewThatFits(in: .horizontal) {
+                        segmentedControl(showTitles: true, showIcons: false)
+                        compactMenu
+                    }
                 } else {
                     ViewThatFits(in: .horizontal) {
                         segmentedControl(showTitles: true)
@@ -198,12 +204,12 @@ struct InspectorTabSwitcher: View {
                 compactMenu
             }
         }
-        .frame(height: InspectorLayout.switcherHeight)
+        .frame(height: InspectorLayout.switcherHeight + (usesTextOnlySegments ? 4 : 0))
         .accessibilityElement(children: .contain)
     }
 
     private func segmentedControl(showTitles: Bool, showIcons: Bool = true) -> some View {
-        HStack(spacing: InspectorLayout.segmentSpacing) {
+        HStack(spacing: usesTextOnlySegments ? 6 : InspectorLayout.segmentSpacing) {
             ForEach(WorkspaceStore.SidebarTab.allCases) { tab in
                 let isSelected = selection == tab
                 let isHovering = hovering == tab
@@ -230,6 +236,7 @@ struct InspectorTabSwitcher: View {
                                 Text(tab.title).lineLimit(1)
                             }
                             .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, usesTextOnlySegments ? 8 : 0)
                             #endif
                         } else {
                             Label(tab.title, systemImage: tab.systemImage)
@@ -273,7 +280,7 @@ struct InspectorTabSwitcher: View {
                 .accessibilityIdentifier(tab.accessibilityIdentifier)
             }
         }
-        .font(.callout)
+        .font(usesTextOnlySegments ? .subheadline.weight(.medium) : .callout)
         #if os(macOS)
         .frame(maxWidth: .infinity)
         #endif

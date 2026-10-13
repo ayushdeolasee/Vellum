@@ -94,7 +94,7 @@ enum VellumShortcutRouter {
             }
         }
         if SheetPresence_iOS.isPresenting {
-            if case .dismiss = action { SheetPresence_iOS.topPresented?.dismiss(animated: true) }
+            if case .dismiss = action { SheetPresence_iOS.dismissTopPresentation() }
             return
         }
 
