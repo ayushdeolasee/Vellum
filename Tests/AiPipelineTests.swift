@@ -978,7 +978,9 @@ final class AiPipelineTests: XCTestCase {
             currentPageImage: nil,
             references: [AiReference(kind: .image(image: snapshot, name: "diagram.png"))]
         )
-        let block = AiPrompts.buildContextBlock(pageTexts: [1: "text"], context: context)
+        let block = AiPrompts.buildNativeToolUserPrompt(AiPromptParameters(
+            conversation: "", context: AiPrompts.buildContextBlock(pageTexts: [1: "text"], context: context),
+            latestUserRequest: "Explain this image", references: context.references)).volatile
         XCTAssertTrue(block.contains("[attached image: diagram.png] image attached (12x9)"))
         XCTAssertFalse(block.contains("[attached image: diagram.png] image attached (12x9), p."))
     }

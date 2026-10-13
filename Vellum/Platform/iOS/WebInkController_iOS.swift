@@ -720,16 +720,15 @@ final class WebInkController_iOS: InkPaletteHost {
 
     // MARK: - Sidebar Handwriting jump list (Phase 4)
 
-    /// One inked cluster surfaced in the sidebar's "Handwriting" section: a
-    /// virtual page (from its anchor's `start_offset`) and enough anchor context
-    /// to scroll back to the cluster's text. Only anchored clusters appear —
-    /// the page number comes from the anchor.
+    /// One inked cluster surfaced in the sidebar's "Handwriting" section.
+    /// Text anchors provide virtual pages; other clusters jump to their CSS Y.
     struct InkJump: Identifiable, Equatable {
         var id: String
-        var page: Int
+        var documentUrl: String
+        var page: Int?
         /// Document-space Y (zoom-1 CSS px), for stable ordering.
         var docY: CGFloat
-        var anchor: WebInkRecord.Anchor
+        var anchor: WebInkRecord.Anchor?
     }
 
     /// The current inked clusters mapped to virtual pages, ordered top-to-bottom
@@ -737,28 +736,31 @@ final class WebInkController_iOS: InkPaletteHost {
     /// `drawingVersion`, which the anchor-capture and re-anchor paths bump).
     var inkJumps: [InkJump] {
         _ = drawingVersion
-        guard let overlay else { return [] }
+        guard canDisplayInk, let documentUrl = loadedUrl, let overlay else { return [] }
         let drawing = overlay.canvas.drawing
         guard !drawing.strokes.isEmpty else { return [] }
         var jumps: [InkJump] = []
         for (index, cluster) in WebInkClustering.clusters(of: drawing).enumerated() {
-            guard let cacheIndex = anchorEntryIndex(for: cluster.bounds) else { continue }
-            let anchor = anchorCache[cacheIndex].anchor
+            let anchor = anchorForCluster(cluster.bounds)
             jumps.append(InkJump(
-                id: "\(anchor.startOffset)-\(index)",
-                page: max(1, anchor.page ?? 1),
+                id: "\(anchor.map { String($0.startOffset) } ?? "unanchored")-\(index)",
+                documentUrl: documentUrl,
+                page: anchor.map { max(1, $0.page ?? 1) },
                 docY: cluster.bounds.minY,
                 anchor: anchor))
         }
         return jumps.sorted { $0.docY < $1.docY }
     }
 
-    /// Scroll the reader to an inked cluster's anchored text (tapped in the
-    /// sidebar). Uses the same text-quote scroll machinery as bookmarks so it
-    /// survives reflow; falls back to a page jump if the position scroll can't
-    /// run.
+    /// Anchored clusters use bookmark text-quote scrolling and its page fallback.
+    /// Unanchored clusters use their current CSS Y without inventing a page.
     func scrollTo(_ jump: InkJump) {
-        let anchor = jump.anchor
+        guard canDisplayInk, loadedUrl == jump.documentUrl,
+              app?.document?.pdfPath == jump.documentUrl else { return }
+        guard let anchor = jump.anchor else {
+            _ = webController?.scrollToWebInk(docY: jump.docY, documentUrl: jump.documentUrl)
+            return
+        }
         let position = PositionData(
             rects: [],
             pageWidth: 0,
@@ -769,8 +771,9 @@ final class WebInkController_iOS: InkPaletteHost {
             prefix: anchor.prefix,
             suffix: anchor.suffix,
             viewportOffset: nil)
-        if webController?.scrollToWebPosition(position, page: jump.page) != true {
-            app?.goToPage(jump.page)
+        if webController?.scrollToWebPosition(position, page: jump.page) != true,
+           let page = jump.page {
+            app?.goToPage(page)
         }
     }
 

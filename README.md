@@ -11,6 +11,12 @@ The phone layout has a search-first Home, a full-screen reader, a pull-up inspec
 
 Safari sharing writes a small capture record to the App Group. The app later creates the durable web archive; DOM payloads over the conservative 1 MiB limit fall back to fetching the shared URL.
 
+## Safari and system Share on Mac
+
+Open Vellum once, then enable **Save to Vellum** in the system Share menu’s **More** list. In Safari, share an HTTP or HTTPS webpage and choose **Save to Vellum**. Vellum opens and saves the link to Library; its reader creates an offline copy after the page loads successfully. If delivery fails, the share sheet keeps the link visible with Retry and Copy Link. A page-load failure keeps the saved link for another attempt.
+
+The Mac extension uses validated URL intake, so it does not copy Safari’s cookies or logged-in page content. Offline copies depend on Vellum loading the page. Debug builds expose **Save to Vellum Dev** and use `vellum-dev://`; production uses `vellum://`. Mac distribution remains Developer ID/notarized direct download. Extension discovery, sandbox delivery and signed installation require Mac verification; the extension adds no iCloud or App Group capability.
+
 ## Chrome extension
 
 The extension in `VellumChrome/` opens the current HTTP or HTTPS page in the macOS app. To install it locally, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `VellumChrome` folder. Pin **Open in Vellum** for one-click access. The distributed extension targets the production app (`vellum://`); Debug builds register only `vellum-dev://`.
@@ -50,6 +56,7 @@ The generated `Vellum` and `Vellum Mac` schemes share this source tree. Use Debu
 
 - `Vellum/` — shared app sources and platform adapters
 - `VellumShare/` — iOS Safari share extension
+- `VellumMacShare/` — macOS Safari/system Share URL adapter
 - `VellumChrome/` — Chrome extension for the macOS app
 - `Tests/` — unit tests
 - `specs/` — feature specifications

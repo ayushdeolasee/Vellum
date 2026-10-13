@@ -282,6 +282,11 @@ final class PhoneShellStore {
     /// controls unexpectedly.
     func handleReaderScroll(_ event: ReaderChromeScrollEvent) {
         switch event {
+        case .tapped(let sourceInteractionBlocked):
+            resetChromeScrollGesture()
+            guard !sourceInteractionBlocked, !automaticChromeChangesBlocked else { return }
+            chromeVisible.toggle()
+
         case .began(let sourceInteractionBlocked):
             scrollGestureFrozen = sourceInteractionBlocked || automaticChromeChangesBlocked
             if scrollGestureFrozen { resetChromeScrollProgress() }
@@ -303,7 +308,7 @@ final class PhoneShellStore {
     }
 
     /// Kept for the DEBUG launch-state screenshot hook and direct state tests.
-    /// Runtime reader UI has no explicit hide/reveal action.
+    /// Reader taps and swipes use the guarded event handler above.
     func setChrome(_ visible: Bool) {
         guard visible || !automaticChromeChangesBlocked else {
             chromeVisible = true

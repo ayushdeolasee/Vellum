@@ -128,6 +128,32 @@ struct PhoneShellStateTests {
         #expect(shell.chromeVisible)
     }
 
+    @Test("Reader taps toggle both bars and respect interaction safeguards")
+    func tapsToggleChrome() async throws {
+        let (shell, app) = try await makeShell()
+        await app.openFile(path: "/tmp/phone-tap.pdf")
+        shell.didOpenDocument()
+
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(!shell.chromeVisible)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: true))
+        #expect(shell.chromeVisible)
+
+        app.setMode(.note)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+        app.setMode(.view)
+        app.showFind()
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+        app.hideFind()
+        shell.updateAlwaysShowReaderControls(true)
+        shell.handleReaderScroll(.tapped(sourceInteractionBlocked: false))
+        #expect(shell.chromeVisible)
+    }
+
     @Test("Tiny reversals are jitter; deliberate direction changes reset accumulated travel")
     func chromeTravelHandlesDirectionChanges() async throws {
         let (shell, app) = try await makeShell()

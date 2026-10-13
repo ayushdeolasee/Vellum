@@ -94,12 +94,16 @@ actor WebLibraryStorage {
         }
     }
 
-    func setTitle(rawUrl: String, title: String?) async throws {
+    @discardableResult
+    func setTitle(rawUrl: String, title: String?, isUserDefined: Bool = true) async throws -> Bool {
         let url = try WebUrl.normalize(rawUrl)
         let key = WebLibrary.pageKey(url)
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        try await mutateRecord(url: url, key: key) { record in
+        return try await mutateRecord(url: url, key: key) { record in
+            guard isUserDefined || !record.titleIsUserDefined else { return false }
             record.title = trimmed.isEmpty ? nil : trimmed
+            record.titleIsUserDefined = isUserDefined && !trimmed.isEmpty
+            return true
         }
     }
 

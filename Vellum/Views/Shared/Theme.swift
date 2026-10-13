@@ -163,18 +163,24 @@ enum SelectionStyle {
 extension View {
     /// Apply the shared selection surface (tinted fill + hairline edge) clipped
     /// to `shape`. Used by tabs, the segmented thumb, and filter chips so they
-    /// all read as one selection system.
+    /// all read as one selection system. Selected tabs in an unfocused pane
+    /// keep a neutral surface rather than competing with the focused pane.
     func selectionSurface<S: InsettableShape>(
         selected: Bool,
         hovering: Bool = false,
+        accented: Bool = true,
         in shape: S,
         palette: ThemePalette
     ) -> some View {
         background {
-            shape.fill(SelectionStyle.fill(palette, selected: selected, hovering: hovering))
+            shape.fill(selected && !accented
+                ? AnyShapeStyle(palette.muted)
+                : SelectionStyle.fill(palette, selected: selected, hovering: hovering))
         }
         .overlay {
-            shape.strokeBorder(SelectionStyle.edge(palette, selected: selected), lineWidth: 1)
+            shape.strokeBorder(selected && !accented
+                ? AnyShapeStyle(palette.borderStrong)
+                : SelectionStyle.edge(palette, selected: selected), lineWidth: 1)
         }
     }
 

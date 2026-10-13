@@ -54,7 +54,7 @@ struct PaneView_iOS: View {
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
-                if !app.tabs.isEmpty {
+                if !app.tabs.isEmpty || workspace.isSplit {
                     TabStrip_iOS(paneId: pane.id, onNewTab: { app.newStartTab() })
                 }
                 content
@@ -63,17 +63,6 @@ struct PaneView_iOS: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
-            .overlay(alignment: .topLeading) {
-                // Focus ring only when the window is actually split — a lone
-                // pane never needs the "which pane is active" affordance.
-                if workspace.isSplit {
-                    RoundedRectangle(cornerRadius: Radius.md)
-                        .strokeBorder(
-                            isFocused ? palette.primary.opacity(0.55) : Color.clear,
-                            lineWidth: 2)
-                        .allowsHitTesting(false)
-                }
-            }
             // Transparent drop catcher floated above the content so a hosted
             // WKWebView (which registers its own dragged types) can't swallow a
             // tab drop first. Hit testing is gated on an in-flight drag so

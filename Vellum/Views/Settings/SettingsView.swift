@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import WebKit
+#endif
 
 #if os(iOS)
 let settingsBottomNavigationClearance: CGFloat = 96
@@ -17,21 +20,30 @@ struct SettingsView: View {
     @Environment(WorkspaceStore.self) private var workspace
     #if os(iOS)
     @State private var phoneTab: SettingsPhoneTab = .general
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.dismiss) private var dismiss
     #endif
 
     var body: some View {
         #if os(iOS)
-        phoneSettings
-        .onAppear {
-            phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
-        }
-        .onChange(of: workspace.settingsSection) { _, section in
-            phoneTab = SettingsPhoneTab(section: section)
-        }
-        .onChange(of: phoneTab) { _, tab in
-            if let section = tab.settingsSection {
-                workspace.settingsSection = section
+        Group {
+            if ShellIdiom_iOS.current == .pad {
+                padSettings
+            } else {
+                phoneSettings
+                .onAppear {
+                    phoneTab = SettingsPhoneTab(section: workspace.settingsSection)
+                }
+                .onChange(of: workspace.settingsSection) { _, section in
+                    phoneTab = SettingsPhoneTab(section: section)
+                }
+                .onChange(of: phoneTab) { _, tab in
+                    if let section = tab.settingsSection {
+                        workspace.settingsSection = section
+                    }
+                }
             }
         }
         .accessibilityIdentifier("settings.content")
@@ -69,6 +81,68 @@ struct SettingsView: View {
     }
 
     #if os(iOS)
+    private static let padSections: [WorkspaceStore.SettingsSection] = [
+        .general, .reading, .annotations, .ai, .storage, .integrations
+    ]
+
+    private var padSelection: Binding<WorkspaceStore.SettingsSection?> {
+        Binding(
+            get: { workspace.settingsSection },
+            set: { section in
+                if let section {
+                    workspace.settingsSection = section
+                    preferredCompactColumn = .detail
+                }
+            })
+    }
+
+    private var padSettings: some View {
+        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+            List(selection: padSelection) {
+                ForEach(Self.padSections, id: \.self) { section in
+                    NavigationLink(value: section) {
+                        Label(section.settingsTitle, systemImage: section.settingsSymbol)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("settings.sidebar.\(section.settingsTitle.lowercased())")
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
+            .toolbar {
+                // In a collapsed split view, Done must also be available on
+                // the section list after navigating back from a detail.
+                if horizontalSizeClass == .compact {
+                    SettingsDoneToolbar { dismiss() }
+                }
+            }
+        } detail: {
+            padSectionContent
+                .navigationTitle(workspace.settingsSection.settingsTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { SettingsDoneToolbar { dismiss() } }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: workspace.settingsSection) { _, _ in
+            preferredCompactColumn = .detail
+        }
+    }
+
+    @ViewBuilder
+    private var padSectionContent: some View {
+        switch workspace.settingsSection {
+        case .general: GeneralSettingsTab()
+        case .reading: ReadingSettingsTab()
+        case .annotations: AnnotationsSettingsTab()
+        case .ai: AiSettingsTab()
+        case .storage: StorageSettingsTab()
+        case .integrations: IntegrationsSettingsTab()
+        }
+    }
+
     @ViewBuilder
     private var phoneSettings: some View {
         if dynamicTypeSize.isAccessibilitySize {
@@ -140,6 +214,30 @@ struct SettingsView: View {
 }
 
 #if os(iOS)
+private extension WorkspaceStore.SettingsSection {
+    var settingsTitle: String {
+        switch self {
+        case .general: "General"
+        case .reading: "Reading"
+        case .annotations: "Annotations"
+        case .ai: "AI"
+        case .storage: "Storage"
+        case .integrations: "Integrations"
+        }
+    }
+
+    var settingsSymbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .reading: "text.book.closed"
+        case .annotations: "highlighter"
+        case .ai: "sparkles"
+        case .storage: "internaldrive"
+        case .integrations: "link"
+        }
+    }
+}
+
 enum SettingsPhoneTab: Hashable, CaseIterable {
     case general
     case reading
@@ -193,6 +291,12 @@ enum SettingsPhoneTab: Hashable, CaseIterable {
 
 private struct GeneralSettingsTab: View {
     @Environment(ThemeStore.self) private var themeStore
+    #if os(macOS)
+    @AppStorage(BrowserSearchEngine.defaultsKey, store: AppDefaults.current)
+    private var searchEngine = BrowserSearchEngine.duckDuckGo.rawValue
+    @State private var confirmClearWebsiteData = false
+    @State private var isClearingWebsiteData = false
+    #endif
 
     var body: some View {
         Form {
@@ -210,6 +314,32 @@ private struct GeneralSettingsTab: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            #if os(macOS)
+            Section {
+                Picker("Search engine", selection: $searchEngine) {
+                    ForEach(BrowserSearchEngine.allCases, id: \.rawValue) { engine in
+                        Text(engine.label).tag(engine.rawValue)
+                    }
+                }
+                .accessibilityIdentifier("settings.browser.searchEngine")
+                Button(isClearingWebsiteData ? "Clearing Website Data…" : "Clear Website Data…") {
+                    confirmClearWebsiteData = true
+                }
+                .disabled(isClearingWebsiteData)
+                .accessibilityIdentifier("settings.browser.clearData")
+                .confirmationDialog("Clear browser website data?", isPresented: $confirmClearWebsiteData) {
+                    Button("Clear Website Data", role: .destructive) { clearWebsiteData() }
+                } message: {
+                    Text("This signs you out of websites in Vellum and clears their cookies and stored data. Saved articles and annotations are kept.")
+                }
+            } header: {
+                Text("Browser")
+            } footer: {
+                Text("The sidebar browser keeps cookies and website sign-ins across pages and app launches, until you sign out or the website’s session expires.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
         }
         .formStyle(.grouped)
         #if os(iOS)
@@ -238,6 +368,20 @@ private struct GeneralSettingsTab: View {
             set: { themeStore.setTheme($0) }
         )
     }
+
+    #if os(macOS)
+    private func clearWebsiteData() {
+        isClearingWebsiteData = true
+        BrowserWebsiteData.store.removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast
+        ) {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: BrowserWebsiteData.didClear, object: nil)
+                isClearingWebsiteData = false
+            }
+        }
+    }
+    #endif
 }
 
 // MARK: - Reading
@@ -299,7 +443,7 @@ private struct ReadingSettingsTab: View {
                 } header: {
                     Text("Reader")
                 } footer: {
-                    Text("Keeps the iPhone reader’s top and bottom bars visible while you scroll. Assistive navigation also enables this behavior automatically.")
+                    Text("Keeps the iPhone reader’s top and bottom bars visible while you tap or scroll. Assistive navigation also enables this behavior automatically.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

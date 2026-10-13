@@ -128,6 +128,10 @@ struct AiPanel: View {
                 }
                 .accessibilityIdentifier("aiPanel.settings")
                 .accessibilityAddTraits(settingsOpen ? .isSelected : [])
+                .popover(isPresented: $settingsOpen, arrowEdge: .trailing) {
+                    AiSettingsPanel()
+                        .frame(width: 300)
+                }
                 IconButton(
                     help: "Clear AI conversation",
                     disabled: aiStore.messages.isEmpty || aiStore.isClearingConversation,
@@ -142,10 +146,6 @@ struct AiPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
-        .popover(isPresented: $settingsOpen, arrowEdge: .trailing) {
-            AiSettingsPanel()
-                .frame(width: 300)
-        }
     }
 
     /// Clear first, then register Undo if this context has an undo manager.
@@ -744,25 +744,11 @@ struct AiPanel: View {
             )
             HStack(spacing: 4) {
                 attachMenu
-                Button { settingsOpen.toggle() } label: {
-                    HStack(spacing: 4) {
-                        Text(aiStore.activeModelName)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.mutedForeground)
-                    .padding(.horizontal, 6)
-                    .frame(height: 32)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Choose AI provider and model")
-                .accessibilityLabel("AI model: \(aiStore.activeModelName)")
-                .accessibilityIdentifier("aiPanel.model")
-                .accessibilityAddTraits(settingsOpen ? .isSelected : [])
+                AiModelSelectorField()
+                    .controlSize(.small)
+                    .help("Choose AI model")
+                    .accessibilityLabel("AI model: \(aiStore.activeModelName)")
+                    .accessibilityIdentifier("aiPanel.model")
                 Spacer(minLength: 0)
                 Button(action: submit) {
                     Image(systemName: "arrow.up")

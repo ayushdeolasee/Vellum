@@ -52,6 +52,8 @@ struct ArchiveManifest: Codable, Sendable {
     var url: String
     var canonicalUrl: String
     var title: String?
+    /// Nil identifies older archives whose existing names are preserved conservatively.
+    var titleIsUserDefined: Bool?
     var capturedAt: String
     var generator: String
     /// "live-first" (default) or "snapshot-only".
@@ -68,6 +70,7 @@ struct ArchiveManifest: Codable, Sendable {
         case url
         case canonicalUrl = "canonical_url"
         case title
+        case titleIsUserDefined = "title_is_user_defined"
         case capturedAt = "captured_at"
         case generator
         case loadingPolicy = "loading_policy"
@@ -80,6 +83,7 @@ struct ArchiveManifest: Codable, Sendable {
 
     init(
         format: String, version: Int, url: String, canonicalUrl: String, title: String?,
+        titleIsUserDefined: Bool? = nil,
         capturedAt: String, generator: String, loadingPolicy: String, pageCount: Int?,
         lastPage: Int?, hashes: ManifestHashes, assets: [ManifestAsset], assetsSkipped: Int
     ) {
@@ -88,6 +92,7 @@ struct ArchiveManifest: Codable, Sendable {
         self.url = url
         self.canonicalUrl = canonicalUrl
         self.title = title
+        self.titleIsUserDefined = titleIsUserDefined
         self.capturedAt = capturedAt
         self.generator = generator
         self.loadingPolicy = loadingPolicy
@@ -105,6 +110,7 @@ struct ArchiveManifest: Codable, Sendable {
         url = try container.decode(String.self, forKey: .url)
         canonicalUrl = try container.decode(String.self, forKey: .canonicalUrl)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        titleIsUserDefined = try container.decodeIfPresent(Bool.self, forKey: .titleIsUserDefined)
         capturedAt = try container.decode(String.self, forKey: .capturedAt)
         generator = try container.decode(String.self, forKey: .generator)
         loadingPolicy = try container.decode(String.self, forKey: .loadingPolicy)
@@ -381,6 +387,7 @@ enum WebArchive {
     static func buildManifest(
         url: String,
         title: String?,
+        titleIsUserDefined: Bool? = false,
         pageCount: Int?,
         lastPage: Int?,
         loadingPolicy: String,
@@ -397,6 +404,7 @@ enum WebArchive {
             url: url,
             canonicalUrl: url,
             title: title,
+            titleIsUserDefined: titleIsUserDefined,
             capturedAt: WebLibrary.rfc3339Now(),
             generator: "Vellum \(version)",
             loadingPolicy: loadingPolicy,
@@ -545,6 +553,12 @@ enum WebArchive {
         return try readManifest(from: zip)
     }
 
+    static func readManifest(data: Data) throws -> ArchiveManifest {
+        try readManifest(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
     private static func readManifest(from zip: MiniZip) throws -> ArchiveManifest {
         let manifestBytes = try zip.readCapped("manifest.json", cap: maxManifestBytes)
         let manifest: ArchiveManifest
@@ -566,8 +580,18 @@ enum WebArchive {
     }
 
     static func readArchive(at path: URL) throws -> ImportedArchive {
-        let zip = try openArchive(at: path)
+        try readArchive(from: openArchive(at: path))
+    }
 
+    /// Decode bytes obtained through coordinated storage with the same limits
+    /// and integrity checks as a file import.
+    static func readArchive(data: Data) throws -> ImportedArchive {
+        try readArchive(from: MiniZip(
+            data: data, maxBytes: maxArchiveBytes, maxEntries: maxEntries,
+            maxUncompressedBytes: maxTotalUncompressedBytes))
+    }
+
+    private static func readArchive(from zip: MiniZip) throws -> ImportedArchive {
         let manifest = try readManifest(from: zip)
 
         let snapshotBytes = try zip.readCapped(
@@ -972,6 +996,15 @@ struct MiniZip {
             bytes.append(chunk)
         }
         data = bytes
+        (entries, orderedNames) = try Self.parseCentralDirectory(
+            data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
+    }
+
+    init(data: Data, maxBytes: Int, maxEntries: Int, maxUncompressedBytes: Int) throws {
+        guard data.count <= maxBytes else {
+            throw Self.invalid("archive exceeds its size limit")
+        }
+        self.data = data
         (entries, orderedNames) = try Self.parseCentralDirectory(
             data, maxEntries: maxEntries, maxUncompressedBytes: maxUncompressedBytes)
     }

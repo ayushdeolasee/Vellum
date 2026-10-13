@@ -23,6 +23,9 @@ struct PdfToolbar_iOS: View {
 
     @State private var pageFieldText = ""
     @State private var showPageJump = false
+    @State private var showSettings = false
+    @State private var showHelp = false
+    @State private var walkthroughAfterHelp = false
     @State private var toolbarWidth: CGFloat = 0
 
     /// Web offline-copy state and both export state machines, shared verbatim
@@ -221,6 +224,14 @@ struct PdfToolbar_iOS: View {
         } message: {
             Text(exportActions.exportErrorMessage)
         }
+        .sheet(isPresented: $showSettings) { SettingsSheet_iOS() }
+        .sheet(isPresented: $showHelp, onDismiss: {
+            guard walkthroughAfterHelp else { return }
+            walkthroughAfterHelp = false
+            NotificationCenter.default.post(name: .vellumShowWalkthrough, object: nil)
+        }) {
+            HelpCenterView_iOS(onWalkthrough: { walkthroughAfterHelp = true })
+        }
         .sheet(isPresented: $showExportBundle) {
             ExportBundleSheet_iOS(
                 title: appStore.document?.title,
@@ -280,6 +291,18 @@ struct PdfToolbar_iOS: View {
 
     private var moreMenu: some View {
         Menu {
+            // Keep app-wide destinations first, even when compact panes move
+            // the annotation and zoom controls into this menu.
+            Button {
+                workspace.settingsSection = .general
+                showSettings = true
+            } label: { Label("Settings…", systemImage: "gearshape") }
+            .accessibilityIdentifier("toolbar.settings")
+            Button { showHelp = true } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .accessibilityIdentifier("toolbar.help")
+            Divider()
             // When the pane is too narrow to show the actions pod, its controls
             // live here so Find / Note / Ink / Bookmark stay reachable.
             if !showActionsPod {
@@ -343,6 +366,11 @@ struct PdfToolbar_iOS: View {
                 }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(appStore.document == nil || appStore.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             // Offered for BOTH PDF and web documents. Shorter title than the
             // Mac's "Export Vellum Bundle with Notes…" — it reads better in a
             // compact iPad menu — but the accessibility identifier is identical
@@ -403,6 +431,8 @@ struct PdfToolbar_iOS: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .accessibilityIdentifier("toolbar.more")
+        .accessibilityHint("Settings, Help, and document actions")
         // Toolbar state (offline-copy flag) resets whenever the active tab or
         // its backing document changes.
         .task(id: DocumentKey_iOS(appStore)) {
@@ -619,6 +649,23 @@ struct TabStrip_iOS: View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    if appStore.tabs.isEmpty {
+                        HStack(spacing: 6) {
+                            if workspace.focusedPaneId == paneId {
+                                Circle().fill(palette.primary).frame(width: 6, height: 6)
+                                    .accessibilityHidden(true)
+                            }
+                            Text("Library").font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                        .selectionSurface(
+                            selected: true, accented: workspace.focusedPaneId == paneId,
+                            in: Capsule(), palette: palette)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Library")
+                        .accessibilityValue(workspace.focusedPaneId == paneId ? "Focused pane" : "")
+                    }
                     ForEach(appStore.tabs) { tab in
                         TabChip_iOS(tab: tab, paneId: paneId, isActive: tab.id == appStore.activeTabId)
                     }
@@ -731,14 +778,28 @@ private struct TabChip_iOS: View {
 
     private var isLastTab: Bool { appStore.tabs.last?.id == tab.id }
 
+    private var isPaneFocused: Bool {
+        !workspace.isSplit || workspace.focusedPaneId == paneId
+    }
+
+    private var showsPaneFocus: Bool { workspace.isSplit && isPaneFocused && isActive }
+
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: { appStore.activateTab(tab.id) }) {
+            Button(action: { workspace.activateWorkspaceTab(paneId: paneId, tabId: tab.id) }) {
                 HStack(spacing: 6) {
-                    Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
-                        .font(.system(size: 12))
-                        .foregroundStyle(
-                            isActive ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                    Group {
+                        if showsPaneFocus {
+                            Circle().fill(palette.primary).frame(width: 6, height: 6)
+                        } else {
+                            Image(systemName: tab.document?.kind == .web ? "globe" : "doc.text")
+                                .font(.system(size: 12))
+                                .foregroundStyle(isActive && isPaneFocused
+                                    ? AnyShapeStyle(palette.primary) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .frame(width: 12, height: 12)
+                    .accessibilityHidden(true)
                     Text(title)
                         .font(.system(size: 13, weight: isActive ? .semibold : .regular))
                         .lineLimit(1)
@@ -759,7 +820,8 @@ private struct TabChip_iOS: View {
             // Concatenated, not replaced: the selected state is what VoiceOver
             // uses to tell the current tab from the rest.
             .accessibilityValue(
-                [isActive ? "Selected" : "", hasPendingAction ? "Action pending" : ""]
+                [isActive ? "Selected" : "", showsPaneFocus ? "Focused pane" : "",
+                 hasPendingAction ? "Action pending" : ""]
                     .filter { !$0.isEmpty }
                     .joined(separator: ", "))
 
@@ -779,7 +841,7 @@ private struct TabChip_iOS: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(height: 44)
-        .selectionSurface(selected: isActive, in: Capsule(), palette: palette)
+        .selectionSurface(selected: isActive, accented: isPaneFocused, in: Capsule(), palette: palette)
         // Long-press lifts the chip into a drag; dropping on another pane's
         // strip joins that group, dropping on a pane edge splits it.
         .onDrag {
@@ -1020,10 +1082,15 @@ struct SidebarContent_iOS: View {
             InspectorTabSwitcher(
                 selection: Binding(
                     get: { workspace.sidebarTab },
-                    set: { selectTab($0) }))
+                    set: { selectTab($0) }),
+                usesTextOnlySegments: presentation == .phoneSheet)
             .padding(.horizontal, InspectorLayout.switcherHorizontalPadding)
-            .padding(.vertical, InspectorLayout.switcherVerticalPadding)
-            Divider()
+            // The phone's grabber has its own row above this selector.
+            .padding(.top, presentation == .phoneSheet ? 8 : InspectorLayout.switcherVerticalPadding)
+            .padding(.bottom, presentation == .phoneSheet ? 12 : InspectorLayout.switcherVerticalPadding)
+            if presentation == .column {
+                Divider()
+            }
             // Once revealed, a panel stays mounted; only visibility toggles as
             // the tab changes. Keeping them alive (rather than switching, which
             // destroys the inactive ones) preserves each panel's transient view
@@ -1078,6 +1145,22 @@ struct SidebarContent_iOS: View {
                             hasShownAi = true
                         }
                 }
+                if workspace.companionBrowser.webView != nil {
+                    panel(.browser) {
+                        CompanionBrowserPanel_iOS(
+                            controller: workspace.companionBrowser,
+                            isActive: workspace.inspectorPresented && workspace.sidebarTab == .browser)
+                    }
+                } else if workspace.sidebarTab == .browser {
+                    ProgressView("Preparing Browser…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("sidebar.browser.loading")
+                        .task {
+                            await Task.yield()
+                            guard !Task.isCancelled, workspace.sidebarTab == .browser else { return }
+                            workspace.companionBrowser.prepare()
+                        }
+                }
                 if hasShownScratchpad {
                     panel(.scratchpad) { ScratchpadPanel() }
                 } else if workspace.sidebarTab == .scratchpad {
@@ -1094,6 +1177,7 @@ struct SidebarContent_iOS: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(palette.surface)
+        .background(CompanionInspectorHost_iOS(controller: workspace.companionBrowser))
     }
 
     /// Selects immediately. A first-time AI/Scratchpad destination initially
@@ -1199,7 +1283,7 @@ private struct WebInkPagesSection_iOS: View {
                     .padding(.horizontal, 4)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(jumps) { jump in
+                        ForEach(Array(jumps.enumerated()), id: \.element.id) { index, jump in
                             Button {
                                 ink.scrollTo(jump)
                             } label: {
@@ -1207,7 +1291,7 @@ private struct WebInkPagesSection_iOS: View {
                                     Image(systemName: "pencil.and.scribble")
                                         .font(.system(size: 11))
                                         .foregroundStyle(palette.primary)
-                                    Text("p. \(jump.page)")
+                                    Text(jump.page.map { "p. \($0)" } ?? "Location \(index + 1)")
                                         .font(.system(size: 13, weight: .medium))
                                         .monospacedDigit()
                                         .foregroundStyle(palette.foreground)
@@ -1219,7 +1303,9 @@ private struct WebInkPagesSection_iOS: View {
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Handwriting on page \(jump.page). Tap to jump.")
+                            .accessibilityLabel(jump.page.map {
+                                "Handwriting on page \($0). Tap to jump."
+                            } ?? "Handwriting location \(index + 1). Tap to jump.")
                         }
                     }
                     .padding(.horizontal, 4)

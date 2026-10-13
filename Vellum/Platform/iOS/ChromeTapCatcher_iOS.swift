@@ -4,6 +4,7 @@ import UIKit
 
 /// Direct finger travel from PDFKit/WebKit, positive toward later content.
 enum ReaderChromeScrollEvent {
+    case tapped(sourceInteractionBlocked: Bool)
     case began(sourceInteractionBlocked: Bool)
     case changed(deltaY: CGFloat, sourceInteractionBlocked: Bool)
     /// A finger lift clears partial travel; each swipe must be deliberate.
@@ -40,12 +41,13 @@ enum ReaderControlPreferences {
     static let alwaysShowReaderControlsKey = "alwaysShowReaderControls"
 }
 
-/// Observes finger travel alongside the native pan without consuming document gestures.
+/// Observes taps and finger travel without consuming native document gestures.
 /// Translation works at document edges and on short pages, and excludes inertia
 /// and programmatic scrolling. The iPad installs no observer.
 @MainActor
 final class ReaderChromeNativeScrollObserver: NSObject, UIGestureRecognizerDelegate {
     private var travelRecognizer: UIPanGestureRecognizer?
+    private var tapRecognizer: UITapGestureRecognizer?
     private weak var scrollView: UIScrollView?
     private var action = ReaderChromeScrollAction()
     private var sourceInteractionBlocked: @MainActor () -> Bool = { false }
@@ -72,6 +74,14 @@ final class ReaderChromeNativeScrollObserver: NSObject, UIGestureRecognizerDeleg
         pan.delegate = self
         scrollView.addGestureRecognizer(pan)
         travelRecognizer = pan
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        tap.delegate = self
+        scrollView.addGestureRecognizer(tap)
+        tapRecognizer = tap
         scrollView.pinchGestureRecognizer?.addTarget(self, action: #selector(pinchChanged(_:)))
     }
 
@@ -80,6 +90,10 @@ final class ReaderChromeNativeScrollObserver: NSObject, UIGestureRecognizerDeleg
             travelRecognizer.view?.removeGestureRecognizer(travelRecognizer)
         }
         travelRecognizer = nil
+        if let tapRecognizer {
+            tapRecognizer.view?.removeGestureRecognizer(tapRecognizer)
+        }
+        tapRecognizer = nil
         scrollView?.pinchGestureRecognizer?.removeTarget(self, action: #selector(pinchChanged(_:)))
         scrollView = nil
     }
@@ -89,6 +103,33 @@ final class ReaderChromeNativeScrollObserver: NSObject, UIGestureRecognizerDeleg
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
         true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        guard gestureRecognizer === tapRecognizer else { return true }
+        guard !sourceInteractionBlocked() else { return false }
+        var view = touch.view
+        while let current = view {
+            if current is UIControl { return false }
+            view = current.superview
+        }
+        return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === tapRecognizer
+            && ((otherGestureRecognizer as? UITapGestureRecognizer)?.numberOfTapsRequired ?? 0) > 1
+    }
+
+    @objc private func tapped(_ tap: UITapGestureRecognizer) {
+        guard tap.state == .ended else { return }
+        action(.tapped(sourceInteractionBlocked: sourceInteractionBlocked()))
     }
 
     @objc private func pinchChanged(_ pinch: UIPinchGestureRecognizer) {

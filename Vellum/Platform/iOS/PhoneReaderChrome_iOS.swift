@@ -284,6 +284,7 @@ struct PhoneReaderBottomBar: View {
     @Environment(AnnotationStore.self) private var annotations
     @Environment(AiStore.self) private var ai
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(IntegrationsStore.self) private var integrations
     @Environment(\.palette) private var palette
 
     @State private var pageFieldText = ""
@@ -483,6 +484,11 @@ struct PhoneReaderBottomBar: View {
                 } label: { Label("Export a Copy…", systemImage: "square.and.arrow.up") }
                 .disabled(exportActions.exporting)
             }
+            Button {
+                VellumShortcutRouter.perform(.printDocument, workspace: workspace)
+            } label: { Label("Print…", systemImage: "printer") }
+            .disabled(app.document == nil || app.printHandler == nil)
+            .accessibilityIdentifier("toolbar.print")
             if app.document != nil {
                 Button { showExportBundle = true } label: {
                     Label("Export with Notes…", systemImage: "arrow.up.doc")
@@ -491,6 +497,13 @@ struct PhoneReaderBottomBar: View {
                 // Identical identifier to the iPad's, so shared automation
                 // matches on both shells.
                 .accessibilityIdentifier("toolbar.exportWithNotes")
+            }
+
+            // Match the iPad reader's provider action for the active article
+            // or downloaded PDF; the shared menu owns destination eligibility.
+            if let path = app.document?.pdfPath,
+               let item = integrations.readLaterItem(forOpenDocumentPath: path) {
+                MoveToCollectionMenu(item: item, integrations: integrations)
             }
 
             Divider()

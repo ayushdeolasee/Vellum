@@ -305,6 +305,11 @@ private struct PhoneShellRoot_iOS: View {
                     onAddWebpage: { addWebpagePresented = true })
             }
         }
+        .overlay(alignment: .bottom) {
+            if pane.app.mode != .snapshotRegion {
+                readLaterNotice
+            }
+        }
         // The route's own handle, so a UI test can assert "the reader is on
         // screen" without depending on which chrome happens to be visible —
         // `phone.reader.title` and friends are absent in immersive mode, which
@@ -315,40 +320,46 @@ private struct PhoneShellRoot_iOS: View {
         // remaining pieces of furniture over a full-bleed page.
         .statusBarHidden(!shell.readerChromePresented)
         .persistentSystemOverlays(shell.readerChromePresented ? .automatic : .hidden)
-        // The inspector (P6). Presented from the READER, not from the shell
-        // root, for two reasons. It scopes the presentation to the route that
-        // owns it, so a trip to Home takes the sheet down with the screen it
-        // belongs to rather than leaving UIKit to dismiss a sheet whose
-        // presenter is still on screen. And it keeps this `.sheet` on a
-        // different view from the shell's `AddWebpageSheet_iOS` — two
-        // `.sheet(isPresented:)` modifiers on one view is the SwiftUI
-        // arrangement where the second one silently fails to present.
-        //
-        // Nothing is read from the environment inside the closure: the sheet
-        // takes its stores as parameters and re-injects them itself (see
-        // `PhoneInspectorSheet_iOS`), which is the same discipline the
-        // `ContentView_iOS:57-63` comment imposes on the webpage sheet.
-        .sheet(isPresented: inspectorPresented) {
-            PhoneInspectorSheet_iOS(
-                shell: shell, workspace: workspace, pane: pane, themeStore: themeStore)
+        // Keep the docked inspector scoped to the reader route. The overlay
+        // leaves the reader's geometry unchanged and the page above it live.
+        .overlay(alignment: .bottom) {
+            if shell.inspectorPresented {
+                PhoneInspectorSheet_iOS(
+                    shell: shell, workspace: workspace, pane: pane, themeStore: themeStore)
+                    .transition(.move(edge: .bottom))
+            }
         }
+        .animation(.snappy, value: shell.inspectorPresented)
     }
 
-    /// The sheet's presentation, per D2.
-    ///
-    /// Both halves go through `PhoneShellStore` rather than through
-    /// `WorkspaceStore` directly. The getter adds the phone's own term (the
-    /// sheet belongs over the document, so `route == .reader`), and the setter
-    /// is the guard that makes state preservation work: when the route flips to
-    /// Home, SwiftUI dismisses this sheet and writes `false` back through the
-    /// binding, and that write must not be mistaken for the user closing the
-    /// panel. `WorkspaceStore.setInspectorPresented`'s own guard does not cover
-    /// it — on Home the document is still open (D1).
-    private var inspectorPresented: Binding<Bool> {
-        Binding(
-            get: { shell.inspectorPresented },
-            set: { shell.setInspectorPresented($0) }
-        )
+    /// Provider moves can fail while the reader stays open. Keep their result
+    /// above the bottom controls, including when the reader chrome is hidden.
+    @ViewBuilder
+    private var readLaterNotice: some View {
+        let app = pane.app
+        let integrations = workspace.integrations
+        if let path = app.document?.pdfPath,
+           let item = integrations.readLaterItem(forOpenDocumentPath: path),
+           let notice = integrations.notice(forItem: item.id) {
+            FloatingNotice(
+                message: notice.state.message, progress: notice.state.progress,
+                isActive: notice.state.isActive, isSuccess: notice.state.isSuccess,
+                accessibilityID: notice.isMove ? "integrations.notice" : "integrations.downloadNotice",
+                actionTitle: integrations.previousRevisionURL(for: item.id) == nil ? nil : "Open Previous",
+                action: {
+                    guard let url = integrations.takePreviousRevision(for: item.id) else { return }
+                    Task { await app.openFile(path: url.path) }
+                }
+            ) {
+                if notice.isMove {
+                    integrations.dismissMoveNotice(item.id)
+                } else {
+                    integrations.dismissDownloadNotice(item.id)
+                }
+            }
+            .padding(.horizontal, PhoneChromeLayout.edgeInset)
+            .padding(.bottom, PhoneChromeLayout.barHeight + PhoneChromeLayout.edgeInset)
+        }
     }
 
     /// The switcher's presentation. Written by hand rather than with

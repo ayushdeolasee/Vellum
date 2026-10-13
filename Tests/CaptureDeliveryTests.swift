@@ -135,6 +135,52 @@ struct CaptureDeliveryTests {
         #expect(await ingestion.drain() == CaptureDrainReport())
         #expect(await ledger.isUnread(forKey: key) == false)
     }
+    @Test("Share capture preserves an unsaved custom webpage title and its archive ownership")
+    @MainActor
+    func capturePreservesManualTitle() async throws {
+        let layout = CaptureFixtures.scratchLayout("capture-manual-title")
+        let previousWebRoot = WebLibrary.storeDirOverride
+        let suite = "vellum-capture-title-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer {
+            WebLibrary.storeDirOverride = previousWebRoot
+            defaults.removePersistentDomain(forName: suite)
+            CaptureFixtures.remove(layout)
+        }
+        WebLibrary.storeDirOverride = layout.container.appendingPathComponent("web")
+        let record = CaptureFixtures.record(title: "Safari DOM title")
+        let url = try WebUrl.normalize(record.sourceURL)
+        let key = WebLibrary.pageKey(url)
+        let storage = WebLibraryStorage()
+        try await storage.setTitle(rawUrl: url, title: "My page name")
+        try CaptureInboxWriter(layout: layout).write(record)
+        let ingestion = CaptureIngestion(
+            layout: layout, storage: storage, clock: CaptureFixtures.clock,
+            unreadLedger: CapturedUnreadLedger(suiteName: suite), syncEnabled: true,
+            snapshot: { _, html in CapturedSnapshot(html: html, assets: [], skipped: 0) },
+            libraryDidChange: {})
+        #expect(await ingestion.drain() == CaptureDrainReport(ingested: 1))
+        await ingestion.awaitPendingOperations()
+        let saved = try #require(await storage.loadRecord(forKey: key))
+        #expect(saved.title == "My page name")
+        #expect(saved.titleIsUserDefined)
+        #expect(saved.saved)
+
+        let archive = WebLibrary.managedArchivePath(forKey: key)
+        let manifest = try WebArchive.readManifest(at: archive)
+        #expect(manifest.title == "My page name")
+        #expect(manifest.titleIsUserDefined == true)
+        // The captured archive must retain the same name on another installation.
+        WebLibrary.storeDirOverride = layout.container.appendingPathComponent("imported-web")
+        let importedStorage = WebLibraryStorage()
+        let imported = try await WebSessionBackend(storage: importedStorage)
+            .openVellumwebFile(path: archive.path, sessionId: "imported")
+        #expect(imported.info.title == "My page name")
+        #expect(imported.info.titleIsUserDefined == true)
+        try await imported.setMetadata(key: "title", value: "Later DOM title")
+        #expect(await importedStorage.loadRecord(forKey: key)?.title == "My page name")
+    }
+
     @Test("Background cancellation retains intent and foreground retry commits once")
     func backgroundDrainKeepsPendingUntilForegroundRetry() async throws {
         let layout = CaptureFixtures.scratchLayout("capture-background-recovery")

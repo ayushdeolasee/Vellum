@@ -4,6 +4,7 @@ struct AiPromptParameters {
     var conversation: String
     var context: String
     var latestUserRequest: String
+    var references: [AiReference] = []
 }
 
 enum AiQuizScope {
@@ -24,13 +25,8 @@ struct AiUserPrompt {
     /// request — the part that changes every message.
     var volatile: String
 
-    /// The commit-1 fused prompt joins these eight elements with "\n":
-    ///   ["### Document Context", context, "", "### Recent Conversation",
-    ///    conversation, "", "### Latest User Request", request]
-    /// Splitting after the stable half leaves a blank-line "" element between
-    /// the two halves, contributing "\n" + "" + "\n" == "\n\n". `stable` ends
-    /// at `context` and `volatile` starts at "### Recent Conversation", so
-    /// joining with "\n\n" reproduces the fused string byte-for-byte.
+    /// Keep document background cacheable; questions and their attachments
+    /// belong together in the per-message tail.
     var joined: String { stable + "\n\n" + volatile }
 }
 
@@ -40,6 +36,7 @@ enum AiPrompts {
     /// the prompt, plus an overall cap on the joined referenced block.
     static let maxReferenceCharacters = 8_000
     static let maxReferencedBlockCharacters = 32_000
+    static let maxHistoryReferenceCharacters = 2_000
 
     static func nativeSystemPrompt() throws -> String {
         try loadTemplate(named: "tool-mode-native")
@@ -62,31 +59,42 @@ enum AiPrompts {
     /// Stable-first ordering (Document Context → Recent Conversation → Latest
     /// User Request) so the cacheable prefix — document context — leads and the
     /// per-message volatile tail (conversation + request) trails. See PR A.5.
-    /// Returns the two halves split on the section boundary; `AiUserPrompt.joined`
-    /// reproduces the fused single-string prompt byte-for-byte.
+    /// Attachments sit beside the latest request rather than in page background.
     static func buildNativeToolUserPrompt(_ parameters: AiPromptParameters) -> AiUserPrompt {
         let stable = [
             "### Document Context",
             parameters.context,
         ].joined(separator: "\n")
+        var request = parameters.latestUserRequest
+        if !parameters.references.isEmpty {
+            request += "\n\nAttached material for this request (default subject unless the user explicitly names another scope):\n"
+                + referenceBlock(parameters.references)
+        }
         let volatile = [
             "### Recent Conversation",
             parameters.conversation,
             "",
             "### Latest User Request",
-            parameters.latestUserRequest,
+            request,
         ].joined(separator: "\n")
         return AiUserPrompt(stable: stable, volatile: volatile)
     }
 
     static func buildConversationBlock(_ messages: [AiMessage]) -> String {
-        messages.suffix(10).map { "\($0.role.rawValue.uppercased()): \($0.promptContent)" }
-            .joined(separator: "\n")
+        messages.suffix(10).map { message in
+            var turn = "\(message.role.rawValue.uppercased()): \(message.promptContent)"
+            if message.role == .user, !message.references.isEmpty {
+                turn += "\nMaterial attached to that user message:\n"
+                    + referenceBlock(message.references, maximum: maxHistoryReferenceCharacters, imagesAttached: false)
+            }
+            return turn
+        }.joined(separator: "\n")
     }
 
     /// The default per-message context slice (pull model): only the current
     /// page's text + annotations, document metadata, the optional current-page
-    /// image, and user-attached references. The model reaches anything else via
+    /// image. User attachments are sent beside the latest request instead.
+    /// The model reaches anything else via
     /// the `searchDocument` / `getPageText` tools rather than a full-text dump.
     static func buildContextBlock(pageTexts: [Int: String], context: AiContextSnapshot) -> String {
         let rawCurrent = pageTexts[context.currentPage] ?? ""
@@ -109,13 +117,11 @@ enum AiPrompts {
             "attached (\($0.width)x\($0.height), \($0.mediaType))"
         } ?? "none"
 
-        let referenced = boundedReferencedBlock(context.references.map(referenceLine).joined(separator: "\n"))
-
         // Ordered most-stable-first so the leading bytes stay identical across a
         // session and stay cacheable (PR A.5). Session-invariant document
         // metadata and current-page content lead; the volatile tail (visible
         // pages, which shift on scroll, and the per-render image dimensions)
-        // follows; the per-message user-referenced block trails last.
+        // follows. User attachments stay outside this cacheable background.
         return [
             "Document title: \(context.title ?? "Untitled")",
             "Total pages: \(context.numPages)",
@@ -131,27 +137,34 @@ enum AiPrompts {
             "",
             "Visible pages: \(context.visiblePages.isEmpty ? "none" : context.visiblePages.map(String.init).joined(separator: ", "))",
             "Current page image: \(image)",
-            "",
-            "User-referenced context (the user explicitly attached these to this message — prioritize them):",
-            referenced.isEmpty ? "(none)" : referenced,
         ].joined(separator: "\n")
     }
 
-    private static func referenceLine(_ reference: AiReference) -> String {
+    private static func referenceBlock(
+        _ references: [AiReference], maximum: Int = maxReferencedBlockCharacters,
+        imagesAttached: Bool = true
+    ) -> String {
+        boundedReferencedBlock(
+            references.map { referenceLine($0, imagesAttached: imagesAttached) }.joined(separator: "\n"),
+            maximum: maximum)
+    }
+
+    private static func referenceLine(_ reference: AiReference, imagesAttached: Bool) -> String {
+        let imageStatus = imagesAttached ? "image attached" : "image not included in this request"
         switch reference.kind {
         case let .selection(text, page):
             return "- [selected text, p.\(page)] \(quoted(bounded(text)))"
         case let .highlight(text, page):
             return "- [existing highlight, p.\(page)] \(quoted(bounded(text)))"
         case let .region(image, page):
-            return "- [region snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
+            return "- [region snapshot, p.\(page)] \(imageStatus) (\(image.width)x\(image.height))"
         case let .pageSnapshot(image, page):
-            return "- [page snapshot, p.\(page)] image attached (\(image.width)x\(image.height))"
+            return "- [page snapshot, p.\(page)] \(imageStatus) (\(image.width)x\(image.height))"
         case let .quote(text, _):
             return "- [quoted from an earlier assistant reply] \(quoted(bounded(text)))"
         case let .image(image, name):
             // No page: an attached image comes from outside the document.
-            return "- [attached image: \(name)] image attached (\(image.width)x\(image.height))"
+            return "- [attached image: \(name)] \(imageStatus) (\(image.width)x\(image.height))"
         }
     }
 
@@ -165,9 +178,9 @@ enum AiPrompts {
 
     /// Cap the whole referenced block after joining, in case many references add
     /// up past the limit even when each fits under the per-item cap.
-    private static func boundedReferencedBlock(_ block: String) -> String {
-        guard block.count > maxReferencedBlockCharacters else { return block }
-        let end = block.index(block.startIndex, offsetBy: maxReferencedBlockCharacters)
+    private static func boundedReferencedBlock(_ block: String, maximum: Int) -> String {
+        guard block.count > maximum else { return block }
+        let end = block.index(block.startIndex, offsetBy: maximum)
         return String(block[..<end]) + "\n[referenced context truncated]"
     }
 

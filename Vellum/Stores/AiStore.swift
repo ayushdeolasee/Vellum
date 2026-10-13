@@ -62,8 +62,8 @@ struct AiMessage: Codable, Equatable, Identifiable, Sendable {
     /// (selection, highlight, snapshot, quote, image). Persisted so the
     /// transcript can keep showing *what* a past prompt referenced after the
     /// composer chips are cleared — the reference text is deliberately NOT part
-    /// of `content`; it only ever reaches the model through the prompt's
-    /// "User-referenced context" block (`AiPrompts.buildContextBlock`). Empty on
+    /// of `content`; the prompt pairs it with the latest request and keeps
+    /// bounded excerpts beside historical user messages. Empty on
     /// assistant messages and on every conversation written before this field
     /// existed.
     ///
@@ -1425,7 +1425,8 @@ final class AiStore {
             let conversation = AiPrompts.buildConversationBlock(Self.promptHistory(from: messagesWithUser))
             let prompt = AiPrompts.buildNativeToolUserPrompt(AiPromptParameters(
                 conversation: conversation.isEmpty ? "(start of conversation)" : conversation,
-                context: AiPrompts.buildContextBlock(pageTexts: texts, context: context), latestUserRequest: trimmed))
+                context: AiPrompts.buildContextBlock(pageTexts: texts, context: context),
+                latestUserRequest: trimmed, references: context.references))
             var images = context.currentPageImage.map { [$0] } ?? []
             images.append(contentsOf: context.references.compactMap(\.image))
             let provider = generate

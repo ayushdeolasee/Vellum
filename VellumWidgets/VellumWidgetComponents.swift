@@ -9,14 +9,33 @@ struct VellumWidgetShelfView: View {
 
     @Environment(\.widgetFamily) private var family
 
+    static var supportedFamilies: [WidgetFamily] {
+        #if os(macOS)
+        [.systemSmall, .systemMedium, .systemLarge]
+        #else
+        [.systemSmall, .systemMedium, .systemLarge,
+         .accessoryInline, .accessoryCircular, .accessoryRectangular]
+        #endif
+    }
+
+    static var backgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .windowBackgroundColor)
+        #else
+        Color(.systemBackground)
+        #endif
+    }
+
     var body: some View {
         switch family {
+        #if os(iOS)
         case .accessoryInline:
             accessoryInline
         case .accessoryCircular:
             accessoryCircular
         case .accessoryRectangular:
             accessoryRectangular
+        #endif
         case .systemSmall:
             compactHome
         default:
@@ -26,6 +45,7 @@ struct VellumWidgetShelfView: View {
 
     private var first: VellumWidgetItem? { items.first }
 
+    #if os(iOS)
     private var accessoryInline: some View {
         Label(first?.title ?? emptyMessage, systemImage: systemImage)
             .widgetURL(first?.deepLink)
@@ -61,6 +81,8 @@ struct VellumWidgetShelfView: View {
         .widgetURL(first?.deepLink)
         .accessibilityElement(children: .combine)
     }
+
+    #endif
 
     private var compactHome: some View {
         VStack(alignment: .leading, spacing: 8) {

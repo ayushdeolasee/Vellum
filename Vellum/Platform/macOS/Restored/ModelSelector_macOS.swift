@@ -60,6 +60,7 @@ struct ModelSelector: View {
     var onOpen: (() -> Void)?
 
     @Environment(\.palette) private var palette
+    @Environment(\.controlSize) private var controlSize
     @State private var isPresented = false
     @State private var query = ""
     // Persisted so the picker reopens to the last-used sort tab + direction.
@@ -107,7 +108,27 @@ struct ModelSelector: View {
         options.first { $0.id == selection }
     }
 
+    @ViewBuilder
     private var triggerLabel: some View {
+        if controlSize == .small {
+            HStack(spacing: 4) {
+                Text(selection)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(palette.mutedForeground)
+            .padding(.horizontal, 6)
+            .frame(height: 32)
+            .contentShape(Rectangle())
+        } else {
+            settingsTriggerLabel
+        }
+    }
+
+    private var settingsTriggerLabel: some View {
         HStack(spacing: 6) {
             Text(selectedOption?.name ?? (selection.isEmpty ? "Select a model" : selection))
                 .lineLimit(1)
