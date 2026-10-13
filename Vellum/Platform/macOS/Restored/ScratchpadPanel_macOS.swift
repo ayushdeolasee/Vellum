@@ -475,27 +475,32 @@ func scratchpadCapture(from data: Data) -> ScratchpadImageCapture? {
         width: tw, height: th, pageNumber: nil)
 }
 
-/// Resolves `vellum-scratchpad://<id>` image requests from the editor WebView
-/// by streaming the attachment file's bytes back. Stateless — the id maps to a
-/// flat file in `ScratchpadAttachmentStore`, so it needs no document context.
+/// Resolves `vellum-scratchpad://<id>` from this pane's staged byte resolver.
+/// It never reads an iCloud documents-root URL directly.
 final class ScratchpadAttachmentSchemeHandler: NSObject, WKURLSchemeHandler {
+    var resolver: ScratchpadAttachmentResolver
+
+    init(resolver: ScratchpadAttachmentResolver) {
+        self.resolver = resolver
+    }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else {
             task.didFailWithError(URLError(.badURL))
             return
         }
         let id = url.host ?? url.lastPathComponent
-        guard let fileURL = ScratchpadAttachmentStore.fileURL(for: id),
-              let data = try? Data(contentsOf: fileURL) else {
+        guard let attachment = resolver.attachment(for: id) else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
-        let mime = ScratchpadAttachmentStore.mediaType(forExtension: fileURL.pathExtension)
+        let ext = (attachment.name as NSString).pathExtension
+        let mime = ScratchpadAttachmentStore.mediaType(forExtension: ext)
         let response = URLResponse(
             url: url, mimeType: mime,
-            expectedContentLength: data.count, textEncodingName: nil)
+            expectedContentLength: attachment.data.count, textEncodingName: nil)
         task.didReceive(response)
-        task.didReceive(data)
+        task.didReceive(attachment.data)
         task.didFinish()
     }
 
@@ -666,11 +671,9 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
         let controller = WKUserContentController()
         controller.add(context.coordinator, name: "scratchpad")
         config.userContentController = controller
-        // Serve `vellum-scratchpad://<id>` image references from disk. The
-        // configuration retains the handler, so a fresh instance is fine.
-        config.setURLSchemeHandler(
-            ScratchpadAttachmentSchemeHandler(),
-            forURLScheme: ScratchpadAttachmentStore.scheme)
+        let attachmentHandler = ScratchpadAttachmentSchemeHandler(resolver: store.attachmentResolver)
+        context.coordinator.attachmentHandler = attachmentHandler
+        config.setURLSchemeHandler(attachmentHandler, forURLScheme: ScratchpadAttachmentStore.scheme)
 
         let webView = ScratchpadWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -701,6 +704,7 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.attachmentHandler?.resolver = store.attachmentResolver
         // Re-assert this coordinator as the store's insert owner. Covers two
         // cases: (1) the focused-pane store swaps underneath a stable editor
         // (split-screen focus change is an update, not a remake, so makeNSView
@@ -748,6 +752,7 @@ private struct ScratchpadLiveEditor: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: ScratchpadLiveEditor
         weak var webView: WKWebView?
+        var attachmentHandler: ScratchpadAttachmentSchemeHandler?
 
         private var isReady = false
         /// The text the editor currently holds (last pushed or last reported).
