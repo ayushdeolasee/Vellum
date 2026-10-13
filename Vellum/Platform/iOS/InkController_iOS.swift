@@ -44,10 +44,10 @@ final class InkController_iOS: InkPaletteHost {
 
     /// User preference: whether entering Pencil ink mode auto-collapses the
     /// inspector sidebar to give the tool palette the full document width.
-    /// Defaults to on. Persisted under `autoHideSidebarKey`.
+    /// Defaults to off. Persisted under `autoHideSidebarKey`.
     static let autoHideSidebarKey = "autoHideSidebarWhileInking"
     static var autoHideSidebarWhileInking: Bool {
-        AppDefaults.current.object(forKey: autoHideSidebarKey) as? Bool ?? true
+        AppDefaults.current.object(forKey: autoHideSidebarKey) as? Bool ?? false
     }
 
     /// User preference: whether scribbling over existing ink with the pen erases

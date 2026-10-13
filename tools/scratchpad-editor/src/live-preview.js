@@ -176,6 +176,15 @@ function buildDecorations(state) {
         const { name, from, to } = node;
         const active = isActive(from, to);
         switch (name) {
+          case "CommentBlock": {
+            // Editable PencilKit strokes accompany a normal image preview.
+            // Keep their hidden storage reference out of the rendered note.
+            if (!active && /^<!-- vellum-drawing: vellum-scratchpad:\/\/[0-9a-fA-F-]+ -->$/.test(doc.sliceString(from, to).trim())) {
+              const r = blockRange(from, to);
+              decos.push(Decoration.replace({ block: true }).range(r.from, r.to));
+            }
+            return false;
+          }
           case "InlineMath": {
             if (!active) {
               const tex = doc.sliceString(from + 1, to - 1);
