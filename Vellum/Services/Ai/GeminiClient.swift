@@ -22,6 +22,9 @@ final class GeminiClient {
         toolEngine: AiToolEngine,
         onEvent: @escaping @MainActor (AiStreamEvent) -> Void
     ) async throws -> AiProviderResult {
+        guard AiProvider.gemini.isAvailableOnCurrentPlatform else {
+            throw AiClientError.message("Gemini is unavailable on iPhone and iPad.")
+        }
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):streamGenerateContent?alt=sse") else {
             throw AiClientError.message("Invalid Gemini model name.")

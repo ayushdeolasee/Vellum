@@ -725,6 +725,7 @@ enum AiConnectionValidationState: Equatable {
 
 enum AiConnectionValidator {
     static func request(settings: AiSettings) -> URLRequest? {
+        guard settings.provider.isAvailableOnCurrentPlatform else { return nil }
         let key: String
         let urlString: String
         switch settings.provider {
@@ -759,6 +760,9 @@ enum AiConnectionValidator {
         settings: AiSettings,
         session: URLSession = .shared
     ) async -> AiConnectionValidationState {
+        guard settings.provider.isAvailableOnCurrentPlatform else {
+            return .invalid("This provider is unavailable on iPhone and iPad.")
+        }
         guard let request = request(settings: settings) else {
             return .invalid("Credential is missing")
         }

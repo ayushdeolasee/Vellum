@@ -1066,12 +1066,12 @@ final class DocumentActionsTests: XCTestCase {
                 event(.textDelta("late cleared text"))
                 return AiProviderResult(reply: "late cleared answer", actionResults: [])
             }
-            AiSharingConsent.revoke(for: .gemini)
+            AiSharingConsent.revoke(for: .openai)
             await fixture.ai.sendMessage("blocked", context: fixture.context)
             XCTAssertEqual(state.calls, 0)
             XCTAssertTrue(fixture.ai.messages.isEmpty)
             XCTAssertFalse(fixture.ai.isThinking)
-            AiSharingConsent.grant(for: .gemini)
+            AiSharingConsent.grant(for: .openai)
             await fixture.ai.sendMessage("invalid key", context: fixture.context)
             XCTAssertEqual(fixture.ai.messages.map(\.role), [.user])
             XCTAssertEqual(fixture.ai.error, "Incorrect API key provided: fixture-key")
@@ -1463,7 +1463,7 @@ final class DocumentActionsTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         try await AppDefaults.withDefaults(defaults) {
-            AiSharingConsent.grant(for: .gemini)
+            AiSharingConsent.grant(for: .openai)
             do { try await operation() }
             catch {
                 await drainAITestWork()
@@ -1494,8 +1494,8 @@ final class DocumentActionsTests: XCTestCase {
         app.attachTab(testTab(a.info, id: "ai"))
         let annotations = AnnotationStore(app: app)
         var settings = AiSettings()
-        settings.provider = .gemini
-        settings.apiKey = "isolated-unused-fixture-key"
+        settings.provider = .openai
+        settings.openaiApiKey = "isolated-unused-fixture-key"
         let ai = AiStore(settings: settings, generate: generate)
         ai.app = app
         ai.annotationStore = annotations
