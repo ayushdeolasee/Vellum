@@ -292,9 +292,14 @@ def archive(args):
     if args.platform == "macos":
         require(args.signing_identity and args.signing_identity.startswith("Developer ID Application:"),
                 "Supply --signing-identity with the exact Developer ID Application certificate name")
+        require(args.app_profile and args.widget_profile,
+                "Supply --app-profile and --widget-profile with installed Developer ID profile UUIDs")
         command += ["ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO",
                     f"CODE_SIGN_IDENTITY={args.signing_identity}", f"DEVELOPMENT_TEAM={TEAM}",
-                    "ENABLE_HARDENED_RUNTIME=YES"]
+                    "ENABLE_HARDENED_RUNTIME=YES", "CODE_SIGN_STYLE=Manual",
+                    "PROVISIONING_PROFILE_SPECIFIER=$(VELLUM_PROFILE_$(TARGET_NAME))",
+                    f"VELLUM_PROFILE_VellumMac={args.app_profile}",
+                    f"VELLUM_PROFILE_VellumMacWidgets={args.widget_profile}"]
     run(*command, log=output / "archive.log")
     archive_records = inspect_apps(archive_path / "Products", args.platform, args.version, args.build, False)
     symbols = list((archive_path / "dSYMs").glob("*.dSYM/Contents/Resources/DWARF/*"))
@@ -649,6 +654,8 @@ def main():
     prepare.add_argument("--version", required=True)
     prepare.add_argument("--build", required=True)
     prepare.add_argument("--signing-identity", help="Required for Mac: exact Developer ID Application certificate name")
+    prepare.add_argument("--app-profile", type=uuid.UUID, help="Required for Mac: installed app Developer ID profile UUID")
+    prepare.add_argument("--widget-profile", type=uuid.UUID, help="Required for Mac: installed widget Developer ID profile UUID")
     prepare.add_argument("directory", type=Path)
     check = commands.add_parser("verify", help="Recheck recorded archive, symbols and package digests")
     check.add_argument("directory", type=Path)

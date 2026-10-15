@@ -257,7 +257,8 @@ class DirectReleaseTests(unittest.TestCase):
     def test_archive_uses_direct_scheme_and_explicit_manual_developer_id_export(self):
         directory = self.directory / "new-candidate"
         args = argparse.Namespace(directory=directory, platform="macos", version="0.1.2", build="5",
-                                  signing_identity="Developer ID Application: Fixture")
+                                  signing_identity="Developer ID Application: Fixture",
+                                  app_profile=self.submission_id, widget_profile="WIDGET-PROFILE")
         uuids = [("FIXTURE", "arm64"), ("OTHER-FIXTURE", "x86_64")]
         records = [{"bundle": release.BUNDLE, "executable_uuids": uuids, "profile_uuid": self.submission_id},
                    {"bundle": release.BUNDLE + ".widgets", "executable_uuids": uuids, "profile_uuid": "WIDGET-PROFILE"},
@@ -295,6 +296,10 @@ class DirectReleaseTests(unittest.TestCase):
         archive_command = next(c for c in commands if c[:2] == ("xcodebuild", "archive"))
         self.assertIn("Vellum Mac", archive_command)
         self.assertIn("ARCHS=arm64 x86_64", archive_command)
+        self.assertIn("CODE_SIGN_STYLE=Manual", archive_command)
+        self.assertIn("PROVISIONING_PROFILE_SPECIFIER=$(VELLUM_PROFILE_$(TARGET_NAME))", archive_command)
+        self.assertIn(f"VELLUM_PROFILE_VellumMac={args.app_profile}", archive_command)
+        self.assertIn(f"VELLUM_PROFILE_VellumMacWidgets={args.widget_profile}", archive_command)
         self.assertFalse(any("-allowProvisioningUpdates" in c or "notarytool" in c or "altool" in c for c in commands))
         release.verify(directory)
 
