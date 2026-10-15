@@ -246,6 +246,7 @@ class DirectReleaseTests(unittest.TestCase):
         valid = (f"TeamIdentifier={release.TEAM}\nAuthority=Developer ID Application: Fixture\n"
                  "Timestamp=synthetic\nCodeDirectory v=20500 flags=0x10000(runtime)\n")
         for signature in (valid.replace("Developer ID Application", "Apple Distribution"),
+                          valid.replace("Developer ID Application", "Apple Development"),
                           valid.replace("Timestamp=synthetic\n", ""),
                           valid.replace("(runtime)", ""), valid.replace(release.TEAM, "OTHERTEAM")):
             with self.subTest(signature=signature), patch.object(release, "run", side_effect=[b"", signature.encode()]):
@@ -254,7 +255,7 @@ class DirectReleaseTests(unittest.TestCase):
         with patch.object(release, "run", side_effect=[b"", valid.encode()]):
             release.inspect_signature(self.package, direct=True, runtime=True)
 
-    def test_archive_uses_direct_scheme_and_explicit_manual_developer_id_export(self):
+    def test_archive_uses_automatic_development_signing_then_developer_id_export(self):
         directory = self.directory / "new-candidate"
         args = argparse.Namespace(directory=directory, platform="macos", version="0.1.2", build="5",
                                   signing_identity="Developer ID Application: Fixture")
@@ -288,13 +289,14 @@ class DirectReleaseTests(unittest.TestCase):
             release.archive(args)
         options = plistlib.loads((directory / "ExportOptions.plist").read_bytes())
         self.assertEqual(options["method"], "developer-id")
-        self.assertEqual(options["signingStyle"], "manual")
-        self.assertEqual(options["provisioningProfiles"], {release.BUNDLE: self.submission_id,
-                                                          release.BUNDLE + ".widgets": "WIDGET-PROFILE"})
-        self.assertEqual(options["signingCertificate"], args.signing_identity)
+        self.assertEqual(options["signingStyle"], "automatic")
+        self.assertNotIn("provisioningProfiles", options)
+        self.assertNotIn("signingCertificate", options)
         archive_command = next(c for c in commands if c[:2] == ("xcodebuild", "archive"))
         self.assertIn("Vellum Mac", archive_command)
         self.assertIn("ARCHS=arm64 x86_64", archive_command)
+        self.assertIn("CODE_SIGN_STYLE=Automatic", archive_command)
+        self.assertIn("CODE_SIGN_IDENTITY=Apple Development", archive_command)
         self.assertFalse(any("-allowProvisioningUpdates" in c or "notarytool" in c or "altool" in c for c in commands))
         release.verify(directory)
 
@@ -358,6 +360,7 @@ class DirectReleaseTests(unittest.TestCase):
                 release.inspect_bundle(app, "macos", "0.1.2", "5", True)
             profile["Entitlements"] = entitlements
             profile["ProvisionsAllDevices"] = False
+            release.inspect_bundle(app, "macos", "0.1.2", "5", False)
             with self.assertRaisesRegex(ValueError, "Developer ID provisioning"):
                 release.inspect_bundle(app, "macos", "0.1.2", "5", True)
             profile["ProvisionsAllDevices"] = True
