@@ -98,12 +98,12 @@ def inspect_signature(path, direct=False, exported=False, runtime=False, deep=Tr
                 "Direct Mac code is not signed with a Developer ID Application certificate")
         require("Timestamp=" in signature and "Timestamp=none" not in signature,
                 "Developer ID signature lacks a secure timestamp")
-        if runtime:
-            require(re.search(r"^CodeDirectory .*flags=.*\bruntime\b", signature, re.MULTILINE),
-                    "Direct Mac executable lacks Hardened Runtime")
     elif exported:
         require(authorities[0].startswith(("Apple Distribution:", "iPhone Distribution:")),
                 "Export is not signed with a Store distribution certificate")
+    if runtime:
+        require(re.search(r"^CodeDirectory .*flags=.*\bruntime\b", signature, re.MULTILINE),
+                "Direct Mac executable lacks Hardened Runtime")
     return authorities
 
 
@@ -157,7 +157,7 @@ def inspect_bundle(app, platform, version, build, exported):
         require(not any("sparkle" in p.name.lower() for p in app.rglob("*")), "Sparkle in Store app/extension")
     # Xcode export re-signs Sparkle helpers; intermediate archive helpers can
     # retain upstream signatures/debug entitlements. Gate all nested code after export.
-    authorities = inspect_signature(app, direct=direct, exported=exported, runtime=direct,
+    authorities = inspect_signature(app, direct=direct and exported, exported=exported, runtime=direct,
                                     deep=not direct or exported)
     entitlements = plistlib.loads(run("codesign", "-d", "--entitlements", ":-", app))
     mac_share = direct and identifier == MAC_SHARE
@@ -226,11 +226,12 @@ def inspect_bundle(app, platform, version, build, exported):
                     f"Profile does not authorize {key}")
         if direct:
             require(profile.get("Platform") == ["OSX"], "Developer ID profile is not for macOS")
-            require(profile.get("ProvisionsAllDevices") is True and not profile.get("ProvisionedDevices"),
-                    "Direct Mac app lacks a Developer ID provisioning profile")
-            require(not allowed.get("get-task-allow", False)
-                    and not allowed.get("com.apple.security.get-task-allow", False),
-                    "Developer ID profile permits debugging")
+            if exported:
+                require(profile.get("ProvisionsAllDevices") is True and not profile.get("ProvisionedDevices"),
+                        "Direct Mac app lacks a Developer ID provisioning profile")
+                require(not allowed.get("get-task-allow", False)
+                        and not allowed.get("com.apple.security.get-task-allow", False),
+                        "Developer ID profile permits debugging")
         elif exported:
             require(not profile.get("ProvisionedDevices") and not profile.get("ProvisionsAllDevices"),
                     "Export uses a development, ad hoc, or enterprise profile")
@@ -292,14 +293,9 @@ def archive(args):
     if args.platform == "macos":
         require(args.signing_identity and args.signing_identity.startswith("Developer ID Application:"),
                 "Supply --signing-identity with the exact Developer ID Application certificate name")
-        require(args.app_profile and args.widget_profile,
-                "Supply --app-profile and --widget-profile with installed Developer ID profile UUIDs")
         command += ["ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO",
-                    f"CODE_SIGN_IDENTITY={args.signing_identity}", f"DEVELOPMENT_TEAM={TEAM}",
-                    "ENABLE_HARDENED_RUNTIME=YES", "CODE_SIGN_STYLE=Manual",
-                    "PROVISIONING_PROFILE_SPECIFIER=$(VELLUM_PROFILE_$(TARGET_NAME))",
-                    f"VELLUM_PROFILE_VellumMac={args.app_profile}",
-                    f"VELLUM_PROFILE_VellumMacWidgets={args.widget_profile}"]
+                    "CODE_SIGN_IDENTITY=Apple Development", f"DEVELOPMENT_TEAM={TEAM}",
+                    "ENABLE_HARDENED_RUNTIME=YES", "CODE_SIGN_STYLE=Automatic"]
     run(*command, log=output / "archive.log")
     archive_records = inspect_apps(archive_path / "Products", args.platform, args.version, args.build, False)
     symbols = list((archive_path / "dSYMs").glob("*.dSYM/Contents/Resources/DWARF/*"))
@@ -311,13 +307,8 @@ def archive(args):
                "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False,
                "iCloudContainerEnvironment": "Production", "uploadSymbols": True}
     if args.platform == "macos":
-        # Xcode's signingCertificate option only applies to manual exports.
-        # Reuse the validated Developer ID profile already embedded in the archive.
-        options["signingStyle"] = "manual"
-        options["signingCertificate"] = args.signing_identity
-        require(archive_records[0].get("profile_uuid"), "Archive has no provisioning profile UUID")
-        options["provisioningProfiles"] = {record["bundle"]: record["profile_uuid"]
-                                           for record in archive_records if record.get("profile_uuid")}
+        # Xcode-managed profiles require an automatic development archive and
+        # Developer ID export. The exported app must pass all distribution gates.
         options.pop("uploadSymbols")  # Symbols are preserved locally for direct distribution.
     options_path = output / "ExportOptions.plist"
     options_path.write_bytes(plistlib.dumps(options))
@@ -654,8 +645,6 @@ def main():
     prepare.add_argument("--version", required=True)
     prepare.add_argument("--build", required=True)
     prepare.add_argument("--signing-identity", help="Required for Mac: exact Developer ID Application certificate name")
-    prepare.add_argument("--app-profile", type=uuid.UUID, help="Required for Mac: installed app Developer ID profile UUID")
-    prepare.add_argument("--widget-profile", type=uuid.UUID, help="Required for Mac: installed widget Developer ID profile UUID")
     prepare.add_argument("directory", type=Path)
     check = commands.add_parser("verify", help="Recheck recorded archive, symbols and package digests")
     check.add_argument("directory", type=Path)
