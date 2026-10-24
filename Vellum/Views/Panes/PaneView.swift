@@ -241,6 +241,8 @@ private struct LiveTabHost: View {
                     WebViewerView(
                         tabId: tabId, document: document, isActive: isActive,
                         runtime: runtime)
+                } else if document.kind == .epub {
+                    EpubPendingReaderView(document: document)
                 } else {
                     PdfViewerView(
                         tabId: tabId, documentInfo: document, isActive: isActive,

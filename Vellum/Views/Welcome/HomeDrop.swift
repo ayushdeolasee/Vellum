@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// the title or message text a source also advertises.
 @MainActor
 enum HomeDrop {
-    static let types: [UTType] = [.fileURL, .url, .pdf, .plainText, .rtf, .html]
+    static let types: [UTType] = [.fileURL, .url, .pdf, .epub, .plainText, .rtf, .html]
 
     struct Delivery {
         var urls: [URL] = []
@@ -46,14 +46,14 @@ enum HomeDrop {
             if let link {
                 if !delivery.urls.contains(link) { delivery.urls.append(link) }
             } else {
-                delivery.errors.append("Drop a PDF or a message containing a web link.")
+                delivery.errors.append("Drop a PDF, an EPUB or a message containing a web link.")
             }
         }
         return delivery
     }
 
     nonisolated static func isSupported(_ url: URL) -> Bool {
-        if url.isFileURL { return url.pathExtension.lowercased() == "pdf" }
+        if url.isFileURL { return ["pdf", "epub"].contains(url.pathExtension.lowercased()) }
         return ["http", "https"].contains(url.scheme?.lowercased() ?? "")
             && !(url.host ?? "").isEmpty
     }
