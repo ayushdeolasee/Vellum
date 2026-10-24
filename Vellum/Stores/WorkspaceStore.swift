@@ -828,7 +828,8 @@ final class WorkspaceStore {
     static func readingPosition(for tab: PdfTab) -> ReadingPosition {
         ReadingPosition(
             page: max(1, tab.currentPage),
-            pageCount: tab.numPages > 0 ? tab.numPages : tab.document?.pageCount)
+            pageCount: tab.numPages > 0 ? tab.numPages : tab.document?.pageCount,
+            scrollFraction: tab.document?.kind == .epub ? tab.epubProgression : nil)
     }
 
     // MARK: - Focus
