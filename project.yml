@@ -155,6 +155,8 @@ targets:
       - path: Tests/EpubImportTests.swift
       - path: Tests/EpubReaderTests.swift
       - path: Tests/EpubTextTests.swift
+      - path: Tests/EpubLibraryIntegrationTests.swift
+      - path: Tests/ScratchDefaultsTrait.swift
       - path: Tests/TestSupport/EpubFixture.swift
       - path: Tests/TestSupport/StorageIsolationTrait.swift
       - path: Tests/TestSupport/FakeSyncedContainer.swift
